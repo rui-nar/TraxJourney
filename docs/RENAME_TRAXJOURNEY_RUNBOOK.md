@@ -182,6 +182,43 @@ curl -s -u "$AUTH" "$G/api/user/preferences"
 Also check starred dashboards in the UI. Anything pointing at a `viewtrip-*`
 uid has to be pointed at its `traxjourney-*` counterpart after C3.
 
+Then list the Grafana alert rules. They live in Grafana's database, not in
+the provisioning files, so this PR changes none of them. Two things matter:
+
+- a rule in the `ViewTrip` folder blocks deleting that folder in C3, whatever
+  it queries;
+- a rule querying `viewtrip_*` or `service="viewtripweb"` sees no data once the
+  VPS is cut over, and a "fire on increase" rule then never fires again.
+
+`-f` makes a wrong password or address fail loudly instead of looking like
+"no rules":
+
+```bash
+curl -fsS -u "$AUTH" "$G/api/folders" > /tmp/folders.json
+curl -fsS -u "$AUTH" "$G/api/v1/provisioning/alert-rules" > /tmp/rules.json
+python3 - <<'EOF'
+import json, re
+folders = {f["uid"]: f["title"] for f in json.load(open("/tmp/folders.json"))}
+rules = json.load(open("/tmp/rules.json"))
+print(len(rules), "alert rule(s)")
+for r in rules:
+    folder = folders.get(r.get("folderUID"), r.get("folderUID"))
+    # queries, and annotations (a panel-linked rule keeps __dashboardUid__ there)
+    old = bool(re.search(r"view[ _-]?trip", json.dumps([r.get("data"), r.get("annotations")]), re.I))
+    if folder == "ViewTrip" or old:
+        print(f"- {r['title']!r} (uid {r['uid']}) folder={folder!r} uses_old_names={old}")
+EOF
+```
+
+For every rule it lists:
+
+- **now, before C3:** move it out of the `ViewTrip` folder (edit the rule in
+  the UI, pick another folder — create `TraxJourney` if it doesn't exist yet);
+- **after C3:** if it links to a `viewtrip-*` dashboard (`__dashboardUid__`),
+  relink it to the `traxjourney-*` one;
+- **after section D:** if its query uses `viewtrip_*` or `service="viewtripweb"`,
+  change it to the `traxjourney_*` metric or the `{service="traxjourney"}` stream.
+
 ### C2. [NAS] Swap the provisioning with Grafana stopped
 
 In the NAS stack directory:
