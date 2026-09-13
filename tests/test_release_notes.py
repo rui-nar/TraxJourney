@@ -223,6 +223,13 @@ class TestRendering:
         assert "## ⚠️ Upgrade notes" in body
         assert "Set METRICS_TOKEN." in body
 
+    def test_unscoped_breaking_change_has_no_empty_area_prefix(self):
+        body = self._render(_log(
+            ("feat!: project files use a new extension", "", "api/x.py"),
+        ))
+        assert "- Project files use a new extension." in body
+        assert "****" not in body
+
     def test_change_count_excludes_internal_noise(self):
         body = self._render(_log(
             ("fix(map): a", "", "flutter_client/a.dart"),

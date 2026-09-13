@@ -317,7 +317,11 @@ def render(
     upgrades = [c for c in changes if c.upgrade_note]
     if upgrades:
         out += ["## ⚠️ Upgrade notes", ""]
-        out += [f"- **{c.area}** — {c.upgrade_note.rstrip('.')}." for c in upgrades]
+        for c in upgrades:
+            note = c.upgrade_note.rstrip(".")
+            # Same rule as _bullet: no area, no empty "****" prefix.
+            out.append(f"- **{c.area}** — {note}." if c.area
+                       else f"- {note[:1].upper()}{note[1:]}.")
         out.append("")
 
     if internal:
