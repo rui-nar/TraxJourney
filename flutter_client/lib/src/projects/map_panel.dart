@@ -12,6 +12,7 @@ import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import 'package:vector_map_tiles/vector_map_tiles.dart';
 
+import '../core/brand.dart';
 import '../core/concurrency_gate.dart';
 import '../core/design_tokens.dart'
     show kAccent, kShadow2, monoStyle, activityTypeBucket, segmentTypeBucket,
@@ -1828,7 +1829,7 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
               TileLayer(
                 urlTemplate: widget.basemapUrl,
                 subdomains: widget.basemapSubdomains,
-                userAgentPackageName: 'com.viewtrip.client',
+                userAgentPackageName: kAppPackageId,
                 tileProvider: _tileProvider!,
                 maxNativeZoom: 22,
                 retinaMode: RetinaMode.isHighDensity(context),
@@ -1840,7 +1841,7 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
                 TileLayer(
                   urlTemplate: widget.labelsUrl!,
                   subdomains: kActiveViewLabelsSubdomains,
-                  userAgentPackageName: 'com.viewtrip.client',
+                  userAgentPackageName: kAppPackageId,
                   tileProvider: _tileProvider!,
                   maxNativeZoom: 22,
                   // Bundles country/state/city labels in one raster image —
@@ -1851,7 +1852,7 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
             if (widget.trackTileUrlTemplate != null)
               TileLayer(
                 urlTemplate: widget.trackTileUrlTemplate!,
-                userAgentPackageName: 'com.viewtrip.client',
+                userAgentPackageName: kAppPackageId,
                 maxNativeZoom: 15,
               ),
             if (polylines.isNotEmpty)
@@ -2766,7 +2767,7 @@ class ManageMapPanelState extends State<ManageMapPanel>
               TileLayer(
                 urlTemplate: widget.basemapUrl,
                 subdomains: widget.basemapSubdomains,
-                userAgentPackageName: 'com.viewtrip.client',
+                userAgentPackageName: kAppPackageId,
                 tileProvider: _tileProvider!,
                 maxNativeZoom: 22,
               ),

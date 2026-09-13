@@ -41,23 +41,8 @@ const _temp = <String, String>{
   'lib/src/core/app_version.dart': 'doc comment',
   'lib/src/core/design_tokens.dart': 'comment',
   'lib/src/core/theme.dart': 'comment',
-  'lib/src/projects/image_export.dart': 'tile user agent',
-  'lib/src/projects/location_picker_dialog.dart': 'tile user agent',
-  'lib/src/projects/map_panel.dart': 'tile user agent',
-  'lib/src/projects/track_map_editor.dart': 'tile user agent',
   'web/index.html': 'reload guard global',
   'web/reload_guard.js': 'reload guard global',
-  'ios/Runner.xcodeproj/project.pbxproj': 'bundle identifier',
-  'ios/Runner/GoogleService-Info.plist': 'bundle identifier',
-  'macos/Runner.xcodeproj/project.pbxproj': 'product name, bundle identifier',
-  'macos/Runner.xcodeproj/xcshareddata/xcschemes/Runner.xcscheme':
-      'product name',
-  'macos/Runner/Configs/AppInfo.xcconfig': 'product name, bundle identifier',
-  'linux/CMakeLists.txt': 'binary name, application id',
-  'linux/runner/my_application.cc': 'window title',
-  'windows/CMakeLists.txt': 'binary name',
-  'windows/runner/Runner.rc': 'version resource',
-  'windows/runner/main.cpp': 'window title',
 };
 
 /// Machine-generated, gitignored build inputs: they embed the checkout's

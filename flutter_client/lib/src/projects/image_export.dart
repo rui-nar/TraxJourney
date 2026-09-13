@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../core/brand.dart';
 import 'basemaps.dart';
 import 'elevation_chart.dart';
 import 'map_panel.dart' show buildDayBreakpointMarkers, dayStartActivityIds;
@@ -226,13 +227,13 @@ Future<Uint8List?> performOffscreenExport({
                         // don't capture correctly via toImage().
                         TileLayer(
                           urlTemplate: kViewBasemapUrl,
-                          userAgentPackageName: 'com.viewtrip.client',
+                          userAgentPackageName: kAppPackageId,
                           tileProvider: NetworkTileProvider(),
                           maxNativeZoom: 19,
                         ),
                         TileLayer(
                           urlTemplate: kViewLabelsUrl,
-                          userAgentPackageName: 'com.viewtrip.client',
+                          userAgentPackageName: kAppPackageId,
                           tileProvider: NetworkTileProvider(),
                           maxNativeZoom: 19,
                         ),

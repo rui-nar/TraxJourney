@@ -7,3 +7,8 @@ library;
 
 /// Product name, as shown on the Android launcher and traxjourney.com.
 const kAppName = 'TraxJourney';
+
+/// The app's platform identity: Android applicationId, iOS/macOS bundle id and
+/// Linux application id. Map tile requests also name the app by it in their
+/// User-Agent, as tile providers' usage policies ask.
+const kAppPackageId = 'com.traxjourney.app';
