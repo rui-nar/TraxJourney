@@ -66,8 +66,12 @@ All metric objects live in one module, `src/utils/metrics.py`.
 |---|---|
 | `viewtrip_http_requests_total` | `method`, `handler`, `status` |
 | `viewtrip_http_request_duration_seconds` | `method`, `handler` |
+| `viewtrip_http_request_duration_highr_seconds` | — |
 | `viewtrip_http_request_size_bytes`, `viewtrip_http_response_size_bytes` | `handler` |
 | `viewtrip_http_requests_inprogress` | — |
+
+`viewtrip_http_request_duration_highr_seconds` has no labels and many
+buckets, for accurate overall percentiles; the labelled histogram keeps few.
 
 `handler` is the **route template** (`/api/projects/{name}`), never the
 concrete path. Status codes are deliberately not grouped into `2xx`/`4xx`:
@@ -126,9 +130,18 @@ exceed the quota by a factor of the worker count.
 | `viewtrip_job_runs_total` | `job`, `result` (`success`\|`error`\|`missed`) |
 | `viewtrip_job_duration_seconds` | `job` |
 | `viewtrip_job_last_success_timestamp_seconds` | `job` |
+| `viewtrip_prepared_geometry_backlog` | — |
+| `viewtrip_prepared_geometry_outcomes_total` | `outcome` (`prepared`\|`unpreparable`\|`error`) |
 
 Fed by a single APScheduler listener, so every job — `daily_backup`,
 `wal_checkpoint`, anything added later — is covered automatically.
+
+The prepared-geometry pair is set by the backfill sweep itself (issue #369),
+not by that listener.
+`prepared_geometry_backlog` counts activities still waiting for a prepared row,
+including any that can never be prepared: it should fall to a small constant and
+stay there. A flat non-zero line means the sweep runs and reports success
+without making progress, which `job_runs_total` cannot show.
 
 ### Database
 
