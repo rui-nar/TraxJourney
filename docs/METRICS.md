@@ -32,12 +32,12 @@ publish user counts, route names, error rates and DB size to anyone who asks.
 
 ```yaml
 scrape_configs:
-  - job_name: viewtrip
+  - job_name: traxjourney
     scheme: https
     static_configs:
       - targets: ["traxjourney.com"]
     authorization:
-      credentials: "<METRICS_TOKEN>"   # or credentials_file: /etc/prometheus/viewtrip.token
+      credentials: "<METRICS_TOKEN>"   # or credentials_file: /etc/prometheus/traxjourney.token
 ```
 
 Defence in depth — block the path at the proxy so only a local scraper (or an

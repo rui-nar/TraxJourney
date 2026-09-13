@@ -24,6 +24,7 @@ from src.utils import metrics as app_metrics
 
 _ROOT = Path(__file__).resolve().parent.parent
 _DASHBOARD_DIR = _ROOT / "nas" / "grafana" / "provisioning" / "dashboards"
+_ALLOY_CONFIG = _ROOT / "config" / "alloy-config.river.example"
 _METRICS_DOC = _ROOT / "docs" / "METRICS.md"
 
 # Every app metric shares one namespace; the HTTP families are built from it
@@ -54,8 +55,8 @@ def _dashboards() -> list[Path]:
     return paths
 
 
-def _prometheus_queries(node, datasource_type=None, out=None) -> list[str]:
-    """Every PromQL string in a dashboard, skipping non-Prometheus datasources.
+def _queries(node, wanted="prometheus", datasource_type=None, out=None) -> list[str]:
+    """Every query string in a dashboard for datasources of type *wanted*.
 
     A panel's ``datasource`` applies to its ``targets``, which carry none of
     their own; templating variables carry theirs. A ``type: datasource``
@@ -65,7 +66,7 @@ def _prometheus_queries(node, datasource_type=None, out=None) -> list[str]:
         out = []
     if isinstance(node, list):
         for child in node:
-            _prometheus_queries(child, datasource_type, out)
+            _queries(child, wanted, datasource_type, out)
         return out
     if not isinstance(node, dict):
         return out
@@ -79,10 +80,10 @@ def _prometheus_queries(node, datasource_type=None, out=None) -> list[str]:
 
     for key, value in node.items():
         if key in ("expr", "query", "definition") and isinstance(value, str):
-            if datasource_type == "prometheus" and not is_datasource_variable:
+            if datasource_type == wanted and not is_datasource_variable:
                 out.append(value)
         elif isinstance(value, (dict, list)):
-            _prometheus_queries(value, datasource_type, out)
+            _queries(value, wanted, datasource_type, out)
     return out
 
 
@@ -120,7 +121,7 @@ def _dashboard_metric_names() -> dict[str, set[str]]:
     """{metric name: {dashboard file names that query it}}."""
     found: dict[str, set[str]] = {}
     for path in _dashboards():
-        for query in _prometheus_queries(json.loads(path.read_text(encoding="utf-8"))):
+        for query in _queries(json.loads(path.read_text(encoding="utf-8"))):
             for name in metric_names_in(query):
                 found.setdefault(name, set()).add(path.name)
     return found
@@ -232,6 +233,58 @@ def test_every_exported_app_metric_is_documented(exported_families):
     assert not undocumented, f"missing from docs/METRICS.md: {undocumented}"
 
 
+# ── Labels Alloy attaches ────────────────────────────────────────────────────
+# ``job`` on scrape-level series (``up``, ``process_*``) and ``service`` on log
+# streams are not set by the app at all but by the Alloy config on the VPS, so a
+# rename there leaves the dashboards' env dropdowns and every Logs panel empty
+# with no error anywhere — the same silent drift as a metric rename.
+
+_SELECTOR = re.compile(r"([A-Za-z_:][\w:]*)?\s*\{([^{}]*)\}")
+
+
+def _matcher_values(matchers: str, label: str) -> set[str]:
+    return set(re.findall(rf'(?<![\w]){label}\s*=~?\s*"([^"]*)"', matchers))
+
+
+def _alloy_values(pattern: str) -> set[str]:
+    return set(re.findall(pattern, _ALLOY_CONFIG.read_text(encoding="utf-8")))
+
+
+def test_dashboard_job_matchers_match_the_alloy_scrape_job():
+    alloy_jobs = _alloy_values(r'"job"\s*=\s*"([^"]+)"')
+    assert len(alloy_jobs) == 1, alloy_jobs
+    # Only series the scrape itself labels: an app family's own ``job`` label
+    # (``job="daily_backup"``) is an APScheduler job id, not the scrape job.
+    found: dict[str, set[str]] = {}
+    for path in _dashboards():
+        for query in _queries(json.loads(path.read_text(encoding="utf-8"))):
+            for name, matchers in _SELECTOR.findall(query):
+                if name.startswith(APP_PREFIX):
+                    continue
+                for value in _matcher_values(matchers, "job"):
+                    found.setdefault(value, set()).add(path.name)
+    assert found, "no job= matcher found on a scrape-level series"
+    assert set(found) == alloy_jobs, (
+        f"dashboards filter on job values {found}; Alloy scrapes as {alloy_jobs}"
+    )
+
+
+def test_logs_dashboard_service_matches_the_alloy_log_label():
+    alloy_services = _alloy_values(
+        r'target_label\s*=\s*"service"\s*replacement\s*=\s*"([^"]+)"'
+    )
+    assert len(alloy_services) == 1, alloy_services
+    found: set[str] = set()
+    for path in _dashboards():
+        for query in _queries(json.loads(path.read_text(encoding="utf-8")), "loki"):
+            for _name, matchers in _SELECTOR.findall(query):
+                found |= _matcher_values(matchers, "service")
+    assert found, "no Loki service= stream selector found in any dashboard"
+    assert found == alloy_services, (
+        f"Loki queries select service {found}; Alloy labels streams {alloy_services}"
+    )
+
+
 # ── Extractor unit checks ────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("query, expected", [
@@ -239,7 +292,7 @@ def test_every_exported_app_metric_is_documented(exported_families):
      {"a_bucket"}),
     ('100 * a{state="in_use",env="$env"} / b{env="$env"}', {"a", "b"}),
     ('time() - a_ts{job="daily_backup"}', {"a_ts"}),
-    ('label_values(up{job="viewtrip"}, env)', {"up"}),
+    ('label_values(up{job="traxjourney"}, env)', {"up"}),
     ('topk(10, sum by (handler) (rate(x_total[$__rate_interval])))', {"x_total"}),
     ('rate(a_sum[5m]) / on(instance) group_left rate(a_count[5m])', {"a_sum", "a_count"}),
 ])

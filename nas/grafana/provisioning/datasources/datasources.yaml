@@ -8,7 +8,7 @@
 # discovery.
 #
 # No `uid:` here on purpose. An earlier version of this file pinned fixed
-# UIDs (viewtrip-prometheus/viewtrip-loki) so dashboards could reference them
+# datasource UIDs so dashboards could reference them
 # deterministically — confirmed live against grafana/grafana:latest (13.1.3)
 # that this makes the provisioning module fail outright on every start with
 # "Datasource provisioning error: data source not found", crash-looping the

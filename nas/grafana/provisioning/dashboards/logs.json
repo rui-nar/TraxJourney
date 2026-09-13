@@ -1,8 +1,8 @@
 {
-  "uid": "viewtrip-logs",
-  "title": "ViewTrip / Logs",
+  "uid": "traxjourney-logs",
+  "title": "TraxJourney / Logs",
   "description": "Loki queries mirroring docs/OBSERVABILITY.md. request_id= and user_id= are real logfmt tokens; %(levelname)s is positional, not a level= key, so level filtering is a substring match. Edit a panel's query and add e.g. |= \"request_id=<id>\" to reconstruct one request end to end. Use the env variable to view prod or val separately — they share this NAS.",
-  "tags": ["viewtrip"],
+  "tags": ["traxjourney"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,
@@ -38,11 +38,11 @@
       "id": 1,
       "type": "timeseries",
       "title": "Error rate",
-      "description": "sum(rate({service=\"viewtripweb\", env=\"$env\"} |= \"ERROR\" [5m]))",
+      "description": "sum(rate({service=\"traxjourney\", env=\"$env\"} |= \"ERROR\" [5m]))",
       "gridPos": {"h": 7, "w": 12, "x": 0, "y": 0},
       "datasource": {"type": "loki", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "sum(rate({service=\"viewtripweb\", env=\"$env\"} |= \"ERROR\" [5m]))", "legendFormat": "ERROR lines/sec"}
+        {"refId": "A", "expr": "sum(rate({service=\"traxjourney\", env=\"$env\"} |= \"ERROR\" [5m]))", "legendFormat": "ERROR lines/sec"}
       ],
       "fieldConfig": {"defaults": {"unit": "ops", "custom": {"drawStyle": "line", "fillOpacity": 15}}, "overrides": []},
       "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}
@@ -51,11 +51,11 @@
       "id": 2,
       "type": "timeseries",
       "title": "External call failures by service",
-      "description": "sum(rate({service=\"viewtripweb\", env=\"$env\"} |= \"external call failed\" | logfmt [5m])) by (service) — matches track_external()'s log format, src/utils/metrics.py.",
+      "description": "sum(rate({service=\"traxjourney\", env=\"$env\"} |= \"external call failed\" | logfmt [5m])) by (service) — matches track_external()'s log format, src/utils/metrics.py.",
       "gridPos": {"h": 7, "w": 12, "x": 12, "y": 0},
       "datasource": {"type": "loki", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "sum(rate({service=\"viewtripweb\", env=\"$env\"} |= \"external call failed\" | logfmt [5m])) by (service)", "legendFormat": "{{service}}"}
+        {"refId": "A", "expr": "sum(rate({service=\"traxjourney\", env=\"$env\"} |= \"external call failed\" | logfmt [5m])) by (service)", "legendFormat": "{{service}}"}
       ],
       "fieldConfig": {"defaults": {"unit": "ops", "custom": {"drawStyle": "line", "fillOpacity": 15, "stacking": {"mode": "normal"}}}, "overrides": []},
       "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["sum"]}, "tooltip": {"mode": "multi"}}
@@ -64,11 +64,11 @@
       "id": 3,
       "type": "logs",
       "title": "Recent errors",
-      "description": "{service=\"viewtripweb\", env=\"$env\"} |= \"ERROR\" — add |= \"request_id=<id>\" or |= \"user_id=<id>\" to narrow to one request/session.",
+      "description": "{service=\"traxjourney\", env=\"$env\"} |= \"ERROR\" — add |= \"request_id=<id>\" or |= \"user_id=<id>\" to narrow to one request/session.",
       "gridPos": {"h": 9, "w": 24, "x": 0, "y": 7},
       "datasource": {"type": "loki", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "{service=\"viewtripweb\", env=\"$env\"} |= \"ERROR\""}
+        {"refId": "A", "expr": "{service=\"traxjourney\", env=\"$env\"} |= \"ERROR\""}
       ],
       "options": {
         "showTime": true,
@@ -84,11 +84,11 @@
       "id": 4,
       "type": "logs",
       "title": "All logs (logfmt-parsed)",
-      "description": "{service=\"viewtripweb\", env=\"$env\"} | logfmt — the raw firehose. Filter in the query editor by request_id/user_id to reconstruct one request or one user's session across concurrent traffic.",
+      "description": "{service=\"traxjourney\", env=\"$env\"} | logfmt — the raw firehose. Filter in the query editor by request_id/user_id to reconstruct one request or one user's session across concurrent traffic.",
       "gridPos": {"h": 10, "w": 24, "x": 0, "y": 16},
       "datasource": {"type": "loki", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "{service=\"viewtripweb\", env=\"$env\"} | logfmt"}
+        {"refId": "A", "expr": "{service=\"traxjourney\", env=\"$env\"} | logfmt"}
       ],
       "options": {
         "showTime": true,
