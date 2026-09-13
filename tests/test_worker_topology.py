@@ -153,8 +153,8 @@ class TestWorkersTrackTheApi:
                         f"{name} does not share {target} with the API")
 
     def test_workers_declare_the_worker_role(self, services, workers):
-        """VIEWTRIP_ROLE=worker is what stops a worker running migrations, the
+        """TRAXJOURNEY_ROLE=worker is what stops a worker running migrations, the
         admin seed and the scheduler (api/router.py). The entrypoint exports it
         too; this keeps the compose file honest about what the service is."""
         for name in workers:
-            assert services[name].get("environment", {}).get("VIEWTRIP_ROLE") == "worker"
+            assert services[name].get("environment", {}).get("TRAXJOURNEY_ROLE") == "worker"

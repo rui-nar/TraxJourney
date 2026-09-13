@@ -131,7 +131,7 @@ services:
     command: ["/worker-entrypoint.sh", "default", "resolve"]
     env_file: .env
     environment:
-      VIEWTRIP_ROLE: worker
+      TRAXJOURNEY_ROLE: worker
     logging: *default-logging
     deploy:
       resources:
@@ -158,7 +158,7 @@ services:
     command: ["/worker-entrypoint.sh", "poster", "default", "resolve"]
     env_file: .env
     environment:
-      VIEWTRIP_ROLE: worker
+      TRAXJOURNEY_ROLE: worker
     logging: *default-logging
     deploy:
       resources:

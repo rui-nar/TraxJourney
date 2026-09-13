@@ -168,7 +168,7 @@ it are easy to get wrong:
   port — and an unauthenticated Redis reachable from the internet is a
   well-known way to lose a host.
 
-The workers set `VIEWTRIP_ROLE=worker`, which stops them running migrations, the
+The workers set `TRAXJOURNEY_ROLE=worker`, which stops them running migrations, the
 admin seed, and the scheduled jobs. Only the API container owns those: two
 containers racing `alembic upgrade head` at boot, or each taking its own nightly
 backup and 60 s WAL checkpoint, is the failure that guards against.
@@ -253,7 +253,7 @@ Strava allows only one callback domain per app, so val either gets its own
 Strava app or does without Strava sync.
 
 If the `alloy` service (§7) is running, `.env` must also set
-`VIEWTRIP_ENV=validation` here (prod's is `VIEWTRIP_ENV=production`) — both
+`TRAXJOURNEY_ENV=validation` here (prod's is `TRAXJOURNEY_ENV=production`) — both
 push to the same NAS Loki/Prometheus, and this is the only thing that keeps
 their logs/metrics distinguishable there instead of colliding. Each
 dashboard's `env` variable filters on it.

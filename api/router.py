@@ -80,8 +80,8 @@ _scheduler = AsyncIOScheduler()
 #
 # Today a worker never imports this module, so the guard is belt-and-braces —
 # but the failure it prevents is silent and periodic, which is exactly the kind
-# that survives a code review. Set VIEWTRIP_ROLE=worker in the worker image.
-_ROLE = os.environ.get("VIEWTRIP_ROLE", "api").strip().lower()
+# that survives a code review. Set TRAXJOURNEY_ROLE=worker in the worker image.
+_ROLE = os.environ.get("TRAXJOURNEY_ROLE", "api").strip().lower()
 _IS_API_PROCESS = _ROLE != "worker"
 
 # Single source of truth for the running version: the git tag baked in at build
@@ -104,7 +104,7 @@ async def lifespan(_app: FastAPI):
     jwt_secret()
     if not _IS_API_PROCESS:
         # A worker shares this codebase but must not own schema or schedules.
-        _log.info("VIEWTRIP_ROLE=%s — skipping migrations, admin seed and scheduler", _ROLE)
+        _log.info("TRAXJOURNEY_ROLE=%s — skipping migrations, admin seed and scheduler", _ROLE)
         yield
         return
     cfg = AlembicConfig(os.path.join(os.path.dirname(__file__), "..", "alembic.ini"))

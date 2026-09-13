@@ -109,7 +109,7 @@ class TestTwoEnginesOneFile:
         assert found is not None
 
     def test_the_api_checkpoint_folds_in_the_workers_writes(self, db_file):
-        """Only the API process runs the periodic WAL checkpoint (VIEWTRIP_ROLE).
+        """Only the API process runs the periodic WAL checkpoint (TRAXJOURNEY_ROLE).
 
         That is correct rather than a gap — there is one WAL for one file, so
         the API's checkpoint covers frames the worker appended too. Worth a test

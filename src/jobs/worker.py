@@ -5,7 +5,7 @@ count *is* the Overpass politeness bound, so raising it is a deliberate decision
 about load on a free public API, not a throughput knob.
 
 The worker deliberately does not run migrations, the APScheduler jobs, or the
-admin seed — see ``VIEWTRIP_ROLE`` in ``api/router.py`` for why.
+admin seed — see ``TRAXJOURNEY_ROLE`` in ``api/router.py`` for why.
 """
 from __future__ import annotations
 
@@ -88,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
     # LOG_LEVEL (issue #208) is the restart-persistent baseline. A live admin
     # override applies on top of it per-job (see src.jobs.queue.enqueue).
     configure_logging(level=env_level())
-    os.environ.setdefault("VIEWTRIP_ROLE", "worker")
+    os.environ.setdefault("TRAXJOURNEY_ROLE", "worker")
 
     queues = argv if argv else list(ALL_QUEUES)
 
