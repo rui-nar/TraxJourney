@@ -118,6 +118,12 @@ _ISSUE_RE = re.compile(r"#(\d+)")
 # put, and GitHub auto-links it in a release body anyway.
 _TRAILING_REFS_RE = re.compile(r"\s*\(\s*#\d+(?:[,\s]+#\d+)*\s*\)\s*$")
 _TRAILER_RE = re.compile(r"^(Release-Note|Upgrade-Note):\s*(.+)$", re.IGNORECASE)
+# The attribution trailers stacked under a note with no blank line
+# (Co-Authored-By:, Signed-off-by:, Claude-Session:) end it. Only these: a
+# wrapped line may itself start "Self-hosting: ..." and must stay in the note.
+_OTHER_TRAILER_RE = re.compile(
+    r"^(?:(?:[A-Za-z]+-)+by|Claude-Session|Change-Id):\s", re.IGNORECASE
+)
 
 # Commits that are pure bookkeeping — never interesting, in any section.
 _SKIP_SUBJECTS = (
@@ -157,8 +163,8 @@ class Change:
 def _trailers(body: str) -> dict[str, str]:
     """Read ``Release-Note:`` / ``Upgrade-Note:`` trailers from a commit body.
 
-    A trailer runs until a blank line, so it can wrap across lines the way the
-    rest of the commit body does.
+    A trailer runs until a blank line or the next trailer, so it can wrap across
+    lines the way the rest of the commit body does.
     """
     found: dict[str, str] = {}
     key: Optional[str] = None
@@ -167,7 +173,7 @@ def _trailers(body: str) -> dict[str, str]:
         if match:
             key = match.group(1).lower()
             found[key] = match.group(2).strip()
-        elif key and line.strip():
+        elif key and line.strip() and not _OTHER_TRAILER_RE.match(line.strip()):
             found[key] = f"{found[key]} {line.strip()}"
         else:
             key = None

@@ -53,7 +53,9 @@ Two supported trailers:
 | `Release-Note:` | Replaces the subject in the notes. Write it for someone who uses the app. |
 | `Upgrade-Note:` | Adds a line under **⚠️ Upgrade notes** — config that must change, a manual step, anything that breaks on upgrade. A `feat!:`/`fix!:` breaking marker implies one. |
 
-Both may wrap across lines; a blank line ends them.
+Both may wrap across lines; a blank line ends them, and so does an attribution
+trailer stacked right under them (`Co-Authored-By:`, `Signed-off-by:`,
+`Claude-Session:`).
 
 ### Write them in English
 

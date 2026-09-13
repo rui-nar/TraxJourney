@@ -118,6 +118,27 @@ class TestTrailers:
         )
         assert change.release_note == "the note"
 
+    def test_trailer_stops_at_the_next_git_trailer(self):
+        """Trailers stack without blank lines; a Co-Authored-By line directly
+        under the note used to be glued onto the published sentence."""
+        change = _one(
+            "feat(map): x",
+            body="Release-Note: the note\n  wraps here.\n"
+                 "Co-Authored-By: Someone <someone@example.com>\n"
+                 "Signed-off-by: Someone <someone@example.com>\n",
+        )
+        assert change.release_note == "the note wraps here."
+
+    def test_wrapped_line_that_looks_like_a_label_stays_in_the_note(self):
+        change = _one(
+            "feat(docker): x",
+            body="Release-Note: The image moved.\n"
+                 "Self-hosting: pull ghcr.io/rui-nar/traxjourney instead.\n"
+                 "Claude-Session: https://example.com/s/1\n",
+        )
+        assert change.release_note == (
+            "The image moved. Self-hosting: pull ghcr.io/rui-nar/traxjourney instead.")
+
     def test_subject_is_used_when_no_trailer(self):
         change = _one("fix(map): restore the fit-to-trip zoom")
         assert change.text == "restore the fit-to-trip zoom"
