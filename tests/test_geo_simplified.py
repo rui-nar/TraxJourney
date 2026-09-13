@@ -140,10 +140,10 @@ import json
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel
 
 import models.db as db_module
+from models.db import _configure_sqlite, _make_engine
 from api.deps import get_current_user
 from api.geo import _geo_cache, _geo_gen, _track_cache, router as geo_router
 from models.project_db import DBActivity, DBProject, DBProjectItem
@@ -153,12 +153,14 @@ _POINTS = 3000
 
 
 @pytest.fixture
-def env(monkeypatch):
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
+def env(monkeypatch, tmp_path):
+    # A file, pooled the way the app pools it, because the build-lock tests
+    # below send two requests at once. An in-memory StaticPool engine hands
+    # both threads the same sqlite3 connection, and their interleaved queries
+    # corrupt each other's rows — a flaky IndexError or a spurious 404 that has
+    # nothing to do with the code under test.
+    engine = _make_engine(f"sqlite:///{(tmp_path / 'geo.db').as_posix()}")
+    _configure_sqlite(engine)
     monkeypatch.setattr(db_module, "engine", engine)
     SQLModel.metadata.create_all(engine)
     _geo_cache.clear()
@@ -201,6 +203,7 @@ def env(monkeypatch):
     app.dependency_overrides[get_current_user] = lambda: {"sub": str(current["uid"])}
     app.include_router(geo_router)
     yield TestClient(app), uid, sid, lambda who: current.update(uid=who)
+    engine.dispose()
 
 
 def _points(resp) -> int:
