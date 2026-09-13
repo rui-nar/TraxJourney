@@ -100,12 +100,19 @@ class ProjectsNotifier extends ChangeNotifier {
         allowedExtensions: [kProjectFileExtension],
       );
       if (picked == null) return null;
-      final bytes = await picked.readAsBytes();
       final rawName = picked.name;
       const suffix = '.$kProjectFileExtension';
-      final defaultName = rawName.endsWith(suffix)
-          ? rawName.substring(0, rawName.length - suffix.length)
-          : rawName;
+      // The extension filter is only a hint on web ("All files" bypasses it)
+      // and the upload always adds .traxj, so an older-format project file would
+      // otherwise import as a project named after its old suffix.
+      if (!rawName.toLowerCase().endsWith(suffix) ||
+          rawName.length == suffix.length) {
+        _error = 'Choose a $suffix project file.';
+        notifyListeners();
+        return null;
+      }
+      final bytes = await picked.readAsBytes();
+      final defaultName = rawName.substring(0, rawName.length - suffix.length);
       return (bytes: bytes, defaultName: defaultName);
     } on Exception catch (e) {
       _error = _msg(e);

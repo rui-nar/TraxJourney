@@ -43,6 +43,8 @@ ALLOWED: dict[str, tuple[str, str]] = {
         "explains why import rejects old formats", r"\.viewtrip or"),
     "tests/test_project_file_contract.py": (
         "asserts the old formats and export route are gone", r"\.viewtrip|export-viewtrip"),
+    "flutter_client/test/projects/project_file_test.dart": (
+        "asserts the picker refuses old-format files", r"Summer\.viewtrip"),
     "tests/test_spa_catch_all_api_404.py": (
         "names the removed export route", r"export-viewtrip"),
     "docs/ANDROID.md": ("a Google Cloud project id can never be renamed", r"id `viewtrip`"),

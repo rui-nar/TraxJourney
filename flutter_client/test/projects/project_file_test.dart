@@ -91,6 +91,19 @@ void main() {
     expect(picked!.defaultName, 'Trip');
   });
 
+  for (final name in ['Summer.viewtrip', 'Summer.gettracks', 'Summer', '.traxj']) {
+    test('a picked "$name" is refused, not imported under that name', () async {
+      FilePickerPlatform.instance =
+          _RecordingFilePickerPlatform(_FakePlatformFile(name));
+      final notifier = ProjectsNotifier(_FakeProjectsService());
+
+      final picked = await notifier.pickProjectFile();
+
+      expect(picked, isNull);
+      expect(notifier.error, contains('.traxj'));
+    });
+  }
+
   test('an imported project is uploaded as <name>.traxj', () async {
     String? body;
     api = ApiClient(baseUrl: '');
