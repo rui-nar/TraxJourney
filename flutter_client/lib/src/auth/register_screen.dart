@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import '../core/brand.dart';
 import '../core/return_to.dart';
 import 'auth_notifier.dart';
 
@@ -100,8 +101,15 @@ class _RegisterScreenState extends State<RegisterScreen> {
                           Icon(Icons.map_rounded,
                               color: theme.colorScheme.primary, size: 32),
                           const SizedBox(width: 10),
-                          Text('ViewTrip',
-                              style: theme.textTheme.headlineMedium),
+                          // Scales down rather than overflowing when the
+                          // card is narrower than the wordmark.
+                          Flexible(
+                            child: FittedBox(
+                              fit: BoxFit.scaleDown,
+                              child: Text(kAppName,
+                                  style: theme.textTheme.headlineMedium),
+                            ),
+                          ),
                         ],
                       ),
                       const SizedBox(height: 6),

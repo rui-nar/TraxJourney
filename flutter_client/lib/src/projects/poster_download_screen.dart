@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../api/client.dart';
+import '../core/brand.dart';
 import 'download_stub.dart' if (dart.library.html) 'download_web.dart';
 
 /// Extracts the server's `detail` message out of an exception, mirroring
@@ -144,7 +145,7 @@ class _PosterDownloadScreenState extends State<PosterDownloadScreen> {
           const SizedBox(height: 20),
           ElevatedButton(
             onPressed: () => context.go('/'),
-            child: const Text('Go to ViewTrip'),
+            child: const Text('Go to $kAppName'),
           ),
         ],
       );

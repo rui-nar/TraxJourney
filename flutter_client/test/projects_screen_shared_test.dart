@@ -107,4 +107,18 @@ void main() {
     expect(find.text('Shared With Me'), findsNothing);
     expect(find.byIcon(Icons.delete_outline), findsOneWidget);
   });
+
+  testWidgets(
+      'the app bar shows the product name and the import card asks for a '
+      '.traxj file (issue #151)', (tester) async {
+    final notifier = await _loadedNotifier([]);
+
+    await tester.pumpWidget(_harness(notifier));
+    await tester.pump();
+
+    expect(find.descendant(of: find.byType(AppBar), matching: find.text('TraxJourney')),
+        findsOneWidget);
+    expect(find.text('Import a .traxj project file.'), findsOneWidget);
+    expect(find.text('Choose .traxj file'), findsOneWidget);
+  });
 }

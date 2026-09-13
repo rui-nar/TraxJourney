@@ -16,6 +16,7 @@ import 'src/projects/project_data_cache.dart';
 import 'src/projects/project_notifier.dart';
 import 'src/settings/theme_notifier.dart';
 import 'src/core/app_router.dart';
+import 'src/core/brand.dart';
 import 'src/core/onboarding_notifier.dart';
 import 'src/core/perf_timing.dart';
 import 'src/core/server_config.dart';
@@ -98,7 +99,7 @@ class _ViewTripAppState extends State<ViewTripApp> {
     // Router is created once and reused — recreating it would destroy nav stack.
     _router ??= buildRouter(context);
     return MaterialApp.router(
-      title: 'ViewTripWeb',
+      title: kAppName,
       theme: lightTheme,
       darkTheme: darkTheme,
       themeMode: themeMode,

@@ -7,13 +7,14 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../core/app_version.dart';
+import '../core/brand.dart';
 import '../core/design_tokens.dart';
 
 // ── Layout constants ──────────────────────────────────────────────────────────
 const _kBreak = 900.0;
 const _kNavH  = 64.0;
 const _kShell = 1200.0;
-const _kGH    = 'https://github.com/rui-nar/ViewTripWeb';
+const _kGH    = 'https://github.com/rui-nar/TraxJourney';
 
 // ── Always-dark showcase palette ─────────────────────────────────────────────
 const _dBg   = Color(0xFF0D1B2A);
@@ -576,7 +577,7 @@ class _WindowBar extends StatelessWidget {
           const SizedBox(width: 6),
           _TrafficDot(const Color(0xFF16A34A)),
           const SizedBox(width: 12),
-          Text('viewtrip.app / camino-portugués',
+          Text('traxjourney.com / camino-portugués',
               style: _mono(11, FontWeight.w500, theme.colorScheme.onSurfaceVariant)),
         ],
       ),
@@ -935,7 +936,7 @@ class _FeaturesSection extends StatelessWidget {
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  'Most trip trackers drop out the moment you board a train. ViewTrip fills the '
+                  'Most trip trackers drop out the moment you board a train. $kAppName fills the '
                   'gaps — great-circle flight arcs, SLERP-smoothed ferry paths, and dashed '
                   'transport connectors — so your journey line is unbroken from door to door.',
                   style: _inter(17, FontWeight.w400, fg2, height: 1.5),
@@ -1048,7 +1049,7 @@ class _HowItWorksSection extends StatelessWidget {
 
   static const _steps = [
     ('01', 'Connect Strava',
-     'OAuth once. ViewTrip pulls your activity feed with type and date filters. '
+     'OAuth once. $kAppName pulls your activity feed with type and date filters. '
      'Your tokens live in your own database — we never see them.'),
     ('02', 'Stitch & annotate',
      'Drag rides into order, add a connecting flight or train between gaps, '
@@ -1194,7 +1195,7 @@ class _ShowcaseSection extends StatelessWidget {
                             height: 1.1, spacing: -0.025)),
                     const SizedBox(height: 12),
                     Text(
-                      'A real trip stitched in ViewTrip: eight rides from Porto to Santiago, '
+                      'A real trip stitched in $kAppName: eight rides from Porto to Santiago, '
                       'train to Braga, ferry across the Minho, and 12 photo memories pinned '
                       'along the way.',
                       style: _inter(17, FontWeight.w400, _dFgSub, height: 1.5),
@@ -1448,7 +1449,7 @@ class _SelfHostSection extends StatelessWidget {
                         height: 1.1, spacing: -0.025)),
                 const SizedBox(height: 12),
                 Text(
-                  'ViewTrip ships as a single Docker image and a Flutter client. '
+                  '$kAppName ships as a single Docker image and a Flutter client. '
                   'Self-host in five minutes, or join the hosted beta and we\'ll '
                   'keep the box warm.',
                   style: _inter(17, FontWeight.w400, fg2, height: 1.5),
@@ -1765,7 +1766,7 @@ class _FootBottom extends StatelessWidget {
       runSpacing: 8,
       children: [
         VersionText(
-            prefix: '© ${DateTime.now().year} ViewTrip · ',
+            prefix: '© ${DateTime.now().year} $kAppName · ',
             style: _mono(12, FontWeight.w500, fg2)),
         Text('Built on Flutter + FastAPI · Designed in slate',
             style: _mono(12, FontWeight.w500, fg2)),

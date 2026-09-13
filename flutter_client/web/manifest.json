@@ -1,6 +1,6 @@
 {
-    "name": "ViewTrip",
-    "short_name": "ViewTrip",
+    "name": "TraxJourney",
+    "short_name": "TraxJourney",
     "description": "Merge Strava rides, segments and memories into one continuous journey.",
     "start_url": ".",
     "display": "standalone",

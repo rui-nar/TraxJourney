@@ -19,6 +19,7 @@ import 'elevation_chart.dart';
 import 'gpx_import_dialog.dart';
 import '../api/client.dart' show ApiException;
 import '../auth/auth_notifier.dart';
+import '../core/brand.dart';
 import '../core/current_location.dart' show currentDeviceLatLng;
 import '../core/design_tokens.dart' show kWarning, kWarningDark;
 import '../core/last_opened_project.dart';
@@ -691,7 +692,7 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
       appBar: AppBar(
         automaticallyImplyLeading: false,
         title: Text(
-          title.isEmpty ? 'ViewTripWeb' : title,
+          title.isEmpty ? kAppName : title,
           overflow: TextOverflow.ellipsis,
         ),
         actions: [

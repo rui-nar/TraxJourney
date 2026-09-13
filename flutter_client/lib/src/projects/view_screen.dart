@@ -15,6 +15,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 
 import '../auth/auth_notifier.dart';
+import '../core/brand.dart';
 import '../core/current_location.dart' show currentDeviceLatLng;
 import '../core/last_opened_project.dart';
 import '../core/project_ref.dart';
@@ -346,7 +347,7 @@ class _ViewBodyState extends State<_ViewBody> with TickerProviderStateMixin {
           onPressed: () => context.go('/projects'),
         ),
         title: Text(
-          title.isEmpty ? 'ViewTripWeb' : title,
+          title.isEmpty ? kAppName : title,
           overflow: TextOverflow.ellipsis,
         ),
         actions: [

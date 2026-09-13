@@ -14,6 +14,7 @@ import 'package:flutter/material.dart';
 
 import '../api/client.dart';
 import 'app_version.dart';
+import 'brand.dart';
 import 'version_reload_stub.dart'
     if (dart.library.html) 'version_reload_web.dart';
 
@@ -109,7 +110,7 @@ class _VersionGateState extends State<VersionGate> with WidgetsBindingObserver {
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
-                        'A new version of ViewTrip is available.',
+                        'A new version of $kAppName is available.',
                         style: TextStyle(color: scheme.onInverseSurface),
                       ),
                     ),
