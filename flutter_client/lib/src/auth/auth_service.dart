@@ -6,12 +6,26 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../api/client.dart';
 
 class AuthService {
-  static const _tokenKey = 'viewtrip_jwt';
+  static const _tokenKey = 'traxjourney_jwt';
+
+  /// Where the token was kept before the TraxJourney rename (issue #151).
+  /// [restoreSession] moves it to [_tokenKey] so existing users stay signed
+  /// in. Once every active install has launched a release carrying this, the
+  /// legacy read can be removed.
+  static const _legacyTokenKey = 'viewtrip_jwt';
 
   /// Restore a persisted token on app start.
   Future<bool> restoreSession() async {
     final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString(_tokenKey);
+    var token = prefs.getString(_tokenKey);
+    final legacyToken = prefs.getString(_legacyTokenKey);
+    if (legacyToken != null) {
+      if (token == null) {
+        token = legacyToken;
+        await prefs.setString(_tokenKey, token);
+      }
+      await prefs.remove(_legacyTokenKey);
+    }
     if (token != null) {
       api.setToken(token);
       return true;
@@ -87,6 +101,7 @@ class AuthService {
     api.clearToken();
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_tokenKey);
+    await prefs.remove(_legacyTokenKey);
   }
 
   /// Persist a token returned by a mid-session API call (e.g. profile update).

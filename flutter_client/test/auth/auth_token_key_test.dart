@@ -3,9 +3,9 @@
 // SharedPreferences under a fixed key; renaming that key without migrating
 // the old one silently signs every existing user out on their next launch.
 //
-// Every assertion below goes through [_tokenKey]. Moving to a new key is a
-// deliberate edit here: change [_tokenKey], and add a test proving a token
-// left under the legacy key is still restored (and moved) exactly once.
+// Every assertion below goes through [_tokenKey]. The key moved from
+// [_legacyTokenKey] in #151, so the migration group proves a token left under
+// the legacy key is still restored, moved exactly once, and cleared on logout.
 
 import 'dart:convert';
 
@@ -17,7 +17,10 @@ import 'package:traxjourney_client/src/api/client.dart';
 import 'package:traxjourney_client/src/auth/auth_service.dart';
 
 /// The key AuthService persists the JWT under today.
-const _tokenKey = 'viewtrip_jwt';
+const _tokenKey = 'traxjourney_jwt';
+
+/// The key it used before the TraxJourney rename (issue #151).
+const _legacyTokenKey = 'viewtrip_jwt';
 
 void main() {
   setUp(() {
@@ -69,6 +72,47 @@ void main() {
       final prefs = await SharedPreferences.getInstance();
       expect(prefs.containsKey(_tokenKey), isFalse);
       expect(api.isAuthenticated, isFalse);
+    });
+  });
+
+  group('migration from the pre-rename key', () {
+    test('a token only under the legacy key is restored and moved', () async {
+      SharedPreferences.setMockInitialValues({_legacyTokenKey: 'legacy-jwt'});
+
+      expect(await AuthService().restoreSession(), isTrue);
+      expect(api.tokenForUpload, 'legacy-jwt');
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString(_tokenKey), 'legacy-jwt');
+    });
+
+    test('the legacy key is deleted once migrated', () async {
+      SharedPreferences.setMockInitialValues({_legacyTokenKey: 'legacy-jwt'});
+
+      await AuthService().restoreSession();
+
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.containsKey(_legacyTokenKey), isFalse);
+    });
+
+    test('the new key wins when both are present', () async {
+      SharedPreferences.setMockInitialValues(
+          {_tokenKey: 'new-jwt', _legacyTokenKey: 'legacy-jwt'});
+
+      expect(await AuthService().restoreSession(), isTrue);
+      expect(api.tokenForUpload, 'new-jwt');
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString(_tokenKey), 'new-jwt');
+    });
+
+    test('logout() clears both keys', () async {
+      SharedPreferences.setMockInitialValues(
+          {_tokenKey: 'new-jwt', _legacyTokenKey: 'legacy-jwt'});
+
+      await AuthService().logout();
+
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.containsKey(_tokenKey), isFalse);
+      expect(prefs.containsKey(_legacyTokenKey), isFalse);
     });
   });
 }

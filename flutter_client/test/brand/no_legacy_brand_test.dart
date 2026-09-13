@@ -24,12 +24,17 @@ const _allowed = <String, Map<String, String>>{
     "info: utf8.encode('viewtrip-e2ee/device-wrap/v1'),":
         'frozen HKDF info, device wrap',
   },
+  // D2: the pre-rename SharedPreferences key, read once so signed-in users
+  // stay signed in; test/auth/auth_token_key_test.dart pins the migration.
+  'lib/src/auth/auth_service.dart': {
+    "static const _legacyTokenKey = 'viewtrip_jwt';":
+        'legacy session token key, migrated on restore',
+  },
 };
 
 /// TEMP — whole files not yet renamed by a later commit of #151. This list
 /// must be empty once the rename is finished.
 const _temp = <String, String>{
-  'lib/src/auth/auth_service.dart': 'token key migration (D2)',
   'lib/main.dart': 'ViewTripApp class name',
   'lib/src/api/client.dart': 'doc comment',
   'lib/src/core/app_router.dart': 'doc comment',
