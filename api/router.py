@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from scalar_fastapi import get_scalar_api_reference
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from src.brand import APP_NAME
 from src.exceptions.errors import APIError, AuthenticationError, QuotaExceeded
 from src.jobs.prepared_geo_jobs import sweep_unprepared_geometry
 from src.jobs.route_jobs import (
@@ -91,7 +92,7 @@ _APP_VERSION = os.environ.get("APP_VERSION", "dev")
 # Logged at import — this module IS the process entry point, so the line lands at
 # the top of every log, before migrations or any request. Without it there is no
 # way to tell from a log file which build produced it (issue #179).
-_log.info("ViewTrip API starting — version %s", _APP_VERSION)
+_log.info("%s API starting — version %s", APP_NAME, _APP_VERSION)
 
 
 @asynccontextmanager
@@ -167,9 +168,9 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(
-    title="ViewTrip API",
+    title=f"{APP_NAME} API",
     description=(
-        "REST API consumed by the ViewTrip Flutter client (web, Android, iOS).\n\n"
+        f"REST API consumed by the {APP_NAME} Flutter client (web, Android, iOS).\n\n"
         "Authentication uses JWT bearer tokens obtained via `/api/auth/token` "
         "(email + password), `/api/auth/register`, or `/api/auth/google`.\n\n"
         "Interactive docs: [`/docs`](/docs) (Swagger) · [`/scalar`](/scalar) (Scalar)"
@@ -344,7 +345,7 @@ async def scalar_docs() -> HTMLResponse:
     """Scalar API reference UI."""
     return get_scalar_api_reference(
         openapi_url="/openapi.json",
-        title="ViewTrip API",
+        title=f"{APP_NAME} API",
     )
 
 

@@ -32,6 +32,7 @@ from api.project_access import OwnerParam, resolve_project
 from api.project_shared import _DATA_DIR, _projects_dir, _repo
 from src.billing.entitlements import ensure_project_quota, ensure_storage_quota
 from src.billing.usage import reconcile_usage
+from src.brand import APP_NAME
 from src.models.great_circle import great_circle_points
 from src.project.project_io import ProjectIO
 from src.utils.encryption_check import is_encrypted_envelope
@@ -131,7 +132,7 @@ def export_project_gpx(
 
     gpx = gpxpy.gpx.GPX()
     gpx.name = project.name
-    gpx.creator = "ViewTripWeb"
+    gpx.creator = APP_NAME
 
     track = gpxpy.gpx.GPXTrack(name=project.name)
     gpx.tracks.append(track)
