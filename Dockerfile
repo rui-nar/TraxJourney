@@ -1,5 +1,11 @@
 FROM python:3.14-slim
 
+# The source label is what links a package pushed to ghcr.io back to its
+# repository; docker-build.yml passes the same one to the build.
+LABEL org.opencontainers.image.source="https://github.com/rui-nar/TraxJourney" \
+      org.opencontainers.image.title="TraxJourney" \
+      org.opencontainers.image.description="TraxJourney server: the API, the web client and the background workers"
+
 # Build-time version (the git tag), exposed at runtime so /api/version can report
 # it and the web client can detect a stale cached bundle. Defaults to "dev".
 ARG APP_VERSION=dev

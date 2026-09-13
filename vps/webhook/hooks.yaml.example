@@ -22,8 +22,8 @@
 # and not something to fold in silently.
 
 - id: deploy-validation
-  execute-command: "/opt/viewtrip-val/webhook/deploy-validation.sh"
-  command-working-directory: "/opt/viewtrip-val"
+  execute-command: "/opt/traxjourney-val/webhook/deploy-validation.sh"
+  command-working-directory: "/opt/traxjourney-val"
   response-message: "Deploying validation..."
   trigger-rule:
     and:

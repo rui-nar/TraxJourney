@@ -21,7 +21,7 @@ import yaml
 from src.jobs.queue import ALL_QUEUES, QUEUE_MAX_CONCURRENCY, QUEUE_POSTER
 
 _COMPOSE = pathlib.Path(__file__).resolve().parent.parent / "docker-compose.yml.example"
-_API_SERVICE = "viewtripweb"
+_API_SERVICE = "traxjourney"
 
 # Volumes the worker must share with the API. The database is a SQLite file, so
 # "sharing" it means sharing the mount; a worker with its own ./db writes to a
@@ -101,7 +101,7 @@ class TestMemoryLimits:
     instead of a clean OOM-kill `restart: unless-stopped` could recover from.
     """
 
-    _LIMITED_SERVICES = ("viewtripweb", "worker", "worker-poster", "redis")
+    _LIMITED_SERVICES = ("traxjourney", "worker", "worker-poster", "redis")
 
     @staticmethod
     def _memory_limit_bytes(spec: dict) -> int:

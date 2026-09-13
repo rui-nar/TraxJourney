@@ -73,6 +73,10 @@ nas/.env
 **/graphify-out/*
 !/graphify-out/GRAPH_REPORT.md
 .graphify_*
+# Local database files. traxjourney.db is the default since issue #151; the
+# viewtrip*.db* lines in this file are the pre-rename names, kept while old
+# checkouts still have those files lying around.
+traxjourney.db*
 _viewtripweb.db_
 delete_memories.py
 dev-server.ps1
