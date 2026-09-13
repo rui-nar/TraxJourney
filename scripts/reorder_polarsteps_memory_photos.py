@@ -32,7 +32,7 @@ DRY-RUN BY DEFAULT — prints the plan and changes nothing. Pass --apply to writ
 Always run against a copy first.
 
 Usage:
-    python scripts/reorder_polarsteps_memory_photos.py --db "viewtripweb.db" --data-dir data
+    python scripts/reorder_polarsteps_memory_photos.py --db "traxjourney.db" --data-dir data
     python scripts/reorder_polarsteps_memory_photos.py --db copy.db --data-dir data --apply
 
     # a project that was imported once and never linked for auto-sync needs

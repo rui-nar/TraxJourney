@@ -19,7 +19,7 @@ DRY-RUN BY DEFAULT — prints the plan and changes nothing. Pass --apply to writ
 Always run against a copy first.
 
 Usage:
-    python scripts/dedupe_polarsteps_memories.py --db "viewtripweb.db"
+    python scripts/dedupe_polarsteps_memories.py --db "traxjourney.db"
     python scripts/dedupe_polarsteps_memories.py --db copy.db --data-dir data --apply
 """
 from __future__ import annotations

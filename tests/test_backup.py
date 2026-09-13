@@ -12,7 +12,7 @@ import src.backup.backup_service as svc
 @pytest.fixture
 def db_env(tmp_path, monkeypatch):
     """Point the backup service at a real temporary SQLite database."""
-    db_file = tmp_path / "viewtripweb.db"
+    db_file = tmp_path / "traxjourney.db"
     conn = sqlite3.connect(str(db_file))
     conn.execute("CREATE TABLE kv (key TEXT, value TEXT)")
     conn.execute("INSERT INTO kv VALUES ('hello', 'world')")

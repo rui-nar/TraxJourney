@@ -16,7 +16,7 @@ from src.backup import backup_service
 
 
 def _make_engine(monkeypatch, tmp_path):
-    dbfile = tmp_path / "viewtripweb.db"
+    dbfile = tmp_path / "traxjourney.db"
     url = f"sqlite:///{dbfile}"
     monkeypatch.setenv("DATABASE_URL", url)
     eng = create_engine(url, connect_args={"check_same_thread": False})

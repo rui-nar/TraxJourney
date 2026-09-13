@@ -1,10 +1,11 @@
 """Daily SQLite backup — create, list, restore, and prune backups."""
 from __future__ import annotations
 
-import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+
+from models.db_url import resolve_database_url
 
 _MAX_BACKUPS = 30
 
@@ -21,7 +22,7 @@ def _connect(path: Path) -> sqlite3.Connection:
 
 
 def _db_path() -> Path:
-    db_url = os.environ.get("DATABASE_URL", "sqlite:///viewtripweb.db")
+    db_url = resolve_database_url()
     if db_url.startswith("sqlite:///"):
         return Path(db_url[len("sqlite:///"):])
     if db_url.startswith("sqlite://"):
