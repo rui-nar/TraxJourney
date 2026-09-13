@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field, field_validator
 from api.deps import get_current_user
 from api.geo import bust_geo_cache, warm_geo_cache
 from api.project_access import OwnerParam, resolve_project
-from api.project_shared import _legacy_path, _refresh_share_tiles, _refresh_stats_background, _repo, queue_share_tiles_refresh, queue_stats_refresh, warm_meta_cache
+from api.project_shared import _refresh_share_tiles, _refresh_stats_background, _repo, queue_share_tiles_refresh, queue_stats_refresh, warm_meta_cache
 from models.project_db import DBActivity, DBProject, DBProjectItem
 from models.user import StravaToken
 from src.api.strava_client import RateLimiter, StravaAPI
@@ -392,7 +392,6 @@ def add_activities(
     # committed changes with no error at all.
     project = _repo.save_project_with_retry(
         owner_id, name, _add,
-        legacy_path=_legacy_path(str(owner_id), name),
         activity_user_id=user_info_id,
     )
     if project is None:
@@ -804,7 +803,6 @@ async def import_gpx_activity(
     project = await run_in_threadpool(
         _repo.save_project_with_retry,
         owner_id, name, _add,
-        legacy_path=_legacy_path(str(owner_id), name),
         activity_user_id=user_info_id,
     )
     if project is None:
@@ -1078,7 +1076,6 @@ def get_activity_track(
         row = resolve_project(sess, user_info_id, name, owner)
         project = _repo.get_project(
             sess, row.user_info_id, name,
-            legacy_path=_legacy_path(str(row.user_info_id), name),
         )
     if project is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
@@ -1135,7 +1132,6 @@ def edit_activity_track(
         # a project with a large activity).
         project = _repo.get_project(
             sess, owner_id, name,
-            legacy_path=_legacy_path(str(owner_id), name),
             include_heavy=False,
         )
         if project is None:
@@ -1153,7 +1149,6 @@ def edit_activity_track(
         # response nobody reads.
         project = _repo.get_project(
             sess, owner_id, name,
-            legacy_path=_legacy_path(str(owner_id), name),
             include_elevation=False,
         )
     t1 = time.time()
@@ -1193,7 +1188,6 @@ def reset_activity_track(
         # edit_activity_track for why.
         project = _repo.get_project(
             sess, owner_id, name,
-            legacy_path=_legacy_path(str(owner_id), name),
             include_heavy=False,
         )
         if project is None:
@@ -1210,7 +1204,6 @@ def reset_activity_track(
         # /meta + /geo.
         project = _repo.get_project(
             sess, owner_id, name,
-            legacy_path=_legacy_path(str(owner_id), name),
             include_elevation=False,
         )
 
@@ -1284,7 +1277,6 @@ def split_activity(
         # edit_activity_track for why.
         project = _repo.get_project(
             sess, owner_id, name,
-            legacy_path=_legacy_path(str(owner_id), name),
             include_heavy=False,
         )
         if project is None or not _project_contains_activity(project, activity_id):
@@ -1308,7 +1300,6 @@ def split_activity(
         # response nobody reads.
         project = _repo.get_project(
             sess, owner_id, name,
-            legacy_path=_legacy_path(str(owner_id), name),
             include_elevation=False,
         )
     t3 = time.time()

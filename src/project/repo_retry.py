@@ -47,7 +47,6 @@ class SaveRetryMixin:
         mutate: Callable[[Project], None],
         *,
         attempts: int = DEFAULT_ATTEMPTS,
-        legacy_path: Optional[str] = None,
         activity_user_id: Optional[int] = None,
     ) -> Optional[Project]:
         """Load, apply *mutate*, and save under the optimistic lock; retry on conflict.
@@ -62,7 +61,7 @@ class SaveRetryMixin:
         """
         for attempt in range(attempts):
             with get_session() as sess:
-                project = self.get_project(sess, user_info_id, name, legacy_path=legacy_path)
+                project = self.get_project(sess, user_info_id, name)
                 if project is None:
                     return None
                 mutate(project)

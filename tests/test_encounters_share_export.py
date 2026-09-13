@@ -1,4 +1,4 @@
-"""Share-exclusion + .viewtrip export/import round-trip for people/encounters (#40, phase 4)."""
+"""Share-exclusion + .traxj export/import round-trip for people/encounters (#40, phase 4)."""
 from __future__ import annotations
 
 import os
@@ -90,7 +90,7 @@ def test_shared_meta_excludes_people_and_encounters(share_client):
 
 # ── Export / import round-trip ─────────────────────────────────────────────────
 
-def test_viewtrip_roundtrip_preserves_people_and_encounters(monkeypatch):
+def test_traxj_roundtrip_preserves_people_and_encounters(monkeypatch):
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -114,11 +114,11 @@ def test_viewtrip_roundtrip_preserves_people_and_encounters(monkeypatch):
 
     repo = ProjectRepo()
     with tempfile.TemporaryDirectory() as d:
-        path = os.path.join(d, "Roundtrip.viewtrip")
+        path = os.path.join(d, "Roundtrip" + ProjectIO.EXTENSION)
         ProjectIO.save(project, path)
         # The exported file carries the people array + the encounter item.
         with Session(engine) as sess:
-            repo.ingest_project(sess, uid, path.replace(".viewtrip", ".viewtrip"))
+            repo.ingest_project(sess, uid, path)
         # ingest renames to *.migrated; reload from DB.
         with Session(engine) as sess:
             loaded = repo.get_project(sess, uid, "Roundtrip")
@@ -134,7 +134,7 @@ def test_viewtrip_roundtrip_preserves_people_and_encounters(monkeypatch):
     assert enc_items[0].encounter.description == "met"
 
 
-def test_viewtrip_roundtrip_preserves_groups_and_membership(monkeypatch):
+def test_traxj_roundtrip_preserves_groups_and_membership(monkeypatch):
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -154,7 +154,7 @@ def test_viewtrip_roundtrip_preserves_groups_and_membership(monkeypatch):
 
     repo = ProjectRepo()
     with tempfile.TemporaryDirectory() as d:
-        path = os.path.join(d, "Roundtrip.viewtrip")
+        path = os.path.join(d, "Roundtrip" + ProjectIO.EXTENSION)
         ProjectIO.save(project, path)
         with Session(engine) as sess:
             repo.ingest_project(sess, uid, path)

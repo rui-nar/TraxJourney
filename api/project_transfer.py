@@ -1,10 +1,10 @@
-"""REST project import/export endpoints — .viewtrip upload, GPX/.viewtrip/ZIP download.
+"""REST project import/export endpoints — .traxj upload, GPX/.traxj/ZIP download.
 
 Routes:
-    POST   /api/projects/import                 — upload a .viewtrip file
-    GET    /api/projects/{name}/export          — download project as GPX file
-    GET    /api/projects/{name}/export-viewtrip — download project as .viewtrip JSON
-    GET    /api/projects/{name}/export-zip      — download ZIP (.viewtrip + photos)
+    POST   /api/projects/import              — upload a .traxj file
+    GET    /api/projects/{name}/export       — download project as GPX file
+    GET    /api/projects/{name}/export-traxj — download project as .traxj JSON
+    GET    /api/projects/{name}/export-zip   — download ZIP (.traxj + photos)
 """
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field
 from api.deps import get_current_user
 from api.geo import bust_geo_cache
 from api.project_access import OwnerParam, resolve_project
-from api.project_shared import _DATA_DIR, _legacy_path, _projects_dir, _repo
+from api.project_shared import _DATA_DIR, _projects_dir, _repo
 from src.billing.entitlements import ensure_project_quota, ensure_storage_quota
 from src.billing.usage import reconcile_usage
 from src.models.great_circle import great_circle_points
@@ -46,7 +46,7 @@ class ImportedOut(BaseModel):
 
 
 @router.post("/import", status_code=status.HTTP_201_CREATED, response_model=ImportedOut,
-             summary="Import a .viewtrip file")
+             summary="Import a .traxj file")
 async def import_project(
     file: Annotated[UploadFile, File()],
     current_user: Annotated[dict, Depends(get_current_user)],
@@ -54,11 +54,8 @@ async def import_project(
     user_info_id = int(current_user["sub"])
     user_id = current_user["sub"]
 
-    raw_fname = os.path.basename(file.filename or "imported.viewtrip")
-    # Accept both .viewtrip (new) and .gettracks (legacy) on upload
-    if raw_fname.endswith(ProjectIO.LEGACY_EXTENSION):
-        fname = raw_fname[: -len(ProjectIO.LEGACY_EXTENSION)] + ProjectIO.EXTENSION
-    elif raw_fname.endswith(ProjectIO.EXTENSION):
+    raw_fname = os.path.basename(file.filename or "imported" + ProjectIO.EXTENSION)
+    if raw_fname.endswith(ProjectIO.EXTENSION):
         fname = raw_fname
     else:
         fname = raw_fname + ProjectIO.EXTENSION
@@ -109,7 +106,6 @@ def export_project_gpx(
         row = resolve_project(sess, user_info_id, name, owner)
         project = _repo.get_project(
             sess, row.user_info_id, name,
-            legacy_path=_legacy_path(str(row.user_info_id), name),
         )
     if project is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
@@ -241,21 +237,20 @@ def export_project_gpx(
     )
 
 
-# ── .viewtrip export ──────────────────────────────────────────────────────────
+# ── .traxj export ─────────────────────────────────────────────────────────────
 
-@router.get("/{name}/export-viewtrip", summary="Export project as .viewtrip file")
-def export_project_viewtrip(
+@router.get("/{name}/export-traxj", summary="Export project as .traxj file")
+def export_project_traxj(
     name: str,
     current_user: Annotated[dict, Depends(get_current_user)],
     owner: OwnerParam = None,
 ):
-    """Download the project as a .viewtrip JSON file (no embedded photos)."""
+    """Download the project as a .traxj JSON file (no embedded photos)."""
     user_info_id = int(current_user["sub"])
     with get_session() as sess:
         row = resolve_project(sess, user_info_id, name, owner)
         project = _repo.get_project(
             sess, row.user_info_id, name,
-            legacy_path=_legacy_path(str(row.user_info_id), name),
             journal_user_id=user_info_id,
         )
     if project is None:
@@ -269,11 +264,11 @@ def export_project_viewtrip(
     return StreamingResponse(
         io.BytesIO(json_bytes),
         media_type="application/json",
-        headers={"Content-Disposition": f'attachment; filename="{safe}.viewtrip"'},
+        headers={"Content-Disposition": f'attachment; filename="{safe}{ProjectIO.EXTENSION}"'},
     )
 
 
-# ── ZIP export (.viewtrip + photos) ───────────────────────────────────────────
+# ── ZIP export (.traxj + photos) ──────────────────────────────────────────────
 
 @router.get("/{name}/export-zip", summary="Export project as ZIP (with photos)")
 def export_project_zip(
@@ -281,7 +276,7 @@ def export_project_zip(
     current_user: Annotated[dict, Depends(get_current_user)],
     owner: OwnerParam = None,
 ):
-    """Download a ZIP containing the .viewtrip file and all memory photos."""
+    """Download a ZIP containing the .traxj file and all memory photos."""
     user_info_id = int(current_user["sub"])
     with get_session() as sess:
         row = resolve_project(sess, user_info_id, name, owner)
@@ -290,7 +285,6 @@ def export_project_zip(
         owner_dir_id = str(row.user_info_id)
         project = _repo.get_project(
             sess, row.user_info_id, name,
-            legacy_path=_legacy_path(str(row.user_info_id), name),
             journal_user_id=user_info_id,
         )
     if project is None:
@@ -319,13 +313,13 @@ def export_project_zip(
         "items": items_serialised,
         "activities": [a.to_strava_dict() for a in project.activities],
     }
-    viewtrip_bytes = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
+    project_bytes = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
 
     zip_buffer = io.BytesIO()
     safe = _SAFE_NAME.sub("_", project.name)
     memories_base = Path(_DATA_DIR) / "users" / owner_dir_id / "memories"
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr(f"{safe}.viewtrip", viewtrip_bytes)
+        zf.writestr(f"{safe}{ProjectIO.EXTENSION}", project_bytes)
         for item in project.items:
             if item.item_type != "memory" or item.memory is None or item.memory.id is None:
                 continue

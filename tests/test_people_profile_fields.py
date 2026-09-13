@@ -195,7 +195,7 @@ def test_places_call_failure_is_tracked_and_logged(env, monkeypatch, metric, cap
 
 
 def test_project_io_person_round_trip():
-    """The .viewtrip import/export dicts must carry the new profile fields."""
+    """The .traxj import/export dicts must carry the new profile fields."""
     from src.models.person import Person
     from src.project.project_io import _person_from_dict, _person_to_dict
 

@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from api.deps import get_current_user
 from api.geo import bust_geo_cache
 from api.project_access import OwnerParam, journal_visible_positions, resolve_project
-from api.project_shared import _legacy_path, _refresh_share_tiles, _refresh_stats_background, _repo, queue_share_tiles_refresh, queue_stats_refresh
+from api.project_shared import _refresh_share_tiles, _refresh_stats_background, _repo, queue_share_tiles_refresh, queue_stats_refresh
 from src.project.project_io import ProjectIO
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -55,7 +55,7 @@ def delete_item(
         project.remove_item(real_index)
 
     project = _repo.save_project_with_retry(
-        owner_id, name, _remove, legacy_path=_legacy_path(str(owner_id), name))
+        owner_id, name, _remove)
     if project is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
@@ -107,7 +107,7 @@ def reorder_items(
             project.move_item(visible[body.from_index], visible[to_index])
 
     project = _repo.save_project_with_retry(
-        owner_id, name, _move, legacy_path=_legacy_path(str(owner_id), name))
+        owner_id, name, _move)
     if project is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     bust_geo_cache(owner_id, name)
@@ -209,7 +209,7 @@ def sort_items(
         ]
 
     if _repo.save_project_with_retry(
-            owner_id, name, _sort, legacy_path=_legacy_path(str(owner_id), name)) is None:
+            owner_id, name, _sort) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     bust_geo_cache(owner_id, name)
     queue_stats_refresh(background_tasks, owner_id, name)

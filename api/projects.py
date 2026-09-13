@@ -47,7 +47,6 @@ from api.geo import (
 from api.project_access import OwnerParam, require_role, resolve_project
 from src.project.elevation_codec import build_elevation_payload
 from api.project_shared import (
-    _legacy_path,
     _refresh_stats_background,
     _repo,
     build_details_payload,
@@ -269,7 +268,6 @@ def get_project_elevation(
         # endpoint whose whole purpose is spending less memory (#209, #276).
         project = _repo.get_project(
             sess, owner_id, name,
-            legacy_path=_legacy_path(str(owner_id), name),
             journal_user_id=user_info_id,
         )
     if project is None:

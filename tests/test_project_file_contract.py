@@ -29,6 +29,7 @@ import src.admin.storage as storage_mod
 from api.deps import get_current_user
 from api.project_transfer import router as project_transfer_router
 from api.projects import router as projects_router
+from models.project_db import DBProject
 from models.user import UserInfo
 from src.project.project_io import ProjectIO
 
@@ -102,7 +103,7 @@ def test_import_names_the_project_after_the_file_minus_extension(client):
 def test_single_file_export_downloads_with_the_project_extension(client):
     _create(client, "Trip")
 
-    r = client.get("/api/projects/Trip/export-viewtrip")
+    r = client.get("/api/projects/Trip/export-traxj")
 
     assert r.status_code == 200, r.text
     match = _FILENAME.search(r.headers["content-disposition"])
@@ -134,7 +135,7 @@ def test_listing_filename_is_name_plus_extension(client):
 def test_exported_file_round_trips_through_import(client):
     """What export hands the user is exactly what import accepts."""
     _create(client, "Trip")
-    exported = client.get("/api/projects/Trip/export-viewtrip")
+    exported = client.get("/api/projects/Trip/export-traxj")
     download_name = _FILENAME.search(exported.headers["content-disposition"]).group(1)
     download_name = download_name.replace("Trip", "Restored", 1)
 
@@ -147,11 +148,65 @@ def test_exported_file_round_trips_through_import(client):
     assert r.json()["name"] == "Restored"
 
 
-def test_project_file_extension_is_viewtrip(client):
+def test_project_file_extension_is_traxj(client):
     """The one literal pin. Renaming the format changes this line on purpose."""
-    assert ProjectIO.EXTENSION == ".viewtrip"
+    assert ProjectIO.EXTENSION == ".traxj"
 
-    r = _import(client, "Summer.viewtrip")
+    r = _import(client, "Summer.traxj")
     assert r.status_code == 201, r.text
     assert r.json()["name"] == "Summer"
-    assert _listing(client)["Summer"]["filename"] == "Summer.viewtrip"
+    assert _listing(client)["Summer"]["filename"] == "Summer.traxj"
+
+
+@pytest.mark.parametrize("old_name", ["Summer.viewtrip", "Summer.gettracks"])
+def test_old_extensions_are_not_recognised_on_import(client, old_name):
+    """Issue #151 dropped the ``.viewtrip``/``.gettracks`` aliases.
+
+    Import does not validate the extension: any upload is parsed as project
+    JSON, and a name without ``.traxj`` gets it appended. So an old file is no
+    longer stripped of its extension — its suffix stays part of the name.
+    """
+    r = _import(client, old_name)
+
+    assert r.status_code == 201, r.text
+    assert r.json()["name"] == old_name
+    assert _listing(client)[old_name]["filename"] == old_name + ".traxj"
+
+
+def test_old_export_route_is_gone_from_the_real_app(monkeypatch):
+    """``/export-viewtrip`` was renamed to ``/export-traxj`` with no alias.
+
+    Against the real app (no web build, so no SPA catch-all) and an existing
+    project, so the 404 is the router's "no such route" — not "project not
+    found", which is also a 404.
+    """
+    import api.router as router_mod
+
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    monkeypatch.setattr(db_module, "engine", engine)
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as sess:
+        user = UserInfo(display_name="Owner", email="owner@e.com")
+        sess.add(user)
+        sess.commit()
+        sess.refresh(user)
+        sess.add(DBProject(user_info_id=user.id, name="Trip"))
+        sess.commit()
+        uid = user.id
+
+    app = router_mod.app
+    app.dependency_overrides[get_current_user] = lambda: {"sub": str(uid)}
+    try:
+        client = TestClient(app)
+        assert client.get("/api/projects/Trip/export-traxj").status_code == 200
+
+        r = client.get("/api/projects/Trip/export-viewtrip")
+
+        assert r.status_code == 404
+        assert r.json()["detail"] == "Not Found"
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
