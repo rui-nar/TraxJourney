@@ -436,6 +436,13 @@ if os.path.isdir(_web_dir):
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str):
         """Serve the Flutter web build; fall back to index.html for SPA routing."""
+        # An unknown /api/... path is a missing endpoint, never a client route.
+        # Answering it with index.html and a 200 lets an out-of-date client
+        # take the page for a real response — e.g. save it as a project backup
+        # after an export route was renamed. Raise the same 404 an unmatched
+        # route gets when no web build is present.
+        if full_path == "api" or full_path.startswith("api/"):
+            raise StarletteHTTPException(status_code=404)
         candidate = os.path.join(_web_dir, full_path)
         if full_path and os.path.isfile(candidate):
             resp = FileResponse(candidate)
