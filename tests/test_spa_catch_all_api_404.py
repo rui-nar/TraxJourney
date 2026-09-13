@@ -3,7 +3,7 @@
 ``api/router.py`` registers ``/{full_path:path}`` last and serves ``index.html``
 for anything it doesn't recognise, so client-side routes deep-link correctly.
 Before this guard it did the same for ``/api/...``: a client calling an endpoint
-that no longer exists (``/export-viewtrip`` once the export route is renamed)
+that no longer exists (``/export-viewtrip``, since renamed to ``/export-traxj``)
 got the web app's HTML with a 200, saved it as a "backup" and reported success.
 
 Exercised against the real ``api.router.app`` because the route order and the

@@ -106,7 +106,7 @@ from tests.elevation_bench.generators import _ar1
 from tests.elevation_bench.tile_reader import TILE_SIZE, TerrariumReader
 
 CACHE = os.path.join(os.path.expanduser("~"), ".cache",
-                     "viewtrip-terrarium-measure")
+                     "traxjourney-terrarium-measure")
 DGM1_URL = "https://gdi.berlin.de/data/dgm1/atom/DGM1_{e}_{n}.zip"
 SAMPLE_M = 5.0
 SPEED_MS = 5.0

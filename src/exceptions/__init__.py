@@ -1,1 +1,1 @@
-"""Custom exceptions for ViewTrip."""
+"""Custom exceptions for TraxJourney."""

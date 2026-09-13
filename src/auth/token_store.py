@@ -10,13 +10,13 @@ from src.exceptions.errors import TokenError
 class TokenStore:
     """Store and retrieve tokens in a local JSON file.
 
-    Tokens are written to ``~/.config/viewtrip/tokens.json`` (created on
+    Tokens are written to ``~/.config/traxjourney/tokens.json`` (created on
     first save).  This is simpler and more portable than ``keyring``, which
     can silently fall back to a non-persistent in-memory backend on some
     Windows / virtual-environment setups.
     """
 
-    _TOKEN_DIR = Path.home() / ".config" / "viewtrip"
+    _TOKEN_DIR = Path.home() / ".config" / "traxjourney"
     _TOKEN_FILE = _TOKEN_DIR / "tokens.json"
 
     # ------------------------------------------------------------------

@@ -1,4 +1,4 @@
-"""Logging utilities for ViewTrip."""
+"""Logging utilities for TraxJourney."""
 
 import contextvars
 import logging
@@ -76,7 +76,7 @@ def get_logger(name: str) -> logging.Logger:
 # ``apscheduler`` (background jobs — WAL checkpoint, daily backup) has no
 # handler of its own either, so it gets the same treatment.
 _APP_LOGGER_NAMES = ("api", "src", "apscheduler")
-_APP_HANDLER_MARK = "_viewtrip_app_handler"
+_APP_HANDLER_MARK = "_traxjourney_app_handler"
 
 # uvicorn wires its own handlers onto these before the app module is imported
 # (Config.__init__ calls configure_logging() ahead of Config.load()), but its
@@ -88,7 +88,7 @@ _UVICORN_LOGGER_NAMES = ("uvicorn", "uvicorn.error", "uvicorn.access")
 
 # Request/user correlation (issue #205). Populated by api.middleware's
 # access-log middleware for the lifetime of one request; every other caller —
-# APScheduler jobs, the "ViewTrip API starting..." import-time line, a worker
+# APScheduler jobs, the "TraxJourney API starting..." import-time line, a worker
 # process — never sets these, so the explicit "-" default is what actually
 # shows up for them. ContextVar.get() with no default raises LookupError, and
 # a logging.Filter running on every record can't be allowed to raise.

@@ -182,7 +182,7 @@ _geo_gen: dict[tuple, int] = {}
 
 def _gen_redis_key(user_info_id: int, project_name: str) -> str:
     """Redis key holding a project's shared invalidation generation."""
-    return f"viewtrip:geo:gen:{user_info_id}:{project_name}"
+    return f"traxjourney:geo:gen:{user_info_id}:{project_name}"
 
 
 def _shared_generation(user_info_id: int, project_name: str) -> int | None:

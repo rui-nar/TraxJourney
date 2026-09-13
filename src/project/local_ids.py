@@ -8,7 +8,7 @@ from a sync idempotent. Anything the app creates itself therefore takes a
 NEGATIVE id: a split tail, or a GPX import. Both used to allocate their own way
 — a split took ``min(0, global_min) - 1`` and a GPX import a random 62-bit
 value — which meant two schemes sharing one keyspace with different collision
-properties, and the dense one was unsafe across instances: a ``.viewtrip``
+properties, and the dense one was unsafe across instances: a ``.traxj``
 exported from one deployment and imported into another carries its ids with it,
 and ids -1, -2, -3 exist in every deployment.
 
@@ -39,7 +39,7 @@ from models.project_db import DBActivity
 #: about n^2 / 2^54, which is one in eighteen million at a million local
 #: activities — against the decrementing scheme it replaces, which handed out
 #: -1, -2, -3 in every deployment and so collided with certainty once a
-#: ``.viewtrip`` crossed between two.
+#: ``.traxj`` crossed between two.
 #:
 #: Android and iOS carry real 64-bit ints and would not have noticed. The web
 #: client is where this bites, and GPX import has been drawing 62-bit ids since
