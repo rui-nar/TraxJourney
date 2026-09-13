@@ -7,6 +7,7 @@ import '../auth/verify_email_banner.dart';
 import '../billing/upgrade_sheet.dart';
 import '../core/project_ref.dart';
 import 'pending_invites_card.dart';
+import 'project_file.dart';
 import 'projects_notifier.dart';
 
 class ProjectsScreen extends StatefulWidget {
@@ -336,7 +337,7 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Import a .viewtrip project file.',
+                          'Import a .$kProjectFileExtension project file.',
                           style: theme.textTheme.bodySmall,
                         ),
                         const SizedBox(height: 16),
@@ -373,7 +374,7 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
                           icon: const Icon(Icons.upload_rounded),
                           label: Text(notifier.isLoading
                               ? 'Importing…'
-                              : 'Choose .viewtrip file'),
+                              : 'Choose .$kProjectFileExtension file'),
                         ),
                       ],
                     ),

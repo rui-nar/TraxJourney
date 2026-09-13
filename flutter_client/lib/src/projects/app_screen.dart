@@ -31,6 +31,7 @@ import 'panel_resize.dart';
 import 'people_screen.dart';
 import 'map_panel.dart';
 import 'project_add_fab.dart';
+import 'project_file.dart';
 import 'image_export.dart';
 import 'image_download.dart';
 import 'poster_config_dialog.dart';
@@ -359,10 +360,10 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
             ),
           ),
           SimpleDialogOption(
-            onPressed: () => Navigator.of(ctx).pop('viewtrip'),
+            onPressed: () => Navigator.of(ctx).pop('project'),
             child: const ListTile(
               leading: Icon(Icons.article_outlined),
-              title: Text('.viewtrip file'),
+              title: Text('.$kProjectFileExtension file'),
               subtitle: Text('Full project data, no photo files'),
             ),
           ),
@@ -372,7 +373,7 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
               child: const ListTile(
                 leading: Icon(Icons.archive_outlined),
                 title: Text('ZIP archive'),
-                subtitle: Text('.viewtrip + all memory photos'),
+                subtitle: Text('.$kProjectFileExtension + all memory photos'),
               ),
             ),
           SimpleDialogOption(
@@ -405,8 +406,9 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
     if (choice == null || !mounted) return;
     if (choice == 'gpx') {
       await _downloadFile(ref.path('/export'), '$name.gpx');
-    } else if (choice == 'viewtrip') {
-      await _downloadFile(ref.path('/export-viewtrip'), '$name.viewtrip');
+    } else if (choice == 'project') {
+      await _downloadFile(ref.path(kProjectFileExportRoute),
+          '$name.$kProjectFileExtension');
     } else if (choice == 'zip') {
       await _downloadFile(ref.path('/export-zip'), '$name.zip');
     } else if (choice == 'image') {

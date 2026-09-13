@@ -53,10 +53,10 @@ void main() {
       'renders My Trips and Shared With Me as separate sections, with the '
       "owner's name shown on the shared tile", (tester) async {
     final notifier = await _loadedNotifier([
-      {'name': 'Own Trip', 'filename': 'own.viewtrip', 'role': 'owner'},
+      {'name': 'Own Trip', 'filename': 'own.traxj', 'role': 'owner'},
       {
         'name': 'Friend Trip',
-        'filename': 'friend.viewtrip',
+        'filename': 'friend.traxj',
         'owner_id': 7,
         'owner_name': 'Bob',
         'role': 'editor',
@@ -82,7 +82,7 @@ void main() {
   testWidgets('Shared With Me is hidden entirely when nothing is shared',
       (tester) async {
     final notifier = await _loadedNotifier([
-      {'name': 'Own Trip', 'filename': 'own.viewtrip', 'role': 'owner'},
+      {'name': 'Own Trip', 'filename': 'own.traxj', 'role': 'owner'},
     ]);
 
     await tester.pumpWidget(_harness(notifier));
@@ -96,7 +96,7 @@ void main() {
       'backward compat: entries with no owner_id/role (older server) are '
       'all treated as My Trips', (tester) async {
     final notifier = await _loadedNotifier([
-      {'name': 'Legacy Trip', 'filename': 'legacy.viewtrip'},
+      {'name': 'Legacy Trip', 'filename': 'legacy.traxj'},
     ]);
 
     await tester.pumpWidget(_harness(notifier));

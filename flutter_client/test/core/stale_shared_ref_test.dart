@@ -21,7 +21,7 @@ import 'package:traxjourney_client/src/projects/projects_service.dart';
 
 Map<String, dynamic> _entry(String name, int ownerId, String role) => {
       'name': name,
-      'filename': '$name.viewtrip',
+      'filename': '$name.traxj',
       'owner_id': ownerId,
       'owner_name': role == 'editor' ? 'Owner $ownerId' : '',
       'role': role,

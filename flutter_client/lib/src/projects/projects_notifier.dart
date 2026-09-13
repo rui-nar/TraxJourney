@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 
 import '../api/client.dart';
 import '../billing/billing_service.dart';
+import 'project_file.dart';
 import 'projects_service.dart';
 
 class ProjectsNotifier extends ChangeNotifier {
@@ -96,16 +97,15 @@ class ProjectsNotifier extends ChangeNotifier {
     try {
       final picked = await FilePicker.pickFile(
         type: FileType.custom,
-        allowedExtensions: ['viewtrip', 'gettracks'],
+        allowedExtensions: [kProjectFileExtension],
       );
       if (picked == null) return null;
       final bytes = await picked.readAsBytes();
       final rawName = picked.name;
-      final defaultName = rawName.endsWith('.viewtrip')
-          ? rawName.substring(0, rawName.length - '.viewtrip'.length)
-          : rawName.endsWith('.gettracks')
-              ? rawName.substring(0, rawName.length - '.gettracks'.length)
-              : rawName;
+      const suffix = '.$kProjectFileExtension';
+      final defaultName = rawName.endsWith(suffix)
+          ? rawName.substring(0, rawName.length - suffix.length)
+          : rawName;
       return (bytes: bytes, defaultName: defaultName);
     } on Exception catch (e) {
       _error = _msg(e);
@@ -126,7 +126,7 @@ class ProjectsNotifier extends ChangeNotifier {
     notifyListeners();
     try {
       final data =
-          await _uploadBytes(bytes: bytes, filename: '$name.viewtrip');
+          await _uploadBytes(bytes: bytes, filename: '$name.$kProjectFileExtension');
       await load();
       return data['name'] as String?;
     } on Exception catch (e) {
