@@ -1,9 +1,9 @@
-# ViewTripWeb — Project Structure
+# TraxJourney — Project Structure
 
 ## Directory Layout
 
 ```
-ViewTripWeb/
+TraxJourney/
 │
 ├── api/                          # FastAPI route handlers (mounted in router.py)
 │   ├── router.py                 # FastAPI app: mounts routers, lifespan, SPA fallback
@@ -12,10 +12,10 @@ ViewTripWeb/
 │   ├── admin.py                  # Admin dashboard endpoints (is_admin-gated)
 │   ├── projects.py               # Project CRUD, day-meta, track style, sync-meta
 │   ├── project_access.py         # Shared (caller, name, ?owner) → DBProject resolver + role gating
-│   ├── project_shared.py         # Shared infra (no routes): ProjectRepo instance, legacy paths, background tasks
+│   ├── project_shared.py         # Shared infra (no routes): ProjectRepo instance, project-file directory, background tasks
 │   ├── project_items.py          # Item delete/reorder/sort
 │   ├── project_shares.py         # Share-token create/revoke, per-share content key, visitor stats
-│   ├── project_transfer.py       # Import/export (.viewtrip, GPX, ZIP)
+│   ├── project_transfer.py       # Import/export (.traxj, GPX, ZIP)
 │   ├── activities.py             # Add/refresh/track-edit/split/delete Strava activities
 │   ├── segments.py               # Connecting transport segments (flight/train/bus/boat)
 │   ├── geo.py                    # GeoJSON builders (full + low-res)
@@ -58,7 +58,7 @@ ViewTripWeb/
 │   │                             #   track, great_circle (SLERP arc for segments)
 │   ├── poster/                   # A0 poster layout, map stitching, job runner
 │   ├── project/
-│   │   ├── project_io.py         # ProjectIO — (de)serialise .viewtrip JSON
+│   │   ├── project_io.py         # ProjectIO — (de)serialise .traxj JSON
 │   │   └── project_repo.py       # ProjectRepo — DB-backed CRUD (optimistic locking)
 │   ├── services/
 │   │   ├── hafas_service.py      # Train schedules (DB/ÖBB/DSB/VR digitraffic)
@@ -84,7 +84,7 @@ ViewTripWeb/
 ├── alembic/                      # Database migrations
 │   └── versions/
 │
-├── scripts/                      # One-off scripts (migrate_to_db, icons, release, version)
+├── scripts/                      # One-off scripts (icons, release, version)
 ├── config/
 │   ├── config.example.json       # Template — copy to config.json and fill in credentials
 │   └── config.json               # Gitignored — Strava + Google credentials
@@ -102,19 +102,19 @@ ViewTripWeb/
 ```
 
 > `docker-compose.yml` is gitignored (host-specific paths + env); CI publishes
-> the image to `ghcr.io/rui-nar/viewtripweb`.
+> the image to `ghcr.io/rui-nar/traxjourney`.
 
 ## Key Concepts
 
 ### Data Storage
 
-All data lives in **SQLite via SQLModel** (file defaults to `viewtripweb.db`,
+All data lives in **SQLite via SQLModel** (file defaults to `traxjourney.db`,
 overridable with `DATABASE_URL`). Migrations are managed by Alembic and run
 automatically on startup (`alembic upgrade head` in the FastAPI lifespan).
 
 Projects are persisted as relational rows (project + ordered items + activities
-+ memories + journals + segments). The `.viewtrip` format (legacy `.gettracks`
-still accepted on import) is the JSON serialisation used for import/export only,
++ memories + journals + segments). The `.traxj` format (the only one accepted
+on import) is the JSON serialisation used for import/export only,
 produced by `ProjectIO`. Photos are stored on disk under the data volume,
 referenced by UUID from the memory/journal rows.
 

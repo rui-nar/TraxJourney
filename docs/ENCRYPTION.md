@@ -1,6 +1,6 @@
 # Zero-knowledge encryption (issue #26)
 
-ViewTrip can encrypt your **memories** and **journal entries** so that even
+TraxJourney can encrypt your **memories** and **journal entries** so that even
 someone operating the server — an administrator with full database and disk
 access — cannot read them. Encryption and decryption happen entirely on your
 device; the server only ever stores ciphertext and wrapped keys, and performs no
