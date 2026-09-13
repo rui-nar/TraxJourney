@@ -79,7 +79,7 @@ from src.rail.store import SCHEMA_VERSION, store_filename  # noqa: E402
 # no Authorization header) and asset URLs need no token either. This step
 # therefore takes no credentials at all — one fewer secret on the box, and one
 # fewer reason a data refresh can fail.
-DEFAULT_REPO = "rui-nar/ViewTripWeb"
+DEFAULT_REPO = "rui-nar/TraxJourney"
 RELEASES_URL = "https://api.github.com/repos/{repo}/releases?per_page=100"
 # An explicit --tag is fetched by name, never looked for in that list: the list
 # is one page of 100 and this repository publishes ~15 releases a month, so the

@@ -169,9 +169,10 @@ class TestRendering:
             ("fix(editor): compound track edits (#127)", "", "flutter_client/a.dart"),
         ))
 
+        assert body.startswith("# TraxJourney v0.47.0\n")
         assert "## 🚀 New" in body
         assert "## 🐛 Fixed" in body
-        assert "[#125](https://github.com/rui-nar/ViewTripWeb/issues/125)" in body
+        assert "[#125](https://github.com/rui-nar/TraxJourney/issues/125)" in body
         assert "v0.46.9...v0.47.0" in body
 
     def test_audience_subheadings_only_when_both_are_present(self):
@@ -336,7 +337,7 @@ class TestLanguageDetection:
         """"com" and "de" look Portuguese and appear in English text and URLs,
         which is why they are left out of the marker set."""
         assert not looks_non_english(
-            "See https://github.com/rui-nar/ViewTripWeb for the de-duplication "
+            "See https://github.com/rui-nar/TraxJourney for the de-duplication "
             "rules that apply when a step is imported twice.")
 
 

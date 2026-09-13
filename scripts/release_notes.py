@@ -33,7 +33,7 @@ import sys
 from dataclasses import dataclass, replace
 from typing import Iterable, Optional
 
-REPO_URL = "https://github.com/rui-nar/ViewTripWeb"
+REPO_URL = "https://github.com/rui-nar/TraxJourney"
 
 # Scope → (area shown to the reader, audience). Audience splits "what changed in
 # the app" from "what changed on the server", because one tag ships both the
@@ -293,7 +293,7 @@ def render(
     visible = [c for c in changes if c.audience != INTERNAL and c.section != "Internal"]
     internal = [c for c in changes if c not in visible]
 
-    out: list[str] = [f"# ViewTripWeb {version}", ""]
+    out: list[str] = [f"# TraxJourney {version}", ""]
     count = len(visible)
     noun = "change" if count == 1 else "changes"
     out += [f"_{count} {noun} since {previous}_", ""]
@@ -455,7 +455,7 @@ def warn_non_english(changes: list[Change]) -> int:
 # ── Optional: LLM polish ──────────────────────────────────────────────────────
 
 _TRANSLATE_PROMPT = """\
-Below are release-note lines for ViewTrip, an app for mapping and sharing \
+Below are release-note lines for TraxJourney, an app for mapping and sharing \
 multi-week trips. Some are not in English.
 
 Translate each line into English. Keep the meaning exactly — do not add, drop, \
@@ -472,7 +472,7 @@ Lines:
 """
 
 _HIGHLIGHTS_PROMPT = """\
-Write the "Highlights" paragraph for a release of ViewTrip, an app for mapping \
+Write the "Highlights" paragraph for a release of TraxJourney, an app for mapping \
 and sharing multi-week trips (Flutter client, FastAPI server).
 
 Below are the changes in this release, already grouped. Write 2-3 sentences in \

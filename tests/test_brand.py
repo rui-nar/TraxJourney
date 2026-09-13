@@ -157,3 +157,54 @@ def test_project_gpx_export_creator_is_the_product(monkeypatch):
 
     assert r.status_code == 200, r.text
     assert ET.fromstring(r.content).attrib["creator"] == APP_NAME
+
+
+# ── Outbound User-Agent ───────────────────────────────────────────────────────
+
+def test_user_agent_names_the_product_version_and_real_repository(monkeypatch):
+    import importlib
+
+    import src.brand as brand
+
+    monkeypatch.setenv("APP_VERSION", "v9.8.7")
+    try:
+        reloaded = importlib.reload(brand)
+        assert reloaded.USER_AGENT == "TraxJourney/v9.8.7 (+https://github.com/rui-nar/TraxJourney)"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(brand)
+
+
+def test_every_outbound_client_sends_the_shared_user_agent(monkeypatch):
+    """Overpass, Transitous (MOTIS) and Nominatim all identify the same way."""
+    import api.geo as geo
+    import src.services.hafas_service as hafas
+    import src.services.overpass_service as overpass
+    from src.brand import USER_AGENT
+
+    seen = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return []
+
+    def _capture(url, params=None, headers=None, timeout=None):
+        seen["nominatim"] = (headers or {}).get("User-Agent")
+        return _Resp()
+
+    monkeypatch.setattr(geo.requests, "get", _capture)
+    geo._nominatim_search("lisbon")
+
+    agents = {
+        "overpass": overpass._HEADERS["User-Agent"],
+        "motis": hafas._HEADERS["User-Agent"],
+        "nominatim": seen["nominatim"],
+    }
+    for service, ua in agents.items():
+        assert ua == USER_AGENT, service
+        assert ua.startswith(f"{APP_NAME}/"), service
+        assert "(+https://github.com/rui-nar/TraxJourney)" in ua, service
+        assert not _OLD_NAME.search(ua), service

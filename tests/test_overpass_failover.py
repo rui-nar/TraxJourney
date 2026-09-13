@@ -149,11 +149,10 @@ class TestUserAgent:
         """A user agent an operator cannot verify invites the manual kind of ban,
         which does not expire on its own."""
         ua = ov._HEADERS["User-Agent"]
-        assert "github.com/rui-nar/ViewTripWeb" in ua
-        assert "github.com/viewtrip;" not in ua
+        assert "(+https://github.com/rui-nar/TraxJourney)" in ua
 
     def test_carries_a_version(self):
-        assert ov._HEADERS["User-Agent"].startswith("ViewTripWeb/")
+        assert ov._HEADERS["User-Agent"].startswith("TraxJourney/")
 
 
 class TestBrokenHostsFailOverImmediately:

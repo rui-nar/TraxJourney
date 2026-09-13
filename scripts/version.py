@@ -1,3 +1,3 @@
-"""Version management for ViewTrip."""
+"""Version management for TraxJourney."""
 
 __version__ = "1.2.0"

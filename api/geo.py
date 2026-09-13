@@ -26,6 +26,7 @@ from sqlmodel import select
 
 from api.deps import get_current_user
 from api.project_access import OwnerParam, resolve_project
+from src.brand import USER_AGENT
 from src.models.great_circle import great_circle_points
 from src.models.prepared_geo import (
     COORD_SCALE,
@@ -622,7 +623,7 @@ def _linestring(coords: List[List[float]], properties: Dict[str, Any]) -> Dict[s
 # and the shared usage policy (a descriptive User-Agent, modest volume — the
 # client debounces) stays on the server. We store only the display string.
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
-_PLACES_UA = "ViewTrip/1.0 (city autocomplete; https://github.com/rui-nar/ViewTripWeb)"
+_PLACES_UA = USER_AGENT
 
 
 def _nominatim_search(q: str) -> List[Dict[str, Any]]:

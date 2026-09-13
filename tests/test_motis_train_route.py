@@ -184,7 +184,8 @@ class TestIssue277HamburgOffenburg:
 
         with patch("src.services.hafas_service.requests.get", _capture):
             _resolve()
-        assert "ViewTripWeb" in seen["User-Agent"]
+        assert seen["User-Agent"].startswith("TraxJourney/")
+        assert "(+https://github.com/rui-nar/TraxJourney)" in seen["User-Agent"]
 
 
 # ---------------------------------------------------------------------------

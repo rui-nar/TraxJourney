@@ -25,6 +25,7 @@ from urllib.parse import urlsplit
 
 import requests
 
+from src.brand import USER_AGENT
 from src.jobs.upstream_cache import get as cache_get, put as cache_put
 from src.jobs.upstream_slots import is_cooling, mark_cooling, slot
 from src.services.rail_source import (
@@ -1424,12 +1425,8 @@ def _sq(a: list[float], b: list[float]) -> float:
 #
 # The version is read at runtime rather than hardcoded: "identifies application and
 # version" means the real one, and a frozen string is a mild form of UA faking.
-_HEADERS = {
-    "User-Agent": (
-        f"ViewTripWeb/{os.environ.get('APP_VERSION', 'dev')} "
-        "(+https://github.com/rui-nar/ViewTripWeb; route geometry resolver)"
-    )
-}
+# src.brand.USER_AGENT carries both.
+_HEADERS = {"User-Agent": USER_AGENT}
 
 
 def _slot_name(url: str) -> str:
