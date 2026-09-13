@@ -96,8 +96,8 @@ it isn't meant to be switched.
 
 The `env` variable itself is populated via `label_values(<metric>, env)`,
 and which metric that is matters: on a freshly-deployed or quiet instance,
-a metric that only appears once real traffic occurs (`viewtrip_http_requests_total`,
-`viewtrip_logins_total`, ...) means the `env` dropdown comes up empty and the
+a metric that only appears once real traffic occurs (`traxjourney_http_requests_total`,
+`traxjourney_logins_total`, ...) means the `env` dropdown comes up empty and the
 whole dashboard looks broken even though the pipeline is fine — confirmed
 live on a real val deployment with zero traffic yet. HTTP & Traffic, Jobs &
 Database and Integrations & Auth all key off `up{job="viewtrip"}` instead —
@@ -149,7 +149,7 @@ service (`docs/ENCRYPTION.md`). Two starting rules in Grafana Alerting:
 1. **Error-rate spike** — the LogQL query above, alert if `> N` errors over
    5 minutes for some threshold `N` worth calibrating against real traffic
    first (start loose, tighten once you know the baseline).
-2. **Scheduled job failure** — `viewtrip_job_runs_total{result="error"}`
+2. **Scheduled job failure** — `traxjourney_job_runs_total{result="error"}`
    (Prometheus, already emitted by `src/utils/metrics.py`'s
    `record_job_event`) — alert on any increment, since a failed daily
    backup or WAL checkpoint is always worth knowing about immediately, not

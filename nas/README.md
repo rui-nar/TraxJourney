@@ -151,7 +151,7 @@ PROMETHEUS_REMOTE_WRITE_URL=http://viewtrip-observability:9090/api/v1/write
 (Use whichever hostname/IP §3 showed you — MagicDNS name is more stable
 across IP churn than the raw `100.x.y.z` address.) Then
 `docker compose up -d` the `alloy` service on the VPS and watch for log
-lines and `viewtrip_*` metrics starting to arrive in Grafana here within a
+lines and `traxjourney_*` metrics starting to arrive in Grafana here within a
 minute or two.
 
 ## 5. Retention / disk

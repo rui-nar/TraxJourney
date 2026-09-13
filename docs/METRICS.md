@@ -64,13 +64,13 @@ All metric objects live in one module, `src/utils/metrics.py`.
 
 | Metric | Labels |
 |---|---|
-| `viewtrip_http_requests_total` | `method`, `handler`, `status` |
-| `viewtrip_http_request_duration_seconds` | `method`, `handler` |
-| `viewtrip_http_request_duration_highr_seconds` | — |
-| `viewtrip_http_request_size_bytes`, `viewtrip_http_response_size_bytes` | `handler` |
-| `viewtrip_http_requests_inprogress` | — |
+| `traxjourney_http_requests_total` | `method`, `handler`, `status` |
+| `traxjourney_http_request_duration_seconds` | `method`, `handler` |
+| `traxjourney_http_request_duration_highr_seconds` | — |
+| `traxjourney_http_request_size_bytes`, `traxjourney_http_response_size_bytes` | `handler` |
+| `traxjourney_http_requests_inprogress` | — |
 
-`viewtrip_http_request_duration_highr_seconds` has no labels and many
+`traxjourney_http_request_duration_highr_seconds` has no labels and many
 buckets, for accurate overall percentiles; the labelled histogram keeps few.
 
 `handler` is the **route template** (`/api/projects/{name}`), never the
@@ -83,14 +83,14 @@ The in-progress gauge is what tells a slow request apart from a stuck one
 
 | Metric | Labels |
 |---|---|
-| `viewtrip_logins_total` | `provider` (`password`\|`google`), `result` (`success`\|`failure`) |
-| `viewtrip_registrations_total` | `provider` |
-| `viewtrip_app_opens_total` | `session_state` (`resumed`\|`login_required`) |
+| `traxjourney_logins_total` | `provider` (`password`\|`google`), `result` (`success`\|`failure`) |
+| `traxjourney_registrations_total` | `provider` |
+| `traxjourney_app_opens_total` | `session_state` (`resumed`\|`login_required`) |
 
 Google sign-in has no separate sign-up call, so `registrations_total{provider="google"}`
 fires on first sight of an account and never again.
 
-`viewtrip_logins_total` only counts a fresh credential submission — it misses
+`traxjourney_logins_total` only counts a fresh credential submission — it misses
 every launch where a cached session was simply resumed. `app_opens_total`
 covers "returnability" instead: the client pings `POST /api/auth/app-opened`
 once per launch, `resumed` when the cached session was still valid and
@@ -100,8 +100,8 @@ once per launch, `resumed` when the cached session was still valid and
 
 | Metric | Labels |
 |---|---|
-| `viewtrip_external_requests_total` | `service`, `endpoint`, `outcome` |
-| `viewtrip_external_request_duration_seconds` | `service`, `endpoint` |
+| `traxjourney_external_requests_total` | `service`, `endpoint`, `outcome` |
+| `traxjourney_external_request_duration_seconds` | `service`, `endpoint` |
 
 `service` ∈ `strava`, `polarsteps`, `google_translate`, `smtp`. `endpoint` is
 templated (`/activities/{id}/streams`). `outcome` ∈ `success`, `client_error`,
@@ -113,9 +113,9 @@ Strava's own quotas are tracked separately (issue #130):
 
 | Metric | Labels |
 |---|---|
-| `viewtrip_strava_rate_limit_usage` | `window` (`15min`\|`daily`) |
-| `viewtrip_strava_rate_limit_capacity` | `window` |
-| `viewtrip_strava_throttled_total` | `window` |
+| `traxjourney_strava_rate_limit_usage` | `window` (`15min`\|`daily`) |
+| `traxjourney_strava_rate_limit_capacity` | `window` |
+| `traxjourney_strava_throttled_total` | `window` |
 
 `throttled_total` counts calls **our own** limiter refused before they reached
 Strava — distinct from `outcome="rate_limited"`, which means Strava returned a
@@ -127,11 +127,11 @@ exceed the quota by a factor of the worker count.
 
 | Metric | Labels |
 |---|---|
-| `viewtrip_job_runs_total` | `job`, `result` (`success`\|`error`\|`missed`) |
-| `viewtrip_job_duration_seconds` | `job` |
-| `viewtrip_job_last_success_timestamp_seconds` | `job` |
-| `viewtrip_prepared_geometry_backlog` | — |
-| `viewtrip_prepared_geometry_outcomes_total` | `outcome` (`prepared`\|`unpreparable`\|`error`) |
+| `traxjourney_job_runs_total` | `job`, `result` (`success`\|`error`\|`missed`) |
+| `traxjourney_job_duration_seconds` | `job` |
+| `traxjourney_job_last_success_timestamp_seconds` | `job` |
+| `traxjourney_prepared_geometry_backlog` | — |
+| `traxjourney_prepared_geometry_outcomes_total` | `outcome` (`prepared`\|`unpreparable`\|`error`) |
 
 Fed by a single APScheduler listener, so every job — `daily_backup`,
 `wal_checkpoint`, anything added later — is covered automatically.
@@ -147,13 +147,13 @@ without making progress, which `job_runs_total` cannot show.
 
 | Metric | Labels |
 |---|---|
-| `viewtrip_db_queries_total`, `viewtrip_db_query_duration_seconds` | `operation` (SQL keyword only) |
-| `viewtrip_db_session_duration_seconds` | — |
-| `viewtrip_db_errors_total` | `kind` (`pool_timeout`\|`locked`\|`operational`\|`other`) |
-| `viewtrip_db_pool_connections` | `state` (`in_use`\|`idle`) |
-| `viewtrip_db_pool_overflow`, `viewtrip_db_pool_capacity` | — |
-| `viewtrip_db_file_size_bytes` | `file` (`main`\|`wal`) |
-| `viewtrip_stale_writes_total` | — |
+| `traxjourney_db_queries_total`, `traxjourney_db_query_duration_seconds` | `operation` (SQL keyword only) |
+| `traxjourney_db_session_duration_seconds` | — |
+| `traxjourney_db_errors_total` | `kind` (`pool_timeout`\|`locked`\|`operational`\|`other`) |
+| `traxjourney_db_pool_connections` | `state` (`in_use`\|`idle`) |
+| `traxjourney_db_pool_overflow`, `traxjourney_db_pool_capacity` | — |
+| `traxjourney_db_file_size_bytes` | `file` (`main`\|`wal`) |
+| `traxjourney_stale_writes_total` | — |
 
 Pool and file-size gauges are computed at scrape time, so they cost nothing
 between scrapes.
@@ -162,13 +162,13 @@ between scrapes.
 
 | Symptom | Signal |
 |---|---|
-| Pool exhaustion — the issue #35 hang | `viewtrip_db_pool_connections{state="in_use"}` approaching `viewtrip_db_pool_capacity` (60), or any `viewtrip_db_errors_total{kind="pool_timeout"}` |
-| WAL checkpointing has stopped | `viewtrip_db_file_size_bytes{file="wal"}` climbing without ever dropping — `wal_autocheckpoint=0` means only the `wal_checkpoint` job folds it back |
-| Backup silently stopped | `time() - viewtrip_job_last_success_timestamp_seconds{job="daily_backup"} > 90000` |
-| Strava quota nearly spent | `viewtrip_strava_rate_limit_usage / viewtrip_strava_rate_limit_capacity > 0.8` — imports start deferring past this |
-| Strava quota actually hit | any `viewtrip_strava_throttled_total` (our limiter refused), or `viewtrip_external_requests_total{service="strava",outcome="rate_limited"}` (Strava refused) |
-| Credential stuffing | `rate(viewtrip_logins_total{result="failure"}[5m])` |
-| Write contention | `rate(viewtrip_stale_writes_total[5m])` |
+| Pool exhaustion — the issue #35 hang | `traxjourney_db_pool_connections{state="in_use"}` approaching `traxjourney_db_pool_capacity` (60), or any `traxjourney_db_errors_total{kind="pool_timeout"}` |
+| WAL checkpointing has stopped | `traxjourney_db_file_size_bytes{file="wal"}` climbing without ever dropping — `wal_autocheckpoint=0` means only the `wal_checkpoint` job folds it back |
+| Backup silently stopped | `time() - traxjourney_job_last_success_timestamp_seconds{job="daily_backup"} > 90000` |
+| Strava quota nearly spent | `traxjourney_strava_rate_limit_usage / traxjourney_strava_rate_limit_capacity > 0.8` — imports start deferring past this |
+| Strava quota actually hit | any `traxjourney_strava_throttled_total` (our limiter refused), or `traxjourney_external_requests_total{service="strava",outcome="rate_limited"}` (Strava refused) |
+| Credential stuffing | `rate(traxjourney_logins_total{result="failure"}[5m])` |
+| Write contention | `rate(traxjourney_stale_writes_total[5m])` |
 
 ## Constraints
 
@@ -177,7 +177,7 @@ between scrapes.
   process served.
   It does **not** see another process. Two things put work outside the API
   process: a job `worker` container (`REDIS_URL` set — see issue #173), whose
-  queued jobs record DB-session timings and `viewtrip_stale_writes_total` in
+  queued jobs record DB-session timings and `traxjourney_stale_writes_total` in
   their own registry; and multiple gunicorn workers, were that ever adopted.
   Both need `PROMETHEUS_MULTIPROC_DIR` pointing at a directory every process
   mounts — `/metrics` then aggregates the samples written there instead of

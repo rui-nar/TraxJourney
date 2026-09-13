@@ -397,7 +397,7 @@ def app_opened(body: AppOpenedRequest):
 
     Unauthenticated: a launch with no valid cached session must still be
     counted, and there is no token to attach in that case. Distinct from
-    ``viewtrip_logins_total`` — that only counts a fresh credential
+    ``traxjourney_logins_total`` — that only counts a fresh credential
     submission, so it misses every launch where a cached session was simply
     resumed, undercounting how often people actually come back to the app.
     """

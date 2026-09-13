@@ -170,11 +170,11 @@ def test_places_call_is_tracked_via_track_external(env, monkeypatch, metric):
         geo_module.requests, "get",
         lambda *a, **k: _FakeResponse(_FAKE_NOMINATIM),
     )
-    before = metric("viewtrip_external_requests_total",
+    before = metric("traxjourney_external_requests_total",
                      service="nominatim", endpoint="/search", outcome="success")
     resp = client.get("/api/geo/places", params={"q": "lisbon"})
     assert resp.status_code == 200
-    assert metric("viewtrip_external_requests_total",
+    assert metric("traxjourney_external_requests_total",
                    service="nominatim", endpoint="/search", outcome="success") - before == 1
 
 
@@ -184,12 +184,12 @@ def test_places_call_failure_is_tracked_and_logged(env, monkeypatch, metric, cap
         geo_module.requests, "get",
         lambda *a, **k: _FakeResponse(None, status_error=RuntimeError("nominatim down")),
     )
-    before = metric("viewtrip_external_requests_total",
+    before = metric("traxjourney_external_requests_total",
                      service="nominatim", endpoint="/search", outcome="exception")
     with caplog.at_level("WARNING", logger="src.utils.metrics"):
         resp = client.get("/api/geo/places", params={"q": "lisbon"})
     assert resp.status_code == 502
-    assert metric("viewtrip_external_requests_total",
+    assert metric("traxjourney_external_requests_total",
                    service="nominatim", endpoint="/search", outcome="exception") - before == 1
     assert "nominatim" in caplog.text
 

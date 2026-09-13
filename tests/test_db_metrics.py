@@ -33,31 +33,31 @@ def file_engine(tmp_path):
 
 class TestQueryMetrics:
     def test_statements_are_counted_by_operation(self, file_engine, metric):
-        before = metric("viewtrip_db_queries_total", operation="SELECT")
+        before = metric("traxjourney_db_queries_total", operation="SELECT")
         with file_engine.connect() as conn:
             conn.execute(text("SELECT 1"))
             conn.execute(text("SELECT 2"))
-        assert metric("viewtrip_db_queries_total", operation="SELECT") - before == 2
+        assert metric("traxjourney_db_queries_total", operation="SELECT") - before == 2
 
     def test_writes_are_counted_separately_from_reads(self, file_engine, metric):
-        selects = metric("viewtrip_db_queries_total", operation="SELECT")
-        inserts = metric("viewtrip_db_queries_total", operation="INSERT")
+        selects = metric("traxjourney_db_queries_total", operation="SELECT")
+        inserts = metric("traxjourney_db_queries_total", operation="INSERT")
 
         with file_engine.begin() as conn:
             conn.execute(text("CREATE TABLE t (id INTEGER)"))
             conn.execute(text("INSERT INTO t VALUES (1)"))
 
-        assert metric("viewtrip_db_queries_total", operation="INSERT") - inserts == 1
-        assert metric("viewtrip_db_queries_total", operation="SELECT") == selects
+        assert metric("traxjourney_db_queries_total", operation="INSERT") - inserts == 1
+        assert metric("traxjourney_db_queries_total", operation="SELECT") == selects
         # CREATE TABLE isn't in the closed set — it lands in OTHER, not its own
         # label value.
-        assert metric("viewtrip_db_queries_total", operation="CREATE") == 0
+        assert metric("traxjourney_db_queries_total", operation="CREATE") == 0
 
     def test_duration_is_observed(self, file_engine, metric):
-        before = metric("viewtrip_db_query_duration_seconds_count", operation="SELECT")
+        before = metric("traxjourney_db_query_duration_seconds_count", operation="SELECT")
         with file_engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-        assert metric("viewtrip_db_query_duration_seconds_count",
+        assert metric("traxjourney_db_query_duration_seconds_count",
                       operation="SELECT") - before == 1
 
     def test_statement_text_never_becomes_a_label(self, file_engine, metric):
@@ -69,7 +69,7 @@ class TestQueryMetrics:
         samples = [
             sample
             for family in __import__("prometheus_client").REGISTRY.collect()
-            if family.name == "viewtrip_db_queries"
+            if family.name == "traxjourney_db_queries"
             for sample in family.samples
         ]
         for sample in samples:
@@ -78,10 +78,10 @@ class TestQueryMetrics:
     def test_install_is_idempotent(self, file_engine, metric):
         """A second install would double-count every statement."""
         install_db_metrics(file_engine)
-        before = metric("viewtrip_db_queries_total", operation="SELECT")
+        before = metric("traxjourney_db_queries_total", operation="SELECT")
         with file_engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-        assert metric("viewtrip_db_queries_total", operation="SELECT") - before == 1
+        assert metric("traxjourney_db_queries_total", operation="SELECT") - before == 1
 
 
 class TestPoolGauges:
@@ -94,17 +94,17 @@ class TestPoolGauges:
         what preceded the hang."""
         with file_engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-            assert metric("viewtrip_db_pool_connections", state="in_use") == 1
+            assert metric("traxjourney_db_pool_connections", state="in_use") == 1
 
-        assert metric("viewtrip_db_pool_connections", state="in_use") == 0
-        assert metric("viewtrip_db_pool_connections", state="idle") == 1
+        assert metric("traxjourney_db_pool_connections", state="in_use") == 0
+        assert metric("traxjourney_db_pool_connections", state="idle") == 1
 
     def test_reports_capacity(self, file_engine, metric):
         # pool_size=20 + max_overflow=40, the ceiling requests queue behind.
-        assert metric("viewtrip_db_pool_capacity") == 60
+        assert metric("traxjourney_db_pool_capacity") == 60
 
     def test_overflow_is_reported(self, file_engine, metric):
-        assert metric("viewtrip_db_pool_overflow") <= 0  # negative until it fills
+        assert metric("traxjourney_db_pool_overflow") <= 0  # negative until it fills
 
     def test_in_memory_pool_does_not_break_a_scrape(self, metric):
         """The in-memory pool used by tests has no checkedout()/overflow(); a
@@ -116,9 +116,9 @@ class TestPoolGauges:
         )
         install_db_metrics(engine)
 
-        assert metric("viewtrip_db_pool_overflow") == 0
-        assert metric("viewtrip_db_pool_connections", state="in_use") == 0
-        assert metric("viewtrip_db_pool_capacity") == 0
+        assert metric("traxjourney_db_pool_overflow") == 0
+        assert metric("traxjourney_db_pool_connections", state="in_use") == 0
+        assert metric("traxjourney_db_pool_capacity") == 0
 
 
 class TestFileSizeGauges:
@@ -129,13 +129,13 @@ class TestFileSizeGauges:
             conn.execute(text("CREATE TABLE t (id INTEGER)"))
             conn.execute(text("INSERT INTO t VALUES (1)"))
 
-        assert metric("viewtrip_db_file_size_bytes", file="main") > 0
-        assert metric("viewtrip_db_file_size_bytes", file="wal") > 0
+        assert metric("traxjourney_db_file_size_bytes", file="main") > 0
+        assert metric("traxjourney_db_file_size_bytes", file="wal") > 0
 
     def test_in_memory_database_reports_zero(self, metric):
         engine = create_engine("sqlite://", poolclass=StaticPool)
         install_db_metrics(engine)
-        assert metric("viewtrip_db_file_size_bytes", file="main") == 0
+        assert metric("traxjourney_db_file_size_bytes", file="main") == 0
 
 
 class TestErrorClassification:
@@ -174,15 +174,15 @@ class TestGetSessionInstrumentation:
         return engine
 
     def test_session_duration_is_observed(self, engine, metric):
-        before = metric("viewtrip_db_session_duration_seconds_count")
+        before = metric("traxjourney_db_session_duration_seconds_count")
         with get_session():
             pass
-        assert metric("viewtrip_db_session_duration_seconds_count") - before == 1
+        assert metric("traxjourney_db_session_duration_seconds_count") - before == 1
 
     def test_pool_timeout_is_counted_and_still_raises(self, engine, metric):
         """Pool exhaustion is what took production down in #35 — it has to be
         both counted and left to propagate exactly as before."""
-        before = metric("viewtrip_db_errors_total", kind="pool_timeout")
+        before = metric("traxjourney_db_errors_total", kind="pool_timeout")
 
         with patch.object(db_module, "Session",
                           side_effect=sqlalchemy.exc.TimeoutError("pool limit")):
@@ -190,26 +190,26 @@ class TestGetSessionInstrumentation:
                 with get_session():
                     pass
 
-        assert metric("viewtrip_db_errors_total", kind="pool_timeout") - before == 1
+        assert metric("traxjourney_db_errors_total", kind="pool_timeout") - before == 1
 
     def test_database_locked_is_counted(self, engine, metric):
-        before = metric("viewtrip_db_errors_total", kind="locked")
+        before = metric("traxjourney_db_errors_total", kind="locked")
         locked = sqlalchemy.exc.OperationalError("INSERT", {}, Exception("database is locked"))
 
         with pytest.raises(sqlalchemy.exc.OperationalError):
             with get_session():
                 raise locked
 
-        assert metric("viewtrip_db_errors_total", kind="locked") - before == 1
+        assert metric("traxjourney_db_errors_total", kind="locked") - before == 1
 
     def test_application_exception_is_not_counted(self, engine, metric):
-        before = metric("viewtrip_db_errors_total", kind="other")
+        before = metric("traxjourney_db_errors_total", kind="other")
 
         with pytest.raises(ValueError):
             with get_session():
                 raise ValueError("business rule")
 
-        assert metric("viewtrip_db_errors_total", kind="other") == before
+        assert metric("traxjourney_db_errors_total", kind="other") == before
 
     def test_stale_writes_are_counted_without_changing_the_response(self, metric):
         """Optimistic-lock 409s spike exactly when writers collide, so they are
@@ -219,13 +219,13 @@ class TestGetSessionInstrumentation:
         import api.router as router
         from src.project.project_repo import StaleWriteError
 
-        before = metric("viewtrip_stale_writes_total")
+        before = metric("traxjourney_stale_writes_total")
         resp = anyio.run(
             router._stale_write_handler, None, StaleWriteError("version mismatch")
         )
 
         assert resp.status_code == 409
-        assert metric("viewtrip_stale_writes_total") - before == 1
+        assert metric("traxjourney_stale_writes_total") - before == 1
 
     def test_original_exception_propagates_unchanged(self, engine):
         """Instrumentation must not alter a single response — the exception the

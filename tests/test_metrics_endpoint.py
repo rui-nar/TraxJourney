@@ -54,7 +54,7 @@ class TestMetricsAuth:
 
         assert resp.status_code == 200
         assert resp.headers["content-type"] == CONTENT_TYPE_LATEST
-        assert "# HELP viewtrip_http_requests_total" in resp.text
+        assert "# HELP traxjourney_http_requests_total" in resp.text
 
     def test_token_is_read_per_request(self, client, monkeypatch):
         """Read from the environment at request time, so enabling metrics on a
@@ -77,7 +77,7 @@ class TestHttpInstrumentation:
         # project name a user ever invents — share a single time series.
         assert 'handler="/api/projects/{name}"' in body
         assert 'handler="/api/projects/alpha"' not in body
-        assert "viewtrip_http_requests_total" in body
+        assert "traxjourney_http_requests_total" in body
 
     def test_status_codes_are_not_grouped(self, client, monkeypatch):
         """409 (optimistic-lock conflict) and 401-vs-404 are individually
@@ -93,7 +93,7 @@ class TestHttpInstrumentation:
         """Distinguishing a slow request from a stuck one is what issue #45's
         investigation lacked."""
         monkeypatch.setenv("METRICS_TOKEN", "right")
-        assert "viewtrip_http_requests_inprogress" in _scrape(client).text
+        assert "traxjourney_http_requests_inprogress" in _scrape(client).text
 
     def test_metrics_endpoint_excludes_itself(self, client, monkeypatch):
         monkeypatch.setenv("METRICS_TOKEN", "right")

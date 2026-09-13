@@ -1,4 +1,4 @@
-"""Prometheus metrics for ViewTrip — the single place metric objects are defined.
+"""Prometheus metrics for TraxJourney — the single place metric objects are defined.
 
 Business code imports the counters/histograms it needs (or one of the helpers
 below); nothing outside this module touches ``prometheus_client`` directly.
@@ -46,19 +46,19 @@ _log = get_logger(__name__)
 # ── Authentication ────────────────────────────────────────────────────────────
 
 LOGINS = Counter(
-    "viewtrip_logins_total",
+    "traxjourney_logins_total",
     "Login attempts by auth provider and outcome.",
     ["provider", "result"],
 )
 
 REGISTRATIONS = Counter(
-    "viewtrip_registrations_total",
+    "traxjourney_registrations_total",
     "Accounts created, by auth provider.",
     ["provider"],
 )
 
 APP_OPENS = Counter(
-    "viewtrip_app_opens_total",
+    "traxjourney_app_opens_total",
     "App launches, by whether the cached session was still valid.",
     ["session_state"],
 )
@@ -66,13 +66,13 @@ APP_OPENS = Counter(
 # ── Third-party APIs (Strava, Polarsteps, Google Translate, SMTP) ──────────────
 
 EXTERNAL_REQUESTS = Counter(
-    "viewtrip_external_requests_total",
+    "traxjourney_external_requests_total",
     "Calls to third-party services by outcome.",
     ["service", "endpoint", "outcome"],
 )
 
 EXTERNAL_DURATION = Histogram(
-    "viewtrip_external_request_duration_seconds",
+    "traxjourney_external_request_duration_seconds",
     "Wall-clock duration of calls to third-party services.",
     ["service", "endpoint"],
 )
@@ -80,19 +80,19 @@ EXTERNAL_DURATION = Histogram(
 # Strava's quotas belong to the application, and the limiters enforcing them are
 # process-wide (issue #130), which is what makes these worth exporting.
 STRAVA_RATE_LIMIT_USAGE = Gauge(
-    "viewtrip_strava_rate_limit_usage",
+    "traxjourney_strava_rate_limit_usage",
     "Strava requests made in the current quota window.",
     ["window"],
 )
 
 STRAVA_RATE_LIMIT_CAPACITY = Gauge(
-    "viewtrip_strava_rate_limit_capacity",
+    "traxjourney_strava_rate_limit_capacity",
     "Strava requests allowed per quota window.",
     ["window"],
 )
 
 STRAVA_THROTTLED = Counter(
-    "viewtrip_strava_throttled_total",
+    "traxjourney_strava_throttled_total",
     "Calls refused by our own limiter before reaching Strava.",
     ["window"],
 )
@@ -100,19 +100,19 @@ STRAVA_THROTTLED = Counter(
 # ── Background jobs (APScheduler) ─────────────────────────────────────────────
 
 JOB_RUNS = Counter(
-    "viewtrip_job_runs_total",
+    "traxjourney_job_runs_total",
     "Scheduled job executions by outcome.",
     ["job", "result"],
 )
 
 JOB_DURATION = Histogram(
-    "viewtrip_job_duration_seconds",
+    "traxjourney_job_duration_seconds",
     "Wall-clock duration of scheduled job executions.",
     ["job"],
 )
 
 JOB_LAST_SUCCESS = Gauge(
-    "viewtrip_job_last_success_timestamp_seconds",
+    "traxjourney_job_last_success_timestamp_seconds",
     "Unix timestamp of the last successful run of each scheduled job.",
     ["job"],
 )
@@ -123,13 +123,13 @@ JOB_LAST_SUCCESS = Gauge(
 # and every log-based signal for it either spams once the backlog is drained or
 # goes silent exactly when it matters. A flat non-zero line here is the signal.
 PREPARED_GEOMETRY_BACKLOG = Gauge(
-    "viewtrip_prepared_geometry_backlog",
+    "traxjourney_prepared_geometry_backlog",
     "Activities with a polyline and no current prepared row, including any that "
     "can never be prepared. Should fall to a small constant and stay there.",
 )
 
 PREPARED_GEOMETRY_OUTCOMES = Counter(
-    "viewtrip_prepared_geometry_outcomes_total",
+    "traxjourney_prepared_geometry_outcomes_total",
     "Rows the backfill sweep examined, by outcome.",
     ["outcome"],  # prepared | unpreparable | error
 )
@@ -137,59 +137,59 @@ PREPARED_GEOMETRY_OUTCOMES = Counter(
 # ── Database ──────────────────────────────────────────────────────────────────
 
 DB_QUERIES = Counter(
-    "viewtrip_db_queries_total",
+    "traxjourney_db_queries_total",
     "SQL statements executed, by operation.",
     ["operation"],
 )
 
 DB_QUERY_DURATION = Histogram(
-    "viewtrip_db_query_duration_seconds",
+    "traxjourney_db_query_duration_seconds",
     "Wall-clock duration of individual SQL statements.",
     ["operation"],
 )
 
 DB_SESSION_DURATION = Histogram(
-    "viewtrip_db_session_duration_seconds",
+    "traxjourney_db_session_duration_seconds",
     "Wall-clock lifetime of a get_session() scope.",
 )
 
 DB_ERRORS = Counter(
-    "viewtrip_db_errors_total",
+    "traxjourney_db_errors_total",
     "Database errors escaping a get_session() scope, by kind.",
     ["kind"],
 )
 
 DB_POOL_CONNECTIONS = Gauge(
-    "viewtrip_db_pool_connections",
+    "traxjourney_db_pool_connections",
     "Connections in the SQLAlchemy pool, by state.",
     ["state"],
 )
 
 DB_POOL_OVERFLOW = Gauge(
-    "viewtrip_db_pool_overflow",
+    "traxjourney_db_pool_overflow",
     "Connections currently open beyond pool_size.",
 )
 
 DB_POOL_CAPACITY = Gauge(
-    "viewtrip_db_pool_capacity",
+    "traxjourney_db_pool_capacity",
     "Maximum connections the pool will hand out (pool_size + max_overflow).",
 )
 
 DB_FILE_SIZE = Gauge(
-    "viewtrip_db_file_size_bytes",
+    "traxjourney_db_file_size_bytes",
     "Size of the SQLite database file and its write-ahead log.",
     ["file"],
 )
 
 STALE_WRITES = Counter(
-    "viewtrip_stale_writes_total",
+    "traxjourney_stale_writes_total",
     "Optimistic-lock conflicts (StaleWriteError) surfaced to clients as 409.",
 )
 
 
 # ── HTTP requests ─────────────────────────────────────────────────────────────
 
-_HTTP_METRIC_PREFIX = "viewtrip_http_"
+_HTTP_METRIC_PREFIX = "traxjourney_http_"
 
 
 def instrument_http(app) -> None:
@@ -219,7 +219,7 @@ def instrument_http(app) -> None:
         should_instrument_requests_inprogress=True,
         inprogress_name=_HTTP_METRIC_PREFIX + "requests_inprogress",
         excluded_handlers=["/metrics"],
-    ).instrument(app, metric_namespace="viewtrip")
+    ).instrument(app, metric_namespace="traxjourney")
 
 
 # ── Third-party call tracking ─────────────────────────────────────────────────
@@ -390,7 +390,7 @@ def _db_file_size(engine, suffix: str = "") -> float:
         return 0.0
 
 
-_DB_METRICS_MARK = "_viewtrip_db_metrics_installed"
+_DB_METRICS_MARK = "_traxjourney_db_metrics_installed"
 
 
 def install_db_metrics(engine) -> None:
@@ -407,12 +407,12 @@ def install_db_metrics(engine) -> None:
 
     @event.listens_for(engine, "before_cursor_execute")
     def _before(_conn, _cursor, _statement, _params, context, _executemany):
-        context._viewtrip_query_start = time.perf_counter()
+        context._traxjourney_query_start = time.perf_counter()
 
     @event.listens_for(engine, "after_cursor_execute")
     def _after(_conn, _cursor, statement, _params, context, _executemany):
         operation = _operation_of(statement)
-        start = getattr(context, "_viewtrip_query_start", None)
+        start = getattr(context, "_traxjourney_query_start", None)
         if start is not None:
             DB_QUERY_DURATION.labels(operation).observe(time.perf_counter() - start)
         DB_QUERIES.labels(operation).inc()

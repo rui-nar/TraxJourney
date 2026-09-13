@@ -340,12 +340,12 @@ from prometheus_client import REGISTRY
 
 
 def _backlog():
-    return REGISTRY.get_sample_value("viewtrip_prepared_geometry_backlog")
+    return REGISTRY.get_sample_value("traxjourney_prepared_geometry_backlog")
 
 
 def _outcomes(outcome: str) -> float:
     return REGISTRY.get_sample_value(
-        "viewtrip_prepared_geometry_outcomes_total", {"outcome": outcome}) or 0.0
+        "traxjourney_prepared_geometry_outcomes_total", {"outcome": outcome}) or 0.0
 
 
 def test_the_backlog_gauge_is_published_and_falls(db):

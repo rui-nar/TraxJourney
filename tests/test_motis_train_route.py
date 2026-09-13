@@ -753,12 +753,12 @@ class TestRetryAndErrors:
         assert api.calls == []
 
     def test_outbound_calls_are_counted(self, metric):
-        before = metric("viewtrip_external_requests_total",
+        before = metric("traxjourney_external_requests_total",
                         service="hafas", endpoint="motis/trip", outcome="success")
         api = _Motis()
         with patch("src.services.hafas_service.requests.get", api):
             _resolve()
-        after = metric("viewtrip_external_requests_total",
+        after = metric("traxjourney_external_requests_total",
                        service="hafas", endpoint="motis/trip", outcome="success")
         assert after - before == 1
 

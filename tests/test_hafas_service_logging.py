@@ -93,13 +93,13 @@ class TestUnexpectedNetworkFailure:
 
     def test_wraps_outbound_call_in_track_external(self, metric):
         """The failing call is still counted via track_external("hafas", ...)."""
-        before = metric("viewtrip_external_requests_total", service="hafas",
+        before = metric("traxjourney_external_requests_total", service="hafas",
                         endpoint="motis/reverse-geocode", outcome="exception")
         with patch("src.services.hafas_service.requests.get",
                    side_effect=ConnectionError("boom")):
             with pytest.raises(HafasError):
                 _lookup()
-        after = metric("viewtrip_external_requests_total", service="hafas",
+        after = metric("traxjourney_external_requests_total", service="hafas",
                        endpoint="motis/reverse-geocode", outcome="exception")
         assert after - before == 1
 
@@ -111,12 +111,12 @@ class TestUnexpectedNetworkFailure:
             def raise_for_status(self):
                 raise AssertionError("should not be reached for a retryable status")
 
-        before = metric("viewtrip_external_requests_total", service="hafas",
+        before = metric("traxjourney_external_requests_total", service="hafas",
                         endpoint="motis/reverse-geocode", outcome="retryable_error")
         with patch("src.services.hafas_service.requests.get",
                    return_value=_Resp()):
             with pytest.raises(HafasError, match="unavailable after 3 attempts"):
                 _lookup()
-        after = metric("viewtrip_external_requests_total", service="hafas",
+        after = metric("traxjourney_external_requests_total", service="hafas",
                        endpoint="motis/reverse-geocode", outcome="retryable_error")
         assert after - before == 3
