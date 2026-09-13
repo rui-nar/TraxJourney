@@ -5,7 +5,7 @@
 // older server that doesn't send those fields at all.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/core/project_ref.dart';
+import 'package:traxjourney_client/src/core/project_ref.dart';
 
 void main() {
   group('ProjectRef.isOwn / capability getters', () {

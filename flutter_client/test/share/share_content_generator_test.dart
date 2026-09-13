@@ -3,10 +3,10 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:viewtrip_client/src/api/client.dart';
-import 'package:viewtrip_client/src/core/project_ref.dart';
-import 'package:viewtrip_client/src/crypto/share_crypto.dart';
-import 'package:viewtrip_client/src/share/share_content_generator.dart';
+import 'package:traxjourney_client/src/api/client.dart';
+import 'package:traxjourney_client/src/core/project_ref.dart';
+import 'package:traxjourney_client/src/crypto/share_crypto.dart';
+import 'package:traxjourney_client/src/share/share_content_generator.dart';
 
 void main() {
   group('ShareContentGenerator.generate', () {

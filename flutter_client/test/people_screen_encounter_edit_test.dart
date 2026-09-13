@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:viewtrip_client/src/core/project_ref.dart';
-import 'package:viewtrip_client/src/projects/encounter_dialog.dart';
-import 'package:viewtrip_client/src/projects/people_screen.dart';
-import 'package:viewtrip_client/src/projects/project_notifier.dart';
-import 'package:viewtrip_client/src/projects/project_service.dart';
+import 'package:traxjourney_client/src/core/project_ref.dart';
+import 'package:traxjourney_client/src/projects/encounter_dialog.dart';
+import 'package:traxjourney_client/src/projects/people_screen.dart';
+import 'package:traxjourney_client/src/projects/project_notifier.dart';
+import 'package:traxjourney_client/src/projects/project_service.dart';
 
 /// Guards issue #175: an encounter can be edited and deleted from the person and
 /// group detail sheets, not only from the trip timeline.

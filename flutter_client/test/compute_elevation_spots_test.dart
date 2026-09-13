@@ -11,7 +11,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/projects/elevation_chart.dart';
+import 'package:traxjourney_client/src/projects/elevation_chart.dart';
 
 void main() {
   Map<String, dynamic> activity(dynamic id, List<List<num>> profile) =>

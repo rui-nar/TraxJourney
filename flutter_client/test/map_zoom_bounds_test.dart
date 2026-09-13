@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/projects/basemaps.dart';
+import 'package:traxjourney_client/src/projects/basemaps.dart';
 
 void main() {
   group('map zoom cap', () {

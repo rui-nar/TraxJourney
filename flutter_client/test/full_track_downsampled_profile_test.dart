@@ -14,8 +14,8 @@
 // thing needed from the profile is that one number, at any resolution.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/map/geo_point.dart';
-import 'package:viewtrip_client/src/projects/project_notifier.dart';
+import 'package:traxjourney_client/src/map/geo_point.dart';
+import 'package:traxjourney_client/src/projects/project_notifier.dart';
 
 /// A straight track of [n] coordinates running north from the equator.
 List<List<double>> _coords(int n) => [for (var i = 0; i < n; i++) [0.0, i * 0.001]];

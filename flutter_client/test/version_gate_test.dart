@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/core/version_gate.dart';
+import 'package:traxjourney_client/src/core/version_gate.dart';
 
 void main() {
   group('isClientStale', () {

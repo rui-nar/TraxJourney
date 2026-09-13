@@ -4,7 +4,7 @@
 // relative-path-only rule.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/core/return_to.dart';
+import 'package:traxjourney_client/src/core/return_to.dart';
 
 void main() {
   group('safeReturnTo', () {

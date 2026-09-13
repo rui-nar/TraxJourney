@@ -5,9 +5,9 @@
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/core/project_ref.dart';
-import 'package:viewtrip_client/src/projects/project_segment_crud_mixin.dart';
-import 'package:viewtrip_client/src/projects/project_service.dart';
+import 'package:traxjourney_client/src/core/project_ref.dart';
+import 'package:traxjourney_client/src/projects/project_segment_crud_mixin.dart';
+import 'package:traxjourney_client/src/projects/project_service.dart';
 
 /// Minimal concrete host so the mixin can be exercised in isolation. Only the
 /// geo-overlay methods are tested; `service` is never called.

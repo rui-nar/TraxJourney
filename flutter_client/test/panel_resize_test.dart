@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:viewtrip_client/src/projects/panel_resize.dart';
+import 'package:traxjourney_client/src/projects/panel_resize.dart';
 
 void main() {
   group('clampPanelWidth', () {

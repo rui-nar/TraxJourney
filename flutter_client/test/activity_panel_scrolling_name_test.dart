@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
-import 'package:viewtrip_client/src/core/scrolling_selectable_text.dart';
-import 'package:viewtrip_client/src/projects/activity_panel.dart';
-import 'package:viewtrip_client/src/projects/project_notifier.dart';
-import 'package:viewtrip_client/src/projects/project_service.dart';
+import 'package:traxjourney_client/src/core/scrolling_selectable_text.dart';
+import 'package:traxjourney_client/src/projects/activity_panel.dart';
+import 'package:traxjourney_client/src/projects/project_notifier.dart';
+import 'package:traxjourney_client/src/projects/project_service.dart';
 
 /// Regression coverage for wiring the activity panel's selection state into
 /// [ScrollingSelectableText.isSelected] for each of the four row kinds

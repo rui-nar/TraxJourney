@@ -5,10 +5,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:viewtrip_client/src/core/project_ref.dart';
-import 'package:viewtrip_client/src/projects/people_screen.dart';
-import 'package:viewtrip_client/src/projects/project_notifier.dart';
-import 'package:viewtrip_client/src/projects/project_service.dart';
+import 'package:traxjourney_client/src/core/project_ref.dart';
+import 'package:traxjourney_client/src/projects/people_screen.dart';
+import 'package:traxjourney_client/src/projects/project_notifier.dart';
+import 'package:traxjourney_client/src/projects/project_service.dart';
 
 /// A notifier whose `fetchPerson` is answered locally, so the person detail
 /// sheet can be pumped without a server (the API client is app-wide).

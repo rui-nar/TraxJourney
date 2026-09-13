@@ -5,9 +5,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:image/image.dart' as img;
-import 'package:viewtrip_client/src/photos/immich_source.dart';
-import 'package:viewtrip_client/src/photos/photo_match.dart';
-import 'package:viewtrip_client/src/photos/photo_source.dart';
+import 'package:traxjourney_client/src/photos/immich_source.dart';
+import 'package:traxjourney_client/src/photos/photo_match.dart';
+import 'package:traxjourney_client/src/photos/photo_source.dart';
 
 Uint8List _checkerboardPngBytes({int size = 32, int block = 4, bool invert = false}) {
   final image = img.Image(width: size, height: size);

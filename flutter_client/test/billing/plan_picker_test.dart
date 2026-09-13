@@ -6,10 +6,10 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/billing/billing_service.dart';
-import 'package:viewtrip_client/src/billing/plan_picker.dart';
-import 'package:viewtrip_client/src/billing/upgrade_sheet.dart';
-import 'package:viewtrip_client/src/core/theme.dart';
+import 'package:traxjourney_client/src/billing/billing_service.dart';
+import 'package:traxjourney_client/src/billing/plan_picker.dart';
+import 'package:traxjourney_client/src/billing/upgrade_sheet.dart';
+import 'package:traxjourney_client/src/core/theme.dart';
 
 const _mb = 1024 * 1024;
 const _gb = 1024 * _mb;

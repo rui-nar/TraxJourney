@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/admin/admin_screen.dart';
-import 'package:viewtrip_client/src/admin/admin_service.dart';
-import 'package:viewtrip_client/src/core/design_tokens.dart';
+import 'package:traxjourney_client/src/admin/admin_screen.dart';
+import 'package:traxjourney_client/src/admin/admin_service.dart';
+import 'package:traxjourney_client/src/core/design_tokens.dart';
 
 class _FakeAdminService extends AdminService {
   List<Map<String, dynamic>> searchResult = [];

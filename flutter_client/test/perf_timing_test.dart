@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/core/perf_timing.dart';
+import 'package:traxjourney_client/src/core/perf_timing.dart';
 
 /// The frame-timing recorder itself needs a real frame pipeline, but its pure
 /// reporting helpers (percentile + summary line) are unit-testable so the

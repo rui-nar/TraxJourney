@@ -3,9 +3,9 @@ import 'dart:convert';
 import 'package:cryptography_plus/cryptography_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/crypto/e2ee_crypto.dart';
-import 'package:viewtrip_client/src/crypto/encryption_service.dart';
-import 'package:viewtrip_client/src/crypto/manage_devices_screen.dart';
+import 'package:traxjourney_client/src/crypto/e2ee_crypto.dart';
+import 'package:traxjourney_client/src/crypto/encryption_service.dart';
+import 'package:traxjourney_client/src/crypto/manage_devices_screen.dart';
 
 class _FakeStore implements DeviceKeyStore {
   SimpleKeyPair? _kp;

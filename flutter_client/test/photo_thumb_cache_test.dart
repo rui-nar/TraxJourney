@@ -11,7 +11,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/projects/photo_thumb_cache.dart';
+import 'package:traxjourney_client/src/projects/photo_thumb_cache.dart';
 
 void main() {
   test('read returns null when nothing is cached', () async {

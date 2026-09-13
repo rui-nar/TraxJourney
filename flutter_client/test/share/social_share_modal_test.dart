@@ -5,9 +5,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:share_plus/share_plus.dart';
 
-import 'package:viewtrip_client/src/projects/social_share_dialog.dart';
-import 'package:viewtrip_client/src/share/share_interfaces.dart';
-import 'package:viewtrip_client/src/share/social_share_controller.dart';
+import 'package:traxjourney_client/src/projects/social_share_dialog.dart';
+import 'package:traxjourney_client/src/share/share_interfaces.dart';
+import 'package:traxjourney_client/src/share/social_share_controller.dart';
 
 // ── Recording fakes (mirror social_share_controller_test) ───────────────────
 

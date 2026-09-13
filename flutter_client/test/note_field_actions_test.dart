@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:viewtrip_client/src/projects/note_field_actions.dart';
+import 'package:traxjourney_client/src/projects/note_field_actions.dart';
 
 /// Guards issue #175: the notes fields get copy/paste buttons that work even
 /// when the engine's own selection toolbar doesn't (mobile web).

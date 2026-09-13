@@ -9,7 +9,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/core/brand_mark.dart';
+import 'package:traxjourney_client/src/core/brand_mark.dart';
 
 void main() {
   group('BrandMark', () {

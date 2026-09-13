@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:viewtrip_client/src/projects/people_search.dart';
+import 'package:traxjourney_client/src/projects/people_search.dart';
 
 Map<String, dynamic> _p(int id, {String? name, String? email, String? phone,
     String? polarsteps, String? notes}) => {

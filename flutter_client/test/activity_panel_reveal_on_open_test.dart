@@ -2,9 +2,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
-import 'package:viewtrip_client/src/projects/activity_panel.dart';
-import 'package:viewtrip_client/src/projects/project_notifier.dart';
-import 'package:viewtrip_client/src/projects/project_service.dart';
+import 'package:traxjourney_client/src/projects/activity_panel.dart';
+import 'package:traxjourney_client/src/projects/project_notifier.dart';
+import 'package:traxjourney_client/src/projects/project_service.dart';
 
 /// Regression for issue #21: on narrow layouts the activity panel is built but
 /// hidden (slid off-screen). When a segment is selected on the map while the

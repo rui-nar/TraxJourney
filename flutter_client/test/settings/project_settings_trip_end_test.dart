@@ -24,11 +24,11 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:provider/provider.dart';
 
-import 'package:viewtrip_client/src/api/client.dart';
-import 'package:viewtrip_client/src/core/project_ref.dart';
-import 'package:viewtrip_client/src/projects/project_notifier.dart';
-import 'package:viewtrip_client/src/projects/project_service.dart';
-import 'package:viewtrip_client/src/projects/project_settings_screen.dart';
+import 'package:traxjourney_client/src/api/client.dart';
+import 'package:traxjourney_client/src/core/project_ref.dart';
+import 'package:traxjourney_client/src/projects/project_notifier.dart';
+import 'package:traxjourney_client/src/projects/project_service.dart';
+import 'package:traxjourney_client/src/projects/project_settings_screen.dart';
 
 /// Every day-meta map PUT during a test, in order.
 late List<Map<String, dynamic>> putDayMeta;

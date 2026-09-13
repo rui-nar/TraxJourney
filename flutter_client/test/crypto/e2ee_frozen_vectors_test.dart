@@ -29,7 +29,7 @@ import 'dart:convert';
 
 import 'package:cryptography_plus/cryptography_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/crypto/e2ee_crypto.dart';
+import 'package:traxjourney_client/src/crypto/e2ee_crypto.dart';
 
 List<int> _hex(String s) => [
       for (var i = 0; i < s.length; i += 2)

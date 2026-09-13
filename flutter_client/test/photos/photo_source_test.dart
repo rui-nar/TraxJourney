@@ -2,8 +2,8 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
-import 'package:viewtrip_client/src/photos/photo_match.dart';
-import 'package:viewtrip_client/src/photos/photo_source.dart';
+import 'package:traxjourney_client/src/photos/photo_match.dart';
+import 'package:traxjourney_client/src/photos/photo_source.dart';
 
 /// Builds a minimal, hand-rolled TIFF/EXIF byte buffer (the same container
 /// format a JPEG's APP1 segment wraps) so tests can exercise

@@ -10,8 +10,8 @@
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/core/perf_subtree.dart';
-import 'package:viewtrip_client/src/core/perf_timing.dart';
+import 'package:traxjourney_client/src/core/perf_subtree.dart';
+import 'package:traxjourney_client/src/core/perf_timing.dart';
 
 void main() {
   setUp(() => perfSpans

@@ -6,7 +6,7 @@
 // stub/wiring). This just proves the stub is safe to construct and dispose.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/settings/strava_oauth_popup_stub.dart';
+import 'package:traxjourney_client/src/settings/strava_oauth_popup_stub.dart';
 
 void main() {
   test('dispose() with no prior connect() call does not throw', () {

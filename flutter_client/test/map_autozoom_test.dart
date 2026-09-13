@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
-import 'package:viewtrip_client/src/projects/map_panel.dart';
+import 'package:traxjourney_client/src/projects/map_panel.dart';
 
 /// Guards issue #34: view-mode auto-zoom must target the SELECTED item, not the
 /// whole trip. This exercises the shared bounds helper the auto-zoom uses.

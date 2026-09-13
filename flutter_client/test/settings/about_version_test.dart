@@ -12,13 +12,13 @@ import 'package:http/testing.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:viewtrip_client/src/api/client.dart';
-import 'package:viewtrip_client/src/auth/auth_notifier.dart';
-import 'package:viewtrip_client/src/auth/auth_service.dart';
-import 'package:viewtrip_client/src/core/app_version.dart';
-import 'package:viewtrip_client/src/settings/settings_screen.dart';
-import 'package:viewtrip_client/src/settings/settings_service.dart';
-import 'package:viewtrip_client/src/settings/theme_notifier.dart';
+import 'package:traxjourney_client/src/api/client.dart';
+import 'package:traxjourney_client/src/auth/auth_notifier.dart';
+import 'package:traxjourney_client/src/auth/auth_service.dart';
+import 'package:traxjourney_client/src/core/app_version.dart';
+import 'package:traxjourney_client/src/settings/settings_screen.dart';
+import 'package:traxjourney_client/src/settings/settings_service.dart';
+import 'package:traxjourney_client/src/settings/theme_notifier.dart';
 
 Future<void> _pumpSettings(WidgetTester tester) async {
   await tester.pumpWidget(MultiProvider(

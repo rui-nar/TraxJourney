@@ -19,13 +19,13 @@ import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
 
-import 'package:viewtrip_client/src/api/client.dart';
-import 'package:viewtrip_client/src/core/project_ref.dart';
-import 'package:viewtrip_client/src/projects/project_data_cache.dart';
-import 'package:viewtrip_client/src/projects/project_filters.dart';
-import 'package:viewtrip_client/src/projects/project_notifier.dart';
-import 'package:viewtrip_client/src/projects/project_service.dart';
-import 'package:viewtrip_client/src/shared/shared_project_screen.dart';
+import 'package:traxjourney_client/src/api/client.dart';
+import 'package:traxjourney_client/src/core/project_ref.dart';
+import 'package:traxjourney_client/src/projects/project_data_cache.dart';
+import 'package:traxjourney_client/src/projects/project_filters.dart';
+import 'package:traxjourney_client/src/projects/project_notifier.dart';
+import 'package:traxjourney_client/src/projects/project_service.dart';
+import 'package:traxjourney_client/src/shared/shared_project_screen.dart';
 
 import '../helpers/signed_in.dart';
 

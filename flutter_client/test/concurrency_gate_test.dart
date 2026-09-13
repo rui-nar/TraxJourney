@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/core/concurrency_gate.dart';
+import 'package:traxjourney_client/src/core/concurrency_gate.dart';
 
 /// Guards the fix for the map-view thumbnail storm: MapPanel fires one HTTP
 /// request per memory marker with no virtualization, and an unthrottled

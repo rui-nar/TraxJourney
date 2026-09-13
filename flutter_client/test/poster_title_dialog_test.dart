@@ -5,7 +5,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/projects/poster_title_dialog.dart';
+import 'package:traxjourney_client/src/projects/poster_title_dialog.dart';
 
 /// Opens the dialog, leaving it open so a test can drag/type/slide before
 /// pressing an action itself.

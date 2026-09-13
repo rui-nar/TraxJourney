@@ -18,10 +18,10 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/projects/heavy_decode.dart';
-import 'package:viewtrip_client/src/projects/map_geometry_memo.dart';
-import 'package:viewtrip_client/src/projects/project_notifier.dart';
-import 'package:viewtrip_client/src/projects/project_service.dart';
+import 'package:traxjourney_client/src/projects/heavy_decode.dart';
+import 'package:traxjourney_client/src/projects/map_geometry_memo.dart';
+import 'package:traxjourney_client/src/projects/project_notifier.dart';
+import 'package:traxjourney_client/src/projects/project_service.dart';
 
 Map<String, dynamic> _geo(int activities, int pointsPer) => {
       'type': 'FeatureCollection',

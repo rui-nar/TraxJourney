@@ -15,8 +15,8 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
 
-import 'package:viewtrip_client/src/projects/track_edit_model.dart';
-import 'package:viewtrip_client/src/projects/track_map_editor.dart';
+import 'package:traxjourney_client/src/projects/track_edit_model.dart';
+import 'package:traxjourney_client/src/projects/track_map_editor.dart';
 
 /// [n] points marching north-east from (0, 0), one per [step] degrees.
 List<EditPoint> _points(int n, {double step = 0.001}) =>

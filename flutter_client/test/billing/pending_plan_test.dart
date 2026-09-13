@@ -8,9 +8,9 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/billing/billing_service.dart';
-import 'package:viewtrip_client/src/billing/plan_widgets.dart';
-import 'package:viewtrip_client/src/core/theme.dart';
+import 'package:traxjourney_client/src/billing/billing_service.dart';
+import 'package:traxjourney_client/src/billing/plan_widgets.dart';
+import 'package:traxjourney_client/src/core/theme.dart';
 
 BillingStatus _status({
   String plan = 'tier_3',

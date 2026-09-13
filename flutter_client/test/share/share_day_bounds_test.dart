@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
-import 'package:viewtrip_client/src/share/share_day_bounds.dart';
+import 'package:traxjourney_client/src/share/share_day_bounds.dart';
 
 void main() {
   Map<String, dynamic> activityFeature(String id, List<List<double>> lonLat) => {

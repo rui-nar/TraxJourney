@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/crypto/e2ee_crypto.dart';
-import 'package:viewtrip_client/src/crypto/share_crypto.dart';
+import 'package:traxjourney_client/src/crypto/e2ee_crypto.dart';
+import 'package:traxjourney_client/src/crypto/share_crypto.dart';
 
 void main() {
   group('generateShareKey', () {

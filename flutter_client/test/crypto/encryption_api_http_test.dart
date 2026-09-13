@@ -3,8 +3,8 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:viewtrip_client/src/api/client.dart';
-import 'package:viewtrip_client/src/crypto/encryption_api_http.dart';
+import 'package:traxjourney_client/src/api/client.dart';
+import 'package:traxjourney_client/src/crypto/encryption_api_http.dart';
 
 void main() {
   test('enable POSTs the payload to /api/encryption/enable', () async {

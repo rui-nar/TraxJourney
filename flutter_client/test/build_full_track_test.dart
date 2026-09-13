@@ -9,7 +9,7 @@
 // compute_elevation_spots_test.dart / decimate_polyline_points_test.dart.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/projects/project_notifier.dart';
+import 'package:traxjourney_client/src/projects/project_notifier.dart';
 
 void main() {
   Map<String, dynamic> activity(

@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
-import 'package:viewtrip_client/src/projects/map_panel.dart';
+import 'package:traxjourney_client/src/projects/map_panel.dart';
 
 /// Incremental map updates: per-feature geometry work (coordinate→LatLng
 /// conversion + arc-midpoint) is memoized by the identity of the raw coords

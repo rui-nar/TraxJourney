@@ -4,7 +4,7 @@ library;
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
-import 'package:viewtrip_client/src/api/client.dart';
+import 'package:traxjourney_client/src/api/client.dart';
 
 /// An unsigned JWT whose payload carries [sub], the way the server's
 /// `create_access_token` names the account. Nothing client-side verifies the

@@ -10,7 +10,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/projects/bounded_byte_cache.dart';
+import 'package:traxjourney_client/src/projects/bounded_byte_cache.dart';
 
 Uint8List _bytes(int n) => Uint8List(n);
 

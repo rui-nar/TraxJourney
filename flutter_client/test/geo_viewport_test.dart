@@ -7,7 +7,7 @@
 // zoom while the saving falls (issue #324).
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/projects/geo_viewport.dart';
+import 'package:traxjourney_client/src/projects/geo_viewport.dart';
 
 const _alps = GeoBox(7.3, 45.3, 7.5, 45.5);
 

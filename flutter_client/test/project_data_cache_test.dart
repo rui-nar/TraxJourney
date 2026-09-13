@@ -5,8 +5,8 @@
 // for the full design rationale.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/core/project_ref.dart';
-import 'package:viewtrip_client/src/projects/project_data_cache.dart';
+import 'package:traxjourney_client/src/core/project_ref.dart';
+import 'package:traxjourney_client/src/projects/project_data_cache.dart';
 
 void main() {
   setUp(() => projectDataCache.resetForTest());

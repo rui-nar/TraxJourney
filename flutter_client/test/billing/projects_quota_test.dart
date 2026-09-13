@@ -4,9 +4,9 @@ library;
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/api/client.dart';
-import 'package:viewtrip_client/src/projects/projects_notifier.dart';
-import 'package:viewtrip_client/src/projects/projects_service.dart';
+import 'package:traxjourney_client/src/api/client.dart';
+import 'package:traxjourney_client/src/projects/projects_notifier.dart';
+import 'package:traxjourney_client/src/projects/projects_service.dart';
 
 class _ThrowingService extends ProjectsService {
   final Exception failure;

@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:viewtrip_client/src/projects/encounter_dialog.dart';
+import 'package:traxjourney_client/src/projects/encounter_dialog.dart';
 
 /// Guards issue #77: the encounter note box should start with a capital
 /// letter and capitalize the first letter after every sentence-ending

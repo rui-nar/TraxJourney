@@ -5,12 +5,12 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/api/client.dart';
-import 'package:viewtrip_client/src/projects/memory_detail_modal.dart';
-import 'package:viewtrip_client/src/projects/project_memory_crud_mixin.dart'
+import 'package:traxjourney_client/src/api/client.dart';
+import 'package:traxjourney_client/src/projects/memory_detail_modal.dart';
+import 'package:traxjourney_client/src/projects/project_memory_crud_mixin.dart'
     show TranslationUnavailableException;
-import 'package:viewtrip_client/src/projects/project_notifier.dart';
-import 'package:viewtrip_client/src/projects/project_service.dart';
+import 'package:traxjourney_client/src/projects/project_notifier.dart';
+import 'package:traxjourney_client/src/projects/project_service.dart';
 
 /// Notifier whose translation call fails like the backend would, and whose
 /// like/comment loaders are stubbed so the modal makes no real network calls.

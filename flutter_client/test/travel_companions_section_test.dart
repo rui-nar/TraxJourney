@@ -11,14 +11,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:viewtrip_client/src/api/client.dart';
-import 'package:viewtrip_client/src/auth/auth_notifier.dart';
-import 'package:viewtrip_client/src/auth/auth_service.dart';
-import 'package:viewtrip_client/src/core/project_ref.dart';
-import 'package:viewtrip_client/src/projects/members_service.dart';
-import 'package:viewtrip_client/src/projects/project_notifier.dart';
-import 'package:viewtrip_client/src/projects/project_service.dart';
-import 'package:viewtrip_client/src/projects/travel_companions_section.dart';
+import 'package:traxjourney_client/src/api/client.dart';
+import 'package:traxjourney_client/src/auth/auth_notifier.dart';
+import 'package:traxjourney_client/src/auth/auth_service.dart';
+import 'package:traxjourney_client/src/core/project_ref.dart';
+import 'package:traxjourney_client/src/projects/members_service.dart';
+import 'package:traxjourney_client/src/projects/project_notifier.dart';
+import 'package:traxjourney_client/src/projects/project_service.dart';
+import 'package:traxjourney_client/src/projects/travel_companions_section.dart';
 
 class _FakeMembersService extends MembersService {
   List<ProjectMember> members;

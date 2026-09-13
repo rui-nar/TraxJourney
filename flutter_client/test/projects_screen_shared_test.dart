@@ -7,11 +7,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
-import 'package:viewtrip_client/src/auth/auth_notifier.dart';
-import 'package:viewtrip_client/src/auth/auth_service.dart';
-import 'package:viewtrip_client/src/projects/projects_notifier.dart';
-import 'package:viewtrip_client/src/projects/projects_screen.dart';
-import 'package:viewtrip_client/src/projects/projects_service.dart';
+import 'package:traxjourney_client/src/auth/auth_notifier.dart';
+import 'package:traxjourney_client/src/auth/auth_service.dart';
+import 'package:traxjourney_client/src/projects/projects_notifier.dart';
+import 'package:traxjourney_client/src/projects/projects_screen.dart';
+import 'package:traxjourney_client/src/projects/projects_service.dart';
 
 class _FakeProjectsService extends ProjectsService {
   final List<Map<String, dynamic>> entries;

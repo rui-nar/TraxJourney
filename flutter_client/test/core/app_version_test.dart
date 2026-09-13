@@ -12,9 +12,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:viewtrip_client/src/api/client.dart';
-import 'package:viewtrip_client/src/core/app_version.dart';
-import 'package:viewtrip_client/src/core/version_gate.dart';
+import 'package:traxjourney_client/src/api/client.dart';
+import 'package:traxjourney_client/src/core/app_version.dart';
+import 'package:traxjourney_client/src/core/version_gate.dart';
 
 /// The notifier is app-wide, so every test starts from "not yet known" and
 /// leaves it that way.

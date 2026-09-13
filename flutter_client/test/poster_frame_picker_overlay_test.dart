@@ -10,7 +10,7 @@ import 'package:flutter_map_animations/flutter_map_animations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
 
-import 'package:viewtrip_client/src/projects/map_panel.dart';
+import 'package:traxjourney_client/src/projects/map_panel.dart';
 
 Future<void> _pump(WidgetTester tester, Widget overlay,
     AnimatedMapController controller) async {

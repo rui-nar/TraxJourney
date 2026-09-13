@@ -6,7 +6,7 @@
 // provider's own reason when the server kept one.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/projects/segment_dialog.dart';
+import 'package:traxjourney_client/src/projects/segment_dialog.dart';
 
 void main() {
   group('resolveOutcomeMessage', () {

@@ -6,7 +6,7 @@ import 'package:flutter/rendering.dart' show Size;
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
-import 'package:viewtrip_client/src/projects/viewport_sync.dart';
+import 'package:traxjourney_client/src/projects/viewport_sync.dart';
 
 MapCamera _camera({double zoom = 4}) => MapCamera(
       crs: const Epsg3857(),
