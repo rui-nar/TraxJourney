@@ -160,11 +160,11 @@ Step "Creating GitHub release $newTag"
 # marshaling can split it across multiple argv entries at the embedded
 # newlines, and gh then tries to glob-expand a stray trailing line as an
 # asset filename (e.g. a commit subject containing "(...)").
-$notesFile = Join-Path ([System.IO.Path]::GetTempPath()) "viewtrip-release-notes-$newTag.md"
+$notesFile = Join-Path ([System.IO.Path]::GetTempPath()) "traxjourney-release-notes-$newTag.md"
 Set-Content -Path $notesFile -Value $releaseBody -NoNewline
 try {
     gh release create $newTag `
-        --title "ViewTripWeb $newTag" `
+        --title "TraxJourney $newTag" `
         --notes-file $notesFile
     if ($LASTEXITCODE -ne 0) { Die "gh release create failed." }
 } finally {

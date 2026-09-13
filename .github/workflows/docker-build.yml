@@ -66,9 +66,9 @@ jobs:
         id: image_tags
         run: |
           if [ "${{ github.ref_name }}" = "validation" ]; then
-            tags="ghcr.io/rui-nar/viewtripweb:validation"
+            tags="ghcr.io/rui-nar/traxjourney:validation"
           else
-            tags=$(printf 'ghcr.io/rui-nar/viewtripweb:latest\nghcr.io/rui-nar/viewtripweb:%s\nghcr.io/rui-nar/viewtripweb:%s' "${{ github.sha }}" "${{ github.ref_name }}")
+            tags=$(printf 'ghcr.io/rui-nar/traxjourney:latest\nghcr.io/rui-nar/traxjourney:%s\nghcr.io/rui-nar/traxjourney:%s' "${{ github.sha }}" "${{ github.ref_name }}")
           fi
           {
             echo "tags<<EOF"
@@ -76,11 +76,14 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      # A package pushed with a PAT (GHCR_TOKEN) is linked to its repository only
+      # through this label; the Dockerfile sets the same one for local builds.
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
+          labels: org.opencontainers.image.source=https://github.com/rui-nar/TraxJourney
           build-args: |
             APP_VERSION=${{ steps.app_version.outputs.version }}
           tags: ${{ steps.image_tags.outputs.tags }}
