@@ -158,19 +158,18 @@ def test_project_file_extension_is_traxj(client):
     assert _listing(client)["Summer"]["filename"] == "Summer.traxj"
 
 
-@pytest.mark.parametrize("old_name", ["Summer.viewtrip", "Summer.gettracks"])
-def test_old_extensions_are_not_recognised_on_import(client, old_name):
-    """Issue #151 dropped the ``.viewtrip``/``.gettracks`` aliases.
-
-    Import does not validate the extension: any upload is parsed as project
-    JSON, and a name without ``.traxj`` gets it appended. So an old file is no
-    longer stripped of its extension — its suffix stays part of the name.
+@pytest.mark.parametrize("bad_name", ["Summer.viewtrip", "Summer.gettracks", "Summer", ".traxj"])
+def test_import_rejects_anything_but_a_traxj_file(client, bad_name):
+    """Issue #151 dropped the ``.viewtrip``/``.gettracks`` formats with no
+    compatibility. The upload is valid project JSON in every case, so only the
+    extension check stands between an old file and a project named
+    ``Summer.viewtrip``.
     """
-    r = _import(client, old_name)
+    r = _import(client, bad_name)
 
-    assert r.status_code == 201, r.text
-    assert r.json()["name"] == old_name
-    assert _listing(client)[old_name]["filename"] == old_name + ".traxj"
+    assert r.status_code == 400, r.text
+    assert ".traxj" in r.json()["detail"]
+    assert _listing(client) == {}
 
 
 def test_old_export_route_is_gone_from_the_real_app(monkeypatch):

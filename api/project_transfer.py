@@ -55,11 +55,15 @@ async def import_project(
     user_info_id = int(current_user["sub"])
     user_id = current_user["sub"]
 
-    raw_fname = os.path.basename(file.filename or "imported" + ProjectIO.EXTENSION)
-    if raw_fname.endswith(ProjectIO.EXTENSION):
-        fname = raw_fname
-    else:
-        fname = raw_fname + ProjectIO.EXTENSION
+    fname = os.path.basename(file.filename or "imported" + ProjectIO.EXTENSION)
+    # Only the current format is accepted (issue #151). An older .viewtrip or
+    # .gettracks file would otherwise parse and land under a name that still
+    # carries its old suffix.
+    if not fname.endswith(ProjectIO.EXTENSION) or fname == ProjectIO.EXTENSION:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Only {ProjectIO.EXTENSION} project files can be imported",
+        )
 
     # Write to a temp location so ingest_project can read it
     pdir = _projects_dir(user_id)
