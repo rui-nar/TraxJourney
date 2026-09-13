@@ -17,9 +17,9 @@ flutter --version          # must match FLUTTER_TAG below
 
 docker build -t flutter-3471 --build-arg FLUTTER_TAG=3.47.1 tools/flutter-test
 
-docker run -d --name viewtrip-flutter-3.47.1-tests \
+docker run -d --name traxjourney-flutter-3.47.1-tests \
   --restart unless-stopped \
-  -v "E:/Dev/ViewTripWeb/flutter_client:/src:ro" \
+  -v "E:/Dev/TraxJourney/flutter_client:/src:ro" \
   flutter-3471
 ```
 
@@ -30,7 +30,7 @@ whole point. A cold run re-resolves packages and re-downloads artifacts.
 ## Run the tests
 
 ```bash
-docker exec viewtrip-flutter-3.47.1-tests bash -c "rsync -a --delete \
+docker exec traxjourney-flutter-3.47.1-tests bash -c "rsync -a --delete \
   --exclude '.dart_tool' --exclude 'build' --exclude '.flutter-plugins*' \
   /src/ /work/ && cd /work && flutter test"
 ```

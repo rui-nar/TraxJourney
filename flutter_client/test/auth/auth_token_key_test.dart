@@ -1,5 +1,5 @@
-// Guard for the persisted-JWT storage key (issue #151, ViewTrip ->
-// TraxJourney rename). AuthService keeps the session token in
+// Guard for the persisted-JWT storage key (issue #151, the TraxJourney
+// rename). AuthService keeps the session token in
 // SharedPreferences under a fixed key; renaming that key without migrating
 // the old one silently signs every existing user out on their next launch.
 //

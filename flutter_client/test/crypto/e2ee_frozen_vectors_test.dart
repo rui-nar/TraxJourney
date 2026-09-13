@@ -1,5 +1,5 @@
 // Known-answer vectors for the E2EE CMK wraps (issue #26), added as a guard
-// for the ViewTrip -> TraxJourney rename (issue #151).
+// for the TraxJourney rename (issue #151).
 //
 // The HKDF domain-separation strings in lib/src/crypto/e2ee_crypto.dart:
 //

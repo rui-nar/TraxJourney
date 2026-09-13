@@ -53,9 +53,9 @@ void main() async {
   await projectDataCache.init();
   await photoThumbCache.init();
   runApp(
-    // MultiProvider lives here — above ViewTripApp — so its providers are
+    // MultiProvider lives here — above TraxJourneyApp — so its providers are
     // never reconstructed by theme changes. Only the Builder inside
-    // ViewTripApp (which watches ThemeNotifier) rebuilds on theme toggles.
+    // TraxJourneyApp (which watches ThemeNotifier) rebuilds on theme toggles.
     MultiProvider(
       providers: [
         ChangeNotifierProvider<ThemeNotifier>(
@@ -76,19 +76,19 @@ void main() async {
           create: (_) => ProjectNotifier(ProjectService()),
         ),
       ],
-      child: const ViewTripApp(),
+      child: const TraxJourneyApp(),
     ),
   );
 }
 
-class ViewTripApp extends StatefulWidget {
-  const ViewTripApp({super.key});
+class TraxJourneyApp extends StatefulWidget {
+  const TraxJourneyApp({super.key});
 
   @override
-  State<ViewTripApp> createState() => _ViewTripAppState();
+  State<TraxJourneyApp> createState() => _TraxJourneyAppState();
 }
 
-class _ViewTripAppState extends State<ViewTripApp> {
+class _TraxJourneyAppState extends State<TraxJourneyApp> {
   GoRouter? _router;
 
   @override

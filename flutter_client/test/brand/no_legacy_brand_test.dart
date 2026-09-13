@@ -1,4 +1,4 @@
-// Guard for the ViewTrip -> TraxJourney rename (issue #151): the old name must
+// Guard for the TraxJourney rename (issue #151): the old product name must
 // not creep back into the app's code, its web shell, or its platform
 // projects. Every surviving occurrence is listed below with the reason it has
 // to stay, matched by exact line content so nothing else can hide next to it.
@@ -30,19 +30,6 @@ const _allowed = <String, Map<String, String>>{
     "static const _legacyTokenKey = 'viewtrip_jwt';":
         'legacy session token key, migrated on restore',
   },
-};
-
-/// TEMP — whole files not yet renamed by a later commit of #151. This list
-/// must be empty once the rename is finished.
-const _temp = <String, String>{
-  'lib/main.dart': 'ViewTripApp class name',
-  'lib/src/api/client.dart': 'doc comment',
-  'lib/src/core/app_router.dart': 'doc comment',
-  'lib/src/core/app_version.dart': 'doc comment',
-  'lib/src/core/design_tokens.dart': 'comment',
-  'lib/src/core/theme.dart': 'comment',
-  'web/index.html': 'reload guard global',
-  'web/reload_guard.js': 'reload guard global',
 };
 
 /// Machine-generated, gitignored build inputs: they embed the checkout's
@@ -98,7 +85,6 @@ void main() {
   test('the old name appears only where it has to', () {
     final unexpected = <String>[];
     hits.forEach((path, lines) {
-      if (_temp.containsKey(path)) return;
       for (final line in lines) {
         if (_allowed[path]?.containsKey(line) ?? false) continue;
         unexpected.add('$path: $line');
@@ -108,14 +94,12 @@ void main() {
         reason: 'rename these to $kAppName, or allowlist them with a reason');
   });
 
-  test('every allowlisted line and TEMP file still exists', () {
+  test('every allowlisted line still exists', () {
     final stale = <String>[
       for (final entry in _allowed.entries)
         for (final line in entry.value.keys)
           if (!(hits[entry.key]?.contains(line) ?? false))
             '${entry.key}: $line',
-      for (final path in _temp.keys)
-        if (!hits.containsKey(path)) 'TEMP $path',
     ];
     expect(stale, isEmpty, reason: 'remove these entries from the allowlist');
   });

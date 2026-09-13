@@ -120,7 +120,7 @@ Color iconBoxFg(Color c, {bool dark = false}) => dark
 
 // ── Sleeping-category dots (Edit Day modal) ──────────────────────────────────
 // Maps a sleeping option's group (see ProjectNotifier.sleepingOptionGroups)
-// to the dot colour used on its chip, per the ViewTrip design system.
+// to the dot colour used on its chip, per the TraxJourney design system.
 const kSleepIndoors  = Color(0xFF3B82F6); // blue
 const kSleepOutdoors = Color(0xFF22C55E); // green
 const kSleepOther    = Color(0xFFA855F7); // purple

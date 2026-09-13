@@ -1,6 +1,6 @@
 /// Pins the client side of the project-file contract (issue #151): project
 /// files are `.traxj`, exported from `/export-traxj`, and the import picker
-/// accepts nothing else — the old `.viewtrip`/`.gettracks` files are
+/// accepts nothing else — project files in the pre-rename formats are
 /// deliberately no longer importable.
 library;
 

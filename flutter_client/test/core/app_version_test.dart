@@ -89,9 +89,9 @@ void main() {
       _resetServerVersion();
 
       await tester.pumpWidget(const MaterialApp(
-          home: Scaffold(body: VersionText(prefix: '© 2026 ViewTrip · '))));
+          home: Scaffold(body: VersionText(prefix: '© 2026 TraxJourney · '))));
 
-      expect(find.text('© 2026 ViewTrip · app dev · server unknown'),
+      expect(find.text('© 2026 TraxJourney · app dev · server unknown'),
           findsOneWidget);
     });
   });

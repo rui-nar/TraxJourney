@@ -1,4 +1,4 @@
-// Guard for the web shell's reload-guard pairing (issue #151, ViewTrip ->
+// Guard for the web shell's reload-guard pairing (issue #151, the
 // TraxJourney rename). web/reload_guard.js publishes its factory on a global,
 // and web/index.html looks that global up by name. The lookup is wrapped in
 // `if (window.<name>)`, so renaming only one side throws nothing: Android PWA

@@ -1,4 +1,4 @@
-/// Named routes + auth guard for the ViewTripWeb Flutter client.
+/// Named routes + auth guard for the TraxJourney Flutter client.
 library;
 
 import 'package:flutter/foundation.dart' show kIsWeb;

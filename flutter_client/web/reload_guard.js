@@ -16,7 +16,7 @@
   if (typeof module === 'object' && module.exports) {
     module.exports = factory();
   } else {
-    root.__viewTripReloadGuard = factory();
+    root.__traxJourneyReloadGuard = factory();
   }
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';

@@ -22,7 +22,7 @@ Uint8List _checkerboardPngBytes({int size = 32, int block = 4, bool invert = fal
   return Uint8List.fromList(img.encodePng(image));
 }
 
-const _baseUrl = 'https://viewtrip.example.com';
+const _baseUrl = 'https://traxjourney.example.com';
 const _authHeaders = {'Authorization': 'Bearer test-token'};
 
 Map<String, dynamic> _rawCandidate({
