@@ -99,7 +99,7 @@ default (`transport http { keepalive }`). `entrypoint.sh` therefore runs uvicorn
 with `--timeout-keep-alive 300`; its 5 s default made uvicorn close first, and a
 request that Caddy sent on a pooled connection at that same instant failed
 with a 502 (`journalctl -u caddy`: `"msg":"EOF"` or `read: connection reset by
-peer`, on POST/PUT/DELETE — Go's HTTP client retries GETs by itself). If you
+peer`, on POST/PUT/DELETE â€” Go's HTTP client retries GETs by itself). If you
 ever set `keepalive` explicitly in the Caddyfile, keep it below uvicorn's value;
 `tests/test_entrypoint_keepalive.py` pins the entrypoint side, and
 `docs/repro/keepalive_502/` reproduces the race (issue #400).
