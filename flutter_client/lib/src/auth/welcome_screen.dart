@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../core/app_version.dart';
 import '../core/brand.dart';
 import '../core/design_tokens.dart';
+import '../core/legal_links.dart';
 
 // ── Layout constants ──────────────────────────────────────────────────────────
 const _kBreak = 900.0;
@@ -1656,6 +1657,8 @@ class _Footer extends StatelessWidget {
                   _FootLinks('Docs', ['Quick start', 'Architecture', 'API reference', 'Docker'], theme),
                   const SizedBox(height: 24),
                   _FootLinks('Community', ['GitHub', 'Strava club', 'Discussions', 'License · AGPL-3.0'], theme),
+                  const SizedBox(height: 24),
+                  _FootLinks('Legal', ['Privacy', 'Terms'], theme),
                   const SizedBox(height: 32),
                   _FootBottom(theme),
                 ],
@@ -1685,6 +1688,7 @@ class _FootGrid extends StatelessWidget {
             ['Quick start', 'Architecture', 'API reference', 'Docker'], theme)),
         Expanded(child: _FootLinks('Community',
             ['GitHub', 'Strava club', 'Discussions', 'License · AGPL-3.0'], theme)),
+        Expanded(child: _FootLinks('Legal', ['Privacy', 'Terms'], theme)),
       ],
     );
   }
@@ -1752,6 +1756,8 @@ class _FootLinks extends StatelessWidget {
 VoidCallback? _footLinkAction(String label) => switch (label) {
       'GitHub' => () => _openUrl(kRepoUrl),
       'License · AGPL-3.0' => () => _openUrl(kLicenseUrl),
+      'Privacy' => () => openLegalPage(kPrivacyPolicyPath),
+      'Terms' => () => openLegalPage(kTermsOfServicePath),
       _ => null,
     };
 

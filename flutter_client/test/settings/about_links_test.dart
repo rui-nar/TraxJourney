@@ -1,7 +1,9 @@
-/// Settings > About links out to the source code (issue #421).
+/// Settings > About links out to the source code, the privacy policy and the
+/// terms of service (issue #421).
 ///
 /// The app is AGPL-3.0: someone using the hosted service over a network must
-/// be offered the source, and a signed-in user's way to find it is here.
+/// be offered the source, and a signed-in user's way to find it is here. The
+/// legal pages live on the server the app is connected to.
 library;
 
 import 'dart:convert';
@@ -72,6 +74,24 @@ void main() {
     await _tapAboutLink(tester, 'Source code');
 
     expect(launcher.launched, [kRepoUrl]);
+  });
+
+  testWidgets("Privacy Policy opens the server's policy", (tester) async {
+    final launcher = installFakeUrlLauncher();
+    await _pumpSettings(tester);
+
+    await _tapAboutLink(tester, 'Privacy Policy');
+
+    expect(launcher.launched, ['https://trax.example.com/privacy']);
+  });
+
+  testWidgets("Terms of Service opens the server's terms", (tester) async {
+    final launcher = installFakeUrlLauncher();
+    await _pumpSettings(tester);
+
+    await _tapAboutLink(tester, 'Terms of Service');
+
+    expect(launcher.launched, ['https://trax.example.com/terms']);
   });
 
   testWidgets('names the licence instead of reserving all rights',

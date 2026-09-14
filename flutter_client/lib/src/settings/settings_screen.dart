@@ -12,6 +12,7 @@ import '../auth/auth_service.dart';
 import '../billing/billing_section.dart';
 import '../core/app_version.dart';
 import '../core/brand.dart';
+import '../core/legal_links.dart';
 import '../core/perf_timing.dart' show perfSpans;
 import '../projects/basemaps.dart' show kMapTileModePref, mapTileModeNotifier;
 import '../core/version_reload_stub.dart'
@@ -1132,6 +1133,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       Wrap(
                         spacing: 8,
                         children: [
+                          TextButton.icon(
+                            onPressed: () =>
+                                openLegalPage(kPrivacyPolicyPath),
+                            icon: const Icon(Icons.privacy_tip_outlined,
+                                size: 18),
+                            label: const Text('Privacy Policy'),
+                          ),
+                          TextButton.icon(
+                            onPressed: () =>
+                                openLegalPage(kTermsOfServicePath),
+                            icon: const Icon(Icons.description_outlined,
+                                size: 18),
+                            label: const Text('Terms of Service'),
+                          ),
                           TextButton.icon(
                             onPressed: () => launchUrl(Uri.parse(kRepoUrl),
                                 mode: LaunchMode.externalApplication),
