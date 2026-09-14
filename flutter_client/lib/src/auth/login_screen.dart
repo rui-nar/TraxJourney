@@ -16,6 +16,7 @@ import 'google_button_stub.dart'
 
 import '../core/app_version.dart';
 import '../core/brand.dart';
+import '../core/legal_links.dart';
 import '../core/platform.dart';
 import '../core/return_to.dart';
 import '../core/server_config.dart';
@@ -308,7 +309,11 @@ class _LoginScreenState extends State<LoginScreen> {
                         const SizedBox(height: 8),
                         const SelfHostingLink(),
                       ],
-                      const SizedBox(height: 24),
+                      const SizedBox(height: 16),
+                      // Google sign-in creates the account on first use, so
+                      // this screen needs the notice as much as Register.
+                      const LegalNotice(action: 'continuing'),
+                      const SizedBox(height: 16),
                       VersionText(
                         prefix: '© ${DateTime.now().year} $kAppName · ',
                         style: theme.textTheme.bodySmall?.copyWith(

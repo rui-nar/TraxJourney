@@ -6,7 +6,7 @@ Stripe.
 **Self-hosting is not affected.** With no payment provider configured there is
 no billing: the payment endpoints return 404, no paywall exists anywhere in the
 client, and every account has unlimited trips and storage. The landing page's
-"Self-hosted · MIT · Unlimited projects, users" is enforced by
+"Self-hosted · AGPL · Unlimited projects, users" is enforced by
 `billing_enabled()` returning False, not by good intentions.
 
 ## What the plans limit
