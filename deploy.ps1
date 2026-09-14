@@ -2,18 +2,19 @@
 <#
 .SYNOPSIS
     Build, push and deploy TraxJourney to the validation or production
-    environment.
+    environment, then check the deploy actually took effect.
 
 .DESCRIPTION
     -Target Validation (default) -> DEPLOY_VAL_URL, DEPLOY_VAL_DIR:
-      1. Builds the Flutter web app.
-      2. Builds and pushes the Docker image to GHCR (:validation + version tag if present).
-      3. SSHes into the host and runs: docker compose down / pull / up -d.
+      1. Checks the host's compose file uses the image being deployed.
+      2. Builds the Flutter web app.
+      3. Builds and pushes the Docker image to GHCR (:validation + version tag if present).
+      4. SSHes into the host and runs: docker compose down / pull / up -d.
+      5. Verifies the deploy (see VERIFICATION).
 
     -Target Prod -> DEPLOY_PROD_URL, DEPLOY_PROD_DIR:
       Skips the build entirely - prod runs whatever :latest CI has published for
-      the current tagged release (see .github/workflows). Just SSHes into the
-      host and runs: docker compose down / pull / up -d.
+      the current tagged release (see .github/workflows). Steps 1, 4 and 5 only.
 
     By default (Validation only) the image is built from the CURRENT working tree
     (the fast path for validating local, possibly-uncommitted changes). Pass
@@ -26,6 +27,22 @@
     Host details live in deploy.env next to this script (gitignored). Copy
     deploy.env.example to deploy.env and fill it in. The script stops before
     building or deploying anything if a value is missing.
+
+    VERIFICATION
+    "docker compose pull" pulls whatever image the HOST's compose file names,
+    and a container that crash-loops still counts as started, so a clean exit
+    from down / pull / up -d proves nothing (issue #423). The script fails, with
+    a non-zero exit, unless:
+      a. the host's compose file names the image being deployed (checked
+         before anything is built or taken down);
+      b. the app containers run the image ID the tag was just pulled as;
+      c. every compose service is running, healthy where it has a healthcheck,
+         and has not restarted since up -d;
+      d. <url>/api/version reports the expected version within 120 s: the
+         built version for a local build, validation-<sha of the validation
+         tag> for CI's :validation, the newest vX.Y.Z tag for :latest.
+    The checks live in scripts/deploy_verify.py, which needs Python 3 (the
+    repo's .venv, or python on PATH).
 
     THE OTHER WAY TO CUT :validation
     A session with no local Docker (a web Claude Code session, say) can produce
@@ -54,6 +71,7 @@
     - SSH key auth to DEPLOY_HOST via DEPLOY_SSH_KEY for DEPLOY_USER.
     - docker-compose.yml present in DEPLOY_VAL_DIR and DEPLOY_PROD_DIR on the host.
     - Docker on the host logged in to GHCR.
+    - Python 3 locally, for the verification.
 
 .PARAMETER MapboxToken
     Mapbox public token passed as a Dart define at build time (Validation only).
@@ -239,6 +257,18 @@ if ($Building -and -not $MapboxToken) {
     $MapboxToken = $Config['MAPBOX_TOKEN']
 }
 
+# Verification runs in Python: the repo's .venv if there is one, else python
+# on PATH. The Windows Store "python" alias exists without Python installed,
+# so the interpreter is proven by running it.
+$Python = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
+if (-not (Test-Path $Python)) { $Python = 'python' }
+$ErrorActionPreference = "Continue"
+& $Python -c "import sys; sys.exit(sys.version_info < (3, 9))" 2>$null | Out-Null
+$pythonOk = ($LASTEXITCODE -eq 0)
+$ErrorActionPreference = "Stop"
+if (-not $pythonOk) { Die "Python 3.9+ is needed to verify the deploy; none found in .venv or on PATH." }
+$Verifier = Join-Path $PSScriptRoot 'scripts\deploy_verify.py'
+
 $Worktree = $null
 if ($FromMain -and $Building) {
     git worktree prune | Out-Null   # drop stale registrations from any crashed run
@@ -282,12 +312,43 @@ Write-Host "  -> ${Image}:${targetTag}" -ForegroundColor Green
 Write-Host "  -> ${DeployHost}:${targetBase}  ($targetUrl)" -ForegroundColor Green
 Write-Host "--------------------------------------------" -ForegroundColor Green
 
+# The same host, directory, image and URL for both verification calls.
+$StateFile = [System.IO.Path]::GetTempFileName()
+$VerifyArgs = @(
+    '--ssh-host', $DeployHost, '--ssh-port', $SshPort, '--ssh-user', $DeployUser, '--ssh-key', $SshKey,
+    '--dir', $targetBase, '--image', "${Image}:${targetTag}", '--url', $targetUrl, '--state', $StateFile
+)
+
 try {
+
+if (-not $Building) {
+    Write-Host ""
+    Write-Host "  Checking for an in-progress image build on GitHub Actions..." -ForegroundColor Cyan
+    $activeRuns = Get-ActiveImageBuildRuns
+    # Not .Count: a function returning one run hands back the run itself, which
+    # has no Count under StrictMode on Windows PowerShell 5.1.
+    if ($activeRuns) {
+        Write-Host ""
+        foreach ($r in $activeRuns) {
+            Write-Host "  - $($r.displayTitle) [$($r.status)] $($r.url)" -ForegroundColor Yellow
+        }
+        Die "A 'Build and publish Docker image' run is still in progress on GitHub Actions - you're deploying too soon. Deploying now would pull a stale or half-published :$targetTag. Wait for it to finish, then retry."
+    }
+}
+
+# -- 1. Preflight --------------------------------------------------------------
+# Before building or taking anything down: the host must pull the image this
+# deploy is for. Also records the version served now and the one to expect.
+Step 1 5 "Checking the host ($Target) before deploying..."
+$preflightArgs = @('--target', $Target.ToLowerInvariant(), '--repo', $PSScriptRoot)
+if ($Building) { $preflightArgs += @('--built-version', $FullVersion) }
+& $Python $Verifier preflight @VerifyArgs @preflightArgs
+if ($LASTEXITCODE -ne 0) { Die "Preflight failed - nothing was built or deployed." }
 
 if ($Building) {
 
-# -- 1. Build Flutter web ------------------------------------------------------
-Step 1 3 "Building Flutter web..."
+# -- 2. Build Flutter web ------------------------------------------------------
+Step 2 5 "Building Flutter web..."
 Push-Location (Join-Path $SrcRoot 'flutter_client')
 flutter build web --release `
   --dart-define=APP_VERSION=$FullVersion `
@@ -299,8 +360,8 @@ if (Test-Path $webClient) { Remove-Item -Recurse -Force $webClient }
 Copy-Item -Recurse (Join-Path $SrcRoot 'flutter_client/build/web') $webClient
 Write-Host "  Flutter web build ready in $webClient"
 
-# -- 2. Build + push Docker image ----------------------------------------------
-Step 2 3 "Building and pushing Docker image..."
+# -- 3. Build + push Docker image ----------------------------------------------
+Step 3 5 "Building and pushing Docker image..."
 
 # :validation is the rolling dev label pushed by this script.
 # :latest is reserved for clean version tags (set by GitHub Actions / CI).
@@ -320,25 +381,13 @@ if ($Version) {
 
 } else {
     Write-Host ""
-    Write-Host "[1-2/3] Skipping build - pulling :$targetTag as already published to GHCR." -ForegroundColor Cyan
-
-    Write-Host "  Checking for an in-progress image build on GitHub Actions..." -ForegroundColor Cyan
-    $activeRuns = Get-ActiveImageBuildRuns
-    # Not .Count: a function returning one run hands back the run itself, which
-    # has no Count under StrictMode on Windows PowerShell 5.1.
-    if ($activeRuns) {
-        Write-Host ""
-        foreach ($r in $activeRuns) {
-            Write-Host "  - $($r.displayTitle) [$($r.status)] $($r.url)" -ForegroundColor Yellow
-        }
-        Die "A 'Build and publish Docker image' run is still in progress on GitHub Actions - you're deploying too soon. Deploying now would pull a stale or half-published :$targetTag. Wait for it to finish, then retry."
-    }
+    Write-Host "[2-3/5] Skipping build - pulling :$targetTag as already published to GHCR." -ForegroundColor Cyan
 }
 
-# -- 3. Deploy -----------------------------------------------------------------
+# -- 4. Deploy -----------------------------------------------------------------
 # Both environments are plain Docker on the same Debian host, so one script
 # serves both - only $targetBase differs.
-Step 3 3 "Deploying ($Target) on $DeployHost..."
+Step 4 5 "Deploying ($Target) on $DeployHost..."
 
 $remoteScript = @"
 set -euo pipefail
@@ -353,11 +402,6 @@ docker compose pull
 
 echo "  Starting containers..."
 docker compose up -d
-
-echo ""
-docker compose ps
-echo ""
-echo "  Done."
 "@
 
 # `tr -d '\r'` on the far side: this file is checked out with CRLF on Windows,
@@ -365,15 +409,23 @@ echo "  Done."
 $remoteScript | ssh -i $SshKey -p $SshPort "${DeployUser}@${DeployHost}" "tr -d '\r' | bash -s"
 if ($LASTEXITCODE -ne 0) { Die "Remote deployment failed." }
 
+# -- 5. Verify -----------------------------------------------------------------
+Step 5 5 "Verifying the deploy..."
+& $Python $Verifier verify @VerifyArgs
+if ($LASTEXITCODE -ne 0) {
+    Die "The deploy did not take effect as expected (see FAIL lines above). The containers were left as they are."
+}
+
 Write-Host ""
 Write-Host "===========================================" -ForegroundColor Green
-Write-Host "  Deployed $FullVersion ($Target)" -ForegroundColor Green
+Write-Host "  Deployed and verified ($Target)" -ForegroundColor Green
 Write-Host "  App : $targetUrl" -ForegroundColor Green
 Write-Host "===========================================" -ForegroundColor Green
 Write-Host ""
 
 }
 finally {
+    Remove-Item -Force $StateFile -ErrorAction SilentlyContinue
     # Always tear down the throwaway worktree, even on failure. (PowerShell runs
     # finally on `exit` from within try; a stale registration is also swept by
     # `git worktree prune` at the next -FromMain run.)

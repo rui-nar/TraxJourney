@@ -16,8 +16,8 @@ before it builds or deploys anything.
 Most assertions are on the script text, because that is where such a mistake
 would live, and no test host has the GHCR/VPS credentials to run it. The
 behavioural ones run the script under every installed PowerShell edition, either
-with a config that stops it before any network access or with ssh and gh
-replaced by stand-ins that only log what they were asked to do.
+with a config that stops it before any network access or with ssh, gh and
+python replaced by stand-ins that only log what they were asked to do.
 """
 import json
 import os
@@ -232,6 +232,36 @@ def test_remote_script_strips_carriage_returns():
     assert _code_lines()[ssh].rstrip().endswith('"tr -d \'\\r\' | bash -s"')
 
 
+# -- verification (issue #423) ----------------------------------------------------
+
+def test_preflight_runs_before_anything_is_built_or_taken_down():
+    code = _code_lines()
+    preflight = _index_of(r"\$Verifier preflight @VerifyArgs")
+    assert preflight != -1, "expected the preflight call"
+    assert code[preflight + 1].strip().startswith("if ($LASTEXITCODE -ne 0) { Die")
+    for pattern in (r"flutter build web", r"^\s*docker build ", r"docker push ", r"\| ssh "):
+        assert preflight < _index_of(pattern), f"preflight must run before {pattern}"
+
+
+def test_verification_runs_after_the_deploy_and_gates_success():
+    code = _code_lines()
+    deploy = _index_of(r"\| ssh ")
+    verify = _index_of(r"\$Verifier verify @VerifyArgs")
+    success = _index_of(r"Deployed and verified")
+    assert -1 < deploy < verify < success
+    assert code[verify + 1].strip() == "if ($LASTEXITCODE -ne 0) {"
+    assert code[verify + 2].strip().startswith("Die ")
+
+
+def test_both_verification_calls_share_one_argument_list():
+    """preflight and verify must look at the same host, directory, image and URL."""
+    block = re.search(r"\$VerifyArgs\s*=\s*@\((.*?)\n\)", TEXT, re.DOTALL)
+    assert block
+    for flag in ("--ssh-host", "--ssh-port", "--ssh-user", "--ssh-key", "--dir", "--image", "--url", "--state"):
+        assert f"'{flag}'" in block.group(1)
+    assert '"${Image}:${targetTag}"' in block.group(1)
+
+
 # -- running it -----------------------------------------------------------------
 
 POWERSHELLS = [exe for exe in ("pwsh", "powershell") if shutil.which(exe)]
@@ -340,21 +370,29 @@ def test_missing_keys_are_named(sandbox, exe):
             "DEPLOY_VAL_DIR, DEPLOY_VAL_URL, DEPLOY_PROD_DIR, DEPLOY_PROD_URL") in "".join(result.stdout.splitlines())
 
 
-# Stand-ins for ssh and gh, first on PATH. ssh logs its arguments and stdin; gh
-# prints SHIM_GH_JSON as its run list.
+# Stand-ins for ssh, gh and python, first on PATH. ssh logs its arguments and
+# stdin; gh prints SHIM_GH_JSON as its run list; python logs its arguments and
+# exits with SHIM_PREFLIGHT_EXIT / SHIM_VERIFY_EXIT for those subcommands, 0
+# otherwise.
 if os.name == "nt":
     SHIMS = {
         "ssh.bat": '@echo off\r\necho %*>> "%~dp0ssh.log"\r\nfindstr "^" >> "%~dp0ssh.stdin"\r\nexit /b 0\r\n',
         "gh.bat": "@echo off\r\necho %SHIM_GH_JSON%\r\nexit /b 0\r\n",
+        # Not `if "%2"==...`: the interpreter probe's quoted argument breaks cmd's `if`.
+        "python.bat": ('@echo off\r\necho %*>> "%~dp0python.log"\r\n'
+                       'echo %* | findstr /c:" preflight " >nul && exit /b %SHIM_PREFLIGHT_EXIT%\r\n'
+                       'echo %* | findstr /c:" verify " >nul && exit /b %SHIM_VERIFY_EXIT%\r\nexit /b 0\r\n'),
     }
 else:
     SHIMS = {
         "ssh": '#!/bin/sh\necho "$*" >> "$(dirname "$0")/ssh.log"\ncat >> "$(dirname "$0")/ssh.stdin"\n',
         "gh": '#!/bin/sh\necho "$SHIM_GH_JSON"\n',
+        "python": ('#!/bin/sh\necho "$*" >> "$(dirname "$0")/python.log"\n'
+                   'case "$2" in preflight) exit "$SHIM_PREFLIGHT_EXIT";; verify) exit "$SHIM_VERIFY_EXIT";; esac\n'),
     }
 
 
-def _deploy_with_shims(sandbox, exe, runs=("completed", "completed")):
+def _deploy_with_shims(sandbox, exe, preflight=0, verify=0, runs=("completed", "completed")):
     """Run `deploy.ps1 -Target Prod` against stand-ins; nothing leaves the machine."""
     shims = sandbox.parent / "shims"
     shims.mkdir()
@@ -371,6 +409,7 @@ def _deploy_with_shims(sandbox, exe, runs=("completed", "completed")):
         encoding="utf-8",
     )
     env = dict(os.environ, PATH=f"{shims}{os.pathsep}{os.environ['PATH']}",
+               SHIM_PREFLIGHT_EXIT=str(preflight), SHIM_VERIFY_EXIT=str(verify),
                SHIM_GH_JSON=json.dumps([{"status": s, "displayTitle": f"run{n}", "url": f"u{n}"}
                                         for n, s in enumerate(runs)], separators=(",", ":")))
     result = subprocess.run(
@@ -382,6 +421,52 @@ def _deploy_with_shims(sandbox, exe, runs=("completed", "completed")):
         path = shims / name
         return path.read_text(errors="replace").replace('"', "") if path.exists() else ""
     return result, read, key
+
+
+@every_powershell
+def test_deploy_checks_deploys_and_verifies_the_configured_target(sandbox, exe):
+    result, read, key = _deploy_with_shims(sandbox, exe)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Deployed and verified (Prod)" in result.stdout
+
+    calls = [line.split() for line in read("python.log").splitlines() if "deploy_verify.py" in line]
+    assert [call[1] for call in calls] == ["preflight", "verify"]
+    for call in calls:
+        options = dict(zip(call[2::2], call[3::2]))
+        assert options["--ssh-host"] == "host.invalid"
+        assert options["--ssh-port"] == "2222"
+        assert options["--ssh-user"] == "deployer"
+        assert Path(options["--ssh-key"]) == key
+        assert options["--dir"] == "/srv/app"
+        assert options["--image"] == "registry.invalid/owner/app:latest"
+        assert options["--url"] == "https://app.invalid"
+    assert calls[0][calls[0].index("--target") + 1] == "prod"
+    assert "--built-version" not in calls[0]
+    assert calls[0][calls[0].index("--state") + 1] == calls[1][calls[1].index("--state") + 1]
+
+    ssh = read("ssh.log")
+    assert "-p 2222 deployer@host.invalid tr -d '\\r' | bash -s" in ssh
+    stdin = read("ssh.stdin")
+    assert "cd /srv/app\n" in stdin.replace("\r", "")
+    assert stdin.index("docker compose down") < stdin.index("docker compose pull") < stdin.index("docker compose up -d")
+
+
+@every_powershell
+def test_failed_preflight_stops_before_the_host_is_touched(sandbox, exe):
+    result, read, _ = _deploy_with_shims(sandbox, exe, preflight=1)
+    assert result.returncode == 1
+    assert "Preflight failed - nothing was built or deployed." in result.stdout
+    assert read("ssh.log") == ""
+    assert " verify " not in read("python.log")
+
+
+@every_powershell
+def test_failed_verification_fails_the_deploy(sandbox, exe):
+    result, read, _ = _deploy_with_shims(sandbox, exe, verify=1)
+    assert result.returncode == 1
+    assert "The deploy did not take effect as expected" in result.stdout
+    assert "Deployed and verified" not in result.stdout
+    assert read("ssh.log") != ""
 
 
 @every_powershell

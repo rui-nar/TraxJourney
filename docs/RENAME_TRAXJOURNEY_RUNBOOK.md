@@ -177,7 +177,10 @@ Select-String -Path E:\Dev\ViewTripWeb\docker-compose.yml -Pattern 'viewtrip' -C
 Change its image path and compose service name to the new names.
 
 Do not run `deploy.ps1` against a host until that host has been cut over
-(section D). Delete `$HOME\deploy.ps1.pre-423` once a deploy has worked.
+(section D). It would stop anyway: before building or taking anything down, it
+refuses a host whose `docker-compose.yml` does not name
+`ghcr.io/rui-nar/traxjourney`. Delete `$HOME\deploy.ps1.pre-423` once a deploy
+has passed its checks.
 
 ---
 

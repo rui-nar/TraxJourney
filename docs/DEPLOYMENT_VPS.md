@@ -339,8 +339,9 @@ free space first, it is a full copy of prod's media onto a 40 GB disk.
 ## 6. `deploy.ps1`
 
 `-Target Validation|Prod` (default `Validation`). Both targets SSH to the VPS
-and run `docker compose down / pull / up -d`. They differ in directory, image
-tag and whether anything is built locally.
+and run `docker compose down / pull / up -d`, then check that the deploy took
+effect. They differ in directory, image tag and whether anything is built
+locally.
 
 | | `Validation` | `Prod` |
 |---|---|---|
@@ -392,6 +393,43 @@ A checkout that still has the old, untracked `deploy.ps1` must move it aside
 before `git pull` can bring in the tracked one; the steps, and which old
 variable goes to which key, are in `docs/RENAME_TRAXJOURNEY_RUNBOOK.md` step B4.
 
+### What "Deployed and verified" checks
+
+`docker compose pull` pulls whatever `image:` the **host's** compose file names,
+not the image the script means to deploy, and a container that starts and then
+crash-loops still counts as up. So `scripts/deploy_verify.py` checks the deploy
+(issue #423). When any check fails the script exits non-zero with a red `ERROR`
+and one `FAIL:` line per problem:
+
+| Check | When | Catches |
+|---|---|---|
+| The host's compose file names `DEPLOY_IMAGE:<tag>` (`docker compose config --images`), and no service is on another tag or another image from the same registry owner | before anything is built or taken down | a host compose file not updated after an image rename; a val host on `:latest` |
+| Each container created from that image runs the image ID the tag was just pulled as (`docker inspect`) | after `up -d` | a container left on the previous image |
+| Every service has a container that is running, is healthy if it has a healthcheck, and has not restarted since `up -d` (`docker compose ps --format json`; restart counts from `docker inspect`) | at least 15 s after `up -d`; a healthcheck still `starting` gets 60 s more | crash loops, including a container caught running between two crashes; exited or unhealthy containers; a service with no container |
+| `<url>/api/version` reports the expected version | polled for up to 120 s after `up -d` | the old server still answering; a stale `:validation` or `:latest` |
+
+The expected version is the one the image was stamped with:
+
+- **Local build:** `git describe --tags --long`. The script passes it to both
+  the web build and `docker build --build-arg APP_VERSION`. Before, a locally
+  built server reported `dev`.
+- **`-SkipBuild`:** `validation-<sha>`, where `<sha>` is the commit the
+  `validation` tag points at after a forced tag fetch. CI's short sha can be
+  shorter than your clone's, so it is compared as a prefix.
+- **`-Target Prod`:** the newest `vX.Y.Z` tag, which CI stamps `:latest` with.
+
+If the version can't be worked out (no tags at all), the script says so before
+deploying and only requires the served version to change from the one served
+before the deploy. The summary then warns that the exact version was not
+checked.
+
+A failed check leaves the containers as they are, for inspection. The summary
+lists the expected, previous and served versions, the registry digest and image
+ID that were pulled, and every container's state.
+
+The checks need Python 3 on the dev machine: the repository's `.venv` if it
+exists, otherwise `python` on `PATH`.
+
 ### The other way to cut `:validation`
 
 A session with no local Docker — a web Claude Code session, say — produces the
@@ -420,9 +458,11 @@ baked a broken `#!/bin/sh\r` shebang into the image and crash-looped the worker
 containers. `.gitattributes` pins shell scripts to LF, but only on a fresh
 checkout of the affected path, not retroactively.
 
-**One consequence of the shared tag:** two producers write `:validation`, and
-the host cannot tell which one it is running. If a local build and a tag push
-race, last writer wins. Prefer the tag route when it matters who built it.
+**One consequence of the shared tag:** two producers write `:validation`. If a
+local build and a tag push race, last writer wins. The version check notices,
+because a local build expects its `git describe` version and CI's image reports
+`validation-<sha>`, and fails the deploy; it cannot undo the overwrite. Prefer
+the tag route when it matters who built it.
 
 ## 7. Observability: Loki/Prometheus/Grafana on the NAS (issue #205)
 

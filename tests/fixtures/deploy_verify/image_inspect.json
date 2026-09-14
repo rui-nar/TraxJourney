@@ -1,0 +1,11 @@
+[
+    {
+        "Id": "sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6",
+        "RepoTags": [
+            "ghcr.io/rui-nar/traxjourney:validation"
+        ],
+        "RepoDigests": [
+            "ghcr.io/rui-nar/traxjourney@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6"
+        ]
+    }
+]
