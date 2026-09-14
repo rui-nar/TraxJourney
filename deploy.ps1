@@ -298,7 +298,9 @@ Step 2 3 "Building and pushing Docker image..."
 # :latest is reserved for clean version tags (set by GitHub Actions / CI).
 $tags = @("-t", "${Image}:validation")
 if ($Version) { $tags += @("-t", "${Image}:${Version}") }
-docker build @tags $SrcRoot
+# The server reports APP_VERSION from /api/version; without the build arg a
+# local image says "dev" while its web client carries $FullVersion.
+docker build @tags --build-arg "APP_VERSION=$FullVersion" $SrcRoot
 if ($LASTEXITCODE -ne 0) { Die "Docker build failed." }
 
 docker push "${Image}:validation"

@@ -201,7 +201,17 @@ def test_config_is_gitignored_and_the_script_is_not():
     assert ignored.stdout.split() == ["deploy.env"]
 
 
-# -- the remote step -----------------------------------------------
+# -- versions and the remote step -----------------------------------------------
+
+def test_local_build_stamps_the_server_with_the_client_version():
+    """Without the build arg the server reports "dev" while the web client
+    carries $FullVersion, and the deploy cannot be checked by version."""
+    docker_build = _index_of(r"^\s*docker build ")
+    assert docker_build != -1
+    line = _code_lines()[docker_build]
+    assert re.search(r'--build-arg\s+"APP_VERSION=\$FullVersion"', line), line
+    assert re.search(r"--dart-define=APP_VERSION=\$FullVersion", TEXT)
+
 
 def test_remote_script_strips_carriage_returns():
     """This file is checked out CRLF on Windows and PowerShell pipes a trailing
