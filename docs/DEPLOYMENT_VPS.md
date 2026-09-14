@@ -204,7 +204,7 @@ directory is now `/opt/traxjourney` and the database `traxjourney.db`.*
    throwaway container (safe on a live DB — unlike a raw `cp`, correctly
    handles WAL mode, which the app already runs — see `models/db.py`):
    ```bash
-   ssh -p 4488 Rui@narciso.synology.me "DOCKER=\$(command -v docker 2>/dev/null || ls /var/packages/ContainerManager/target/usr/bin/docker /var/packages/Docker/target/usr/bin/docker /usr/local/bin/docker 2>/dev/null | head -1); \$DOCKER run --rm -v /volume2/docker/viewtrip/db:/db python:3.11-slim python3 -c \"import sqlite3; s=sqlite3.connect('/db/viewtripweb.db'); d=sqlite3.connect('/db/migration_backup.db'); s.backup(d); d.close(); s.close(); print('backup done')\""
+   ssh -p <nas-ssh-port> <nas-user>@<nas-host> "DOCKER=\$(command -v docker 2>/dev/null || ls /var/packages/ContainerManager/target/usr/bin/docker /var/packages/Docker/target/usr/bin/docker /usr/local/bin/docker 2>/dev/null | head -1); \$DOCKER run --rm -v /volume2/docker/viewtrip/db:/db python:3.11-slim python3 -c \"import sqlite3; s=sqlite3.connect('/db/viewtripweb.db'); d=sqlite3.connect('/db/migration_backup.db'); s.backup(d); d.close(); s.close(); print('backup done')\""
    ```
    **Gotcha:** `docker` isn't in `PATH` for non-interactive SSH sessions on
    Synology — same issue `deploy.ps1`'s remote script already works around;
@@ -217,9 +217,9 @@ directory is now `/opt/traxjourney` and the database `traxjourney.db`.*
 3. **Copy DB + data + config from NAS straight to the VPS** (no need to hop
    through a local machine — the VPS has direct SSH reach to the NAS):
    ```bash
-   scp -O -P 4488 Rui@narciso.synology.me:/volume2/docker/viewtrip/db/migration_backup.db /opt/viewtrip/db/viewtripweb.db
-   rsync -avz -e "ssh -p 4488" Rui@narciso.synology.me:/volume2/docker/viewtrip/data/ /opt/viewtrip/data/
-   rsync -avz -e "ssh -p 4488" Rui@narciso.synology.me:/volume2/docker/viewtrip/config/ /opt/viewtrip/config/
+   scp -O -P <nas-ssh-port> <nas-user>@<nas-host>:/volume2/docker/viewtrip/db/migration_backup.db /opt/viewtrip/db/viewtripweb.db
+   rsync -avz -e "ssh -p <nas-ssh-port>" <nas-user>@<nas-host>:/volume2/docker/viewtrip/data/ /opt/viewtrip/data/
+   rsync -avz -e "ssh -p <nas-ssh-port>" <nas-user>@<nas-host>:/volume2/docker/viewtrip/config/ /opt/viewtrip/config/
    ```
    **Gotchas encountered:**
    - `scp` alone failed with `subsystem request failed` — modern OpenSSH
@@ -339,7 +339,7 @@ free space first, it is a full copy of prod's media onto a 40 GB disk.
 ## 6. `deploy.ps1`
 
 `-Target Validation|Prod` (default `Validation`). Both targets SSH to the VPS
-(`164.132.195.154`, user `rui`, key `$HOME\.ssh\traxjourney_vps`) and run
+(the host, user and key from your local deploy configuration) and run
 `docker compose down / pull / up -d`; they differ in directory, image tag and
 whether anything is built locally.
 
