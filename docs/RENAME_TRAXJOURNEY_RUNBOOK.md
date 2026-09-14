@@ -457,22 +457,23 @@ diff config/alloy-config.river.pre-rename /tmp/alloy-config.river
 sudo cp /tmp/alloy-config.river config/alloy-config.river
 ```
 
-### D11. [VPS] Update the webhook (validation only)
+### D11. [VPS] Retire the old webhook install (validation only)
+
+Skip this step if `$NEW/webhook` does not exist. Files there predate issue
+#422 and cannot be patched into working order: their `hooks.yaml` does not
+pass the built commit that the new `deploy-validation.sh` requires, and their
+unit runs as `debian` on every interface. GitHub had no webhook for them, so
+there is no secret to keep. Set them aside:
 
 ```bash
-cd "$NEW/webhook"
-for f in deploy-validation.sh webhook.service; do
-  sudo curl -fsSLo "$f" "https://raw.githubusercontent.com/rui-nar/TraxJourney/main/vps/webhook/$f"
-done
-sudo chmod +x deploy-validation.sh
-sudo sed -i 's#/opt/viewtrip-val#/opt/traxjourney-val#g' hooks.yaml   # keeps the secret
-grep -n viewtrip hooks.yaml deploy-validation.sh webhook.service     # must print nothing
-sudo cp webhook.service /etc/systemd/system/webhook.service
-sudo systemctl daemon-reload && sudo systemctl restart webhook
-sudo systemctl status webhook --no-pager
+sudo systemctl disable --now webhook 2>/dev/null || true
+sudo rm -f /etc/systemd/system/webhook.service && sudo systemctl daemon-reload
+sudo mv "$NEW/webhook" "$NEW/webhook.pre-rename"
 ```
 
-Skip this step if the webhook was never installed.
+Install the hook fresh once D13 passes, with `docs/DEPLOYMENT_VPS.md` §8. Not
+before: its `hooks.yaml` only accepts runs of `rui-nar/TraxJourney` (A3), and
+its first checks need the stack from D12 running.
 
 ### D12. [VPS] Pull and start
 
@@ -656,10 +657,10 @@ cut-over is lost by step 3, so decide quickly.
    package may be newer than the database copy.
 6. **[VPS]** `docker compose pull && docker compose up -d`, then check
    `/api/version`.
-7. **[VPS]** Validation only: point the webhook back (`sed` `/opt/traxjourney-val`
-   → `/opt/viewtrip-val` in `hooks.yaml`, `deploy-validation.sh` and
-   `/etc/systemd/system/webhook.service`; `daemon-reload` and restart), or
-   leave it stopped.
+7. **[VPS]** Validation only, if §8's webhook was installed: `sudo systemctl
+   disable --now webhook`. It deploys `/opt/traxjourney-val` from the new
+   image, so it must not run against the old layout; val is deployed by hand
+   until the cut-over is retried.
 8. **[NAS]** Only if both stacks roll back: restore the previous
    `nas/grafana/provisioning` and Tailscale hostname, the reverse of section C.
 
