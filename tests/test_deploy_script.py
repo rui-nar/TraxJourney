@@ -213,6 +213,14 @@ def test_local_build_stamps_the_server_with_the_client_version():
     assert re.search(r"--dart-define=APP_VERSION=\$FullVersion", TEXT)
 
 
+def test_tags_are_force_fetched():
+    """`validation` floats: a plain `git fetch --tags` rejects a moved tag and fails."""
+    fetch = _index_of(r"^git fetch origin")
+    assert fetch != -1
+    line = _code_lines()[fetch]
+    assert re.search(r"--tags\b", line) and re.search(r"--force\b", line), line
+
+
 def test_remote_script_strips_carriage_returns():
     """This file is checked out CRLF on Windows and PowerShell pipes a trailing
     CRLF; bash would read `set -euo pipefail` with a carriage return on it."""

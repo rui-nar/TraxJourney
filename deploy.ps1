@@ -159,7 +159,12 @@ if ($TagOnly -and $Target -ne 'Validation') {
 # export of origin/main in a throwaway git worktree, so the image is exactly
 # what's on main - never contaminated by local edits or untracked files. Without
 # it we build the current working tree (the fast path for validating local work).
-git fetch origin --tags | Out-Null
+#
+# --force: `validation` is a floating tag. Without it, fetching a `validation`
+# that was moved from anywhere else (a web session, another machine) is
+# rejected as "would clobber existing tag", which fails the fetch - and a stale
+# local tag would make verification expect the wrong commit.
+git fetch origin --tags --force | Out-Null
 if ($LASTEXITCODE -ne 0) { Die "git fetch failed." }
 
 # -- -TagOnly ----------------------------------------------------------------
