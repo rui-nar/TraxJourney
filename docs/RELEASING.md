@@ -137,3 +137,22 @@ A release is never blocked by it.
 
 `anthropic` is deliberately kept out of `requirements.txt` — it would ship in
 the server image for no reason.
+
+## Privacy policy and terms of service
+
+`legal/privacy.html` and `legal/terms.html` are served at `/privacy` and
+`/terms` (issue #421). They ship in the image, so a release is what publishes a
+change to them.
+
+- **They must not ship with placeholders.** Facts the code cannot know are
+  written as `{{NAME}}`, and
+  `tests/test_legal_pages.py::test_legal_pages_have_no_unfilled_placeholders`
+  fails while any remain. That failure is the gate: fill the values in, never
+  skip the test.
+- **They describe what the code does.** A change that collects something new,
+  sends data to a new third party or changes how long something is kept needs
+  the matching edit to `legal/privacy.html` in the same pull request.
+- **Change the "Last updated" date** whenever the text changes, and give the
+  commit a `Release-Note:` saying what changed. Both pages promise to tell users
+  about significant changes before they apply, so an email or an in-app notice
+  goes out ahead of such a release.

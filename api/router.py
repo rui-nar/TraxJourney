@@ -406,6 +406,38 @@ async def android_assetlinks():
     )
 
 
+# ── Privacy policy and terms of service (issue #421) ─────────────────────────
+# Served by the API itself, not copied into the Flutter web build: Google's
+# OAuth verification and the Play Console fetch these URLs without running JS,
+# so they must be real HTML at stable paths; the web build only exists in the
+# published image (never under pytest, never on an API-only deployment); and
+# every client already knows this server's origin, so one route serves the
+# web app, Android and iOS alike. Registered before the SPA catch-all, which
+# would otherwise answer /privacy with index.html. A self-hosted server
+# replaces the pages by mounting its own legal/ over /app/legal.
+_legal_dir = os.path.join(os.path.dirname(__file__), "..", "legal")
+
+
+def _legal_page(filename: str) -> FileResponse:
+    resp = FileResponse(
+        os.path.join(_legal_dir, filename), media_type="text/html; charset=utf-8"
+    )
+    resp.headers["Cache-Control"] = _NO_CACHE
+    return resp
+
+
+# HEAD as well as GET: link checkers (and some consent-screen validators) probe
+# a URL with HEAD before fetching it, and a 405 reads as a broken link.
+@app.api_route("/privacy", methods=["GET", "HEAD"], include_in_schema=False)
+async def privacy_policy():
+    return _legal_page("privacy.html")
+
+
+@app.api_route("/terms", methods=["GET", "HEAD"], include_in_schema=False)
+async def terms_of_service():
+    return _legal_page("terms.html")
+
+
 # ── Flutter web SPA — must be registered last so /api/... routes take priority ─
 _web_dir = os.path.join(os.path.dirname(__file__), "..", "web_client")
 

@@ -145,6 +145,24 @@ image with a Dockerfile `ENV`; the published image is public.
 | `MAPBOX_TOKEN` | Mapbox public token for map tiles |
 | `APP_VERSION` | Version string shown in the app |
 
+### Privacy policy and terms of service
+
+The server serves [`legal/privacy.html`](legal/privacy.html) at `/privacy` and
+[`legal/terms.html`](legal/terms.html) at `/terms`, as plain HTML that Google's
+OAuth verification and the Play Console can fetch. The app links to them on the
+sign-in, registration, landing and Settings screens, always on the server it is
+connected to.
+
+They describe the hosted service at traxjourney.com. **If you run your own
+server, they are not your policy:** write your own and mount them over the
+bundled ones (`./legal:/app/legal:ro` in `docker-compose.yml`).
+
+Facts the code cannot know (who operates the service, contact address,
+governing law, ...) are written as `{{PLACEHOLDER}}`.
+`tests/test_legal_pages.py::test_legal_pages_have_no_unfilled_placeholders`
+fails while any remain, and is meant to block a merge until they are filled in
+and the pages reviewed.
+
 ---
 
 ## Features

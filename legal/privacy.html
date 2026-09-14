@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Privacy Policy · TraxJourney</title>
+<meta name="description" content="What TraxJourney collects, why, who else receives it, how long it is kept and how to delete it.">
+<style>
+  :root {
+    --bg: #F8FAFC; --fg: #0F172A; --fg2: #475569; --rule: #E2E8F0;
+    --link: #1D4ED8; --accent: #DC2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0B1420; --fg: #E2E8F0; --fg2: #94A3B8; --rule: #1E3350;
+      --link: #60A5FA; --accent: #EF4444;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 Inter, "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+  }
+  a { color: var(--link); }
+  header, main, footer { max-width: 46rem; margin: 0 auto; padding: 0 1.25rem; }
+  header { padding-top: 2rem; display: flex; flex-wrap: wrap; gap: .5rem 1.5rem;
+           align-items: baseline; justify-content: space-between; }
+  .brand { font-weight: 700; font-size: 1.25rem; text-decoration: none; color: var(--fg); }
+  .brand span { color: var(--accent); }
+  nav a { margin-left: 1rem; font-size: .95rem; }
+  nav a:first-child { margin-left: 0; }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 2.5rem 0 .25rem; }
+  .updated { color: var(--fg2); margin: 0 0 2rem; font-size: .95rem; }
+  h2 { font-size: 1.3rem; margin: 2.5rem 0 .5rem; padding-top: 1rem; border-top: 1px solid var(--rule); }
+  h3 { font-size: 1.05rem; margin: 1.5rem 0 .25rem; }
+  table { width: 100%; border-collapse: collapse; margin: .75rem 0; font-size: .95rem; }
+  th, td { text-align: left; vertical-align: top; padding: .5rem .6rem; border-bottom: 1px solid var(--rule); }
+  th { color: var(--fg2); font-weight: 600; }
+  .scroll { overflow-x: auto; }
+  code { font-size: .9em; }
+  footer { margin-top: 3rem; padding-top: 1.5rem; padding-bottom: 3rem;
+           border-top: 1px solid var(--rule); color: var(--fg2); font-size: .9rem; }
+</style>
+</head>
+<body>
+<header>
+  <a class="brand" href="/">Trax<span>Journey</span></a>
+  <nav>
+    <a href="/privacy">Privacy</a>
+    <a href="/terms">Terms</a>
+    <a href="https://github.com/rui-nar/TraxJourney">Source code</a>
+  </nav>
+</header>
+
+<main>
+<h1>Privacy Policy</h1>
+<p class="updated">Last updated: 14 September 2026</p>
+
+<p>TraxJourney turns your activities, transport legs, photos and notes into one
+journey you can keep, share and export. This policy explains what the hosted
+service at <strong>traxjourney.com</strong> collects, why, who else receives it,
+how long it is kept and how you can get it back or delete it.</p>
+
+<p>The service is operated by <strong>{{OPERATOR_NAME}}</strong>,
+{{OPERATOR_ADDRESS}} ("we", "us"). For anything about your data, write to
+<a href="mailto:{{CONTACT_EMAIL}}">{{CONTACT_EMAIL}}</a>.</p>
+
+<p>TraxJourney is free software. Someone else running their own copy of it
+(a "self-hosted" server) is responsible for that server and its own policy;
+this page only covers the service we run.</p>
+
+<h2>1. What we collect</h2>
+
+<h3>Your account</h3>
+<ul>
+  <li><strong>Email and password sign-up:</strong> your email address, your
+    first and last name (stored together as your display name) and your
+    password, which we store only as a salted bcrypt hash. We send you an email
+    to confirm the address; the confirmation link expires after 24 hours.</li>
+  <li><strong>Sign in with Google:</strong> the identifier Google gives your
+    account, your email address, your name and the address of your Google
+    profile picture. We never receive your Google password.</li>
+  <li>When your account was created, whether your email is confirmed, your
+    plan, and whether you have turned on encryption.</li>
+</ul>
+
+<h3>Your journeys</h3>
+<ul>
+  <li><strong>Trips:</strong> names, dates, settings, day notes (difficulty,
+    where you slept, weather), counters and the order of everything in a
+    trip.</li>
+  <li><strong>Activities and routes:</strong> GPS tracks, start and end points,
+    times, distances, elevation, speed and, when your source provides them,
+    heart-rate averages and maximums, whether you uploaded them as GPX files
+    or imported them.</li>
+  <li><strong>Transport legs</strong> (train, flight, bus, boat): start and end
+    places, dates and, for trains, the train number, together with the route we
+    work out for them.</li>
+  <li><strong>Memories and journal entries:</strong> titles, text, date, time,
+    location and photos. Journal entries are private: in a shared trip each
+    person sees only their own.</li>
+  <li><strong>Photos:</strong> we keep the file you upload exactly as it is,
+    including any embedded metadata such as the camera, the time and the GPS
+    position where it was taken, plus a smaller preview we generate from it
+    (the preview carries no such metadata).</li>
+  <li><strong>Comments and likes</strong> you leave on memories, with the
+    display name you had at the time.</li>
+  <li><strong>Posters</strong> you generate, and the settings used to make
+    them.</li>
+</ul>
+
+<h3>People you met</h3>
+<p>You can record people and groups you met on a trip: their name, email,
+phone number, Polarsteps profile, social media handles, nationalities, where
+they live, notes and a photo. This is information about other people. Only add
+what they would be comfortable with. These entries are visible to you and to
+the companions of that trip, and are never included in a public share link.</p>
+
+<h3>Travel companions</h3>
+<p>When you invite someone to a trip by email, we store their email address
+with the invitation and send them one email with a link to join. Companions of
+a trip can see each other's display name and profile picture.</p>
+
+<h3>Connected services (only if you connect them)</h3>
+<ul>
+  <li><strong>Strava:</strong> the access and refresh tokens Strava issues when
+    you authorise us (read access to your activities, including private ones),
+    a cached copy of your activity list, and the details and GPS streams of the
+    activities you add to a trip.</li>
+  <li><strong>Polarsteps:</strong> the <code>remember_token</code> sign-in
+    cookie you paste in, your Polarsteps user id and username, and the trips,
+    steps and photos you choose to import. The cookie gives access to your
+    Polarsteps account, so disconnect it when you no longer need it.</li>
+  <li><strong>Immich:</strong> the address of your Immich server and the API
+    key you enter. Photos you browse from Immich pass through our server to
+    reach you but are not stored, unless you add one to a memory.</li>
+</ul>
+<p>Disconnecting a service in Settings deletes its stored token or key.</p>
+
+<h3>Payments</h3>
+<p>If you buy a paid plan, payment is handled by Stripe. We send Stripe your
+email address, your TraxJourney account ID and the plan you chose, and we store the
+Stripe customer and subscription identifiers, your plan, its status, when the
+current period ends and any change you have scheduled. Your card details are
+entered on Stripe's own pages and never reach our servers.</p>
+
+<h3>Usage of storage and share links</h3>
+<ul>
+  <li>How much storage your account uses, to apply plan limits.</li>
+  <li>When someone opens one of your share links: if they are signed in, which
+    account opened it and when (you can see their display name and email
+    address in the trip's visitor list); if not, a random identifier their
+    browser or app generated, so we can count distinct visitors.</li>
+</ul>
+
+<h3>Technical data</h3>
+<ul>
+  <li><strong>Server logs:</strong> each request produces a log line with the
+    time, the address of the page or API route requested (including any
+    parameters in the address), the result, how long it took, your account ID
+    if you were signed in, and the network address the request came
+    from. Errors are logged with the details needed to fix them.</li>
+  <li><strong>Metrics:</strong> aggregate counters such as the number of
+    requests, sign-ins, registrations and app launches. They are totals, not
+    linked to your account or device.</li>
+  <li><strong>Your device's location</strong> is used only on your device, when
+    you ask the map to show where you are or to fill in a location. It is sent
+    to us only if you then save that location in a memory, journal entry or
+    encounter.</li>
+</ul>
+
+<h2>2. Why we use it</h2>
+<div class="scroll">
+<table>
+  <tr><th>Purpose</th><th>Data</th><th>Legal basis</th></tr>
+  <tr><td>Providing the service you signed up for: your account, trips,
+    imports, sharing, companions, posters, exports</td>
+    <td>Account, journey, companion and connected-service data</td>
+    <td>Performing our contract with you</td></tr>
+  <tr><td>Connecting Strava, Polarsteps or Immich</td>
+    <td>Tokens, keys and imported data</td>
+    <td>Your consent, given by connecting; withdraw it by disconnecting</td></tr>
+  <tr><td>Taking payments and applying plan limits</td>
+    <td>Payment identifiers, plan, storage usage</td>
+    <td>Performing our contract with you; keeping accounting records the law
+      requires</td></tr>
+  <tr><td>Sending emails: address confirmation, invitations, poster ready or
+    failed, and messages about the service</td>
+    <td>Email address, name, trip name</td>
+    <td>Performing our contract with you</td></tr>
+  <tr><td>Keeping the service secure and working, investigating faults</td>
+    <td>Logs, metrics, backups</td>
+    <td>Our legitimate interest in running a reliable, secure service</td></tr>
+  <tr><td>Telling you who opened your share links</td>
+    <td>Share-link visits</td>
+    <td>Our legitimate interest in letting you see who you shared a trip
+      with</td></tr>
+</table>
+</div>
+<p>We do not sell your data, show advertising, or use your data to build
+advertising profiles.</p>
+
+<h2>3. Encryption</h2>
+<p>You can turn on end-to-end encryption in Settings. Your device then encrypts
+the following before sending them, with keys we never receive:</p>
+<ul>
+  <li>memory titles and text;</li>
+  <li>journal entry text;</li>
+  <li>the names, GPS tracks, start and end points and elevation profiles of the
+    activities in your own trips.</li>
+</ul>
+<p>Everything else is not end-to-end encrypted, and we can technically read it:
+trip names, dates and times, the locations of memories, journal entries and
+encounters, photos, transport legs, people and encounters, comments, the
+cached activity list from Strava, and all account, payment and technical data.
+Anything you publish through a share link is readable by whoever has the
+link. All traffic between the app and our servers is encrypted in transit
+(HTTPS).</p>
+
+<h2>4. What becomes public when you share</h2>
+<p>A share link lets anyone who has it view the trip without signing in. It
+shows the trip's name, your display name, its routes, transport legs, dates and
+statistics and, unless you chose the "without memories" link, its memories with
+their photos (at full resolution, including the metadata embedded in them),
+comments and likes. Journal entries, people and encounters are never shown.
+Visitors can also ask for a memory to be translated (see section 5). Revoking
+the link in the trip's settings stops it working.</p>
+
+<h2>5. Who else receives data</h2>
+<p>We use these services to run TraxJourney. Some are contacted by our server,
+others directly by the app on your device, in which case they also see your
+network address and the usual information your browser or phone sends.</p>
+<div class="scroll">
+<table>
+  <tr><th>Service</th><th>What it receives</th><th>When</th></tr>
+  <tr><td>OVH (hosting)</td>
+    <td>Everything we store, on servers in Strasbourg, France</td>
+    <td>Always</td></tr>
+  <tr><td>{{EMAIL_PROVIDER}} (email delivery)</td>
+    <td>Recipient address, subject and content of the emails we send</td>
+    <td>When we email you, or someone you invite</td></tr>
+  <tr><td>Mapbox</td>
+    <td>From the app: the map areas and zoom levels you view. From our server:
+      the map area of a poster you generate</td>
+    <td>Whenever a map is shown; when a poster is made</td></tr>
+  <tr><td>OpenStreetMap Foundation</td>
+    <td>From the app: the map area you view in the location picker</td>
+    <td>When you pick a location on a map</td></tr>
+  <tr><td>Google</td>
+    <td>Sign in with Google (on the web, Google's sign-in script is loaded on
+      the sign-in page); fonts downloaded by the app from Google Fonts; the text
+      of a memory's title and description sent from our server to Google Cloud
+      Translation when you or a share-link visitor ask for a translation</td>
+    <td>Sign-in; app start; translation requests</td></tr>
+  <tr><td>Strava</td>
+    <td>Authorisation requests and requests for your activities, made with
+      your token</td>
+    <td>If you connect Strava</td></tr>
+  <tr><td>Polarsteps</td>
+    <td>Requests for your trips and steps, and for the public trips of people
+      whose Polarsteps profile you saved, made with your cookie; downloads of
+      the photos you import</td>
+    <td>If you connect Polarsteps</td></tr>
+  <tr><td>Your Immich server</td>
+    <td>Searches by date and requests for photos, made with your API key</td>
+    <td>If you connect Immich</td></tr>
+  <tr><td>Stripe</td>
+    <td>Email address, account ID, chosen plan; your payment details,
+      which you give to Stripe directly</td>
+    <td>If you buy or manage a paid plan</td></tr>
+  <tr><td>Transitous (MOTIS)</td>
+    <td>From our server: coordinates near the start and end of a train leg,
+      the train number and the date</td>
+    <td>When a train route is worked out</td></tr>
+  <tr><td>Overpass API (OpenStreetMap data)</td>
+    <td>From our server: coordinates around the start and end of a transport
+      leg</td>
+    <td>When a transport route is worked out</td></tr>
+  <tr><td>Nominatim (OpenStreetMap)</td>
+    <td>From our server: the place name you type when entering where a person
+      lives</td>
+    <td>While you type in that field</td></tr>
+</table>
+</div>
+<p>Requests our server makes to Transitous, Overpass and Nominatim do not
+include your name, email or network address. Some of these providers are
+based outside the European Economic Area, including in the United States;
+where they are, the transfer relies on the safeguards they offer, such as the
+European Commission's standard contractual clauses or an adequacy
+decision.</p>
+<p>Our logs and metrics are stored on monitoring equipment we operate
+ourselves in {{OBSERVABILITY_LOCATION}}, reached over an encrypted private
+network. We may also disclose data where the law requires it.</p>
+
+<h2>6. How long we keep it</h2>
+<ul>
+  <li><strong>Account and content:</strong> until you delete them or delete your
+    account.</li>
+  <li><strong>Deleted data in backups:</strong> we back up the database once a
+    day and keep the last 30 backups, so deleted data can remain in a backup
+    for up to 30 days.</li>
+  <li><strong>Server logs:</strong> 30 days in our monitoring system. A limited
+    local copy on the server is overwritten as new logs arrive.</li>
+  <li><strong>Metrics:</strong> 30 days.</li>
+  <li><strong>Email confirmation links:</strong> 24 hours.</li>
+  <li><strong>Payment records:</strong> Stripe keeps its own records of your
+    payments, as the law requires of it.</li>
+</ul>
+
+<h2>7. Your choices and rights</h2>
+<ul>
+  <li><strong>See and correct your data:</strong> everything you create can be
+    viewed and edited in the app. Change your display name and password in
+    Settings.</li>
+  <li><strong>Take it with you:</strong> each trip can be exported as a
+    <code>.traxj</code> file, as a ZIP file with its photos, or as GPX.</li>
+  <li><strong>Delete it:</strong> <em>Settings → Delete account</em> permanently
+    deletes your account, your trips, photos, memories, journal entries, people,
+    comments and likes, and your Strava and Polarsteps connections, straight
+    away. Deleting your account does
+    not cancel a paid subscription at Stripe: cancel it first with <em>Cancel subscription</em> on
+    your plan page.</li>
+  <li><strong>Withdraw consent</strong> for a connected service at any time by
+    disconnecting it.</li>
+</ul>
+<p>Depending on where you live, you may also have the right to access, correct,
+delete or export your data, to restrict or object to how we use it, and to
+complain to a data protection authority, such as {{SUPERVISORY_AUTHORITY}}.
+To exercise any of these rights, write to
+<a href="mailto:{{CONTACT_EMAIL}}">{{CONTACT_EMAIL}}</a>.</p>
+
+<h2>8. Storage on your device</h2>
+<p>TraxJourney does not use cookies. The app keeps the following on your
+device, in your browser's local storage or your phone's app storage:</p>
+<ul>
+  <li>your sign-in token (valid for 7 days);</li>
+  <li>your preferences: theme, map display mode, panel width, whether you have
+    seen the introduction, and the server address if you use a self-hosted
+    server;</li>
+  <li>the last trip you opened and its selection and filters, and whether a
+    poster is being prepared;</li>
+  <li>a random visitor identifier used when you open share links;</li>
+  <li>if you use encryption, your device's encryption key, in your platform's
+    secure storage;</li>
+  <li>on Android and iOS, a cache of trip data and photo previews, so trips you
+    have opened load faster.</li>
+</ul>
+<p>Google's sign-in and Stripe's payment pages may set their own cookies when
+you use them.</p>
+
+<h2>9. Children</h2>
+<p>TraxJourney is not intended for anyone under {{MINIMUM_AGE}}. If you believe
+a child has given us personal data, contact us and we will delete it.</p>
+
+<h2>10. Changes to this policy</h2>
+<p>We will update this page when what we collect or how we use it changes, and
+change the date at the top. For significant changes, we will tell you by email
+or in the app before they take effect.</p>
+</main>
+
+<footer>
+  <p>TraxJourney is free software, licensed under the
+  <a href="https://github.com/rui-nar/TraxJourney/blob/main/LICENSE">GNU Affero General Public License v3</a>.
+  <a href="https://github.com/rui-nar/TraxJourney">Get the source code</a> ·
+  <a href="/terms">Terms of Service</a></p>
+</footer>
+</body>
+</html>

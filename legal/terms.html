@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Terms of Service · TraxJourney</title>
+<meta name="description" content="The terms for using the TraxJourney service, including paid plans.">
+<style>
+  :root {
+    --bg: #F8FAFC; --fg: #0F172A; --fg2: #475569; --rule: #E2E8F0;
+    --link: #1D4ED8; --accent: #DC2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0B1420; --fg: #E2E8F0; --fg2: #94A3B8; --rule: #1E3350;
+      --link: #60A5FA; --accent: #EF4444;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 Inter, "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+  }
+  a { color: var(--link); }
+  header, main, footer { max-width: 46rem; margin: 0 auto; padding: 0 1.25rem; }
+  header { padding-top: 2rem; display: flex; flex-wrap: wrap; gap: .5rem 1.5rem;
+           align-items: baseline; justify-content: space-between; }
+  .brand { font-weight: 700; font-size: 1.25rem; text-decoration: none; color: var(--fg); }
+  .brand span { color: var(--accent); }
+  nav a { margin-left: 1rem; font-size: .95rem; }
+  nav a:first-child { margin-left: 0; }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 2.5rem 0 .25rem; }
+  .updated { color: var(--fg2); margin: 0 0 2rem; font-size: .95rem; }
+  h2 { font-size: 1.3rem; margin: 2.5rem 0 .5rem; padding-top: 1rem; border-top: 1px solid var(--rule); }
+  footer { margin-top: 3rem; padding-top: 1.5rem; padding-bottom: 3rem;
+           border-top: 1px solid var(--rule); color: var(--fg2); font-size: .9rem; }
+</style>
+</head>
+<body>
+<header>
+  <a class="brand" href="/">Trax<span>Journey</span></a>
+  <nav>
+    <a href="/privacy">Privacy</a>
+    <a href="/terms">Terms</a>
+    <a href="https://github.com/rui-nar/TraxJourney">Source code</a>
+  </nav>
+</header>
+
+<main>
+<h1>Terms of Service</h1>
+<p class="updated">Last updated: 14 September 2026</p>
+
+<p>These terms apply when you use the TraxJourney service at
+<strong>traxjourney.com</strong>, on the web or in the TraxJourney app. The
+service is operated by <strong>{{OPERATOR_NAME}}</strong>, {{OPERATOR_ADDRESS}}
+("we", "us"). By creating an account or signing in, you agree to them. Our
+<a href="/privacy">Privacy Policy</a> explains how we handle your data.</p>
+
+<h2>1. The service</h2>
+<p>TraxJourney lets you combine activities, transport legs, memories, photos and
+notes into journeys, share them, and export them. We may add, change or remove
+features over time. When a change takes away something you rely on, we will
+try to tell you in advance.</p>
+<p>The software behind TraxJourney is free software (see section 11). These
+terms cover only the service we run. A server someone else runs with the same
+software is theirs, under their own terms.</p>
+
+<h2>2. Your account</h2>
+<ul>
+  <li>You must be at least {{MINIMUM_AGE}} years old to create an account.</li>
+  <li>Give a real email address you can receive mail at, and keep your password
+    to yourself. You are responsible for what happens under your account.</li>
+  <li>Tell us straight away at <a href="mailto:{{CONTACT_EMAIL}}">{{CONTACT_EMAIL}}</a>
+    if you think someone else has access to it.</li>
+</ul>
+
+<h2>3. Your content</h2>
+<p>Everything you add (tracks, memories, photos, journal entries, notes about
+people, comments) stays yours. You give us permission to store, copy, process
+and display it only as far as needed to run the service for you: for example to
+show it to you and the companions you invite, to publish it through the share
+links you create, to generate posters and exports, to work out transport routes
+and, when you or a share-link visitor ask for it, to translate it.</p>
+<p>You are responsible for your content. Only upload what you have the right to
+share, and respect other people's privacy: the people you record in a trip,
+and the people who appear in your photos, have not agreed to these terms.</p>
+
+<h2>4. Sharing and companions</h2>
+<p>A share link makes a trip viewable by anyone who has the link, without an
+account. Companions you invite can view or edit the trip according to the role
+you give them. You can revoke share links and remove companions at any time,
+but we cannot recall copies that people already made.</p>
+
+<h2>5. Connected services</h2>
+<p>You can connect Strava, Polarsteps and Immich. Your use of those services is
+governed by their own terms, and connecting them is your decision. Polarsteps
+has no public API: the connection uses your own sign-in cookie and can stop
+working without warning. We are not responsible for the availability or
+accuracy of what those services, or the map and transit data providers we use,
+return.</p>
+
+<h2>6. Acceptable use</h2>
+<p>Do not use TraxJourney to:</p>
+<ul>
+  <li>break the law or infringe anyone's rights, including their privacy;</li>
+  <li>upload content that is illegal, harassing, or that exposes someone's
+    personal information without their consent;</li>
+  <li>try to access accounts or data that are not yours, or probe, overload or
+    disrupt the service;</li>
+  <li>send spam through invitations or share links;</li>
+  <li>scrape or resell the service.</li>
+</ul>
+
+<h2>7. Plans and payment</h2>
+<ul>
+  <li><strong>Free and paid plans.</strong> The free plan and each paid plan
+    come with the limits (number of trips, storage, days per trip) shown on the
+    plan page in the app. Prices are shown in euros on the plan page and at
+    checkout.</li>
+  <li><strong>Billing.</strong> Paid plans are monthly subscriptions, paid in
+    advance through Stripe, and renew automatically each month until you
+    cancel.</li>
+  <li><strong>Changing plan.</strong> Moving to a higher plan applies straight
+    away, and you pay the prorated difference for the rest of the current
+    period. Moving to a lower plan takes effect at the end of the period you
+    have already paid for.</li>
+  <li><strong>Cancelling.</strong> You can cancel at any time from the plan
+    page. Your paid plan stays active until the end of the period you have
+    paid for, and you then move to the free plan.</li>
+  <li><strong>Refunds.</strong> {{REFUND_POLICY}}</li>
+  <li><strong>Failed payments.</strong> If a renewal fails, your plan stays
+    active while Stripe retries the payment. If the payment still does not go
+    through, the subscription ends and you move to the free plan.</li>
+  <li><strong>Going over a limit.</strong> Nothing you have already stored is
+    deleted when you move to a plan with lower limits. You can keep viewing,
+    editing and exporting it, but you cannot add more beyond the new limits
+    until you are back under them or upgrade.</li>
+  <li><strong>Price changes.</strong> We will tell you about a price change
+    before it applies to your subscription, so you can cancel first.</li>
+  <li><strong>Deleting your account does not cancel your subscription.</strong>
+    Cancel it on the plan page first.</li>
+</ul>
+
+<h2>8. Availability, backups and encryption</h2>
+<p>We work to keep TraxJourney available and your data safe, and back up our
+database every day, but we cannot promise the service will be uninterrupted or
+free of errors. Keep your own copies of anything important: every trip can be
+exported.</p>
+<p>If you turn on end-to-end encryption, only your devices and your recovery
+method can unlock the encrypted content. If you lose all your trusted devices
+and your recovery key or answers, that content cannot be recovered, by you or
+by us.</p>
+
+<h2>9. Ending your use</h2>
+<p>You can stop using TraxJourney and delete your account at any time in
+Settings. We may suspend or close an account that seriously or repeatedly
+breaks these terms, or where the law requires it. Unless there is an urgent
+reason not to, we will tell you first and give you the chance to export your
+data.</p>
+
+<h2>10. Liability</h2>
+<p>TraxJourney is a tool for recording and sharing journeys. It is not a
+navigation or safety device: routes, distances, elevations and timetables come
+from your data and from third-party sources and may be wrong.</p>
+<p>To the extent the law allows, we are not liable for indirect or
+consequential loss, or for loss of data you could have avoided by exporting
+it. Nothing in these terms limits liability that cannot be limited by law, or
+the rights you have as a consumer under the law of the country where you
+live.</p>
+
+<h2>11. Free software</h2>
+<p>The TraxJourney software is licensed under the
+<a href="https://github.com/rui-nar/TraxJourney/blob/main/LICENSE">GNU Affero General Public License, version 3</a>.
+You can <a href="https://github.com/rui-nar/TraxJourney">get its complete source code</a>,
+study it, run your own server and share your changes under the same licence.
+That licence governs the software; these terms govern your use of our
+service.</p>
+
+<h2>12. Changes to these terms</h2>
+<p>We may update these terms. We will change the date at the top and, for
+changes that affect your rights or what you pay, tell you by email or in the
+app before they take effect. If you do not agree to the new terms, you can
+delete your account before they apply.</p>
+
+<h2>13. Governing law and contact</h2>
+<p>These terms are governed by the law of {{GOVERNING_LAW}}. Disputes go to the
+courts of {{JURISDICTION}}, unless the law of the country where you live gives
+you the right to go to your local courts. Questions about these terms:
+<a href="mailto:{{CONTACT_EMAIL}}">{{CONTACT_EMAIL}}</a>.</p>
+</main>
+
+<footer>
+  <p>TraxJourney is free software, licensed under the
+  <a href="https://github.com/rui-nar/TraxJourney/blob/main/LICENSE">GNU Affero General Public License v3</a>.
+  <a href="https://github.com/rui-nar/TraxJourney">Get the source code</a> ·
+  <a href="/privacy">Privacy Policy</a></p>
+</footer>
+</body>
+</html>
