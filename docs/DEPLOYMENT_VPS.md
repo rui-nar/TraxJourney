@@ -339,16 +339,15 @@ free space first, it is a full copy of prod's media onto a 40 GB disk.
 ## 6. `deploy.ps1`
 
 `-Target Validation|Prod` (default `Validation`). Both targets SSH to the VPS
-(`164.132.195.154`, user `rui`, key `$HOME\.ssh\traxjourney_vps`) and run
-`docker compose down / pull / up -d`; they differ in directory, image tag and
-whether anything is built locally.
+and run `docker compose down / pull / up -d`. They differ in directory, image
+tag and whether anything is built locally.
 
 | | `Validation` | `Prod` |
 |---|---|---|
-| Directory | `/opt/traxjourney-val` | `/opt/traxjourney` |
+| Directory | `DEPLOY_VAL_DIR` (`/opt/traxjourney-val`) | `DEPLOY_PROD_DIR` (`/opt/traxjourney`) |
 | Image tag | `:validation` | `:latest` |
 | Builds locally | yes (unless `-SkipBuild`) | never |
-| URL | val.traxjourney.com | traxjourney.com |
+| URL | `DEPLOY_VAL_URL` (val.traxjourney.com) | `DEPLOY_PROD_URL` (traxjourney.com) |
 
 ```powershell
 .\deploy.ps1                      # build working tree -> :validation -> val
@@ -358,14 +357,40 @@ whether anything is built locally.
 ```
 
 `-FromMain` builds a pristine export of `origin/main` in a throwaway git
-worktree, so the image is exactly what is on main — never contaminated by local
+worktree, so the image is exactly what is on main, never contaminated by local
 edits or untracked files.
 
 Every path that skips the build first checks GitHub Actions for an in-progress
 `docker-build.yml` run and refuses to deploy while one is going, since the tag
 it is about to pull may be stale or only half-pushed.
 
-Note `deploy.ps1` itself is **gitignored** and lives only on the dev machine.
+### Configuration: `deploy.env`
+
+The script is tracked in git; the details of the machine it deploys to are not.
+They live in `deploy.env` next to the script, which is gitignored:
+
+```powershell
+Copy-Item deploy.env.example deploy.env   # then fill in the blanks
+```
+
+| Key | What |
+|---|---|
+| `DEPLOY_HOST`, `DEPLOY_SSH_PORT`, `DEPLOY_USER` | the SSH target: `<vps-host>`, `22`, `<ssh-user>` |
+| `DEPLOY_SSH_KEY` | private key for that user; a leading `~` is your home directory |
+| `DEPLOY_IMAGE` | repository without a tag: `ghcr.io/rui-nar/traxjourney` |
+| `DEPLOY_VAL_DIR`, `DEPLOY_VAL_URL` | validation's compose directory on the host, and its public URL |
+| `DEPLOY_PROD_DIR`, `DEPLOY_PROD_URL` | the same for prod |
+| `MAPBOX_TOKEN` | public token baked into a local web build (same name as the CI secret); `-MapboxToken` overrides it |
+
+It is parsed with the same rules as `.env` (`Load-DotEnv.ps1`), but into a table
+rather than `$env:`, so a variable left over in your shell can't stand in for a
+missing value. A missing key stops the script, naming the key, before anything
+is built or deployed. `MAPBOX_TOKEN` is only needed when the script builds the
+web client.
+
+A checkout that still has the old, untracked `deploy.ps1` must move it aside
+before `git pull` can bring in the tracked one; the steps, and which old
+variable goes to which key, are in `docs/RENAME_TRAXJOURNEY_RUNBOOK.md` step B4.
 
 ### The other way to cut `:validation`
 
