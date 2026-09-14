@@ -99,7 +99,7 @@ default (`transport http { keepalive }`). `entrypoint.sh` therefore runs uvicorn
 with `--timeout-keep-alive 300`; its 5 s default made uvicorn close first, and a
 request that Caddy sent on a pooled connection at that same instant failed
 with a 502 (`journalctl -u caddy`: `"msg":"EOF"` or `read: connection reset by
-peer`, on POST/PUT/DELETE � Go's HTTP client retries GETs by itself). If you
+peer`, on POST/PUT/DELETE � Go's HTTP client retries GETs by itself). If you
 ever set `keepalive` explicitly in the Caddyfile, keep it below uvicorn's value;
 `tests/test_entrypoint_keepalive.py` pins the entrypoint side, and
 `docs/repro/keepalive_502/` reproduces the race (issue #400).
@@ -379,7 +379,8 @@ git push origin validation --force
 
 `docker-build.yml` builds `ghcr.io/rui-nar/traxjourney:validation` on
 `ubuntu-latest`. It is the **same tag** `deploy.ps1` pushes, so the val host
-pulls it either way and needs no reconfiguration. Deploy it with
+pulls it either way and needs no reconfiguration. Once §8's webhook is
+installed, the VPS deploys it by itself. Otherwise deploy it with
 `.\deploy.ps1 -SkipBuild`, or directly on the VPS:
 
 ```bash
@@ -474,7 +475,7 @@ this 40GB host). This stays even with Loki live: if the NAS or the tunnel
 is down during an incident, `docker compose logs` here must still answer
 "what just happened" on its own.
 
-## 8. Auto-deploy validation on new image (issue #205)
+## 8. Auto-deploy validation on new image (issues #205, #422)
 
 `deploy.ps1` needs a human at a Windows dev machine to redeploy validation.
 `vps/webhook/` closes that loop: `docker-build.yml` finishing successfully
@@ -486,97 +487,220 @@ prod on every release would remove `deploy.ps1 -Target Prod`'s existing
 manual gate, which is a bigger safety call than "keep val fresh" and not
 something to fold in as a side effect of this.
 
-**Not verified against a live `webhook` binary from the session that wrote
-this** — `vps/webhook/` is a documented starting point, same caveat as the
-Alloy/Loki configs above.
+**Status: not live yet.** Until issue #422, GitHub had no webhook configured, so
+this never ran. What is verified: the rules and flags against the
+[webhook 2.8.0 source](https://github.com/adnanh/webhook/tree/2.8.0) and its
+[docs](https://github.com/adnanh/webhook/tree/master/docs), the payload fields
+against [GitHub's `workflow_run` docs](https://docs.github.com/en/webhooks/webhook-events-and-payloads#workflow_run)
+and this repository's real runs, and the script against a fake `docker` and
+`curl` (`tests/test_validation_webhook.py`). The live install stays unverified
+until step 10 below passes. When it does, replace this paragraph with the date.
 
-### Install `webhook`
+**Do it after the rename cut-over** (`docs/RENAME_TRAXJOURNEY_RUNBOOK.md`).
+`hooks.yaml` only accepts runs of `rui-nar/TraxJourney`, and GitHub sends the
+repository's current name, so installed earlier it never fires.
+
+### How a build reaches val
+
+1. The build finishes. GitHub POSTs a `workflow_run` delivery to
+   `https://val.traxjourney.com/gh-webhook/hooks/deploy-validation`. It also
+   does so when a run is `requested` and `in_progress`, and for every build,
+   `v*` releases and failed runs included.
+2. Caddy strips `/gh-webhook` and proxies to `webhook` on `127.0.0.1:9999`.
+3. `webhook` runs `deploy-validation.sh <head_sha>` only if every rule in
+   `hooks.yaml` holds: a valid `X-Hub-Signature-256`, event `workflow_run`,
+   `action` `completed`, conclusion `success`, `head_branch` `validation` (a
+   tag push puts the tag name there), repository `rui-nar/TraxJourney`, and
+   workflow "Build and publish Docker image". It answers GitHub straight away
+   and runs the script in the background: GitHub fails any delivery not
+   answered within 10 seconds.
+4. The script takes a lock (a second delivery waits for the first), runs
+   `docker compose pull` and `up -d`, then polls
+   `http://127.0.0.1:8001/api/version` for up to 5 minutes until it reports
+   `validation-<short sha>` of the commit that was built. It writes a
+   `SUCCESS` or `FAILED` line to `/opt/traxjourney-val/webhook/deploy.log` and
+   exits non-zero on failure.
+
+### Checklist
+
+Run the VPS steps as `rui`, the user `deploy.ps1` connects as. If the deploy
+user has another name, use it everywhere `rui` appears, including `User=` in
+the unit.
+
+**1. [VPS] Check the deploy user can run the val stack.**
 
 ```bash
-sudo apt install webhook   # Debian's own repo; check `webhook -version` after
+id rui                                                  # groups must include docker
+sudo -u rui -H docker compose -f /opt/traxjourney-val/docker-compose.yml ps
+sudo -u rui -H docker pull ghcr.io/rui-nar/traxjourney:validation   # GHCR login works
 ```
 
-If it's missing or too old there, grab a static binary from
-[adnanh/webhook's releases](https://github.com/adnanh/webhook/releases)
-instead and drop it at `/usr/bin/webhook`.
+The service runs as this user, with its groups and its `~/.docker/config.json`
+(the GHCR login), so these must work before anything else.
 
-### Configure the hook
+**2. [VPS] Install `webhook` 2.8.0 or later.**
 
 ```bash
-mkdir -p /opt/traxjourney-val/webhook
-cp vps/webhook/*.sh vps/webhook/hooks.yaml.example /opt/traxjourney-val/webhook/
+sudo apt update && sudo apt install -y webhook
+webhook -version                                        # webhook version 2.8.0
+```
+
+Debian 12 and 13 both ship 2.8.0. Releases before 2.8.0 do not know
+`payload-hmac-sha256` and silently never trigger. The package also installs
+its own `webhook.service`, which does nothing without `/etc/webhook.conf`; the
+unit from step 5, in `/etc/systemd/system`, replaces it.
+
+**3. [VPS] Copy the files.**
+
+```bash
+sudo install -d -o rui -g rui -m 755 /opt/traxjourney-val/webhook
 cd /opt/traxjourney-val/webhook
-mv hooks.yaml.example hooks.yaml
-openssl rand -hex 32   # generate a secret, paste it into hooks.yaml AND
-                        # into GitHub's webhook config below — same value
+for f in deploy-validation.sh hooks.yaml.example webhook.service; do
+  curl -fsSLo "$f" "https://raw.githubusercontent.com/rui-nar/TraxJourney/main/vps/webhook/$f"
+done
+chmod 755 deploy-validation.sh
 ```
 
-`hooks.yaml` is gitignored (the secret lives inline — `webhook` has no
-env-var interpolation in its config), same pattern as `docker-compose.yml`
-and `config/config.json` elsewhere in this repo.
-
-### systemd unit
+**4. [VPS] Create `hooks.yaml` with a new secret.**
 
 ```bash
-sudo cp /opt/traxjourney-val/webhook/webhook.service /etc/systemd/system/
+cd /opt/traxjourney-val/webhook
+SECRET=$(openssl rand -hex 32)
+(umask 077; sed "s/secret: \"\"/secret: \"$SECRET\"/" hooks.yaml.example > hooks.yaml)
+grep -c "secret: \"$SECRET\"" hooks.yaml                # must print 1
+ls -l hooks.yaml                                        # -rw------- rui
+echo "$SECRET"                                          # for step 7
+```
+
+`hooks.yaml` holds the secret, so only `rui` can read it, and it is gitignored
+in the repo. The example ships with an empty secret on purpose: `webhook`
+refuses to check a signature against an empty secret, so a copy nobody filled
+in rejects every delivery instead of accepting a key anyone can read on GitHub.
+
+**5. [VPS] Install and start the unit.**
+
+```bash
+sudo cp /opt/traxjourney-val/webhook/webhook.service /etc/systemd/system/webhook.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now webhook
-sudo systemctl status webhook   # confirm it's listening on 127.0.0.1:9999
+systemctl status webhook --no-pager
+journalctl -u webhook -n 20 --no-pager    # "loaded: deploy-validation" and
+                                          # "serving hooks on http://127.0.0.1:9999/hooks/{id}"
+ss -ltn | grep 9999                       # 127.0.0.1:9999 only, never 0.0.0.0
+curl -s -X POST http://127.0.0.1:9999/hooks/deploy-validation \
+  -H 'Content-Type: application/json' -d '{}'; echo     # Hook rules were not satisfied.
 ```
 
-### Caddy routing
+`Hook not found.` from that `curl` means `hooks.yaml` did not load; the journal
+says why.
 
-Loopback-bound (`127.0.0.1:9999`), same discipline as everything else in
-§1 — add a `handle_path` block to the existing `traxjourney.com` site
-(order matters: this must come before the catch-all `reverse_proxy
-127.0.0.1:8000`, same as the existing `/metrics` block):
+**6. [VPS] Route the hook through Caddy.**
+
+In `/etc/caddy/Caddyfile`, give the `val.traxjourney.com` site from §2 this
+shape, keeping anything else already in it:
 
 ```
-traxjourney.com {
-    handle /metrics { respond 403 }
+val.traxjourney.com {
     handle_path /gh-webhook/* {
         reverse_proxy 127.0.0.1:9999
     }
-    reverse_proxy 127.0.0.1:8000
+    handle {
+        reverse_proxy 127.0.0.1:8001
+    }
 }
 ```
 
-`handle_path` (not `handle`) strips the `/gh-webhook` prefix before
-forwarding — `webhook`'s own server serves each hook at `/hooks/<id>`
-relative to its own root (its default `-urlprefix`), so the public URL
-ends up `https://traxjourney.com/gh-webhook/hooks/deploy-validation`.
-`caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy`
-after editing, per §2.
+```bash
+caddy validate --config /etc/caddy/Caddyfile && sudo systemctl reload caddy
+curl -s -X POST https://val.traxjourney.com/gh-webhook/hooks/deploy-validation \
+  -H 'Content-Type: application/json' -d '{}'; echo     # Hook rules were not satisfied.
+```
 
-### GitHub-side webhook
+`handle_path` strips `/gh-webhook`, so `webhook` sees its own
+`/hooks/deploy-validation`. `handle` and `handle_path` blocks are mutually
+exclusive and the path-matched one is tried first, so neither the app's
+`/api/*` nor its SPA fallback can take the hook's path. The route is on the
+val site on purpose: the prod site never exposes it.
 
-Repo → Settings → Webhooks → Add webhook:
+**7. [GitHub] Add the webhook.**
+
+`rui-nar/TraxJourney` → Settings → Webhooks → Add webhook:
 
 | Field | Value |
 |---|---|
-| Payload URL | `https://traxjourney.com/gh-webhook/hooks/deploy-validation` |
+| Payload URL | `https://val.traxjourney.com/gh-webhook/hooks/deploy-validation` |
 | Content type | `application/json` |
-| Secret | same value as `hooks.yaml`'s `secret` |
-| Events | "Let me select individual events" → **Workflow runs** only |
-| Active | checked |
+| Secret | the value from step 4 |
+| SSL verification | Enable SSL verification |
+| Which events | "Let me select individual events" → **Workflow runs** only (untick Pushes) |
+| Active | ticked |
 
-No changes needed to `docker-build.yml` itself — repo webhooks subscribe to
-workflow-run completions independently of the workflow's own
-`permissions:` block.
+No change to `docker-build.yml` is needed: repository webhooks receive
+workflow-run events regardless of the workflow's `permissions:` block.
 
-### Verify
+**8. [GitHub] Check the ping.**
 
-Force-push the `validation` tag (see §6's "other way to cut `:validation`")
-and watch:
+Adding the webhook sends a `ping`. Settings → Webhooks → the webhook → Recent
+Deliveries → the `ping` delivery → Response: **200** with body
+`Hook rules were not satisfied.` That proves the route and the secret (the
+signature is checked first) and that a ping does not deploy. **Redeliver** it
+once and expect the same.
+
+**9. [VPS] Watch.**
 
 ```bash
-tail -f /opt/traxjourney-val/deploy.log
+tail -f /opt/traxjourney-val/webhook/deploy.log
+journalctl -u webhook -f
 ```
 
-`deploy-validation.sh` logs each attempt (triggered/succeeded/failed) with
-a UTC timestamp, and is `flock`-guarded so a retried GitHub delivery for
-the same build can't run a second `pull`/`up -d` concurrently against the
-same compose project.
+**10. [Workstation → GitHub → VPS] End-to-end check.**
+
+```bash
+git fetch origin
+git tag -f validation origin/main
+git push origin validation --force
+git rev-parse --short origin/main          # the sha to expect
+```
+
+- Actions: "Build and publish Docker image" for `validation` succeeds.
+- Recent Deliveries: three `workflow_run` deliveries. `requested` and
+  `in_progress` answer `Hook rules were not satisfied.`; `completed` answers
+  `Deploying validation...`.
+- `deploy.log`: `delivery for <sha> received`, the pull and up output, then
+  `SUCCESS <short sha>: http://127.0.0.1:8001/api/version reports validation-<short sha>`.
+- `curl -s https://val.traxjourney.com/api/version` returns the same version.
+- Redeliver the `completed` delivery: it deploys again (nothing to pull) and
+  logs `SUCCESS` again.
+
+Then replace the status paragraph at the top of this section with the date.
+
+### Pausing it
+
+```bash
+sudo systemctl stop webhook       # resume: sudo systemctl start webhook
+```
+
+While it is stopped, deliveries fail with a 502 and nothing deploys. Redeliver
+the last `completed` delivery after starting it again if val should catch up.
+The rename runbook's D1 does this during a cut-over. To stop GitHub sending
+anything, untick **Active** on the webhook instead.
+
+### Troubleshooting
+
+Recent Deliveries shows each response's status and body:
+
+| Response | Meaning |
+|---|---|
+| 502 | Caddy cannot reach `127.0.0.1:9999`: `systemctl status webhook`. |
+| 404 `Hook not found.` | `hooks.yaml` did not load (`journalctl -u webhook`: `couldn't load hooks from file!`), or the URL path is wrong. |
+| 500 `Error occurred while evaluating hook rules.` | Signature mismatch: the GitHub secret and `hooks.yaml`'s differ, or `hooks.yaml` still has the empty secret. `webhook` answers a bad signature with 500, not 403. |
+| 200 `Hook rules were not satisfied.` | The signature is fine and a field did not match. Expected for `ping`, `requested`, `in_progress`, failed builds and `v*` builds. On a successful `completed` validation run, compare the payload with the rules: `repository.full_name` (still the old name?), the workflow name, and the content type (a form-encoded delivery has none of the fields). |
+| 200 `Deploying validation...` | The script started. The outcome is in `deploy.log` and the journal, not in GitHub. |
+
+`FAILED <short sha>: ... reports 'validation-<other sha>'` in `deploy.log`
+usually means a newer `validation` build was pushed while this one deployed;
+that build's own delivery follows and logs `SUCCESS`. `reports 'no version'`
+means val did not answer within 5 minutes: `docker compose logs traxjourney`.
 
 ## 9. Rail data (issue #345)
 
