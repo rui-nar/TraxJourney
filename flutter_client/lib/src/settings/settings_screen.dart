@@ -1122,8 +1122,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        '© ${DateTime.now().year} Rui Narciso. All rights reserved.',
+                        '© ${DateTime.now().year} Rui Narciso. '
+                        'Free software under the AGPL-3.0 licence.',
                         style: theme.textTheme.bodySmall,
+                      ),
+                      const SizedBox(height: 8),
+                      // AGPL section 13: people using the service over a
+                      // network must be offered its source.
+                      Wrap(
+                        spacing: 8,
+                        children: [
+                          TextButton.icon(
+                            onPressed: () => launchUrl(Uri.parse(kRepoUrl),
+                                mode: LaunchMode.externalApplication),
+                            icon: const Icon(Icons.code, size: 18),
+                            label: const Text('Source code'),
+                          ),
+                        ],
                       ),
                     ],
                   ),

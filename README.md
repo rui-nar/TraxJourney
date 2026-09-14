@@ -199,6 +199,13 @@ See [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) for the full directory layout.
 
 ---
 
-## License
+## Licence
 
-MIT
+TraxJourney is free software, licensed under the
+[GNU Affero General Public License v3.0](LICENSE).
+
+You may run, study, change and share it. If you run a modified version as a
+service that other people use over a network, the licence requires you to offer
+those users the source code of your version. The app's Settings → About panel
+and the `/privacy` and `/terms` pages link to this repository for that reason;
+point them at your own repository if you change the code.
