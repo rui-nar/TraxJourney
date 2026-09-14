@@ -142,7 +142,10 @@ function Get-ActiveImageBuildRuns {
         Write-Host "  (couldn't check GitHub Actions status - gh not installed/authenticated; skipping this check)" -ForegroundColor DarkYellow
         return $null
     }
-    return @($json | ConvertFrom-Json | Where-Object { $_.status -ne 'completed' })
+    # The parentheses matter on Windows PowerShell 5.1 (deploy.bat): its
+    # ConvertFrom-Json emits a JSON array as ONE object, so without them
+    # Where-Object sees the whole list at once instead of each run.
+    return @(($json | ConvertFrom-Json) | Where-Object { $_.status -ne 'completed' })
 }
 
 # Prod never builds; Validation builds unless told not to.
@@ -321,7 +324,9 @@ if ($Version) {
 
     Write-Host "  Checking for an in-progress image build on GitHub Actions..." -ForegroundColor Cyan
     $activeRuns = Get-ActiveImageBuildRuns
-    if ($activeRuns -and $activeRuns.Count -gt 0) {
+    # Not .Count: a function returning one run hands back the run itself, which
+    # has no Count under StrictMode on Windows PowerShell 5.1.
+    if ($activeRuns) {
         Write-Host ""
         foreach ($r in $activeRuns) {
             Write-Host "  - $($r.displayTitle) [$($r.status)] $($r.url)" -ForegroundColor Yellow

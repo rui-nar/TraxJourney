@@ -15,9 +15,12 @@ before it builds or deploys anything.
 
 Most assertions are on the script text, because that is where such a mistake
 would live, and no test host has the GHCR/VPS credentials to run it. The
-behavioural ones run the script under every installed PowerShell edition, with a
-config that stops it before any network access.
+behavioural ones run the script under every installed PowerShell edition, either
+with a config that stops it before any network access or with ssh and gh
+replaced by stand-ins that only log what they were asked to do.
 """
+import json
+import os
 import re
 import shutil
 import subprocess
@@ -336,3 +339,61 @@ def test_missing_keys_are_named(sandbox, exe):
     assert ("deploy.env is missing: DEPLOY_SSH_PORT, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_IMAGE, "
             "DEPLOY_VAL_DIR, DEPLOY_VAL_URL, DEPLOY_PROD_DIR, DEPLOY_PROD_URL") in "".join(result.stdout.splitlines())
 
+
+# Stand-ins for ssh and gh, first on PATH. ssh logs its arguments and stdin; gh
+# prints SHIM_GH_JSON as its run list.
+if os.name == "nt":
+    SHIMS = {
+        "ssh.bat": '@echo off\r\necho %*>> "%~dp0ssh.log"\r\nfindstr "^" >> "%~dp0ssh.stdin"\r\nexit /b 0\r\n',
+        "gh.bat": "@echo off\r\necho %SHIM_GH_JSON%\r\nexit /b 0\r\n",
+    }
+else:
+    SHIMS = {
+        "ssh": '#!/bin/sh\necho "$*" >> "$(dirname "$0")/ssh.log"\ncat >> "$(dirname "$0")/ssh.stdin"\n',
+        "gh": '#!/bin/sh\necho "$SHIM_GH_JSON"\n',
+    }
+
+
+def _deploy_with_shims(sandbox, exe, runs=("completed", "completed")):
+    """Run `deploy.ps1 -Target Prod` against stand-ins; nothing leaves the machine."""
+    shims = sandbox.parent / "shims"
+    shims.mkdir()
+    for name, body in SHIMS.items():
+        (shims / name).write_text(body, encoding="ascii", newline="")
+        (shims / name).chmod(0o755)
+    key = sandbox.parent / "id_test"
+    key.write_text("not a key\n")
+    (sandbox / "deploy.env").write_text(
+        "DEPLOY_HOST=host.invalid\nDEPLOY_SSH_PORT=2222\nDEPLOY_USER=deployer\n"
+        f"DEPLOY_SSH_KEY={key}\nDEPLOY_IMAGE=registry.invalid/owner/app\n"
+        "DEPLOY_VAL_DIR=/srv/app-val\nDEPLOY_VAL_URL=https://val.app.invalid\n"
+        "DEPLOY_PROD_DIR=/srv/app\nDEPLOY_PROD_URL=https://app.invalid/\n",
+        encoding="utf-8",
+    )
+    env = dict(os.environ, PATH=f"{shims}{os.pathsep}{os.environ['PATH']}",
+               SHIM_GH_JSON=json.dumps([{"status": s, "displayTitle": f"run{n}", "url": f"u{n}"}
+                                        for n, s in enumerate(runs)], separators=(",", ":")))
+    result = subprocess.run(
+        [exe, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(sandbox / "deploy.ps1"), "-Target", "Prod"],
+        cwd=sandbox, capture_output=True, text=True, timeout=120, env=env,
+    )
+
+    def read(name):
+        path = shims / name
+        return path.read_text(errors="replace").replace('"', "") if path.exists() else ""
+    return result, read, key
+
+
+@every_powershell
+@pytest.mark.parametrize("runs", [(), ("completed", "in_progress", "completed")], ids=["no-runs", "one-running"])
+def test_image_build_check_stops_only_on_unfinished_runs(sandbox, exe, runs):
+    """Windows PowerShell 5.1 hands Where-Object the whole JSON array unless it
+    is parenthesised: an empty list threw, and one running build listed all."""
+    result, read, _ = _deploy_with_shims(sandbox, exe, runs=runs)
+    if "in_progress" in runs:
+        assert result.returncode == 1
+        assert "run1 [in_progress]" in result.stdout
+        assert "run0" not in result.stdout and "run2" not in result.stdout
+        assert read("ssh.log") == ""
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
