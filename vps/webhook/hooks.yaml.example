@@ -1,20 +1,18 @@
 # adnanh/webhook config — auto-deploys val.traxjourney.com the moment
-# docker-build.yml finishes publishing a new :validation image (issue #205).
-# See ../../docs/DEPLOYMENT_VPS.md's "Auto-deploy validation" section for the
-# full setup (Caddy routing, GitHub-side webhook config, systemd unit).
+# docker-build.yml finishes publishing a new :validation image (issues #205,
+# #422). Install it with the checklist in ../../docs/DEPLOYMENT_VPS.md §8
+# (Caddy route, GitHub-side webhook, systemd unit).
 #
-#   cp hooks.yaml.example hooks.yaml
-#   # edit hooks.yaml: replace REPLACE_WITH_YOUR_WEBHOOK_SECRET with a real
-#   # secret (same value goes into GitHub's webhook "Secret" field) —
-#   # generate one with: openssl rand -hex 32
+# hooks.yaml is gitignored: the secret below lives inline. The example ships
+# with an EMPTY secret on purpose. webhook refuses to check a signature against
+# an empty secret, so a copy nobody filled in rejects every delivery (HTTP 500)
+# instead of accepting payloads signed with a placeholder anyone can read here.
 #
-# hooks.yaml is gitignored (it holds the secret inline — adnanh/webhook has
-# no env-var interpolation in its config), same pattern as
-# docker-compose.yml / config/config.json elsewhere in this repo.
-#
-# NOT verified against a live `webhook` binary from the session that wrote
-# this — same caveat as the Alloy/Loki configs: a documented starting point
-# to test against your actual install, not verified software.
+# Rule semantics were checked against the webhook 2.8.0 source (the version
+# Debian 12 and 13 ship; payload-hmac-sha256 needs 2.8.0 or later, older
+# releases silently never match it) and against real workflow_run data from
+# this repository. They are not verified against a live delivery until the
+# §8 checklist's end-to-end step passes.
 #
 # Deliberately scoped to validation only, not prod — auto-deploying prod on
 # every release would remove `deploy.ps1 -Target Prod`'s existing manual
@@ -25,11 +23,20 @@
   execute-command: "/opt/traxjourney-val/webhook/deploy-validation.sh"
   command-working-directory: "/opt/traxjourney-val"
   response-message: "Deploying validation..."
+  # The script checks /api/version against the commit that was built.
+  pass-arguments-to-command:
+    - source: payload
+      name: workflow_run.head_sha
+  # Every rule must hold (a single `and`, no `or`): a signature alone would
+  # also deploy on `requested`/`in_progress` deliveries, failed builds and
+  # v* release builds.
   trigger-rule:
     and:
+      # GitHub sends "sha256=<hex HMAC of the raw body>"; webhook strips the
+      # prefix and compares in constant time.
       - match:
           type: payload-hmac-sha256
-          secret: "REPLACE_WITH_YOUR_WEBHOOK_SECRET"
+          secret: ""
           parameter:
             source: header
             name: X-Hub-Signature-256
@@ -39,6 +46,7 @@
           parameter:
             source: header
             name: X-GitHub-Event
+      # workflow_run is also delivered with action requested and in_progress.
       - match:
           type: value
           value: "completed"
@@ -51,12 +59,21 @@
           parameter:
             source: payload
             name: workflow_run.conclusion
+      # For a run started by a tag push, head_branch holds the tag name.
       - match:
           type: value
           value: "validation"
           parameter:
             source: payload
             name: workflow_run.head_branch
+      # GitHub sends the repository's current name. Before the rename to
+      # TraxJourney this rule never matches (docs/RENAME_TRAXJOURNEY_RUNBOOK.md).
+      - match:
+          type: value
+          value: "rui-nar/TraxJourney"
+          parameter:
+            source: payload
+            name: repository.full_name
       - match:
           type: value
           value: "Build and publish Docker image"

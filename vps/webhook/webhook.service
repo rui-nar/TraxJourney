@@ -1,14 +1,24 @@
 [Unit]
-Description=adnanh/webhook — GitHub workflow_run listener (auto-deploy validation, issue #205)
+Description=adnanh/webhook — GitHub workflow_run listener (auto-deploy validation, issues #205, #422)
 After=network.target docker.service
 Requires=docker.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/webhook -hooks /opt/traxjourney-val/webhook/hooks.yaml -port 9999 -verbose
+# Loopback only: Caddy is the public side (docs/DEPLOYMENT_VPS.md §8).
+ExecStart=/usr/bin/webhook -hooks /opt/traxjourney-val/webhook/hooks.yaml -ip 127.0.0.1 -port 9999 -verbose
 Restart=on-failure
 RestartSec=5
-User=debian
+# The deploy user deploy.ps1 connects as. It must be in the `docker` group
+# (systemd applies the user's groups), own /opt/traxjourney-val/webhook, and
+# hold the GHCR login in ~/.docker/config.json.
+User=rui
+# Safe with the docker CLI: it is not setuid and talks to /run/docker.sock.
+# ProtectHome would hide ~/.docker (the GHCR login) and ProtectSystem=strict
+# would make the log and lock read-only. Being in the `docker` group is
+# root-equivalent anyway, so those would not contain a compromise.
+NoNewPrivileges=true
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
