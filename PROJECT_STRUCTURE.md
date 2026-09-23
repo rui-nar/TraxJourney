@@ -96,7 +96,8 @@ TraxJourney/
 ├── Dockerfile                    # Container image (FastAPI + uvicorn + bundled web build)
 ├── entrypoint.sh                 # Container entrypoint
 ├── requirements.txt              # Python dependencies
-├── deploy.ps1                    # Gitignored — build + push image + deploy to NAS
+├── deploy.ps1                    # Build + push image + deploy to the VPS, then verify
+├── deploy.env.example            # Template for the gitignored deploy.env (host settings)
 ├── PROJECT_STRUCTURE.md          # This file
 └── README.md                     # Getting started guide
 ```

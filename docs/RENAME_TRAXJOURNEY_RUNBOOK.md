@@ -140,18 +140,47 @@ Check the package page shows it is linked to `rui-nar/TraxJourney` (the
 Do not delete or change `ghcr.io/rui-nar/viewtripweb`. Its last tags are the
 rollback image (section G). It stops receiving new versions.
 
-### B4. [Workstation] Update the gitignored deploy files
+### B4. [Workstation] Move the deploy settings into `deploy.env`
 
-`deploy.ps1` and the local `docker-compose.yml` in the main checkout are not
-in git and still say `viewtripweb` and `/opt/viewtrip`:
+`deploy.ps1` is tracked in git since #423, and the host details it used to
+hard-code now live in the gitignored `deploy.env`. The main checkout still has
+the old, untracked `deploy.ps1` at the same path, and `git pull` refuses to
+overwrite an untracked file. Move it out of the checkout first, then pull:
 
 ```powershell
-Select-String -Path E:\Dev\ViewTripWeb\deploy.ps1, E:\Dev\ViewTripWeb\docker-compose.yml -Pattern 'viewtrip' -CaseSensitive:$false
+Move-Item E:\Dev\ViewTripWeb\deploy.ps1 $HOME\deploy.ps1.pre-423
+git -C E:\Dev\ViewTripWeb pull
+Copy-Item E:\Dev\ViewTripWeb\deploy.env.example E:\Dev\ViewTripWeb\deploy.env
 ```
 
-Change the image path, the `/opt/...` directories, the repository name and the
-compose service name to the new names. Do not run `deploy.ps1` against a host
-until that host has been cut over (section D).
+Fill in `deploy.env` from the old script's configuration block:
+
+| Old script | `deploy.env` |
+|---|---|
+| `$VPS_HOST` | `DEPLOY_HOST` |
+| `$VPS_SSH_PORT` | `DEPLOY_SSH_PORT` |
+| `$VPS_USER` | `DEPLOY_USER` |
+| `$VPS_KEY` | `DEPLOY_SSH_KEY` |
+| the `-MapboxToken` default | `MAPBOX_TOKEN` |
+
+Leave `DEPLOY_IMAGE`, `DEPLOY_*_DIR` and `DEPLOY_*_URL` as the example has them.
+The old script's `$IMAGE`, `$VPS_BASE` and `$VAL_BASE` are the pre-rename
+names, which is what this runbook replaces.
+
+The local `docker-compose.yml` is still gitignored and still says `viewtripweb`
+and `/opt/viewtrip`:
+
+```powershell
+Select-String -Path E:\Dev\ViewTripWeb\docker-compose.yml -Pattern 'viewtrip' -CaseSensitive:$false
+```
+
+Change its image path and compose service name to the new names.
+
+Do not run `deploy.ps1` against a host until that host has been cut over
+(section D). It would stop anyway: before building or taking anything down, it
+refuses a host whose `docker-compose.yml` does not name
+`ghcr.io/rui-nar/traxjourney`. Delete `$HOME\deploy.ps1.pre-423` once a deploy
+has passed its checks.
 
 ---
 

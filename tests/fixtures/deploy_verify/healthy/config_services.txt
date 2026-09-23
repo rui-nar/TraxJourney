@@ -1,0 +1,4 @@
+worker-poster
+redis
+traxjourney
+worker
