@@ -68,3 +68,47 @@ def test_refresh_token_failure(mock_post):
     oauth = OAuth2Session(config)
     with pytest.raises(TokenError):
         oauth.refresh_token("bad")
+
+
+# ---------------------------------------------------------------------------
+# Deauthorize (issue #440)
+# ---------------------------------------------------------------------------
+
+@patch("src.auth.oauth.requests.post")
+def test_deauthorize_sends_bearer_header_only(mock_post):
+    mock_post.return_value.status_code = 200
+
+    config = DummyConfig()
+    oauth = OAuth2Session(config)
+    oauth.deauthorize("tok-123")
+
+    mock_post.assert_called_once()
+    args, kwargs = mock_post.call_args
+    assert args[0] == OAuth2Session.DEAUTHORIZE_URL
+    assert kwargs["headers"] == {"Authorization": "Bearer tok-123"}
+    assert "tok-123" not in args[0]
+    assert "data" not in kwargs and "params" not in kwargs
+    assert kwargs["timeout"] == OAuth2Session.TOKEN_TIMEOUT
+
+
+@patch("src.auth.oauth.requests.post")
+def test_deauthorize_failure_raises_without_leaking_body(mock_post):
+    mock_post.return_value.status_code = 401
+    mock_post.return_value.text = '{"message":"Authorization Error","access_token":"tok-123"}'
+
+    config = DummyConfig()
+    oauth = OAuth2Session(config)
+    with pytest.raises(AuthenticationError) as excinfo:
+        oauth.deauthorize("tok-123")
+    assert "HTTP 401" in str(excinfo.value)
+    assert "tok-123" not in str(excinfo.value)
+
+
+@patch("src.auth.oauth.requests.post")
+def test_refresh_token_has_a_timeout(mock_post):
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = {"access_token": "new"}
+
+    OAuth2Session(DummyConfig()).refresh_token("r123")
+
+    assert mock_post.call_args.kwargs["timeout"] == OAuth2Session.TOKEN_TIMEOUT

@@ -7,7 +7,12 @@ admin-triggered ``DELETE /api/admin/users/{id}``.
 """
 from __future__ import annotations
 
+import logging
+import time
+from unittest.mock import MagicMock
+
 import pytest
+import requests
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
@@ -41,6 +46,7 @@ from models.project_db import (
 )
 from models.user import LocalUser, PolarstepsToken, StravaToken, UserInfo
 from src.auth.account_deletion import delete_user_and_data, purge_user_files
+from src.auth.oauth import OAuth2Session
 
 
 @pytest.fixture
@@ -162,6 +168,65 @@ class TestDeleteUserAndData:
 
     def test_purge_user_files_is_noop_if_absent(self, engine):
         purge_user_files(999999)  # must not raise
+
+
+class TestStravaDeauthorize:
+    """Issue #440: deleting the account also revokes the app at Strava, and a
+    Strava failure never blocks the deletion."""
+
+    @pytest.fixture
+    def post(self, monkeypatch):
+        monkeypatch.setenv("STRAVA_CLIENT_ID", "id")
+        monkeypatch.setenv("STRAVA_CLIENT_SECRET", "secret")
+        mock = MagicMock()
+        mock.return_value.status_code = 200
+        monkeypatch.setattr("src.auth.oauth.requests.post", mock)
+        return mock
+
+    def _user_with_token(self, engine) -> int:
+        with Session(engine) as sess:
+            ui = _mk_user(sess, display_name="T", email="t@x.io")
+            sess.add(StravaToken(user_info_id=ui.id, access_token="access-secret",
+                                 refresh_token="refresh-secret",
+                                 expires_at=time.time() + 3600))
+            sess.commit()
+            return ui.id
+
+    def test_deletion_deauthorizes_at_strava(self, engine, post):
+        uid = self._user_with_token(engine)
+
+        with Session(engine) as sess:
+            delete_user_and_data(sess, uid)
+
+        post.assert_called_once()
+        assert post.call_args.args[0] == OAuth2Session.DEAUTHORIZE_URL
+        assert post.call_args.kwargs["headers"] == {"Authorization": "Bearer access-secret"}
+        with Session(engine) as sess:
+            assert sess.get(UserInfo, uid) is None
+            assert sess.exec(select(StravaToken).where(StravaToken.user_info_id == uid)).first() is None
+
+    def test_strava_failure_does_not_block_deletion(self, engine, post, caplog):
+        uid = self._user_with_token(engine)
+        post.side_effect = requests.ConnectionError("boom")
+
+        with caplog.at_level(logging.WARNING, logger="src.auth.strava_deauth"):
+            with Session(engine) as sess:
+                delete_user_and_data(sess, uid)
+
+        assert "strava deauthorize failed" in caplog.text
+        assert "access-secret" not in caplog.text
+        with Session(engine) as sess:
+            assert sess.get(UserInfo, uid) is None
+            assert sess.exec(select(StravaToken).where(StravaToken.user_info_id == uid)).first() is None
+
+    def test_no_token_means_no_call(self, engine, post):
+        with Session(engine) as sess:
+            uid = _mk_user(sess, display_name="N", email="n@x.io").id
+
+        with Session(engine) as sess:
+            delete_user_and_data(sess, uid)
+
+        post.assert_not_called()
 
 
 def _seed_companionship(sess, owner_id: int, companion_id: int) -> dict:

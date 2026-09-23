@@ -4,7 +4,7 @@ Routes:
     GET    /api/strava/connect              — returns OAuth URL to redirect user to
     GET    /api/strava/callback             — exchanges auth code, stores token, redirects to app
     GET    /api/strava/status               — {"connected": bool}
-    DELETE /api/strava/disconnect           — removes stored Strava token
+    DELETE /api/strava/disconnect           — revokes at Strava, removes token + cached activity list
     GET    /api/strava/activities           — browse user's Strava activities (with filters)
     GET    /api/strava/cache/status         — cache age + activity count
     POST   /api/projects/{name}/strava/sync — syncs Strava activities into a project
@@ -31,6 +31,7 @@ from models.project_db import DBProjectItem, DBStravaCache
 from models.user import StravaToken, UserInfo
 from src.api.strava_client import StravaAPI
 from src.auth.oauth import OAuth2Session
+from src.auth.strava_deauth import deauthorize_strava
 from src.billing.entitlements import ensure_trip_days_quota
 from src.config.settings import Config
 from src.filters.filter_engine import FilterCriteria, FilterEngine
@@ -273,15 +274,25 @@ def strava_status(current_user: Annotated[dict, Depends(get_current_user)]):
 @router.delete("/api/strava/disconnect", status_code=status.HTTP_204_NO_CONTENT,
                summary="Disconnect Strava account")
 def strava_disconnect(current_user: Annotated[dict, Depends(get_current_user)]):
-    """Remove the stored Strava token for the current user."""
+    """Disconnect Strava: revoke the app at Strava, then drop the stored token
+    and the cached raw activity list (issue #440).
+
+    Activities already added to trips are the user's own and stay. The revoke
+    is best effort — if Strava is unreachable the local data is removed all the
+    same, so the user is disconnected either way.
+    """
     user_info_id = int(current_user["sub"])
     with get_session() as sess:
         row = sess.exec(
             select(StravaToken).where(StravaToken.user_info_id == user_info_id)
         ).first()
         if row:
+            deauthorize_strava(row, _cfg)
             sess.delete(row)
-            sess.commit()
+        cache_row = sess.get(DBStravaCache, user_info_id)
+        if cache_row is not None:
+            sess.delete(cache_row)
+        sess.commit()
 
 
 @router.get("/api/strava/activities", response_model=ActivitiesPageOut,

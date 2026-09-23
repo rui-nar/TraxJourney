@@ -48,6 +48,7 @@ from models.user import (
     StravaToken,
     UserInfo,
 )
+from src.auth.strava_deauth import deauthorize_strava
 from src.project.repo_core import bump_lock_version
 from src.admin import storage as _storage_mod
 from src.billing.gateway import GatewayError, get_gateway
@@ -354,6 +355,15 @@ def delete_user_and_data(sess: Session, user_info_id: int) -> None:
     record_deletion_withdrawal(sess, user_info_id, now)
     cancel_live_subscription(sess, user_info_id)
     refund_inside_window(sess, user_info_id, now)
+    # Revoke the app at Strava (issue #440) once billing is settled, so a
+    # refused deletion leaves Strava connected; before the account lock, like
+    # the Stripe calls above, since it is a network round trip.
+    # Best effort — the token row goes below whatever Strava answered.
+    strava_token = sess.exec(
+        select(StravaToken).where(StravaToken.user_info_id == user_info_id)
+    ).first()
+    if strava_token is not None:
+        deauthorize_strava(strava_token)
     # Stripe was called without holding any lock (never hold SQLite's write
     # lock across the network). A webhook can land in that window and record
     # a first purchase on the row — a customer this deletion never cancelled.
