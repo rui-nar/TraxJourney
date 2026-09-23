@@ -10,8 +10,8 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/auth/welcome_screen.dart';
-import 'package:viewtrip_client/src/core/app_version.dart';
+import 'package:traxjourney_client/src/auth/welcome_screen.dart';
+import 'package:traxjourney_client/src/core/app_version.dart';
 
 /// The version footer is the only label on the page carrying "server".
 final _footerVersion = find.textContaining('· server ');

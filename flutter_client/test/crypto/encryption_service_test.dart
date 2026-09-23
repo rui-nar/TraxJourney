@@ -2,8 +2,8 @@ import 'dart:convert';
 
 import 'package:cryptography_plus/cryptography_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/crypto/e2ee_crypto.dart';
-import 'package:viewtrip_client/src/crypto/encryption_service.dart';
+import 'package:traxjourney_client/src/crypto/e2ee_crypto.dart';
+import 'package:traxjourney_client/src/crypto/encryption_service.dart';
 
 /// In-memory device key store (the real one persists to the OS keystore).
 class FakeDeviceKeyStore implements DeviceKeyStore {

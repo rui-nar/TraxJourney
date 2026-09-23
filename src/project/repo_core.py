@@ -6,7 +6,6 @@ for the composed class and module docstring.
 from __future__ import annotations
 
 import json
-import os
 import time
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
@@ -166,16 +165,11 @@ class ProjectCoreMixin:
         sess: Session,
         user_info_id: int,
         name: str,
-        legacy_path: Optional[str] = None,
         include_heavy: bool = True,
         include_elevation: bool = True,
         journal_user_id: Optional[int] = None,
     ) -> Optional[Project]:
-        """Load a project from DB.
-
-        If no DB row exists and *legacy_path* points to a ``.viewtrip`` or ``.gettracks`` file,
-        the file is ingested into the DB first (lazy migration).
-        Returns ``None`` if neither DB row nor legacy file exists.
+        """Load a project from DB. Returns ``None`` if no DB row exists.
 
         journal_user_id (issue #106) filters journal entries — and their timeline
         items — to those authored by that user (a NULL author = the project
@@ -185,7 +179,7 @@ class ProjectCoreMixin:
         on read-only paths that serialise the project to a client.
 
         include_heavy=False defers summary_polyline and elevation_profile_json (see
-        _row_to_project for details).  The legacy-ingest path always uses full loading.
+        _row_to_project for details).
 
         include_elevation=False (with include_heavy=True) keeps summary_polyline but
         defers the large elevation_profile_json column — used by the full-res geo
@@ -196,12 +190,7 @@ class ProjectCoreMixin:
         row = self._get_project_row(sess, user_info_id, name)
 
         if row is None:
-            if legacy_path and os.path.isfile(legacy_path):
-                self.ingest_project(sess, user_info_id, legacy_path)
-                # Re-fetch after ingest
-                row = self._get_project_row(sess, user_info_id, name)
-            if row is None:
-                return None
+            return None
 
         return self._row_to_project(
             sess, row, include_heavy=include_heavy, include_elevation=include_elevation,

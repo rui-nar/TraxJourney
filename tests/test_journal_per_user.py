@@ -181,19 +181,19 @@ def test_only_the_author_may_edit_or_delete(env):
         ).first() is None
 
 
-def test_export_viewtrip_excludes_other_users_journal(env):
+def test_export_traxj_excludes_other_users_journal(env):
     client, _, ids, act_as = env
     act_as("owner")
     own_entry = _create_entry(client, ids, as_companion=False, date="2026-03-01")
     act_as("companion")
     comp_entry = _create_entry(client, ids, as_companion=True, date="2026-03-02")
 
-    data = json.loads(client.get(f"/api/projects/Trip/export-viewtrip{_owner_q(ids)}").content)
+    data = json.loads(client.get(f"/api/projects/Trip/export-traxj{_owner_q(ids)}").content)
     exported = [it["journal"]["id"] for it in data["items"] if it["item_type"] == "journal"]
     assert exported == [comp_entry]
 
     act_as("owner")
-    data = json.loads(client.get("/api/projects/Trip/export-viewtrip").content)
+    data = json.loads(client.get("/api/projects/Trip/export-traxj").content)
     exported = [it["journal"]["id"] for it in data["items"] if it["item_type"] == "journal"]
     assert exported == [own_entry]
 

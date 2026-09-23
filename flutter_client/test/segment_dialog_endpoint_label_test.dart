@@ -3,7 +3,7 @@
 // read "Custom" — not "— clear —", which wrongly implies nothing is set.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/projects/segment_dialog.dart';
+import 'package:traxjourney_client/src/projects/segment_dialog.dart';
 
 void main() {
   group('endpointClearOptionLabel', () {

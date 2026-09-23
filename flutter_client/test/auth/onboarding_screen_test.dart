@@ -8,8 +8,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:viewtrip_client/src/auth/onboarding_screen.dart';
-import 'package:viewtrip_client/src/core/onboarding_notifier.dart';
+import 'package:traxjourney_client/src/auth/onboarding_screen.dart';
+import 'package:traxjourney_client/src/core/onboarding_notifier.dart';
 
 Future<OnboardingNotifier> _pump(WidgetTester tester) async {
   final notifier = OnboardingNotifier(false);

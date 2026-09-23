@@ -6,7 +6,7 @@
 // outright and never inherits (issue #203).
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/projects/project_filter_mixin.dart';
+import 'package:traxjourney_client/src/projects/project_filter_mixin.dart';
 
 void main() {
   Map<String, Map<String, dynamic>> meta(Map<String, List<String>> tagsByDay) =>

@@ -9,9 +9,9 @@
 apiVersion: 1
 
 providers:
-  - name: viewtrip
+  - name: traxjourney
     orgId: 1
-    folder: ViewTrip
+    folder: TraxJourney
     type: file
     disableDeletion: true
     editable: false

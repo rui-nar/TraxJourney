@@ -16,11 +16,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
-import 'package:viewtrip_client/src/auth/auth_notifier.dart';
-import 'package:viewtrip_client/src/auth/auth_service.dart';
-import 'package:viewtrip_client/src/core/app_version.dart';
-import 'package:viewtrip_client/src/core/brand_mark.dart';
-import 'package:viewtrip_client/src/core/splash_screen.dart';
+import 'package:traxjourney_client/src/auth/auth_notifier.dart';
+import 'package:traxjourney_client/src/auth/auth_service.dart';
+import 'package:traxjourney_client/src/core/app_version.dart';
+import 'package:traxjourney_client/src/core/brand_mark.dart';
+import 'package:traxjourney_client/src/core/splash_screen.dart';
 
 /// Lets a test drive the two loading flags independently, which the real
 /// notifier only ever does from inside a network call.

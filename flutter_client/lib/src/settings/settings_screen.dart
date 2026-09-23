@@ -11,6 +11,7 @@ import '../auth/auth_notifier.dart';
 import '../auth/auth_service.dart';
 import '../billing/billing_section.dart';
 import '../core/app_version.dart';
+import '../core/brand.dart';
 import '../core/perf_timing.dart' show perfSpans;
 import '../projects/basemaps.dart' show kMapTileModePref, mapTileModeNotifier;
 import '../core/version_reload_stub.dart'
@@ -1108,7 +1109,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('ViewTripWeb',
+                      Text(kAppName,
                           style: theme.textTheme.titleMedium),
                       const SizedBox(height: 4),
                       // Both halves, named: this is the line a user is asked

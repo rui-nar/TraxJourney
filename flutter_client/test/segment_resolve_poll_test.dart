@@ -9,9 +9,9 @@
 // handling (see activity_refresh_poll_test.dart).
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/core/project_ref.dart';
-import 'package:viewtrip_client/src/projects/project_notifier.dart';
-import 'package:viewtrip_client/src/projects/project_service.dart';
+import 'package:traxjourney_client/src/core/project_ref.dart';
+import 'package:traxjourney_client/src/projects/project_notifier.dart';
+import 'package:traxjourney_client/src/projects/project_service.dart';
 
 const _ref = ProjectRef(name: 'Trip');
 const _fast = Duration(milliseconds: 1);

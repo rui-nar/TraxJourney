@@ -8,11 +8,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
-import 'package:viewtrip_client/src/api/client.dart';
-import 'package:viewtrip_client/src/auth/auth_notifier.dart';
-import 'package:viewtrip_client/src/auth/auth_service.dart';
-import 'package:viewtrip_client/src/auth/verify_email_banner.dart';
-import 'package:viewtrip_client/src/auth/verify_email_screen.dart';
+import 'package:traxjourney_client/src/api/client.dart';
+import 'package:traxjourney_client/src/auth/auth_notifier.dart';
+import 'package:traxjourney_client/src/auth/auth_service.dart';
+import 'package:traxjourney_client/src/auth/verify_email_banner.dart';
+import 'package:traxjourney_client/src/auth/verify_email_screen.dart';
 
 class _FakeAuthService extends AuthService {
   ApiException? verifyError;

@@ -1,5 +1,5 @@
-name: viewtrip_client
-description: ViewTripWeb Flutter client — web, Android, iOS.
+name: traxjourney_client
+description: TraxJourney Flutter client — web, Android, iOS.
 publish_to: 'none'
 
 version: 0.50.0+1

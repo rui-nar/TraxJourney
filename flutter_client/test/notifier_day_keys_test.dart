@@ -5,8 +5,8 @@
 // default day: today while the trip is active, else the last trip day.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/projects/project_notifier.dart';
-import 'package:viewtrip_client/src/projects/project_service.dart';
+import 'package:traxjourney_client/src/projects/project_notifier.dart';
+import 'package:traxjourney_client/src/projects/project_service.dart';
 
 ProjectNotifier _notifier({
   Map<String, Map<String, dynamic>> dayMeta = const {},

@@ -4,10 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:viewtrip_client/src/projects/project_notifier.dart';
-import 'package:viewtrip_client/src/projects/project_service.dart';
-import 'package:viewtrip_client/src/projects/segment_track_editor_page.dart';
-import 'package:viewtrip_client/src/projects/track_editor_controller.dart';
+import 'package:traxjourney_client/src/projects/project_notifier.dart';
+import 'package:traxjourney_client/src/projects/project_service.dart';
+import 'package:traxjourney_client/src/projects/segment_track_editor_page.dart';
+import 'package:traxjourney_client/src/projects/track_editor_controller.dart';
 
 Map<String, dynamic> _segment({
   String id = 'seg-1',

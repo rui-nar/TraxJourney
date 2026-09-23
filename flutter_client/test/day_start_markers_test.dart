@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/projects/map_panel.dart';
+import 'package:traxjourney_client/src/projects/map_panel.dart';
 
 /// Issue #19: a day breakpoint node is drawn at the start of each day. This
 /// covers the pure helper that picks which activities begin a new day.

@@ -7,8 +7,8 @@
 # See docs/DEPLOYMENT_VPS.md's "Auto-deploy validation" section for setup.
 set -euo pipefail
 
-VAL_DIR="/opt/viewtrip-val"
-LOCK_FILE="/tmp/viewtrip-deploy-validation.lock"
+VAL_DIR="/opt/traxjourney-val"
+LOCK_FILE="/tmp/traxjourney-deploy-validation.lock"
 LOG_FILE="$VAL_DIR/deploy.log"
 
 log() { echo "$(date -u +%FT%TZ) $*" >> "$LOG_FILE"; }

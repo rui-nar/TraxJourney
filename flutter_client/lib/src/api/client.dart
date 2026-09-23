@@ -1,4 +1,4 @@
-/// Base HTTP client for the ViewTrip REST API.
+/// Base HTTP client for the TraxJourney REST API.
 ///
 /// Stores the JWT returned by /api/auth/token or /api/auth/google
 /// and attaches it as a Bearer token on every request.

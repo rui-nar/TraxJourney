@@ -15,9 +15,9 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/auth/auth_notifier.dart';
-import 'package:viewtrip_client/src/auth/auth_service.dart';
-import 'package:viewtrip_client/src/api/client.dart';
+import 'package:traxjourney_client/src/auth/auth_notifier.dart';
+import 'package:traxjourney_client/src/auth/auth_service.dart';
+import 'package:traxjourney_client/src/api/client.dart';
 
 /// Builds an unsigned (test-only) JWT carrying just an `exp` claim. Nothing
 /// in AuthNotifier verifies the signature client-side — only the payload's

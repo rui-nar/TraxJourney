@@ -5,12 +5,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
-import 'package:viewtrip_client/src/api/client.dart';
-import 'package:viewtrip_client/src/core/project_ref.dart';
-import 'package:viewtrip_client/src/projects/members_service.dart';
-import 'package:viewtrip_client/src/projects/pending_invites_card.dart';
-import 'package:viewtrip_client/src/projects/projects_notifier.dart';
-import 'package:viewtrip_client/src/projects/projects_service.dart';
+import 'package:traxjourney_client/src/api/client.dart';
+import 'package:traxjourney_client/src/core/project_ref.dart';
+import 'package:traxjourney_client/src/projects/members_service.dart';
+import 'package:traxjourney_client/src/projects/pending_invites_card.dart';
+import 'package:traxjourney_client/src/projects/projects_notifier.dart';
+import 'package:traxjourney_client/src/projects/projects_service.dart';
 
 class _FakeMembersService extends MembersService {
   List<MyPendingInvite> invites;

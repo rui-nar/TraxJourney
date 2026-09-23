@@ -61,7 +61,7 @@ that resolves to whichever Prometheus/Loki datasource actually exists,
 however it got its UID.
 
 Five dashboards are provisioned from `nas/grafana/provisioning/dashboards/`
-(a **ViewTrip** folder, read-only in the UI): **HTTP & Traffic**, **Jobs &
+(a **TraxJourney** folder, read-only in the UI): **HTTP & Traffic**, **Jobs &
 Database**, **Integrations & Auth**, **Logs**, and **Host Resources**. They
 render the metrics table above and the LogQL queries below directly — see
 `nas/README.md` §3 for where to find them once Grafana is up.
@@ -84,7 +84,7 @@ Loki/Prometheus (`docs/DEPLOYMENT_VPS.md` §5). Every series and log stream
 Alloy ships carries an `env` label (`production` or `validation`), and every
 one of the five dashboards has an `env` template variable (top-left) that
 filters every panel on it — pick which environment you're looking at before
-reading the numbers. `service="viewtripweb"` is likewise a real label on
+reading the numbers. `service="traxjourney"` is likewise a real label on
 every log stream now, set unconditionally by Alloy's static relabel rule
 (`config/alloy-config.river.example`) rather than assumed — the LogQL
 queries below only started actually matching once that rule existed.
@@ -96,11 +96,11 @@ it isn't meant to be switched.
 
 The `env` variable itself is populated via `label_values(<metric>, env)`,
 and which metric that is matters: on a freshly-deployed or quiet instance,
-a metric that only appears once real traffic occurs (`viewtrip_http_requests_total`,
-`viewtrip_logins_total`, ...) means the `env` dropdown comes up empty and the
+a metric that only appears once real traffic occurs (`traxjourney_http_requests_total`,
+`traxjourney_logins_total`, ...) means the `env` dropdown comes up empty and the
 whole dashboard looks broken even though the pipeline is fine — confirmed
 live on a real val deployment with zero traffic yet. HTTP & Traffic, Jobs &
-Database and Integrations & Auth all key off `up{job="viewtrip"}` instead —
+Database and Integrations & Auth all key off `up{job="traxjourney"}` instead —
 a synthetic series Prometheus/Alloy create for every successful scrape,
 independent of anything the app itself has done. Host Resources already
 had this right by construction (`node_memory_MemTotal_bytes`, from
@@ -122,22 +122,22 @@ filtering is a substring match, not a logfmt field.
 - **One request end to end** — the original "reconstruct what happened,
   without asking the user" ask, scoped to a single request:
   ```logql
-  {service="viewtripweb"} | logfmt | request_id="a1b2c3d4"
+  {service="traxjourney"} | logfmt | request_id="a1b2c3d4"
   ```
 - **One user's whole session across concurrent traffic** — the broader
   version of the same ask, across every request that user made in a time
   window:
   ```logql
-  {service="viewtripweb"} | logfmt | user_id="42"
+  {service="traxjourney"} | logfmt | user_id="42"
   ```
 - **Error rate** (substring match — see the level-field note above):
   ```logql
-  sum(rate({service="viewtripweb"} |= "ERROR" [5m]))
+  sum(rate({service="traxjourney"} |= "ERROR" [5m]))
   ```
 - **A specific external integration's failures** (matches
   `track_external()`'s log format, `src/utils/metrics.py`):
   ```logql
-  {service="viewtripweb"} |= "external call failed" |= "service=polarsteps"
+  {service="traxjourney"} |= "external call failed" |= "service=polarsteps"
   ```
 
 ## Alerting (replaces the earlier idea of adding Sentry)
@@ -149,7 +149,7 @@ service (`docs/ENCRYPTION.md`). Two starting rules in Grafana Alerting:
 1. **Error-rate spike** — the LogQL query above, alert if `> N` errors over
    5 minutes for some threshold `N` worth calibrating against real traffic
    first (start loose, tighten once you know the baseline).
-2. **Scheduled job failure** — `viewtrip_job_runs_total{result="error"}`
+2. **Scheduled job failure** — `traxjourney_job_runs_total{result="error"}`
    (Prometheus, already emitted by `src/utils/metrics.py`'s
    `record_job_event`) — alert on any increment, since a failed daily
    backup or WAL checkpoint is always worth knowing about immediately, not

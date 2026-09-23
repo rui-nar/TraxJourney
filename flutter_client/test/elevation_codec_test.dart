@@ -6,7 +6,7 @@
 // cross-language contract test rather than a round-trip against ourselves.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/projects/elevation_codec.dart';
+import 'package:traxjourney_client/src/projects/elevation_codec.dart';
 
 void main() {
   test('decodes a vector produced by the server encoder', () {

@@ -1,4 +1,4 @@
-"""Legacy ``.viewtrip`` / ``.gettracks`` file ingestion into the DB.
+"""Project file (``.traxj``) ingestion into the DB — the import endpoint's back end.
 
 Part of the ``ProjectRepo`` mixin split — see ``src/project/project_repo.py``
 for the composed class and module docstring.
@@ -19,12 +19,12 @@ from src.project.repo_core import _compute_low_res_geo
 
 
 class ImportExportMixin:
-    """Legacy file ingestion (lazy migration into the DB)."""
+    """Project file ingestion into the DB."""
 
     def ingest_project(
         self, sess: Session, user_info_id: int, path: str
     ) -> None:
-        """Parse a ``.viewtrip`` (or legacy ``.gettracks``) file and write it into the DB.
+        """Parse a ``.traxj`` project file and write it into the DB.
 
         The DB project name is derived from the **filename** (minus extension)
         so it stays consistent with the URL slug the API has always used.
@@ -37,8 +37,8 @@ class ImportExportMixin:
         """
         # Use the filename-derived name as the DB key (matches the legacy URL slug)
         basename = os.path.basename(path)
-        ext = ProjectIO.EXTENSION if basename.endswith(ProjectIO.EXTENSION) else ProjectIO.LEGACY_EXTENSION
-        db_name = basename[: -len(ext)] if basename.endswith((ProjectIO.EXTENSION, ProjectIO.LEGACY_EXTENSION)) else basename
+        ext = ProjectIO.EXTENSION
+        db_name = basename[: -len(ext)] if basename.endswith(ext) else basename
 
         project = ProjectIO.load(path)
 

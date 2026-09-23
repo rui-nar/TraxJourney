@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
   <body style="font-family: sans-serif; color: #1a1a1a;">
-    <p>Welcome to ViewTrip, <strong>{{ display_name }}</strong>.</p>
+    <p>Welcome to {{ app_name }}, <strong>{{ display_name }}</strong>.</p>
     <p>Confirm this address to finish setting up your account:</p>
     <p>
       <a href="{{ verify_url }}"
@@ -14,12 +14,12 @@
       This link expires in {{ expires_hours }} hours.
     </p>
     <p style="color: #666666; font-size: 12px;">
-      Until it is confirmed you can still use ViewTrip normally — you just
+      Until it is confirmed you can still use {{ app_name }} normally — you just
       won't be able to send trip invites, or receive one someone sends to
       this address.
     </p>
     <p style="color: #666666; font-size: 12px;">
-      If you didn't create a ViewTrip account, you can ignore this email.
+      If you didn't create a {{ app_name }} account, you can ignore this email.
     </p>
   </body>
 </html>

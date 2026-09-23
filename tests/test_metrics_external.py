@@ -16,7 +16,7 @@ from src.api.strava_client import StravaAPI
 from src.config.settings import Config
 from src.exceptions.errors import APIError, AuthenticationError
 
-_COUNTER = "viewtrip_external_requests_total"
+_COUNTER = "traxjourney_external_requests_total"
 
 
 class DummyConfig(Config):

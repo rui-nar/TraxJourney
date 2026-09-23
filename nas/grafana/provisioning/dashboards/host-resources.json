@@ -1,8 +1,8 @@
 {
-  "uid": "viewtrip-host-resources",
-  "title": "ViewTrip / Host Resources",
+  "uid": "traxjourney-host-resources",
+  "title": "TraxJourney / Host Resources",
   "description": "VPS host memory, swap, CPU, disk and load, from Alloy's prometheus.exporter.unix (config/alloy-config.river.example). Added after issue #209: the host livelocked under memory pressure with no swap, and nothing was watching host resources at all, so the incident looked like silence rather than a clean crash. Prod and val run on the same physical VPS, so this dashboard reports the same host either way — use the env variable to pick which environment's alloy container is reporting it (a gap in one while the other keeps reporting is itself a useful signal).",
-  "tags": ["viewtrip"],
+  "tags": ["traxjourney"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,
@@ -137,12 +137,12 @@
     {
       "id": 6,
       "type": "timeseries",
-      "title": "ViewTrip API process RSS",
-      "description": "process_resident_memory_bytes for the viewtripweb job — the app's own view of its memory, from prometheus_client's default collector. Empty if PROMETHEUS_MULTIPROC_DIR is set (worker containers running, docs/DEPLOYMENT_VPS.md): multiprocess mode doesn't aggregate this metric across processes. Host memory above is the reliable signal either way.",
+      "title": "TraxJourney API process RSS",
+      "description": "process_resident_memory_bytes for the traxjourney job — the app's own view of its memory, from prometheus_client's default collector. Empty if PROMETHEUS_MULTIPROC_DIR is set (worker containers running, docs/DEPLOYMENT_VPS.md): multiprocess mode doesn't aggregate this metric across processes. Host memory above is the reliable signal either way.",
       "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "process_resident_memory_bytes{job=\"viewtrip\",env=\"$env\"}", "legendFormat": "{{instance}}"}
+        {"refId": "A", "expr": "process_resident_memory_bytes{job=\"traxjourney\",env=\"$env\"}", "legendFormat": "{{instance}}"}
       ],
       "fieldConfig": {"defaults": {"unit": "bytes", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": []},
       "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}

@@ -370,9 +370,9 @@ you have the parallelism for it.
   Grafana, monolithic/filesystem storage, retention/compaction settings.
   Grafana datasource config (both Prometheus and Loki, both pointed at
   localhost-on-NAS). A handful of concrete LogQL/PromQL examples an
-  operator would actually run — e.g. `{service="viewtripweb"} | logfmt |
+  operator would actually run — e.g. `{service="traxjourney"} | logfmt |
   user_id="123"` to pull one user's whole session across concurrent
-  traffic, `{service="viewtripweb"} | logfmt | request_id="..."` for one
+  traffic, `{service="traxjourney"} | logfmt | request_id="..."` for one
   request end-to-end. 2-3 starter Grafana alert rules (error-rate spike,
   job failure) replacing the earlier Sentry idea. One line noting Dozzle
   is already deployed (`/opt/dozzle`, :8892) and covers live-tail — confirm

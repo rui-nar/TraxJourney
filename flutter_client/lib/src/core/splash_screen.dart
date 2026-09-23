@@ -16,10 +16,10 @@ import 'package:provider/provider.dart';
 
 import '../auth/auth_notifier.dart';
 import 'app_version.dart';
+import 'brand.dart';
 import 'brand_mark.dart';
 
-/// Product name, as shown on the Android launcher and traxjourney.com.
-const _wordmark = 'TraxJourney';
+const _wordmark = kAppName;
 const _tagline = 'Merge · Visualise · Export';
 
 /// The app's own one-liner, kept in step with web/manifest.json.

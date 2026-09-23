@@ -16,7 +16,7 @@
 //
 // PROD AND VAL SHARE THIS FILE, UNCHANGED, ONE PER HOST DIRECTORY. Both push
 // to the same NAS Loki/Prometheus, so every series and log stream carries an
-// `env` label (VIEWTRIP_ENV in .env — "production" or "validation", see
+// `env` label (TRAXJOURNEY_ENV in .env — "production" or "validation", see
 // docs/DEPLOYMENT_VPS.md §5) or the two deployments' data would be
 // indistinguishable once it lands here. Every dashboard's `env` variable
 // filters on exactly this label.
@@ -36,7 +36,7 @@ discovery.docker "containers" {
 // Alloy's own container is dropped before either label is applied — not
 // narrowed to a different label, dropped entirely. Confirmed live: without
 // this, Alloy's own diagnostics ("disabling udev device properties" and
-// friends) show up mislabeled service="viewtripweb" in the Logs dashboard's
+// friends) show up mislabeled service="traxjourney" in the Logs dashboard's
 // "All logs" panel, mixed in with the app's actual logs. Alloy is the one
 // container that's structurally unmonitorable through this pipeline anyway
 // — if Alloy itself is broken, it can't ship logs about being broken
@@ -45,7 +45,7 @@ discovery.docker "containers" {
 // broken Alloy needs `docker compose logs alloy` on the host, not a Loki
 // query. Everything else — Redis, the worker, worker-poster, any future
 // service — deliberately keeps the blanket, ungated rule below and lands
-// under service="viewtripweb" same as the app itself: they're all part of
+// under service="traxjourney" same as the app itself: they're all part of
 // what "the app" means operationally, and a failure in any of them is
 // exactly the kind of thing the Logs dashboard exists to surface. New
 // services need no config change here to be covered, same as discovery
@@ -58,16 +58,16 @@ discovery.relabel "containers" {
 
   rule {
     source_labels = ["__meta_docker_container_name"]
-    regex         = "^/viewtrip-(val-)?alloy$"
+    regex         = "^/traxjourney-(val-)?alloy$"
     action        = "drop"
   }
   rule {
     target_label = "service"
-    replacement  = "viewtripweb"
+    replacement  = "traxjourney"
   }
   rule {
     target_label = "env"
-    replacement  = env("VIEWTRIP_ENV")
+    replacement  = env("TRAXJOURNEY_ENV")
   }
 }
 
@@ -105,12 +105,12 @@ loki.write "nas" {
 // /metrics requires Authorization: Bearer <METRICS_TOKEN> unconditionally
 // (docs/METRICS.md) — there's no exemption for same-network requests, so
 // this scrape needs it same as any external one would. Without it, every
-// scrape 401s; confirmed live via up{job="viewtrip"} == 0 with this
+// scrape 401s; confirmed live via up{job="traxjourney"} == 0 with this
 // argument absent. .env already reaches this container (env_file: .env,
 // docker-compose.yml.example), so no separate wiring needed beyond this.
-prometheus.scrape "viewtrip" {
+prometheus.scrape "traxjourney" {
   targets = [
-    {"__address__" = "viewtripweb:8000", "job" = "viewtrip", "env" = env("VIEWTRIP_ENV")},
+    {"__address__" = "traxjourney:8000", "job" = "traxjourney", "env" = env("TRAXJOURNEY_ENV")},
   ]
   metrics_path    = "/metrics"
   scrape_interval = "30s"
@@ -145,7 +145,7 @@ discovery.relabel "host" {
 
   rule {
     target_label = "env"
-    replacement  = env("VIEWTRIP_ENV")
+    replacement  = env("TRAXJOURNEY_ENV")
   }
 }
 

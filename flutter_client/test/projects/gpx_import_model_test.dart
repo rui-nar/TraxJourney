@@ -6,7 +6,7 @@
 library;
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/projects/gpx_import_model.dart';
+import 'package:traxjourney_client/src/projects/gpx_import_model.dart';
 
 Map<String, dynamic> _candidate([Map<String, dynamic> overrides = const {}]) => {
       'index': 0,

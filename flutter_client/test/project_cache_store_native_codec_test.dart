@@ -11,7 +11,7 @@
 import 'dart:convert' show jsonEncode;
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/projects/project_cache_store_native.dart';
+import 'package:traxjourney_client/src/projects/project_cache_store_native.dart';
 
 void main() {
   test('gzEncode/gzDecode round-trips a typical payload', () {

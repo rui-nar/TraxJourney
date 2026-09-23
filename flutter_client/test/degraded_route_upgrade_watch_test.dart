@@ -10,9 +10,9 @@
 // mid-edit on. Reload/Later are the only two paths that touch state.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/core/project_ref.dart';
-import 'package:viewtrip_client/src/projects/project_notifier.dart';
-import 'package:viewtrip_client/src/projects/project_service.dart';
+import 'package:traxjourney_client/src/core/project_ref.dart';
+import 'package:traxjourney_client/src/projects/project_notifier.dart';
+import 'package:traxjourney_client/src/projects/project_service.dart';
 
 const _ref = ProjectRef(name: 'Trip');
 

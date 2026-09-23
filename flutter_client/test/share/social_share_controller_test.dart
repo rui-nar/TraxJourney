@@ -2,9 +2,9 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:share_plus/share_plus.dart';
-import 'package:viewtrip_client/src/share/share_interfaces.dart';
-import 'package:viewtrip_client/src/share/share_strategy.dart';
-import 'package:viewtrip_client/src/share/social_share_controller.dart';
+import 'package:traxjourney_client/src/share/share_interfaces.dart';
+import 'package:traxjourney_client/src/share/share_strategy.dart';
+import 'package:traxjourney_client/src/share/social_share_controller.dart';
 
 // ── Fakes ──────────────────────────────────────────────────────────────────
 

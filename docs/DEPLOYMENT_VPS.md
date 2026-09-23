@@ -3,11 +3,15 @@
 Runbook for the OVH VPS, which now hosts **both** environments and has fully
 replaced the Synology NAS:
 
-- **production** — `traxjourney.com`, `/opt/viewtrip/`, image `:latest`
-- **validation** — `val.traxjourney.com`, `/opt/viewtrip-val/`, image `:validation`
+- **production** — `traxjourney.com`, `/opt/traxjourney/`, image `:latest`
+- **validation** — `val.traxjourney.com`, `/opt/traxjourney-val/`, image `:validation`
+
+A host still laid out under the app's old name (`/opt/viewtrip`, service
+`viewtripweb`, `viewtripweb.db`) is moved to these names with
+`docs/RENAME_TRAXJOURNEY_RUNBOOK.md` (issue #151).
 
 Validation moved off the NAS because its firewall could not be opened up enough
-to serve the environment. Nothing about ViewTripWeb forced the move, so there is
+to serve the environment. Nothing about TraxJourney forced the move, so there is
 no application-level workaround to look for — the NAS is simply no longer a
 deployment target, and `deploy.ps1` no longer has a code path that reaches it.
 
@@ -20,8 +24,8 @@ deployment target, and `deploy.ps1` no longer has a code path that reaches it.
 | Specs | 2 vCore, 4 GB RAM, 40 GB NVMe SSD, Strasbourg (FR) datacenter |
 | Image | Debian 12 - Docker (Docker preinstalled) |
 | SSH user | `debian` (OVH default account, sudo + docker group) |
-| Prod directory | `/opt/viewtrip/` (`db/`, `config/`, `data/`, `docker-compose.yml`, `.env`) |
-| Val directory | `/opt/viewtrip-val/` (same layout, own `.env`, own data) |
+| Prod directory | `/opt/traxjourney/` (`db/`, `config/`, `data/`, `docker-compose.yml`, `.env`) |
+| Val directory | `/opt/traxjourney-val/` (same layout, own `.env`, own data) |
 | Reverse proxy | Caddy (automatic Let's Encrypt TLS) |
 
 ## 1. VPS hardening
@@ -102,7 +106,7 @@ ever set `keepalive` explicitly in the Caddyfile, keep it below uvicorn's value;
 
 ## 3. App deployment
 
-`/opt/viewtrip/docker-compose.yml` mirrors the NAS prod compose
+`/opt/traxjourney/docker-compose.yml` mirrors the NAS prod compose
 (`/volume2/docker/viewtrip/docker-compose.yml`), with three differences:
 
 - Port bound to loopback (`127.0.0.1:8000:8000`) instead of `7777:8000`.
@@ -168,7 +172,7 @@ it are easy to get wrong:
   port — and an unauthenticated Redis reachable from the internet is a
   well-known way to lose a host.
 
-The workers set `VIEWTRIP_ROLE=worker`, which stops them running migrations, the
+The workers set `TRAXJOURNEY_ROLE=worker`, which stops them running migrations, the
 admin seed, and the scheduled jobs. Only the API container owns those: two
 containers racing `alembic upgrade head` at boot, or each taking its own nightly
 backup and 60 s WAL checkpoint, is the failure that guards against.
@@ -192,7 +196,9 @@ job-side DB metrics silently go missing (see docs/METRICS.md).
 ## 4. Data migration (NAS -> VPS)
 
 *Historical — the one-time move of prod data off the NAS. Kept for the gotchas,
-which apply to any Synology copy. To seed validation from prod, see §5.*
+which apply to any Synology copy. To seed validation from prod, see §5. The
+paths are the ones used at the time, before the rename (issue #151): the VPS
+directory is now `/opt/traxjourney` and the database `traxjourney.db`.*
 
 1. **Consistent DB snapshot on the NAS**, via SQLite's online backup API in a
    throwaway container (safe on a live DB — unlike a raw `cp`, correctly
@@ -233,7 +239,7 @@ which apply to any Synology copy. To seed validation from prod, see §5.*
 4. `cd /opt/viewtrip && docker compose up -d`, then `docker compose logs -f`
    to confirm a clean Alembic migration + startup before checking the site.
 
-## 5. Validation environment (`/opt/viewtrip-val`)
+## 5. Validation environment (`/opt/traxjourney-val`)
 
 Same host, same Docker, same image repository — a second directory with its own
 compose file, `.env` and data. Three things differ from prod:
@@ -243,7 +249,7 @@ compose file, `.env` and data. Three things differ from prod:
   `8001:8000` would put validation on the public internet regardless of the
   firewall. Only Caddy needs to reach it.
 - **Image `:validation`**, not `:latest`.
-- **Its own `db/`, `data/`, `config/`.** Pointing val at `/opt/viewtrip/db`
+- **Its own `db/`, `data/`, `config/`.** Pointing val at `/opt/traxjourney/db`
   would put validation writes into the production SQLite file.
 
 `.env` must set `FRONTEND_ORIGIN` and `STRAVA_REDIRECT_URI` to
@@ -253,7 +259,7 @@ Strava allows only one callback domain per app, so val either gets its own
 Strava app or does without Strava sync.
 
 If the `alloy` service (§7) is running, `.env` must also set
-`VIEWTRIP_ENV=validation` here (prod's is `VIEWTRIP_ENV=production`) — both
+`TRAXJOURNEY_ENV=validation` here (prod's is `TRAXJOURNEY_ENV=production`) — both
 push to the same NAS Loki/Prometheus, and this is the only thing that keeps
 their logs/metrics distinguishable there instead of colliding. Each
 dashboard's `env` variable filters on it.
@@ -265,7 +271,7 @@ keys can bill or mutate a real customer.
 
 ### Seeding val from the latest prod backup
 
-Prod's nightly job writes `/opt/viewtrip/db/backups/viewtripweb_<YYYY-MM-DD>.db`
+Prod's nightly job writes `/opt/traxjourney/db/backups/traxjourney_<YYYY-MM-DD>.db`
 (`src/backup/backup_service.py`). Each file is self-contained —
 `wal_checkpoint(TRUNCATE)` folds the WAL in — so there is no sidecar to carry
 along. Both stacks are on one host, so a bind mount reaches them:
@@ -278,21 +284,21 @@ along. Both stacks are on one host, so a bind mount reaches them:
     image: alpine:3.20
     profiles: ["seed"]
     volumes:
-      - /opt/viewtrip/db/backups:/prod-backups:ro
+      - /opt/traxjourney/db/backups:/prod-backups:ro
       - ./db:/db
     command:
       - sh
       - -euc
       - |
-        latest=$$(ls -1 /prod-backups/viewtripweb_*.db 2>/dev/null | tail -n1)
+        latest=$$(ls -1 /prod-backups/traxjourney_*.db 2>/dev/null | tail -n1)
         [ -n "$$latest" ] || { echo "no prod backup in /prod-backups"; exit 1; }
         echo "seeding val from $$latest"
-        rm -f /db/viewtripweb.db-wal /db/viewtripweb.db-shm
-        cp "$$latest" /db/viewtripweb.db
+        rm -f /db/traxjourney.db-wal /db/traxjourney.db-shm
+        cp "$$latest" /db/traxjourney.db
         echo done
 ```
 
-**Run it** (from `/opt/viewtrip-val`, in this order — val must be stopped
+**Run it** (from `/opt/traxjourney-val`, in this order — val must be stopped
 before the copy, per the first gotcha below):
 
 ```bash
@@ -326,7 +332,7 @@ Schema drift needs no action: val's API runs `alembic upgrade head` in its
 lifespan, so a prod DB on an older revision migrates forward on first boot.
 
 The database references media under `data/`, so a DB-only seed leaves memories
-pointing at files that do not exist. Add `/opt/viewtrip/data:/prod-data:ro` plus
+pointing at files that do not exist. Add `/opt/traxjourney/data:/prod-data:ro` plus
 `./data:/val-data` and `cp -a /prod-data/. /val-data/` if you want them — check
 free space first, it is a full copy of prod's media onto a 40 GB disk.
 
@@ -339,7 +345,7 @@ whether anything is built locally.
 
 | | `Validation` | `Prod` |
 |---|---|---|
-| Directory | `/opt/viewtrip-val` | `/opt/viewtrip` |
+| Directory | `/opt/traxjourney-val` | `/opt/traxjourney` |
 | Image tag | `:validation` | `:latest` |
 | Builds locally | yes (unless `-SkipBuild`) | never |
 | URL | val.traxjourney.com | traxjourney.com |
@@ -371,13 +377,13 @@ git tag -f validation <commit-or-branch>
 git push origin validation --force
 ```
 
-`docker-build.yml` builds `ghcr.io/rui-nar/viewtripweb:validation` on
+`docker-build.yml` builds `ghcr.io/rui-nar/traxjourney:validation` on
 `ubuntu-latest`. It is the **same tag** `deploy.ps1` pushes, so the val host
 pulls it either way and needs no reconfiguration. Deploy it with
 `.\deploy.ps1 -SkipBuild`, or directly on the VPS:
 
 ```bash
-cd /opt/viewtrip-val && docker compose pull && docker compose up -d
+cd /opt/traxjourney-val && docker compose pull && docker compose up -d
 ```
 
 This path only ever produces `:validation` — never `:latest` or a `:<sha>` tag,
@@ -423,7 +429,7 @@ IP/MagicDNS name — that's what `LOKI_PUSH_URL` and
 ### Alloy (VPS side)
 
 `docker-compose.yml.example`'s `alloy` service tails every container's logs
-via the Docker socket (read-only), scrapes `viewtripweb:8000/metrics` over
+via the Docker socket (read-only), scrapes `traxjourney:8000/metrics` over
 the compose-internal network — `/metrics` itself never needs to be reachable
 from outside this host for this to work — and (issue #209) scrapes its own
 `prometheus.exporter.unix` component for host memory/swap/CPU/disk. That
@@ -446,8 +452,8 @@ PROMETHEUS_REMOTE_WRITE_URL=http://<nas-tailscale-host>:9090/api/v1/write
 **Not verified against a live Alloy binary** — `config/alloy-config.river.example`
 is a documented starting point to adapt, the same spirit
 `docker-compose.yml.example` itself already is. Confirm log lines, the
-`viewtrip_*` metrics, and the `node_*` host metrics actually arrive in
-Grafana on the NAS (`ViewTrip / Host Resources` dashboard) before relying
+`traxjourney_*` metrics, and the `node_*` host metrics actually arrive in
+Grafana on the NAS (`TraxJourney / Host Resources` dashboard) before relying
 on it for an incident.
 
 ### Dropping `/metrics`'s public exposure
@@ -473,7 +479,7 @@ is down during an incident, `docker compose logs` here must still answer
 `deploy.ps1` needs a human at a Windows dev machine to redeploy validation.
 `vps/webhook/` closes that loop: `docker-build.yml` finishing successfully
 off the `validation` tag triggers a `docker compose pull && up -d` on
-`/opt/viewtrip-val` automatically, with no runner registered in GitHub and
+`/opt/traxjourney-val` automatically, with no runner registered in GitHub and
 no SSH key stored in GitHub's secrets — the trust boundary stays entirely
 on this VPS. Deliberately scoped to **validation only**: auto-deploying
 prod on every release would remove `deploy.ps1 -Target Prod`'s existing
@@ -497,9 +503,9 @@ instead and drop it at `/usr/bin/webhook`.
 ### Configure the hook
 
 ```bash
-mkdir -p /opt/viewtrip-val/webhook
-cp vps/webhook/*.sh vps/webhook/hooks.yaml.example /opt/viewtrip-val/webhook/
-cd /opt/viewtrip-val/webhook
+mkdir -p /opt/traxjourney-val/webhook
+cp vps/webhook/*.sh vps/webhook/hooks.yaml.example /opt/traxjourney-val/webhook/
+cd /opt/traxjourney-val/webhook
 mv hooks.yaml.example hooks.yaml
 openssl rand -hex 32   # generate a secret, paste it into hooks.yaml AND
                         # into GitHub's webhook config below — same value
@@ -512,7 +518,7 @@ and `config/config.json` elsewhere in this repo.
 ### systemd unit
 
 ```bash
-sudo cp /opt/viewtrip-val/webhook/webhook.service /etc/systemd/system/
+sudo cp /opt/traxjourney-val/webhook/webhook.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now webhook
 sudo systemctl status webhook   # confirm it's listening on 127.0.0.1:9999
@@ -564,7 +570,7 @@ Force-push the `validation` tag (see §6's "other way to cut `:validation`")
 and watch:
 
 ```bash
-tail -f /opt/viewtrip-val/deploy.log
+tail -f /opt/traxjourney-val/deploy.log
 ```
 
 `deploy-validation.sh` logs each attempt (triggered/succeeded/failed) with
@@ -581,7 +587,7 @@ deployment step, run here, against the `rail-data-<date>` prereleases the
 `Rail extract` workflow publishes on GitHub.
 
 Everything below is `docker compose run --rm` in the **prod** stack
-(`/opt/viewtrip`); val is the same with `-f` pointed at `/opt/viewtrip-val`.
+(`/opt/traxjourney`); val is the same with `-f` pointed at `/opt/traxjourney-val`.
 Starting a second refresh of the same directory is harmless: it takes an
 exclusive lock on `.incoming/.lock`, so the second run prints that one is
 already going, does nothing and exits 0.
@@ -589,8 +595,8 @@ already going, does nothing and exits 0.
 ### First install
 
 ```bash
-cd /opt/viewtrip
-docker compose run --rm --entrypoint python viewtripweb \
+cd /opt/traxjourney
+docker compose run --rm --entrypoint python traxjourney \
     scripts/fetch_rail_data.py --dest /app/data/rail
 ```
 
@@ -628,7 +634,7 @@ store it already holds at that release's checksum, and fetches only what
 changed:
 
 ```bash
-docker compose run --rm --entrypoint python viewtripweb \
+docker compose run --rm --entrypoint python traxjourney \
     scripts/fetch_rail_data.py --dest /app/data/rail
 ```
 
@@ -658,21 +664,21 @@ The step exits non-zero if any region was refused, and names them. Otherwise:
 
 ```bash
 # 1. Every ok region in the manifest has a store beside it.
-ls /opt/viewtrip/data/rail/*.rail.sqlite | wc -l
-python3 -c "import json;m=json.load(open('/opt/viewtrip/data/rail/manifest.json'));\
+ls /opt/traxjourney/data/rail/*.rail.sqlite | wc -l
+python3 -c "import json;m=json.load(open('/opt/traxjourney/data/rail/manifest.json'));\
 print(sum(1 for e in m['regions'] if e['status']=='ok'), 'ok', \
       sum(1 for e in m['regions'] if e['status']=='empty'), 'empty')"
 
 # 2. How old the data is — per region, which is the number that matters.
-python3 -c "import json;m=json.load(open('/opt/viewtrip/data/rail/manifest.json'));\
+python3 -c "import json;m=json.load(open('/opt/traxjourney/data/rail/manifest.json'));\
 print(sorted({e.get('source_date') for e in m['regions']}))"
 
 # 3. Nothing left mid-flight.
-ls -A /opt/viewtrip/data/rail/.incoming   # must hold nothing but .lock
+ls -A /opt/traxjourney/data/rail/.incoming   # must hold nothing but .lock
 
 # 4. Resolves are actually using it: no Overpass traffic for European
 #    segments, and no "local rail data ... is unusable" in the logs.
-docker compose logs --since 10m viewtripweb worker | grep -i "rail"
+docker compose logs --since 10m traxjourney worker | grep -i "rail"
 ```
 
 A count of ok regions that is lower than the manifest's is the failure that
@@ -693,13 +699,13 @@ that is what happened, and `--memory` on the `run` is the fix.
 The previous month's release is still there, and installing it is the rollback:
 
 ```bash
-docker compose run --rm --entrypoint python viewtripweb \
+docker compose run --rm --entrypoint python traxjourney \
     scripts/fetch_rail_data.py --dest /app/data/rail --tag rail-data-2026-09-06
 ```
 
 It rebuilds every region whose checksum differs from what is installed and
 leaves the rest alone, so this converges on the old data without a manual
-cleanup. `gh release list --repo rui-nar/ViewTripWeb | grep rail-data-` lists
+cleanup. `gh release list --repo rui-nar/TraxJourney | grep rail-data-` lists
 the tags to choose from; any of them works however old it is, because a tag
 given here is fetched from GitHub by name rather than looked for among the
 most recent hundred releases.
@@ -708,7 +714,7 @@ The other rollback, when the data itself is suspect rather than one region's:
 
 ```bash
 # back to Overpass — no image, no data change, effective within 5 minutes
-sed -i 's/^RAIL_SOURCE=local/RAIL_SOURCE=overpass/' /opt/viewtrip/.env
+sed -i 's/^RAIL_SOURCE=local/RAIL_SOURCE=overpass/' /opt/traxjourney/.env
 docker compose up -d
 ```
 
@@ -726,7 +732,7 @@ is harmless.
       is the same site that suffered OVH's 2021 fire — the in-house
       "Automated Backup" option isn't sufficient on its own).
 - [x] Decommission the NAS as a deployment target. Validation moved to
-      `/opt/viewtrip-val` on the VPS; `deploy.ps1` no longer reaches the NAS.
+      `/opt/traxjourney-val` on the VPS; `deploy.ps1` no longer reaches the NAS.
 - [ ] Both environments now share one host, one disk and one 4 GB of RAM. A
       poster render in val competes with prod for memory — worth watching
       before assuming val is free. Confirmed a real constraint, not just a

@@ -94,7 +94,9 @@ keyPassword=...
 `main.dart` already passes a `serverClientId` for native platforms, but Google
 also requires an **Android** OAuth client registered against the app's package
 name and signing certificate. Create it once, in the Google Cloud console for
-project `viewtrip`:
+the project with id `viewtrip` (a Google Cloud project id can never be
+changed, so it keeps the app's old name; only the display name can say
+TraxJourney):
 
 > Credentials → Create credentials → OAuth client ID → **Android**
 > Package name: `com.traxjourney.app`

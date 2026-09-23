@@ -43,6 +43,7 @@ from models.project_db import (
     DBProjectPendingInvite,
 )
 from models.user import UserInfo
+from src.brand import APP_NAME
 from src.email.address import is_valid_email, normalize_email
 from src.email.service import EmailMessage, get_email_service
 from src.email.templates import render_invite_email
@@ -152,7 +153,7 @@ async def send_invite_email(to_email: str, project_name: str, owner_name: str,
     try:
         await get_email_service().send(EmailMessage(
             to=to_email,
-            subject=f"{owner_name} invited you to {project_name} on ViewTrip",
+            subject=f"{owner_name} invited you to {project_name} on {APP_NAME}",
             text_body=text_body,
             html_body=html_body,
         ))

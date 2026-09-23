@@ -7,10 +7,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
-import 'package:viewtrip_client/src/api/client.dart';
-import 'package:viewtrip_client/src/core/project_ref.dart';
-import 'package:viewtrip_client/src/projects/join_trip_screen.dart';
-import 'package:viewtrip_client/src/projects/members_service.dart';
+import 'package:traxjourney_client/src/api/client.dart';
+import 'package:traxjourney_client/src/core/project_ref.dart';
+import 'package:traxjourney_client/src/projects/join_trip_screen.dart';
+import 'package:traxjourney_client/src/projects/members_service.dart';
 
 class _FakeMembersService extends MembersService {
   InvitePreview? preview;

@@ -3,7 +3,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/projects/add_speed_dial.dart';
+import 'package:traxjourney_client/src/projects/add_speed_dial.dart';
 
 void main() {
   testWidgets('fans actions out on tap and fires the selected one',

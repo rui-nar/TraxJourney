@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/crypto/device_key_store.dart';
-import 'package:viewtrip_client/src/crypto/e2ee_crypto.dart';
+import 'package:traxjourney_client/src/crypto/device_key_store.dart';
+import 'package:traxjourney_client/src/crypto/e2ee_crypto.dart';
 
 class InMemoryKv implements SecureKvStore {
   final Map<String, String> _m = {};

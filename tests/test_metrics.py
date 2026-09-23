@@ -55,47 +55,47 @@ class TestOutcomeForStatus:
 
 class TestTrackExternal:
     def test_records_success_and_duration(self, metric):
-        before = metric("viewtrip_external_requests_total",
+        before = metric("traxjourney_external_requests_total",
                         service="demo", endpoint="/ping", outcome="success")
-        before_count = metric("viewtrip_external_request_duration_seconds_count",
+        before_count = metric("traxjourney_external_request_duration_seconds_count",
                               service="demo", endpoint="/ping")
 
         with track_external("demo", "/ping"):
             pass
 
-        assert metric("viewtrip_external_requests_total",
+        assert metric("traxjourney_external_requests_total",
                       service="demo", endpoint="/ping", outcome="success") - before == 1
-        assert metric("viewtrip_external_request_duration_seconds_count",
+        assert metric("traxjourney_external_request_duration_seconds_count",
                       service="demo", endpoint="/ping") - before_count == 1
 
     def test_caller_set_outcome_wins(self, metric):
-        before = metric("viewtrip_external_requests_total",
+        before = metric("traxjourney_external_requests_total",
                         service="demo", endpoint="/ping", outcome="rate_limited")
         with track_external("demo", "/ping") as call:
             call.outcome = "rate_limited"
-        assert metric("viewtrip_external_requests_total",
+        assert metric("traxjourney_external_requests_total",
                       service="demo", endpoint="/ping", outcome="rate_limited") - before == 1
 
     def test_raising_block_records_exception_and_reraises(self, metric):
-        before = metric("viewtrip_external_requests_total",
+        before = metric("traxjourney_external_requests_total",
                         service="demo", endpoint="/boom", outcome="exception")
         with pytest.raises(ValueError):
             with track_external("demo", "/boom"):
                 raise ValueError("upstream exploded")
-        assert metric("viewtrip_external_requests_total",
+        assert metric("traxjourney_external_requests_total",
                       service="demo", endpoint="/boom", outcome="exception") - before == 1
 
     def test_caller_set_outcome_survives_a_raise(self, metric):
         """The Strava client classifies a 401 itself and *then* raises. The
         classification must win over the generic "exception" fallback,
         otherwise every upstream auth failure is recorded as a client crash."""
-        before = metric("viewtrip_external_requests_total",
+        before = metric("traxjourney_external_requests_total",
                         service="demo", endpoint="/auth", outcome="auth_error")
         with pytest.raises(RuntimeError):
             with track_external("demo", "/auth") as call:
                 call.outcome = "auth_error"
                 raise RuntimeError("401")
-        assert metric("viewtrip_external_requests_total",
+        assert metric("traxjourney_external_requests_total",
                       service="demo", endpoint="/auth", outcome="auth_error") - before == 1
 
 
@@ -138,39 +138,39 @@ class TestRecordJobEvent:
         return JobExecutionEvent(code, job_id, "default", None, exception=exception)
 
     def test_successful_run_counts_and_stamps_last_success(self, metric):
-        before = metric("viewtrip_job_runs_total", job="demo_ok", result="success")
+        before = metric("traxjourney_job_runs_total", job="demo_ok", result="success")
         record_job_event(self._submitted("demo_ok"))
         record_job_event(self._executed("demo_ok"))
 
-        assert metric("viewtrip_job_runs_total", job="demo_ok", result="success") - before == 1
-        assert metric("viewtrip_job_duration_seconds_count", job="demo_ok") == 1
-        assert metric("viewtrip_job_last_success_timestamp_seconds", job="demo_ok") > 0
+        assert metric("traxjourney_job_runs_total", job="demo_ok", result="success") - before == 1
+        assert metric("traxjourney_job_duration_seconds_count", job="demo_ok") == 1
+        assert metric("traxjourney_job_last_success_timestamp_seconds", job="demo_ok") > 0
 
     def test_failed_run_counts_as_error_and_leaves_last_success_alone(self, metric):
         record_job_event(self._submitted("demo_err"))
         record_job_event(self._executed("demo_err"))
-        stamped = metric("viewtrip_job_last_success_timestamp_seconds", job="demo_err")
+        stamped = metric("traxjourney_job_last_success_timestamp_seconds", job="demo_err")
 
         record_job_event(self._submitted("demo_err"))
         record_job_event(self._executed("demo_err", exception=RuntimeError("boom")))
 
-        assert metric("viewtrip_job_runs_total", job="demo_err", result="error") == 1
-        assert metric("viewtrip_job_last_success_timestamp_seconds", job="demo_err") == stamped
+        assert metric("traxjourney_job_runs_total", job="demo_err", result="error") == 1
+        assert metric("traxjourney_job_last_success_timestamp_seconds", job="demo_err") == stamped
 
     def test_missed_run_is_recorded(self, metric):
         """A missed run only ever produced a log line before — invisible after
         the fact, which is exactly when it matters."""
-        before = metric("viewtrip_job_runs_total", job="demo_missed", result="missed")
+        before = metric("traxjourney_job_runs_total", job="demo_missed", result="missed")
         record_job_event(JobExecutionEvent(EVENT_JOB_MISSED, "demo_missed", "default", None))
-        assert metric("viewtrip_job_runs_total", job="demo_missed", result="missed") - before == 1
+        assert metric("traxjourney_job_runs_total", job="demo_missed", result="missed") - before == 1
 
     def test_execution_without_submission_still_counts(self, metric):
         """Duration is unknown if the submit event was missed (e.g. the
         listener was attached mid-flight); the run must still be counted."""
-        before = metric("viewtrip_job_runs_total", job="demo_orphan", result="success")
+        before = metric("traxjourney_job_runs_total", job="demo_orphan", result="success")
         record_job_event(self._executed("demo_orphan"))
-        assert metric("viewtrip_job_runs_total", job="demo_orphan", result="success") - before == 1
-        assert metric("viewtrip_job_duration_seconds_count", job="demo_orphan") == 0
+        assert metric("traxjourney_job_runs_total", job="demo_orphan", result="success") - before == 1
+        assert metric("traxjourney_job_duration_seconds_count", job="demo_orphan") == 0
 
 
 class TestOperationOf:

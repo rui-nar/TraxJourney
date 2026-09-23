@@ -7,11 +7,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
-import 'package:viewtrip_client/src/auth/auth_notifier.dart';
-import 'package:viewtrip_client/src/auth/auth_service.dart';
-import 'package:viewtrip_client/src/projects/projects_notifier.dart';
-import 'package:viewtrip_client/src/projects/projects_screen.dart';
-import 'package:viewtrip_client/src/projects/projects_service.dart';
+import 'package:traxjourney_client/src/auth/auth_notifier.dart';
+import 'package:traxjourney_client/src/auth/auth_service.dart';
+import 'package:traxjourney_client/src/projects/projects_notifier.dart';
+import 'package:traxjourney_client/src/projects/projects_screen.dart';
+import 'package:traxjourney_client/src/projects/projects_service.dart';
 
 class _FakeProjectsService extends ProjectsService {
   final List<Map<String, dynamic>> entries;
@@ -53,10 +53,10 @@ void main() {
       'renders My Trips and Shared With Me as separate sections, with the '
       "owner's name shown on the shared tile", (tester) async {
     final notifier = await _loadedNotifier([
-      {'name': 'Own Trip', 'filename': 'own.viewtrip', 'role': 'owner'},
+      {'name': 'Own Trip', 'filename': 'own.traxj', 'role': 'owner'},
       {
         'name': 'Friend Trip',
-        'filename': 'friend.viewtrip',
+        'filename': 'friend.traxj',
         'owner_id': 7,
         'owner_name': 'Bob',
         'role': 'editor',
@@ -82,7 +82,7 @@ void main() {
   testWidgets('Shared With Me is hidden entirely when nothing is shared',
       (tester) async {
     final notifier = await _loadedNotifier([
-      {'name': 'Own Trip', 'filename': 'own.viewtrip', 'role': 'owner'},
+      {'name': 'Own Trip', 'filename': 'own.traxj', 'role': 'owner'},
     ]);
 
     await tester.pumpWidget(_harness(notifier));
@@ -96,7 +96,7 @@ void main() {
       'backward compat: entries with no owner_id/role (older server) are '
       'all treated as My Trips', (tester) async {
     final notifier = await _loadedNotifier([
-      {'name': 'Legacy Trip', 'filename': 'legacy.viewtrip'},
+      {'name': 'Legacy Trip', 'filename': 'legacy.traxj'},
     ]);
 
     await tester.pumpWidget(_harness(notifier));
@@ -106,5 +106,19 @@ void main() {
     expect(find.text('Legacy Trip'), findsOneWidget);
     expect(find.text('Shared With Me'), findsNothing);
     expect(find.byIcon(Icons.delete_outline), findsOneWidget);
+  });
+
+  testWidgets(
+      'the app bar shows the product name and the import card asks for a '
+      '.traxj file (issue #151)', (tester) async {
+    final notifier = await _loadedNotifier([]);
+
+    await tester.pumpWidget(_harness(notifier));
+    await tester.pump();
+
+    expect(find.descendant(of: find.byType(AppBar), matching: find.text('TraxJourney')),
+        findsOneWidget);
+    expect(find.text('Import a .traxj project file.'), findsOneWidget);
+    expect(find.text('Choose .traxj file'), findsOneWidget);
   });
 }

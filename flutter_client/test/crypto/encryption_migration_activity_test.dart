@@ -4,10 +4,10 @@ import 'package:cryptography_plus/cryptography_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:viewtrip_client/src/api/client.dart';
-import 'package:viewtrip_client/src/crypto/e2ee_crypto.dart';
-import 'package:viewtrip_client/src/crypto/encryption_migration.dart';
-import 'package:viewtrip_client/src/crypto/encryption_service.dart';
+import 'package:traxjourney_client/src/api/client.dart';
+import 'package:traxjourney_client/src/crypto/e2ee_crypto.dart';
+import 'package:traxjourney_client/src/crypto/encryption_migration.dart';
+import 'package:traxjourney_client/src/crypto/encryption_service.dart';
 
 /// Extends encryption_migration_test.dart's coverage to activity geometry
 /// (issue #29): EncryptionMigration.run() must also encrypt a still-plaintext

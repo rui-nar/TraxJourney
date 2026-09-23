@@ -23,7 +23,7 @@ from typing import Optional, Tuple
 
 from src.jobs.redis_client import get_redis
 
-_KEY = "viewtrip:log_level_override"
+_KEY = "traxjourney:log_level_override"
 
 
 def write(level: int, expires_at: Optional[float]) -> None:

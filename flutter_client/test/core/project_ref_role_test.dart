@@ -4,8 +4,8 @@
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:viewtrip_client/src/core/last_opened_project.dart';
-import 'package:viewtrip_client/src/core/project_ref.dart';
+import 'package:traxjourney_client/src/core/last_opened_project.dart';
+import 'package:traxjourney_client/src/core/project_ref.dart';
 
 void main() {
   group('ProjectRef.resolveRoleFor', () {

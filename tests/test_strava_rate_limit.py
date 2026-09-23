@@ -121,7 +121,7 @@ class TestFailFast:
         assert issubclass(RateLimitError, APIError)
 
     def test_throttling_is_counted(self, metric):
-        before = metric("viewtrip_strava_throttled_total", window="15min")
+        before = metric("traxjourney_strava_throttled_total", window="15min")
         _SHORT_TERM_LIMITER._timestamps.extend(
             [time.monotonic()] * RateLimiter.MAX_REQUESTS
         )
@@ -131,7 +131,7 @@ class TestFailFast:
                 with pytest.raises(RateLimitError):
                     _client().get_activities()
 
-        assert metric("viewtrip_strava_throttled_total", window="15min") - before == 1
+        assert metric("traxjourney_strava_throttled_total", window="15min") - before == 1
 
     def test_waits_for_a_slot_that_frees_up_in_time(self):
         """Short waits are still honoured — a slot about to expire is worth
@@ -232,9 +232,9 @@ class TestRateLimitMetrics:
             mock_req.return_value.json.return_value = {}
             _client().get_activities()
 
-        assert metric("viewtrip_strava_rate_limit_usage", window="15min") == 1
-        assert metric("viewtrip_strava_rate_limit_usage", window="daily") == 1
+        assert metric("traxjourney_strava_rate_limit_usage", window="15min") == 1
+        assert metric("traxjourney_strava_rate_limit_usage", window="daily") == 1
 
     def test_capacity_gauges_report_stravas_quotas(self, metric):
-        assert metric("viewtrip_strava_rate_limit_capacity", window="15min") == 100
-        assert metric("viewtrip_strava_rate_limit_capacity", window="daily") == 1000
+        assert metric("traxjourney_strava_rate_limit_capacity", window="15min") == 100
+        assert metric("traxjourney_strava_rate_limit_capacity", window="daily") == 1000

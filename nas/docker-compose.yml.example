@@ -1,4 +1,4 @@
-# ViewTripWeb — NAS-side observability stack (issue #205).
+# TraxJourney — NAS-side observability stack (issue #205).
 #
 # Loki + Prometheus + Grafana, colocated here deliberately: generous disk,
 # no CPU contention with the VPS's production traffic. See
@@ -31,7 +31,7 @@ services:
   tailscale:
     image: tailscale/tailscale:latest
     container_name: observability-tailscale
-    hostname: viewtrip-observability
+    hostname: traxjourney-observability
     restart: unless-stopped
     environment:
       - TS_AUTHKEY=${TS_AUTHKEY}
@@ -122,7 +122,7 @@ services:
 
 # Ports, for reference (all reachable only via the tailnet, at whatever
 # Tailscale IP/MagicDNS name `tailscale status` shows for
-# "viewtrip-observability" once this is up):
+# "traxjourney-observability" once this is up):
 #   Loki       3100
 #   Prometheus 9090
 #   Grafana    3000

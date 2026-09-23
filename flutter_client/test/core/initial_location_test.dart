@@ -9,7 +9,7 @@
 // the welcome screen as if launched from the icon.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/core/app_router.dart';
+import 'package:traxjourney_client/src/core/app_router.dart';
 
 void main() {
   group('native', () {

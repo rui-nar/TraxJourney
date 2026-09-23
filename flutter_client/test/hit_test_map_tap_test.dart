@@ -11,8 +11,8 @@
 // compute_elevation_spots_test.dart.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/map/geo_point.dart';
-import 'package:viewtrip_client/src/projects/map_panel.dart';
+import 'package:traxjourney_client/src/map/geo_point.dart';
+import 'package:traxjourney_client/src/projects/map_panel.dart';
 
 void main() {
   Map<String, dynamic> feature(String type, dynamic id, List<List<double>> coords) => {

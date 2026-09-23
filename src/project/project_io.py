@@ -1,4 +1,4 @@
-"""Serialize / deserialize a Project to/from a .viewtrip JSON file."""
+"""Serialize / deserialize a Project to/from a .traxj JSON file."""
 
 from __future__ import annotations
 
@@ -91,10 +91,9 @@ def _group_from_dict(d: Dict[str, Any]) -> PersonGroup:
 
 
 class ProjectIO:
-    """Load and save .viewtrip project files."""
+    """Load and save .traxj project files."""
 
-    EXTENSION = ".viewtrip"
-    LEGACY_EXTENSION = ".gettracks"
+    EXTENSION = ".traxj"
 
     # ------------------------------------------------------------------
     # Public API
@@ -207,7 +206,7 @@ class ProjectIO:
 
     @staticmethod
     def load(path: str) -> Project:
-        """Deserialise a .viewtrip (or legacy .gettracks) file and return a :class:`Project`."""
+        """Deserialise a .traxj file and return a :class:`Project`."""
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
 

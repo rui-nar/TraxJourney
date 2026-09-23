@@ -7,6 +7,7 @@ from typing import Dict, List
 import gpxpy
 import gpxpy.gpx
 
+from src.brand import APP_NAME
 from src.models.track import Track
 
 
@@ -45,7 +46,7 @@ class GPXProcessor:
             options = ExportOptions()
 
         gpx = gpxpy.gpx.GPX()
-        gpx.creator = "ViewTrip"
+        gpx.creator = APP_NAME
 
         sorted_tracks = sorted(tracks, key=lambda t: t.start_time)
 
@@ -113,7 +114,7 @@ class GPXProcessor:
             options = ExportOptions()
 
         gpx = gpxpy.gpx.GPX()
-        gpx.creator = "ViewTrip"
+        gpx.creator = APP_NAME
 
         track_map: Dict[int, Track] = {t.activity_id: t for t in tracks}
 

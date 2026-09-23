@@ -1,1 +1,1 @@
-"""Utilities and helper functions for ViewTrip."""
+"""Utilities and helper functions for TraxJourney."""

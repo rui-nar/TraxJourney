@@ -42,7 +42,7 @@ String versionLabel(String client, String? server,
 }
 
 /// [versionLabel] for the running build, re-rendered when the server version
-/// arrives. [prefix] is prepended verbatim (e.g. `'© 2026 ViewTrip · '`).
+/// arrives. [prefix] is prepended verbatim (e.g. `'© 2026 TraxJourney · '`).
 class VersionText extends StatelessWidget {
   const VersionText({
     super.key,

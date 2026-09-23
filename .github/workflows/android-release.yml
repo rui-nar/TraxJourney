@@ -156,6 +156,6 @@ jobs:
             sleep 10
           done
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title "ViewTripWeb $TAG" --generate-notes
+            gh release create "$TAG" --title "TraxJourney $TAG" --generate-notes
           fi
           gh release upload "$TAG" "$RUNNER_TEMP/traxjourney-$TAG.apk" --clobber

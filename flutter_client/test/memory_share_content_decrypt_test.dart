@@ -7,10 +7,10 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/crypto/share_crypto.dart';
-import 'package:viewtrip_client/src/projects/memory_detail_modal.dart';
-import 'package:viewtrip_client/src/projects/project_notifier.dart';
-import 'package:viewtrip_client/src/projects/project_service.dart';
+import 'package:traxjourney_client/src/crypto/share_crypto.dart';
+import 'package:traxjourney_client/src/projects/memory_detail_modal.dart';
+import 'package:traxjourney_client/src/projects/project_notifier.dart';
+import 'package:traxjourney_client/src/projects/project_service.dart';
 
 /// Notifier whose like/comment loaders are stubbed so the modal makes no
 /// real network calls (mirrors test/memory_translation_error_test.dart).

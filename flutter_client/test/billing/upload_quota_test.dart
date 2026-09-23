@@ -11,10 +11,10 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/billing/billing_service.dart';
-import 'package:viewtrip_client/src/billing/upgrade_sheet.dart';
-import 'package:viewtrip_client/src/projects/project_notifier.dart';
-import 'package:viewtrip_client/src/projects/project_service.dart';
+import 'package:traxjourney_client/src/billing/billing_service.dart';
+import 'package:traxjourney_client/src/billing/upgrade_sheet.dart';
+import 'package:traxjourney_client/src/projects/project_notifier.dart';
+import 'package:traxjourney_client/src/projects/project_service.dart';
 
 final _quotaBody = jsonEncode({
   'detail': "This upload would exceed your plan's storage.",

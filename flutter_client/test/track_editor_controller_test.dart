@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:viewtrip_client/src/projects/track_edit_model.dart';
-import 'package:viewtrip_client/src/projects/track_editor_controller.dart';
+import 'package:traxjourney_client/src/projects/track_edit_model.dart';
+import 'package:traxjourney_client/src/projects/track_editor_controller.dart';
 
 TrackEditorController _controller() => TrackEditorController(
       TrackEditModel.fromPoints(const [

@@ -11,10 +11,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:viewtrip_client/src/api/client.dart' show ApiException;
-import 'package:viewtrip_client/src/auth/auth_notifier.dart';
-import 'package:viewtrip_client/src/auth/auth_service.dart';
-import 'package:viewtrip_client/src/projects/view_screen.dart';
+import 'package:traxjourney_client/src/api/client.dart' show ApiException;
+import 'package:traxjourney_client/src/auth/auth_notifier.dart';
+import 'package:traxjourney_client/src/auth/auth_service.dart';
+import 'package:traxjourney_client/src/projects/view_screen.dart';
 
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));

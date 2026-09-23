@@ -5,7 +5,7 @@ Requires=docker.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/webhook -hooks /opt/viewtrip-val/webhook/hooks.yaml -port 9999 -verbose
+ExecStart=/usr/bin/webhook -hooks /opt/traxjourney-val/webhook/hooks.yaml -port 9999 -verbose
 Restart=on-failure
 RestartSec=5
 User=debian

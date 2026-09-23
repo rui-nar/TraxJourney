@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from scalar_fastapi import get_scalar_api_reference
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from src.brand import APP_NAME
 from src.exceptions.errors import APIError, AuthenticationError, QuotaExceeded
 from src.jobs.prepared_geo_jobs import sweep_unprepared_geometry
 from src.jobs.route_jobs import (
@@ -79,8 +80,8 @@ _scheduler = AsyncIOScheduler()
 #
 # Today a worker never imports this module, so the guard is belt-and-braces —
 # but the failure it prevents is silent and periodic, which is exactly the kind
-# that survives a code review. Set VIEWTRIP_ROLE=worker in the worker image.
-_ROLE = os.environ.get("VIEWTRIP_ROLE", "api").strip().lower()
+# that survives a code review. Set TRAXJOURNEY_ROLE=worker in the worker image.
+_ROLE = os.environ.get("TRAXJOURNEY_ROLE", "api").strip().lower()
 _IS_API_PROCESS = _ROLE != "worker"
 
 # Single source of truth for the running version: the git tag baked in at build
@@ -91,7 +92,7 @@ _APP_VERSION = os.environ.get("APP_VERSION", "dev")
 # Logged at import — this module IS the process entry point, so the line lands at
 # the top of every log, before migrations or any request. Without it there is no
 # way to tell from a log file which build produced it (issue #179).
-_log.info("ViewTrip API starting — version %s", _APP_VERSION)
+_log.info("%s API starting — version %s", APP_NAME, _APP_VERSION)
 
 
 @asynccontextmanager
@@ -103,7 +104,7 @@ async def lifespan(_app: FastAPI):
     jwt_secret()
     if not _IS_API_PROCESS:
         # A worker shares this codebase but must not own schema or schedules.
-        _log.info("VIEWTRIP_ROLE=%s — skipping migrations, admin seed and scheduler", _ROLE)
+        _log.info("TRAXJOURNEY_ROLE=%s — skipping migrations, admin seed and scheduler", _ROLE)
         yield
         return
     cfg = AlembicConfig(os.path.join(os.path.dirname(__file__), "..", "alembic.ini"))
@@ -167,9 +168,9 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(
-    title="ViewTrip API",
+    title=f"{APP_NAME} API",
     description=(
-        "REST API consumed by the ViewTrip Flutter client (web, Android, iOS).\n\n"
+        f"REST API consumed by the {APP_NAME} Flutter client (web, Android, iOS).\n\n"
         "Authentication uses JWT bearer tokens obtained via `/api/auth/token` "
         "(email + password), `/api/auth/register`, or `/api/auth/google`.\n\n"
         "Interactive docs: [`/docs`](/docs) (Swagger) · [`/scalar`](/scalar) (Scalar)"
@@ -344,7 +345,7 @@ async def scalar_docs() -> HTMLResponse:
     """Scalar API reference UI."""
     return get_scalar_api_reference(
         openapi_url="/openapi.json",
-        title="ViewTrip API",
+        title=f"{APP_NAME} API",
     )
 
 
@@ -436,6 +437,13 @@ if os.path.isdir(_web_dir):
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str):
         """Serve the Flutter web build; fall back to index.html for SPA routing."""
+        # An unknown /api/... path is a missing endpoint, never a client route.
+        # Answering it with index.html and a 200 lets an out-of-date client
+        # take the page for a real response — e.g. save it as a project backup
+        # after an export route was renamed. Raise the same 404 an unmatched
+        # route gets when no web build is present.
+        if full_path == "api" or full_path.startswith("api/"):
+            raise StarletteHTTPException(status_code=404)
         candidate = os.path.join(_web_dir, full_path)
         if full_path and os.path.isfile(candidate):
             resp = FileResponse(candidate)

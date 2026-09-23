@@ -1,8 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:viewtrip_client/src/map/geo_point.dart';
-import 'package:viewtrip_client/src/map/polyline_decoder.dart';
-import 'package:viewtrip_client/src/projects/track_edit_model.dart';
+import 'package:traxjourney_client/src/map/geo_point.dart';
+import 'package:traxjourney_client/src/map/polyline_decoder.dart';
+import 'package:traxjourney_client/src/projects/track_edit_model.dart';
 
 void main() {
   // Four collinear points ~roughly eastward, plus their elevations.

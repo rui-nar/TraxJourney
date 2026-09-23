@@ -1,4 +1,4 @@
-"""Strava API client for ViewTrip."""
+"""Strava API client for TraxJourney."""
 
 import threading
 import requests

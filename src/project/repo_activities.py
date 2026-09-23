@@ -521,7 +521,7 @@ class ActivityMixin:
         # A tail is an activity the app creates, so it takes a local (negative)
         # id from the shared allocator — the same one GPX import uses, rather
         # than the decrementing scheme this used to have. That scheme handed out
-        # -1, -2, -3 in every deployment, which collides the moment a .viewtrip
+        # -1, -2, -3 in every deployment, which collides the moment a .traxj
         # exported from one is imported into another. The allocator also keeps
         # the property that mattered here: it checks the activity TABLE, not
         # this project's timeline, because a tail whose item was removed leaves

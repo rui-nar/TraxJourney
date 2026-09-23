@@ -35,7 +35,7 @@ lands.
 
 Deleting a person cascades to their encounters (+ timeline items); deleting a
 group cascades to its group-encounters (+ timeline items) the same way — a
-group-referencing encounter has no other entity to fall back to. `.viewtrip`
+group-referencing encounter has no other entity to fall back to. `.traxj`
 export/import round-trips people + groups + encounters (excluded from public
 shares).
 
@@ -85,7 +85,7 @@ views.
 - Data model (Alembic `50c0de5f6a7b`): `person_group` — `id`, `project_id`,
   `name?`, `nationalities_json?`, `socials_json?`, `created_at`; plus the nullable
   `person.group_id` FK. Deleting a group **ungroups** its members (the people
-  remain) but deletes its direct group-encounters (see above); `.viewtrip`
+  remain) but deletes its direct group-encounters (see above); `.traxj`
   export/import round-trips groups and membership.
 - API: `POST /api/groups`, `GET/PUT/DELETE /api/groups/{id}`, and
   `PUT /api/groups/{id}/members` to set the member list.

@@ -14,9 +14,9 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/billing/billing_section.dart';
-import 'package:viewtrip_client/src/billing/billing_service.dart';
-import 'package:viewtrip_client/src/core/theme.dart';
+import 'package:traxjourney_client/src/billing/billing_section.dart';
+import 'package:traxjourney_client/src/billing/billing_service.dart';
+import 'package:traxjourney_client/src/core/theme.dart';
 
 class _FakeBilling implements BillingService {
   final Map<String, dynamic> payload;

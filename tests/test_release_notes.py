@@ -118,6 +118,27 @@ class TestTrailers:
         )
         assert change.release_note == "the note"
 
+    def test_trailer_stops_at_the_next_git_trailer(self):
+        """Trailers stack without blank lines; a Co-Authored-By line directly
+        under the note used to be glued onto the published sentence."""
+        change = _one(
+            "feat(map): x",
+            body="Release-Note: the note\n  wraps here.\n"
+                 "Co-Authored-By: Someone <someone@example.com>\n"
+                 "Signed-off-by: Someone <someone@example.com>\n",
+        )
+        assert change.release_note == "the note wraps here."
+
+    def test_wrapped_line_that_looks_like_a_label_stays_in_the_note(self):
+        change = _one(
+            "feat(docker): x",
+            body="Release-Note: The image moved.\n"
+                 "Self-hosting: pull ghcr.io/rui-nar/traxjourney instead.\n"
+                 "Claude-Session: https://example.com/s/1\n",
+        )
+        assert change.release_note == (
+            "The image moved. Self-hosting: pull ghcr.io/rui-nar/traxjourney instead.")
+
     def test_subject_is_used_when_no_trailer(self):
         change = _one("fix(map): restore the fit-to-trip zoom")
         assert change.text == "restore the fit-to-trip zoom"
@@ -169,9 +190,10 @@ class TestRendering:
             ("fix(editor): compound track edits (#127)", "", "flutter_client/a.dart"),
         ))
 
+        assert body.startswith("# TraxJourney v0.47.0\n")
         assert "## 🚀 New" in body
         assert "## 🐛 Fixed" in body
-        assert "[#125](https://github.com/rui-nar/ViewTripWeb/issues/125)" in body
+        assert "[#125](https://github.com/rui-nar/TraxJourney/issues/125)" in body
         assert "v0.46.9...v0.47.0" in body
 
     def test_audience_subheadings_only_when_both_are_present(self):
@@ -200,6 +222,13 @@ class TestRendering:
         ))
         assert "## ⚠️ Upgrade notes" in body
         assert "Set METRICS_TOKEN." in body
+
+    def test_unscoped_breaking_change_has_no_empty_area_prefix(self):
+        body = self._render(_log(
+            ("feat!: project files use a new extension", "", "api/x.py"),
+        ))
+        assert "- Project files use a new extension." in body
+        assert "****" not in body
 
     def test_change_count_excludes_internal_noise(self):
         body = self._render(_log(
@@ -336,7 +365,7 @@ class TestLanguageDetection:
         """"com" and "de" look Portuguese and appear in English text and URLs,
         which is why they are left out of the marker set."""
         assert not looks_non_english(
-            "See https://github.com/rui-nar/ViewTripWeb for the de-duplication "
+            "See https://github.com/rui-nar/TraxJourney for the de-duplication "
             "rules that apply when a step is imported twice.")
 
 

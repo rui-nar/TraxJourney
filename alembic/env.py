@@ -1,4 +1,3 @@
-import os
 from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config
@@ -39,10 +38,13 @@ from models.project_db import (  # noqa: F401
 
 target_metadata = sqlmodel.SQLModel.metadata
 
-# Allow DATABASE_URL env var to override alembic.ini (used in Docker)
-_db_url = os.environ.get("DATABASE_URL")
-if _db_url:
-    config.set_main_option("sqlalchemy.url", _db_url)
+# Always resolve the URL the way the app does (models/db_url.py): DATABASE_URL
+# wins, otherwise the shared default. Never fall back to alembic.ini's value —
+# entrypoint.sh migrates before uvicorn starts, so this is where an install
+# still sitting on the old default database file must be refused.
+from models.db_url import resolve_database_url  # noqa: E402
+
+config.set_main_option("sqlalchemy.url", resolve_database_url())
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:

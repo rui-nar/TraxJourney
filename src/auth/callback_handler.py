@@ -52,7 +52,7 @@ class OAuthCallbackServer:
                     <head><title>Authentication Successful</title></head>
                     <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
                         <h1>&#10003; Authentication Successful!</h1>
-                        <p>You can close this window and return to ViewTrip.</p>
+                        <p>You can close this window and return to TraxJourney.</p>
                     </body>
                     </html>
                     """

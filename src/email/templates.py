@@ -10,6 +10,8 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
 
+from src.brand import APP_NAME
+
 # HTML templates must autoescape (user-controlled strings like project/owner
 # names land in markup); the text counterpart must NOT — escaping would
 # corrupt a plain-text body (e.g. "&" becoming "&amp;").
@@ -17,6 +19,8 @@ _env = Environment(
     loader=FileSystemLoader(Path(__file__).parent / "templates"),
     autoescape=lambda name: name is not None and name.endswith(".html.jinja2"),
 )
+# Every template can name the product without each render function passing it.
+_env.globals["app_name"] = APP_NAME
 
 
 def render_invite_email(

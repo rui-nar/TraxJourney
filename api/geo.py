@@ -8,7 +8,6 @@ from __future__ import annotations
 import gzip as gzip_lib
 import json
 import math
-import os
 import time
 from array import array
 from itertools import chain
@@ -27,6 +26,7 @@ from sqlmodel import select
 
 from api.deps import get_current_user
 from api.project_access import OwnerParam, resolve_project
+from src.brand import USER_AGENT
 from src.models.great_circle import great_circle_points
 from src.models.prepared_geo import (
     COORD_SCALE,
@@ -46,7 +46,6 @@ from src.models.simplify import (
     working_set,
 )
 from src.models.project import Project
-from src.project.project_io import ProjectIO
 from src.project.project_repo import ProjectRepo, _compute_low_res_geo
 from src.jobs.redis_client import get_redis
 from src.utils.encryption_check import is_encrypted_envelope
@@ -57,7 +56,6 @@ router = APIRouter(prefix="/api/geo", tags=["geo"])
 
 _log = get_logger(__name__)
 
-_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
 _repo = ProjectRepo()
 
 # In-memory cache of gzipped per-project payloads:
@@ -184,7 +182,7 @@ _geo_gen: dict[tuple, int] = {}
 
 def _gen_redis_key(user_info_id: int, project_name: str) -> str:
     """Redis key holding a project's shared invalidation generation."""
-    return f"viewtrip:geo:gen:{user_info_id}:{project_name}"
+    return f"traxjourney:geo:gen:{user_info_id}:{project_name}"
 
 
 def _shared_generation(user_info_id: int, project_name: str) -> int | None:
@@ -608,12 +606,6 @@ project_cache_generation = _geo_generation
 bust_project_cache = bust_geo_cache
 
 
-def _legacy_path(user_id: str, name: str) -> str:
-    path = os.path.join(_DATA_DIR, "users", user_id, "projects")
-    os.makedirs(path, exist_ok=True)
-    return os.path.join(path, name + ProjectIO.EXTENSION)
-
-
 def _linestring(coords: List[List[float]], properties: Dict[str, Any]) -> Dict[str, Any]:
     """Build a GeoJSON Feature with a LineString geometry."""
     return {
@@ -631,7 +623,7 @@ def _linestring(coords: List[List[float]], properties: Dict[str, Any]) -> Dict[s
 # and the shared usage policy (a descriptive User-Agent, modest volume — the
 # client debounces) stays on the server. We store only the display string.
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
-_PLACES_UA = "ViewTrip/1.0 (city autocomplete; https://github.com/rui-nar/ViewTripWeb)"
+_PLACES_UA = USER_AGENT
 
 
 def _nominatim_search(q: str) -> List[Dict[str, Any]]:
@@ -728,7 +720,6 @@ def project_geo_low_res(
         gen = _geo_generation(owner_id, name)  # before the read, so a bust wins
         project = _repo.get_project(
             sess, owner_id, name,
-            legacy_path=_legacy_path(str(owner_id), name),
             include_heavy=False,
         )
     if project is None:
@@ -1149,7 +1140,6 @@ def load_project_for_geo(owner_id: int, name: str) -> Project | None:
     with get_session() as sess:
         return _repo.get_project(
             sess, owner_id, name,
-            legacy_path=_legacy_path(str(owner_id), name),
             include_heavy=False,
         )
 
@@ -1233,7 +1223,6 @@ def project_geo(
         gen = _geo_generation(owner_id, name)  # before the read, so a bust wins
         project = _repo.get_project(
             sess, owner_id, name,
-            legacy_path=_legacy_path(str(owner_id), name),
             include_elevation=False,
         )
     if project is None:

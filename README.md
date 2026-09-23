@@ -1,4 +1,4 @@
-# ViewTripWeb
+# TraxJourney
 
 > Build multi-sport GPS journey files from your Strava (and Polarsteps) activities — with connecting transport segments, memories, journals, statistics, sharing, and one-click GPX export.
 
@@ -29,7 +29,7 @@ Self-hosted via Docker · Flutter web/mobile frontend + FastAPI backend. The run
 
 ## Quick Start (Docker)
 
-CI publishes the image to `ghcr.io/rui-nar/viewtripweb`. Provide your own
+CI publishes the image to `ghcr.io/rui-nar/traxjourney`. Provide your own
 `docker-compose.yml` (not committed — it carries host-specific volume paths and
 env) referencing that image, or build locally from the bundled `Dockerfile`.
 
@@ -120,7 +120,7 @@ These are read by the backend at **runtime** (`os.getenv`) — a value passed to
 | Variable | Purpose |
 |---|---|
 | `JWT_SECRET` | **Required — the server will not start without it.** Signs every login token. Generate with `openssl rand -hex 32`, never reuse one between deployments, and note that changing it signs all users out |
-| `DATABASE_URL` | SQLAlchemy URL for the DB (defaults to local `viewtripweb.db`) |
+| `DATABASE_URL` | SQLAlchemy URL for the DB (defaults to local `traxjourney.db`; the server refuses to start on that default next to an old `viewtripweb.db` until it is renamed) |
 | `GOOGLE_TRANSLATE_API_KEY` | Enables memory translation endpoints (optional) |
 | `GOOGLE_CLIENT_ID` | Google OAuth client id; takes priority over `config.json` (optional) |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USERNAME` / `SMTP_PASSWORD` / `MAIL_FROM` | Transactional email via any provider's SMTP relay (optional — without `SMTP_HOST`, emails are logged to the console instead of sent). `MAIL_FROM` must be on a domain verified with the provider, or mail is delivered to spam |
@@ -157,7 +157,7 @@ image with a Dockerfile `ENV`; the published image is public.
 - **Travel companions** — invite other accounts to a trip as viewer (read-only), editor (full content access), or co-owner (editor + rename/sharing/member management); each companion's journal stays private to them. Invite links are copyable or, once SMTP is configured, emailed directly. An emailed invite is addressed to that person: it shows in the owner's "waiting to accept" list, can be revoked on its own without affecting anyone else, and is offered to the recipient as an Accept/Decline prompt once they sign in with that (confirmed) address — including on an account they create afterwards.
 - **Sharing** — read-only public links (with or without memories); social-media composer that posts a memory's photos, a trip map image, and a durable deep link via the OS share sheet / WhatsApp / Facebook.
 - **Zero-knowledge encryption (optional)** — encrypt memory/journal text and activity GPS/name client-side so the server admin can't read it. Device-key based (passwordless daily use across trusted devices) with a recovery key or security-Q&A backstop. Sharing an encrypted memory uses a per-share content key embedded in the link's URL fragment, never sent to the server.
-- **Export** — GPX, `.viewtrip` (JSON), or ZIP (`.viewtrip` + photos).
+- **Export** — GPX, `.traxj` (JSON), or ZIP (`.traxj` + photos).
 - **Backups** — automatic daily SQLite backup (30-day retention) with user-initiated restore from settings.
 
 ---

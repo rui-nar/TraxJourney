@@ -21,7 +21,7 @@ import yaml
 from src.jobs.queue import ALL_QUEUES, QUEUE_MAX_CONCURRENCY, QUEUE_POSTER
 
 _COMPOSE = pathlib.Path(__file__).resolve().parent.parent / "docker-compose.yml.example"
-_API_SERVICE = "viewtripweb"
+_API_SERVICE = "traxjourney"
 
 # Volumes the worker must share with the API. The database is a SQLite file, so
 # "sharing" it means sharing the mount; a worker with its own ./db writes to a
@@ -101,7 +101,7 @@ class TestMemoryLimits:
     instead of a clean OOM-kill `restart: unless-stopped` could recover from.
     """
 
-    _LIMITED_SERVICES = ("viewtripweb", "worker", "worker-poster", "redis")
+    _LIMITED_SERVICES = ("traxjourney", "worker", "worker-poster", "redis")
 
     @staticmethod
     def _memory_limit_bytes(spec: dict) -> int:
@@ -153,8 +153,8 @@ class TestWorkersTrackTheApi:
                         f"{name} does not share {target} with the API")
 
     def test_workers_declare_the_worker_role(self, services, workers):
-        """VIEWTRIP_ROLE=worker is what stops a worker running migrations, the
+        """TRAXJOURNEY_ROLE=worker is what stops a worker running migrations, the
         admin seed and the scheduler (api/router.py). The entrypoint exports it
         too; this keeps the compose file honest about what the service is."""
         for name in workers:
-            assert services[name].get("environment", {}).get("VIEWTRIP_ROLE") == "worker"
+            assert services[name].get("environment", {}).get("TRAXJOURNEY_ROLE") == "worker"

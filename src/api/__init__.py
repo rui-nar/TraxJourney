@@ -1,1 +1,1 @@
-"""API client modules for ViewTrip."""
+"""API client modules for TraxJourney."""

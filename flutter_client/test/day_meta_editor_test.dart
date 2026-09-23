@@ -2,9 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-import 'package:viewtrip_client/src/core/design_tokens.dart';
-import 'package:viewtrip_client/src/projects/day_meta_editor.dart';
-import 'package:viewtrip_client/src/projects/project_notifier.dart' show dayTripNumbering;
+import 'package:traxjourney_client/src/core/design_tokens.dart';
+import 'package:traxjourney_client/src/projects/day_meta_editor.dart';
+import 'package:traxjourney_client/src/projects/project_notifier.dart' show dayTripNumbering;
 
 /// Pumps a bare [DayMetaEditor] and returns the meta captured by the most
 /// recent onSave. Edits make the editor dirty, which enables "Save day".

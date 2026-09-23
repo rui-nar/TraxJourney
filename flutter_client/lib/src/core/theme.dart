@@ -11,7 +11,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 // ── Brand seed color ───────────────────────────────────────────────────────────
-const _seed = Color(0xFF0D6EFD); // ViewTrip brand blue
+const _seed = Color(0xFF0D6EFD); // TraxJourney brand blue
 
 // ── Shared error tokens ────────────────────────────────────────────────────────
 const _error = Color(0xFFEF4444);

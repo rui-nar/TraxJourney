@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/map/great_circle.dart';
-import 'package:viewtrip_client/src/map/polyline_decoder.dart';
-import 'package:viewtrip_client/src/projects/client_geo_builder.dart';
+import 'package:traxjourney_client/src/map/great_circle.dart';
+import 'package:traxjourney_client/src/map/polyline_decoder.dart';
+import 'package:traxjourney_client/src/projects/client_geo_builder.dart';
 
 /// Minimal Google-polyline encoder mirroring [decodePolyline] (lat, lon) input
 /// — same helper used by geo_encoded_test.dart.

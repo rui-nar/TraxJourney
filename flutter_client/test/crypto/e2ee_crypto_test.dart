@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/crypto/e2ee_crypto.dart';
+import 'package:traxjourney_client/src/crypto/e2ee_crypto.dart';
 
 final _salt = Uint8List.fromList(List<int>.generate(16, (i) => i * 7 % 256));
 const _params = Argon2Params(memoryKib: 19456, iterations: 2, parallelism: 1);

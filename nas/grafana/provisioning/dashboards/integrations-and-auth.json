@@ -1,8 +1,8 @@
 {
-  "uid": "viewtrip-integrations-auth",
-  "title": "ViewTrip / Integrations & Auth",
+  "uid": "traxjourney-integrations-auth",
+  "title": "TraxJourney / Integrations & Auth",
   "description": "Third-party API outcomes, Strava's own quota, and login/registration activity (docs/METRICS.md). Strava counts every retry attempt, since each one spends real quota. Use the env variable to view prod or val separately — they share this NAS.",
-  "tags": ["viewtrip"],
+  "tags": ["traxjourney"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,
@@ -24,7 +24,7 @@
         "name": "env",
         "type": "query",
         "datasource": {"type": "prometheus", "uid": "$datasource"},
-        "query": {"query": "label_values(up{job=\"viewtrip\"}, env)", "refId": "EnvVariable"},
+        "query": {"query": "label_values(up{job=\"traxjourney\"}, env)", "refId": "EnvVariable"},
         "current": {"text": "production", "value": "production"},
         "includeAll": false,
         "multi": false,
@@ -41,7 +41,7 @@
       "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "100 * viewtrip_strava_rate_limit_usage{window=\"15min\",env=\"$env\"} / viewtrip_strava_rate_limit_capacity{window=\"15min\",env=\"$env\"}"}
+        {"refId": "A", "expr": "100 * traxjourney_strava_rate_limit_usage{window=\"15min\",env=\"$env\"} / traxjourney_strava_rate_limit_capacity{window=\"15min\",env=\"$env\"}"}
       ],
       "fieldConfig": {
         "defaults": {
@@ -63,7 +63,7 @@
       "gridPos": {"h": 6, "w": 6, "x": 6, "y": 0},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "100 * viewtrip_strava_rate_limit_usage{window=\"daily\",env=\"$env\"} / viewtrip_strava_rate_limit_capacity{window=\"daily\",env=\"$env\"}"}
+        {"refId": "A", "expr": "100 * traxjourney_strava_rate_limit_usage{window=\"daily\",env=\"$env\"} / traxjourney_strava_rate_limit_capacity{window=\"daily\",env=\"$env\"}"}
       ],
       "fieldConfig": {
         "defaults": {
@@ -86,7 +86,7 @@
       "gridPos": {"h": 6, "w": 6, "x": 12, "y": 0},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "sum(rate(viewtrip_strava_throttled_total{env=\"$env\"}[15m])) by (window)", "legendFormat": "{{window}}"}
+        {"refId": "A", "expr": "sum(rate(traxjourney_strava_throttled_total{env=\"$env\"}[15m])) by (window)", "legendFormat": "{{window}}"}
       ],
       "fieldConfig": {"defaults": {"unit": "ops", "decimals": 4}, "overrides": []},
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "graphMode": "area"}
@@ -99,7 +99,7 @@
       "gridPos": {"h": 6, "w": 6, "x": 18, "y": 0},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "sum(rate(viewtrip_logins_total{result=\"failure\",env=\"$env\"}[5m]))"}
+        {"refId": "A", "expr": "sum(rate(traxjourney_logins_total{result=\"failure\",env=\"$env\"}[5m]))"}
       ],
       "fieldConfig": {
         "defaults": {
@@ -122,7 +122,7 @@
       "gridPos": {"h": 9, "w": 12, "x": 0, "y": 6},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "sum(rate(viewtrip_external_requests_total{env=\"$env\"}[5m])) by (service, outcome)", "legendFormat": "{{service}} ({{outcome}})"}
+        {"refId": "A", "expr": "sum(rate(traxjourney_external_requests_total{env=\"$env\"}[5m])) by (service, outcome)", "legendFormat": "{{service}} ({{outcome}})"}
       ],
       "fieldConfig": {"defaults": {"unit": "reqps", "custom": {"drawStyle": "line", "fillOpacity": 10, "stacking": {"mode": "normal"}}}, "overrides": []},
       "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["sum"]}, "tooltip": {"mode": "multi"}}
@@ -134,7 +134,7 @@
       "gridPos": {"h": 9, "w": 12, "x": 12, "y": 6},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "histogram_quantile(0.95, sum(rate(viewtrip_external_request_duration_seconds_bucket{env=\"$env\"}[5m])) by (le, service))", "legendFormat": "{{service}}"}
+        {"refId": "A", "expr": "histogram_quantile(0.95, sum(rate(traxjourney_external_request_duration_seconds_bucket{env=\"$env\"}[5m])) by (le, service))", "legendFormat": "{{service}}"}
       ],
       "fieldConfig": {"defaults": {"unit": "s", "custom": {"drawStyle": "line", "fillOpacity": 0}}, "overrides": []},
       "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["mean", "max"]}, "tooltip": {"mode": "multi"}}
@@ -146,7 +146,7 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 15},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "sum(rate(viewtrip_logins_total{env=\"$env\"}[15m])) by (provider, result)", "legendFormat": "{{provider}} ({{result}})"}
+        {"refId": "A", "expr": "sum(rate(traxjourney_logins_total{env=\"$env\"}[15m])) by (provider, result)", "legendFormat": "{{provider}} ({{result}})"}
       ],
       "fieldConfig": {"defaults": {"unit": "ops", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": [
         {"matcher": {"id": "byRegexp", "options": "/failure/"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}]}
@@ -161,7 +161,7 @@
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 15},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "sum(rate(viewtrip_registrations_total{env=\"$env\"}[1h])) by (provider)", "legendFormat": "{{provider}}"}
+        {"refId": "A", "expr": "sum(rate(traxjourney_registrations_total{env=\"$env\"}[1h])) by (provider)", "legendFormat": "{{provider}}"}
       ],
       "fieldConfig": {"defaults": {"unit": "ops", "custom": {"drawStyle": "bars", "fillOpacity": 30}}, "overrides": []},
       "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}
@@ -174,7 +174,7 @@
       "gridPos": {"h": 8, "w": 24, "x": 0, "y": 23},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "sum(rate(viewtrip_app_opens_total{env=\"$env\"}[15m])) by (session_state)", "legendFormat": "{{session_state}}"}
+        {"refId": "A", "expr": "sum(rate(traxjourney_app_opens_total{env=\"$env\"}[15m])) by (session_state)", "legendFormat": "{{session_state}}"}
       ],
       "fieldConfig": {"defaults": {"unit": "ops", "custom": {"drawStyle": "line", "fillOpacity": 10, "stacking": {"mode": "normal"}}}, "overrides": [
         {"matcher": {"id": "byRegexp", "options": "/login_required/"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "orange"}}]}

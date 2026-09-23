@@ -19,6 +19,7 @@ import time
 from sqlmodel import select
 
 from models.user import EmailVerification, UserInfo
+from src.brand import APP_NAME
 from src.email.address import normalize_email
 from src.email.service import EmailMessage, get_email_service
 from src.email.templates import render_verification_email
@@ -117,7 +118,7 @@ async def send_verification_email(
     try:
         await get_email_service().send(EmailMessage(
             to=to_email,
-            subject="Confirm your ViewTrip email address",
+            subject=f"Confirm your {APP_NAME} email address",
             text_body=text_body,
             html_body=html_body,
         ))

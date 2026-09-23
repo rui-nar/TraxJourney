@@ -16,16 +16,16 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:viewtrip_client/src/api/client.dart';
-import 'package:viewtrip_client/src/core/perf_timing.dart' show kFrameBudgetMs;
-import 'package:viewtrip_client/src/core/project_ref.dart';
-import 'package:viewtrip_client/src/map/polyline_decoder.dart';
-import 'package:viewtrip_client/src/projects/heavy_decode.dart';
-import 'package:viewtrip_client/src/projects/map_geometry_memo.dart';
-import 'package:viewtrip_client/src/projects/project_cache_store_native.dart'
+import 'package:traxjourney_client/src/api/client.dart';
+import 'package:traxjourney_client/src/core/perf_timing.dart' show kFrameBudgetMs;
+import 'package:traxjourney_client/src/core/project_ref.dart';
+import 'package:traxjourney_client/src/map/polyline_decoder.dart';
+import 'package:traxjourney_client/src/projects/heavy_decode.dart';
+import 'package:traxjourney_client/src/projects/map_geometry_memo.dart';
+import 'package:traxjourney_client/src/projects/project_cache_store_native.dart'
     show gunzipToBytes, gzEncode;
-import 'package:viewtrip_client/src/projects/polyline_decimation.dart';
-import 'package:viewtrip_client/src/projects/project_service.dart';
+import 'package:traxjourney_client/src/projects/polyline_decimation.dart';
+import 'package:traxjourney_client/src/projects/project_service.dart';
 
 /// Google-encoded-polyline encoder — the inverse of [decodePolyline], needed
 /// only to build a realistically large fixture. The round-trip is asserted in

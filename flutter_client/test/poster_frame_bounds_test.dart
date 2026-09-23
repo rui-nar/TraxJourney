@@ -6,7 +6,7 @@ import 'package:flutter/material.dart' show Size;
 import 'package:flutter_map/flutter_map.dart' show LatLngBounds;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart' show LatLng;
-import 'package:viewtrip_client/src/projects/map_panel.dart';
+import 'package:traxjourney_client/src/projects/map_panel.dart';
 
 void main() {
   group('frameRectFor', () {

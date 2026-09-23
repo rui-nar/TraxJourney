@@ -1,6 +1,6 @@
-# viewtrip_client
+# traxjourney_client
 
-Flutter web frontend for ViewTripWeb.
+Flutter client (web, Android, iOS) for TraxJourney.
 
 ## Prerequisites
 

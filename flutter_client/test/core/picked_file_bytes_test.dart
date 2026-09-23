@@ -12,7 +12,7 @@ import 'package:cross_file/cross_file.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:viewtrip_client/src/core/picked_file_bytes.dart';
+import 'package:traxjourney_client/src/core/picked_file_bytes.dart';
 
 final Uint8List _bytes = Uint8List.fromList([1, 2, 3]);
 

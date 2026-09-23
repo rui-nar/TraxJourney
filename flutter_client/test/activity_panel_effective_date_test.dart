@@ -5,7 +5,7 @@
 // segment's raw null date and so never un-collapsed the day it lived in.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/projects/activity_panel.dart';
+import 'package:traxjourney_client/src/projects/activity_panel.dart';
 
 void main() {
   Map<dynamic, Map<String, dynamic>> activityById(

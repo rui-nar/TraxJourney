@@ -21,7 +21,7 @@ docs/
 tests/
 scripts/
 # ...except the one script that runs *in* the image: the rail data refresh is
-# `docker compose run --rm --entrypoint python viewtripweb
+# `docker compose run --rm --entrypoint python traxjourney
 # scripts/fetch_rail_data.py` (issue #345), so the file has to be in the build
 # context. Must stay after `scripts/`: docker's last matching pattern wins.
 !scripts/fetch_rail_data.py

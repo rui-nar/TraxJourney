@@ -16,6 +16,7 @@ import 'src/projects/project_data_cache.dart';
 import 'src/projects/project_notifier.dart';
 import 'src/settings/theme_notifier.dart';
 import 'src/core/app_router.dart';
+import 'src/core/brand.dart';
 import 'src/core/onboarding_notifier.dart';
 import 'src/core/perf_timing.dart';
 import 'src/core/server_config.dart';
@@ -52,9 +53,9 @@ void main() async {
   await projectDataCache.init();
   await photoThumbCache.init();
   runApp(
-    // MultiProvider lives here — above ViewTripApp — so its providers are
+    // MultiProvider lives here — above TraxJourneyApp — so its providers are
     // never reconstructed by theme changes. Only the Builder inside
-    // ViewTripApp (which watches ThemeNotifier) rebuilds on theme toggles.
+    // TraxJourneyApp (which watches ThemeNotifier) rebuilds on theme toggles.
     MultiProvider(
       providers: [
         ChangeNotifierProvider<ThemeNotifier>(
@@ -75,19 +76,19 @@ void main() async {
           create: (_) => ProjectNotifier(ProjectService()),
         ),
       ],
-      child: const ViewTripApp(),
+      child: const TraxJourneyApp(),
     ),
   );
 }
 
-class ViewTripApp extends StatefulWidget {
-  const ViewTripApp({super.key});
+class TraxJourneyApp extends StatefulWidget {
+  const TraxJourneyApp({super.key});
 
   @override
-  State<ViewTripApp> createState() => _ViewTripAppState();
+  State<TraxJourneyApp> createState() => _TraxJourneyAppState();
 }
 
-class _ViewTripAppState extends State<ViewTripApp> {
+class _TraxJourneyAppState extends State<TraxJourneyApp> {
   GoRouter? _router;
 
   @override
@@ -98,7 +99,7 @@ class _ViewTripAppState extends State<ViewTripApp> {
     // Router is created once and reused — recreating it would destroy nav stack.
     _router ??= buildRouter(context);
     return MaterialApp.router(
-      title: 'ViewTripWeb',
+      title: kAppName,
       theme: lightTheme,
       darkTheme: darkTheme,
       themeMode: themeMode,

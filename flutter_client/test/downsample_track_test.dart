@@ -12,8 +12,8 @@
 // (~6,700 points per activity) rather than the elevation profile (~300).
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/map/geo_point.dart';
-import 'package:viewtrip_client/src/projects/project_notifier.dart';
+import 'package:traxjourney_client/src/map/geo_point.dart';
+import 'package:traxjourney_client/src/projects/project_notifier.dart';
 
 List<(double, GeoPoint)> _track(int n) => [
       for (var i = 0; i < n; i++)

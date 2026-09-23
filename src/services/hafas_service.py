@@ -60,6 +60,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import polyline as polyline_lib
 import requests
 
+from src.brand import USER_AGENT
 from src.utils.logging import get_logger
 from src.utils.metrics import track_external
 
@@ -69,9 +70,7 @@ _MOTIS_BASE = "https://api.transitous.org/api/v1"
 
 # Transitous asks API users to identify themselves and keep volume modest
 # (https://transitous.org/api/). Same format as overpass_service._HEADERS.
-_HEADERS = {
-    "User-Agent": "ViewTripWeb/1.0 (https://github.com/viewtrip; train route resolver)"
-}
+_HEADERS = {"User-Agent": USER_AGENT}
 
 _TIMEOUT = 20  # seconds per request
 

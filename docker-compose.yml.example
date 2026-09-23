@@ -1,4 +1,4 @@
-# ViewTripWeb — example Docker Compose deployment.
+# TraxJourney — example Docker Compose deployment.
 #
 # The real `docker-compose.yml` is gitignored because it has historically held
 # secrets inline. This example keeps them in `.env` instead (copy `.env.example`
@@ -63,9 +63,9 @@ x-mem-redis: &mem-redis
 
 services:
   # ── API ─────────────────────────────────────────────────────────────────────
-  viewtripweb:
-    image: ghcr.io/rui-nar/viewtripweb:latest
-    container_name: viewtripweb
+  traxjourney:
+    image: ghcr.io/rui-nar/traxjourney:latest
+    container_name: traxjourney
     restart: unless-stopped
     ports:
       - "7777:8000"
@@ -125,13 +125,13 @@ services:
 
   # Cheap queues only. Never renders a poster.
   worker:
-    image: ghcr.io/rui-nar/viewtripweb:latest
-    container_name: viewtrip-worker
+    image: ghcr.io/rui-nar/traxjourney:latest
+    container_name: traxjourney-worker
     restart: unless-stopped
     command: ["/worker-entrypoint.sh", "default", "resolve"]
     env_file: .env
     environment:
-      VIEWTRIP_ROLE: worker
+      TRAXJOURNEY_ROLE: worker
     logging: *default-logging
     deploy:
       resources:
@@ -152,13 +152,13 @@ services:
   # above. It also drains the cheap queues when no poster is pending, so it is
   # the second `resolve`/`default` consumer rather than a mostly-idle container.
   worker-poster:
-    image: ghcr.io/rui-nar/viewtripweb:latest
-    container_name: viewtrip-worker-poster
+    image: ghcr.io/rui-nar/traxjourney:latest
+    container_name: traxjourney-worker-poster
     restart: unless-stopped
     command: ["/worker-entrypoint.sh", "poster", "default", "resolve"]
     env_file: .env
     environment:
-      VIEWTRIP_ROLE: worker
+      TRAXJOURNEY_ROLE: worker
     logging: *default-logging
     deploy:
       resources:
@@ -179,7 +179,7 @@ services:
   # it" is not a substitute for simply not publishing it.
   redis:
     image: redis:7-alpine
-    container_name: viewtrip-redis
+    container_name: traxjourney-redis
     restart: unless-stopped
     # appendonly: queued jobs survive a Redis restart. Without it a broker
     # bounce silently drops every in-flight job — the exact failure the queue
@@ -207,7 +207,7 @@ services:
   # deployed separately) for everything.
   #
   # Reaches the API over the compose-internal network by service name
-  # (viewtripweb:8000) — /metrics is never published to the host or the
+  # (traxjourney:8000) — /metrics is never published to the host or the
   # internet for this to work, only to the other containers on this network.
   #
   # NOT verified against a live Alloy binary from the session that wrote this
@@ -215,7 +215,7 @@ services:
   # adapt, in the same spirit docker-compose.yml.example itself already is.
   alloy:
     image: grafana/alloy:latest
-    container_name: viewtrip-alloy
+    container_name: traxjourney-alloy
     restart: unless-stopped
     env_file: .env
     logging: *default-logging
@@ -239,7 +239,7 @@ services:
       - "--server.http.listen-addr=127.0.0.1:12345"
       - "/etc/alloy/config.river"
     depends_on:
-      - viewtripweb
+      - traxjourney
 
 # Relevant .env keys for the above (see .env.example for the full list):
 #

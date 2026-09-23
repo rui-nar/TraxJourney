@@ -28,11 +28,11 @@
 // level of detail exists to avoid.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/core/project_ref.dart';
-import 'package:viewtrip_client/src/projects/geo_viewport.dart';
-import 'package:viewtrip_client/src/projects/project_data_cache.dart';
-import 'package:viewtrip_client/src/projects/project_notifier.dart';
-import 'package:viewtrip_client/src/projects/project_service.dart';
+import 'package:traxjourney_client/src/core/project_ref.dart';
+import 'package:traxjourney_client/src/projects/geo_viewport.dart';
+import 'package:traxjourney_client/src/projects/project_data_cache.dart';
+import 'package:traxjourney_client/src/projects/project_notifier.dart';
+import 'package:traxjourney_client/src/projects/project_service.dart';
 
 const _ref = ProjectRef(name: 'Trip');
 

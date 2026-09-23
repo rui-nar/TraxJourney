@@ -55,7 +55,7 @@ class Activity:
     # Cached elevation profile — populated on first fetch and persisted in project file
     elevation_profile: Optional[Tuple[List[float], List[float]]] = None  # (distances_km, elevations_m)
     # Downsampled profile for the low-res-first chart (DB-derived, not part of the
-    # .viewtrip file format). Same shape as elevation_profile. Served when the full
+    # .traxj file format). Same shape as elevation_profile. Served when the full
     # profile is deferred (meta / low-res loads).
     elevation_profile_low_res: Optional[Tuple[List[float], List[float]]] = None
     # Geometry-edit flag (issue #31). True when the track was edited locally, so
@@ -209,7 +209,7 @@ class Activity:
             is_edited=data.get("is_edited", False),
             split_parent_id=data.get("split_parent_id"),
             # Absent from a real Strava payload — present only when round-tripping
-            # our own to_strava_dict() output (e.g. a .viewtrip file).
+            # our own to_strava_dict() output (e.g. a .traxj file).
             refresh_status=data.get("refresh_status"),
             refresh_started_at=data.get("refresh_started_at"),
             refresh_error=data.get("refresh_error"),

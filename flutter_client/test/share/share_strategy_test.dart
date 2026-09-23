@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/share/share_interfaces.dart';
-import 'package:viewtrip_client/src/share/share_strategy.dart';
+import 'package:traxjourney_client/src/share/share_interfaces.dart';
+import 'package:traxjourney_client/src/share/share_strategy.dart';
 
 class _Caps implements ShareCapabilities {
   @override

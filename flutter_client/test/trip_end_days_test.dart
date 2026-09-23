@@ -7,7 +7,7 @@
 // days actually go and which stay.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/projects/trip_end_days.dart';
+import 'package:traxjourney_client/src/projects/trip_end_days.dart';
 
 Map<String, dynamic> _activity(String date) => {'start_date_local': date};
 

@@ -1,6 +1,6 @@
 """Shared infra for the api.projects.* route modules — no routes of its own.
 
-Holds the single ``ProjectRepo`` instance, legacy file-path helpers, the
+Holds the single ``ProjectRepo`` instance, the project-file directory, the
 background-task helpers (stats refresh, share-tile refresh) that are reused
 across the Core/Activities/Item-ordering/Segments route modules, and the
 ``/meta`` payload cache shared by the endpoint and its warmers.
@@ -18,7 +18,6 @@ from sqlmodel import select
 
 from api.project_access import effective_role, resolve_project
 from models.project_db import DBProject
-from src.project.project_io import ProjectIO
 from src.project.project_repo import ProjectRepo
 
 _repo = ProjectRepo()
@@ -30,10 +29,6 @@ def _projects_dir(user_id: str) -> str:
     path = os.path.join(_DATA_DIR, "users", user_id, "projects")
     os.makedirs(path, exist_ok=True)
     return path
-
-
-def _legacy_path(user_id: str, name: str) -> str:
-    return os.path.join(_projects_dir(user_id), name + ProjectIO.EXTENSION)
 
 
 def _get_project_row(sess, user_info_id: int, name: str) -> DBProject:
@@ -113,7 +108,6 @@ def build_meta_payload(sess, row: DBProject, name: str, caller_id: int) -> dict 
     owner_id = row.user_info_id
     project = _repo.get_project(
         sess, owner_id, name,
-        legacy_path=_legacy_path(str(owner_id), name),
         include_heavy=False,
         journal_user_id=caller_id,
     )
@@ -134,7 +128,6 @@ def build_details_payload(sess, row: DBProject, name: str, caller_id: int) -> di
     owner_id = row.user_info_id
     project = _repo.get_project(
         sess, owner_id, name,
-        legacy_path=_legacy_path(str(owner_id), name),
         journal_user_id=caller_id,
     )
     if project is None:

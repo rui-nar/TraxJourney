@@ -1,4 +1,4 @@
-"""Configuration management for ViewTrip."""
+"""Configuration management for TraxJourney."""
 
 import json
 from pathlib import Path
@@ -8,7 +8,7 @@ from src.exceptions.errors import ConfigurationError
 
 
 class Config:
-    """Configuration management for ViewTrip."""
+    """Configuration management for TraxJourney."""
 
     DEFAULT_CONFIG = {
         "strava": {

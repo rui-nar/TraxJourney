@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:viewtrip_client/src/shared/shared_project_screen.dart';
+import 'package:traxjourney_client/src/shared/shared_project_screen.dart';
 
 /// Guards issue #147: the guest and view-only banners on the shared-trip
 /// screen must wrap instead of overflowing at phone width.

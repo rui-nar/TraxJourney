@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../api/client.dart';
 import '../core/app_version.dart';
+import '../core/brand.dart';
 import '../core/design_tokens.dart' show LineStyleKind, resolveTypeStyle, lineStyleName;
 import 'project_notifier.dart';
 import 'travel_companions_section.dart';
@@ -1185,7 +1186,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
             child: VersionText(
-              prefix: '© ${DateTime.now().year} ViewTrip · ',
+              prefix: '© ${DateTime.now().year} $kAppName · ',
               style: const TextStyle(
                 fontFamily: 'monospace', fontSize: 10.5, color: _kDim, letterSpacing: 0.5,
               ),

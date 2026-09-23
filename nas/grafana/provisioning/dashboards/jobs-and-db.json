@@ -1,8 +1,8 @@
 {
-  "uid": "viewtrip-jobs-db",
-  "title": "ViewTrip / Jobs & Database",
+  "uid": "traxjourney-jobs-db",
+  "title": "TraxJourney / Jobs & Database",
   "description": "Background job health (APScheduler, docs/METRICS.md) and SQLite pool/file metrics. Counters reset on restart — only ever read rate()/increase(), not absolute totals. Use the env variable to view prod or val separately — they share this NAS.",
-  "tags": ["viewtrip"],
+  "tags": ["traxjourney"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,
@@ -24,7 +24,7 @@
         "name": "env",
         "type": "query",
         "datasource": {"type": "prometheus", "uid": "$datasource"},
-        "query": {"query": "label_values(up{job=\"viewtrip\"}, env)", "refId": "EnvVariable"},
+        "query": {"query": "label_values(up{job=\"traxjourney\"}, env)", "refId": "EnvVariable"},
         "current": {"text": "production", "value": "production"},
         "includeAll": false,
         "multi": false,
@@ -38,11 +38,11 @@
       "id": 1,
       "type": "stat",
       "title": "Time since last successful daily_backup",
-      "description": "Alert threshold from docs/METRICS.md: time() - viewtrip_job_last_success_timestamp_seconds{job=\"daily_backup\"} > 90000 (25h) means it silently stopped.",
+      "description": "Alert threshold from docs/METRICS.md: time() - traxjourney_job_last_success_timestamp_seconds{job=\"daily_backup\"} > 90000 (25h) means it silently stopped.",
       "gridPos": {"h": 5, "w": 8, "x": 0, "y": 0},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "time() - viewtrip_job_last_success_timestamp_seconds{job=\"daily_backup\",env=\"$env\"}"}
+        {"refId": "A", "expr": "time() - traxjourney_job_last_success_timestamp_seconds{job=\"daily_backup\",env=\"$env\"}"}
       ],
       "fieldConfig": {
         "defaults": {
@@ -65,7 +65,7 @@
       "gridPos": {"h": 5, "w": 8, "x": 8, "y": 0},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "100 * viewtrip_db_pool_connections{state=\"in_use\",env=\"$env\"} / viewtrip_db_pool_capacity{env=\"$env\"}"}
+        {"refId": "A", "expr": "100 * traxjourney_db_pool_connections{state=\"in_use\",env=\"$env\"} / traxjourney_db_pool_capacity{env=\"$env\"}"}
       ],
       "fieldConfig": {
         "defaults": {
@@ -88,7 +88,7 @@
       "gridPos": {"h": 5, "w": 8, "x": 16, "y": 0},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "sum(rate(viewtrip_stale_writes_total{env=\"$env\"}[5m]))"}
+        {"refId": "A", "expr": "sum(rate(traxjourney_stale_writes_total{env=\"$env\"}[5m]))"}
       ],
       "fieldConfig": {
         "defaults": {
@@ -109,7 +109,7 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 5},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "sum(rate(viewtrip_job_runs_total{env=\"$env\"}[15m])) by (job, result)", "legendFormat": "{{job}} ({{result}})"}
+        {"refId": "A", "expr": "sum(rate(traxjourney_job_runs_total{env=\"$env\"}[15m])) by (job, result)", "legendFormat": "{{job}} ({{result}})"}
       ],
       "fieldConfig": {"defaults": {"unit": "ops", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": [
         {"matcher": {"id": "byRegexp", "options": "/error/"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}]}
@@ -123,7 +123,7 @@
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 5},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "histogram_quantile(0.95, sum(rate(viewtrip_job_duration_seconds_bucket{env=\"$env\"}[15m])) by (le, job))", "legendFormat": "{{job}}"}
+        {"refId": "A", "expr": "histogram_quantile(0.95, sum(rate(traxjourney_job_duration_seconds_bucket{env=\"$env\"}[15m])) by (le, job))", "legendFormat": "{{job}}"}
       ],
       "fieldConfig": {"defaults": {"unit": "s", "custom": {"drawStyle": "line", "fillOpacity": 0}}, "overrides": []},
       "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["mean", "max"]}, "tooltip": {"mode": "multi"}}
@@ -135,10 +135,10 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 13},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "viewtrip_db_pool_connections{state=\"in_use\",env=\"$env\"}", "legendFormat": "in use"},
-        {"refId": "B", "expr": "viewtrip_db_pool_connections{state=\"idle\",env=\"$env\"}", "legendFormat": "idle"},
-        {"refId": "C", "expr": "viewtrip_db_pool_overflow{env=\"$env\"}", "legendFormat": "overflow"},
-        {"refId": "D", "expr": "viewtrip_db_pool_capacity{env=\"$env\"}", "legendFormat": "capacity"}
+        {"refId": "A", "expr": "traxjourney_db_pool_connections{state=\"in_use\",env=\"$env\"}", "legendFormat": "in use"},
+        {"refId": "B", "expr": "traxjourney_db_pool_connections{state=\"idle\",env=\"$env\"}", "legendFormat": "idle"},
+        {"refId": "C", "expr": "traxjourney_db_pool_overflow{env=\"$env\"}", "legendFormat": "overflow"},
+        {"refId": "D", "expr": "traxjourney_db_pool_capacity{env=\"$env\"}", "legendFormat": "capacity"}
       ],
       "fieldConfig": {"defaults": {"unit": "none", "custom": {"drawStyle": "line", "fillOpacity": 5}}, "overrides": [
         {"matcher": {"id": "byName", "options": "capacity"}, "properties": [{"id": "custom.lineStyle", "value": {"dash": [10, 10]}}]}
@@ -153,8 +153,8 @@
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 13},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "viewtrip_db_file_size_bytes{file=\"main\",env=\"$env\"}", "legendFormat": "main"},
-        {"refId": "B", "expr": "viewtrip_db_file_size_bytes{file=\"wal\",env=\"$env\"}", "legendFormat": "wal"}
+        {"refId": "A", "expr": "traxjourney_db_file_size_bytes{file=\"main\",env=\"$env\"}", "legendFormat": "main"},
+        {"refId": "B", "expr": "traxjourney_db_file_size_bytes{file=\"wal\",env=\"$env\"}", "legendFormat": "wal"}
       ],
       "fieldConfig": {"defaults": {"unit": "bytes", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": []},
       "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}
@@ -166,7 +166,7 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 21},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "sum(rate(viewtrip_db_errors_total{env=\"$env\"}[5m])) by (kind)", "legendFormat": "{{kind}}"}
+        {"refId": "A", "expr": "sum(rate(traxjourney_db_errors_total{env=\"$env\"}[5m])) by (kind)", "legendFormat": "{{kind}}"}
       ],
       "fieldConfig": {"defaults": {"unit": "ops", "custom": {"drawStyle": "line", "fillOpacity": 10, "stacking": {"mode": "normal"}}}, "overrides": []},
       "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["sum"]}, "tooltip": {"mode": "multi"}}
@@ -178,7 +178,7 @@
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 21},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "histogram_quantile(0.95, sum(rate(viewtrip_db_query_duration_seconds_bucket{env=\"$env\"}[5m])) by (le, operation))", "legendFormat": "{{operation}}"}
+        {"refId": "A", "expr": "histogram_quantile(0.95, sum(rate(traxjourney_db_query_duration_seconds_bucket{env=\"$env\"}[5m])) by (le, operation))", "legendFormat": "{{operation}}"}
       ],
       "fieldConfig": {"defaults": {"unit": "s", "custom": {"drawStyle": "line", "fillOpacity": 0}}, "overrides": []},
       "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["mean", "max"]}, "tooltip": {"mode": "multi"}}

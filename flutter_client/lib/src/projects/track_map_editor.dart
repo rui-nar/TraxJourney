@@ -17,6 +17,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../core/brand.dart';
 import '../core/design_tokens.dart';
 import 'basemaps.dart';
 import 'track_edit_model.dart';
@@ -388,7 +389,7 @@ class _TrackMapEditorState extends State<TrackMapEditor> {
                   TileLayer(
                     urlTemplate: kActiveManageBasemapUrl,
                     subdomains: kActiveManageSubdomains,
-                    userAgentPackageName: 'com.viewtrip.client',
+                    userAgentPackageName: kAppPackageId,
                     maxNativeZoom: 20,
                   ),
                   if (polyline.length >= 2)

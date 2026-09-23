@@ -33,7 +33,7 @@ import sys
 from dataclasses import dataclass, replace
 from typing import Iterable, Optional
 
-REPO_URL = "https://github.com/rui-nar/ViewTripWeb"
+REPO_URL = "https://github.com/rui-nar/TraxJourney"
 
 # Scope → (area shown to the reader, audience). Audience splits "what changed in
 # the app" from "what changed on the server", because one tag ships both the
@@ -118,6 +118,12 @@ _ISSUE_RE = re.compile(r"#(\d+)")
 # put, and GitHub auto-links it in a release body anyway.
 _TRAILING_REFS_RE = re.compile(r"\s*\(\s*#\d+(?:[,\s]+#\d+)*\s*\)\s*$")
 _TRAILER_RE = re.compile(r"^(Release-Note|Upgrade-Note):\s*(.+)$", re.IGNORECASE)
+# The attribution trailers stacked under a note with no blank line
+# (Co-Authored-By:, Signed-off-by:, Claude-Session:) end it. Only these: a
+# wrapped line may itself start "Self-hosting: ..." and must stay in the note.
+_OTHER_TRAILER_RE = re.compile(
+    r"^(?:(?:[A-Za-z]+-)+by|Claude-Session|Change-Id):\s", re.IGNORECASE
+)
 
 # Commits that are pure bookkeeping — never interesting, in any section.
 _SKIP_SUBJECTS = (
@@ -157,8 +163,8 @@ class Change:
 def _trailers(body: str) -> dict[str, str]:
     """Read ``Release-Note:`` / ``Upgrade-Note:`` trailers from a commit body.
 
-    A trailer runs until a blank line, so it can wrap across lines the way the
-    rest of the commit body does.
+    A trailer runs until a blank line or the next trailer, so it can wrap across
+    lines the way the rest of the commit body does.
     """
     found: dict[str, str] = {}
     key: Optional[str] = None
@@ -167,7 +173,7 @@ def _trailers(body: str) -> dict[str, str]:
         if match:
             key = match.group(1).lower()
             found[key] = match.group(2).strip()
-        elif key and line.strip():
+        elif key and line.strip() and not _OTHER_TRAILER_RE.match(line.strip()):
             found[key] = f"{found[key]} {line.strip()}"
         else:
             key = None
@@ -293,7 +299,7 @@ def render(
     visible = [c for c in changes if c.audience != INTERNAL and c.section != "Internal"]
     internal = [c for c in changes if c not in visible]
 
-    out: list[str] = [f"# ViewTripWeb {version}", ""]
+    out: list[str] = [f"# TraxJourney {version}", ""]
     count = len(visible)
     noun = "change" if count == 1 else "changes"
     out += [f"_{count} {noun} since {previous}_", ""]
@@ -311,7 +317,11 @@ def render(
     upgrades = [c for c in changes if c.upgrade_note]
     if upgrades:
         out += ["## ⚠️ Upgrade notes", ""]
-        out += [f"- **{c.area}** — {c.upgrade_note.rstrip('.')}." for c in upgrades]
+        for c in upgrades:
+            note = c.upgrade_note.rstrip(".")
+            # Same rule as _bullet: no area, no empty "****" prefix.
+            out.append(f"- **{c.area}** — {note}." if c.area
+                       else f"- {note[:1].upper()}{note[1:]}.")
         out.append("")
 
     if internal:
@@ -455,7 +465,7 @@ def warn_non_english(changes: list[Change]) -> int:
 # ── Optional: LLM polish ──────────────────────────────────────────────────────
 
 _TRANSLATE_PROMPT = """\
-Below are release-note lines for ViewTrip, an app for mapping and sharing \
+Below are release-note lines for TraxJourney, an app for mapping and sharing \
 multi-week trips. Some are not in English.
 
 Translate each line into English. Keep the meaning exactly — do not add, drop, \
@@ -472,7 +482,7 @@ Lines:
 """
 
 _HIGHLIGHTS_PROMPT = """\
-Write the "Highlights" paragraph for a release of ViewTrip, an app for mapping \
+Write the "Highlights" paragraph for a release of TraxJourney, an app for mapping \
 and sharing multi-week trips (Flutter client, FastAPI server).
 
 Below are the changes in this release, already grouped. Write 2-3 sentences in \

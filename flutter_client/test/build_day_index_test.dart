@@ -6,7 +6,7 @@
 // map_panel.dart's doc comment on buildDayIndex for the full story.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/projects/map_panel.dart';
+import 'package:traxjourney_client/src/projects/map_panel.dart';
 
 void main() {
   Map<String, dynamic> act(int id, String date) =>

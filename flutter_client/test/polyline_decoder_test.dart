@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/map/polyline_decoder.dart';
+import 'package:traxjourney_client/src/map/polyline_decoder.dart';
 
 /// These tests must be run on the web (`flutter test --platform chrome`) to be
 /// meaningful: the decoder's previous bug only manifested when compiled to

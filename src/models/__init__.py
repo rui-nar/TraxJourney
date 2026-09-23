@@ -1,4 +1,4 @@
-"""Models package for ViewTrip."""
+"""Models package for TraxJourney."""
 
 from src.models.activity import Activity
 

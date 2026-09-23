@@ -1,7 +1,7 @@
 """What a given user is allowed to do (issue #121).
 
 The rule that shapes this module: **billing is off unless it is switched on**.
-ViewTrip ships as a public MIT Docker image, and a self-hoster must never meet a
+TraxJourney ships as a public MIT Docker image, and a self-hoster must never meet a
 paywall — so with no provider configured, ``billing_enabled()`` is False,
 everyone is on the strongest plan, and no limit is ever checked.
 

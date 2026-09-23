@@ -15,6 +15,7 @@ import 'google_button_stub.dart'
     if (dart.library.html) 'google_button_web.dart';
 
 import '../core/app_version.dart';
+import '../core/brand.dart';
 import '../core/platform.dart';
 import '../core/return_to.dart';
 import '../core/server_config.dart';
@@ -172,8 +173,15 @@ class _LoginScreenState extends State<LoginScreen> {
                           Icon(Icons.map_rounded,
                               color: theme.colorScheme.primary, size: 32),
                           const SizedBox(width: 10),
-                          Text('ViewTrip',
-                              style: theme.textTheme.headlineMedium),
+                          // Scales down rather than overflowing when the
+                          // card is narrower than the wordmark.
+                          Flexible(
+                            child: FittedBox(
+                              fit: BoxFit.scaleDown,
+                              child: Text(kAppName,
+                                  style: theme.textTheme.headlineMedium),
+                            ),
+                          ),
                         ],
                       ),
                       const SizedBox(height: 6),
@@ -302,7 +310,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       ],
                       const SizedBox(height: 24),
                       VersionText(
-                        prefix: '© ${DateTime.now().year} ViewTrip · ',
+                        prefix: '© ${DateTime.now().year} $kAppName · ',
                         style: theme.textTheme.bodySmall?.copyWith(
                           color: theme.colorScheme.onSurfaceVariant,
                         ),
@@ -457,7 +465,7 @@ class ServerConfigDialogState extends State<ServerConfigDialog> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  'Point this app at your own ViewTrip server instead of '
+                  'Point this app at your own $kAppName server instead of '
                   'the default one. Leave blank to use the default.',
                 ),
                 const SizedBox(height: 16),

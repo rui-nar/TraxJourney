@@ -23,8 +23,8 @@ import 'dart:typed_data';
 
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/projects/elevation_chart.dart';
-import 'package:viewtrip_client/src/projects/project_notifier.dart';
+import 'package:traxjourney_client/src/projects/elevation_chart.dart';
+import 'package:traxjourney_client/src/projects/project_notifier.dart';
 
 List<Map<String, dynamic>> _acts(int n, int samples) => [
       for (var a = 0; a < n; a++)

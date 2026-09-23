@@ -5,7 +5,7 @@
 // older server that doesn't send those fields at all.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/core/project_ref.dart';
+import 'package:traxjourney_client/src/core/project_ref.dart';
 
 void main() {
   group('ProjectRef.isOwn / capability getters', () {
@@ -134,7 +134,7 @@ void main() {
     test('parses owner_id/owner_name/role from a full entry', () {
       final entry = {
         'name': 'Trip',
-        'filename': 'trip.viewtrip',
+        'filename': 'trip.traxj',
         'owner_id': 7,
         'owner_name': 'Alice',
         'role': 'editor',
@@ -152,7 +152,7 @@ void main() {
 
     test('backward compat: older server with no owner_id/owner_name/role '
         'defaults to an own, role-owner ref', () {
-      final entry = {'name': 'Trip', 'filename': 'trip.viewtrip'};
+      final entry = {'name': 'Trip', 'filename': 'trip.traxj'};
       expect(entry.ref, const ProjectRef(name: 'Trip'));
       expect(entry.ownerName, isNull);
       expect(entry.isSharedWithMe, isFalse);

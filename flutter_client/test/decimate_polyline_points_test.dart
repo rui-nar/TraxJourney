@@ -11,7 +11,7 @@
 
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:viewtrip_client/src/projects/map_panel.dart';
+import 'package:traxjourney_client/src/projects/map_panel.dart';
 
 List<(double, double)> _line(int n, {double lonStart = 0}) =>
     [for (var i = 0; i < n; i++) (i.toDouble(), lonStart + i.toDouble())];

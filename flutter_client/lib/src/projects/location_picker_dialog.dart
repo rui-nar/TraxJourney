@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../core/brand.dart';
 import '../map/geo_point.dart';
 import '../map/great_circle.dart';
 
@@ -191,7 +192,7 @@ class _LocationPickerDialogState extends State<LocationPickerDialog> {
                     TileLayer(
                       urlTemplate:
                           'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                      userAgentPackageName: 'com.viewtrip.client',
+                      userAgentPackageName: kAppPackageId,
                       tileProvider: _tileProvider,
                       maxNativeZoom: 19,
                     ),

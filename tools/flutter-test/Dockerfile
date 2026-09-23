@@ -1,4 +1,4 @@
-# Flutter test environment for ViewTripWeb.
+# Flutter test environment for TraxJourney.
 #
 # Tests run here rather than on Windows: Smart App Control blocks the SDK's
 # unsigned impellerc.exe, so a native `flutter test` dies before the first test.

@@ -5,7 +5,7 @@
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:viewtrip_client/src/core/onboarding_notifier.dart';
+import 'package:traxjourney_client/src/core/onboarding_notifier.dart';
 
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));

@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/auth/password_rules.dart';
+import 'package:traxjourney_client/src/auth/password_rules.dart';
 
 void main() {
   test('accepts a valid change', () {

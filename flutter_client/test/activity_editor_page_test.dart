@@ -5,14 +5,14 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:viewtrip_client/src/api/client.dart';
-import 'package:viewtrip_client/src/core/project_ref.dart';
-import 'package:viewtrip_client/src/map/geo_point.dart';
-import 'package:viewtrip_client/src/projects/activity_editor_page.dart';
-import 'package:viewtrip_client/src/projects/project_notifier.dart';
-import 'package:viewtrip_client/src/projects/project_service.dart';
-import 'package:viewtrip_client/src/projects/track_editor_controller.dart';
-import 'package:viewtrip_client/src/projects/track_map_editor.dart';
+import 'package:traxjourney_client/src/api/client.dart';
+import 'package:traxjourney_client/src/core/project_ref.dart';
+import 'package:traxjourney_client/src/map/geo_point.dart';
+import 'package:traxjourney_client/src/projects/activity_editor_page.dart';
+import 'package:traxjourney_client/src/projects/project_notifier.dart';
+import 'package:traxjourney_client/src/projects/project_service.dart';
+import 'package:traxjourney_client/src/projects/track_editor_controller.dart';
+import 'package:traxjourney_client/src/projects/track_map_editor.dart';
 
 /// Minimal Google-polyline encoder for test fixtures.
 String _encode(List<GeoPoint> pts) {

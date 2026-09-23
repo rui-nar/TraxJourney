@@ -1,25 +1,25 @@
-"""Custom exceptions for ViewTrip application."""
+"""Custom exceptions for TraxJourney application."""
 
 
-class ViewTripException(Exception):
-    """Base exception for ViewTrip."""
+class TraxJourneyException(Exception):
+    """Base exception for TraxJourney."""
 
     pass
 
 
-class ConfigurationError(ViewTripException):
+class ConfigurationError(TraxJourneyException):
     """Raised when configuration is invalid or missing."""
 
     pass
 
 
-class AuthenticationError(ViewTripException):
+class AuthenticationError(TraxJourneyException):
     """Raised when authentication fails."""
 
     pass
 
 
-class APIError(ViewTripException):
+class APIError(TraxJourneyException):
     """Raised when Strava API returns an error."""
 
     pass
@@ -36,7 +36,7 @@ class RateLimitError(APIError):
     pass
 
 
-class QuotaExceeded(ViewTripException):
+class QuotaExceeded(TraxJourneyException):
     """Raised when an action would push a user past their plan's limits.
 
     Carries the numbers so the API handler can turn it into a 402 the client can
@@ -55,25 +55,25 @@ class QuotaExceeded(ViewTripException):
         self.needed = needed if needed is not None else used
 
 
-class TokenError(ViewTripException):
+class TokenError(TraxJourneyException):
     """Raised when token management fails."""
 
     pass
 
 
-class ValidationError(ViewTripException):
+class ValidationError(TraxJourneyException):
     """Raised when data validation fails."""
 
     pass
 
 
-class ExportError(ViewTripException):
+class ExportError(TraxJourneyException):
     """Raised when export operation fails."""
 
     pass
 
 
-class GPXError(ViewTripException):
+class GPXError(TraxJourneyException):
     """Raised when GPX processing fails."""
 
     pass

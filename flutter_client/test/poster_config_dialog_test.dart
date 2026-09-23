@@ -4,7 +4,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/projects/poster_config_dialog.dart';
+import 'package:traxjourney_client/src/projects/poster_config_dialog.dart';
 
 const _defaults = PosterConfigOptions(
   distance: true,

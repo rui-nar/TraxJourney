@@ -1,15 +1,15 @@
 """Database engine and session factory — replaces rx.session()."""
 from __future__ import annotations
 
-import os
 from contextlib import contextmanager
 
 from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine
 
+from models.db_url import resolve_database_url
 from src.utils.metrics import track_db_session
 
-_DB_URL = os.environ.get("DATABASE_URL", "sqlite:///viewtripweb.db")
+_DB_URL = resolve_database_url()
 
 
 def _make_engine(url: str):

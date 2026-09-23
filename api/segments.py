@@ -27,7 +27,7 @@ from api.project_access import (
     resolve_project,
     translate_insert_after,
 )
-from api.project_shared import _legacy_path, _refresh_share_tiles, _refresh_stats_background, _repo, queue_share_tiles_refresh, queue_stats_refresh, warm_meta_cache
+from api.project_shared import _refresh_share_tiles, _refresh_stats_background, _repo, queue_share_tiles_refresh, queue_stats_refresh, warm_meta_cache
 from src.billing.entitlements import ensure_trip_days_quota
 from src.jobs.queue import QUEUE_RESOLVE, enqueue
 from src.jobs.route_jobs import RESOLVER_VERSION, create_job, mark_done, mark_running
@@ -410,7 +410,6 @@ def create_segment(
     # repo_retry owns the policy for exactly this (issues #172/#173).
     if _repo.save_project_with_retry(
         owner_id, name, _insert,
-        legacy_path=_legacy_path(str(owner_id), name),
     ) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     bust_geo_cache(owner_id, name)
@@ -478,7 +477,6 @@ def update_segment(
     # the callback rather than once outside it.
     if _repo.save_project_with_retry(
         owner_id, name, _update,
-        legacy_path=_legacy_path(str(owner_id), name),
     ) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     bust_geo_cache(owner_id, name)
@@ -576,7 +574,6 @@ def edit_segment_track(
         # check its type below — see edit_activity_track for why.
         project = _repo.get_project(
             sess, owner_id, name,
-            legacy_path=_legacy_path(str(owner_id), name),
             include_heavy=False,
         )
         if project is None:
@@ -713,7 +710,6 @@ def resolve_segment_route(
         owner_id = row.user_info_id
         project = _repo.get_project(
             sess, owner_id, name,
-            legacy_path=_legacy_path(str(owner_id), name),
         )
         if project is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")

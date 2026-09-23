@@ -1,1 +1,1 @@
-"""Configuration management for ViewTrip."""
+"""Configuration management for TraxJourney."""

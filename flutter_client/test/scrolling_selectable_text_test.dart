@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:viewtrip_client/src/core/scrolling_selectable_text.dart';
+import 'package:traxjourney_client/src/core/scrolling_selectable_text.dart';
 
 /// Regression coverage for the activity-panel marquee: only overflowing text
 /// scrolls, only while selected, the sequence runs once and holds (never

@@ -11,10 +11,10 @@ Nothing secret is printed (the remember_token is never echoed). Run it against
 the DB that holds the connected account:
 
     # list the connected account's trips (so you can find the trip id)
-    python scripts/inspect_polarsteps_steps.py "E:/Downloads/viewtripweb (8).db"
+    python scripts/inspect_polarsteps_steps.py "E:/Downloads/traxjourney (8).db"
 
     # then inspect one trip's steps
-    python scripts/inspect_polarsteps_steps.py "E:/Downloads/viewtripweb (8).db" --trip-id 1234567
+    python scripts/inspect_polarsteps_steps.py "E:/Downloads/traxjourney (8).db" --trip-id 1234567
 
 If more than one user has a Polarsteps token, pass --user-email to disambiguate.
 """

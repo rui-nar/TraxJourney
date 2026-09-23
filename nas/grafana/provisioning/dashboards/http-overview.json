@@ -1,8 +1,8 @@
 {
-  "uid": "viewtrip-http",
-  "title": "ViewTrip / HTTP & Traffic",
+  "uid": "traxjourney-http",
+  "title": "TraxJourney / HTTP & Traffic",
   "description": "Request rate, errors and latency from prometheus-fastapi-instrumentator (docs/METRICS.md). handler is the route template, not the concrete path. Use the env variable to view prod or val separately — they share this NAS.",
-  "tags": ["viewtrip"],
+  "tags": ["traxjourney"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,
@@ -24,7 +24,7 @@
         "name": "env",
         "type": "query",
         "datasource": {"type": "prometheus", "uid": "$datasource"},
-        "query": {"query": "label_values(up{job=\"viewtrip\"}, env)", "refId": "EnvVariable"},
+        "query": {"query": "label_values(up{job=\"traxjourney\"}, env)", "refId": "EnvVariable"},
         "current": {"text": "production", "value": "production"},
         "includeAll": false,
         "multi": false,
@@ -41,7 +41,7 @@
       "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "sum(rate(viewtrip_http_requests_total{env=\"$env\"}[5m]))"}
+        {"refId": "A", "expr": "sum(rate(traxjourney_http_requests_total{env=\"$env\"}[5m]))"}
       ],
       "fieldConfig": {"defaults": {"unit": "reqps", "decimals": 2}, "overrides": []},
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "graphMode": "area"}
@@ -53,7 +53,7 @@
       "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "100 * sum(rate(viewtrip_http_requests_total{status=~\"5..\",env=\"$env\"}[5m])) / sum(rate(viewtrip_http_requests_total{env=\"$env\"}[5m]))"}
+        {"refId": "A", "expr": "100 * sum(rate(traxjourney_http_requests_total{status=~\"5..\",env=\"$env\"}[5m])) / sum(rate(traxjourney_http_requests_total{env=\"$env\"}[5m]))"}
       ],
       "fieldConfig": {
         "defaults": {
@@ -75,7 +75,7 @@
       "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "viewtrip_http_requests_inprogress{env=\"$env\"}"}
+        {"refId": "A", "expr": "traxjourney_http_requests_inprogress{env=\"$env\"}"}
       ],
       "fieldConfig": {"defaults": {"unit": "none"}, "overrides": []},
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "graphMode": "area"}
@@ -87,7 +87,7 @@
       "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "histogram_quantile(0.95, sum(rate(viewtrip_http_request_duration_seconds_bucket{env=\"$env\"}[5m])) by (le))"}
+        {"refId": "A", "expr": "histogram_quantile(0.95, sum(rate(traxjourney_http_request_duration_seconds_bucket{env=\"$env\"}[5m])) by (le))"}
       ],
       "fieldConfig": {
         "defaults": {
@@ -110,7 +110,7 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "sum(rate(viewtrip_http_requests_total{env=\"$env\"}[5m])) by (status)", "legendFormat": "{{status}}"}
+        {"refId": "A", "expr": "sum(rate(traxjourney_http_requests_total{env=\"$env\"}[5m])) by (status)", "legendFormat": "{{status}}"}
       ],
       "fieldConfig": {"defaults": {"unit": "reqps", "custom": {"drawStyle": "line", "fillOpacity": 10, "stacking": {"mode": "normal"}}}, "overrides": []},
       "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["mean", "max"]}, "tooltip": {"mode": "multi"}}
@@ -122,7 +122,7 @@
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "topk(10, sum(rate(viewtrip_http_requests_total{env=\"$env\"}[5m])) by (handler))", "legendFormat": "{{handler}}"}
+        {"refId": "A", "expr": "topk(10, sum(rate(traxjourney_http_requests_total{env=\"$env\"}[5m])) by (handler))", "legendFormat": "{{handler}}"}
       ],
       "fieldConfig": {"defaults": {"unit": "reqps", "custom": {"drawStyle": "line", "fillOpacity": 0}}, "overrides": []},
       "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["mean", "max"]}, "tooltip": {"mode": "multi"}}
@@ -134,9 +134,9 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "histogram_quantile(0.50, sum(rate(viewtrip_http_request_duration_seconds_bucket{env=\"$env\"}[5m])) by (le))", "legendFormat": "p50"},
-        {"refId": "B", "expr": "histogram_quantile(0.95, sum(rate(viewtrip_http_request_duration_seconds_bucket{env=\"$env\"}[5m])) by (le))", "legendFormat": "p95"},
-        {"refId": "C", "expr": "histogram_quantile(0.99, sum(rate(viewtrip_http_request_duration_seconds_bucket{env=\"$env\"}[5m])) by (le))", "legendFormat": "p99"}
+        {"refId": "A", "expr": "histogram_quantile(0.50, sum(rate(traxjourney_http_request_duration_seconds_bucket{env=\"$env\"}[5m])) by (le))", "legendFormat": "p50"},
+        {"refId": "B", "expr": "histogram_quantile(0.95, sum(rate(traxjourney_http_request_duration_seconds_bucket{env=\"$env\"}[5m])) by (le))", "legendFormat": "p95"},
+        {"refId": "C", "expr": "histogram_quantile(0.99, sum(rate(traxjourney_http_request_duration_seconds_bucket{env=\"$env\"}[5m])) by (le))", "legendFormat": "p99"}
       ],
       "fieldConfig": {"defaults": {"unit": "s", "custom": {"drawStyle": "line", "fillOpacity": 0}}, "overrides": []},
       "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["mean", "max"]}, "tooltip": {"mode": "multi"}}
@@ -148,7 +148,7 @@
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "topk(10, histogram_quantile(0.95, sum(rate(viewtrip_http_request_duration_seconds_bucket{env=\"$env\"}[5m])) by (le, handler)))", "legendFormat": "{{handler}}"}
+        {"refId": "A", "expr": "topk(10, histogram_quantile(0.95, sum(rate(traxjourney_http_request_duration_seconds_bucket{env=\"$env\"}[5m])) by (le, handler)))", "legendFormat": "{{handler}}"}
       ],
       "fieldConfig": {"defaults": {"unit": "s", "custom": {"drawStyle": "line", "fillOpacity": 0}}, "overrides": []},
       "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["mean", "max"]}, "tooltip": {"mode": "multi"}}
@@ -160,8 +160,8 @@
       "gridPos": {"h": 8, "w": 24, "x": 0, "y": 20},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "rate(viewtrip_http_request_size_bytes_sum{env=\"$env\"}[5m]) / rate(viewtrip_http_request_size_bytes_count{env=\"$env\"}[5m])", "legendFormat": "request"},
-        {"refId": "B", "expr": "rate(viewtrip_http_response_size_bytes_sum{env=\"$env\"}[5m]) / rate(viewtrip_http_response_size_bytes_count{env=\"$env\"}[5m])", "legendFormat": "response"}
+        {"refId": "A", "expr": "rate(traxjourney_http_request_size_bytes_sum{env=\"$env\"}[5m]) / rate(traxjourney_http_request_size_bytes_count{env=\"$env\"}[5m])", "legendFormat": "request"},
+        {"refId": "B", "expr": "rate(traxjourney_http_response_size_bytes_sum{env=\"$env\"}[5m]) / rate(traxjourney_http_response_size_bytes_count{env=\"$env\"}[5m])", "legendFormat": "response"}
       ],
       "fieldConfig": {"defaults": {"unit": "bytes", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": []},
       "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}

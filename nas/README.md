@@ -106,16 +106,16 @@ instead of removing the ACL outright.)
 docker compose exec tailscale tailscale status
 ```
 
-Note the IP or MagicDNS name for `viewtrip-observability` — that's what the
+Note the IP or MagicDNS name for `traxjourney-observability` — that's what the
 VPS's `LOKI_PUSH_URL`/`PROMETHEUS_REMOTE_WRITE_URL` point at (§4). From
 another device already on the same tailnet, sanity-check reachability:
 
 ```bash
-curl -s http://viewtrip-observability:3100/ready   # Loki
-curl -s http://viewtrip-observability:9090/-/ready  # Prometheus
+curl -s http://traxjourney-observability:3100/ready   # Loki
+curl -s http://traxjourney-observability:9090/-/ready  # Prometheus
 ```
 
-Open Grafana at `http://viewtrip-observability:3000` (only reachable from a
+Open Grafana at `http://traxjourney-observability:3000` (only reachable from a
 device on the tailnet — that's the point) and confirm the Prometheus and
 Loki datasources (auto-provisioned from
 `grafana/provisioning/datasources/datasources.yaml`) show green in
@@ -123,7 +123,7 @@ Settings → Data sources.
 
 Five dashboards are auto-provisioned too (`grafana/provisioning/dashboards/`,
 read-only — edit the JSON and it picks up the change within 30s, no restart
-needed), in a **ViewTrip** folder: **HTTP & Traffic**, **Jobs & Database**,
+needed), in a **TraxJourney** folder: **HTTP & Traffic**, **Jobs & Database**,
 **Integrations & Auth**, **Logs**, and **Host Resources** (VPS memory,
 swap, CPU, load and disk — added after issue #209, see
 `../docs/DEPLOYMENT_VPS.md`'s Alloy section for the host `/proc`/`/sys`
@@ -144,14 +144,14 @@ the full VPS-side setup — Tailscale install there, `config/alloy-config.river`
 etc.), set in its `.env`:
 
 ```
-LOKI_PUSH_URL=http://viewtrip-observability:3100/loki/api/v1/push
-PROMETHEUS_REMOTE_WRITE_URL=http://viewtrip-observability:9090/api/v1/write
+LOKI_PUSH_URL=http://traxjourney-observability:3100/loki/api/v1/push
+PROMETHEUS_REMOTE_WRITE_URL=http://traxjourney-observability:9090/api/v1/write
 ```
 
 (Use whichever hostname/IP §3 showed you — MagicDNS name is more stable
 across IP churn than the raw `100.x.y.z` address.) Then
 `docker compose up -d` the `alloy` service on the VPS and watch for log
-lines and `viewtrip_*` metrics starting to arrive in Grafana here within a
+lines and `traxjourney_*` metrics starting to arrive in Grafana here within a
 minute or two.
 
 ## 5. Retention / disk

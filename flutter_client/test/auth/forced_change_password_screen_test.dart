@@ -2,10 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:viewtrip_client/src/auth/auth_notifier.dart';
-import 'package:viewtrip_client/src/auth/auth_service.dart';
-import 'package:viewtrip_client/src/auth/forced_change_password_screen.dart';
-import 'package:viewtrip_client/src/settings/settings_service.dart';
+import 'package:traxjourney_client/src/auth/auth_notifier.dart';
+import 'package:traxjourney_client/src/auth/auth_service.dart';
+import 'package:traxjourney_client/src/auth/forced_change_password_screen.dart';
+import 'package:traxjourney_client/src/settings/settings_service.dart';
 
 class _FakeSettingsService extends SettingsService {
   Object? changePasswordError;
