@@ -384,10 +384,12 @@ if os.name == "nt":
                        'echo %* | findstr /c:" verify " >nul && exit /b %SHIM_VERIFY_EXIT%\r\nexit /b 0\r\n'),
     }
 else:
+    # printf, not echo: dash (Ubuntu's /bin/sh) echo expands the `\r` in the
+    # ssh command's `tr -d '\r'` into a real carriage return.
     SHIMS = {
-        "ssh": '#!/bin/sh\necho "$*" >> "$(dirname "$0")/ssh.log"\ncat >> "$(dirname "$0")/ssh.stdin"\n',
-        "gh": '#!/bin/sh\necho "$SHIM_GH_JSON"\n',
-        "python": ('#!/bin/sh\necho "$*" >> "$(dirname "$0")/python.log"\n'
+        "ssh": '#!/bin/sh\nprintf "%s\\n" "$*" >> "$(dirname "$0")/ssh.log"\ncat >> "$(dirname "$0")/ssh.stdin"\n',
+        "gh": '#!/bin/sh\nprintf "%s\\n" "$SHIM_GH_JSON"\n',
+        "python": ('#!/bin/sh\nprintf "%s\\n" "$*" >> "$(dirname "$0")/python.log"\n'
                    'case "$2" in preflight) exit "$SHIM_PREFLIGHT_EXIT";; verify) exit "$SHIM_VERIFY_EXIT";; esac\n'),
     }
 
