@@ -172,6 +172,12 @@ ever set `keepalive` explicitly in the Caddyfile, keep it below uvicorn's value;
 (`/volume2/docker/viewtrip/docker-compose.yml`), with three differences:
 
 - Port bound to loopback (`127.0.0.1:8000:8000`) instead of `7777:8000`.
+- `FORWARDED_ALLOW_IPS=*` in `.env` (issue #443). Caddy's connection reaches
+  the container through that published port, so from inside it comes from
+  the Docker network's gateway, not `127.0.0.1`; without this the access log
+  records the gateway's `/24` for every request instead of the client's.
+  `*` is safe precisely because the port is loopback-bound — the only peers
+  that can connect are processes on this host. Same line in val's `.env`.
 - `FRONTEND_ORIGIN` / `STRAVA_REDIRECT_URI` point at `traxjourney.com`.
 - `JWT_SECRET` freshly generated (`openssl rand -hex 32`) — not reused from
   the NAS, no reason to carry an old session-signing key to a new host.

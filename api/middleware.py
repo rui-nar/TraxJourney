@@ -5,9 +5,16 @@ Authorization header ahead of route dependencies, and logs one access-log
 line per request — DEBUG for the chatty/polled routes listed in
 ``DEBUG_ROUTE_TEMPLATES`` (docs/LOGGING_OBSERVABILITY_PLAN.md Section 3),
 INFO for everything else.
+
+That line is the only access log the server keeps (uvicorn's own is off, see
+entrypoint.sh), and it deliberately records the route template rather than
+the URL — query strings carry OAuth codes, share tokens and search terms —
+and the client address truncated to its /24 (IPv6: /48), never in full
+(issue #443, docs/LOGGING.md).
 """
 from __future__ import annotations
 
+import ipaddress
 import time
 import uuid
 from typing import Awaitable, Callable
@@ -34,15 +41,33 @@ DEBUG_ROUTE_TEMPLATES = frozenset(
 )
 
 
-def _route_template(request: Request) -> str:
+def route_template(request: Request) -> str:
     """The path template the request matched, e.g. "/api/projects/{name}".
 
-    Falls back to the raw path for anything that never matched a route (a
-    404) — those aren't in the allowlist either way, so they still log at
-    INFO.
+    What every log line names a request by — api.router's exception handlers
+    included — so a share token or other path parameter never lands in a
+    log. Falls back to the raw path (never the query string) for anything
+    that never matched a route (a 404) — those aren't in the allowlist either
+    way, so they still log at INFO.
     """
     route = request.scope.get("route")
     return route.path if route is not None else request.url.path
+
+
+def client_ip_for_log(host: str | None) -> str:
+    """*host* reduced to what the access log may keep (issue #443): an IPv4
+    address to its /24, an IPv6 address to its /48 — enough to see which
+    network a burst of abuse came from, not enough to single out a client.
+    "-" when there is no usable address (no peer, or a non-IP literal such
+    as the TestClient's "testclient")."""
+    if not host:
+        return "-"
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return "-"
+    prefix = 24 if addr.version == 4 else 48
+    return str(ipaddress.ip_network(f"{addr}/{prefix}", strict=False))
 
 
 def _resolve_user_id(request: Request) -> str:
@@ -104,11 +129,17 @@ async def access_log_middleware(
     start = time.monotonic()
     response = await call_next(request)
     duration_ms = (time.monotonic() - start) * 1000
-    template = _route_template(request)
+    template = route_template(request)
     log = _log.debug if template in DEBUG_ROUTE_TEMPLATES else _log.info
+    # request.client is already the real client behind the reverse proxy:
+    # uvicorn's ProxyHeadersMiddleware (--proxy-headers, entrypoint.sh) wraps
+    # the whole app and rewrites scope["client"] from X-Forwarded-For — but
+    # only when the peer is one --forwarded-allow-ips lists, so a stranger
+    # sending that header is logged by its own address.
     log(
-        "%s %s -> %d (%.1fms)",
+        "%s %s -> %d (%.1fms) ip=%s",
         request.method, template, response.status_code, duration_ms,
+        client_ip_for_log(request.client.host if request.client else None),
     )
     response.headers["X-Request-Id"] = req_id
     return response

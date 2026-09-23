@@ -70,10 +70,44 @@ Never log:
 - Stripe secret keys / other API secrets
 - E2EE key material
 - raw request bodies
+- a request's URL or query string — name a request by its **route template**
+  (`route_template()` in `api/middleware.py`, what the exception handlers
+  use); OAuth codes, share tokens and search terms travel in the URL
+- a full client IP address — only the truncated form below
 
 Email logging: log the recipient and subject only, never the body. Exception:
 the `ConsoleEmailService` dev backend logging the full body is fine — that's
 a dev-only code path, not something that reaches a shared log stream.
+
+## Access log: client address and retention
+
+The one line per request the middleware writes is
+
+```
+GET /api/projects/{name} -> 200 (12.3ms) ip=203.0.113.0/24
+```
+
+method, route template, status, duration, and the client address truncated
+to its /24 (IPv6: its /48). That is deliberately all of it (issue #443): no
+query string, no path parameters, no full address. uvicorn's own access
+log, which printed the full IP and the raw request line, is off
+(`--no-access-log` in `entrypoint.sh`) — keep it off in any other way the
+server gets started.
+
+The truncated address exists for abuse investigation only (which network a
+burst of failed logins or scraping came from); nothing rate-limits or
+decides on it. Behind the reverse proxy it comes from `X-Forwarded-For`,
+which uvicorn believes only from the peers `FORWARDED_ALLOW_IPS` lists
+(`.env.example` explains the value to set in Docker; `entrypoint.sh` wires
+it). If every line shows the same `172.x.x.0/24`, that variable is missing
+and you are logging the Docker gateway, not clients.
+
+Retention: lines ship to Loki and are kept **30 days**
+(`docs/OBSERVABILITY.md`, "Loki retention"). The local Docker `json-file`
+copy on the host is capped by size, not time (100 MB per service,
+`docker-compose.yml.example`), which at current volume is shorter than
+that. The privacy policy states what the access log holds and for how long
+— change either here and update it there.
 
 ## External calls: `track_external()`
 

@@ -43,7 +43,7 @@ from api.journal import router as journal_router
 from api.members import router as members_router, invites_router
 from api.memories import router as memories_router
 from api.metrics import router as metrics_router
-from api.middleware import install_middleware
+from api.middleware import install_middleware, route_template
 from api.people import router as people_router
 from api.polarsteps import router as polarsteps_router
 from api.poster import poster_public_router, router as poster_router
@@ -342,7 +342,7 @@ async def _http_exception_handler(_request, exc: StarletteHTTPException):
     below is for the unexpected kind.
     """
     _log.warning(
-        "%s %s -> %d: %s", _request.method, _request.url.path, exc.status_code, exc.detail
+        "%s %s -> %d: %s", _request.method, route_template(_request), exc.status_code, exc.detail
     )
     return JSONResponse(
         status_code=exc.status_code,
@@ -369,7 +369,7 @@ async def _unhandled_exception_handler(_request, exc: Exception):
     ``response.headers["X-Request-Id"] = ...`` line never runs for this path,
     so the header is set here directly instead.
     """
-    _log.exception("Unhandled exception on %s %s", _request.method, _request.url.path)
+    _log.exception("Unhandled exception on %s %s", _request.method, route_template(_request))
     request_id = request_id_var.get()
     return JSONResponse(
         status_code=500,
