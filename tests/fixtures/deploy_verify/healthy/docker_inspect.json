@@ -1,0 +1,118 @@
+[
+    {
+        "Id": "d186727583c8e255158e594f118be253596562e4d48fd6322780df1fb8fd2f2d",
+        "Created": "2026-09-14T05:48:40.428477042Z",
+        "State": {
+            "Status": "running",
+            "Running": true,
+            "Paused": false,
+            "Restarting": false,
+            "OOMKilled": false,
+            "Dead": false,
+            "Pid": 40485,
+            "ExitCode": 0,
+            "Error": "",
+            "StartedAt": "2026-09-14T05:48:40.757905041Z",
+            "FinishedAt": "0001-01-01T00:00:00Z",
+            "Health": {
+                "Status": "healthy",
+                "FailingStreak": 0
+            }
+        },
+        "Image": "sha256:7a1b7a1b7a1b7a1b7a1b7a1b7a1b7a1b7a1b7a1b7a1b7a1b7a1b7a1b7a1b7a1b",
+        "Name": "/traxjourney-val-redis-1",
+        "RestartCount": 0,
+        "Config": {
+            "Image": "redis:7-alpine",
+            "Labels": {
+                "com.docker.compose.container-number": "1",
+                "com.docker.compose.project": "traxjourney-val",
+                "com.docker.compose.service": "redis"
+            }
+        }
+    },
+    {
+        "Id": "df3863b42290ef8c2c651ed19a5f00cbd303bd40950e4e71f2972d24dbd49310",
+        "Created": "2026-09-14T05:48:40.451040637Z",
+        "State": {
+            "Status": "running",
+            "Running": true,
+            "Paused": false,
+            "Restarting": false,
+            "OOMKilled": false,
+            "Dead": false,
+            "Pid": 40655,
+            "ExitCode": 0,
+            "Error": "",
+            "StartedAt": "2026-09-14T05:48:41.557623511Z",
+            "FinishedAt": "0001-01-01T00:00:00Z"
+        },
+        "Image": "sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6",
+        "Name": "/traxjourney-val-traxjourney-1",
+        "RestartCount": 0,
+        "Config": {
+            "Image": "ghcr.io/rui-nar/traxjourney:validation",
+            "Labels": {
+                "com.docker.compose.container-number": "1",
+                "com.docker.compose.project": "traxjourney-val",
+                "com.docker.compose.service": "traxjourney"
+            }
+        }
+    },
+    {
+        "Id": "a38d6a910defbd81d5bb189d9f6ad721ce9a9e3a66671930dafa42b7fdc0fd2b",
+        "Created": "2026-09-14T05:48:40.427640068Z",
+        "State": {
+            "Status": "running",
+            "Running": true,
+            "Paused": false,
+            "Restarting": false,
+            "OOMKilled": false,
+            "Dead": false,
+            "Pid": 40598,
+            "ExitCode": 0,
+            "Error": "",
+            "StartedAt": "2026-09-14T05:48:41.253907208Z",
+            "FinishedAt": "0001-01-01T00:00:00Z"
+        },
+        "Image": "sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6",
+        "Name": "/traxjourney-val-worker-1",
+        "RestartCount": 0,
+        "Config": {
+            "Image": "ghcr.io/rui-nar/traxjourney:validation",
+            "Labels": {
+                "com.docker.compose.container-number": "1",
+                "com.docker.compose.project": "traxjourney-val",
+                "com.docker.compose.service": "worker"
+            }
+        }
+    },
+    {
+        "Id": "8269d6017b32f8d4a32637e1056fa39e1ab7e1ce20eb03e5d47e56043458e137",
+        "Created": "2026-09-14T05:48:40.441711726Z",
+        "State": {
+            "Status": "running",
+            "Running": true,
+            "Paused": false,
+            "Restarting": false,
+            "OOMKilled": false,
+            "Dead": false,
+            "Pid": 40541,
+            "ExitCode": 0,
+            "Error": "",
+            "StartedAt": "2026-09-14T05:48:41.01554842Z",
+            "FinishedAt": "0001-01-01T00:00:00Z"
+        },
+        "Image": "sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6",
+        "Name": "/traxjourney-val-worker-poster-1",
+        "RestartCount": 0,
+        "Config": {
+            "Image": "ghcr.io/rui-nar/traxjourney:validation",
+            "Labels": {
+                "com.docker.compose.container-number": "1",
+                "com.docker.compose.project": "traxjourney-val",
+                "com.docker.compose.service": "worker-poster"
+            }
+        }
+    }
+]

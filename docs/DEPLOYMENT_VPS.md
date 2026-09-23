@@ -99,7 +99,7 @@ default (`transport http { keepalive }`). `entrypoint.sh` therefore runs uvicorn
 with `--timeout-keep-alive 300`; its 5 s default made uvicorn close first, and a
 request that Caddy sent on a pooled connection at that same instant failed
 with a 502 (`journalctl -u caddy`: `"msg":"EOF"` or `read: connection reset by
-peer`, on POST/PUT/DELETE � Go's HTTP client retries GETs by itself). If you
+peer`, on POST/PUT/DELETE — Go's HTTP client retries GETs by itself). If you
 ever set `keepalive` explicitly in the Caddyfile, keep it below uvicorn's value;
 `tests/test_entrypoint_keepalive.py` pins the entrypoint side, and
 `docs/repro/keepalive_502/` reproduces the race (issue #400).
@@ -204,7 +204,7 @@ directory is now `/opt/traxjourney` and the database `traxjourney.db`.*
    throwaway container (safe on a live DB — unlike a raw `cp`, correctly
    handles WAL mode, which the app already runs — see `models/db.py`):
    ```bash
-   ssh -p 4488 Rui@narciso.synology.me "DOCKER=\$(command -v docker 2>/dev/null || ls /var/packages/ContainerManager/target/usr/bin/docker /var/packages/Docker/target/usr/bin/docker /usr/local/bin/docker 2>/dev/null | head -1); \$DOCKER run --rm -v /volume2/docker/viewtrip/db:/db python:3.11-slim python3 -c \"import sqlite3; s=sqlite3.connect('/db/viewtripweb.db'); d=sqlite3.connect('/db/migration_backup.db'); s.backup(d); d.close(); s.close(); print('backup done')\""
+   ssh -p <nas-ssh-port> <nas-user>@<nas-host> "DOCKER=\$(command -v docker 2>/dev/null || ls /var/packages/ContainerManager/target/usr/bin/docker /var/packages/Docker/target/usr/bin/docker /usr/local/bin/docker 2>/dev/null | head -1); \$DOCKER run --rm -v /volume2/docker/viewtrip/db:/db python:3.11-slim python3 -c \"import sqlite3; s=sqlite3.connect('/db/viewtripweb.db'); d=sqlite3.connect('/db/migration_backup.db'); s.backup(d); d.close(); s.close(); print('backup done')\""
    ```
    **Gotcha:** `docker` isn't in `PATH` for non-interactive SSH sessions on
    Synology — same issue `deploy.ps1`'s remote script already works around;
@@ -217,9 +217,9 @@ directory is now `/opt/traxjourney` and the database `traxjourney.db`.*
 3. **Copy DB + data + config from NAS straight to the VPS** (no need to hop
    through a local machine — the VPS has direct SSH reach to the NAS):
    ```bash
-   scp -O -P 4488 Rui@narciso.synology.me:/volume2/docker/viewtrip/db/migration_backup.db /opt/viewtrip/db/viewtripweb.db
-   rsync -avz -e "ssh -p 4488" Rui@narciso.synology.me:/volume2/docker/viewtrip/data/ /opt/viewtrip/data/
-   rsync -avz -e "ssh -p 4488" Rui@narciso.synology.me:/volume2/docker/viewtrip/config/ /opt/viewtrip/config/
+   scp -O -P <nas-ssh-port> <nas-user>@<nas-host>:/volume2/docker/viewtrip/db/migration_backup.db /opt/viewtrip/db/viewtripweb.db
+   rsync -avz -e "ssh -p <nas-ssh-port>" <nas-user>@<nas-host>:/volume2/docker/viewtrip/data/ /opt/viewtrip/data/
+   rsync -avz -e "ssh -p <nas-ssh-port>" <nas-user>@<nas-host>:/volume2/docker/viewtrip/config/ /opt/viewtrip/config/
    ```
    **Gotchas encountered:**
    - `scp` alone failed with `subsystem request failed` — modern OpenSSH
@@ -339,16 +339,17 @@ free space first, it is a full copy of prod's media onto a 40 GB disk.
 ## 6. `deploy.ps1`
 
 `-Target Validation|Prod` (default `Validation`). Both targets SSH to the VPS
-(`164.132.195.154`, user `rui`, key `$HOME\.ssh\traxjourney_vps`) and run
-`docker compose down / pull / up -d`; they differ in directory, image tag and
-whether anything is built locally.
+(the host, user and key from `deploy.env`) and run
+`docker compose down / pull / up -d`, then check that the deploy took
+effect. They differ in directory, image tag and whether anything is built
+locally.
 
 | | `Validation` | `Prod` |
 |---|---|---|
-| Directory | `/opt/traxjourney-val` | `/opt/traxjourney` |
+| Directory | `DEPLOY_VAL_DIR` (`/opt/traxjourney-val`) | `DEPLOY_PROD_DIR` (`/opt/traxjourney`) |
 | Image tag | `:validation` | `:latest` |
 | Builds locally | yes (unless `-SkipBuild`) | never |
-| URL | val.traxjourney.com | traxjourney.com |
+| URL | `DEPLOY_VAL_URL` (val.traxjourney.com) | `DEPLOY_PROD_URL` (traxjourney.com) |
 
 ```powershell
 .\deploy.ps1                      # build working tree -> :validation -> val
@@ -358,14 +359,77 @@ whether anything is built locally.
 ```
 
 `-FromMain` builds a pristine export of `origin/main` in a throwaway git
-worktree, so the image is exactly what is on main — never contaminated by local
+worktree, so the image is exactly what is on main, never contaminated by local
 edits or untracked files.
 
 Every path that skips the build first checks GitHub Actions for an in-progress
 `docker-build.yml` run and refuses to deploy while one is going, since the tag
 it is about to pull may be stale or only half-pushed.
 
-Note `deploy.ps1` itself is **gitignored** and lives only on the dev machine.
+### Configuration: `deploy.env`
+
+The script is tracked in git; the details of the machine it deploys to are not.
+They live in `deploy.env` next to the script, which is gitignored:
+
+```powershell
+Copy-Item deploy.env.example deploy.env   # then fill in the blanks
+```
+
+| Key | What |
+|---|---|
+| `DEPLOY_HOST`, `DEPLOY_SSH_PORT`, `DEPLOY_USER` | the SSH target: `<vps-host>`, `22`, `<ssh-user>` |
+| `DEPLOY_SSH_KEY` | private key for that user; a leading `~` is your home directory |
+| `DEPLOY_IMAGE` | repository without a tag: `ghcr.io/rui-nar/traxjourney` |
+| `DEPLOY_VAL_DIR`, `DEPLOY_VAL_URL` | validation's compose directory on the host, and its public URL |
+| `DEPLOY_PROD_DIR`, `DEPLOY_PROD_URL` | the same for prod |
+| `MAPBOX_TOKEN` | public token baked into a local web build (same name as the CI secret); `-MapboxToken` overrides it |
+
+It is parsed with the same rules as `.env` (`Load-DotEnv.ps1`), but into a table
+rather than `$env:`, so a variable left over in your shell can't stand in for a
+missing value. A missing key stops the script, naming the key, before anything
+is built or deployed. `MAPBOX_TOKEN` is only needed when the script builds the
+web client.
+
+A checkout that still has the old, untracked `deploy.ps1` must move it aside
+before `git pull` can bring in the tracked one; the steps, and which old
+variable goes to which key, are in `docs/RENAME_TRAXJOURNEY_RUNBOOK.md` step B4.
+
+### What "Deployed and verified" checks
+
+`docker compose pull` pulls whatever `image:` the **host's** compose file names,
+not the image the script means to deploy, and a container that starts and then
+crash-loops still counts as up. So `scripts/deploy_verify.py` checks the deploy
+(issue #423). When any check fails the script exits non-zero with a red `ERROR`
+and one `FAIL:` line per problem:
+
+| Check | When | Catches |
+|---|---|---|
+| The host's compose file names `DEPLOY_IMAGE:<tag>` (`docker compose config --images`), and no service is on another tag or another image from the same registry owner | before anything is built or taken down | a host compose file not updated after an image rename; a val host on `:latest` |
+| Each container created from that image runs the image ID the tag was just pulled as (`docker inspect`) | after `up -d` | a container left on the previous image |
+| Every service has a container that is running, is healthy if it has a healthcheck, and has not restarted since `up -d` (`docker compose ps --format json`; restart counts from `docker inspect`) | at least 15 s after `up -d`; a healthcheck still `starting` gets 60 s more | crash loops, including a container caught running between two crashes; exited or unhealthy containers; a service with no container |
+| `<url>/api/version` reports the expected version | polled for up to 120 s after `up -d` | the old server still answering; a stale `:validation` or `:latest` |
+
+The expected version is the one the image was stamped with:
+
+- **Local build:** `git describe --tags --long`. The script passes it to both
+  the web build and `docker build --build-arg APP_VERSION`. Before, a locally
+  built server reported `dev`.
+- **`-SkipBuild`:** `validation-<sha>`, where `<sha>` is the commit the
+  `validation` tag points at after a forced tag fetch. CI's short sha can be
+  shorter than your clone's, so it is compared as a prefix.
+- **`-Target Prod`:** the newest `vX.Y.Z` tag, which CI stamps `:latest` with.
+
+If the version can't be worked out (no tags at all), the script says so before
+deploying and only requires the served version to change from the one served
+before the deploy. The summary then warns that the exact version was not
+checked.
+
+A failed check leaves the containers as they are, for inspection. The summary
+lists the expected, previous and served versions, the registry digest and image
+ID that were pulled, and every container's state.
+
+The checks need Python 3 on the dev machine: the repository's `.venv` if it
+exists, otherwise `python` on `PATH`.
 
 ### The other way to cut `:validation`
 
@@ -396,9 +460,11 @@ baked a broken `#!/bin/sh\r` shebang into the image and crash-looped the worker
 containers. `.gitattributes` pins shell scripts to LF, but only on a fresh
 checkout of the affected path, not retroactively.
 
-**One consequence of the shared tag:** two producers write `:validation`, and
-the host cannot tell which one it is running. If a local build and a tag push
-race, last writer wins. Prefer the tag route when it matters who built it.
+**One consequence of the shared tag:** two producers write `:validation`. If a
+local build and a tag push race, last writer wins. The version check notices,
+because a local build expects its `git describe` version and CI's image reports
+`validation-<sha>`, and fails the deploy; it cannot undo the overwrite. Prefer
+the tag route when it matters who built it.
 
 ## 7. Observability: Loki/Prometheus/Grafana on the NAS (issue #205)
 

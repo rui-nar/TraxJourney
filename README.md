@@ -77,7 +77,10 @@ flutter run -d chrome --web-port 5500 \
 ```
 
 Windows helper scripts: `dev-client.ps1` (Flutter client), `deploy.ps1` (build
-+ push image + deploy to NAS), `bump_version_and_release.ps1` (tag a release).
++ push image + deploy to the VPS, then check the deploy took effect; host
+settings in the gitignored `deploy.env`, see
+[docs/DEPLOYMENT_VPS.md](docs/DEPLOYMENT_VPS.md)),
+`bump_version_and_release.ps1` (tag a release).
 
 ### Android
 

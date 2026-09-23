@@ -1,6 +1,8 @@
 # ── .env loader for the local dev scripts ─────────────────────────────────────
 # Single source of truth for local secrets/config: dev.ps1 and dev-server.ps1
 # dot-source this file and call `Import-DotEnv` to populate $env:* from .env.
+# deploy.ps1 calls `Read-DotEnv` on deploy.env instead, so its settings stay in
+# a table and never leak into, or get filled in from, the calling shell.
 #
 # Contains NO secrets — safe to commit. The real .env is gitignored.
 #
@@ -12,14 +14,11 @@
 #     server default with an empty string
 #   - .env wins: a non-empty value overwrites any pre-existing $env: var
 
-function Import-DotEnv {
-    param([string]$Path = (Join-Path $PSScriptRoot '.env'))
+# Returns the file's non-empty KEY=VALUE pairs as an ordered hashtable.
+function Read-DotEnv {
+    param([Parameter(Mandatory)][string]$Path)
 
-    if (-not (Test-Path $Path)) {
-        Write-Error ".env not found at '$Path'. Copy .env.example to .env and fill it in."
-        return $false
-    }
-
+    $values = [ordered]@{}
     foreach ($line in Get-Content -Path $Path) {
         $trimmed = $line.Trim()
         if ($trimmed -eq '' -or $trimmed.StartsWith('#')) { continue }
@@ -39,7 +38,23 @@ function Import-DotEnv {
 
         if ($val -eq '') { continue } # don't override defaults with empties
 
-        Set-Item -Path "Env:$key" -Value $val
+        $values[$key] = $val
+    }
+
+    return $values
+}
+
+function Import-DotEnv {
+    param([string]$Path = (Join-Path $PSScriptRoot '.env'))
+
+    if (-not (Test-Path $Path)) {
+        Write-Error ".env not found at '$Path'. Copy .env.example to .env and fill it in."
+        return $false
+    }
+
+    $values = Read-DotEnv -Path $Path
+    foreach ($key in $values.Keys) {
+        Set-Item -Path "Env:$key" -Value $values[$key]
     }
 
     return $true
