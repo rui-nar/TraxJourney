@@ -15,6 +15,28 @@ import '../core/project_ref.dart';
 import 'e2ee_crypto.dart';
 import 'encryption_service.dart';
 
+/// Every field the client end-to-end encrypts, per API resource, named as the
+/// PUT/POST body key it travels under (issue #433).
+///
+/// This is the whole list. The create/update paths
+/// (projects/project_memory_crud_mixin.dart, projects/project_journal_crud_mixin.dart)
+/// protect the same memory/journal fields, and activities are encrypted only
+/// by [EncryptionMigration]. docs/ENCRYPTION.md documents coverage from this
+/// list and test/crypto/encryption_coverage_test.dart asserts the migration's
+/// writes match it exactly, so a field added to one must be added to all three.
+const encryptedFieldsByResource = <String, Set<String>>{
+  'memory': {'name', 'description'},
+  'journal': {'description'},
+  'activity': {
+    'name',
+    'summary_polyline',
+    'start_latlng_json',
+    'end_latlng_json',
+    'elevation_profile_json',
+    'elevation_profile_low_res_json',
+  },
+};
+
 class EncryptionMigration {
   final ApiClient _api;
   final EncryptionService _enc;
