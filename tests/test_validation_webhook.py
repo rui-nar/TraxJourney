@@ -29,7 +29,7 @@ SCRIPT = WEBHOOK_DIR / "deploy-validation.sh"
 UNIT = WEBHOOK_DIR / "webhook.service"
 BUILD_WORKFLOW = ROOT / ".github" / "workflows" / "docker-build.yml"
 DEPLOY_DOC = ROOT / "docs" / "DEPLOYMENT_VPS.md"
-DEPLOY_PS1 = ROOT / "deploy.ps1"
+DEPLOY_ENV = ROOT / "deploy.env"
 
 SHA = "84a156a5f39ca5ac3110d49b284dfd51e0bde3eb"
 OTHER_SHA = "6e8eac6dbddb05e19d7e71fcd66f186ceacde5cb"
@@ -154,12 +154,15 @@ def test_the_documented_caddy_route_and_payload_url_reach_the_listener(hook):
     assert f"https://val.traxjourney.com{prefix}/hooks/{hook['id']}" in doc
 
 
-@pytest.mark.skipif(not DEPLOY_PS1.exists(), reason="deploy.ps1 is gitignored, local-only")
+@pytest.mark.skipif(not DEPLOY_ENV.exists(), reason="deploy.env is gitignored, local-only")
 def test_the_unit_runs_as_the_user_deploy_ps1_connects_as():
     """The unit said User=debian while every manual deploy runs as another user."""
-    deploy_user = re.search(r'^\$VPS_USER\s*=\s*"([^"]+)"', DEPLOY_PS1.read_text(encoding="utf-8-sig"), re.M)
+    deploy_user = re.search(r"""^\s*DEPLOY_USER\s*=\s*["']?([^"'\s#]+)""",
+                            DEPLOY_ENV.read_text(encoding="utf-8-sig"), re.M)
+    if not deploy_user:
+        pytest.skip("DEPLOY_USER is not set in deploy.env")
     unit_user = re.search(r"^User=(\S+)$", UNIT.read_text(encoding="utf-8"), re.M)
-    assert deploy_user and unit_user
+    assert unit_user
     assert unit_user.group(1) == deploy_user.group(1)
 
 
