@@ -62,6 +62,7 @@ from src.models.memory import Memory
 from src.project.memory_match import step_key
 from src.project.project_repo import bump_lock_version
 from src.utils.encryption_check import is_encrypted_envelope as _is_encrypted_envelope
+from src.utils.photo_privacy import share_copy_path
 
 router = APIRouter(prefix="/api/memories", tags=["memories"])
 
@@ -476,7 +477,7 @@ def delete_memory(
         photos: List[str] = json.loads(mem_row.photos_json or "[]")
         owner_dir = _owner_dir_id(sess, mem_row)
         photo_path = photo_folder(_DATA_DIR, owner_dir, "memories", memory_id)
-        unlink_and_record(owner_dir, photo_files(photo_path, photos))
+        _delete_photo_files(owner_dir, memory_id, photos)
         if photo_path.exists():
             try:
                 photo_path.rmdir()
@@ -528,9 +529,18 @@ def _save_photo_files(user_id: str, memory_id: int, uuid_str: str, raw: bytes) -
 
 
 def _delete_photo_files(user_id: str, memory_id: int, photo_uuids: List[str]) -> None:
-    """Remove the on-disk full-res + thumbnail files for the given photo UUIDs."""
-    unlink_and_record(user_id, photo_files(
-        photo_folder(_DATA_DIR, user_id, "memories", memory_id), photo_uuids))
+    """Remove the on-disk full-res + thumbnail files for the given photo UUIDs.
+
+    The share-link copy (issue #430) goes with them, but outside the
+    accounting: it was never counted, so subtracting it here would hand the
+    owner headroom they do not have.
+    """
+    folder = photo_folder(_DATA_DIR, user_id, "memories", memory_id)
+    unlink_and_record(user_id, photo_files(folder, photo_uuids))
+    for photo_uuid in photo_uuids:
+        full = photo_file(folder, photo_uuid)
+        if full is not None:
+            share_copy_path(full).unlink(missing_ok=True)
 
 
 def _clear_memory_photos(sess, user_id: str, mem_row: DBMemory) -> None:

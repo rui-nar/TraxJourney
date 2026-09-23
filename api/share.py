@@ -87,6 +87,7 @@ from src.models.project import tag_options_with_untagged
 from src.project.project_repo import ProjectRepo, _compute_stats
 from src.tile_renderer import get_cached_tile, get_or_build_features, get_or_create_tile
 from src.utils.encryption_check import is_encrypted_envelope
+from src.utils.photo_privacy import ensure_share_copy
 
 from src.utils.photo_paths import photo_file, photo_folder
 
@@ -623,13 +624,18 @@ def _shared_photo_path(token: str, memory_id: int, photo_uuid: str, thumb: bool)
 
 @router.get("/{token}/photos/{memory_id}/{photo_uuid}/thumb", summary="Serve memory photo thumbnail")
 def shared_photo_thumb(token: str, memory_id: int, photo_uuid: str):
-    """Serve a memory photo thumbnail without requiring user authentication."""
+    """Serve a memory photo thumbnail without requiring user authentication.
+
+    The thumbnail is re-encoded at upload and carries no EXIF; the full-res
+    fallback is the original and does, so it goes through the same stripped
+    copy as :func:`shared_photo_full` (issue #430).
+    """
     path = _shared_photo_path(token, memory_id, photo_uuid, thumb=True)
     if not path.exists():
         # Fall back to full-res
         full = photo_file(path.parent, photo_uuid)
         if full is not None and full.exists():
-            return FileResponse(str(full), media_type="image/jpeg",
+            return FileResponse(str(ensure_share_copy(full)), media_type="image/jpeg",
                                 headers={"Cache-Control": "public, max-age=86400"})
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     return FileResponse(str(path), media_type="image/jpeg",
@@ -638,11 +644,16 @@ def shared_photo_thumb(token: str, memory_id: int, photo_uuid: str):
 
 @router.get("/{token}/photos/{memory_id}/{photo_uuid}", summary="Serve full-resolution memory photo")
 def shared_photo_full(token: str, memory_id: int, photo_uuid: str):
-    """Serve a full-resolution memory photo without requiring user authentication."""
+    """Serve a full-resolution memory photo without requiring user authentication.
+
+    Never the owner's file: that keeps its GPS position, capture time and
+    camera serials, and a share link is public. What goes out is the
+    metadata-free copy, derived on first serve (issue #430).
+    """
     path = _shared_photo_path(token, memory_id, photo_uuid, thumb=False)
     if not path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
-    return FileResponse(str(path), media_type="image/jpeg",
+    return FileResponse(str(ensure_share_copy(path)), media_type="image/jpeg",
                         headers={"Cache-Control": "public, max-age=86400"})
 
 
