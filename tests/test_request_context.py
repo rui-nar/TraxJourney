@@ -112,6 +112,23 @@ class TestContextVarIsolation:
         resp = asyncio.run(_run())
         assert resp.body.decode() == "-"
 
+    def test_non_jwt_bearer_token_binds_dash_and_logs_nothing(self, caplog):
+        """The middleware's decode is best-effort and must stay silent (issue
+        #446): a Bearer header is not necessarily a JWT — /metrics is
+        authenticated with the opaque METRICS_TOKEN — and the route that
+        actually rejects a bad token is the one that warns about it."""
+        async def _capture(request: Request) -> Response:
+            return Response(user_id_var.get(), status_code=200)
+
+        async def _run():
+            req = _make_request(headers={"Authorization": "Bearer opaque-metrics-token"})
+            with caplog.at_level(logging.DEBUG, logger="api.deps"):
+                return await access_log_middleware(req, _capture)
+
+        resp = asyncio.run(_run())
+        assert resp.body.decode() == "-"
+        assert [r for r in caplog.records if r.name == "api.deps"] == []
+
 
 class TestSharedJwtDecode:
     """get_current_user reuses the middleware's decode instead of repeating it
@@ -172,6 +189,36 @@ class TestSharedJwtDecode:
         client = TestClient(app)
         resp = client.get("/protected", headers={"Authorization": "Bearer garbage"})
         assert resp.status_code == 401
+
+    @pytest.mark.parametrize("bad_token", [
+        "garbage",  # not even parseable as a JWT
+        pyjwt.encode({"sub": "42"}, "a-different-key" * 4, algorithm="HS256"),
+    ], ids=["malformed", "forged"])
+    def test_a_bad_token_is_warned_about_exactly_once(self, caplog, bad_token):
+        """Only a *successful* decode is shared via request.state, so a bad
+        token is decoded twice (middleware, then get_current_user). It must
+        still be warned about once, by the decode that rejects it (issue
+        #446)."""
+        app = FastAPI()
+        install_middleware(app)
+
+        @app.get("/protected")
+        def protected(current_user: Annotated[dict, Depends(get_current_user)]):
+            return {"sub": current_user["sub"]}
+
+        client = TestClient(app)
+        with caplog.at_level(logging.WARNING, logger="api.deps"):
+            resp = client.get(
+                "/protected", headers={"Authorization": f"Bearer {bad_token}"}
+            )
+
+        assert resp.status_code == 401
+        warnings = [
+            r for r in caplog.records
+            if r.name == "api.deps" and "invalid JWT rejected" in r.message
+        ]
+        assert len(warnings) == 1, [r.message for r in warnings]
+        assert bad_token not in caplog.text
 
 
 class TestAccessLogLevel:

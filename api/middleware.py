@@ -14,7 +14,7 @@ from typing import Awaitable, Callable
 
 from fastapi import Request, Response
 
-from api.deps import decode_token
+from api.deps import decode_token_quietly
 from src.utils.logging import get_logger, request_id_var, user_id_var
 
 _log = get_logger(__name__)
@@ -49,11 +49,13 @@ def _resolve_user_id(request: Request) -> str:
     """Best-effort JWT decode straight from the Authorization header.
 
     Runs ahead of FastAPI's ``get_current_user`` dependency (this is
-    middleware, not a route dependency), so it calls the same
-    ``decode_token`` api.deps already uses rather than duplicating the JWT
-    logic. Never raises: a missing, malformed or expired token just means the
-    request logs with user_id="-" — unauthenticated routes, or a request
-    that will itself 401 further down the stack.
+    middleware, not a route dependency), so it shares api.deps' JWT
+    verification rather than duplicating it — through its quiet variant,
+    because a missing, malformed or expired token just means the request logs
+    with user_id="-" and nothing is said about it here: it's an
+    unauthenticated route, a request that will itself 401 (and be warned
+    about, once) further down the stack, or a Bearer token that was never a
+    JWT, like the opaque one ``/metrics`` takes (issue #446).
 
     Stashes the decoded payload on ``request.state`` so ``get_current_user``/
     ``get_optional_current_user`` (api.deps) can reuse it instead of decoding
@@ -66,9 +68,8 @@ def _resolve_user_id(request: Request) -> str:
     scheme, _, token = auth.partition(" ")
     if scheme.lower() != "bearer" or not token.strip():
         return "-"
-    try:
-        payload = decode_token(token.strip())
-    except Exception:
+    payload = decode_token_quietly(token.strip())
+    if payload is None:
         return "-"
     request.state.jwt_payload = payload
     sub = payload.get("sub")

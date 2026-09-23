@@ -5,6 +5,7 @@ instrumentator wiring are precisely what these tests are protecting.
 """
 
 import importlib
+import logging
 
 import pytest
 from fastapi import FastAPI
@@ -63,6 +64,21 @@ class TestMetricsAuth:
         assert client.get("/metrics").status_code == 404
         monkeypatch.setenv("METRICS_TOKEN", "later")
         assert _scrape(client, "later").status_code == 200
+
+
+class TestScrapeIsQuiet:
+    def test_a_valid_scrape_logs_no_warning(self, client, caplog, monkeypatch):
+        """METRICS_TOKEN is an opaque bearer token, not a JWT. The access-log
+        middleware's best-effort JWT decode of every Authorization header used
+        to warn ``invalid JWT rejected`` on each scrape (issue #446) — a steady
+        stream of false alarms in Loki, on the interval Alloy scrapes at, that
+        drowned the forged-token signal the warning exists for."""
+        monkeypatch.setenv("METRICS_TOKEN", "right")
+        with caplog.at_level(logging.WARNING):
+            resp = _scrape(client)
+
+        assert resp.status_code == 200
+        assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
 
 
 class TestHttpInstrumentation:

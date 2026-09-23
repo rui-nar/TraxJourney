@@ -19,7 +19,13 @@ import jwt
 import pytest
 from fastapi import HTTPException
 
-from api.deps import _JWT_ALGORITHM, decode_token, jwt_secret, require_admin
+from api.deps import (
+    _JWT_ALGORITHM,
+    decode_token,
+    decode_token_quietly,
+    jwt_secret,
+    require_admin,
+)
 
 
 def _token(payload: dict, secret: str | None = None) -> str:
@@ -82,6 +88,30 @@ class TestInvalidSignatureTokenWarns:
         assert exc.value.status_code == 401
         warnings = [r for r in caplog.records if r.levelname == "WARNING"]
         assert len(warnings) == 1
+
+
+class TestQuietDecodeNeverLogs:
+    """`decode_token_quietly` is for callers that only *observe* a token (the
+    access-log middleware binding user_id) and never reject the request on it
+    — so it must not emit the warning that belongs to the rejecting path
+    (issue #446), whatever is wrong with the token."""
+
+    def test_valid_token_decodes(self):
+        assert decode_token_quietly(_token({"sub": "1"}))["sub"] == "1"
+
+    @pytest.mark.parametrize("bad_token", [
+        "not-a-jwt-at-all",
+        _token({"sub": "1"}, secret="a-different-key" * 4),
+        _token({
+            "sub": "1",
+            "exp": datetime.datetime.now(datetime.timezone.utc)
+            - datetime.timedelta(hours=1),
+        }),
+    ], ids=["malformed", "forged", "expired"])
+    def test_bad_token_is_none_and_silent(self, caplog, bad_token):
+        with caplog.at_level(logging.DEBUG, logger="api.deps"):
+            assert decode_token_quietly(bad_token) is None
+        assert caplog.records == []
 
 
 class TestMalformedSubClaimWarns:
