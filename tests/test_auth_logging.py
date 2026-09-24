@@ -113,6 +113,20 @@ class TestQuietDecodeNeverLogs:
             assert decode_token_quietly(bad_token) is None
         assert caplog.records == []
 
+    def test_unusable_key_is_none_not_a_crash(self, monkeypatch):
+        # PyJWT refuses a PEM-shaped HMAC secret with InvalidKeyError, which is
+        # not an InvalidTokenError. The middleware has no catch-all any more,
+        # so letting it escape would 500 every bearer request, public routes
+        # included; rejecting it is the rejecting path's job.
+        token = _token({"sub": "1"})
+        monkeypatch.setenv(
+            "JWT_SECRET",
+            "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQY\n-----END PUBLIC KEY-----",
+        )
+        with pytest.raises(jwt.InvalidKeyError):  # the premise, pinned
+            jwt.decode(token, jwt_secret(), algorithms=[_JWT_ALGORITHM])
+        assert decode_token_quietly(token) is None
+
 
 class TestMalformedSubClaimWarns:
     @pytest.mark.parametrize("payload", [

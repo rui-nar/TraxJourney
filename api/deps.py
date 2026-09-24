@@ -124,7 +124,7 @@ def decode_token_quietly(token: str) -> Optional[dict]:
     """
     try:
         return _verify(token)
-    except jwt.InvalidTokenError:  # includes ExpiredSignatureError
+    except jwt.PyJWTError:  # bad/expired token, and a key PyJWT won't use
         return None
 
 
