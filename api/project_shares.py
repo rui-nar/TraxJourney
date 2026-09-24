@@ -239,10 +239,13 @@ def revoke_share_link_no_memories(
 def _visitor_key(owner_id: int, visitor_id: int) -> str:
     """Stable pseudonymous id for a signed-in visitor, scoped to one trip owner
     (issue #431). The owner can tell two visitors apart across calls, but the
-    key is not the account id, carries no email, and the same visitor gets a
-    different key on another owner's trips — so owners cannot pool their
-    stats to follow one person around. Keyed off the server secret with a
-    domain-separated message so it never doubles as a token."""
+    key is not the account id and carries no email. The key itself is
+    owner-scoped — the same visitor gets a different one on another owner's
+    trips — though the display name and avatar sent alongside are the same
+    everywhere, so this alone does not stop owners comparing notes. Keyed off
+    the server secret with a domain-separated message so it never doubles as
+    a token; rotating JWT_SECRET therefore relabels every visitor_key (nothing
+    persists them, so that is harmless)."""
     msg = f"share-visitor:{owner_id}:{visitor_id}".encode()
     return hmac.new(jwt_secret().encode(), msg, hashlib.sha256).hexdigest()[:16]
 

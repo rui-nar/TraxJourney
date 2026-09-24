@@ -3,6 +3,8 @@ api/project_shares.py. Covers the previously-untested happy paths: share-link
 create/revoke (both full and no-memories variants), share-info, and visitors."""
 from __future__ import annotations
 
+import re
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -203,21 +205,24 @@ def test_share_visitors_never_reveal_email(env):
 
 def test_share_visitor_key_is_stable_pseudonymous_and_owner_scoped(env):
     """The key the owner sees is the same on every call, differs between
-    visitors, is not the raw user id, and the same visitor gets a different
-    key on another owner's trip — so two owners cannot correlate visitors."""
+    visitors, has the shape of an HMAC digest rather than a user id, and the
+    same visitor gets a different key on another owner's trip."""
     client, engine, uid = env
     v1 = _add_registered_visit(engine, project_name="My Trip", token_type="full",
                                display_name="One", email="one@e.com")
-    v2 = _add_registered_visit(engine, project_name="My Trip", token_type="full",
-                               display_name="Two", email="two@e.com")
+    _add_registered_visit(engine, project_name="My Trip", token_type="full",
+                          display_name="Two", email="two@e.com")
 
     first = client.get("/api/projects/My Trip/share/visitors").json()
     second = client.get("/api/projects/My Trip/share/visitors").json()
     keys = {e["display_name"]: e["visitor_key"] for e in first["full"]["registered"]}
     assert keys == {e["display_name"]: e["visitor_key"] for e in second["full"]["registered"]}
     assert keys["One"] != keys["Two"]
-    assert keys["One"] not in (str(v1), v1) and keys["Two"] not in (str(v2), v2)
-    assert str(v1) not in keys["One"]
+    # Shape, not content: "the id's digits don't appear in the key" would be
+    # probabilistic — a small integer shows up in 16 random hex chars most of
+    # the time, and conftest's setdefault lets an exported JWT_SECRET vary it.
+    for key in keys.values():
+        assert re.fullmatch(r"[0-9a-f]{16}", key), key
 
     # Same visitor (v1) on a trip owned by someone else -> different key.
     with Session(engine) as sess:
