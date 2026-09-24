@@ -17,10 +17,11 @@ import 'package:traxjourney_client/src/crypto/encryption_service.dart';
 /// constant is updated; tests/test_encryption_doc_coverage.py (server CI)
 /// then holds docs/ENCRYPTION.md to the constant.
 ///
-/// Not covered: the per-write CRUD mixins (project_memory_crud_mixin.dart,
+/// Not yet exercised: the per-write CRUD mixins (project_memory_crud_mixin.dart,
 /// project_journal_crud_mixin.dart). They call the final top-level
-/// `encryption` service, which a unit test cannot unlock without the OS
-/// keystore plugin — exercising them needs an injection seam (follow-up).
+/// `encryption` service, which no test unlocks today; its keystore is a
+/// method channel other widget tests already mock, so this is a follow-up,
+/// not a blocker.
 class _FakeStore implements DeviceKeyStore {
   SimpleKeyPair? _kp;
   @override

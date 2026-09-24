@@ -26,11 +26,12 @@ it that way:
 
 What the tests do **not** cover: the per-write memory/journal paths
 (`project_memory_crud_mixin.dart`, `project_journal_crud_mixin.dart`) are not
-exercised — they use the final top-level `encryption` service, which a unit
-test cannot unlock without the OS keystore, so a change there (say, encrypting
-or un-encrypting `lat`) would not fail any test today. Giving them an injection
-seam is a follow-up. The "What stays plaintext" table further down is
-hand-written from the schema and is not test-pinned.
+yet exercised — they go through the final top-level `encryption` service,
+which no test currently unlocks (its keystore is a method channel that other
+widget tests already mock, so this is undone work, not impossible work). A
+change there (say, encrypting or un-encrypting `lat`) would not fail any test
+today; covering it is a follow-up. The "What stays plaintext" table further
+down is hand-written from the schema and is not test-pinned.
 
 | Resource | Encrypted field (API key) | Database column | Encrypted where |
 |---|---|---|---|
@@ -121,7 +122,7 @@ encryption time, from the code:
 | `memory_translation` | machine translations of memory `name`/`description` | **purged** when the memory becomes ciphertext; the server refuses to translate an encrypted memory (409) |
 | Full-res geo response cache | GeoJSON built from plaintext tracks | busted for every trip the activity is in |
 | GPX export, poster tracks | built from `summary_polyline` | GPX export refuses (409) any trip with an encrypted activity; the geo builders skip encrypted tracks |
-| `.traxj` / ZIP export (`api/project_transfer.py`) | the project as JSON (ZIP adds the photos) | no check: encrypted fields are written into the file **as their envelopes**, so the export stays unreadable without your key — and re-importing it elsewhere keeps the ciphertext |
+| `.traxj` / ZIP export (`api/project_transfer.py`) | the project as JSON (ZIP adds the photos) | no check: encrypted fields are written into the file **as their envelopes** (`name`, `map.summary_polyline`, and the endpoints/elevation under `start_latlng_enc`/`end_latlng_enc`/`elevation_profile_enc`), so the export stays unreadable without your key. **Re-importing it is lossy**: `_upsert_activity` (`src/project/repo_activities.py`) rebuilds `start_latlng_json`, `end_latlng_json`, `elevation_profile_json` and the low-res copy from the plaintext attributes only, which are `None` for an encrypted activity — the `name` and `summary_polyline` envelopes survive, the encrypted endpoints and elevation profile become NULL. Bug to be filed separately |
 
 ## Known plaintext remnants (not yet fixed)
 
@@ -171,8 +172,10 @@ own fix.
    someone else's trip. So an editor whose own account is encrypted writes
    memory titles/notes and journal text into a plaintext owner's trip as
    ciphertext under **their** key — which the owner (and every other
-   companion) cannot read. The reverse holds too: a plaintext companion's
-   writes into a trip are plaintext.
+   companion) cannot read. The guard is asymmetric: `POST /api/encryption/enable`
+   (`api/encryption.py`) refuses to turn encryption on while any trip you
+   **own** has companions, but nothing stops you from enabling it while you
+   **are** a companion on someone else's trip, or from being invited afterwards.
 9. **Writes while locked** — `EncryptionService.protect()` returns the
    plaintext unchanged when the device is not unlocked
    (`encryption_service.dart`), and no memory/journal write path is gated on

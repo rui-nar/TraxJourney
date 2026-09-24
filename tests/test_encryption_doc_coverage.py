@@ -75,34 +75,34 @@ def test_every_resource_has_a_row(encrypted_fields, table):
         )
 
 
+def claimed_fields(table: str, resource: str) -> set[str]:
+    """Fields named in backticks in the *encrypted-field cell* (column 2) of
+    every row for *resource*. Only that cell counts, in both directions: a
+    field mentioned in the "Database column" or "Encrypted where" cells is
+    not a claim that it is encrypted."""
+    claimed: set[str] = set()
+    for line in table.splitlines():
+        if line.startswith(f"| {_DOC_LABELS[resource]} |"):
+            claimed |= set(re.findall(r"`(\w+)`", line.split("|")[2]))
+    return claimed
+
+
 def test_every_encrypted_field_is_in_the_doc(encrypted_fields, table):
-    rows_by_resource = {
-        resource: [
-            line for line in table.splitlines()
-            if line.startswith(f"| {_DOC_LABELS[resource]} |")
-        ]
-        for resource in encrypted_fields
-    }
     for resource, fields in encrypted_fields.items():
-        rows = "\n".join(rows_by_resource[resource])
-        missing = sorted(f for f in fields if f"`{f}`" not in rows)
+        missing = sorted(fields - claimed_fields(table, resource))
         assert not missing, (
             f"{resource}: encryptedFieldsByResource has {missing} but the "
-            f"'{_DOC_LABELS[resource]}' rows of docs/ENCRYPTION.md do not — "
-            "update the doc (or the constant)"
+            f"'{_DOC_LABELS[resource]}' rows of docs/ENCRYPTION.md do not name "
+            "them in the encrypted-field column — update the doc (or the constant)"
         )
 
 
 def test_the_doc_lists_no_field_the_client_does_not_encrypt(encrypted_fields, table):
-    """A field named in backticks on a resource's row must be one the client
-    encrypts — the table may not promise more than the code does."""
+    """A field named in a resource's encrypted-field cell must be one the
+    client encrypts — the table may not promise more than the code does."""
     for resource, fields in encrypted_fields.items():
-        for line in table.splitlines():
-            if not line.startswith(f"| {_DOC_LABELS[resource]} |"):
-                continue
-            field_cell = line.split("|")[2]
-            claimed = set(re.findall(r"`(\w+)`", field_cell))
-            assert claimed <= fields, (
-                f"{resource}: the doc claims {sorted(claimed - fields)} is encrypted "
-                "but encryptedFieldsByResource does not list it"
-            )
+        extra = sorted(claimed_fields(table, resource) - fields)
+        assert not extra, (
+            f"{resource}: the doc claims {extra} is encrypted "
+            "but encryptedFieldsByResource does not list it"
+        )
