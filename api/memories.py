@@ -23,6 +23,7 @@ import io
 import json
 import logging
 import os
+import shutil
 import threading
 import uuid as uuid_lib
 from datetime import datetime, timezone
@@ -62,7 +63,7 @@ from src.models.memory import Memory
 from src.project.memory_match import step_key
 from src.project.project_repo import bump_lock_version
 from src.utils.encryption_check import is_encrypted_envelope as _is_encrypted_envelope
-from src.utils.photo_privacy import share_copy_path
+from src.utils.photo_privacy import remove_share_copy
 
 router = APIRouter(prefix="/api/memories", tags=["memories"])
 
@@ -478,11 +479,10 @@ def delete_memory(
         owner_dir = _owner_dir_id(sess, mem_row)
         photo_path = photo_folder(_DATA_DIR, owner_dir, "memories", memory_id)
         _delete_photo_files(owner_dir, memory_id, photos)
-        if photo_path.exists():
-            try:
-                photo_path.rmdir()
-            except OSError:
-                pass
+        # The memory is gone, so its directory goes whatever is left in it: a
+        # share copy a concurrent first serve landed after the unlink above,
+        # or the temp file of one (issue #430).
+        shutil.rmtree(photo_path, ignore_errors=True)
 
         item_rows = sess.exec(
             select(DBProjectItem).where(
@@ -520,6 +520,9 @@ def _save_photo_files(user_id: str, memory_id: int, uuid_str: str, raw: bytes) -
     thumb = photo_path / f"{uuid_str}_thumb.jpg"
     full.write_bytes(raw)
     img.thumbnail(_THUMB_SIZE, Image.LANCZOS)
+    # A re-encode drops EXIF, but Pillow does carry a JPEG comment over from
+    # img.info, and the thumbnail is served to share links (issue #430).
+    img.info.clear()
     img.save(str(thumb), "JPEG", quality=85)
     # Storage accounting for quota checks (issue #121). Done here rather than at
     # each call site so every path that writes a photo — upload, replace,
@@ -533,14 +536,14 @@ def _delete_photo_files(user_id: str, memory_id: int, photo_uuids: List[str]) ->
 
     The share-link copy (issue #430) goes with them, but outside the
     accounting: it was never counted, so subtracting it here would hand the
-    owner headroom they do not have.
+    owner headroom they do not have. Deleting never creates the directory.
     """
     folder = photo_folder(_DATA_DIR, user_id, "memories", memory_id)
     unlink_and_record(user_id, photo_files(folder, photo_uuids))
     for photo_uuid in photo_uuids:
         full = photo_file(folder, photo_uuid)
         if full is not None:
-            share_copy_path(full).unlink(missing_ok=True)
+            remove_share_copy(full)
 
 
 def _clear_memory_photos(sess, user_id: str, mem_row: DBMemory) -> None:

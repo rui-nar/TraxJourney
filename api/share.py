@@ -87,7 +87,9 @@ from src.models.project import tag_options_with_untagged
 from src.project.project_repo import ProjectRepo, _compute_stats
 from src.tile_renderer import get_cached_tile, get_or_build_features, get_or_create_tile
 from src.utils.encryption_check import is_encrypted_envelope
-from src.utils.photo_privacy import ensure_share_copy
+from src.utils.photo_privacy import (
+    UndecodablePhoto, ensure_share_copy, strip_jpeg_metadata_segments,
+)
 
 from src.utils.photo_paths import photo_file, photo_folder
 
@@ -622,24 +624,42 @@ def _shared_photo_path(token: str, memory_id: int, photo_uuid: str, thumb: bool)
     return path
 
 
+_PHOTO_CACHE_HEADERS = {"Cache-Control": "public, max-age=86400"}
+
+
+def _share_copy_response(original: Path) -> FileResponse:
+    """The stripped copy of *original* as a response; 404 if it cannot be made.
+
+    A photo deleted under a first serve, or a file on disk that is not a
+    readable image, is simply not there for a share link — never the
+    original in its place (issue #430).
+    """
+    try:
+        copy = ensure_share_copy(original)
+    except (FileNotFoundError, UndecodablePhoto):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+    return FileResponse(str(copy), media_type="image/jpeg", headers=_PHOTO_CACHE_HEADERS)
+
+
 @router.get("/{token}/photos/{memory_id}/{photo_uuid}/thumb", summary="Serve memory photo thumbnail")
 def shared_photo_thumb(token: str, memory_id: int, photo_uuid: str):
     """Serve a memory photo thumbnail without requiring user authentication.
 
-    The thumbnail is re-encoded at upload and carries no EXIF; the full-res
-    fallback is the original and does, so it goes through the same stripped
-    copy as :func:`shared_photo_full` (issue #430).
+    A thumbnail is re-encoded at upload, so it never had EXIF, but a JPEG
+    comment does survive that re-encode and thumbnails written before #430
+    may carry one: its metadata segments are dropped losslessly on the way
+    out. The full-res fallback is the original, which keeps everything, so
+    it goes through the same stripped copy as :func:`shared_photo_full`.
     """
     path = _shared_photo_path(token, memory_id, photo_uuid, thumb=True)
     if not path.exists():
         # Fall back to full-res
         full = photo_file(path.parent, photo_uuid)
         if full is not None and full.exists():
-            return FileResponse(str(ensure_share_copy(full)), media_type="image/jpeg",
-                                headers={"Cache-Control": "public, max-age=86400"})
+            return _share_copy_response(full)
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
-    return FileResponse(str(path), media_type="image/jpeg",
-                        headers={"Cache-Control": "public, max-age=86400"})
+    return Response(strip_jpeg_metadata_segments(path.read_bytes()),
+                    media_type="image/jpeg", headers=_PHOTO_CACHE_HEADERS)
 
 
 @router.get("/{token}/photos/{memory_id}/{photo_uuid}", summary="Serve full-resolution memory photo")
@@ -653,8 +673,7 @@ def shared_photo_full(token: str, memory_id: int, photo_uuid: str):
     path = _shared_photo_path(token, memory_id, photo_uuid, thumb=False)
     if not path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
-    return FileResponse(str(ensure_share_copy(path)), media_type="image/jpeg",
-                        headers={"Cache-Control": "public, max-age=86400"})
+    return _share_copy_response(path)
 
 
 # ── Share: comments & likes ───────────────────────────────────────────────────

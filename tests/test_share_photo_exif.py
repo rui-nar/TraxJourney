@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import json
 import uuid
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -78,6 +79,35 @@ def _close(px, ref, tol=40) -> bool:
     return all(abs(a - b) <= tol for a, b in zip(px[:3], ref))
 
 
+COM, APP0, APP1, APP2, APP13, APP14, SOS = 0xFE, 0xE0, 0xE1, 0xE2, 0xED, 0xEE, 0xDA
+
+
+def _jpeg_markers(data: bytes) -> list[int]:
+    """The marker bytes of every segment up to and including SOS."""
+    assert data[:2] == b"\xff\xd8", "not a JPEG"
+    i, markers = 2, []
+    while i + 4 <= len(data):
+        assert data[i] == 0xFF, f"lost sync at byte {i}"
+        marker = data[i + 1]
+        markers.append(marker)
+        if marker == SOS:
+            break
+        i += 2 + int.from_bytes(data[i + 2:i + 4], "big")
+    return markers
+
+
+def _scan_data(data: bytes) -> bytes:
+    """Everything from the SOS marker on — the entropy-coded pixels."""
+    return data[data.index(b"\xff\xda"):]
+
+
+def _assert_no_metadata_segments(data: bytes) -> None:
+    markers = _jpeg_markers(data)
+    assert COM not in markers, "COM segment survived"
+    assert APP1 not in markers, "APP1 (EXIF/XMP) segment survived"
+    assert APP13 not in markers, "APP13 (IPTC) segment survived"
+
+
 def _assert_stripped_and_upright(data: bytes) -> None:
     img = Image.open(io.BytesIO(data))
     exif = img.getexif()
@@ -85,6 +115,7 @@ def _assert_stripped_and_upright(data: bytes) -> None:
     assert dict(exif.get_ifd(ExifTags.IFD.GPSInfo)) == {}
     assert dict(exif.get_ifd(ExifTags.IFD.Exif)) == {}
     assert "exif" not in img.info and "xmp" not in img.info
+    _assert_no_metadata_segments(data)
     # Orientation 6 on a 40x20 source: pixels rotated, so 20x40 with red on top.
     assert img.size == (20, 40)
     assert _close(img.getpixel((10, 5)), RED)
@@ -212,6 +243,55 @@ class TestSharedPhotoIsStripped:
             assert resp.status_code == 200, fmt
             _assert_stripped_and_upright(resp.content)
 
+    def test_share_thumbnail_carries_no_comment_segment(self, env):
+        """Pillow carries a JPEG comment across the thumbnail re-encode."""
+        photo = _upload(env, _encoded("JPEG", _private_exif(), quality=95,
+                                      comment=b"taken at home"))
+        resp = env.client.get(env.share_url(photo, thumb=True))
+        assert resp.status_code == 200
+        assert b"taken at home" not in resp.content
+        _assert_no_metadata_segments(resp.content)
+
+    def test_pre_existing_thumbnail_is_served_without_metadata_and_without_re_encoding(self, env):
+        """Thumbnails written before #430 may hold a comment (and, if a
+        deployment ever wrote them differently, EXIF): served losslessly
+        stripped, the pixels bit-for-bit those on disk, ICC kept."""
+        from PIL import ImageCms
+
+        photo = _upload(env, _gps_jpeg())
+        icc = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+        buf = io.BytesIO()
+        _half_red_half_blue().save(buf, "JPEG", exif=_private_exif().tobytes(),
+                                   comment=b"taken at home", icc_profile=icc)
+        on_disk = buf.getvalue()
+        (env.photo_dir / f"{photo}_thumb.jpg").write_bytes(on_disk)
+        assert {COM, APP1} <= set(_jpeg_markers(on_disk))
+
+        resp = env.client.get(env.share_url(photo, thumb=True))
+        assert resp.status_code == 200
+        served = resp.content
+        _assert_no_metadata_segments(served)
+        assert _scan_data(served) == _scan_data(on_disk)
+        assert Image.open(io.BytesIO(served)).info.get("icc_profile") == icc
+        assert dict(Image.open(io.BytesIO(served)).getexif()) == {}
+        assert (env.photo_dir / f"{photo}_thumb.jpg").read_bytes() == on_disk
+
+    def test_undecodable_original_is_a_404_and_warns_once_without_the_path(self, env, caplog):
+        import logging
+
+        photo = _upload(env, _gps_jpeg())
+        (env.photo_dir / f"{photo}.jpg").write_bytes(b"not an image at all")
+        with caplog.at_level(logging.WARNING, logger="src.utils.photo_privacy"):
+            for _ in range(2):
+                assert env.client.get(env.share_url(photo)).status_code == 404
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        message = warnings[0].getMessage()
+        assert photo in message, "the photo uuid is what an operator needs"
+        assert str(env.photo_dir) not in message and "users" not in message, \
+            "the owner's user id lives in the path, and the path is not logged"
+        assert not (env.photo_dir / f"{photo}_share.jpg").exists()
+
 
 # ── the copy is cached next to the original, deleted with it, and not charged
 
@@ -276,6 +356,83 @@ class TestShareCopyLifecycle:
         assert reconcile_usage(env.user_id) == after_upload
         env.client.delete(env.owner_url(photo))
         assert _usage(env.engine, env.user_id) == 0
+
+    def test_photo_deleted_during_first_serve_leaves_no_orphan_copy(self, env, monkeypatch):
+        """A DELETE that lands while the copy is being derived: the strip
+        finishes and renames into place after the unlink — the copy must not
+        stay behind, and the viewer gets a 404, never the original."""
+        from src.utils import photo_privacy
+
+        photo = _upload(env, _gps_jpeg())
+        real = photo_privacy.strip_private_metadata
+
+        def strip_while_deleted(raw):
+            out = real(raw)
+            mem_mod._delete_photo_files(str(env.user_id), env.memory_id, [photo])
+            return out
+
+        monkeypatch.setattr(photo_privacy, "strip_private_metadata", strip_while_deleted)
+        assert env.client.get(env.share_url(photo)).status_code == 404
+        assert list(env.photo_dir.iterdir()) == []
+
+    def test_deleting_the_memory_removes_the_directory_whatever_is_left_in_it(self, env):
+        photo = _upload(env, _gps_jpeg())
+        env.client.get(env.share_url(photo))
+        (env.photo_dir / f"{photo}.deadbeef.tmp_share.jpg").write_bytes(b"crashed mid-write")
+        resp = env.client.delete(f"/api/memories/{env.memory_id}")
+        assert resp.status_code == 204
+        assert not env.photo_dir.exists()
+
+    def test_deleting_a_photo_does_not_create_its_directory(self, env):
+        with Session(env.engine) as sess:
+            mem = sess.get(DBMemory, env.memory_id)
+            mem.photos_json = json.dumps(["ghost"])
+            sess.add(mem); sess.commit()
+        assert not env.photo_dir.exists()
+        resp = env.client.delete(env.owner_url("ghost"))
+        assert resp.status_code == 204
+        assert not env.photo_dir.exists()
+
+    def test_the_temp_file_is_named_so_the_storage_walk_skips_it(self, env, monkeypatch):
+        from src.admin.storage import dir_size
+        from src.utils import photo_privacy
+
+        renamed = []
+        real_replace = photo_privacy.os.replace
+
+        def spy(src, dst):
+            renamed.append(Path(src).name)
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(photo_privacy.os, "replace", spy)
+        photo = _upload(env, _gps_jpeg())
+        env.client.get(env.share_url(photo))
+        assert len(renamed) == 1
+        assert photo_privacy.is_share_copy(renamed[0])
+        (env.photo_dir / renamed[0]).write_bytes(b"x" * 1000)
+        counted = dir_size(env.photo_dir)
+        assert counted == sum(
+            p.stat().st_size for p in (env.photo_dir / f"{photo}.jpg",
+                                       env.photo_dir / f"{photo}_thumb.jpg"))
+
+    def test_stale_temp_files_are_cleaned_up(self, env):
+        import os
+        import time
+
+        photo = _upload(env, _gps_jpeg())
+        stale = env.photo_dir / f"{photo}.deadbeef.tmp_share.jpg"
+        stale.write_bytes(b"crashed mid-write")
+        old = time.time() - 3600
+        os.utime(stale, (old, old))
+        fresh = env.photo_dir / f"{photo}.cafebabe.tmp_share.jpg"
+        fresh.write_bytes(b"another first serve, still writing")
+
+        assert env.client.get(env.share_url(photo)).status_code == 200
+        assert not stale.exists(), "a crash residue is removed on the next derive"
+        assert fresh.exists(), "an in-flight derivation is left alone"
+
+        assert env.client.delete(env.owner_url(photo)).status_code == 204
+        assert list(env.photo_dir.iterdir()) == []
 
     def test_copy_is_never_double_served_from_a_stale_name(self, env):
         """A stripped copy is keyed by the photo's uuid — the replace path mints
@@ -355,8 +512,60 @@ class TestStripPrivateMetadata:
         assert out.info.get("icc_profile") == icc
 
 
+class TestStripJpegMetadataSegments:
+    """The lossless walk used on thumbnails."""
+
+    def _jpeg(self, **save_kwargs) -> bytes:
+        buf = io.BytesIO()
+        _half_red_half_blue().save(buf, "JPEG", **save_kwargs)
+        return buf.getvalue()
+
+    def test_drops_com_app1_and_app13_and_keeps_the_pixels(self):
+        from src.utils.photo_privacy import strip_jpeg_metadata_segments
+
+        raw = self._jpeg(exif=_private_exif().tobytes(), comment=b"taken at home")
+        # Splice in an IPTC-style APP13 segment after APP0, as editors do.
+        iptc = b"\xff\xed" + (2 + 20).to_bytes(2, "big") + b"Photoshop 3.0\0" + b"\x00" * 6
+        app0_end = 2 + 2 + int.from_bytes(raw[4:6], "big")
+        raw = raw[:app0_end] + iptc + raw[app0_end:]
+        assert {COM, APP1, APP13} <= set(_jpeg_markers(raw))
+
+        out = strip_jpeg_metadata_segments(raw)
+        markers = _jpeg_markers(out)
+        assert not {COM, APP1, APP13} & set(markers)
+        assert markers[0] == APP0
+        assert _scan_data(out) == _scan_data(raw)
+        assert Image.open(io.BytesIO(out)).tobytes() == Image.open(io.BytesIO(raw)).tobytes()
+        assert b"taken at home" not in out and b"BODYSERIAL123" not in out
+
+    def test_keeps_icc_and_adobe_segments(self):
+        from PIL import ImageCms
+        from src.utils.photo_privacy import strip_jpeg_metadata_segments
+
+        icc = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+        raw = self._jpeg(icc_profile=icc)
+        out = strip_jpeg_metadata_segments(raw)
+        assert APP2 in _jpeg_markers(out)
+        assert Image.open(io.BytesIO(out)).info.get("icc_profile") == icc
+
+        buf = io.BytesIO()
+        _half_red_half_blue().convert("CMYK").save(buf, "JPEG")
+        cmyk = buf.getvalue()
+        assert APP14 in _jpeg_markers(cmyk), "Pillow writes an Adobe marker for CMYK"
+        out = strip_jpeg_metadata_segments(cmyk)
+        assert APP14 in _jpeg_markers(out)
+        assert Image.open(io.BytesIO(out)).tobytes() == Image.open(io.BytesIO(cmyk)).tobytes()
+
+    def test_non_jpeg_bytes_pass_through_unchanged(self):
+        from src.utils.photo_privacy import strip_jpeg_metadata_segments
+
+        png = _encoded("PNG")
+        assert strip_jpeg_metadata_segments(png) == png
+        assert strip_jpeg_metadata_segments(b"") == b""
+
+
 class TestStorageWalkIgnoresShareCopies:
-    def test_dir_size_skips_share_copies(self, tmp_path):
+    def test_dir_size_skips_share_copies_and_their_temp_files(self, tmp_path):
         from src.admin.storage import dir_size
 
         d = tmp_path / "users" / "1" / "memories" / "7"
@@ -364,4 +573,5 @@ class TestStorageWalkIgnoresShareCopies:
         (d / "a.jpg").write_bytes(b"x" * 100)
         (d / "a_thumb.jpg").write_bytes(b"x" * 10)
         (d / "a_share.jpg").write_bytes(b"x" * 90)
+        (d / "a.0123abcd.tmp_share.jpg").write_bytes(b"x" * 70)
         assert dir_size(tmp_path) == 110
