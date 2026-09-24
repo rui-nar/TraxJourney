@@ -38,11 +38,11 @@
       "id": 1,
       "type": "stat",
       "title": "Time since last successful daily_backup",
-      "description": "Alert threshold from docs/METRICS.md: time() - traxjourney_job_last_success_timestamp_seconds{job=\"daily_backup\"} > 90000 (25h) means it silently stopped.",
+      "description": "Alert threshold from docs/METRICS.md: time() - traxjourney_job_last_success_timestamp_seconds{job_name=\"daily_backup\"} > 90000 (25h) means it silently stopped.",
       "gridPos": {"h": 5, "w": 8, "x": 0, "y": 0},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "time() - traxjourney_job_last_success_timestamp_seconds{job=\"daily_backup\",env=\"$env\"}"}
+        {"refId": "A", "expr": "time() - traxjourney_job_last_success_timestamp_seconds{job_name=\"daily_backup\",env=\"$env\"}"}
       ],
       "fieldConfig": {
         "defaults": {
@@ -109,7 +109,7 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 5},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "sum(rate(traxjourney_job_runs_total{env=\"$env\"}[15m])) by (job, result)", "legendFormat": "{{job}} ({{result}})"}
+        {"refId": "A", "expr": "sum(rate(traxjourney_job_runs_total{env=\"$env\"}[15m])) by (job_name, result)", "legendFormat": "{{job_name}} ({{result}})"}
       ],
       "fieldConfig": {"defaults": {"unit": "ops", "custom": {"drawStyle": "line", "fillOpacity": 10}}, "overrides": [
         {"matcher": {"id": "byRegexp", "options": "/error/"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}]}
@@ -123,7 +123,7 @@
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 5},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "histogram_quantile(0.95, sum(rate(traxjourney_job_duration_seconds_bucket{env=\"$env\"}[15m])) by (le, job))", "legendFormat": "{{job}}"}
+        {"refId": "A", "expr": "histogram_quantile(0.95, sum(rate(traxjourney_job_duration_seconds_bucket{env=\"$env\"}[15m])) by (le, job_name))", "legendFormat": "{{job_name}}"}
       ],
       "fieldConfig": {"defaults": {"unit": "s", "custom": {"drawStyle": "line", "fillOpacity": 0}}, "overrides": []},
       "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["mean", "max"]}, "tooltip": {"mode": "multi"}}

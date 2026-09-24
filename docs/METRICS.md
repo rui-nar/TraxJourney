@@ -127,14 +127,22 @@ exceed the quota by a factor of the worker count.
 
 | Metric | Labels |
 |---|---|
-| `traxjourney_job_runs_total` | `job`, `result` (`success`\|`error`\|`missed`) |
-| `traxjourney_job_duration_seconds` | `job` |
-| `traxjourney_job_last_success_timestamp_seconds` | `job` |
+| `traxjourney_job_runs_total` | `job_name`, `result` (`success`\|`error`\|`missed`) |
+| `traxjourney_job_duration_seconds` | `job_name` |
+| `traxjourney_job_last_success_timestamp_seconds` | `job_name` |
 | `traxjourney_prepared_geometry_backlog` | — |
 | `traxjourney_prepared_geometry_outcomes_total` | `outcome` (`prepared`\|`unpreparable`\|`error`) |
 
 Fed by a single APScheduler listener, so every job — `daily_backup`,
 `wal_checkpoint`, anything added later — is covered automatically.
+
+The label is `job_name`, not `job` (issue #435). The scrape attaches its own
+`job` (and `instance`, and every label on the Alloy target, such as `env`), and
+without `honor_labels` Prometheus keeps the scrape's value and renames the
+app's to `exported_job`, so a `{job="daily_backup"}` filter matches nothing.
+No app metric may use a label the scrape attaches;
+`tests/test_dashboard_metrics_contract.py` enforces it. Series recorded before
+the rename carry `exported_job` and do not join the `job_name` ones.
 
 The prepared-geometry pair is set by the backfill sweep itself (issue #369),
 not by that listener.
@@ -164,7 +172,7 @@ between scrapes.
 |---|---|
 | Pool exhaustion — the issue #35 hang | `traxjourney_db_pool_connections{state="in_use"}` approaching `traxjourney_db_pool_capacity` (60), or any `traxjourney_db_errors_total{kind="pool_timeout"}` |
 | WAL checkpointing has stopped | `traxjourney_db_file_size_bytes{file="wal"}` climbing without ever dropping — `wal_autocheckpoint=0` means only the `wal_checkpoint` job folds it back |
-| Backup silently stopped | `time() - traxjourney_job_last_success_timestamp_seconds{job="daily_backup"} > 90000` |
+| Backup silently stopped | `time() - traxjourney_job_last_success_timestamp_seconds{job_name="daily_backup"} > 90000` |
 | Strava quota nearly spent | `traxjourney_strava_rate_limit_usage / traxjourney_strava_rate_limit_capacity > 0.8` — imports start deferring past this |
 | Strava quota actually hit | any `traxjourney_strava_throttled_total` (our limiter refused), or `traxjourney_external_requests_total{service="strava",outcome="rate_limited"}` (Strava refused) |
 | Credential stuffing | `rate(traxjourney_logins_total{result="failure"}[5m])` |

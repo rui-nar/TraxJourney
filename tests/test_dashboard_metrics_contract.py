@@ -253,14 +253,13 @@ def _alloy_values(pattern: str) -> set[str]:
 def test_dashboard_job_matchers_match_the_alloy_scrape_job():
     alloy_jobs = _alloy_values(r'"job"\s*=\s*"([^"]+)"')
     assert len(alloy_jobs) == 1, alloy_jobs
-    # Only series the scrape itself labels: an app family's own ``job`` label
-    # (``job="daily_backup"``) is an APScheduler job id, not the scrape job.
+    # No app family carries its own ``job`` label (see
+    # test_no_app_metric_uses_a_label_the_scrape_attaches), so every ``job=``
+    # matcher, on any series, is the scrape job.
     found: dict[str, set[str]] = {}
     for path in _dashboards():
         for query in _queries(json.loads(path.read_text(encoding="utf-8"))):
-            for name, matchers in _SELECTOR.findall(query):
-                if name.startswith(APP_PREFIX):
-                    continue
+            for _name, matchers in _SELECTOR.findall(query):
                 for value in _matcher_values(matchers, "job"):
                     found.setdefault(value, set()).add(path.name)
     assert found, "no job= matcher found on a scrape-level series"
@@ -285,13 +284,104 @@ def test_logs_dashboard_service_matches_the_alloy_log_label():
     )
 
 
+# ── Labels the scrape reserves (issue #435) ──────────────────────────────────
+# The scrape attaches ``job``, ``instance`` and every label on its target. When
+# an app series already carries one of them, Prometheus keeps the scrape's value
+# and renames the app's to ``exported_<name>`` (``honor_labels`` is off). A
+# dashboard filtering on the app's label then matches nothing, with no error
+# anywhere. The "Backup silently stopped" panel did exactly that on ``job``.
+
+_LABEL_MATCHER = re.compile(
+    r'([A-Za-z_]\w*)\s*(?:=~|!~|!=|=)\s*(?:"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|`[^`]*`)'
+)
+_GROUPING_LABELS = re.compile(r"\b(?:by|without|on|ignoring)\s*\(([^()]*)\)")
+
+
+def _scrape_attached_labels() -> set[str]:
+    """``instance`` plus every label on the app's Alloy scrape target."""
+    block = re.search(
+        r'prometheus\.scrape\s+"traxjourney"\s*\{.*?targets\s*=\s*\[(.*?)\]',
+        _ALLOY_CONFIG.read_text(encoding="utf-8"), re.S,
+    )
+    assert block, "app scrape target not found in the Alloy config"
+    target = set(re.findall(r'"([A-Za-z_]\w*)"\s*=', block.group(1)))
+    return {"instance"} | {name for name in target if not name.startswith("__")}
+
+
+@pytest.fixture(scope="module")
+def app_series_labels(exported_families) -> dict[str, frozenset[str]]:
+    """{app series name: label names it carries}, read off the metric objects.
+
+    Not from the scrape text: a labelled family with no children yet exposes
+    no sample, so its labels would be unknown. Depends on ``exported_families``
+    so the HTTP instrumentator's families exist.
+    """
+    from prometheus_client import REGISTRY
+
+    out: dict[str, frozenset[str]] = {}
+    for series, collector in REGISTRY._names_to_collectors.items():
+        if not series.startswith(APP_PREFIX):
+            continue
+        labels = frozenset(getattr(collector, "_labelnames", ()))
+        if series.endswith("_bucket") and getattr(collector, "_type", "") == "histogram":
+            labels |= {"le"}
+        out[series] = labels
+    return out
+
+
+def test_scrape_attached_labels_are_read_from_the_alloy_config():
+    assert {"job", "instance", "env"} <= _scrape_attached_labels()
+
+
+def test_no_app_metric_uses_a_label_the_scrape_attaches(app_series_labels):
+    reserved = _scrape_attached_labels()
+    clashes = {
+        series: sorted(labels & reserved)
+        for series, labels in app_series_labels.items()
+        if labels & reserved
+    }
+    assert not clashes, (
+        f"app metrics carry labels the scrape overwrites ({sorted(reserved)}); "
+        f"Prometheus renames the app's copy to exported_<name>: {clashes}"
+    )
+
+
+def test_dashboards_filter_and_group_only_on_labels_the_metrics_carry(app_series_labels):
+    scrape = _scrape_attached_labels()
+    checked = 0
+    bad: list[str] = []
+    for path in _dashboards():
+        for query in _queries(json.loads(path.read_text(encoding="utf-8"))):
+            names = metric_names_in(query)
+            for name, matchers in _SELECTOR.findall(query):
+                if name not in app_series_labels:
+                    continue
+                for label in _LABEL_MATCHER.findall(matchers):
+                    checked += 1
+                    if label not in app_series_labels[name] | scrape:
+                        bad.append(f"{path.name}: {name} has no label {label!r}")
+            if not names or not names <= app_series_labels.keys():
+                continue  # a foreign series' labels are not ours to know
+            # Every app series comes from the one scrape job, so grouping them
+            # by ``job`` only ever meant the app's own label, the #435 bug.
+            # (A ``job=`` matcher is pinned to the scrape job by the test above.)
+            carried = (scrape - {"job"}).union(*(app_series_labels[n] for n in names))
+            for group in _GROUPING_LABELS.findall(_STRING.sub(" ", query)):
+                for label in filter(None, (s.strip() for s in group.split(","))):
+                    checked += 1
+                    if label not in carried:
+                        bad.append(f"{path.name}: groups on {label!r}, not on {sorted(names)}")
+    assert checked >= 20, f"extractor found only {checked} label references"
+    assert not bad, "\n".join(bad)
+
+
 # ── Extractor unit checks ────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("query, expected", [
     ('histogram_quantile(0.95, sum(rate(a_bucket{env="$env"}[5m])) by (le, handler))',
      {"a_bucket"}),
     ('100 * a{state="in_use",env="$env"} / b{env="$env"}', {"a", "b"}),
-    ('time() - a_ts{job="daily_backup"}', {"a_ts"}),
+    ('time() - a_ts{job_name="daily_backup"}', {"a_ts"}),
     ('label_values(up{job="traxjourney"}, env)', {"up"}),
     ('topk(10, sum by (handler) (rate(x_total[$__rate_interval])))', {"x_total"}),
     ('rate(a_sum[5m]) / on(instance) group_left rate(a_count[5m])', {"a_sum", "a_count"}),

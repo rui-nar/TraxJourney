@@ -102,19 +102,19 @@ STRAVA_THROTTLED = Counter(
 JOB_RUNS = Counter(
     "traxjourney_job_runs_total",
     "Scheduled job executions by outcome.",
-    ["job", "result"],
+    ["job_name", "result"],
 )
 
 JOB_DURATION = Histogram(
     "traxjourney_job_duration_seconds",
     "Wall-clock duration of scheduled job executions.",
-    ["job"],
+    ["job_name"],
 )
 
 JOB_LAST_SUCCESS = Gauge(
     "traxjourney_job_last_success_timestamp_seconds",
     "Unix timestamp of the last successful run of each scheduled job.",
-    ["job"],
+    ["job_name"],
 )
 
 # The backfill sweep for prepared geometry (issue #369). A gauge rather than a
