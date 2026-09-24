@@ -273,3 +273,53 @@ class StripeGateway:
         # — and its recursive conversion is private, while webhook_events wants
         # plain nested dicts it can ``.get()`` through.
         return json.loads(payload)
+
+    def cancel_subscription(self, subscription_id: str) -> None:
+        """Cancel immediately — the account it belongs to is being deleted (#429).
+
+        Not ``cancel_at_period_end``: once the account is gone there is nothing
+        left to use the remaining period, nor anyone to stop a renewal.
+
+        A refusal is only a failure if the subscription is still running. Stripe
+        refuses to cancel one that no longer exists or has already ended, and a
+        retry after a partial failure (cancelled here, then the account deletion
+        failed) lands exactly there — so such a refusal is checked against the
+        subscription's real state rather than parsed from its message.
+        """
+        stripe = _stripe()
+        if not subscription_id:
+            raise GatewayError("No subscription to cancel")
+        try:
+            stripe.Subscription.cancel(subscription_id)
+            return
+        except Exception as exc:
+            if _is_missing(exc):
+                _log.info("Stripe subscription %s does not exist — nothing to "
+                          "cancel", subscription_id)
+                return
+            cancel_error = exc
+
+        try:
+            sub = stripe.Subscription.retrieve(subscription_id)
+        except Exception as exc:
+            if _is_missing(exc):
+                return
+            _log.warning("Stripe subscription cancel failed for %s: %s",
+                         subscription_id, cancel_error)
+            raise GatewayError(str(cancel_error)) from cancel_error
+        status = str(_field(sub, "status") or "")
+        if status in _ENDED_STATUSES:
+            _log.info("Stripe subscription %s already %s", subscription_id, status)
+            return
+        _log.warning("Stripe subscription cancel failed for %s (status %s): %s",
+                     subscription_id, status, cancel_error)
+        raise GatewayError(str(cancel_error)) from cancel_error
+
+
+#: Stripe subscription statuses that will never bill again.
+_ENDED_STATUSES = frozenset({"canceled", "incomplete_expired"})
+
+
+def _is_missing(exc: Exception) -> bool:
+    """True for Stripe's "No such subscription" (``resource_missing``)."""
+    return getattr(exc, "code", None) == "resource_missing"

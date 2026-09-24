@@ -49,14 +49,73 @@ from models.user import (
 )
 from src.project.repo_core import bump_lock_version
 from src.admin import storage as _storage_mod
+from src.billing.gateway import GatewayError, get_gateway
+from src.exceptions.errors import AccountDeletionRefused
+
+#: Provider statuses after which a subscription can never charge again.
+#: Deliberately the complement of "may still bill" rather than a list of live
+#: statuses: ``entitlements._LIVE_STATUSES`` answers "does this grant the plan",
+#: which leaves out ``unpaid`` (invoices keep being generated), ``incomplete``
+#: (the first invoice can still be paid) and ``paused`` (can resume) — all of
+#: which could still take money from someone with no account left. An unknown
+#: future status is cancelled too; cancelling one that turns out to be over
+#: costs a round trip, not a refusal. ``none`` is a row that never had a
+#: subscription (a free user, or an admin comp).
+_ENDED_SUBSCRIPTION_STATUSES = frozenset({"", "none", "canceled", "incomplete_expired"})
+
+
+def cancel_live_subscription(sess: Session, user_info_id: int) -> None:
+    """Cancel the user's subscription at the provider before deleting (#429).
+
+    Must run before any row is deleted: if it raises, the account is left
+    exactly as it was, so the user can retry — and a retry is safe because the
+    gateway treats an already-cancelled subscription as success. Writes nothing.
+
+    Raises :class:`AccountDeletionRefused` when there is a subscription that may
+    still bill and it could not be cancelled — including when this deployment
+    has no payment gateway configured, since deleting the account would then
+    orphan a paying customer. A user with nothing that can bill never reaches
+    the gateway, so deletion works on an instance without billing.
+    """
+    row = sess.exec(
+        select(Subscription).where(Subscription.user_info_id == user_info_id)
+    ).first()
+    if row is None or (row.status or "") in _ENDED_SUBSCRIPTION_STATUSES:
+        return
+
+    gateway = get_gateway()
+    if gateway is None:
+        # 409, not 502: nothing upstream failed and retrying will not help —
+        # the server is not in a state where this deletion can be done.
+        raise AccountDeletionRefused(
+            "This account has a paid plan that this server cannot cancel, "
+            "because billing is not configured here. The account was not "
+            "deleted. Please contact the administrator.",
+            status_code=409, code="billing_unavailable",
+        )
+    try:
+        gateway.cancel_subscription(row.provider_subscription_id)
+    except GatewayError as exc:
+        # 502: the payment provider failed. Retrying later may succeed.
+        raise AccountDeletionRefused(
+            "The paid plan on this account could not be cancelled, so the "
+            "account was not deleted and nothing was removed. Please try "
+            "again in a few minutes.",
+            status_code=502, code="subscription_cancel_failed",
+        ) from exc
 
 
 def delete_user_and_data(sess: Session, user_info_id: int) -> None:
     """Delete a ``UserInfo`` and every row it owns, directly or via a project.
 
+    Cancels any subscription that may still bill first, and raises
+    :class:`AccountDeletionRefused` — with nothing deleted — if that fails.
+
     Commits internally. Does not touch the filesystem — call
     :func:`purge_user_files` afterwards, outside any DB session.
     """
+    cancel_live_subscription(sess, user_info_id)
+
     project_ids = sess.exec(
         select(DBProject.id).where(DBProject.user_info_id == user_info_id)
     ).all()
@@ -148,9 +207,8 @@ def delete_user_and_data(sess: Session, user_info_id: int) -> None:
     _delete_all(PolarstepsToken, PolarstepsToken.user_info_id == user_info_id)
     _delete_all(DBDeviceKey, DBDeviceKey.user_info_id == user_info_id)
     _delete_all(DBRecoveryWrap, DBRecoveryWrap.user_info_id == user_info_id)
-    # Billing rows (issue #121). Deleting the account here does not cancel a
-    # live subscription at the provider — that is the provider's own record and
-    # must be cancelled through it (or through the billing portal) first.
+    # Billing rows (issue #121). Any subscription that could still bill was
+    # cancelled at the provider by cancel_live_subscription above (issue #429).
     _delete_all(Subscription, Subscription.user_info_id == user_info_id)
     _delete_all(UserUsage, UserUsage.user_info_id == user_info_id)
 

@@ -20,7 +20,7 @@ class GatewayError(Exception):
 
 
 class BillingGateway(Protocol):
-    """The four provider operations the app needs."""
+    """The provider operations the app needs."""
 
     def create_checkout_session(
         self, *, user_info_id: int, plan: str, email: str, customer_id: str,
@@ -43,6 +43,16 @@ class BillingGateway(Protocol):
 
     def parse_webhook(self, payload: bytes, signature: str) -> dict:
         """Verify the signature and return the event dict. Raises on mismatch."""
+
+    def cancel_subscription(self, subscription_id: str) -> None:
+        """End a subscription *now*, not at the end of the paid period.
+
+        Used when the account is being deleted (issue #429): there will be no
+        account left from which to cancel it, so nothing may renew. A
+        subscription that is already cancelled, or that the provider does not
+        know, counts as success — a retry after a partial failure must not be
+        refused. Raises :class:`GatewayError` on anything else.
+        """
 
 
 _override: BillingGateway | None = None

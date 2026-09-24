@@ -346,3 +346,94 @@ class TestResolvePriceId:
         calls = self._stripe(monkeypatch, prices={})
         assert gw.resolve_price_id(FREE) == ""
         assert calls == []
+
+
+class TestCancelSubscription:
+    """Immediate cancellation when the account is deleted (issue #429).
+
+    The refusals are real ``stripe.InvalidRequestError`` instances, and the
+    retrieved subscription a real ``StripeObject`` — the ``code`` attribute and
+    the ``.get`` trap are exactly what a dict or a bare Exception would hide.
+    """
+
+    def _gateway(self, monkeypatch, *, cancel_error=None, status="canceled",
+                 retrieve_error=None):
+        calls: dict = {"cancel": [], "retrieve": []}
+
+        class _Subscription:
+            @staticmethod
+            def cancel(sub_id, **params):
+                calls["cancel"].append((sub_id, params))
+                if cancel_error is not None:
+                    raise cancel_error
+                return _obj(id=sub_id, status="canceled")
+
+            @staticmethod
+            def retrieve(sub_id):
+                calls["retrieve"].append(sub_id)
+                if retrieve_error is not None:
+                    raise retrieve_error
+                return _obj(id=sub_id, status=status)
+
+        fake = types.SimpleNamespace(Subscription=_Subscription)
+        monkeypatch.setattr("src.billing.stripe_gateway._stripe", lambda: fake)
+        return StripeGateway(), calls
+
+    @staticmethod
+    def _missing():
+        import stripe
+        return stripe.InvalidRequestError(
+            "No such subscription: 'sub_1'", "id", code="resource_missing",
+            http_status=404)
+
+    @staticmethod
+    def _refused():
+        import stripe
+        return stripe.InvalidRequestError(
+            "A canceled subscription can only update its cancellation_details "
+            "and metadata.", None, http_status=400)
+
+    def test_cancels_immediately_by_id(self, monkeypatch):
+        gateway, calls = self._gateway(monkeypatch)
+        gateway.cancel_subscription("sub_1")
+        # Subscription.cancel ends it now; there is no at-period-end flag on it.
+        assert calls["cancel"] == [("sub_1", {})]
+
+    def test_a_subscription_stripe_does_not_know_is_success(self, monkeypatch):
+        gateway, calls = self._gateway(monkeypatch, cancel_error=self._missing())
+        gateway.cancel_subscription("sub_1")  # must not raise
+        assert calls["retrieve"] == []
+
+    @pytest.mark.parametrize("status", ["canceled", "incomplete_expired"])
+    def test_an_already_ended_subscription_is_success(self, monkeypatch, status):
+        """The retry after a partial failure: cancelled at Stripe last time,
+        then the account deletion itself failed."""
+        gateway, calls = self._gateway(monkeypatch, cancel_error=self._refused(),
+                                       status=status)
+        gateway.cancel_subscription("sub_1")  # must not raise
+        assert calls["retrieve"] == ["sub_1"]
+
+    def test_vanishing_between_cancel_and_retrieve_is_success(self, monkeypatch):
+        gateway, _ = self._gateway(monkeypatch, cancel_error=self._refused(),
+                                   retrieve_error=self._missing())
+        gateway.cancel_subscription("sub_1")  # must not raise
+
+    def test_a_refusal_while_still_running_is_a_gateway_error(self, monkeypatch):
+        gateway, _ = self._gateway(monkeypatch, cancel_error=self._refused(),
+                                   status="active")
+        with pytest.raises(GatewayError):
+            gateway.cancel_subscription("sub_1")
+
+    def test_a_network_failure_is_a_gateway_error(self, monkeypatch):
+        import stripe
+        down = stripe.APIConnectionError("connection reset")
+        gateway, _ = self._gateway(monkeypatch, cancel_error=down,
+                                   retrieve_error=down)
+        with pytest.raises(GatewayError):
+            gateway.cancel_subscription("sub_1")
+
+    def test_no_subscription_id_is_a_gateway_error(self, monkeypatch):
+        gateway, calls = self._gateway(monkeypatch)
+        with pytest.raises(GatewayError):
+            gateway.cancel_subscription("")
+        assert calls["cancel"] == []

@@ -55,6 +55,20 @@ class QuotaExceeded(TraxJourneyException):
         self.needed = needed if needed is not None else used
 
 
+class AccountDeletionRefused(TraxJourneyException):
+    """An account cannot be deleted yet; nothing has been removed (issue #429).
+
+    Raised when the account's paid plan could not be cancelled at the payment
+    provider. Deleting anyway would leave a subscription charging someone who
+    no longer has an account to cancel it from. The message is user-facing.
+    """
+
+    def __init__(self, message: str, *, status_code: int, code: str):
+        super().__init__(message)
+        self.status_code = status_code
+        self.code = code
+
+
 class TokenError(TraxJourneyException):
     """Raised when token management fails."""
 
