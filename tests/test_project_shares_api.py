@@ -136,7 +136,8 @@ def test_share_visitors_counts_anonymous_and_registered(env):
         proj = sess.exec(
             select(DBProject).where(DBProject.name == "My Trip")
         ).first()
-        visitor = UserInfo(display_name="Visitor", email="v@e.com")
+        visitor = UserInfo(display_name="Visitor", email="v@e.com",
+                           avatar_url="https://img/v.png")
         sess.add(visitor); sess.commit(); sess.refresh(visitor)
         sess.add(DBShareVisit(
             project_id=proj.id, token_type="full", visitor_type="anonymous",
@@ -156,11 +157,86 @@ def test_share_visitors_counts_anonymous_and_registered(env):
     assert resp.status_code == 200
     body = resp.json()
     assert body["full"]["anonymous_count"] == 1
-    assert body["full"]["registered"] == [
-        {"display_name": "Visitor", "email": "v@e.com", "last_seen_at": 200.0}
-    ]
+    [entry] = body["full"]["registered"]
+    assert entry["display_name"] == "Visitor"
+    assert entry["avatar_url"] == "https://img/v.png"
+    assert entry["last_seen_at"] == 200.0
     assert body["no_memories"]["anonymous_count"] == 1
     assert body["no_memories"]["registered"] == []
+
+
+def _add_registered_visit(engine, *, project_name: str, token_type: str,
+                          display_name: str, email: str) -> int:
+    with Session(engine) as sess:
+        proj = sess.exec(
+            select(DBProject).where(DBProject.name == project_name)
+        ).first()
+        visitor = UserInfo(display_name=display_name, email=email)
+        sess.add(visitor); sess.commit(); sess.refresh(visitor)
+        sess.add(DBShareVisit(
+            project_id=proj.id, token_type=token_type, visitor_type="registered",
+            user_info_id=visitor.id, last_seen_at=300.0,
+        ))
+        sess.commit()
+        return visitor.id
+
+
+def test_share_visitors_never_reveal_email(env):
+    """Issue #431: a signed-in visitor's address must not reach the trip owner,
+    whichever link they opened and even when they have no display name (the
+    old client fell back to the email in that case)."""
+    client, engine, _ = env
+    _add_registered_visit(engine, project_name="My Trip", token_type="full",
+                          display_name="Named", email="named@e.com")
+    _add_registered_visit(engine, project_name="My Trip", token_type="no_memories",
+                          display_name="", email="nameless@e.com")
+
+    resp = client.get("/api/projects/My Trip/share/visitors")
+    assert resp.status_code == 200
+    body = resp.json()
+    for bucket in ("full", "no_memories"):
+        for entry in body[bucket]["registered"]:
+            assert set(entry) == {"visitor_key", "display_name", "avatar_url", "last_seen_at"}
+    assert "@e.com" not in resp.text
+    assert "email" not in resp.text
+
+
+def test_share_visitor_key_is_stable_pseudonymous_and_owner_scoped(env):
+    """The key the owner sees is the same on every call, differs between
+    visitors, is not the raw user id, and the same visitor gets a different
+    key on another owner's trip — so two owners cannot correlate visitors."""
+    client, engine, uid = env
+    v1 = _add_registered_visit(engine, project_name="My Trip", token_type="full",
+                               display_name="One", email="one@e.com")
+    v2 = _add_registered_visit(engine, project_name="My Trip", token_type="full",
+                               display_name="Two", email="two@e.com")
+
+    first = client.get("/api/projects/My Trip/share/visitors").json()
+    second = client.get("/api/projects/My Trip/share/visitors").json()
+    keys = {e["display_name"]: e["visitor_key"] for e in first["full"]["registered"]}
+    assert keys == {e["display_name"]: e["visitor_key"] for e in second["full"]["registered"]}
+    assert keys["One"] != keys["Two"]
+    assert keys["One"] not in (str(v1), v1) and keys["Two"] not in (str(v2), v2)
+    assert str(v1) not in keys["One"]
+
+    # Same visitor (v1) on a trip owned by someone else -> different key.
+    with Session(engine) as sess:
+        other = UserInfo(display_name="B", email="b@e.com")
+        sess.add(other); sess.commit(); sess.refresh(other)
+        proj = DBProject(user_info_id=other.id, name="Other Trip")
+        sess.add(proj); sess.commit(); sess.refresh(proj)
+        sess.add(DBShareVisit(
+            project_id=proj.id, token_type="full", visitor_type="registered",
+            user_info_id=v1, last_seen_at=400.0,
+        ))
+        sess.commit()
+        other_id = other.id
+    client.app.dependency_overrides[get_current_user] = (
+        lambda: {"sub": str(other_id), "email": "b@e.com"})
+    other_view = client.get("/api/projects/Other Trip/share/visitors").json()
+    [entry] = other_view["full"]["registered"]
+    assert entry["display_name"] == "One"
+    assert entry["visitor_key"] != keys["One"]
 
 
 def test_share_visitors_project_not_found(env):
