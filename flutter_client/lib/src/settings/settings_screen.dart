@@ -10,6 +10,7 @@ import 'package:vector_map_tiles/vector_map_tiles.dart' show VectorTileLayerMode
 import '../auth/auth_notifier.dart';
 import '../auth/auth_service.dart';
 import '../billing/billing_section.dart';
+import '../billing/billing_service.dart';
 import '../core/app_version.dart';
 import '../core/brand.dart';
 import '../core/perf_timing.dart' show perfSpans;
@@ -26,6 +27,25 @@ import 'settings_service.dart';
 import 'strava_oauth_popup_stub.dart'
     if (dart.library.js_interop) 'strava_oauth_popup_web.dart';
 import 'theme_notifier.dart';
+
+/// What the delete-account confirmation says (issue #429).
+///
+/// Deleting the account cancels a paid plan immediately, so the user is told
+/// before confirming. [billing] is null when the plan could not be fetched —
+/// then the general sentence, which is true either way.
+String deleteAccountWarning(BillingStatus? billing) {
+  const base = 'This will permanently delete your account and all projects. '
+      'This cannot be undone.';
+  if (billing == null) {
+    return '$base\n\nAny active paid plan will be cancelled immediately, and '
+        'you will not be charged again.';
+  }
+  if (billing.mayStillBill) {
+    return '$base\n\nYour ${billing.planName} plan will be cancelled '
+        'immediately, and you will not be charged again.';
+  }
+  return base;
+}
 
 class SettingsScreen extends StatefulWidget {
   final SettingsService? service; // injectable for tests
@@ -179,14 +199,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _deleteAccount() async {
+    // Best effort: knowing the plan makes the warning precise, and the general
+    // wording is still true when it cannot be fetched.
+    BillingStatus? billing;
+    try {
+      billing = await BillingService().status().timeout(const Duration(seconds: 5));
+    } catch (_) {}
+    if (!mounted) return;
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Delete account?'),
-        content: const Text(
-          'This will permanently delete your account and all projects. '
-          'This cannot be undone.',
-        ),
+        content: Text(deleteAccountWarning(billing)),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
@@ -211,11 +236,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await auth.logout();
       router.go('/login');
     } on Exception catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Delete failed: ${e.toString().replaceFirst('Exception: ', '')}')),
-        );
-      }
+      if (!mounted) return;
+      // A dialog, not a snackbar: a refusal (e.g. the paid plan could not be
+      // cancelled) says why and what to do, and must not vanish unread.
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Account not deleted'),
+          content: Text(e.toString().replaceFirst('Exception: ', '')),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
     }
   }
 
