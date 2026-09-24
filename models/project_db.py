@@ -273,10 +273,9 @@ class DBActivity(sqlmodel.SQLModel, table=True):
     manual: bool = sqlmodel.Field(default=False)
     private: bool = sqlmodel.Field(default=False)
     flagged: bool = sqlmodel.Field(default=False)
-    has_heartrate: bool = sqlmodel.Field(default=False)
     has_kudoed: bool = sqlmodel.Field(default=False)
-    heartrate_opt_out: bool = sqlmodel.Field(default=False)
-    display_hide_heartrate_option: bool = sqlmodel.Field(default=False)
+    # No heart-rate columns (issue #442): health data under GDPR, unused by
+    # any feature. Dropped by migration a442d0e1f2b3; see src/models/activity.py.
 
     # Speed
     average_speed: float = sqlmodel.Field(default=0.0)
@@ -284,8 +283,6 @@ class DBActivity(sqlmodel.SQLModel, table=True):
 
     # Optional inline fields
     gear_id: Optional[str] = sqlmodel.Field(default=None)
-    average_heartrate: Optional[float] = sqlmodel.Field(default=None)
-    max_heartrate: Optional[int] = sqlmodel.Field(default=None)
     elev_high: Optional[float] = sqlmodel.Field(default=None)
     elev_low: Optional[float] = sqlmodel.Field(default=None)
 

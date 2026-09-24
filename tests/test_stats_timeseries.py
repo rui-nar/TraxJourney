@@ -34,7 +34,6 @@ def _ride(aid: int, date_str: str, distance_m: float, moving_time_s: int, elevat
         manual=False,
         private=False,
         flagged=False,
-        has_heartrate=False,
         pr_count=0,
         total_photo_count=0,
         has_kudoed=False,

@@ -46,6 +46,13 @@ def _seed_activity_row(engine, **kwargs) -> None:
     md = MetaData()
     tbl = Table("activity", md, autoload_with=engine)
     data = {k: v for k, v in data.items() if k in tbl.columns}
+    # The reverse drift: a NOT NULL column this historical schema still has but
+    # the current model has since dropped (#442's heart-rate flags) gets its
+    # type's zero value, since no ORM default exists for it any more.
+    for col in tbl.columns:
+        if (col.name not in data and not col.nullable and not col.primary_key
+                and col.server_default is None):
+            data[col.name] = col.type.python_type()
     with engine.begin() as conn:
         conn.execute(insert(tbl), data)
 

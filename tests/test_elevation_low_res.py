@@ -64,10 +64,9 @@ class TestRowToActivityThreading:
             total_elevation_gain=0.0, start_date="", start_date_local="", timezone="UTC",
             achievement_count=0, kudos_count=0, comment_count=0, athlete_count=0,
             photo_count=0, trainer=False, commute=False, manual=False, private=False,
-            flagged=False, average_speed=0.0, max_speed=0.0, has_heartrate=False,
+            flagged=False, average_speed=0.0, max_speed=0.0,
             pr_count=0, total_photo_count=0, has_kudoed=False, gear_id=None,
-            average_heartrate=None, max_heartrate=None, heartrate_opt_out=False,
-            display_hide_heartrate_option=False, elev_high=None, elev_low=None,
+            elev_high=None, elev_low=None,
             start_latlng_json=None, end_latlng_json=None, summary_polyline=None,
             elevation_profile_json=json.dumps(
                 {"distances_km": [0.0, 1.0], "elevations_m": [5.0, 6.0]}),
