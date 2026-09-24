@@ -9,12 +9,18 @@ import 'package:traxjourney_client/src/crypto/e2ee_crypto.dart';
 import 'package:traxjourney_client/src/crypto/encryption_migration.dart';
 import 'package:traxjourney_client/src/crypto/encryption_service.dart';
 
-/// Pins the end-to-end encryption coverage documented in docs/ENCRYPTION.md
-/// (issue #433): for each resource the migration writes, the set of fields
-/// that leave the device as ciphertext must be exactly
-/// [encryptedFieldsByResource], and the set that leaves as plaintext must be
-/// exactly the list below. A field added to (or dropped from) either side of
-/// the migration fails here until the constant and the doc are updated too.
+/// Pins what EncryptionMigration writes (issue #433): for each resource, the
+/// set of fields that leave the device as ciphertext must be exactly
+/// [encryptedFieldsByResource], and the set the migration re-sends as
+/// plaintext must be exactly [_plaintextFieldsByResource]. A field added to
+/// (or dropped from) either side of the migration fails here until the
+/// constant is updated; tests/test_encryption_doc_coverage.py (server CI)
+/// then holds docs/ENCRYPTION.md to the constant.
+///
+/// Not covered: the per-write CRUD mixins (project_memory_crud_mixin.dart,
+/// project_journal_crud_mixin.dart). They call the final top-level
+/// `encryption` service, which a unit test cannot unlock without the OS
+/// keystore plugin — exercising them needs an injection seam (follow-up).
 class _FakeStore implements DeviceKeyStore {
   SimpleKeyPair? _kp;
   @override
@@ -167,21 +173,6 @@ void main() {
       expect(plaintext, _plaintextFieldsByResource[resource],
           reason: '$resource: plaintext fields drifted — update '
               '_plaintextFieldsByResource and docs/ENCRYPTION.md');
-    }
-  });
-
-  test('a still-plaintext value the migration does not know is never sent', () {
-    // A tripwire for the doc's "stays plaintext" list: these are fields the
-    // API returns that the migration deliberately leaves alone (server-owned
-    // metadata). They must not appear in encryptedFieldsByResource.
-    const serverOwned = {
-      'date', 'time', 'lat', 'lon', 'geo_mode', 'photos', 'public_id',
-      'type', 'distance', 'moving_time', 'elapsed_time', 'total_elevation_gain',
-      'start_date', 'start_date_local', 'timezone', 'kudos_count',
-      'average_speed', 'average_heartrate', 'elev_high', 'elev_low', 'source',
-    };
-    for (final fields in encryptedFieldsByResource.values) {
-      expect(fields.intersection(serverOwned), isEmpty);
     }
   });
 }

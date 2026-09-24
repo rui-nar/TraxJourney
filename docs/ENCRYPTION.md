@@ -10,13 +10,27 @@ Turn it on under **Settings → Encryption → Set up encryption**.
 
 ## What is encrypted
 
-The list below is generated from the code, not from intent. It is pinned by
-`encryptedFieldsByResource` in
-`flutter_client/lib/src/crypto/encryption_migration.dart` and by
-`flutter_client/test/crypto/encryption_coverage_test.dart`, which asserts that
-the migration encrypts exactly those fields and re-sends exactly the plaintext
-fields listed in the next section. Change one, and the test fails until the
-other two are updated.
+The list below was written from the code, not from intent, and two tests keep
+it that way:
+
+- `encryptedFieldsByResource` in
+  `flutter_client/lib/src/crypto/encryption_migration.dart` is the pinned
+  list. `flutter_client/test/crypto/encryption_coverage_test.dart` runs the
+  migration and asserts its writes carry exactly those fields as ciphertext,
+  and exactly `date`, `geo_mode`, `time`, `lat`, `lon` (memory, journal) and
+  the two nulled `original_*` columns (activity) as plaintext.
+- `tests/test_encryption_doc_coverage.py` (server CI, no Flutter needed)
+  parses that constant out of the Dart source and fails unless every resource
+  and field appears in the table below — and unless the table claims nothing
+  the constant does not.
+
+What the tests do **not** cover: the per-write memory/journal paths
+(`project_memory_crud_mixin.dart`, `project_journal_crud_mixin.dart`) are not
+exercised — they use the final top-level `encryption` service, which a unit
+test cannot unlock without the OS keystore, so a change there (say, encrypting
+or un-encrypting `lat`) would not fail any test today. Giving them an injection
+seam is a follow-up. The "What stays plaintext" table further down is
+hand-written from the schema and is not test-pinned.
 
 | Resource | Encrypted field (API key) | Database column | Encrypted where |
 |---|---|---|---|
@@ -43,6 +57,9 @@ Two more things are encrypted, under **different keys**:
   tracks that are E2EE-encrypted are simply **absent** from the shared map, and
   the server strips the raw envelopes from shared memory fields so a viewer
   without the fragment key sees "unavailable" rather than ciphertext.
+  Everything else a share link carries — plaintext memories, photos, dates,
+  memory coordinates, unencrypted tracks, connecting segments — is readable by
+  **anyone holding the link**, by definition.
 - **Key material**: the Content Master Key wrapped to each device and to your
   recovery method (`device_key.wrapped_cmk`, `recovery_wrap.wrapped_cmk`).
 
@@ -65,7 +82,9 @@ Two more things are encrypted, under **different keys**:
   too land in plaintext even with encryption on. Editing such a memory once in
   the app re-saves it encrypted.
 - Trips shared **with** you by another user are never migrated: only your own
-  trips are, under your own key (issue #106).
+  trips are, under your own key (issue #106). The per-write paths are not so
+  careful — see remnants 8 and 9 below for the companion and locked-device
+  cases.
 
 ## What stays plaintext
 
@@ -102,6 +121,7 @@ encryption time, from the code:
 | `memory_translation` | machine translations of memory `name`/`description` | **purged** when the memory becomes ciphertext; the server refuses to translate an encrypted memory (409) |
 | Full-res geo response cache | GeoJSON built from plaintext tracks | busted for every trip the activity is in |
 | GPX export, poster tracks | built from `summary_polyline` | GPX export refuses (409) any trip with an encrypted activity; the geo builders skip encrypted tracks |
+| `.traxj` / ZIP export (`api/project_transfer.py`) | the project as JSON (ZIP adds the photos) | no check: encrypted fields are written into the file **as their envelopes**, so the export stays unreadable without your key — and re-importing it elsewhere keeps the ciphertext |
 
 ## Known plaintext remnants (not yet fixed)
 
@@ -113,8 +133,10 @@ own fix.
    per user, refreshed on every Strava sync (`api/strava.py::_save_cache`). It
    holds every synced activity's **name, start/end coordinates, summary
    polyline and dates** exactly as Strava returned them, regardless of
-   encryption, and the migration does not touch it. Anyone with the database
-   can read the last-synced tracks of an encrypted account from this column.
+   encryption, and the migration does not touch it. The row is never deleted,
+   only overwritten by the next sync (`_invalidate_cache` in `api/strava.py`
+   has no callers). Anyone with the database can read the last-synced tracks
+   of an encrypted account from this column.
 2. **`project.low_res_geo_json`** — a straight-line-per-activity GeoJSON with
    each activity's `name` and start/end coordinates. It is only rewritten by a
    full `save_project`, so after the migration it keeps the **pre-encryption
@@ -141,6 +163,23 @@ own fix.
    decrypts the same maps in place; the SQLite cache on the device can
    therefore hold decrypted content. It is protected by the device only (the
    web client has no on-disk cache).
+8. **Companions with their own encryption** — `POST .../invite`
+   (`api/members.py`) refuses to create an invite only when the trip
+   **owner** has encryption enabled; accepting an invite checks nothing about
+   the invitee. The client's memory/journal write paths call
+   `encryption.protect()` unconditionally, including on `?owner=` writes into
+   someone else's trip. So an editor whose own account is encrypted writes
+   memory titles/notes and journal text into a plaintext owner's trip as
+   ciphertext under **their** key — which the owner (and every other
+   companion) cannot read. The reverse holds too: a plaintext companion's
+   writes into a trip are plaintext.
+9. **Writes while locked** — `EncryptionService.protect()` returns the
+   plaintext unchanged when the device is not unlocked
+   (`encryption_service.dart`), and no memory/journal write path is gated on
+   `isUnlocked`. A device still waiting for approval, or a web session that
+   has not unlocked yet, therefore saves new or edited memories and journal
+   entries **in the clear** on an encrypted account, with no warning. They
+   stay plaintext until edited again from an unlocked device.
 
 ## What the server checks
 
