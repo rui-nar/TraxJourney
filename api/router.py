@@ -19,6 +19,7 @@ from src.jobs.route_jobs import (
     sweep_stale_resolver_segments,
 )
 from src.poster.poster_job_runner import sweep_orphaned_poster_jobs
+from src.project.migrated_sweep import sweep_migrated_files
 from src.project.project_repo import StaleWriteError
 
 from api.activities import router as activities_router, activity_fields_router
@@ -122,6 +123,15 @@ async def lifespan(_app: FastAPI):
     # the rarer case where the whole worker container went down with it, so
     # nothing was left alive to run that handler (issue #14 follow-up).
     sweep_orphaned_poster_jobs()
+    # TEMPORARY (issue #434) — remove in a later release, with
+    # src/project/migrated_sweep.py. Deletes the *.migrated copies old imports
+    # left under data/users/*/projects/. Here, behind the API-process guard
+    # above, so it runs once per boot and never in a worker. It is cleanup, so
+    # it must never be what stops the API from starting.
+    try:
+        sweep_migrated_files()
+    except Exception:
+        _log.exception("Leftover *.migrated sweep failed; continuing startup")
     _scheduler.add_job(backup_db, "cron", hour=2, minute=0, id="daily_backup", replace_existing=True)
     _scheduler.add_job(checkpoint_wal, "interval", seconds=60, id="wal_checkpoint", replace_existing=True)
     # Correct any drift between the per-user storage counters used for quota
