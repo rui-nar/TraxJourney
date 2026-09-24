@@ -88,6 +88,7 @@ def run_migrations_online() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        hide_parameters=True,  # a failed backfill must not log row values (#443)
     )
 
     with connectable.connect() as connection:

@@ -17,7 +17,8 @@ alembic upgrade head
 # from. Inside the container the reverse proxy's connection arrives from the
 # Docker network's gateway (it comes in through the published port), not from
 # 127.0.0.1, so uvicorn's default trusts nothing and the log would show the
-# gateway's /24 for every request. Set FORWARDED_ALLOW_IPS in .env — see
-# .env.example. The shell fallback is deliberate: a blank .env line reaches
-# uvicorn as an empty string, which it reads as "trust nobody", not as unset.
+# gateway's /24 for every request. Set FORWARDED_ALLOW_IPS in .env to the
+# proxy's address or network, never "*" — see .env.example for why. The shell
+# fallback is deliberate: a blank .env line reaches uvicorn as an empty
+# string, which it reads as "trust nobody", not as unset.
 exec uvicorn api.router:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 300 --no-access-log --proxy-headers --forwarded-allow-ips "${FORWARDED_ALLOW_IPS:-127.0.0.1}"

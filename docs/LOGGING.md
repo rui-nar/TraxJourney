@@ -88,19 +88,28 @@ GET /api/projects/{name} -> 200 (12.3ms) ip=203.0.113.0/24
 ```
 
 method, route template, status, duration, and the client address truncated
-to its /24 (IPv6: its /48). That is deliberately all of it (issue #443): no
-query string, no path parameters, no full address. uvicorn's own access
-log, which printed the full IP and the raw request line, is off
-(`--no-access-log` in `entrypoint.sh`) — keep it off in any other way the
-server gets started.
+to its /24 (IPv6: its /48; an IPv4 client on a dual-stack socket is
+truncated as IPv4). That is deliberately all of it (issue #443): no query
+string, no path parameters, no full address. A request no route claimed —
+a trailing-slash 307, a CORS preflight, a 404 — is named by its first
+segment, plus the area segment under `/api`, the rest replaced by `...`
+(`/api/share/...`, `/share/...`), never by its raw path; if a new URL
+scheme ever puts a secret earlier than that, `_redacted_path()` in
+`api/middleware.py` is where the rule lives. uvicorn's own access log, which
+printed the full IP and the raw request line, is off (`--no-access-log` in
+`entrypoint.sh`) — keep it off in any other way the server gets started.
+The database engine runs with `hide_parameters=True` for the same reason:
+a failed statement's exception text would otherwise carry its bound values
+into the catch-all handler's `.exception()` line.
 
 The truncated address exists for abuse investigation only (which network a
 burst of failed logins or scraping came from); nothing rate-limits or
 decides on it. Behind the reverse proxy it comes from `X-Forwarded-For`,
 which uvicorn believes only from the peers `FORWARDED_ALLOW_IPS` lists
-(`.env.example` explains the value to set in Docker; `entrypoint.sh` wires
-it). If every line shows the same `172.x.x.0/24`, that variable is missing
-and you are logging the Docker gateway, not clients.
+(`.env.example` explains the value to set in Docker and why it is a list of
+networks rather than `*`; `entrypoint.sh` wires it). If every line shows
+the same `172.x.x.0/24`, that variable is missing and you are logging the
+Docker gateway, not clients.
 
 Retention: lines ship to Loki and are kept **30 days**
 (`docs/OBSERVABILITY.md`, "Loki retention"). The local Docker `json-file`

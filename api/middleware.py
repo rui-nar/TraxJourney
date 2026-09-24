@@ -46,12 +46,31 @@ def route_template(request: Request) -> str:
 
     What every log line names a request by — api.router's exception handlers
     included — so a share token or other path parameter never lands in a
-    log. Falls back to the raw path (never the query string) for anything
-    that never matched a route (a 404) — those aren't in the allowlist either
-    way, so they still log at INFO.
+    log. A request no route claimed is named by :func:`_redacted_path`
+    instead, never by its raw path; it isn't in the allowlist either way, so
+    it still logs at INFO.
     """
     route = request.scope.get("route")
-    return route.path if route is not None else request.url.path
+    return route.path if route is not None else _redacted_path(request)
+
+
+def _redacted_path(request: Request) -> str:
+    """A path no route claimed, with anything that could be a secret removed.
+
+    A trailing-slash redirect (``/api/share/<token>/meta/`` -> 307), a CORS
+    preflight (CORSMiddleware answers ``OPTIONS`` before the router runs)
+    and a plain 404 all reach the access log with the concrete path, and a
+    share token may be in it. This app's URLs put a secret no earlier than
+    the second segment of a web deep link (``/share/<token>``,
+    ``/join/<token>``, ``/verify-email/<token>``) and the third under
+    ``/api`` (``/api/share/<token>/...``; the second is the area — share,
+    projects, auth, ...). So the first segment is kept, the second only
+    under ``/api``, and the rest becomes ``...``: enough to tell
+    ``/api/share/...`` from a scanner probing ``/wp-login.php/...``.
+    """
+    segments = [s for s in request.url.path.split("/") if s]
+    keep = 2 if segments[:1] == ["api"] else 1
+    return "/" + "/".join(segments[:keep] + ["..."])
 
 
 def client_ip_for_log(host: str | None) -> str:
@@ -66,6 +85,10 @@ def client_ip_for_log(host: str | None) -> str:
         addr = ipaddress.ip_address(host)
     except ValueError:
         return "-"
+    if addr.version == 6 and addr.ipv4_mapped is not None:
+        # "::ffff:203.0.113.77" is how a dual-stack socket presents an IPv4
+        # client; its /48 would be "::/48", i.e. nothing. Truncate the IPv4.
+        addr = addr.ipv4_mapped
     prefix = 24 if addr.version == 4 else 48
     return str(ipaddress.ip_network(f"{addr}/{prefix}", strict=False))
 

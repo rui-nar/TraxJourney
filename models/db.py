@@ -28,7 +28,10 @@ def _make_engine(url: str):
     """
     is_sqlite = url.startswith("sqlite")
     is_memory = is_sqlite and (":memory:" in url or url == "sqlite://")
-    kwargs: dict = {}
+    # A failed statement's exception text otherwise carries its bound
+    # parameters ("[parameters: ('<share token>',)]"), and api.router's
+    # catch-all handler logs that text (issue #443).
+    kwargs: dict = {"hide_parameters": True}
     if is_sqlite:
         kwargs["connect_args"] = {"check_same_thread": False}
     if not is_memory:
