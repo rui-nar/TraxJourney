@@ -35,13 +35,34 @@ from apscheduler.events import (
     EVENT_JOB_MISSED,
     EVENT_JOB_SUBMITTED,
 )
-from prometheus_client import REGISTRY, Counter, Gauge, Histogram
+from prometheus_client import REGISTRY, Counter, Gauge, Histogram, values
 from prometheus_fastapi_instrumentator import Instrumentator
 from sqlalchemy import event
 
 from src.utils.logging import get_logger
+from src.utils.metrics_multiproc import (
+    claim_multiproc_dir,
+    multiproc_dir,
+    process_identifier,
+)
 
 _log = get_logger(__name__)
+
+# ── Multiprocess mode (issue #437) ────────────────────────────────────────────
+# Must run before the first metric below is built: unlabelled metrics create
+# their value, and so their file, at construction. prometheus_client picked its
+# value class when it was imported, from the variable's mere presence.
+
+_MULTIPROC_DIR = multiproc_dir()
+if _MULTIPROC_DIR:
+    # Held open for the life of the process; see claim_multiproc_dir.
+    _MULTIPROC_LOCK_FD = claim_multiproc_dir(_MULTIPROC_DIR)
+    values.ValueClass = values.MultiProcessValue(process_identifier)
+else:
+    # Set but empty (``.env.example``'s default) must mean off, as it does for
+    # /metrics. Otherwise every process, one per RQ job, writes its files into
+    # the working directory and nothing ever reads or clears them.
+    values.ValueClass = values.MutexValue
 
 # ── Authentication ────────────────────────────────────────────────────────────
 

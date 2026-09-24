@@ -250,7 +250,9 @@ services:
 #   PROMETHEUS_MULTIPROC_DIR=/app/metrics
 #     Only if you scrape /metrics AND run the workers. Without it a scrape sees
 #     the API process only, so job-side DB metrics silently go missing. Leave
-#     unset when there are no workers.
+#     unset when there are no workers. ./metrics must be the same local host
+#     directory in every service (the processes coordinate clearing it with a
+#     file lock, docs/METRICS.md); never clear it by hand while the stack runs.
 #
 #   LOKI_PUSH_URL=http://<nas-tailscale-host>:3100/loki/api/v1/push
 #   PROMETHEUS_REMOTE_WRITE_URL=http://<nas-tailscale-host>:9090/api/v1/write
