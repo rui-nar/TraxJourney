@@ -58,6 +58,11 @@ class SubscriptionUpdate:
     current_period_end: float
     cancel_at_period_end: bool
     user_info_id: int | None = None
+    # When the provider created the object the event is about (the checkout
+    # session or the subscription), unix seconds; 0 when the payload has none.
+    # Lets the caller tell that ``user_info_id`` names an account created
+    # *after* this purchase — a reused id, not the buyer (issue #429).
+    object_created: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -316,6 +321,7 @@ def subscription_update_from_event(event: dict) -> SubscriptionUpdate | None:
             current_period_end=0.0,
             cancel_at_period_end=False,
             user_info_id=_user_info_id(obj),
+            object_created=_as_float(obj.get("created")),
         )
 
     if etype == "invoice.payment_failed":
@@ -335,6 +341,7 @@ def subscription_update_from_event(event: dict) -> SubscriptionUpdate | None:
             current_period_end=_period_end(obj),
             cancel_at_period_end=bool(obj.get("cancel_at_period_end")),
             user_info_id=_user_info_id(obj),
+            object_created=_as_float(obj.get("created")),
         )
 
     # customer.subscription.created / updated
@@ -348,4 +355,5 @@ def subscription_update_from_event(event: dict) -> SubscriptionUpdate | None:
         current_period_end=_period_end(obj),
         cancel_at_period_end=bool(obj.get("cancel_at_period_end")),
         user_info_id=_user_info_id(obj),
+        object_created=_as_float(obj.get("created")),
     )
