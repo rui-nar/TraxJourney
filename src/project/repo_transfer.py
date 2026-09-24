@@ -6,7 +6,6 @@ for the composed class and module docstring.
 from __future__ import annotations
 
 import json
-import os
 import uuid
 from typing import Dict, Optional
 
@@ -14,6 +13,7 @@ from sqlmodel import Session
 
 from models.project_db import DBEncounter, DBMemory, DBPerson, DBPersonGroup, DBProject, DBProjectItem
 from src.models.person import polarsteps_from_socials
+from src.models.project import Project
 from src.project.project_io import ProjectIO
 from src.project.repo_core import _compute_low_res_geo
 
@@ -22,31 +22,23 @@ class ImportExportMixin:
     """Project file ingestion into the DB."""
 
     def ingest_project(
-        self, sess: Session, user_info_id: int, path: str
+        self, sess: Session, user_info_id: int, db_name: str, project: Project
     ) -> None:
-        """Parse a ``.traxj`` project file and write it into the DB.
+        """Write a parsed ``.traxj`` project into the DB under ``db_name``.
 
-        The DB project name is derived from the **filename** (minus extension)
-        so it stays consistent with the URL slug the API has always used.
+        The caller derives ``db_name`` from the uploaded **filename** (minus
+        extension), not from the name inside the file, so it stays consistent
+        with the URL slug the API has always used.
+
+        Takes the parsed project rather than a path so an import never has to
+        land the upload on disk (issue #434).
 
         Idempotent: if the project already exists in the DB, the call is a
         no-op.  Activity rows are upserted so enriched data is never overwritten.
-
-        After a successful ingest the file is renamed to ``*.migrated``
-        so repeated calls are O(1) rather than re-reading the file each time.
         """
-        # Use the filename-derived name as the DB key (matches the legacy URL slug)
-        basename = os.path.basename(path)
-        ext = ProjectIO.EXTENSION
-        db_name = basename[: -len(ext)] if basename.endswith(ext) else basename
-
-        project = ProjectIO.load(path)
-
         # Check for existing project before inserting
         row = self._get_project_row(sess, user_info_id, db_name)
         if row is not None:
-            # Already migrated — just rename the file and return
-            self._mark_migrated(path)
             return
 
         # 1. Upsert activities (do NOT overwrite enriched data if row exists)
@@ -177,12 +169,3 @@ class ImportExportMixin:
             sess.add(db_item)
 
         sess.commit()
-        self._mark_migrated(path)
-
-    @staticmethod
-    def _mark_migrated(path: str) -> None:
-        """Rename a project file to *.migrated to prevent re-ingestion."""
-        try:
-            os.rename(path, path + ".migrated")
-        except OSError:
-            pass  # not critical — ingest is idempotent anyway

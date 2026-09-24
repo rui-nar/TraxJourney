@@ -208,8 +208,11 @@ class ProjectIO:
     def load(path: str) -> Project:
         """Deserialise a .traxj file and return a :class:`Project`."""
         with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
+            return ProjectIO.from_dict(json.load(fh))
 
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> Project:
+        """Build a :class:`Project` from a parsed .traxj document."""
         fs_raw = data.get("filter_state", {}) or {}
         filter_state = ProjectFilterState(
             start_date=fs_raw.get("start_date"),
