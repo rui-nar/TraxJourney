@@ -44,33 +44,15 @@ def _by_customer(sess, customer_id: str) -> Subscription | None:
     ).first()
 
 
-#: Slack between this server's clock and the provider's when comparing an
-#: account's creation time with a purchase's (see :func:`_bought_by`). A real
-#: buyer's account always predates their checkout session by far more than
-#: this; an account that reused a deleted one's id always postdates the old
-#: purchase by at least the deletion in between.
-_CLOCK_SKEW_SECONDS = 60.0
+def _account_exists(sess, user_info_id: int) -> bool:
+    """True when ``user_info_id`` still names an account.
 
-
-def _bought_by(sess, update: SubscriptionUpdate) -> bool:
-    """True when ``update.user_info_id`` still names the account that bought it.
-
-    The id in the metadata was stamped at checkout, and can outlive the account
-    (issue #429): deleting an account cancels its subscription, and the
-    provider's ``customer.subscription.deleted`` arrives afterwards. SQLite may
-    also hand the deleted account's id to the next one registered, so the id
-    existing is not enough — the account must also predate the purchase, or a
-    late event would attach the old customer and subscription to a stranger.
+    The id in the metadata was stamped at checkout and outlives the account
+    (issue #429): deleting it cancels the subscription, and the provider's
+    ``customer.subscription.deleted`` arrives afterwards. Account ids are never
+    reused (``userinfo`` is AUTOINCREMENT), so existing is enough to trust it.
     """
-    user = sess.get(UserInfo, update.user_info_id)
-    if user is None:
-        return False
-    if (
-        update.object_created
-        and user.created_at > update.object_created + _CLOCK_SKEW_SECONDS
-    ):
-        return False
-    return True
+    return sess.get(UserInfo, user_info_id) is not None
 
 
 def resolve_row(sess, update: SubscriptionUpdate) -> Subscription | None:
@@ -78,20 +60,33 @@ def resolve_row(sess, update: SubscriptionUpdate) -> Subscription | None:
 
     Prefers our own user id (carried in checkout metadata) and falls back to the
     provider customer id, which is all most subscription events contain. An id
-    that no longer names the buyer — the account was deleted, or its id reused —
-    is not trusted, and only the customer id is left to go on.
+    whose account has been deleted is not trusted — creating a row for it would
+    leave an orphan — and only the customer id is left to go on.
     """
     if update.user_info_id:
-        if _bought_by(sess, update):
+        if _account_exists(sess, update.user_info_id):
             row = get_subscription(sess, update.user_info_id)
             if row is None:
                 row = Subscription(user_info_id=update.user_info_id)
             return row
         _log.info(
-            "Webhook %s: user %s is not the account that bought it — "
-            "matching by customer only", update.event_id, update.user_info_id,
+            "Webhook %s: account %s no longer exists — matching by customer only",
+            update.event_id, update.user_info_id,
         )
     return _by_customer(sess, update.customer_id)
+
+
+def is_orphaned(sess, update: SubscriptionUpdate) -> bool:
+    """True when the event's subscription belongs to no account at all.
+
+    That is: it names an account (metadata) that has been deleted, and its
+    customer matches no remaining one. The case this exists for is a checkout
+    page opened before the account was deleted and paid afterwards — nothing
+    would ever cancel what it started (issue #429).
+    """
+    if not update.user_info_id or _account_exists(sess, update.user_info_id):
+        return False
+    return _by_customer(sess, update.customer_id) is None
 
 
 def apply_update(sess, update: SubscriptionUpdate) -> bool:

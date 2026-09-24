@@ -437,3 +437,213 @@ class TestCancelSubscription:
         with pytest.raises(GatewayError):
             gateway.cancel_subscription("")
         assert calls["cancel"] == []
+
+
+def _missing(what="subscription"):
+    import stripe
+    return stripe.InvalidRequestError(
+        f"No such {what}: 'x_1'", "id", code="resource_missing", http_status=404)
+
+
+def _page(*items):
+    """A real ListObject, so ``auto_paging_iter`` is the SDK's own."""
+    from stripe import ListObject
+    return ListObject.construct_from(
+        {"object": "list", "data": [dict(i) for i in items], "has_more": False,
+         "url": "/v1/x"}, "sk_test_x")
+
+
+class _FakeStripe:
+    """Just enough of the SDK for the account-deletion calls (issue #429).
+
+    Records every call in order, so tests can check what happened first.
+    """
+
+    def __init__(self, *, customer=None, sessions=(), subscriptions=(),
+                 customer_error=None, list_error=None, expire_error=None,
+                 session_status_after_expire_error="complete",
+                 subscription_cancel_error=None, subscription_retrieve_error=None):
+        self.log: list[tuple] = []
+        fake = self
+        self.customer = customer if customer is not None else {"id": "cus_1"}
+
+        class Customer:
+            @staticmethod
+            def retrieve(cid):
+                fake.log.append(("customer.retrieve", cid))
+                if customer_error is not None:
+                    raise customer_error
+                return _obj(**fake.customer)
+
+            @staticmethod
+            def delete(cid):  # must never be called
+                fake.log.append(("customer.delete", cid))
+
+        class Session:
+            @staticmethod
+            def list(**params):
+                fake.log.append(("session.list", params))
+                if list_error is not None:
+                    raise list_error
+                return _page(*sessions)
+
+            @staticmethod
+            def expire(sid):
+                fake.log.append(("session.expire", sid))
+                if expire_error is not None:
+                    raise expire_error
+                return _obj(id=sid, status="expired")
+
+            @staticmethod
+            def retrieve(sid):
+                fake.log.append(("session.retrieve", sid))
+                return _obj(id=sid, status=session_status_after_expire_error)
+
+        class Subscription:
+            @staticmethod
+            def list(**params):
+                fake.log.append(("subscription.list", params))
+                return _page(*subscriptions)
+
+            @staticmethod
+            def cancel(sid, **params):
+                fake.log.append(("subscription.cancel", sid))
+                if subscription_cancel_error is not None:
+                    raise subscription_cancel_error
+                return _obj(id=sid, status="canceled")
+
+            @staticmethod
+            def retrieve(sid):
+                fake.log.append(("subscription.retrieve", sid))
+                if subscription_retrieve_error is not None:
+                    raise subscription_retrieve_error
+                return _obj(id=sid, status="active")
+
+        self.Customer = Customer
+        self.Subscription = Subscription
+        self.checkout = types.SimpleNamespace(Session=Session)
+
+    def calls(self, name):
+        return [c[1] for c in self.log if c[0] == name]
+
+
+def _install(monkeypatch, fake):
+    monkeypatch.setattr("src.billing.stripe_gateway._stripe", lambda: fake)
+    return StripeGateway()
+
+
+class TestCancelAllForCustomer:
+    """Deleting an account asks Stripe what could still bill (issue #429).
+
+    Our cached row can say "none" while a checkout page opened before the
+    deletion is still payable, and it tracks one subscription where Stripe may
+    hold several, so the customer's own state is what gets stopped.
+    """
+
+    def test_cancels_every_subscription_that_has_not_ended(self, monkeypatch):
+        fake = _FakeStripe(subscriptions=[
+            {"id": "sub_a", "status": "active"},
+            {"id": "sub_b", "status": "past_due"},
+            {"id": "sub_c", "status": "canceled"},
+            {"id": "sub_d", "status": "incomplete_expired"},
+            {"id": "sub_e", "status": "unpaid"},
+        ])
+        gateway = _install(monkeypatch, fake)
+
+        cancelled = gateway.cancel_all_for_customer("cus_1")
+
+        assert cancelled == ["sub_a", "sub_b", "sub_e"]
+        assert fake.calls("subscription.cancel") == ["sub_a", "sub_b", "sub_e"]
+        # Every status is listed, not just the live ones Stripe lists by default.
+        assert fake.calls("subscription.list") == [
+            {"customer": "cus_1", "status": "all", "limit": 100}]
+
+    def test_expires_open_checkouts_before_listing_subscriptions(self, monkeypatch):
+        """A checkout opened before the deletion must not be payable after it,
+        and one paid in between must show up in the list that follows."""
+        fake = _FakeStripe(sessions=[{"id": "cs_1"}, {"id": "cs_2"}])
+        gateway = _install(monkeypatch, fake)
+
+        gateway.cancel_all_for_customer("cus_1")
+
+        assert fake.calls("session.list") == [
+            {"customer": "cus_1", "status": "open", "limit": 100}]
+        assert fake.calls("session.expire") == ["cs_1", "cs_2"]
+        names = [c[0] for c in fake.log]
+        assert names.index("session.expire") < names.index("subscription.list")
+
+    def test_the_customer_is_kept(self, monkeypatch):
+        """Its invoices are the accounting record, and a refund needs them."""
+        fake = _FakeStripe(subscriptions=[{"id": "sub_a", "status": "active"}])
+        _install(monkeypatch, fake).cancel_all_for_customer("cus_1")
+        assert fake.calls("customer.delete") == []
+
+    def test_a_customer_stripe_does_not_know_means_the_wrong_account(self, monkeypatch):
+        """A sandbox key against live ids says "no such customer" too. That
+        proves nothing was cancelled, so it must not pass for success."""
+        fake = _FakeStripe(customer_error=_missing("customer"))
+        gateway = _install(monkeypatch, fake)
+        with pytest.raises(GatewayError):
+            gateway.cancel_all_for_customer("cus_1")
+        assert fake.calls("subscription.list") == []
+
+    def test_a_deleted_customer_has_nothing_left_to_cancel(self, monkeypatch):
+        fake = _FakeStripe(customer={"id": "cus_1", "deleted": True})
+        assert _install(monkeypatch, fake).cancel_all_for_customer("cus_1") == []
+        assert fake.calls("subscription.list") == []
+
+    def test_a_session_completed_meanwhile_is_fine(self, monkeypatch):
+        import stripe
+        fake = _FakeStripe(
+            sessions=[{"id": "cs_1"}],
+            expire_error=stripe.InvalidRequestError("not open", None, http_status=400),
+            session_status_after_expire_error="complete",
+        )
+        _install(monkeypatch, fake).cancel_all_for_customer("cus_1")  # no raise
+        assert fake.calls("session.retrieve") == ["cs_1"]
+
+    def test_a_session_still_open_after_a_failed_expire_is_an_error(self, monkeypatch):
+        import stripe
+        fake = _FakeStripe(
+            sessions=[{"id": "cs_1"}],
+            expire_error=stripe.APIConnectionError("reset"),
+            session_status_after_expire_error="open",
+        )
+        with pytest.raises(GatewayError):
+            _install(monkeypatch, fake).cancel_all_for_customer("cus_1")
+
+    def test_a_listing_failure_is_an_error(self, monkeypatch):
+        import stripe
+        fake = _FakeStripe(list_error=stripe.APIConnectionError("reset"))
+        with pytest.raises(GatewayError):
+            _install(monkeypatch, fake).cancel_all_for_customer("cus_1")
+
+    def test_a_failed_cancel_is_an_error(self, monkeypatch):
+        import stripe
+        fake = _FakeStripe(
+            subscriptions=[{"id": "sub_a", "status": "active"}],
+            subscription_cancel_error=stripe.APIConnectionError("reset"),
+            subscription_retrieve_error=stripe.APIConnectionError("reset"),
+        )
+        with pytest.raises(GatewayError):
+            _install(monkeypatch, fake).cancel_all_for_customer("cus_1")
+
+    def test_no_customer_id_is_an_error(self, monkeypatch):
+        fake = _FakeStripe()
+        with pytest.raises(GatewayError):
+            _install(monkeypatch, fake).cancel_all_for_customer("")
+
+
+class TestMissingSubscriptionWithAKnownCustomer:
+    """A missing subscription is only success if Stripe knows the customer."""
+
+    def test_the_customer_exists_so_missing_means_gone(self, monkeypatch):
+        fake = _FakeStripe(subscription_cancel_error=_missing())
+        _install(monkeypatch, fake).cancel_subscription("sub_1", "cus_1")
+        assert fake.calls("customer.retrieve") == ["cus_1"]
+
+    def test_the_customer_is_missing_too_so_the_key_is_wrong(self, monkeypatch):
+        fake = _FakeStripe(subscription_cancel_error=_missing(),
+                           customer_error=_missing("customer"))
+        with pytest.raises(GatewayError):
+            _install(monkeypatch, fake).cancel_subscription("sub_1", "cus_1")

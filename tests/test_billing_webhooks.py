@@ -21,6 +21,7 @@ from src.billing.subscriptions import (
     apply_schedule,
     apply_update,
     get_subscription,
+    is_orphaned,
     set_admin_override,
 )
 from src.billing.webhook_events import (
@@ -350,17 +351,9 @@ class TestDeletedAccounts:
     """The metadata id can outlive the account it names (issue #429).
 
     Deleting an account cancels its subscription, so Stripe's
-    ``customer.subscription.deleted`` arrives after the account is gone — and
-    SQLite may already have handed the id to someone new.
+    ``customer.subscription.deleted`` arrives after the account is gone. Ids
+    are never reused, so "the account exists" is the whole test.
     """
-
-    def test_the_created_time_of_the_object_is_carried(self):
-        event = _subscription_event("customer.subscription.deleted", user_info_id=1)
-        event["data"]["object"]["created"] = 1234
-        assert subscription_update_from_event(event).object_created == 1234.0
-        checkout = _checkout_event()
-        checkout["data"]["object"]["created"] = 777
-        assert subscription_update_from_event(checkout).object_created == 777.0
 
     def test_an_event_for_a_deleted_account_creates_no_row(self, sess):
         assert apply_update(sess, _update(
@@ -368,42 +361,35 @@ class TestDeletedAccounts:
         )) is False
         assert sess.exec(select(Subscription)).all() == []
 
-    def test_an_account_that_reused_the_id_gets_no_row(self, sess):
-        """User 1 was created now; the subscription is from long before."""
+    def test_the_buyer_is_matched_whatever_the_clocks_say(self, sess):
+        """No comparison with the account's creation time any more: a server
+        clock running ahead of Stripe's must not disown a real first purchase."""
         user = sess.get(UserInfo, 1)
-        assert apply_update(sess, _update(
-            plan=FREE, status="canceled", object_created=user.created_at - 3600,
-        )) is False
-        assert get_subscription(sess, 1) is None
-
-    def test_an_account_that_reused_the_id_keeps_its_own_row(self, sess):
-        """A comped newcomer has a row with no customer yet — exactly the shape
-        a real first purchase fills in, so only the dates tell them apart."""
-        set_admin_override(sess, 1, TIER_2)
-        user = sess.get(UserInfo, 1)
-        assert apply_update(sess, _update(
-            customer_id="cus_old", subscription_id="sub_old", plan=FREE,
-            status="canceled", object_created=user.created_at - 3600,
-        )) is False
-        row = get_subscription(sess, 1)
-        assert row.provider_customer_id == ""
-        assert row.provider_subscription_id == ""
-        assert row.last_event_id == ""
-
-    def test_the_buyer_is_still_matched_when_the_purchase_follows_the_account(self, sess):
-        user = sess.get(UserInfo, 1)
-        assert apply_update(sess, _update(
-            object_created=user.created_at + 120,
-        )) is True
+        event = _subscription_event("customer.subscription.created",
+                                    created=int(user.created_at), user_info_id=1)
+        # Stripe's clock an hour behind ours: the subscription looks older
+        # than the account that bought it.
+        event["data"]["object"]["created"] = int(user.created_at) - 3600
+        assert apply_update(sess, subscription_update_from_event(event)) is True
         assert get_subscription(sess, 1).provider_customer_id == "cus_1"
 
-    def test_a_little_clock_skew_does_not_disown_the_buyer(self, sess):
-        """Stripe's clock and ours differ slightly; a checkout started seconds
-        after registering can carry a creation time just before the account's."""
-        user = sess.get(UserInfo, 1)
-        assert apply_update(sess, _update(
-            object_created=user.created_at - 30,
-        )) is True
+
+class TestIsOrphaned:
+    """A subscription that belongs to no account at all (issue #429)."""
+
+    def test_a_deleted_account_whose_customer_no_one_holds(self, sess):
+        assert is_orphaned(sess, _update(user_info_id=99, customer_id="cus_x"))
+
+    def test_a_live_account_is_not(self, sess):
+        assert not is_orphaned(sess, _update(user_info_id=1))
+
+    def test_a_customer_another_account_holds_is_not(self, sess):
+        apply_update(sess, _update(customer_id="cus_held"))
+        assert not is_orphaned(sess, _update(user_info_id=99, customer_id="cus_held"))
+
+    def test_an_event_naming_no_account_is_not(self, sess):
+        """Without metadata there is nothing to say whose it was."""
+        assert not is_orphaned(sess, _update(user_info_id=None, customer_id="cus_x"))
 
 
 # ── Scheduled changes (issue #153) ────────────────────────────────────────────

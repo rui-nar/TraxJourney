@@ -64,27 +64,45 @@ from src.exceptions.errors import AccountDeletionRefused
 _ENDED_SUBSCRIPTION_STATUSES = frozenset({"", "none", "canceled", "incomplete_expired"})
 
 
-def cancel_live_subscription(sess: Session, user_info_id: int) -> None:
-    """Cancel the user's subscription at the provider before deleting (#429).
+def cancel_live_subscription(sess: Session, user_info_id: int) -> list[str]:
+    """Stop everything that could still bill the user, before deleting (#429).
 
     Must run before any row is deleted: if it raises, the account is left
     exactly as it was, so the user can retry — and a retry is safe because the
-    gateway treats an already-cancelled subscription as success. Writes nothing.
+    gateway treats an already-ended subscription as success. Writes nothing.
+    Returns the ids of the subscriptions it cancelled.
 
-    Raises :class:`AccountDeletionRefused` when there is a subscription that may
-    still bill and it could not be cancelled — including when this deployment
-    has no payment gateway configured, since deleting the account would then
-    orphan a paying customer. A user with nothing that can bill never reaches
-    the gateway, so deletion works on an instance without billing.
+    Once the account has a provider customer, the provider decides, not our
+    cached row: the row can say "none" while a checkout page opened earlier is
+    still waiting to be paid, and it tracks only one subscription. So every
+    open checkout of that customer is expired and every running subscription
+    cancelled. Only a row with no customer falls back to its one stored
+    subscription.
+
+    Raises :class:`AccountDeletionRefused` when something may still bill and
+    could not be stopped — including when this deployment has no payment
+    gateway configured, since deleting the account would then orphan a paying
+    customer. A user who never reached the provider never touches the gateway,
+    so deletion works on an instance without billing.
     """
     row = sess.exec(
         select(Subscription).where(Subscription.user_info_id == user_info_id)
     ).first()
-    if row is None or (row.status or "") in _ENDED_SUBSCRIPTION_STATUSES:
-        return
+    if row is None:
+        return []
+    customer_id = row.provider_customer_id or ""
+    subscription_id = row.provider_subscription_id or ""
+    may_bill = (row.status or "") not in _ENDED_SUBSCRIPTION_STATUSES
+    if not customer_id and not (subscription_id and may_bill):
+        return []
 
     gateway = get_gateway()
     if gateway is None:
+        if not may_bill:
+            # Billing was switched off after this account reached the provider.
+            # Nothing can be asked, and our last word is that nothing runs;
+            # refusing would make the account undeletable for good.
+            return []
         # 409, not 502: nothing upstream failed and retrying will not help —
         # the server is not in a state where this deletion can be done.
         raise AccountDeletionRefused(
@@ -94,7 +112,10 @@ def cancel_live_subscription(sess: Session, user_info_id: int) -> None:
             status_code=409, code="billing_unavailable",
         )
     try:
-        gateway.cancel_subscription(row.provider_subscription_id)
+        if customer_id:
+            return gateway.cancel_all_for_customer(customer_id)
+        gateway.cancel_subscription(subscription_id)
+        return [subscription_id]
     except GatewayError as exc:
         # 502: the payment provider failed. Retrying later may succeed.
         raise AccountDeletionRefused(

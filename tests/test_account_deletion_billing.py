@@ -10,8 +10,6 @@ must *not* reach it installs one anyway and asserts it stayed untouched.
 """
 from __future__ import annotations
 
-import time
-
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
@@ -30,15 +28,17 @@ from src.billing.gateway import GatewayError, set_gateway
 class FakeGateway:
     """Records cancellations, and what the DB looked like when each happened."""
 
-    def __init__(self, engine, *, fail=False, event=None):
+    def __init__(self, engine, *, fail=False, event=None, cancelled=("sub_live",)):
         self.engine = engine
         self.fail = fail
         self.event = event or {}
-        self.cancel_calls: list[str] = []
+        self.cancelled = list(cancelled)
+        self.customer_calls: list[str] = []
+        self.subscription_calls: list[str] = []
+        self.checkout_calls: list[dict] = []
         self.rows_at_cancel: list[bool] = []
 
-    def cancel_subscription(self, subscription_id):
-        self.cancel_calls.append(subscription_id)
+    def _record(self):
         # The cancel must come before anything is deleted — look from a
         # separate session, as another request would.
         with Session(self.engine) as sess:
@@ -49,8 +49,25 @@ class FakeGateway:
         if self.fail:
             raise GatewayError("provider down")
 
+    def cancel_all_for_customer(self, customer_id):
+        self.customer_calls.append(customer_id)
+        self._record()
+        return list(self.cancelled)
+
+    def cancel_subscription(self, subscription_id, customer_id=""):
+        self.subscription_calls.append(subscription_id)
+        self._record()
+
+    def create_checkout_session(self, **kwargs):
+        self.checkout_calls.append(kwargs)
+        return {"url": "https://pay.test/session", "customer_id": "cus_new"}
+
     def parse_webhook(self, payload, signature):
         return self.event
+
+    @property
+    def touched(self) -> bool:
+        return bool(self.customer_calls or self.subscription_calls)
 
 
 @pytest.fixture
@@ -70,11 +87,14 @@ def engine(monkeypatch, tmp_path):
     set_gateway(None)
 
 
-def _seed(engine, *, status="active", sub_id="sub_live", admin=False,
-          with_subscription=True) -> int:
+_seq = iter(range(1, 10_000))
+
+
+def _seed(engine, *, status="active", customer="cus_1", sub_id="sub_live",
+          admin=False, with_subscription=True) -> int:
     """A user with a trip, a memory, usage and (optionally) a subscription."""
     with Session(engine) as sess:
-        local = LocalUser(username=f"u{time.time_ns()}@x.io")
+        local = LocalUser(username=f"u{next(_seq)}@x.io")
         sess.add(local)
         sess.commit()
         sess.refresh(local)
@@ -92,7 +112,7 @@ def _seed(engine, *, status="active", sub_id="sub_live", admin=False,
         if with_subscription:
             sess.add(Subscription(
                 user_info_id=uid, plan="tier_2", status=status,
-                provider_customer_id="cus_1", provider_subscription_id=sub_id,
+                provider_customer_id=customer, provider_subscription_id=sub_id,
             ))
         sess.commit()
     return uid
@@ -142,10 +162,13 @@ def _admin_delete(engine, target):
 # ── Self-service DELETE /api/auth/me ─────────────────────────────────────────
 
 class TestSelfDelete:
-    @pytest.mark.parametrize(
-        "status", ["active", "trialing", "past_due", "unpaid", "incomplete", "paused"]
-    )
-    def test_a_subscription_that_may_still_bill_is_cancelled_first(self, engine, status):
+    @pytest.mark.parametrize("status", ["active", "none", "canceled", "past_due"])
+    def test_a_customer_is_settled_at_the_provider_whatever_the_cache_says(
+        self, engine, status,
+    ):
+        """The cached status can lag: "none" is what a checkout opened before
+        the deletion and paid afterwards looks like, and a customer can hold
+        subscriptions the row never recorded. So the provider decides."""
         uid = _seed(engine, status=status)
         gw = FakeGateway(engine)
         set_gateway(gw)
@@ -153,8 +176,24 @@ class TestSelfDelete:
         res = _delete_me(uid)
 
         assert res.status_code == 200, res.text
-        assert gw.cancel_calls == ["sub_live"]
+        assert gw.customer_calls == ["cus_1"]
+        assert gw.subscription_calls == []
         assert gw.rows_at_cancel == [True], "rows were deleted before the cancel"
+        assert _everything_gone(engine, uid)
+
+    @pytest.mark.parametrize(
+        "status", ["active", "trialing", "past_due", "unpaid", "incomplete", "paused"]
+    )
+    def test_without_a_customer_the_stored_subscription_is_cancelled(self, engine, status):
+        uid = _seed(engine, status=status, customer="")
+        gw = FakeGateway(engine)
+        set_gateway(gw)
+
+        res = _delete_me(uid)
+
+        assert res.status_code == 200, res.text
+        assert gw.subscription_calls == ["sub_live"]
+        assert gw.rows_at_cancel == [True]
         assert _everything_gone(engine, uid)
 
     def test_a_gateway_failure_refuses_and_deletes_nothing(self, engine):
@@ -184,24 +223,38 @@ class TestSelfDelete:
         assert _everything_present(engine, uid)
 
     @pytest.mark.parametrize("gateway_installed", [False, True])
-    @pytest.mark.parametrize("status", [None, "none", "canceled", "incomplete_expired"])
-    def test_nothing_that_can_bill_never_touches_the_gateway(
-        self, engine, status, gateway_installed,
+    @pytest.mark.parametrize("row", [
+        None,                                        # never opened the plan page
+        {"status": "none", "sub_id": ""},            # admin comp
+        {"status": "canceled", "sub_id": "sub_old"},  # ended, no customer kept
+        {"status": "incomplete_expired", "sub_id": "sub_old"},
+    ])
+    def test_nothing_at_the_provider_never_touches_the_gateway(
+        self, engine, row, gateway_installed,
     ):
-        """A free user (no row, or an admin comp's "none" row) and an ended
-        subscription delete fine with or without a gateway."""
-        uid = _seed(engine, status=status or "none",
-                    with_subscription=status is not None)
+        """A free user, a comp, or an ended subscription with no customer on
+        record delete fine with or without a gateway."""
+        uid = _seed(engine, with_subscription=row is not None, customer="",
+                    **(row or {}))
         gw = FakeGateway(engine)
         set_gateway(gw if gateway_installed else None)
 
         res = _delete_me(uid)
 
         assert res.status_code == 200, res.text
-        assert gw.cancel_calls == []
+        assert not gw.touched
         with Session(engine) as sess:
             assert sess.get(UserInfo, uid) is None
             assert sess.exec(select(Subscription)).first() is None
+
+    def test_billing_switched_off_later_does_not_trap_a_finished_customer(self, engine):
+        """No gateway can be asked, and the last word is that nothing runs:
+        refusing would make the account undeletable for good."""
+        uid = _seed(engine, status="canceled")
+        set_gateway(None)
+
+        assert _delete_me(uid).status_code == 200
+        assert _everything_gone(engine, uid)
 
     def test_a_retry_after_a_refusal_succeeds(self, engine):
         uid = _seed(engine)
@@ -211,7 +264,7 @@ class TestSelfDelete:
 
         gw.fail = False
         assert _delete_me(uid).status_code == 200
-        assert gw.cancel_calls == ["sub_live", "sub_live"]
+        assert gw.customer_calls == ["cus_1", "cus_1"]
         assert _everything_gone(engine, uid)
 
 
@@ -226,7 +279,7 @@ class TestAdminDelete:
         res = _admin_delete(engine, uid)
 
         assert res.status_code == 200, res.text
-        assert gw.cancel_calls == ["sub_live"]
+        assert gw.customer_calls == ["cus_1"]
         assert gw.rows_at_cancel == [True]
         with Session(engine) as sess:
             assert sess.get(UserInfo, uid) is None
@@ -255,16 +308,25 @@ class TestAdminDelete:
 
 # ── The provider's events after the account is gone ──────────────────────────
 
-def _subscription_deleted_event(uid, *, created) -> dict:
-    """What Stripe sends once the deletion's cancel has gone through."""
+def _subscription_event(etype, uid, *, customer="cus_1", sub_id="sub_live",
+                        status="canceled", event_id="evt_late") -> dict:
     return {
-        "id": "evt_late", "type": "customer.subscription.deleted",
-        "created": created + 5,
+        "id": event_id, "type": etype, "created": 2000,
         "data": {"object": {
-            "id": "sub_live", "customer": "cus_1", "status": "canceled",
-            "created": created,
+            "id": sub_id, "customer": customer, "status": status,
             "metadata": {"user_info_id": str(uid), "plan": "tier_2"},
             "items": {"data": [{"price": {"id": "price_t2"}}]},
+        }},
+    }
+
+
+def _checkout_completed(uid, *, customer="cus_new", sub_id="sub_new") -> dict:
+    return {
+        "id": "evt_co", "type": "checkout.session.completed", "created": 2000,
+        "data": {"object": {
+            "id": "cs_1", "mode": "subscription", "customer": customer,
+            "subscription": sub_id, "client_reference_id": str(uid),
+            "metadata": {"user_info_id": str(uid), "plan": "tier_2"},
         }},
     }
 
@@ -276,26 +338,32 @@ def _post_webhook(gw):
                                 headers={"stripe-signature": "good"})
 
 
+def _no_subscription_rows(engine) -> bool:
+    with Session(engine) as sess:
+        return sess.exec(select(Subscription)).first() is None
+
+
 class TestLateWebhook:
     def test_a_late_cancellation_event_recreates_nothing(self, engine):
         uid = _seed(engine)
-        set_gateway(FakeGateway(engine))
+        gw = FakeGateway(engine)
+        set_gateway(gw)
         assert _delete_me(uid).status_code == 200
 
-        res = _post_webhook(FakeGateway(
-            engine, event=_subscription_deleted_event(uid, created=time.time() - 3600)))
+        late = FakeGateway(engine, event=_subscription_event(
+            "customer.subscription.deleted", uid))
+        res = _post_webhook(late)
 
         assert res.status_code == 200
         assert res.json() == {"received": True, "applied": False}
+        assert _no_subscription_rows(engine)
+        assert not late.touched  # an ended subscription needs no cancelling
         with Session(engine) as sess:
-            assert sess.exec(select(Subscription)).first() is None
             assert sess.exec(select(UserInfo)).first() is None
 
-    def test_a_late_event_does_not_land_on_an_account_that_reused_the_id(self, engine):
-        """SQLite hands the deleted account's id to the next one registered, and
-        the event's metadata still names that id. Attaching it would give a
-        stranger the old customer — and their next checkout would bill it."""
-        bought_at = time.time() - 3600
+    def test_a_deleted_accounts_id_is_never_given_to_the_next_account(self, engine):
+        """The id lives on in Stripe metadata. Were it handed out again, the
+        late event above would name a stranger instead of nobody."""
         uid = _seed(engine)
         set_gateway(FakeGateway(engine))
         assert _delete_me(uid).status_code == 200
@@ -305,12 +373,88 @@ class TestLateWebhook:
             sess.add(newcomer)
             sess.commit()
             sess.refresh(newcomer)
-            assert newcomer.id == uid, "precondition: SQLite reused the id"
+            assert newcomer.id != uid
 
-        res = _post_webhook(FakeGateway(
-            engine, event=_subscription_deleted_event(uid, created=bought_at)))
+
+class TestCheckoutPaidAfterDeletion:
+    """The in-flight checkout: subscribe, delete, then pay the open page.
+
+    Deletion expires the customer's open checkouts when it knows the customer,
+    but a first purchase has none until it is paid. The completion events then
+    name an account that no longer exists and a customer no account has — a
+    subscription nobody can ever cancel from the app, so it is cancelled on
+    arrival.
+    """
+
+    @pytest.mark.parametrize("known_customer", [True, False])
+    def test_the_completion_events_cancel_it_and_create_nothing(
+        self, engine, known_customer,
+    ):
+        uid = _seed(engine, with_subscription=False)
+        gw = FakeGateway(engine, cancelled=())
+        set_gateway(gw)
+        if known_customer:
+            # Clicking Subscribe records the customer the provider returned.
+            res = _as(uid).post("/api/billing/checkout", json={"plan": "tier_2"})
+            assert res.status_code == 200, res.text
+        else:
+            # A first purchase by email: no customer until it is paid.
+            with Session(engine) as sess:
+                sess.add(Subscription(user_info_id=uid))
+                sess.commit()
+
+        assert _delete_me(uid).status_code == 200
+        assert gw.customer_calls == (["cus_new"] if known_customer else [])
+
+        for event in (
+            _checkout_completed(uid),
+            _subscription_event("customer.subscription.created", uid,
+                                customer="cus_new", sub_id="sub_new",
+                                status="active", event_id="evt_created"),
+        ):
+            late = FakeGateway(engine, event=event)
+            res = _post_webhook(late)
+            assert res.status_code == 200, res.text
+            assert res.json() == {"received": True, "applied": False}
+            assert late.customer_calls == ["cus_new"]
+
+        assert _no_subscription_rows(engine)
+
+    def test_a_failed_cancel_asks_stripe_to_deliver_again(self, engine):
+        uid = _seed(engine, with_subscription=False)
+        set_gateway(FakeGateway(engine))
+        assert _delete_me(uid).status_code == 200
+
+        res = _post_webhook(FakeGateway(engine, fail=True,
+                                        event=_checkout_completed(uid)))
+
+        assert res.status_code == 502
+        assert _no_subscription_rows(engine)
+
+    def test_a_purchase_by_a_live_account_is_applied_not_cancelled(self, engine):
+        uid = _seed(engine, with_subscription=False)
+        gw = FakeGateway(engine, event=_checkout_completed(uid))
+
+        res = _post_webhook(gw)
+
+        assert res.json() == {"received": True, "applied": True}
+        assert not gw.touched
+        with Session(engine) as sess:
+            row = sess.exec(select(Subscription)).one()
+            assert row.user_info_id == uid
+            assert row.provider_customer_id == "cus_new"
+
+    def test_a_customer_another_account_still_holds_is_not_cancelled(self, engine):
+        """Only a subscription that belongs to nobody is an orphan."""
+        keeper = _seed(engine, customer="cus_new", sub_id="sub_keep")
+        gone = _seed(engine, with_subscription=False)
+        set_gateway(FakeGateway(engine))
+        assert _delete_me(gone).status_code == 200
+
+        gw = FakeGateway(engine, event=_checkout_completed(gone))
+        res = _post_webhook(gw)
 
         assert res.status_code == 200
-        assert res.json()["applied"] is False
+        assert not gw.touched
         with Session(engine) as sess:
-            assert sess.exec(select(Subscription)).first() is None
+            assert sess.exec(select(Subscription)).one().user_info_id == keeper

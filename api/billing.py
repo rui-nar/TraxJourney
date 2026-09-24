@@ -373,6 +373,42 @@ def create_portal(
     return CheckoutOut(url=result.get("url") or "")
 
 
+#: Events announcing a subscription that has just started. One that belongs to
+#: no account is cancelled on arrival (see :func:`_cancel_orphan`).
+_SUBSCRIPTION_START_TYPES = frozenset({
+    "checkout.session.completed",
+    "customer.subscription.created",
+})
+
+
+def _cancel_orphan(gateway, update) -> None:
+    """Cancel a subscription that started after its account was deleted (#429).
+
+    Deletion expires the customer's open checkouts, but a first purchase has
+    no customer until it is paid, so its page cannot be found then. Paying it
+    afterwards starts a subscription nobody can cancel from the app. Cancelling
+    is idempotent, so the two start events arriving for the same purchase is
+    harmless. A provider failure answers 502 so Stripe redelivers the event
+    and this is tried again, rather than acknowledging a subscription that
+    keeps billing.
+    """
+    _log.warning(
+        "Billing: subscription %s (customer %s) started for deleted account %s "
+        "— cancelling it (event %s)",
+        update.subscription_id, update.customer_id, update.user_info_id,
+        update.event_id,
+    )
+    try:
+        if update.customer_id:
+            gateway.cancel_all_for_customer(update.customer_id)
+        elif update.subscription_id:
+            gateway.cancel_subscription(update.subscription_id)
+    except GatewayError as exc:
+        _log.warning("Billing: could not cancel orphaned subscription %s: %s",
+                     update.subscription_id, exc)
+        raise HTTPException(status_code=502, detail="Could not cancel the subscription")
+
+
 @router.post("/webhook", response_model=WebhookAck, summary="Provider webhook")
 async def webhook(request: Request):
     """Apply a provider event.
@@ -408,6 +444,13 @@ async def webhook(request: Request):
     update = subscription_update_from_event(event)
     if update is None:
         return WebhookAck(received=True, applied=False)
+
+    if (event.get("type") or "") in _SUBSCRIPTION_START_TYPES:
+        with get_session() as sess:
+            orphaned = subs.is_orphaned(sess, update)
+        if orphaned:
+            _cancel_orphan(gateway, update)
+            return WebhookAck(received=True, applied=False)
 
     with get_session() as sess:
         applied = subs.apply_update(sess, update)

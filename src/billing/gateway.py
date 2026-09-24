@@ -44,14 +44,30 @@ class BillingGateway(Protocol):
     def parse_webhook(self, payload: bytes, signature: str) -> dict:
         """Verify the signature and return the event dict. Raises on mismatch."""
 
-    def cancel_subscription(self, subscription_id: str) -> None:
+    def cancel_subscription(self, subscription_id: str, customer_id: str = "") -> None:
         """End a subscription *now*, not at the end of the paid period.
 
         Used when the account is being deleted (issue #429): there will be no
         account left from which to cancel it, so nothing may renew. A
-        subscription that is already cancelled, or that the provider does not
+        subscription that has already ended, or that the provider does not
         know, counts as success — a retry after a partial failure must not be
-        refused. Raises :class:`GatewayError` on anything else.
+        refused. When ``customer_id`` is given, an unknown subscription is only
+        success if the provider knows the customer: both missing means the
+        configured key belongs to another account. Raises
+        :class:`GatewayError` on anything else.
+        """
+
+    def cancel_all_for_customer(self, customer_id: str) -> list[str]:
+        """Stop everything that could still bill ``customer_id``, now.
+
+        Expires the customer's open checkout sessions first — so a payment
+        page left open cannot start a subscription afterwards — then cancels
+        every subscription that has not ended. Decides from the provider, not
+        from our cached state, which can lag or track only one subscription.
+        Returns the ids of the subscriptions it cancelled. The customer itself
+        is kept: its invoices are the accounting record. Raises
+        :class:`GatewayError` when anything could not be stopped, or when the
+        provider does not know the customer at all.
         """
 
 

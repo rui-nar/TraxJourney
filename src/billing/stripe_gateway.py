@@ -274,7 +274,7 @@ class StripeGateway:
         # plain nested dicts it can ``.get()`` through.
         return json.loads(payload)
 
-    def cancel_subscription(self, subscription_id: str) -> None:
+    def cancel_subscription(self, subscription_id: str, customer_id: str = "") -> None:
         """Cancel immediately — the account it belongs to is being deleted (#429).
 
         Not ``cancel_at_period_end``: once the account is gone there is nothing
@@ -285,6 +285,10 @@ class StripeGateway:
         retry after a partial failure (cancelled here, then the account deletion
         failed) lands exactly there — so such a refusal is checked against the
         subscription's real state rather than parsed from its message.
+
+        "No such subscription" is also what a key for the *wrong* Stripe account
+        says (a sandbox key against live ids). So when the customer is known it
+        is looked up too, and success needs the provider to know it.
         """
         stripe = _stripe()
         if not subscription_id:
@@ -294,6 +298,7 @@ class StripeGateway:
             return
         except Exception as exc:
             if _is_missing(exc):
+                self._require_customer(stripe, customer_id)
                 _log.info("Stripe subscription %s does not exist — nothing to "
                           "cancel", subscription_id)
                 return
@@ -303,6 +308,7 @@ class StripeGateway:
             sub = stripe.Subscription.retrieve(subscription_id)
         except Exception as exc:
             if _is_missing(exc):
+                self._require_customer(stripe, customer_id)
                 return
             _log.warning("Stripe subscription cancel failed for %s: %s",
                          subscription_id, cancel_error)
@@ -315,11 +321,99 @@ class StripeGateway:
                      subscription_id, status, cancel_error)
         raise GatewayError(str(cancel_error)) from cancel_error
 
+    def cancel_all_for_customer(self, customer_id: str) -> list[str]:
+        """Expire open checkouts, then cancel every running subscription (#429).
+
+        Asks Stripe rather than trusting our cached row, which can lag behind a
+        payment made on a checkout page opened before the deletion, and which
+        tracks only one subscription per account. Sessions go first: one
+        completed in between shows up in the subscription list that follows.
+
+        The customer is kept, not deleted — its invoices are the accounting
+        record, and a refund needs them.
+        """
+        stripe = _stripe()
+        if not customer_id:
+            raise GatewayError("No billing account to cancel")
+        if not self._require_customer(stripe, customer_id):
+            return []  # a deleted customer has nothing left that can bill
+
+        try:
+            sessions = stripe.checkout.Session.list(
+                customer=customer_id, status="open", limit=100
+            )
+            for session in sessions.auto_paging_iter():
+                self._expire_session(stripe, str(_field(session, "id") or ""))
+            subscriptions = stripe.Subscription.list(
+                customer=customer_id, status="all", limit=100
+            )
+            running = [
+                str(_field(sub, "id") or "")
+                for sub in subscriptions.auto_paging_iter()
+                if str(_field(sub, "status") or "") not in _ENDED_STATUSES
+            ]
+        except GatewayError:
+            raise
+        except Exception as exc:
+            _log.warning("Stripe listing failed for customer %s: %s", customer_id, exc)
+            raise GatewayError(str(exc)) from exc
+
+        for subscription_id in running:
+            self.cancel_subscription(subscription_id, customer_id)
+        if running:
+            _log.info("Stripe customer %s: cancelled %s", customer_id, running)
+        return running
+
+    @staticmethod
+    def _require_customer(stripe, customer_id: str) -> bool:
+        """Check the provider knows ``customer_id``. False if it was deleted.
+
+        No-op (True) without a customer id. A missing customer means this key
+        belongs to another Stripe account than the one that created it, and
+        every "not found" after that proves nothing — so it is an error, never
+        a success.
+        """
+        if not customer_id:
+            return True
+        try:
+            customer = stripe.Customer.retrieve(customer_id)
+        except Exception as exc:
+            if _is_missing(exc):
+                _log.warning(
+                    "Stripe does not know customer %s — STRIPE_SECRET_KEY looks "
+                    "like it belongs to another account", customer_id,
+                )
+                raise GatewayError(f"No such customer {customer_id}") from exc
+            _log.warning("Stripe customer lookup failed for %s: %s", customer_id, exc)
+            raise GatewayError(str(exc)) from exc
+        return not _field(customer, "deleted")
+
+    @staticmethod
+    def _expire_session(stripe, session_id: str) -> None:
+        """Expire an open checkout session, so it can no longer be paid.
+
+        A session completed or expired since it was listed refuses; that is
+        fine as long as it is no longer open.
+        """
+        try:
+            stripe.checkout.Session.expire(session_id)
+            return
+        except Exception as exc:
+            expire_error = exc
+        try:
+            session = stripe.checkout.Session.retrieve(session_id)
+        except Exception as exc:
+            raise GatewayError(str(expire_error)) from expire_error
+        if str(_field(session, "status") or "") == "open":
+            _log.warning("Stripe session %s could not be expired: %s",
+                         session_id, expire_error)
+            raise GatewayError(str(expire_error)) from expire_error
+
 
 #: Stripe subscription statuses that will never bill again.
 _ENDED_STATUSES = frozenset({"canceled", "incomplete_expired"})
 
 
 def _is_missing(exc: Exception) -> bool:
-    """True for Stripe's "No such subscription" (``resource_missing``)."""
+    """True for Stripe's "No such …" (``resource_missing``)."""
     return getattr(exc, "code", None) == "resource_missing"
