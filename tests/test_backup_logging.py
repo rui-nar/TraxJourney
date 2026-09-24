@@ -17,12 +17,15 @@ from fastapi.testclient import TestClient
 
 import api.backup as backup_mod
 from api.backup import router as backup_router
-from api.deps import get_current_user
+from api.deps import get_current_user, require_admin
 
 
 def _make_app(user_payload: dict) -> FastAPI:
+    # These tests cover logging only; the admin gate itself is tested against
+    # a real DB in test_backup_api.py.
     app = FastAPI()
     app.dependency_overrides[get_current_user] = lambda: user_payload
+    app.dependency_overrides[require_admin] = lambda: user_payload
     app.include_router(backup_router)
     return app
 
