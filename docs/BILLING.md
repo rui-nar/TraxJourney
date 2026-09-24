@@ -29,6 +29,23 @@ within a day.
 Nothing else is gated. Strava/Polarsteps sync, posters, sharing, companions and
 encounters are on every plan.
 
+### Only advertise what exists
+
+Any other pricing bullet (`_EXTRA_FEATURES` in `src/billing/plans.py`) is a
+promise to someone paying for it. `tests/test_plan_features_backed.py` fails CI
+on any bullet that is not one of:
+
+- a limit line, generated from the limits above;
+- mapped in that test to the routes that implement it — so removing the
+  feature breaks the claim too;
+- on `MARKETING_ONLY_FEATURES` in `plans.py`, which only the owner adds to.
+
+The paid tiers used to list weekly or daily backups and priority support
+(#432). None of it existed: every plan, Free included, shares one daily copy
+of the whole server database on the same host, and there is no support tier.
+Those lines come back when per-user backups, restore and a support channel are
+built.
+
 ### Days per trip
 
 A trip's length is its **calendar span — first day to last, inclusive, counting

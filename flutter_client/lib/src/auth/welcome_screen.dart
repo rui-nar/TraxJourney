@@ -1500,12 +1500,11 @@ class _TierCard extends StatelessWidget {
       'Unlimited projects, users',
       'Community support',
     ];
+    // Only what the hosted service really provides (issue #432): there are no
+    // per-user backups, custom share domains, background Strava sync or
+    // support tiers, so the card must not promise them.
     final cloudFeatures = [
       'Everything in self-hosted',
-      'Daily backups',
-      'Share links with custom domains',
-      'Background Strava sync',
-      'Priority support',
     ];
 
     return Stack(
