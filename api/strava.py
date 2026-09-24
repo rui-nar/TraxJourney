@@ -106,8 +106,16 @@ def _save_cache(user_info_id: int, raw_activities: List[Dict[str, Any]]) -> None
     Stored whole, so it is the one place a Strava payload reaches the disk
     unparsed — heart rate is scrubbed here (issue #442), the same way the
     parsed ``Activity`` never carries it.
+
+    No-op once the user has disconnected: a fetch that was in flight when
+    ``DELETE /api/strava/disconnect`` ran must not recreate the cache row it
+    just removed (issue #440). Checked in the same session as the write.
     """
     with get_session() as sess:
+        if sess.exec(
+            select(StravaToken).where(StravaToken.user_info_id == user_info_id)
+        ).first() is None:
+            return
         row = sess.get(DBStravaCache, user_info_id)
         if row is None:
             row = DBStravaCache(user_info_id=user_info_id)
@@ -282,12 +290,20 @@ def strava_disconnect(current_user: Annotated[dict, Depends(get_current_user)]):
     same, so the user is disconnected either way.
     """
     user_info_id = int(current_user["sub"])
+    # Read, then revoke outside any session — the Strava round trip (up to two
+    # attempts × timeout) must not sit on an open transaction.
+    with get_session() as sess:
+        row = sess.exec(
+            select(StravaToken).where(StravaToken.user_info_id == user_info_id)
+        ).first()
+        tokens = (row.access_token, row.refresh_token) if row else None
+    if tokens is not None:
+        deauthorize_strava(user_info_id, *tokens, cfg=_cfg)
     with get_session() as sess:
         row = sess.exec(
             select(StravaToken).where(StravaToken.user_info_id == user_info_id)
         ).first()
         if row:
-            deauthorize_strava(row, _cfg)
             sess.delete(row)
         cache_row = sess.get(DBStravaCache, user_info_id)
         if cache_row is not None:

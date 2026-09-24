@@ -171,8 +171,9 @@ class TestDeleteUserAndData:
 
 
 class TestStravaDeauthorize:
-    """Issue #440: deleting the account also revokes the app at Strava, and a
-    Strava failure never blocks the deletion."""
+    """Issue #440: deleting the account also revokes the app at Strava
+    (``POST /oauth/revoke``, documented shape), and a Strava failure never
+    blocks the deletion."""
 
     @pytest.fixture
     def post(self, monkeypatch):
@@ -199,8 +200,12 @@ class TestStravaDeauthorize:
             delete_user_and_data(sess, uid)
 
         post.assert_called_once()
-        assert post.call_args.args[0] == OAuth2Session.DEAUTHORIZE_URL
-        assert post.call_args.kwargs["headers"] == {"Authorization": "Bearer access-secret"}
+        call = post.call_args
+        assert call.args[0] == OAuth2Session.REVOKE_URL
+        assert call.kwargs["auth"] == ("id", "secret")
+        assert call.kwargs["data"] == {"token": "refresh-secret",
+                                       "token_type_hint": "refresh_token"}
+        assert "refresh-secret" not in call.args[0]
         with Session(engine) as sess:
             assert sess.get(UserInfo, uid) is None
             assert sess.exec(select(StravaToken).where(StravaToken.user_info_id == uid)).first() is None
@@ -213,8 +218,9 @@ class TestStravaDeauthorize:
             with Session(engine) as sess:
                 delete_user_and_data(sess, uid)
 
-        assert "strava deauthorize failed" in caplog.text
+        assert "strava revoke failed" in caplog.text
         assert "access-secret" not in caplog.text
+        assert "refresh-secret" not in caplog.text
         with Session(engine) as sess:
             assert sess.get(UserInfo, uid) is None
             assert sess.exec(select(StravaToken).where(StravaToken.user_info_id == uid)).first() is None

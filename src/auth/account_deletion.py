@@ -358,12 +358,14 @@ def delete_user_and_data(sess: Session, user_info_id: int) -> None:
     # Revoke the app at Strava (issue #440) once billing is settled, so a
     # refused deletion leaves Strava connected; before the account lock, like
     # the Stripe calls above, since it is a network round trip.
+    # Only the token fields are kept, so no ORM row is held across the call.
     # Best effort — the token row goes below whatever Strava answered.
     strava_token = sess.exec(
         select(StravaToken).where(StravaToken.user_info_id == user_info_id)
     ).first()
     if strava_token is not None:
-        deauthorize_strava(strava_token)
+        access, refresh = strava_token.access_token, strava_token.refresh_token
+        deauthorize_strava(user_info_id, access, refresh)
     # Stripe was called without holding any lock (never hold SQLite's write
     # lock across the network). A webhook can land in that window and record
     # a first purchase on the row — a customer this deletion never cancelled.

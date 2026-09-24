@@ -2,12 +2,13 @@
 
 Regression: ``DELETE /api/strava/disconnect`` used to delete only the
 ``StravaToken`` row. The cached raw activity list (``DBStravaCache``) stayed
-behind, and the app was never deauthorized at Strava, so it kept showing as
+behind, and the app was never revoked at Strava, so it kept showing as
 connected in the athlete's Strava settings.
 
 Strava is mocked at the HTTP layer (``src.auth.oauth.requests.post``) so the
-tests prove the real ``OAuth2Session`` wiring — refresh-then-deauthorize,
-Bearer header, no token in the URL — and never touch the network.
+tests prove the real ``OAuth2Session`` wiring — ``POST /oauth/revoke`` with
+Basic client credentials and the token in the form body, never in the URL —
+and never touch the network. They cannot prove the live endpoint accepts it.
 """
 from __future__ import annotations
 
@@ -32,7 +33,6 @@ from src.config.settings import Config
 
 ACCESS = "access-secret-xyz"
 REFRESH = "refresh-secret-abc"
-NEW_ACCESS = "refreshed-secret-123"
 
 
 class _StravaConfig(Config):
@@ -42,7 +42,7 @@ class _StravaConfig(Config):
         self.set("strava.client_secret", "secret")
 
 
-def _seed(engine, *, expires_in: float) -> int:
+def _seed(engine, *, refresh_token: str = REFRESH) -> int:
     """One user with a token, a cached activity list, and an activity already
     added to a trip. Returns the user id."""
     with Session(engine) as sess:
@@ -51,8 +51,8 @@ def _seed(engine, *, expires_in: float) -> int:
         sess.commit()
         sess.refresh(u)
         sess.add(StravaToken(user_info_id=u.id, access_token=ACCESS,
-                             refresh_token=REFRESH,
-                             expires_at=time.time() + expires_in))
+                             refresh_token=refresh_token,
+                             expires_at=time.time() + 3600))
         sess.add(DBStravaCache(user_info_id=u.id, fetched_at=time.time(),
                                activities_json='[{"id": 1}]'))
         proj = DBProject(user_info_id=u.id, name="Trip")
@@ -88,7 +88,7 @@ def _client_for(uid: int) -> TestClient:
 
 @pytest.fixture
 def client(engine):
-    uid = _seed(engine, expires_in=3600)
+    uid = _seed(engine)
     try:
         yield _client_for(uid), uid
     finally:
@@ -100,7 +100,6 @@ def post(monkeypatch):
     """``requests.post`` as seen by OAuth2Session, answering 200 to everything."""
     mock = MagicMock()
     mock.return_value.status_code = 200
-    mock.return_value.json.return_value = {"access_token": NEW_ACCESS}
     monkeypatch.setattr("src.auth.oauth.requests.post", mock)
     return mock
 
@@ -114,32 +113,34 @@ def _assert_local_data_gone_but_trip_kept(engine, uid: int) -> None:
         assert sess.exec(select(DBProjectItem).where(DBProjectItem.activity_id == 1)).first() is not None
 
 
-def _deauthorize_calls(post: MagicMock) -> list:
-    return [c for c in post.call_args_list if c.args[0] == OAuth2Session.DEAUTHORIZE_URL]
+def _assert_documented_revoke_shape(call, *, token: str, hint: str) -> None:
+    assert call.args[0] == OAuth2Session.REVOKE_URL
+    assert call.kwargs["auth"] == ("id", "secret")
+    assert call.kwargs["data"] == {"token": token, "token_type_hint": hint}
+    # The token travels in the body only — never in the URL.
+    assert token not in call.args[0]
+    assert "params" not in call.kwargs and "headers" not in call.kwargs
+    assert call.kwargs["timeout"] == OAuth2Session.TOKEN_TIMEOUT
 
 
-def test_disconnect_clears_cache_and_deauthorizes(client, engine, post):
+def test_disconnect_clears_cache_and_revokes_the_refresh_token(client, engine, post):
     tc, uid = client
 
     resp = tc.delete("/api/strava/disconnect")
 
     assert resp.status_code == 204
     _assert_local_data_gone_but_trip_kept(engine, uid)
-    (call,) = _deauthorize_calls(post)
-    assert call.kwargs["headers"] == {"Authorization": f"Bearer {ACCESS}"}
-    # Token travels in the header only — never in the URL or body.
-    assert ACCESS not in call.args[0]
-    assert "data" not in call.kwargs and "params" not in call.kwargs
-    assert call.kwargs["timeout"] == OAuth2Session.TOKEN_TIMEOUT
-    # A valid token is not refreshed first.
-    assert not [c for c in post.call_args_list if c.args[0] == OAuth2Session.TOKEN_URL]
+    post.assert_called_once()
+    # The refresh token is revoked (it takes the access tokens with it); no
+    # refresh call is made first — Strava's revoke accepts an expired token.
+    _assert_documented_revoke_shape(post.call_args, token=REFRESH, hint="refresh_token")
 
     assert tc.get("/api/strava/status").json() == {"connected": False}
     assert tc.get("/api/strava/cache/status").json()["cached"] is False
 
 
-def test_expired_token_is_refreshed_before_deauthorize(engine, post):
-    uid = _seed(engine, expires_in=-60)
+def test_access_token_is_revoked_when_no_refresh_token_is_stored(engine, post):
+    uid = _seed(engine, refresh_token="")
     tc = _client_for(uid)
     try:
         resp = tc.delete("/api/strava/disconnect")
@@ -148,32 +149,27 @@ def test_expired_token_is_refreshed_before_deauthorize(engine, post):
 
     assert resp.status_code == 204
     _assert_local_data_gone_but_trip_kept(engine, uid)
-    urls = [c.args[0] for c in post.call_args_list]
-    assert urls == [OAuth2Session.TOKEN_URL, OAuth2Session.DEAUTHORIZE_URL]
-    refresh_call, deauth_call = post.call_args_list
-    assert refresh_call.kwargs["data"]["refresh_token"] == REFRESH
-    assert refresh_call.kwargs["data"]["grant_type"] == "refresh_token"
-    # Deauthorize goes out with the NEW access token, not the expired one.
-    assert deauth_call.kwargs["headers"] == {"Authorization": f"Bearer {NEW_ACCESS}"}
+    post.assert_called_once()
+    _assert_documented_revoke_shape(post.call_args, token=ACCESS, hint="access_token")
 
 
-def test_failed_deauthorize_still_clears_local_data(client, engine, post, caplog):
+def test_failed_revoke_still_clears_local_data(client, engine, post, caplog):
     tc, uid = client
     post.return_value.status_code = 401
-    post.return_value.text = '{"message":"Authorization Error"}'
+    post.return_value.text = '{"message":"Unauthorized"}'
 
     with caplog.at_level(logging.WARNING, logger="src.auth.strava_deauth"):
         resp = tc.delete("/api/strava/disconnect")
 
     assert resp.status_code == 204
     _assert_local_data_gone_but_trip_kept(engine, uid)
-    assert len(_deauthorize_calls(post)) == 1
-    assert "strava deauthorize failed" in caplog.text
+    post.assert_called_once()
+    assert "strava revoke failed" in caplog.text
     assert "HTTP 401" in caplog.text
     assert ACCESS not in caplog.text and REFRESH not in caplog.text
 
 
-def test_deauthorize_timeout_still_clears_local_data(client, engine, post, caplog):
+def test_revoke_timeout_still_clears_local_data(client, engine, post, caplog):
     tc, uid = client
     post.side_effect = requests.Timeout("Read timed out")
 
@@ -182,28 +178,21 @@ def test_deauthorize_timeout_still_clears_local_data(client, engine, post, caplo
 
     assert resp.status_code == 204
     _assert_local_data_gone_but_trip_kept(engine, uid)
-    assert "strava deauthorize failed" in caplog.text
+    assert "strava revoke failed" in caplog.text
     assert ACCESS not in caplog.text and REFRESH not in caplog.text
 
 
-def test_failed_refresh_still_clears_local_data(engine, post, caplog):
-    """An expired token whose refresh Strava refuses (revoked on their side):
-    nothing to deauthorize with, but the user is still disconnected here."""
-    uid = _seed(engine, expires_in=-60)
-    post.return_value.status_code = 400
-    post.return_value.text = '{"message":"Bad Request"}'
-    tc = _client_for(uid)
-    try:
-        with caplog.at_level(logging.WARNING, logger="src.auth.strava_deauth"):
-            resp = tc.delete("/api/strava/disconnect")
-    finally:
-        app.dependency_overrides.clear()
+def test_503_is_retried_once_then_succeeds(client, engine, post, caplog):
+    tc, uid = client
+    post.side_effect = [MagicMock(status_code=503), MagicMock(status_code=200)]
+
+    with caplog.at_level(logging.WARNING, logger="src.auth.strava_deauth"):
+        resp = tc.delete("/api/strava/disconnect")
 
     assert resp.status_code == 204
     _assert_local_data_gone_but_trip_kept(engine, uid)
-    assert [c.args[0] for c in post.call_args_list] == [OAuth2Session.TOKEN_URL]
-    assert "strava deauthorize failed" in caplog.text
-    assert REFRESH not in caplog.text
+    assert post.call_count == 2
+    assert "strava revoke failed" not in caplog.text
 
 
 def test_strava_not_configured_still_clears_local_data(client, engine, post, monkeypatch):
@@ -239,3 +228,24 @@ def test_disconnect_when_not_connected_is_a_noop(engine, post):
     post.assert_not_called()
     with Session(engine) as sess:
         assert sess.get(DBStravaCache, uid) is None
+
+
+def test_save_cache_does_not_resurrect_the_row_after_disconnect(client, engine, post):
+    """A Strava fetch that was in flight when the user disconnected finishes
+    after the delete — its _save_cache must not recreate the cache row."""
+    tc, uid = client
+    assert tc.delete("/api/strava/disconnect").status_code == 204
+
+    strava_module._save_cache(uid, [{"id": 2}])
+
+    with Session(engine) as sess:
+        assert sess.get(DBStravaCache, uid) is None
+
+
+def test_save_cache_still_writes_while_connected(client, engine, post):
+    _, uid = client
+
+    strava_module._save_cache(uid, [{"id": 2}])
+
+    with Session(engine) as sess:
+        assert sess.get(DBStravaCache, uid).activities_json == '[{"id": 2}]'

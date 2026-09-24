@@ -2,7 +2,7 @@
 
 import pytest
 import requests
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from src.config.settings import Config
 from src.auth.oauth import OAuth2Session
@@ -71,35 +71,56 @@ def test_refresh_token_failure(mock_post):
 
 
 # ---------------------------------------------------------------------------
-# Deauthorize (issue #440)
+# Revoke (issue #440) — the documented shape of POST /oauth/revoke: HTTP Basic
+# client credentials, the token in the form body with a type hint, never in
+# the URL. Nothing here can prove the live endpoint accepts the call.
 # ---------------------------------------------------------------------------
 
 @patch("src.auth.oauth.requests.post")
-def test_deauthorize_sends_bearer_header_only(mock_post):
+def test_revoke_uses_basic_auth_and_form_body(mock_post):
     mock_post.return_value.status_code = 200
 
-    config = DummyConfig()
-    oauth = OAuth2Session(config)
-    oauth.deauthorize("tok-123")
+    OAuth2Session(DummyConfig()).revoke("tok-123", "refresh_token")
 
     mock_post.assert_called_once()
     args, kwargs = mock_post.call_args
-    assert args[0] == OAuth2Session.DEAUTHORIZE_URL
-    assert kwargs["headers"] == {"Authorization": "Bearer tok-123"}
+    assert args[0] == OAuth2Session.REVOKE_URL
+    assert kwargs["auth"] == ("id", "secret")
+    assert kwargs["data"] == {"token": "tok-123", "token_type_hint": "refresh_token"}
     assert "tok-123" not in args[0]
-    assert "data" not in kwargs and "params" not in kwargs
+    assert "params" not in kwargs and "headers" not in kwargs
     assert kwargs["timeout"] == OAuth2Session.TOKEN_TIMEOUT
 
 
 @patch("src.auth.oauth.requests.post")
-def test_deauthorize_failure_raises_without_leaking_body(mock_post):
-    mock_post.return_value.status_code = 401
-    mock_post.return_value.text = '{"message":"Authorization Error","access_token":"tok-123"}'
+def test_revoke_retries_once_on_503(mock_post):
+    ok = MagicMock(status_code=200)
+    unavailable = MagicMock(status_code=503)
+    mock_post.side_effect = [unavailable, ok]
 
-    config = DummyConfig()
-    oauth = OAuth2Session(config)
+    OAuth2Session(DummyConfig()).revoke("tok-123", "access_token")
+
+    assert mock_post.call_count == 2
+
+
+@patch("src.auth.oauth.requests.post")
+def test_revoke_gives_up_after_second_503(mock_post):
+    mock_post.return_value.status_code = 503
+
     with pytest.raises(AuthenticationError) as excinfo:
-        oauth.deauthorize("tok-123")
+        OAuth2Session(DummyConfig()).revoke("tok-123", "access_token")
+    assert mock_post.call_count == 2
+    assert "HTTP 503" in str(excinfo.value)
+
+
+@patch("src.auth.oauth.requests.post")
+def test_revoke_failure_raises_without_leaking_body(mock_post):
+    mock_post.return_value.status_code = 401
+    mock_post.return_value.text = '{"message":"Unauthorized","token":"tok-123"}'
+
+    with pytest.raises(AuthenticationError) as excinfo:
+        OAuth2Session(DummyConfig()).revoke("tok-123", "refresh_token")
+    assert mock_post.call_count == 1  # only 503 is retried
     assert "HTTP 401" in str(excinfo.value)
     assert "tok-123" not in str(excinfo.value)
 
