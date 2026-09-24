@@ -375,6 +375,86 @@ def test_dashboards_filter_and_group_only_on_labels_the_metrics_carry(app_series
     assert not bad, "\n".join(bad)
 
 
+# ── Parsed log fields vs stream labels (issue #436) ──────────────────────────
+# Loki renames a parsed field that collides with a stream label to
+# ``<name>_extracted``, so ``| logfmt ... by (service)`` groups on the stream's
+# own ``service`` (one line: the app) instead of the field the app logged.
+
+_APP_SOURCES = ("src", "api")
+_LOGFMT_KEY = re.compile(r"\b([A-Za-z_]\w*)=%")
+_LOGQL_LABEL_FILTER = re.compile(r"\|\s*([A-Za-z_]\w*)\s*(?:=~|!~|!=|==|=|>=|<=|>|<)")
+
+
+def _stream_labels() -> set[str]:
+    """Labels every log stream carries: the Alloy relabel targets, plus
+    ``service_name``, which Loki 3 derives from ``service`` on ingest."""
+    return _alloy_values(r'target_label\s*=\s*"([^"]+)"') | {"service_name"}
+
+
+def _app_logfmt_keys() -> set[str]:
+    """``key=`` names the app writes into log lines (``"upstream=%s"``,
+    ``"request_id=%(request_id)s"``)."""
+    keys: set[str] = set()
+    for folder in _APP_SOURCES:
+        for path in (_ROOT / folder).rglob("*.py"):
+            keys |= set(_LOGFMT_KEY.findall(path.read_text(encoding="utf-8")))
+    return keys
+
+
+def _logfmt_label_refs(query: str) -> set[str]:
+    """Labels a LogQL query filters on after ``| logfmt`` or groups on."""
+    parsed = query.split("| logfmt", 1)
+    if len(parsed) == 1:
+        return set()
+    refs = set(_LOGQL_LABEL_FILTER.findall(_STRING.sub(" ", parsed[1])))
+    for group in _GROUPING_LABELS.findall(_STRING.sub(" ", query)):
+        refs |= {s.strip() for s in group.split(",") if s.strip()}
+    return refs
+
+
+def test_stream_labels_are_read_from_the_alloy_config():
+    assert {"service", "env"} <= _stream_labels()
+
+
+def test_app_logfmt_keys_are_found():
+    """Guards the extractor: the request-context fields every line carries."""
+    assert {"request_id", "user_id", "endpoint"} <= _app_logfmt_keys()
+
+
+def test_no_app_log_field_shadows_a_stream_label():
+    clashes = _app_logfmt_keys() & _stream_labels()
+    assert not clashes, (
+        f"the app logs key=value fields named like a Loki stream label, which "
+        f"Loki renames to <name>_extracted: {sorted(clashes)}"
+    )
+
+
+def test_logs_dashboards_use_only_parsed_fields_the_app_logs():
+    streams = _stream_labels()
+    fields = _app_logfmt_keys()
+    refs_seen = 0
+    bad: list[str] = []
+    for path in _dashboards():
+        for query in _queries(json.loads(path.read_text(encoding="utf-8")), "loki"):
+            for label in _logfmt_label_refs(query):
+                refs_seen += 1
+                if label in streams:
+                    bad.append(f"{path.name}: {label!r} is a stream label, not the parsed field")
+                elif label not in fields:
+                    bad.append(f"{path.name}: {label!r} is not a field the app logs")
+    assert refs_seen, "no label grouped or filtered after | logfmt in any dashboard"
+    assert not bad, "\n".join(bad)
+
+
+@pytest.mark.parametrize("query, expected", [
+    ('sum(rate({service="x"} |= "a=b" | logfmt [5m])) by (upstream)', {"upstream"}),
+    ('{service="x"} | logfmt | user_id="42" | duration > 1', {"user_id", "duration"}),
+    ('sum(rate({service="x"} |= "ERROR" [5m])) by (env)', set()),
+])
+def test_logfmt_label_ref_extraction(query, expected):
+    assert _logfmt_label_refs(query) == expected
+
+
 # ── Extractor unit checks ────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("query, expected", [

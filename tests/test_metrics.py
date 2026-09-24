@@ -125,6 +125,19 @@ class TestTrackExternalLogging:
                 call.outcome = "auth_error"
         assert "auth_error" in caplog.text and "/auth" in caplog.text
 
+    @pytest.mark.parametrize("fail", [False, True])
+    def test_names_the_upstream_in_a_field_no_stream_label_shadows(self, caplog, fail):
+        """Every Loki stream already has a ``service`` label, so a logfmt
+        ``service=`` field is renamed ``service_extracted`` and a dashboard
+        grouping ``by (service)`` sees only the app's own name (issue #436)."""
+        with caplog.at_level(logging.INFO, logger="src.utils.metrics"):
+            with track_external("demo", "/ping") as call:
+                if fail:
+                    call.outcome = "server_error"
+        (record,) = [r for r in caplog.records if "external call" in r.message]
+        assert "upstream=demo " in record.message
+        assert "service=" not in record.message
+
 
 class TestRecordJobEvent:
     """APScheduler carries no duration on its execution events, so

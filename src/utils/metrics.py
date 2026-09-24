@@ -274,10 +274,10 @@ def track_external(service: str, endpoint: str) -> Iterator[ExternalCall]:
         outcome = call.outcome or "success"
         EXTERNAL_REQUESTS.labels(service, endpoint, outcome).inc()
         if outcome == "success":
-            _log.info("external call succeeded service=%s endpoint=%s duration=%.3fs",
+            _log.info("external call succeeded upstream=%s endpoint=%s duration=%.3fs",
                        service, endpoint, duration)
         else:
-            _log.warning("external call failed service=%s endpoint=%s outcome=%s duration=%.3fs",
+            _log.warning("external call failed upstream=%s endpoint=%s outcome=%s duration=%.3fs",
                           service, endpoint, outcome, duration)
 
 
