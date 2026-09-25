@@ -183,7 +183,12 @@ class ProjectsNotifier extends ChangeNotifier {
   String _msg(Exception e) {
     final s = e.toString();
     final m = RegExp(r'"detail"\s*:\s*"([^"]+)"').firstMatch(s);
-    return m?.group(1) ?? s.replaceFirst('Exception: ', '');
+    if (m != null) return m.group(1)!;
+    // A 413 from a proxy in front of the server has no JSON detail (issue #434).
+    if (e is ApiException && e.statusCode == 413) {
+      return 'This file is too large to import.';
+    }
+    return s.replaceFirst('Exception: ', '');
   }
 
   /// A plan-limit refusal, or null for any other failure (issue #121).
