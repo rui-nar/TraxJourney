@@ -16,7 +16,7 @@ from sqlmodel import Session, select
 
 from src.utils.logging import get_logger
 from models.project_db import DBActivity, DBEncounter, DBJournalEntry, DBMemory, DBMemoryComment, DBMemoryLike, DBPerson, DBPersonGroup, DBProject, DBProjectItem
-from src.models.activity import Activity
+from src.models.activity import Activity, is_activity_id
 from src.models.journal import JournalEntry
 from src.models.memory import Memory
 from src.models.project import (
@@ -132,6 +132,61 @@ class ProjectCoreMixin:
             .order_by(DBProject.name)
         ).all()
         return [{"name": r.name, "filename": r.name + ProjectIO.EXTENSION} for r in rows]
+
+    @staticmethod
+    def _drop_activities_of_other_accounts(
+        sess: Session, project_id: int, importer_id: int, project: Project,
+    ) -> None:
+        """Remove from *project* any activity it is about to start referencing
+        that is not the saver's own.
+
+        An activity row belongs to the account that created it. A trip may
+        hold activities of several accounts (a companion adds their own, issue
+        #106), but only because each account added its own: an activity the
+        trip does not hold yet may join it only if its row is the saver's, or
+        does not exist and is about to be created as the saver's from the
+        project's own activities. A reference to an id with no row and nothing
+        to create it from is left out too: it would start naming whichever
+        account later creates that id. Activities the trip already holds are
+        left alone, whoever owns them.
+
+        Runs in the save's own write transaction. That settles a race on
+        SQLite, where a writer holds the database; a backend with concurrent
+        writers would need the owner rows locked here.
+        """
+        held = set(sess.exec(
+            select(DBProjectItem.activity_id).where(
+                DBProjectItem.project_id == project_id,
+                DBProjectItem.item_type == "activity",
+            )
+        ).all())
+        joining = {
+            it.activity_id for it in project.items
+            if it.item_type == "activity" and it.activity_id is not None
+            and it.activity_id not in held
+        }
+        if not joining:
+            return
+        ids = {aid for aid in joining if is_activity_id(aid)}
+        owners = dict(sess.exec(
+            select(DBActivity.id, DBActivity.user_info_id).where(DBActivity.id.in_(ids))
+        ).all()) if ids else {}
+        creatable = {a.id for a in project.activities if is_activity_id(a.id)}
+        others = {
+            aid for aid in joining
+            if not is_activity_id(aid)
+            or owners.get(aid, importer_id if aid in creatable else None) != importer_id
+        }
+        if not others:
+            return
+        _log.warning("project id=%s: left out %d activities owned by another account",
+                     project_id, len(others))
+        project.items = [
+            it for it in project.items
+            if not (it.item_type == "activity" and it.activity_id in others)
+        ]
+        project.activities = [a for a in project.activities if a.id not in others]
+        project.rebuild_map()
 
     def project_exists(self, sess: Session, user_info_id: int, name: str) -> bool:
         row = sess.exec(
@@ -313,6 +368,9 @@ class ProjectCoreMixin:
             sess.refresh(row)
             project.lock_version = row.lock_version
 
+        importer_id = activity_user_id if activity_user_id is not None else user_info_id
+        self._drop_activities_of_other_accounts(sess, row.id, importer_id, project)
+
         row.version = project.version
         row.trip_start = project.trip_start
         row.trip_end = project.trip_end
@@ -348,7 +406,6 @@ class ProjectCoreMixin:
         row.updated_at = time.time()
 
         # Upsert all activities in the project's activity pool
-        importer_id = activity_user_id if activity_user_id is not None else user_info_id
         for act in project.activities:
             self._upsert_activity(sess, importer_id, act)
 
