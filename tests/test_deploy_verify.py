@@ -493,7 +493,8 @@ def transcript(scenario, image=True, inspect=None):
 
 
 def test_ssh_argv_and_remote_commands():
-    assert HOST.ssh_argv("x") == ["ssh", "-i", "/keys/id", "-p", "2222", "deployer@host.invalid", "x"]
+    assert HOST.ssh_argv("x") == ["ssh", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4", "-i", "/keys/id", "-p", "2222",
+                                  "deployer@host.invalid", "x"]
     assert dv.compose_images_command(HOST) == "cd /opt/traxjourney-val || exit 1; docker compose config --images"
     command = dv.host_state_command(HOST, VAL)
     assert command.startswith("cd /opt/traxjourney-val || exit 1; set -e; ")
@@ -615,6 +616,17 @@ SH = shutil.which("sh")
 needs_sh = pytest.mark.skipif(SH is None, reason="needs a POSIX sh")
 
 
+def test_ssh_gives_up_on_a_silently_dropped_connection():
+    """The one session idles through the version wait and the re-check. A
+    connection dropped without a FIN (NAT timeout, host gone) would otherwise
+    block readline() forever; keepalives turn it into ssh exit 255 within a
+    minute (15 s x 4)."""
+    argv = HOST.ssh_argv("sh")
+    options = [argv[i + 1] for i, a in enumerate(argv) if a == "-o"]
+    assert "ServerAliveInterval=15" in options and "ServerAliveCountMax=4" in options
+    assert argv.index("-o") < argv.index("deployer@host.invalid")
+
+
 def test_open_session_runs_one_remote_shell():
     seen = {}
 
@@ -623,7 +635,8 @@ def test_open_session_runs_one_remote_shell():
             seen["argv"], seen["kwargs"] = argv, kwargs
 
     dv.open_session(HOST, popen=Popen)
-    assert seen["argv"] == ["ssh", "-i", "/keys/id", "-p", "2222", "deployer@host.invalid", "sh"]
+    assert seen["argv"] == ["ssh", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4", "-i", "/keys/id", "-p", "2222",
+                           "deployer@host.invalid", "sh"]
     assert seen["kwargs"]["stdin"] == subprocess.PIPE and seen["kwargs"]["stdout"] == subprocess.PIPE
     assert not seen["kwargs"].get("text"), "text mode writes CRLF on Windows"
 

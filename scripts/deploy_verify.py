@@ -397,7 +397,11 @@ class Host:
     directory: str
 
     def ssh_argv(self, command: str) -> list[str]:
-        return ["ssh", "-i", self.key, "-p", str(self.port), f"{self.user}@{self.host}", command]
+        # The one session idles through the version wait and the re-check. A
+        # connection dropped silently (NAT timeout, host gone) would block
+        # readline() for ever; keepalives make ssh exit 255 within a minute.
+        return ["ssh", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
+                "-i", self.key, "-p", str(self.port), f"{self.user}@{self.host}", command]
 
 
 class Session:
