@@ -23,16 +23,78 @@ deployment target, and `deploy.ps1` no longer has a code path that reaches it.
 | Provider | OVH, VPS-1 2027 range |
 | Specs | 2 vCore, 4 GB RAM, 40 GB NVMe SSD, Strasbourg (FR) datacenter |
 | Image | Debian 12 - Docker (Docker preinstalled) |
-| SSH user | `debian` (OVH default account, sudo + docker group) |
+| SSH user | `<deploy-user>`: a personal account created at setup (§1), in the `docker` group; the same one in `deploy.env` and the webhook unit |
 | Prod directory | `/opt/traxjourney/` (`db/`, `config/`, `data/`, `docker-compose.yml`, `.env`) |
 | Val directory | `/opt/traxjourney-val/` (same layout, own `.env`, own data) |
 | Reverse proxy | Caddy (automatic Let's Encrypt TLS) |
 
 ## 1. VPS hardening
 
-- SSH key auth only: generated a dedicated key locally
-  (`~/.ssh/traxjourney_vps`), copied to `~/.ssh/authorized_keys` for the
-  `debian` user, then in `/etc/ssh/sshd_config`:
+### The deploy user
+
+Deploys don't log in as the image's default account. They use a personal
+account, written `<deploy-user>` here. `deploy.ps1` connects as it
+(`DEPLOY_USER` in `deploy.env`), the validation webhook runs as it (`User=` in
+the installed unit, filled in by §8 step 5), and it holds the GHCR login both of them pull
+with. What it needs:
+
+- **`docker` group.** `deploy.ps1` and the webhook only run `docker compose`
+  and `docker inspect` in `/opt/traxjourney` and `/opt/traxjourney-val`. They
+  never use `sudo`. Membership is root-equivalent, since anyone who can talk to
+  the Docker socket can mount `/`, so treat this key like a root key.
+- **An SSH key, and only a key.** Generate a dedicated key on the dev
+  machine and give it a passphrase: `deploy.ps1` asks for it once per deploy.
+- **`sudo`, for setup only.** The one-time steps in this runbook (packages,
+  Caddy, the webhook unit in §8, `chown` of the app directories) need root.
+  Keep sudo password-protected rather than `NOPASSWD`, so a stolen key alone
+  does not also give passwordless root through sudo. (The `docker` group
+  already amounts to root, so this is hygiene, not containment.)
+- **Ownership of the app directories**, so `docker compose` can read the
+  compose files and `.env` and the bind mounts stay writable:
+  `sudo chown -R <deploy-user>:<deploy-user> /opt/traxjourney /opt/traxjourney-val`.
+
+Created from the image's default sudo account, before key-only login is
+enforced:
+
+```bash
+sudo adduser <deploy-user>                  # sets the password sudo asks for
+sudo usermod -aG docker,sudo <deploy-user>
+sudo install -d -m 700 -o <deploy-user> -g <deploy-user> /home/<deploy-user>/.ssh
+sudo install -m 600 -o <deploy-user> -g <deploy-user> /dev/null /home/<deploy-user>/.ssh/authorized_keys
+# then append the public key (traxjourney_vps.pub) to that authorized_keys
+```
+
+On the dev machine (PowerShell; Windows has no `ssh-copy-id`). This logs in
+with the provider's default account, which on the OVH image has `sudo`, to
+write the key into the new user's `authorized_keys`:
+
+```powershell
+ssh-keygen -t ed25519 -C traxjourney-deploy -f $HOME\.ssh\traxjourney_vps
+$key = (Get-Content $HOME\.ssh\traxjourney_vps.pub -Raw).Trim().Replace("'", "'\''")
+ssh <default-user>@<vps-host> "echo '$key' | sudo tee -a /home/<deploy-user>/.ssh/authorized_keys >/dev/null"
+ssh -i $HOME\.ssh\traxjourney_vps <deploy-user>@<vps-host> "id; docker ps"   # groups include docker
+```
+
+The key travels inside the remote command, not through a pipe: PowerShell
+ends every line it pipes to `ssh` with CRLF, and that carriage return would
+land in `authorized_keys`, where it can break the entry. Keep `-C`: it
+replaces ssh-keygen's default comment, your `USERNAME@COMPUTERNAME`, with plain
+ASCII. For an existing key the `Replace` stops a `'` in the comment (an account
+named O'Brien) from ending the remote `echo '...'` early, so the copy survives
+apostrophes and shell characters in the comment. The key itself is never
+altered, but under Windows PowerShell 5.1 the comment can be: a `"` is dropped
+and non-ASCII characters are garbled.
+
+Then log in as `<deploy-user>` and run `docker login ghcr.io` there with the
+read-only token (below). The login lands in that user's `~/.docker/config.json`,
+which is where both `deploy.ps1`'s pull and the webhook's read it from. Once the
+new login works from a fresh terminal, the default account is no longer needed
+for anything.
+
+### SSH, firewall, registry
+
+- SSH key auth only: the key from above in `<deploy-user>`'s
+  `~/.ssh/authorized_keys`, then in `/etc/ssh/sshd_config`:
   - `PermitRootLogin no` (already default on the OVH image)
   - `PasswordAuthentication no`
   - `systemctl restart sshd` — **always verify the key login works from a
@@ -182,7 +244,7 @@ image and only the API runs migrations, so a worker left on an older tag would
 run stale job code against a schema it does not know about.
 
 `deploy.ps1` needs no changes for any of this: it builds/pushes the image and
-then runs `docker compose down && pull && up -d`, which is service-agnostic.
+then runs `docker compose pull` and `up -d`, which is service-agnostic.
 Adding the services to each host's compose file and the keys to its `.env` is
 the whole deployment change.
 
@@ -340,10 +402,25 @@ free space first, it is a full copy of prod's media onto a 40 GB disk.
 ## 6. `deploy.ps1`
 
 `-Target Validation|Prod` (default `Validation`). Both targets SSH to the VPS
-(the host, user and key from `deploy.env`) and run
-`docker compose down / pull / up -d`, then check that the deploy took
-effect. They differ in directory, image tag and whether anything is built
-locally.
+(the host, user and key from `deploy.env`) and run `docker compose pull`, then
+`docker compose up -d`, then check that the deploy took effect. They differ in
+directory, image tag and whether anything is built locally.
+
+There is no `docker compose down` (issue #439). The pull runs while the old
+containers keep serving, so a failed pull (a GHCR outage, an expired login)
+leaves the environment exactly as it was, and `up -d` recreates only the
+containers whose image or configuration changed; `redis` and `alloy` keep
+running. The deploy prints how long the pull took, which is roughly the
+downtime the old down-first order cost on every deploy, and how long after
+`up -d` the new version first answered.
+
+Everything on the host happens over **one** SSH connection, so a key with a
+passphrase and no agent asks for it once. Windows' OpenSSH cannot share a
+connection (`ControlMaster` is not supported there), so
+`scripts/deploy_verify.py` opens one remote shell and sends every command down
+it: the compose-file check, the pull, `up -d` and every read of the containers.
+A local build is pushed from inside that step too, once the host check has
+passed, so nothing leaves the machine for a host that would not pull it.
 
 | | `Validation` | `Prod` |
 |---|---|---|
@@ -362,6 +439,17 @@ locally.
 `-FromMain` builds a pristine export of `origin/main` in a throwaway git
 worktree, so the image is exactly what is on main, never contaminated by local
 edits or untracked files.
+
+**Uncommitted changes.** A validation build of a working tree with changes to
+tracked files is versioned by `git describe --dirty` (`v0.50.0-3-g3186c1b-dirty`),
+warns and lists the files, and is never pushed under the release tag its
+commit carries. `-Target Prod` refuses to start from such a tree at all: prod
+runs CI's image, but this checkout runs the deploy and its checks. Untracked
+files count in neither case, as with `git describe --dirty`.
+
+The banner at the start shows the version the deploy will serve: the build's
+own version, or for `-SkipBuild` and prod the one CI stamped on the image it
+pulls, not the local HEAD.
 
 Every path that skips the build first checks GitHub Actions for an in-progress
 `docker-build.yml` run and refuses to deploy while one is going, since the tag
@@ -405,10 +493,11 @@ and one `FAIL:` line per problem:
 
 | Check | When | Catches |
 |---|---|---|
-| The host's compose file names `DEPLOY_IMAGE:<tag>` (`docker compose config --images`), and no service is on another tag or another image from the same registry owner | before anything is built or taken down | a host compose file not updated after an image rename; a val host on `:latest` |
+| The host's compose file names `DEPLOY_IMAGE:<tag>` (`docker compose config --images`), and no service is on another tag or another image from the same registry owner | before anything is pushed or changed on the host | a host compose file not updated after an image rename; a val host on `:latest` |
 | Each container created from that image runs the image ID the tag was just pulled as (`docker inspect`) | after `up -d` | a container left on the previous image |
-| Every service has a container that is running, is healthy if it has a healthcheck, and has not restarted since `up -d` (`docker compose ps --format json`; restart counts from `docker inspect`) | at least 15 s after `up -d`; a healthcheck still `starting` gets 60 s more | crash loops, including a container caught running between two crashes; exited or unhealthy containers; a service with no container |
+| Every service has a container that is running, is healthy if it has a healthcheck, and has not restarted since the deploy began (`docker compose ps --format json`; restart counts from `docker inspect`, less the count each kept container had before) | at least 15 s after `up -d`; a healthcheck still `starting` gets 60 s more | crash loops, including a container caught running between two crashes; exited or unhealthy containers; a service with no container |
 | `<url>/api/version` reports the expected version | polled for up to 120 s after `up -d` | the old server still answering; a stale `:validation` or `:latest` |
+| The container checks above, once more | 30 s after everything else passed | a container that crashes a little after start: a first job, a first scheduled run |
 
 The expected version is the one the image was stamped with:
 
@@ -425,7 +514,9 @@ deploying and only requires the served version to change from the one served
 before the deploy. The summary then warns that the exact version was not
 checked.
 
-A failed check leaves the containers as they are, for inspection. The summary
+A failed check leaves the containers as they are, for inspection. The red
+`ERROR` line says whether the deploy stopped before the running containers
+were touched (host check, push or pull failed) or after `up -d`. The summary
 lists the expected, previous and served versions, the registry digest and image
 ID that were pulled, and every container's state.
 
@@ -590,16 +681,17 @@ repository's current name, so installed earlier it never fires.
 
 ### Checklist
 
-Run the VPS steps as `rui`, the user `deploy.ps1` connects as. If the deploy
-user has another name, use it everywhere `rui` appears, including `User=` in
-the unit.
+Run the VPS steps as `<deploy-user>`, the user `deploy.ps1` connects as (§1).
+Replace `<deploy-user>` everywhere below with its name. The tracked
+`webhook.service` says `User=<deploy-user>` too; step 5 writes the name of the
+user running it into the installed copy.
 
 **1. [VPS] Check the deploy user can run the val stack.**
 
 ```bash
-id rui                                                  # groups must include docker
-sudo -u rui -H docker compose -f /opt/traxjourney-val/docker-compose.yml ps
-sudo -u rui -H docker pull ghcr.io/rui-nar/traxjourney:validation   # GHCR login works
+id <deploy-user>                                        # groups must include docker
+sudo -u <deploy-user> -H docker compose -f /opt/traxjourney-val/docker-compose.yml ps
+sudo -u <deploy-user> -H docker pull ghcr.io/rui-nar/traxjourney:validation   # GHCR login works
 ```
 
 The service runs as this user, with its groups and its `~/.docker/config.json`
@@ -620,7 +712,7 @@ unit from step 5, in `/etc/systemd/system`, replaces it.
 **3. [VPS] Copy the files.**
 
 ```bash
-sudo install -d -o rui -g rui -m 755 /opt/traxjourney-val/webhook
+sudo install -d -o <deploy-user> -g <deploy-user> -m 755 /opt/traxjourney-val/webhook
 cd /opt/traxjourney-val/webhook
 for f in deploy-validation.sh hooks.yaml.example webhook.service; do
   curl -fsSLo "$f" "https://raw.githubusercontent.com/rui-nar/TraxJourney/main/vps/webhook/$f"
@@ -635,11 +727,11 @@ cd /opt/traxjourney-val/webhook
 SECRET=$(openssl rand -hex 32)
 (umask 077; sed "s/secret: \"\"/secret: \"$SECRET\"/" hooks.yaml.example > hooks.yaml)
 grep -c "secret: \"$SECRET\"" hooks.yaml                # must print 1
-ls -l hooks.yaml                                        # -rw------- rui
+ls -l hooks.yaml                                        # -rw------- <deploy-user>
 echo "$SECRET"                                          # for step 7
 ```
 
-`hooks.yaml` holds the secret, so only `rui` can read it, and it is gitignored
+`hooks.yaml` holds the secret, so only `<deploy-user>` can read it, and it is gitignored
 in the repo. The example ships with an empty secret on purpose: `webhook`
 refuses to check a signature against an empty secret, so a copy nobody filled
 in rejects every delivery instead of accepting a key anyone can read on GitHub.
@@ -647,7 +739,8 @@ in rejects every delivery instead of accepting a key anyone can read on GitHub.
 **5. [VPS] Install and start the unit.**
 
 ```bash
-sudo cp /opt/traxjourney-val/webhook/webhook.service /etc/systemd/system/webhook.service
+sed "s/^User=<deploy-user>$/User=$(id -un)/" /opt/traxjourney-val/webhook/webhook.service | sudo tee /etc/systemd/system/webhook.service >/dev/null
+grep '^User=' /etc/systemd/system/webhook.service       # User=<your deploy user's name>
 sudo systemctl daemon-reload
 sudo systemctl enable --now webhook
 systemctl status webhook --no-pager

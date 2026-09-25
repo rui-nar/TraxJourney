@@ -111,8 +111,7 @@ def test_tag_only_stops_before_building_or_deploying():
     for pattern, what in (
         (r"flutter build web", "the Flutter build"),
         (r"docker build ", "the Docker build"),
-        (r"docker push ", "the image push"),
-        (r"\| ssh ", "the remote deployment"),
+        (r"\$Verifier deploy @DeployArgs", "the push and the remote deployment"),
     ):
         step = _index_of(pattern)
         assert step != -1, f"{what} disappeared from the script"
@@ -224,40 +223,45 @@ def test_tags_are_force_fetched():
     assert re.search(r"--tags\b", line) and re.search(r"--force\b", line), line
 
 
-def test_remote_script_strips_carriage_returns():
-    """This file is checked out CRLF on Windows and PowerShell pipes a trailing
-    CRLF; bash would read `set -euo pipefail` with a carriage return on it."""
-    ssh = _index_of(r"\| ssh ")
-    assert ssh != -1
-    assert _code_lines()[ssh].rstrip().endswith('"tr -d \'\\r\' | bash -s"')
+def test_a_working_tree_build_is_described_with_dirty():
+    """#439: uncommitted changes used to report the clean commit's version."""
+    assert re.search(r"git describe --tags --long --dirty 2>\$null", TEXT)
+    # --dirty cannot name a commit, and origin/main's throwaway worktree is clean.
+    assert re.search(r"git describe --tags --long origin/main 2>\$null", TEXT)
 
 
-# -- verification (issue #423) ----------------------------------------------------
+# -- the deploy (issues #423, #439) -------------------------------------------------
 
-def test_preflight_runs_before_anything_is_built_or_taken_down():
+def test_the_script_never_opens_ssh_itself():
+    """#439: one authentication per deploy. Every host command runs in the one
+    SSH session scripts/deploy_verify.py holds, so a passphrase is asked once."""
+    code = "\n".join(_code_lines())
+    assert not re.search(r"(^\s*|[|;&(]\s*)ssh\b", code, re.MULTILINE), "deploy.ps1 runs ssh itself"
+    assert len(re.findall(r"\$Verifier deploy\b", code)) == 1
+
+
+def test_nothing_is_pushed_or_deployed_outside_the_checked_session():
+    """The push happens inside the deploy command, after the host check."""
+    code = "\n".join(_code_lines())
+    assert not re.search(r"^\s*docker push\b", code, re.MULTILINE)
+    assert "compose down" not in code
+
+
+def test_the_deploy_runs_after_the_build_and_gates_success():
     code = _code_lines()
-    preflight = _index_of(r"\$Verifier preflight @VerifyArgs")
-    assert preflight != -1, "expected the preflight call"
-    assert code[preflight + 1].strip().startswith("if ($LASTEXITCODE -ne 0) { Die")
-    for pattern in (r"flutter build web", r"^\s*docker build ", r"docker push ", r"\| ssh "):
-        assert preflight < _index_of(pattern), f"preflight must run before {pattern}"
-
-
-def test_verification_runs_after_the_deploy_and_gates_success():
-    code = _code_lines()
-    deploy = _index_of(r"\| ssh ")
-    verify = _index_of(r"\$Verifier verify @VerifyArgs")
+    build = _index_of(r"^\s*docker build ")
+    deploy = _index_of(r"\$Verifier deploy @DeployArgs")
     success = _index_of(r"Deployed and verified")
-    assert -1 < deploy < verify < success
-    assert code[verify + 1].strip() == "if ($LASTEXITCODE -ne 0) {"
-    assert code[verify + 2].strip().startswith("Die ")
+    assert -1 < build < deploy < success
+    assert code[deploy + 1].strip().startswith("if ($LASTEXITCODE -eq 3) { Die ")
+    assert code[deploy + 2].strip().startswith("if ($LASTEXITCODE -ne 0) { Die ")
 
 
-def test_both_verification_calls_share_one_argument_list():
-    """preflight and verify must look at the same host, directory, image and URL."""
-    block = re.search(r"\$VerifyArgs\s*=\s*@\((.*?)\n\)", TEXT, re.DOTALL)
+def test_the_deploy_gets_every_setting():
+    block = re.search(r"\$DeployArgs\s*=\s*@\((.*?)\n\)", TEXT, re.DOTALL)
     assert block
-    for flag in ("--ssh-host", "--ssh-port", "--ssh-user", "--ssh-key", "--dir", "--image", "--url", "--state"):
+    for flag in ("--ssh-host", "--ssh-port", "--ssh-user", "--ssh-key", "--dir", "--image", "--url",
+                 "--target", "--repo"):
         assert f"'{flag}'" in block.group(1)
     assert '"${Image}:${targetTag}"' in block.group(1)
 
@@ -370,53 +374,77 @@ def test_missing_keys_are_named(sandbox, exe):
             "DEPLOY_VAL_DIR, DEPLOY_VAL_URL, DEPLOY_PROD_DIR, DEPLOY_PROD_URL") in "".join(result.stdout.splitlines())
 
 
-# Stand-ins for ssh, gh and python, first on PATH. ssh logs its arguments and
-# stdin; gh prints SHIM_GH_JSON as its run list; python logs its arguments and
-# exits with SHIM_PREFLIGHT_EXIT / SHIM_VERIFY_EXIT for those subcommands, 0
-# otherwise.
+# Stand-ins for ssh, gh, python, flutter and docker, first on PATH. Each logs
+# its arguments. gh prints SHIM_GH_JSON as its run list; python prints
+# SHIM_EXPECT for `expect` and exits with SHIM_DEPLOY_EXIT for `deploy`, 0
+# otherwise; flutter leaves a build/web behind for the script to copy.
 if os.name == "nt":
     SHIMS = {
-        "ssh.bat": '@echo off\r\necho %*>> "%~dp0ssh.log"\r\nfindstr "^" >> "%~dp0ssh.stdin"\r\nexit /b 0\r\n',
-        "gh.bat": "@echo off\r\necho %SHIM_GH_JSON%\r\nexit /b 0\r\n",
+        "ssh.bat": '@echo off\r\necho %*>> "%~dp0ssh.log"\r\nexit /b 0\r\n',
+        "gh.bat": '@echo off\r\necho %*>> "%~dp0gh.log"\r\necho %SHIM_GH_JSON%\r\nexit /b 0\r\n',
         # Not `if "%2"==...`: the interpreter probe's quoted argument breaks cmd's `if`.
         "python.bat": ('@echo off\r\necho %*>> "%~dp0python.log"\r\n'
-                       'echo %* | findstr /c:" preflight " >nul && exit /b %SHIM_PREFLIGHT_EXIT%\r\n'
-                       'echo %* | findstr /c:" verify " >nul && exit /b %SHIM_VERIFY_EXIT%\r\nexit /b 0\r\n'),
+                       'echo %* | findstr /c:" expect " >nul && goto expect\r\n'
+                       'echo %* | findstr /c:" deploy " >nul && exit /b %SHIM_DEPLOY_EXIT%\r\nexit /b 0\r\n'
+                       ':expect\r\necho %SHIM_EXPECT%\r\nexit /b 0\r\n'),
+        "flutter.bat": ('@echo off\r\necho %*>> "%~dp0flutter.log"\r\n'
+                        'mkdir build\\web 2>nul\r\necho x> build\\web\\index.html\r\nexit /b 0\r\n'),
+        "docker.bat": '@echo off\r\necho %*>> "%~dp0docker.log"\r\nexit /b 0\r\n',
     }
 else:
-    # printf, not echo: dash (Ubuntu's /bin/sh) echo expands the `\r` in the
-    # ssh command's `tr -d '\r'` into a real carriage return.
     SHIMS = {
-        "ssh": '#!/bin/sh\nprintf "%s\\n" "$*" >> "$(dirname "$0")/ssh.log"\ncat >> "$(dirname "$0")/ssh.stdin"\n',
-        "gh": '#!/bin/sh\nprintf "%s\\n" "$SHIM_GH_JSON"\n',
+        "ssh": '#!/bin/sh\nprintf "%s\\n" "$*" >> "$(dirname "$0")/ssh.log"\n',
+        "gh": '#!/bin/sh\nprintf "%s\\n" "$*" >> "$(dirname "$0")/gh.log"\nprintf "%s\\n" "$SHIM_GH_JSON"\n',
         "python": ('#!/bin/sh\nprintf "%s\\n" "$*" >> "$(dirname "$0")/python.log"\n'
-                   'case "$2" in preflight) exit "$SHIM_PREFLIGHT_EXIT";; verify) exit "$SHIM_VERIFY_EXIT";; esac\n'),
+                   'case "$2" in expect) printf "%s\\n" "$SHIM_EXPECT";; deploy) exit "$SHIM_DEPLOY_EXIT";; esac\n'),
+        "flutter": ('#!/bin/sh\nprintf "%s\\n" "$*" >> "$(dirname "$0")/flutter.log"\n'
+                    'mkdir -p build/web && echo x > build/web/index.html\n'),
+        "docker": '#!/bin/sh\nprintf "%s\\n" "$*" >> "$(dirname "$0")/docker.log"\n',
     }
 
 
-def _deploy_with_shims(sandbox, exe, preflight=0, verify=0, runs=("completed", "completed")):
-    """Run `deploy.ps1 -Target Prod` against stand-ins; nothing leaves the machine."""
+def _git(sandbox, *args):
+    return subprocess.run(["git", "-C", str(sandbox), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                           *args], check=True, capture_output=True, text=True).stdout.strip()
+
+
+def _commit_release(sandbox):
+    """One commit tagged v1.2.3, with tracked.txt to make the tree dirty with."""
+    (sandbox / "tracked.txt").write_text("a\n", encoding="utf-8")
+    _git(sandbox, "add", "tracked.txt", "deploy.ps1", "Load-DotEnv.ps1")
+    _git(sandbox, "commit", "-q", "-m", "release")
+    _git(sandbox, "tag", "v1.2.3")
+
+
+def _make_dirty(sandbox):
+    (sandbox / "tracked.txt").write_text("a\nuncommitted\n", encoding="utf-8")
+
+
+def _deploy_with_shims(sandbox, exe, *script_args, deploy=0, runs=("completed", "completed"), expect="v9.9.9"):
+    """Run deploy.ps1 (default `-Target Prod`) against stand-ins; nothing leaves the machine."""
     shims = sandbox.parent / "shims"
     shims.mkdir()
     for name, body in SHIMS.items():
         (shims / name).write_text(body, encoding="ascii", newline="")
         (shims / name).chmod(0o755)
+    (sandbox / "flutter_client").mkdir(exist_ok=True)
     key = sandbox.parent / "id_test"
     key.write_text("not a key\n")
     (sandbox / "deploy.env").write_text(
         "DEPLOY_HOST=host.invalid\nDEPLOY_SSH_PORT=2222\nDEPLOY_USER=deployer\n"
         f"DEPLOY_SSH_KEY={key}\nDEPLOY_IMAGE=registry.invalid/owner/app\n"
         "DEPLOY_VAL_DIR=/srv/app-val\nDEPLOY_VAL_URL=https://val.app.invalid\n"
-        "DEPLOY_PROD_DIR=/srv/app\nDEPLOY_PROD_URL=https://app.invalid/\n",
+        "DEPLOY_PROD_DIR=/srv/app\nDEPLOY_PROD_URL=https://app.invalid/\nMAPBOX_TOKEN=token-for-tests\n",
         encoding="utf-8",
     )
     env = dict(os.environ, PATH=f"{shims}{os.pathsep}{os.environ['PATH']}",
-               SHIM_PREFLIGHT_EXIT=str(preflight), SHIM_VERIFY_EXIT=str(verify),
+               SHIM_DEPLOY_EXIT=str(deploy), SHIM_EXPECT=expect,
                SHIM_GH_JSON=json.dumps([{"status": s, "displayTitle": f"run{n}", "url": f"u{n}"}
                                         for n, s in enumerate(runs)], separators=(",", ":")))
     result = subprocess.run(
-        [exe, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(sandbox / "deploy.ps1"), "-Target", "Prod"],
-        cwd=sandbox, capture_output=True, text=True, timeout=120, env=env,
+        [exe, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(sandbox / "deploy.ps1"),
+         *(script_args or ("-Target", "Prod"))],
+        cwd=sandbox, capture_output=True, text=True, timeout=180, env=env,
     )
 
     def read(name):
@@ -425,50 +453,76 @@ def _deploy_with_shims(sandbox, exe, preflight=0, verify=0, runs=("completed", "
     return result, read, key
 
 
+def _verifier_calls(read):
+    """{subcommand: [args]} for each deploy_verify.py call python.log recorded."""
+    calls = [line.split() for line in read("python.log").splitlines() if "deploy_verify.py" in line]
+    return [(call[1], call[2:]) for call in calls]
+
+
+def _options(argv):
+    """--flag value pairs; a repeated flag keeps every value."""
+    out = {}
+    for flag, value in zip(argv[::2], argv[1::2]):
+        out.setdefault(flag, []).append(value)
+    return out
+
+
 @every_powershell
-def test_deploy_checks_deploys_and_verifies_the_configured_target(sandbox, exe):
+def test_deploy_hands_the_configured_target_to_one_deploy_call(sandbox, exe):
     result, read, key = _deploy_with_shims(sandbox, exe)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Deployed and verified (Prod)" in result.stdout
 
-    calls = [line.split() for line in read("python.log").splitlines() if "deploy_verify.py" in line]
-    assert [call[1] for call in calls] == ["preflight", "verify"]
-    for call in calls:
-        options = dict(zip(call[2::2], call[3::2]))
-        assert options["--ssh-host"] == "host.invalid"
-        assert options["--ssh-port"] == "2222"
-        assert options["--ssh-user"] == "deployer"
-        assert Path(options["--ssh-key"]) == key
-        assert options["--dir"] == "/srv/app"
-        assert options["--image"] == "registry.invalid/owner/app:latest"
-        assert options["--url"] == "https://app.invalid"
-    assert calls[0][calls[0].index("--target") + 1] == "prod"
-    assert "--built-version" not in calls[0]
-    assert calls[0][calls[0].index("--state") + 1] == calls[1][calls[1].index("--state") + 1]
+    calls = _verifier_calls(read)
+    assert [name for name, _ in calls] == ["expect", "deploy"]
+    options = _options(calls[1][1])
+    assert options["--ssh-host"] == ["host.invalid"]
+    assert options["--ssh-port"] == ["2222"]
+    assert options["--ssh-user"] == ["deployer"]
+    assert [Path(p) for p in options["--ssh-key"]] == [key]
+    assert options["--dir"] == ["/srv/app"]
+    assert options["--image"] == ["registry.invalid/owner/app:latest"]
+    assert options["--url"] == ["https://app.invalid"]
+    assert options["--target"] == ["prod"]
+    assert "--built-version" not in options and "--push" not in options
+    assert _options(calls[0][1])["--target"] == ["prod"]
 
-    ssh = read("ssh.log")
-    assert "-p 2222 deployer@host.invalid tr -d '\\r' | bash -s" in ssh
-    stdin = read("ssh.stdin")
-    assert "cd /srv/app\n" in stdin.replace("\r", "")
-    assert stdin.index("docker compose down") < stdin.index("docker compose pull") < stdin.index("docker compose up -d")
+    # #439: every host command runs in deploy_verify.py's one SSH session.
+    assert read("ssh.log") == ""
+    assert read("docker.log") == "" and read("flutter.log") == ""
 
 
 @every_powershell
-def test_failed_preflight_stops_before_the_host_is_touched(sandbox, exe):
-    result, read, _ = _deploy_with_shims(sandbox, exe, preflight=1)
+def test_banner_shows_the_version_prod_will_serve(sandbox, exe):
+    """#439: it showed the local HEAD's describe, which prod never runs."""
+    result, read, _ = _deploy_with_shims(sandbox, exe, expect="v9.9.9")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "deploy v9.9.9 (Prod)" in result.stdout
+
+
+@every_powershell
+def test_banner_shows_the_version_skip_build_will_serve(sandbox, exe):
+    result, read, _ = _deploy_with_shims(sandbox, exe, "-SkipBuild", expect="validation-abc1234")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "deploy validation-abc1234 (Validation)" in result.stdout
+    expect = _options(_verifier_calls(read)[0][1])
+    assert expect["--target"] == ["validation"] and "--built-version" not in expect
+
+
+@every_powershell
+def test_a_deploy_stopped_before_the_host_changed_says_so(sandbox, exe):
+    result, read, _ = _deploy_with_shims(sandbox, exe, deploy=3)
     assert result.returncode == 1
-    assert "Preflight failed - nothing was built or deployed." in result.stdout
-    assert read("ssh.log") == ""
-    assert " verify " not in read("python.log")
+    assert "Stopped before the running containers were touched" in result.stdout
+    assert "Deployed and verified" not in result.stdout
 
 
 @every_powershell
 def test_failed_verification_fails_the_deploy(sandbox, exe):
-    result, read, _ = _deploy_with_shims(sandbox, exe, verify=1)
+    result, read, _ = _deploy_with_shims(sandbox, exe, deploy=1)
     assert result.returncode == 1
     assert "The deploy did not take effect as expected" in result.stdout
     assert "Deployed and verified" not in result.stdout
-    assert read("ssh.log") != ""
 
 
 @every_powershell
@@ -481,6 +535,151 @@ def test_image_build_check_stops_only_on_unfinished_runs(sandbox, exe, runs):
         assert result.returncode == 1
         assert "run1 [in_progress]" in result.stdout
         assert "run0" not in result.stdout and "run2" not in result.stdout
-        assert read("ssh.log") == ""
+        assert "deploy" not in [name for name, _ in _verifier_calls(read)]
     else:
         assert result.returncode == 0, result.stdout + result.stderr
+
+
+# -- dirty working trees (#439) ---------------------------------------------------
+
+@every_powershell
+def test_prod_refuses_a_dirty_working_tree_before_anything_happens(sandbox, exe):
+    _commit_release(sandbox)
+    _make_dirty(sandbox)
+    result, read, _ = _deploy_with_shims(sandbox, exe)
+    assert result.returncode == 1
+    assert "ERROR: The working tree has uncommitted changes" in result.stdout
+    assert "tracked.txt" in result.stdout
+    assert read("python.log") == "" and read("gh.log") == "" and read("ssh.log") == ""
+
+
+@every_powershell
+def test_prod_is_not_blocked_by_untracked_files(sandbox, exe):
+    """Same rule as `git describe --dirty`: only changes to tracked files count."""
+    _commit_release(sandbox)
+    (sandbox / "notes.txt").write_text("scratch\n", encoding="utf-8")
+    result, _, _ = _deploy_with_shims(sandbox, exe)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@every_powershell
+def test_validation_build_of_a_dirty_tree_warns_and_says_dirty(sandbox, exe):
+    _commit_release(sandbox)
+    _make_dirty(sandbox)
+    described = _git(sandbox, "describe", "--tags", "--long", "--dirty")
+    assert described.startswith("v1.2.3-0-g") and described.endswith("-dirty")
+
+    result, read, _ = _deploy_with_shims(sandbox, exe, "-Target", "Validation", expect=described)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "WARNING: the working tree has uncommitted changes" in result.stdout
+    assert "tracked.txt" in result.stdout
+    assert f"deploy {described} (Validation)" in result.stdout
+
+    assert f"--dart-define=APP_VERSION={described}" in read("flutter.log")
+    docker = read("docker.log")
+    assert f"APP_VERSION={described}" in docker
+    assert "registry.invalid/owner/app:validation" in docker
+    # A dirty build must never be published as the release it started from.
+    assert ":v1.2.3" not in docker
+
+    calls = dict(_verifier_calls(read))
+    assert _options(calls["expect"])["--built-version"] == [described]
+    deploy = _options(calls["deploy"])
+    assert deploy["--built-version"] == [described]
+    assert deploy["--push"] == ["registry.invalid/owner/app:validation"]
+
+
+@every_powershell
+def test_validation_build_of_a_clean_release_commit_also_pushes_its_tag(sandbox, exe):
+    _commit_release(sandbox)
+    described = _git(sandbox, "describe", "--tags", "--long")
+    result, read, _ = _deploy_with_shims(sandbox, exe, "-Target", "Validation", expect=described)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "WARNING" not in result.stdout
+    assert not described.endswith("-dirty")
+    deploy = _options(dict(_verifier_calls(read))["deploy"])
+    assert deploy["--built-version"] == [described]
+    assert deploy["--push"] == ["registry.invalid/owner/app:validation", "registry.invalid/owner/app:v1.2.3"]
+
+
+
+
+# -- DEPLOYMENT_VPS.md §1: copying the key from PowerShell (review of #444) -------
+
+DEPLOY_DOC = ROOT / "docs" / "DEPLOYMENT_VPS.md"
+KEY_MATERIAL = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIProbe444KeyMaterialOnly"
+
+# Records what the far side would get: its arguments and its stdin, as bytes.
+SSH_RECORDER = (
+    "import json, sys\n"
+    "out = sys.argv[1]\n"
+    "data = sys.stdin.buffer.read() if not sys.stdin.isatty() else b''\n"
+    "json.dump({'args': sys.argv[2:], 'stdin': data.decode('latin-1')}, open(out, 'w'))\n"
+)
+
+
+def _key_block():
+    blocks = re.findall(r"```powershell\n(.*?)```", DEPLOY_DOC.read_text(encoding="utf-8"), re.DOTALL)
+    (block,) = [b for b in blocks if "authorized_keys" in b]
+    return block.splitlines()
+
+
+def _key_copy_snippet():
+    """The PowerShell lines of §1 that put the public key on the VPS."""
+    lines = _key_block()
+    last = next(i for i, line in enumerate(lines) if "authorized_keys" in line)
+    return "\n".join(line for line in lines[:last + 1] if not line.startswith("ssh-keygen"))
+
+
+def test_the_documented_key_gets_a_fixed_comment():
+    """ssh-keygen's default comment is USERNAME@COMPUTERNAME, and a Windows
+    account name may hold an apostrophe (O'Brien)."""
+    (keygen,) = [line for line in _key_block() if line.startswith("ssh-keygen")]
+    assert re.search(r"\s-C\s+traxjourney-deploy(\s|$)", keygen), keygen
+
+
+@every_powershell
+@pytest.mark.parametrize("comment", ["someone@workstation", "o'brien@workstation", "o'brien@o'brien-pc"],
+                         ids=["plain", "apostrophe", "two-apostrophes"])
+def test_the_documented_key_copy_lands_the_key_intact(tmp_path, exe, comment):
+    """PowerShell pipes a string to a native command with CRLF line ends, and a
+    quote in the key's comment can end the remote shell's string early. Run
+    the documented lines against a stand-in ssh, then the command it was given
+    in a real sh: authorized_keys must get the key line exactly, LF-ended."""
+    sh = shutil.which("sh")
+    if sh is None:
+        pytest.skip("needs a POSIX sh to play the remote side")
+    pubkey = f"{KEY_MATERIAL} {comment}"
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    (home / ".ssh" / "traxjourney_vps.pub").write_bytes(pubkey.encode() + b"\n")  # as ssh-keygen writes it
+    shims = tmp_path / "shims"
+    shims.mkdir()
+    (shims / "recorder.py").write_text(SSH_RECORDER, encoding="ascii")
+    record = tmp_path / "ssh.json"
+    if os.name == "nt":
+        import sys
+        (shims / "ssh.bat").write_text(f'@"{sys.executable}" "%~dp0recorder.py" "{record}" %*\r\n', encoding="ascii")
+    else:
+        python = shutil.which("python3") or shutil.which("python")
+        (shims / "ssh").write_text(f'#!/bin/sh\nexec "{python}" "$(dirname "$0")/recorder.py" "{record}" "$@"\n',
+                                   encoding="ascii")
+        (shims / "ssh").chmod(0o755)
+
+    # What the reader types: their home, and a value for each <placeholder>.
+    snippet = re.sub(r"<[a-z-]+>", "x", _key_copy_snippet().replace("$HOME", str(home)))
+    result = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", snippet],
+                            capture_output=True, text=True, timeout=60,
+                            env=dict(os.environ, PATH=f"{shims}{os.pathsep}{os.environ['PATH']}"))
+    assert result.returncode == 0, result.stdout + result.stderr
+    sent = json.loads(record.read_text())
+    assert "\r" not in sent["stdin"] + "".join(sent["args"]), repr(sent)
+
+    # The far side: sshd hands the command to the login shell, with ssh's stdin.
+    remote = sent["args"][-1]
+    keys = tmp_path / "authorized_keys"
+    assert "sudo tee -a /home/x/.ssh/authorized_keys" in remote, remote
+    remote = remote.replace("sudo tee -a /home/x/.ssh/authorized_keys", f"tee -a '{keys.as_posix()}'")
+    ran = subprocess.run([sh, "-c", remote], input=sent["stdin"].encode("latin-1"), capture_output=True)
+    assert ran.returncode == 0, ran.stderr.decode(errors="replace")
+    assert keys.read_bytes() == pubkey.encode() + b"\n"

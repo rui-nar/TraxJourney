@@ -11,8 +11,10 @@ Restart=on-failure
 RestartSec=5
 # The deploy user deploy.ps1 connects as. It must be in the `docker` group
 # (systemd applies the user's groups), own /opt/traxjourney-val/webhook, and
-# hold the GHCR login in ~/.docker/config.json.
-User=rui
+# hold the GHCR login in ~/.docker/config.json. A placeholder: the repository
+# is public, and docs/DEPLOYMENT_VPS.md section 8 step 5 writes the real name
+# in while installing the unit. systemd refuses to start it as is.
+User=<deploy-user>
 # Safe with the docker CLI: it is not setuid and talks to /run/docker.sock.
 # ProtectHome would hide ~/.docker (the GHCR login) and ProtectSystem=strict
 # would make the log and lock read-only. Being in the `docker` group is

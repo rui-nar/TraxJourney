@@ -123,3 +123,109 @@ def test_every_ip_allowlist_entry_is_still_needed():
 def test_scanner(tmp_path, line, flagged):
     (tmp_path / "doc.md").write_text(line + "\n")
     assert bool(_findings(["doc.md"], tmp_path)) is flagged
+
+
+_DEPLOY_DOC = ROOT / "docs" / "DEPLOYMENT_VPS.md"
+# Commands that take an account name, and where the name sits in each. Only
+# these count: `-o` is an account for `install`, an output file for `curl`.
+_NAME = r"([^\s;`)|&:\"'-][^\s;`)|&:\"']*)"   # a token that is not an option
+_ACCOUNT_ARGS = [
+    re.compile(r"\bsudo\s+(?:-[A-Za-tv-z]+\s+)*-[A-Za-z]*u\s*" + _NAME),   # -u x, -Hu x, -iu x
+    re.compile(r"\bsudo\s+(?:-\S+\s+)*--user[=\s]" + _NAME),
+    re.compile(r"(?:^|[;&|`(\"'])\s*id\s+" + _NAME),                      # a command, not the word
+    re.compile(r"\bUser=([a-z_][\w.-]*)"),                                # systemd; not "`User=` in"
+    re.compile(r"\bchown\s+(?:--?[\w-]+(?:=\S+)?\s+)*" + _NAME),
+    re.compile(r"\badduser\s+(?:--?\S+\s+)*" + _NAME),
+    re.compile(r"(?<![\w.-])([a-z_][\w.-]*)@(?:<[\w-]+>|[\w-]+(?:\.[\w-]+)+)"),  # user@host
+    re.compile(r"/home/([^\s/;`)|&:\"'-][^\s/;`)|&:\"']*)"),
+    re.compile(r"\bDEPLOY_USER=[\"']?([a-z_][\w.-]*)"),
+]
+# usermod's account is its last argument, whatever order the options come in.
+_USERMOD = re.compile(r"\busermod\s+([^;|&#\n]+)")
+_INSTALL_OWNER = re.compile(r"\s-[og]\s+(\S+)")
+# Placeholders, shell variables, and accounts every host has. `git@github.com`
+# is GitHub's SSH login, not the operator's.
+_NOT_AN_ACCOUNT = re.compile(r"^(<.*|\$.*|root|git)$")
+
+
+def _named_users(text: str) -> list[str]:
+    found = []
+    for line in text.splitlines():
+        names = [m.group(1) for rx in _ACCOUNT_ARGS for m in rx.finditer(line)]
+        for m in _USERMOD.finditer(line):
+            names += m.group(1).split()[-1:]
+        if re.search(r"\binstall\b", line):
+            names += _INSTALL_OWNER.findall(line)
+        found += [f"{line.strip()} -> {n}" for n in (n.strip("`\"'") for n in names)
+                  if not _NOT_AN_ACCOUNT.match(n)]
+    return found
+
+
+def test_deployment_doc_names_no_real_login_user():
+    """#444: the doc gave the deploy user as `debian`, and §8 as the owner's own
+    account. Both are the operator's, like the host: docs say <deploy-user>."""
+    doc = _DEPLOY_DOC.read_text(encoding="utf-8")
+    row = re.search(r"^\| SSH user \| (.+) \|$", doc, re.MULTILINE)
+    assert row and row.group(1).startswith("`<deploy-user>`"), row and row.group(1)
+    assert _named_users(doc) == []
+
+
+def test_tracked_deploy_config_names_no_real_login_user():
+    """The files installed on the VPS as they are, e.g. the webhook unit's User=,
+    and the template deploy.env is made from."""
+    config = [p for p in _tracked_files() if p.startswith("vps/") or p == "deploy.env.example"]
+    assert {"vps/webhook/webhook.service", "deploy.env.example"} <= set(config)
+    found = [f"{p}: {hit}" for p in config for hit in _named_users((ROOT / p).read_text(encoding="utf-8"))]
+    assert found == [], "use <deploy-user>; the install step fills it in"
+
+
+@pytest.mark.parametrize(("line", "named"), [
+    # Missed in round 2 of the #444 review: planted names that got through.
+    ("set User=someone in the copy", True),
+    ("sudo usermod -a -G docker someone", True),
+    ("sudo usermod -G docker -a someone", True),
+    ("sudo -Hu someone docker ps", True),
+    ("sudo -iu someone", True),
+    ("sudo --user=someone docker ps", True),
+    ('ssh -i key <deploy-user>@<vps-host> "id someone; docker ps"', True),
+    ("sudo chown --recursive someone /opt/x", True),
+    ("ssh -i key someone@<vps-host>", True),
+    ("scp key.pub someone@vps.example.invalid:", True),
+    ("cat /home/someone/.ssh/authorized_keys", True),
+    ("DEPLOY_USER=someone", True),
+    ('DEPLOY_USER="someone"', True),
+    # ... and what must stay quiet.
+    ("the validation webhook runs as it (`User=` in the installed unit)", False),
+    ("ssh -T git@github.com", False),
+    ("DEPLOY_USER=", False),
+    ("cat /home/<deploy-user>/.ssh/authorized_keys", False),
+    ("ls /home/$USER", False),
+    ("sudo usermod -aG docker,sudo <deploy-user>", False),
+    ("sudo -u someone -H docker ps", True),
+    ("id someone", True),
+    ("  id someone   # groups", True),
+    ("check with `id someone`", True),
+    ("sudo install -d -o someone -g someone -m 755 /x", True),
+    ("sudo install -d -m 755 -g someone /x", True),
+    ("User=someone", True),
+    ("sudo chown -R someone:someone /opt/x", True),
+    ("sudo adduser someone", True),
+    ("sudo usermod -aG docker,sudo someone", True),
+    ("sudo -u <deploy-user> -H docker ps", False),
+    ("sudo install -d -m 700 -o <deploy-user> -g <deploy-user> /x", False),
+    ("ssh -i key <deploy-user>@<vps-host> \"id; docker ps\"", False),
+    ("sudo usermod -aG docker,sudo <deploy-user>", False),
+    ("sudo chown -R $USER:$USER /opt/app", False),
+    ("a line that ends in `sudo chown -R", False),
+    ('sed "s/^User=<deploy-user>$/User=$(id -un)/" webhook.service', False),
+    # Not a command naming an account (review of #444).
+    ("curl -o out.txt https://example.invalid/x", False),
+    ('curl -fsSLo "$f" "https://example.invalid/$f"', False),
+    ("the id of the trip is kept", False),
+    ("run it as `sudo -u root` if you must", False),
+    ("tar -g snapshot.file -cf x.tar /x", False),
+])
+def test_named_user_scanner(line, named):
+    """Every positive plants `someone`: finding some other token is a miss."""
+    names = [hit.rsplit(" -> ", 1)[1] for hit in _named_users(line)]
+    assert set(names) == ({"someone"} if named else set()), names
