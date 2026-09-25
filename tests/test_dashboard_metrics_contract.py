@@ -468,3 +468,142 @@ def test_logfmt_label_ref_extraction(query, expected):
 ])
 def test_metric_name_extraction(query, expected):
     assert metric_names_in(query) == expected
+
+
+# ── Multiprocess mode, as production runs (issue #455) ───────────────────────
+# The compose deployments set PROMETHEUS_MULTIPROC_DIR, and /metrics then
+# serves what the per-process files hold, not the default registry. Everything
+# above scrapes single-process mode, so it cannot see what goes missing, gains
+# a ``pid`` label, or reads 0 only in production.
+
+_MULTIPROC_SCRAPE = r'''
+import sys
+from sqlalchemy import text
+from fastapi.testclient import TestClient
+
+import api.router as router
+from models.db import engine
+from prometheus_client import REGISTRY
+from src.api.strava_client import _SHORT_TERM_LIMITER
+
+# Give every labelled app family a child, as production traffic eventually does.
+for name, c in list(REGISTRY._names_to_collectors.items()):
+    labelnames = getattr(c, "_labelnames", ())
+    if name.startswith("traxjourney_") and labelnames and not getattr(c, "_labelvalues", ()):
+        try:
+            c.labels(*["probe"] * len(labelnames))
+        except Exception:
+            pass
+
+with engine.begin() as conn:  # a database file with something in it
+    conn.execute(text("CREATE TABLE probe (x INTEGER)"))
+_SHORT_TERM_LIMITER.acquire()  # one Strava call this window
+
+client = TestClient(router.app)
+client.get("/api/version")
+resp = client.get("/metrics", headers={"Authorization": "Bearer mp"})
+assert resp.status_code == 200, resp.text
+sys.stdout.write(resp.text)
+'''
+
+_SAMPLE_LINE = re.compile(r"^([A-Za-z_:][\w:]*)(?:\{(.*)\})?\s+(\S+)$", re.M)
+
+
+@pytest.fixture(scope="module")
+def multiproc_scrape(tmp_path_factory) -> str:
+    import subprocess
+    import sys
+
+    work = tmp_path_factory.mktemp("multiproc")
+    (work / "metrics").mkdir()
+    env = {k: v for k, v in os.environ.items() if k != "METRICS_TOKEN"}
+    env.update(
+        PROMETHEUS_MULTIPROC_DIR=str(work / "metrics"),
+        METRICS_TOKEN="mp",
+        DATABASE_URL=f"sqlite:///{(work / 'app.db').as_posix()}",
+        PYTHONPATH=str(_ROOT),
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", _MULTIPROC_SCRAPE], cwd=work, env=env,
+        capture_output=True, text=True, timeout=180,
+    )
+    assert result.returncode == 0, result.stderr[-3000:]
+    return result.stdout
+
+
+def _app_samples(text: str) -> list[tuple[str, dict[str, str], float]]:
+    out = []
+    for name, labels, value in _SAMPLE_LINE.findall(text):
+        if name.startswith(APP_PREFIX):
+            out.append((name, dict(re.findall(r'(\w+)="((?:[^"\\]|\\.)*)"', labels or "")),
+                        float(value)))
+    return out
+
+
+def _single(samples, name, **labels) -> float:
+    found = [v for n, ls, v in samples
+             if n == name and all(ls.get(k) == want for k, want in labels.items())]
+    assert len(found) == 1, f"{name}{labels}: {len(found)} series, want exactly 1"
+    return found[0]
+
+
+def test_multiprocess_scrape_exports_every_dashboard_metric(multiproc_scrape):
+    queryable = _queryable_series(dict(_TYPE_LINE.findall(multiproc_scrape)))
+    missing = {
+        name: sorted(files)
+        for name, files in _dashboard_metric_names().items()
+        if name.startswith(APP_PREFIX) and name not in queryable
+    }
+    assert not missing, f"not exported in multiprocess mode: {missing}"
+
+
+def test_multiprocess_scrape_carries_no_pid_label(multiproc_scrape):
+    """A ``pid`` label means one series per process, dead ones included, and a
+    ratio of a metric with it and one without matches nothing."""
+    with_pid = sorted({n for n, labels, _ in _app_samples(multiproc_scrape) if "pid" in labels})
+    assert not with_pid, f"app series with a pid label in multiprocess mode: {with_pid}"
+
+
+def test_multiprocess_scrape_time_gauges_hold_the_live_value(multiproc_scrape):
+    samples = _app_samples(multiproc_scrape)
+    # pool_size 20 + max_overflow 40 on a file database (models/db.py).
+    assert _single(samples, f"{APP_PREFIX}db_pool_capacity") == 60
+    _single(samples, f"{APP_PREFIX}db_pool_overflow")
+    _single(samples, f"{APP_PREFIX}db_pool_connections", state="in_use")
+    _single(samples, f"{APP_PREFIX}db_pool_connections", state="idle")
+    assert _single(samples, f"{APP_PREFIX}db_file_size_bytes", file="main") > 0
+    _single(samples, f"{APP_PREFIX}db_file_size_bytes", file="wal")
+    assert _single(samples, f"{APP_PREFIX}strava_rate_limit_usage", window="15min") == 1
+    assert _single(samples, f"{APP_PREFIX}strava_rate_limit_capacity", window="15min") == 100
+
+
+_RATIO = re.compile(r"([A-Za-z_:][\w:]*)\s*\{[^{}]*\}\s*[-+*/]\s*([A-Za-z_:][\w:]*)\s*\{")
+
+
+def test_dashboard_ratios_divide_series_with_the_same_labels(multiproc_scrape):
+    """``a{...} / b{...}`` with no ``on``/``ignoring`` only matches series whose
+    label sets are equal; one extra label on either side and the panel is empty."""
+    labelsets: dict[str, set[frozenset[str]]] = {}
+    for name, labels, _ in _app_samples(multiproc_scrape):
+        labelsets.setdefault(name, set()).add(frozenset(labels))
+    checked = 0
+    bad = []
+    for path in _dashboards():
+        for query in _queries(json.loads(path.read_text(encoding="utf-8"))):
+            if re.search(r"\bon\s*\(", query):
+                continue  # matches on named labels only; not modelled here
+            ignored = {
+                label.strip()
+                for group in re.findall(r"\bignoring\s*\(([^()]*)\)", query)
+                for label in group.split(",") if label.strip()
+            }
+            for left, right in _RATIO.findall(_GROUPING.sub(" ", query)):
+                if not (left.startswith(APP_PREFIX) and right.startswith(APP_PREFIX)):
+                    continue
+                checked += 1
+                lhs = {ls - ignored for ls in labelsets.get(left, set())}
+                rhs = {ls - ignored for ls in labelsets.get(right, set())}
+                if lhs != rhs:
+                    bad.append(f"{path.name}: {left} {lhs} vs {right} {rhs}")
+    assert checked, "no metric-to-metric arithmetic found in any dashboard"
+    assert not bad, "\n".join(bad)

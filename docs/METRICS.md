@@ -141,7 +141,10 @@ The label is `job_name`, not `job` (issue #435). The scrape attaches its own
 without `honor_labels` Prometheus keeps the scrape's value and renames the
 app's to `exported_job`, so a `{job="daily_backup"}` filter matches nothing.
 No app metric may use a label the scrape attaches;
-`tests/test_dashboard_metrics_contract.py` enforces it. Series recorded before
+`tests/test_dashboard_metrics_contract.py` enforces it, and also checks a
+multiprocess-mode scrape (the production setup): every dashboard metric is
+exported, none carries a `pid` label, and every metric-to-metric ratio in a
+dashboard divides series with the same labels. Series recorded before
 the rename carry `exported_job` and do not join the `job_name` ones.
 
 The prepared-geometry pair is set by the backfill sweep itself (issue #369),
@@ -164,7 +167,8 @@ without making progress, which `job_runs_total` cannot show.
 | `traxjourney_stale_writes_total` | — |
 
 Pool and file-size gauges are computed at scrape time, so they cost nothing
-between scrapes.
+between scrapes. The pool-utilisation panel divides `in_use` by capacity
+`ignoring(state)`: without it the two sides never match and the panel is empty.
 
 ## Alerts worth having
 
@@ -221,9 +225,15 @@ between scrapes.
     process never shows up as its own series: `job_last_success_timestamp_seconds`
     and `strava_rate_limit_capacity` take the `max`, and
     `prepared_geometry_backlog` the most recent value. None carries a `pid`
-    label. The pool, file-size and Strava-usage gauges are computed at scrape
-    time in the scraping process and write no files, so in multiprocess mode
-    `/metrics` does not export them at all.
+    label.
+  - The pool, file-size and Strava-usage gauges are computed at scrape time by
+    the process serving `/metrics`, the API (issue #455). They write no file,
+    carry no `pid` label and hold the live value in both modes. The API's pool
+    is the one requests queue behind; the Strava limiter lives in the API,
+    the only process that calls Strava; the file size reads the same file from
+    anywhere. Before #455 they were plain gauges, whose files held a 0 per
+    process: production showed 0 on the pool and file-size panels, and the
+    Strava quota alert could never fire.
   - `flock` needs a local filesystem seen by one kernel: a bind mount on the
     Docker host, not NFS or SMB.
 - **Restarts reset counters.** That is normal — PromQL's `rate()`/`increase()`

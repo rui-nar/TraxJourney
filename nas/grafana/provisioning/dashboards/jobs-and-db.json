@@ -65,7 +65,7 @@
       "gridPos": {"h": 5, "w": 8, "x": 8, "y": 0},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "100 * traxjourney_db_pool_connections{state=\"in_use\",env=\"$env\"} / traxjourney_db_pool_capacity{env=\"$env\"}"}
+        {"refId": "A", "expr": "100 * traxjourney_db_pool_connections{state=\"in_use\",env=\"$env\"} / ignoring(state) traxjourney_db_pool_capacity{env=\"$env\"}"}
       ],
       "fieldConfig": {
         "defaults": {

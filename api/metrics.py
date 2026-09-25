@@ -66,11 +66,10 @@ def _registry():
     Unset (the default, and correct for a single-container deployment) this is
     the plain default registry and nothing changes.
     """
-    if not os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
+    path = os.environ.get("PROMETHEUS_MULTIPROC_DIR")
+    if not path:
         return REGISTRY
 
-    from prometheus_client import CollectorRegistry, multiprocess
+    from src.utils.metrics import multiprocess_registry
 
-    registry = CollectorRegistry()
-    multiprocess.MultiProcessCollector(registry)
-    return registry
+    return multiprocess_registry(path)

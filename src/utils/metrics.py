@@ -26,7 +26,7 @@ import os
 import re
 import time
 from contextlib import contextmanager
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 import sqlalchemy.exc
 from apscheduler.events import (
@@ -35,7 +35,8 @@ from apscheduler.events import (
     EVENT_JOB_MISSED,
     EVENT_JOB_SUBMITTED,
 )
-from prometheus_client import REGISTRY, Counter, Gauge, Histogram, values
+from prometheus_client import REGISTRY, CollectorRegistry, Counter, Gauge, Histogram, values
+from prometheus_client.core import GaugeMetricFamily
 from prometheus_fastapi_instrumentator import Instrumentator
 from sqlalchemy import event
 
@@ -63,6 +64,86 @@ else:
     # /metrics. Otherwise every process, one per RQ job, writes its files into
     # the working directory and nothing ever reads or clears them.
     values.ValueClass = values.MutexValue
+
+
+class ScrapeTimeGauge:
+    """A gauge computed when scraped, by the process serving ``/metrics``.
+
+    For values that exist only as live state of that process (its DB pool, its
+    Strava limiter) or can be read by any process at any time (the DB file
+    size). A plain ``Gauge`` with ``set_function`` works in single-process
+    mode but not with ``PROMETHEUS_MULTIPROC_DIR`` (issue #455): creating the
+    gauge, or a child with ``.labels()``, writes a 0 into a per-process file,
+    ``set_function`` never reaches that file, and ``/metrics`` then exports the
+    0, once per process, with a ``pid`` label. This writes no file: it is a
+    collector, registered on the default registry and added to the
+    multiprocess one by :func:`multiprocess_registry`.
+
+    Mirrors the ``Gauge`` calls the call sites use: ``.set_function(fn)`` and
+    ``.labels(...).set_function(fn)``.
+    """
+
+    def __init__(self, name: str, documentation: str, labelnames=()):
+        self._name = name
+        self._documentation = documentation
+        self._labelnames = tuple(labelnames)
+        self._functions: dict[tuple[str, ...], Callable[[], float]] = {}
+        REGISTRY.register(self)
+
+    def labels(self, *labelvalues) -> "_ScrapeTimeChild":
+        if len(labelvalues) != len(self._labelnames):
+            raise ValueError(f"{self._name} takes labels {self._labelnames}")
+        return _ScrapeTimeChild(self, tuple(str(v) for v in labelvalues))
+
+    def set_function(self, fn: Callable[[], float]) -> None:
+        if self._labelnames:
+            raise ValueError(f"{self._name} is labelled; use .labels() first")
+        self._functions[()] = fn
+
+    def _family(self) -> GaugeMetricFamily:
+        return GaugeMetricFamily(self._name, self._documentation, labels=self._labelnames)
+
+    def describe(self):
+        return [self._family()]
+
+    def collect(self):
+        family = self._family()
+        for labelvalues, fn in list(self._functions.items()):
+            family.add_metric(list(labelvalues), fn())
+        return [family]
+
+
+class _ScrapeTimeChild:
+    __slots__ = ("_parent", "_labelvalues")
+
+    def __init__(self, parent: ScrapeTimeGauge, labelvalues: tuple[str, ...]):
+        self._parent = parent
+        self._labelvalues = labelvalues
+
+    def set_function(self, fn: Callable[[], float]) -> None:
+        self._parent._functions[self._labelvalues] = fn
+
+
+SCRAPE_TIME_GAUGES: list[ScrapeTimeGauge] = []
+
+
+def _scrape_time_gauge(name: str, documentation: str, labelnames=()) -> ScrapeTimeGauge:
+    gauge = ScrapeTimeGauge(name, documentation, labelnames)
+    SCRAPE_TIME_GAUGES.append(gauge)
+    return gauge
+
+
+def multiprocess_registry(path: str) -> CollectorRegistry:
+    """The registry ``/metrics`` serves with ``PROMETHEUS_MULTIPROC_DIR`` set:
+    the per-process files, plus the scrape-time gauges computed by this (the
+    serving) process."""
+    from prometheus_client import multiprocess
+
+    registry = CollectorRegistry()
+    multiprocess.MultiProcessCollector(registry, path=path)
+    for gauge in SCRAPE_TIME_GAUGES:
+        registry.register(gauge)
+    return registry
 
 # ── Authentication ────────────────────────────────────────────────────────────
 
@@ -100,7 +181,9 @@ EXTERNAL_DURATION = Histogram(
 
 # Strava's quotas belong to the application, and the limiters enforcing them are
 # process-wide (issue #130), which is what makes these worth exporting.
-STRAVA_RATE_LIMIT_USAGE = Gauge(
+# Scrape-time: the limiter lives in the API process, the only one that calls
+# Strava (request handlers and their BackgroundTasks; no queued job does).
+STRAVA_RATE_LIMIT_USAGE = _scrape_time_gauge(
     "traxjourney_strava_rate_limit_usage",
     "Strava requests made in the current quota window.",
     ["window"],
@@ -191,23 +274,25 @@ DB_ERRORS = Counter(
     ["kind"],
 )
 
-DB_POOL_CONNECTIONS = Gauge(
+# Scrape-time (see ScrapeTimeGauge). The pool is the API process' own: the one
+# requests queue behind (issue #35). A work-horse's pool lives for one job.
+DB_POOL_CONNECTIONS = _scrape_time_gauge(
     "traxjourney_db_pool_connections",
     "Connections in the SQLAlchemy pool, by state.",
     ["state"],
 )
 
-DB_POOL_OVERFLOW = Gauge(
+DB_POOL_OVERFLOW = _scrape_time_gauge(
     "traxjourney_db_pool_overflow",
     "Connections currently open beyond pool_size.",
 )
 
-DB_POOL_CAPACITY = Gauge(
+DB_POOL_CAPACITY = _scrape_time_gauge(
     "traxjourney_db_pool_capacity",
     "Maximum connections the pool will hand out (pool_size + max_overflow).",
 )
 
-DB_FILE_SIZE = Gauge(
+DB_FILE_SIZE = _scrape_time_gauge(
     "traxjourney_db_file_size_bytes",
     "Size of the SQLite database file and its write-ahead log.",
     ["file"],
