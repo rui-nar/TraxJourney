@@ -303,6 +303,9 @@ class TestProjectIORoundTrip:
         data = {
             "name": "Test",
             "version": 1,
+            # Every writer emits items; a document without them is refused
+            # as not a trip (issue #451).
+            "items": [],
             "activities": [
                 {
                     "id": 1, "name": "Ride", "type": "Ride",

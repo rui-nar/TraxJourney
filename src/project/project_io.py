@@ -40,6 +40,24 @@ _ITEM_TYPE_DESERIALIZERS = {
 }
 
 
+class InvalidProjectFile(ValueError):
+    """The document is not a readable .traxj trip (issue #451).
+
+    Raised only for a fault in the document itself (its encoding, its JSON, or
+    the structure :meth:`ProjectIO.from_dict` walks), never for a bug in the
+    code reading it, so a caller can put it to whoever supplied the file. The
+    message names what is wrong without echoing the file's content.
+    """
+
+
+def _expect(value: Any, kind: type, where: str) -> Any:
+    """Return *value* if it is a *kind* (dict or list), else refuse the file."""
+    if not isinstance(value, kind):
+        noun = "an object" if kind is dict else "a list"
+        raise InvalidProjectFile(f"{where} is not {noun}")
+    return value
+
+
 def _person_to_dict(p: Person) -> Dict[str, Any]:
     return {
         "id": p.id,
@@ -211,38 +229,96 @@ class ProjectIO:
             return ProjectIO.from_dict(json.load(fh))
 
     @staticmethod
+    def from_bytes(raw: bytes) -> Project:
+        """Build a :class:`Project` from the bytes of an uploaded .traxj file.
+
+        Raises :class:`InvalidProjectFile` when the bytes are not a trip.
+
+        A .traxj file is UTF-8 JSON. A leading UTF-8 byte order mark is
+        accepted: Windows tools add one (Windows PowerShell's ``-Encoding
+        UTF8``, Notepad before 2019) to text that is otherwise UTF-8 byte for
+        byte, and RFC 8259 lets a parser ignore it. Any other encoding, UTF-16
+        included, is refused rather than guessed at: the exporter writes UTF-8
+        only, and widening the format is a decision, not a parsing detail.
+        """
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            raise InvalidProjectFile("it is not UTF-8 text") from None
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise InvalidProjectFile(
+                f"it is not valid JSON (line {exc.lineno}, column {exc.colno})"
+            ) from None
+        # json.loads reads nothing but the text it is given, so whatever else
+        # it raises is the document's fault, never a bug of ours: a plain
+        # ValueError for an integer past Python's digit limit, a RecursionError
+        # for nesting past the parser's depth.
+        except ValueError:
+            raise InvalidProjectFile("it holds a number too long to read") from None
+        except RecursionError:
+            raise InvalidProjectFile("it is nested too deeply") from None
+        return ProjectIO.from_dict(data)
+
+    @staticmethod
     def from_dict(data: Dict[str, Any]) -> Project:
-        """Build a :class:`Project` from a parsed .traxj document."""
-        fs_raw = data.get("filter_state", {}) or {}
+        """Build a :class:`Project` from a parsed .traxj document.
+
+        Refuses, with :class:`InvalidProjectFile`, a document whose structure
+        it cannot walk: every object and list it reads into is checked before
+        it reads into it. Leaf values are taken as they come.
+        """
+        # Every exporter writes "items"; an object without it (a GeoJSON file,
+        # a settings file) would otherwise import as an empty trip.
+        if not isinstance(data, dict) or "items" not in data:
+            raise InvalidProjectFile("it does not contain a trip")
+        fs_raw = _expect(data.get("filter_state", {}) or {}, dict, "filter_state")
         filter_state = ProjectFilterState(
             start_date=fs_raw.get("start_date"),
             end_date=fs_raw.get("end_date"),
             activity_types=fs_raw.get("activity_types"),
         )
 
-        activities = parse_activities_or_log(data.get("activities", []), "project_io_load")
+        raw_activities = _expect(data.get("activities", []), list, "activities")
+        for n, raw in enumerate(raw_activities):
+            # The id keys the project's activity map and the items that point
+            # into it, so a non-integer one breaks the trip, not one activity.
+            if isinstance(raw, dict) and not isinstance(raw.get("id"), (int, type(None))):
+                raise InvalidProjectFile(f"activities[{n}].id is not a whole number")
+        activities = parse_activities_or_log(raw_activities, "project_io_load")
 
-        items = [ProjectIO._deserialise_item(i) for i in data.get("items", [])]
+        items = [
+            ProjectIO._deserialise_item(_expect(i, dict, f"items[{n}]"), f"items[{n}]")
+            for n, i in enumerate(_expect(data["items"], list, "items"))
+        ]
 
-        raw_dm = data.get("day_meta") or {}
-        day_meta = {
-            dk: DayMeta(
+        raw_dm = _expect(data.get("day_meta") or {}, dict, "day_meta")
+        day_meta = {}
+        for dk, v in raw_dm.items():
+            # Not named by its key: the message must not echo the file's text.
+            _expect(v, dict, "a day_meta entry")
+            day_meta[dk] = DayMeta(
                 difficulty=v.get("difficulty"),
                 sleeping=v.get("sleeping"),
                 weather=v.get("weather"),
                 journal=v.get("journal"),
                 tags=v.get("tags"),
             )
-            for dk, v in raw_dm.items()
-        }
         raw_opts = data.get("sleeping_options")
         sleeping_options = (
             list(raw_opts) if isinstance(raw_opts, list) and raw_opts
             else list(DEFAULT_SLEEPING_OPTIONS)
         )
 
-        people = [_person_from_dict(p) for p in data.get("people", [])]
-        groups = [_group_from_dict(g) for g in data.get("groups", [])]
+        people = [
+            _person_from_dict(_expect(p, dict, f"people[{n}]"))
+            for n, p in enumerate(_expect(data.get("people", []), list, "people"))
+        ]
+        groups = [
+            _group_from_dict(_expect(g, dict, f"groups[{n}]"))
+            for n, g in enumerate(_expect(data.get("groups", []), list, "groups"))
+        ]
 
         project = Project(
             name=data.get("name", "Untitled"),
@@ -275,12 +351,19 @@ class ProjectIO:
         return d
 
     @staticmethod
-    def _deserialise_item(d: Dict[str, Any]) -> ProjectItem:
+    def _deserialise_item(d: Dict[str, Any], where: str = "an item") -> ProjectItem:
         item_type = d.get("item_type")
+        if item_type is not None and not isinstance(item_type, str):
+            raise InvalidProjectFile(f"{where}.item_type is not text")
         if item_type == "activity":
             return ProjectItem(item_type="activity", activity_id=d.get("activity_id"))
         if item_type in _ITEM_TYPE_DESERIALIZERS:
+            # Each of these item types keeps its payload under its own name.
+            _expect(d.get(item_type, {}), dict, f"{where}.{item_type}")
             return _ITEM_TYPE_DESERIALIZERS[item_type](d)
         # segment — implicit default when item_type is missing/None or "segment"
-        seg = ConnectingSegment.from_dict(d.get("segment", {}))
+        seg_raw = _expect(d.get("segment", {}), dict, f"{where}.segment")
+        for end in ("start", "end"):
+            _expect(seg_raw.get(end, {}), dict, f"{where}.segment.{end}")
+        seg = ConnectingSegment.from_dict(seg_raw)
         return ProjectItem(item_type="segment", segment=seg)

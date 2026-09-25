@@ -139,10 +139,8 @@ def test_import_of_a_malformed_file_leaves_no_file_behind(env):
 
     r = _import(client, f"Trip{ProjectIO.EXTENSION}", b'{"items": [not json')
 
-    # Deliberately loose: a malformed file currently answers a pre-existing
-    # 500, which should become a 4xx under its own issue. Only the "no file
-    # left behind" half is this test's business.
-    assert r.status_code >= 400
+    # A malformed file is the uploader's fault, not a server error (issue #451).
+    assert r.status_code == 400, r.text
     assert _files_under(user_dir) == []
 
 
