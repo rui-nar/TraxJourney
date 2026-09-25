@@ -317,6 +317,8 @@ def test_a_skipped_gauge_file_is_logged_once(tmp_path, monkeypatch, caplog):
                            ["log_probe"], gauge._documentation), 1.0, 0.0)
     f.close()
     monkeypatch.setenv("PROMETHEUS_MULTIPROC_DIR", str(tmp_path))
+    # Process-wide "already logged" state: start empty, whatever ran before.
+    monkeypatch.setattr(app_metrics, "_SKIPPED_GAUGE_FILES", set())
 
     with caplog.at_level(logging.INFO, logger="src.utils.metrics"):
         generate_latest(metrics_endpoint._registry())

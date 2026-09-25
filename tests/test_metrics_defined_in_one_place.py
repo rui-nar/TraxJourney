@@ -30,7 +30,13 @@ def metric_constructions(path: Path) -> list[int]:
     modules: set[str] = set()   # local names bound to prometheus_client (or a submodule)
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("prometheus_client"):
-            classes |= {a.asname or a.name for a in node.names if a.name in _METRIC_CLASSES}
+            for alias in node.names:
+                if alias.name == "*":
+                    classes |= _METRIC_CLASSES
+                elif alias.name in _METRIC_CLASSES:
+                    classes.add(alias.asname or alias.name)
+                else:  # a submodule (metrics, core) or other object: its attributes count
+                    modules.add(alias.asname or alias.name)
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name.startswith("prometheus_client"):
@@ -78,6 +84,9 @@ def test_the_allowed_module_is_seen():
     ("import prometheus_client as pc\npc.Histogram('a', 'b')\n", True),
     ("import prometheus_client\nprometheus_client.metrics.Summary('a', 'b')\n", True),
     ("from prometheus_client.metrics import Gauge\nGauge('a', 'b')\n", True),
+    ("from prometheus_client import metrics as pm\npm.Gauge('a', 'b')\n", True),
+    ("from prometheus_client import core\ncore.Counter('a', 'b')\n", True),
+    ("from prometheus_client import *\nGauge('a', 'b')\n", True),
     ("from collections import Counter\nCounter('abc')\n", False),
     ("from prometheus_client import Gauge\nx = Gauge\n", False),
 ])

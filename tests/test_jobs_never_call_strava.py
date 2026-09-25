@@ -21,7 +21,9 @@ Styles resolved:
   and ``enqueue_at(when, f, ...)`` (second), or the keyword;
 - the callable as a local function, an imported name (aliases included),
   ``module.func``, ``functools.partial(func, ...)``, or a ``"module.func"``
-  string. ``enqueue_many`` is always unsupported: its jobs are built elsewhere.
+  string. ``enqueue_many``, ``enqueue_job`` and ``Job.create`` are always
+  unsupported: their jobs are built elsewhere. The wrapper is recognised by
+  any name it is imported as.
 
 ``src/jobs/queue.py``'s wrapper forwards through rq as
 ``queue.enqueue(_run_with_level_refresh, func, ...)``: the rq job there is the
@@ -49,7 +51,10 @@ _RQ_METHODS = {
     "enqueue_in": (1, ("func", "f")),
     "enqueue_at": (1, ("f", "func")),
     "enqueue_many": (None, ()),
+    "enqueue_job": (None, ()),
 }
+# ``Job.create(func, ...)`` builds a job that is enqueued elsewhere: unsupported.
+_RQ_JOB_CLASSES = {"rq.job.Job", "rq.Job"}
 _WRAPPER = (1, ("func",))
 
 
@@ -182,8 +187,14 @@ class _File:
             if not isinstance(node, ast.Call):
                 continue
             func = node.func
-            if isinstance(func, ast.Name) and func.id == "enqueue":
+            if isinstance(func, ast.Name) and (
+                func.id == "enqueue"
+                or self.aliases.get(func.id) == f"{_WRAPPER_MODULE}.enqueue"
+            ):
                 position, keywords = _WRAPPER
+            elif (isinstance(func, ast.Attribute) and func.attr == "create"
+                  and self.dotted(func.value) in _RQ_JOB_CLASSES):
+                position, keywords = None, ()  # Job.create: built, enqueued elsewhere
             elif isinstance(func, ast.Attribute) and func.attr in _RQ_METHODS:
                 if func.attr == "enqueue" and self.dotted(func.value) == _WRAPPER_MODULE:
                     position, keywords = _WRAPPER
@@ -279,6 +290,8 @@ _HEAD = (
     'get_queue(QUEUE_DEFAULT).enqueue("scratchjobs.strava_job.run")',  # dotted string
     "get_queue(QUEUE_DEFAULT).enqueue_call(func=f, args=(1,))",
     "get_queue(QUEUE_DEFAULT).enqueue_at(when, f)",
+    "from src.jobs.queue import enqueue as enqueue_job; enqueue_job(QUEUE_DEFAULT, f)",
+    "import src.jobs.queue as q; q.enqueue(QUEUE_DEFAULT, f)",
 ])
 def test_the_guard_catches_every_enqueue_style(tmp_path, call):
     package = tmp_path / "scratchjobs"
@@ -296,6 +309,9 @@ def test_the_guard_catches_every_enqueue_style(tmp_path, call):
     "get_queue(QUEUE_DEFAULT).enqueue_many([])",
     "enqueue(QUEUE_DEFAULT, jobs[0])",
     "enqueue(QUEUE_DEFAULT)",
+    "get_queue(QUEUE_DEFAULT).enqueue_job(job)",
+    "from rq.job import Job; Job.create(f, connection=None)",
+    "import rq; rq.job.Job.create(f)",
 ])
 def test_an_unresolvable_style_fails_closed(tmp_path, call):
     package = tmp_path / "scratchjobs"
