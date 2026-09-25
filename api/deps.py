@@ -80,10 +80,20 @@ def create_access_token(
     return jwt.encode(payload, jwt_secret(), algorithm=_JWT_ALGORITHM)
 
 
+def _verify(token: str) -> dict:
+    """The one place that knows how a session JWT is verified."""
+    return jwt.decode(token, jwt_secret(), algorithms=[_JWT_ALGORITHM])
+
+
 def decode_token(token: str) -> dict:
-    """Decode and verify a JWT. Raises HTTPException on failure."""
+    """Decode and verify a JWT. Raises HTTPException on failure.
+
+    For the code path that *rejects* the request on a bad token — it owns the
+    ``invalid JWT rejected`` warning. A caller that only observes the token
+    uses :func:`decode_token_quietly` instead.
+    """
     try:
-        return jwt.decode(token, jwt_secret(), algorithms=[_JWT_ALGORITHM])
+        return _verify(token)
     except jwt.ExpiredSignatureError:
         # Not logged: every issued token expires eventually, so on a running app
         # with several concurrent users this is routine and high-volume, not a
@@ -100,6 +110,22 @@ def decode_token(token: str) -> dict:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
         )
+
+
+def decode_token_quietly(token: str) -> Optional[dict]:
+    """Decode and verify a JWT; None instead of raising or logging on failure.
+
+    For best-effort callers that only *observe* a token and never reject the
+    request on it — the access-log middleware binding user_id
+    (api.middleware._resolve_user_id). The warning :func:`decode_token` emits
+    belongs to the path that actually rejects the request, and would otherwise
+    fire twice for one forged token and once per scrape of ``/metrics``, whose
+    bearer token is not a JWT at all (issue #446).
+    """
+    try:
+        return _verify(token)
+    except jwt.PyJWTError:  # bad/expired token, and a key PyJWT won't use
+        return None
 
 
 _bearer = HTTPBearer()

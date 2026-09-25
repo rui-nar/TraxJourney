@@ -19,7 +19,13 @@ import jwt
 import pytest
 from fastapi import HTTPException
 
-from api.deps import _JWT_ALGORITHM, decode_token, jwt_secret, require_admin
+from api.deps import (
+    _JWT_ALGORITHM,
+    decode_token,
+    decode_token_quietly,
+    jwt_secret,
+    require_admin,
+)
 
 
 def _token(payload: dict, secret: str | None = None) -> str:
@@ -82,6 +88,44 @@ class TestInvalidSignatureTokenWarns:
         assert exc.value.status_code == 401
         warnings = [r for r in caplog.records if r.levelname == "WARNING"]
         assert len(warnings) == 1
+
+
+class TestQuietDecodeNeverLogs:
+    """`decode_token_quietly` is for callers that only *observe* a token (the
+    access-log middleware binding user_id) and never reject the request on it
+    — so it must not emit the warning that belongs to the rejecting path
+    (issue #446), whatever is wrong with the token."""
+
+    def test_valid_token_decodes(self):
+        assert decode_token_quietly(_token({"sub": "1"}))["sub"] == "1"
+
+    @pytest.mark.parametrize("bad_token", [
+        "not-a-jwt-at-all",
+        _token({"sub": "1"}, secret="a-different-key" * 4),
+        _token({
+            "sub": "1",
+            "exp": datetime.datetime.now(datetime.timezone.utc)
+            - datetime.timedelta(hours=1),
+        }),
+    ], ids=["malformed", "forged", "expired"])
+    def test_bad_token_is_none_and_silent(self, caplog, bad_token):
+        with caplog.at_level(logging.DEBUG, logger="api.deps"):
+            assert decode_token_quietly(bad_token) is None
+        assert caplog.records == []
+
+    def test_unusable_key_is_none_not_a_crash(self, monkeypatch):
+        # PyJWT refuses a PEM-shaped HMAC secret with InvalidKeyError, which is
+        # not an InvalidTokenError. The middleware has no catch-all any more,
+        # so letting it escape would 500 every bearer request, public routes
+        # included; rejecting it is the rejecting path's job.
+        token = _token({"sub": "1"})
+        monkeypatch.setenv(
+            "JWT_SECRET",
+            "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQY\n-----END PUBLIC KEY-----",
+        )
+        with pytest.raises(jwt.InvalidKeyError):  # the premise, pinned
+            jwt.decode(token, jwt_secret(), algorithms=[_JWT_ALGORITHM])
+        assert decode_token_quietly(token) is None
 
 
 class TestMalformedSubClaimWarns:
