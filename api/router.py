@@ -442,6 +442,37 @@ def _cache_control_for(full_path: str) -> str:
     return _NO_CACHE
 
 
+def _web_file(web_dir: str, full_path: str):
+    """Locate ``full_path`` inside the web build.
+
+    Returns ``(file, relative_path)`` when it names a regular file inside
+    ``web_dir``, ``(None, None)`` when it names nothing there (a client-side
+    route), and raises a 404 when it resolves outside ``web_dir``.
+
+    Both sides are resolved with ``realpath``, so ``..`` segments, an absolute
+    path (``/x`` or ``C:/x``), backslashes on Windows and symlinks are all
+    judged by where they actually land. A symlink inside the build that points
+    outside it is refused rather than followed. The root is resolved on every
+    call, not cached, so a ``web_client`` that is itself a symlink swapped by a
+    deploy is followed to the build it currently names.
+    """
+    web_root = os.path.realpath(web_dir)
+    try:
+        resolved = os.path.realpath(os.path.join(web_root, full_path))
+        # commonpath raises ValueError for paths on different Windows drives,
+        # realpath for an embedded NUL; neither can name a file in the build.
+        inside = os.path.commonpath([web_root, resolved]) == web_root
+    except ValueError:
+        inside = False
+    if not inside:
+        # Not the SPA shell: no browser sends a path that climbs out of the
+        # site, so this is not a client route and gets the plain 404.
+        raise StarletteHTTPException(status_code=404)
+    if not os.path.isfile(resolved):
+        return None, None
+    return resolved, os.path.relpath(resolved, web_root).replace(os.sep, "/")
+
+
 if os.path.isdir(_web_dir):
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str):
@@ -453,10 +484,12 @@ if os.path.isdir(_web_dir):
         # route gets when no web build is present.
         if full_path == "api" or full_path.startswith("api/"):
             raise StarletteHTTPException(status_code=404)
-        candidate = os.path.join(_web_dir, full_path)
-        if full_path and os.path.isfile(candidate):
+        candidate, relative = _web_file(_web_dir, full_path)
+        if candidate is not None:
             resp = FileResponse(candidate)
-            resp.headers["Cache-Control"] = _cache_control_for(full_path)
+            # Keyed on where the file really is, so assets/../main.dart.js
+            # keeps main.dart.js's no-cache policy.
+            resp.headers["Cache-Control"] = _cache_control_for(relative)
             return resp
         resp = FileResponse(os.path.join(_web_dir, "index.html"))
         resp.headers["Cache-Control"] = _NO_CACHE
