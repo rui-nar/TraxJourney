@@ -7,6 +7,7 @@ import '../auth/verify_email_banner.dart';
 import '../billing/upgrade_sheet.dart';
 import '../core/brand.dart';
 import '../core/project_ref.dart';
+import 'import_conflict_dialog.dart';
 import 'pending_invites_card.dart';
 import 'project_file.dart';
 import 'projects_notifier.dart';
@@ -357,11 +358,28 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
                                     if (name == null || !context.mounted) {
                                       return;
                                     }
-                                    final result =
+                                    var result =
                                         await notifier.uploadProjectFile(
                                       bytes: picked.bytes,
                                       name: name,
                                     );
+                                    // The name is taken: keep both, replace,
+                                    // or leave it (issue #452).
+                                    final taken = notifier.nameConflict;
+                                    if (taken != null && context.mounted) {
+                                      notifier.clearNameConflict();
+                                      final choice =
+                                          await showImportConflictDialog(
+                                              context, taken);
+                                      if (choice == null || !context.mounted) {
+                                        return;
+                                      }
+                                      result = await notifier.uploadProjectFile(
+                                        bytes: picked.bytes,
+                                        name: name,
+                                        onConflict: choice,
+                                      );
+                                    }
                                     if (result != null && context.mounted) {
                                       context.go(
                                           '/view?project=${Uri.encodeComponent(result)}');
