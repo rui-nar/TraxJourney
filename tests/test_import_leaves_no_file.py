@@ -104,15 +104,20 @@ def test_successful_import_leaves_no_file_behind(env):
 
 def test_import_does_not_grow_measured_storage(env):
     client, engine, uid, user_dir = env
+    # A known counter value, so "unchanged" is a real observation rather than
+    # an absent row read as 0.
+    with Session(engine) as sess:
+        sess.add(UserUsage(user_info_id=uid, storage_bytes=12_345))
+        sess.commit()
     before = storage_mod.dir_size(user_dir)
 
     r = _import(client, f"Trip{ProjectIO.EXTENSION}", _project_bytes())
 
     assert r.status_code == 201, r.text
-    # Both measures: the admin dashboard's walk and the quota counter the
-    # import reconciles.
+    # Both measures: the admin dashboard's walk of the user's directory, and
+    # the quota counter, which the import leaves alone now it writes no file.
     assert storage_mod.dir_size(user_dir) == before
-    assert _counted_storage(engine, uid) == before
+    assert _counted_storage(engine, uid) == 12_345
 
 
 def test_import_that_fails_during_ingest_leaves_no_file_behind(env, monkeypatch):
@@ -134,6 +139,9 @@ def test_import_of_a_malformed_file_leaves_no_file_behind(env):
 
     r = _import(client, f"Trip{ProjectIO.EXTENSION}", b'{"items": [not json')
 
+    # Deliberately loose: a malformed file currently answers a pre-existing
+    # 500, which should become a 4xx under its own issue. Only the "no file
+    # left behind" half is this test's business.
     assert r.status_code >= 400
     assert _files_under(user_dir) == []
 
