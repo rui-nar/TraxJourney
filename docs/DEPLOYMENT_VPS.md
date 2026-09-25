@@ -191,7 +191,8 @@ rebuild — jobs simply run in-process again.
 
 If you scrape `/metrics`, also set `PROMETHEUS_MULTIPROC_DIR` to a directory
 both containers mount. Without it the scrape only sees the API process and
-job-side DB metrics silently go missing (see docs/METRICS.md).
+job-side DB metrics silently go missing (see docs/METRICS.md). The app clears
+that directory itself on a stack start; it needs no cron job or manual `rm`.
 
 ## 4. Data migration (NAS -> VPS)
 

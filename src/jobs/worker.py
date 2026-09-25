@@ -16,6 +16,7 @@ import time
 from src.jobs.queue import ALL_QUEUES
 from src.jobs.redis_client import get_redis, redis_url, reset_redis
 from src.utils.logging import configure_logging, env_level, get_logger
+from src.utils.metrics_multiproc import forget_process
 
 _log = get_logger(__name__)
 
@@ -69,6 +70,22 @@ def _work_horse_killed_handler(job, retpid, ret_val, rusage) -> None:
         _log.exception("work_horse_killed_handler failed for job %s", getattr(job, "id", "?"))
 
 
+class _ForgetsWorkHorses:
+    """Mixin for ``rq.Worker``: forget each work-horse's metrics once it exits.
+
+    RQ forks a work-horse per job, and each one writes its own files to
+    ``PROMETHEUS_MULTIPROC_DIR`` (issue #437). ``horse_pid`` is read before
+    monitoring because RQ resets it to 0 once the horse has exited.
+    """
+
+    def monitor_work_horse(self, job, queue):
+        horse = self.horse_pid
+        try:
+            super().monitor_work_horse(job, queue)
+        finally:
+            forget_process(horse)
+
+
 def _connect_with_retry(sleep=time.sleep):
     """Block until Redis answers, retrying with backoff instead of giving up."""
     attempt = 0
@@ -104,7 +121,8 @@ def main(argv: list[str] | None = None) -> int:
     from rq import Worker
 
     _log.info("worker starting on queues: %s", ", ".join(queues))
-    Worker(
+    worker_class = type("Worker", (_ForgetsWorkHorses, Worker), {})
+    worker_class(
         queues, connection=client,
         work_horse_killed_handler=_work_horse_killed_handler,
     ).work(with_scheduler=False)

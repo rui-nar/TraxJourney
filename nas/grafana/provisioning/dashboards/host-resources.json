@@ -138,7 +138,7 @@
       "id": 6,
       "type": "timeseries",
       "title": "TraxJourney API process RSS",
-      "description": "process_resident_memory_bytes for the traxjourney job — the app's own view of its memory, from prometheus_client's default collector. Empty if PROMETHEUS_MULTIPROC_DIR is set (worker containers running, docs/DEPLOYMENT_VPS.md): multiprocess mode doesn't aggregate this metric across processes. Host memory above is the reliable signal either way.",
+      "description": "process_resident_memory_bytes for the traxjourney job — the app's own view of its memory, from prometheus_client's default collector. With PROMETHEUS_MULTIPROC_DIR set (worker containers running, docs/DEPLOYMENT_VPS.md) this is the API process alone; the workers' memory shows only in host memory above, the reliable signal either way.",
       "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16},
       "datasource": {"type": "prometheus", "uid": "$datasource"},
       "targets": [
