@@ -37,8 +37,12 @@ async def metrics(request: Request) -> Response:
     header = request.headers.get("authorization", "")
     scheme, _, presented = header.partition(" ")
     # compare_digest over a constant-time comparison of the token itself; the
-    # scheme check is not secret.
-    if scheme.lower() != "bearer" or not hmac.compare_digest(presented.strip(), expected):
+    # scheme check is not secret. Compared as bytes: compare_digest raises on
+    # non-ASCII str, and Starlette hands headers over decoded as latin-1, so
+    # re-encoding latin-1 recovers the bytes the client sent (issue #450).
+    if scheme.lower() != "bearer" or not hmac.compare_digest(
+        presented.strip().encode("latin-1"), expected.encode("utf-8")
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid metrics token"
         )

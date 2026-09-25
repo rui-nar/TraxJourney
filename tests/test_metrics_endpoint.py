@@ -42,6 +42,21 @@ class TestMetricsAuth:
         monkeypatch.setenv("METRICS_TOKEN", "right")
         assert client.get("/metrics").status_code == 401
 
+    def test_rejects_a_non_ascii_token_without_an_error(self, monkeypatch, caplog):
+        """Starlette decodes headers as latin-1, and hmac.compare_digest raises
+        TypeError on non-ASCII str. Anyone could turn that into a 500 and an
+        ERROR log line (issue #450); it must be a plain 401."""
+        import logging
+
+        import api.router as router
+
+        monkeypatch.setenv("METRICS_TOKEN", "right")
+        lenient = TestClient(router.app, raise_server_exceptions=False)
+        with caplog.at_level(logging.ERROR):
+            resp = lenient.get("/metrics", headers={"Authorization": b"Bearer \xff"})
+        assert resp.status_code == 401
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
     def test_rejects_a_non_bearer_scheme(self, client, monkeypatch):
         monkeypatch.setenv("METRICS_TOKEN", "right")
         assert client.get(
