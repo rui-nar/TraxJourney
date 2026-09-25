@@ -35,7 +35,7 @@ deployment target, and `deploy.ps1` no longer has a code path that reaches it.
 Deploys don't log in as the image's default account. They use a personal
 account, written `<deploy-user>` here. `deploy.ps1` connects as it
 (`DEPLOY_USER` in `deploy.env`), the validation webhook runs as it (`User=` in
-`vps/webhook/webhook.service`), and it holds the GHCR login both of them pull
+the installed unit, filled in by §8 step 5), and it holds the GHCR login both of them pull
 with. What it needs:
 
 - **`docker` group.** `deploy.ps1` and the webhook only run `docker compose`
@@ -669,8 +669,9 @@ repository's current name, so installed earlier it never fires.
 ### Checklist
 
 Run the VPS steps as `<deploy-user>`, the user `deploy.ps1` connects as (§1).
-Replace `<deploy-user>` everywhere below with its name, and check that `User=`
-in `webhook.service` names it too before installing the unit in step 5.
+Replace `<deploy-user>` everywhere below with its name. The tracked
+`webhook.service` says `User=<deploy-user>` too; step 5 writes the name of the
+user running it into the installed copy.
 
 **1. [VPS] Check the deploy user can run the val stack.**
 
@@ -725,7 +726,8 @@ in rejects every delivery instead of accepting a key anyone can read on GitHub.
 **5. [VPS] Install and start the unit.**
 
 ```bash
-sudo cp /opt/traxjourney-val/webhook/webhook.service /etc/systemd/system/webhook.service
+sed "s/^User=<deploy-user>$/User=$(id -un)/" /opt/traxjourney-val/webhook/webhook.service | sudo tee /etc/systemd/system/webhook.service >/dev/null
+grep '^User=' /etc/systemd/system/webhook.service       # User=<your deploy user's name>
 sudo systemctl daemon-reload
 sudo systemctl enable --now webhook
 systemctl status webhook --no-pager

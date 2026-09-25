@@ -154,16 +154,57 @@ def test_the_documented_caddy_route_and_payload_url_reach_the_listener(hook):
     assert f"https://val.traxjourney.com{prefix}/hooks/{hook['id']}" in doc
 
 
+def test_the_tracked_unit_names_no_real_user():
+    """The repository is public (#424/#444): the unit carries the placeholder,
+    and the install step in DEPLOYMENT_VPS.md §8 writes the real name in."""
+    users = re.findall(r"^User=(\S+)$", UNIT.read_text(encoding="utf-8"), re.M)
+    assert users == ["<deploy-user>"]
+
+
+def _documented_install() -> str:
+    """The sed of §8 step 5 that fills in User= while copying the unit into place."""
+    doc = DEPLOY_DOC.read_text(encoding="utf-8")
+    install = re.search(
+        r'^(sed "[^"\n]+") /opt/traxjourney-val/webhook/webhook\.service '
+        r'\| sudo tee /etc/systemd/system/webhook\.service >/dev/null$', doc, re.M)
+    assert install, "§8 step 5 no longer installs the unit through the User= substitution"
+    return install.group(1)
+
+
+def _install_as(tmp_path: Path, user: str | None) -> str:
+    """Run the documented sed on the tracked unit, as the VPS steps do. With
+    `user`, `id -un` answers that name, as it would for that account."""
+    sh = shutil.which("sh")
+    if sh is None:
+        pytest.skip("needs a POSIX sh with sed")
+    command = _documented_install()
+    if user is not None:
+        command = command.replace("$(id -un)", user)
+    unit = tmp_path / "webhook.service"
+    shutil.copy(UNIT, unit)
+    done = subprocess.run([sh, "-c", f'{command} "$0"', unit.as_posix()],
+                          capture_output=True, text=True, encoding="utf-8")
+    assert done.returncode == 0, done.stderr
+    return done.stdout
+
+
+def test_the_documented_install_writes_the_installing_user(tmp_path):
+    installed = _install_as(tmp_path, None)
+    me = subprocess.run([shutil.which("sh"), "-c", "id -un"], capture_output=True, text=True).stdout.strip()
+    assert re.findall(r"^User=(.*)$", installed, re.M) == [me]
+    assert installed.replace(f"User={me}", "User=<deploy-user>") == UNIT.read_text(encoding="utf-8")
+
+
 @pytest.mark.skipif(not DEPLOY_ENV.exists(), reason="deploy.env is gitignored, local-only")
-def test_the_unit_runs_as_the_user_deploy_ps1_connects_as():
-    """The unit said User=debian while every manual deploy runs as another user."""
+def test_the_installed_unit_runs_as_the_user_deploy_ps1_connects_as(tmp_path):
+    """The unit said User=debian while every manual deploy runs as another
+    user. §8's steps run as that user, so the install writes its name."""
     deploy_user = re.search(r"""^\s*DEPLOY_USER\s*=\s*["']?([^"'\s#]+)""",
                             DEPLOY_ENV.read_text(encoding="utf-8-sig"), re.M)
     if not deploy_user:
         pytest.skip("DEPLOY_USER is not set in deploy.env")
-    unit_user = re.search(r"^User=(\S+)$", UNIT.read_text(encoding="utf-8"), re.M)
-    assert unit_user
-    assert unit_user.group(1) == deploy_user.group(1)
+    installed = _install_as(tmp_path, deploy_user.group(1))
+    assert re.findall(r"^User=(.*)$", installed, re.M) == [deploy_user.group(1)]
 
 
 # ---------------------------------------------------------------------------

@@ -130,7 +130,7 @@ _DEPLOY_DOC = ROOT / "docs" / "DEPLOYMENT_VPS.md"
 # these count: `-o` is an account for `install`, an output file for `curl`.
 _ACCOUNT_ARGS = [
     re.compile(r"\bsudo\s+-u\s+(\S+)"),
-    re.compile(r"(?:^|[;&|`(])\s*id\s+([^\s;`)|&]+)"),                    # a command, not the word
+    re.compile(r"(?:^|[;&|`(])\s*id\s+([^\s;`)|&-][^\s;`)|&]*)"),         # a command, not the word
     re.compile(r"^\s*User=(\S+)"),                                      # systemd unit
     re.compile(r"\bchown\s+(?:-\w+\s+)*([^\s:-][^\s:]*)"),
     re.compile(r"\badduser\s+(?:--?\S+\s+)*([^\s-]\S*)"),
@@ -161,6 +161,14 @@ def test_deployment_doc_names_no_real_login_user():
     assert _named_users(doc) == []
 
 
+def test_tracked_deploy_config_names_no_real_login_user():
+    """The files installed on the VPS as they are, e.g. the webhook unit's User=."""
+    config = [p for p in _tracked_files() if p.startswith("vps/")]
+    assert "vps/webhook/webhook.service" in config
+    found = [f"{p}: {hit}" for p in config for hit in _named_users((ROOT / p).read_text(encoding="utf-8"))]
+    assert found == [], "use <deploy-user>; the install step fills it in"
+
+
 @pytest.mark.parametrize(("line", "named"), [
     ("sudo -u someone -H docker ps", True),
     ("id someone", True),
@@ -178,6 +186,7 @@ def test_deployment_doc_names_no_real_login_user():
     ("sudo usermod -aG docker,sudo <deploy-user>", False),
     ("sudo chown -R $USER:$USER /opt/viewtrip", False),
     ("a line that ends in `sudo chown -R", False),
+    ('sed "s/^User=<deploy-user>$/User=$(id -un)/" webhook.service', False),
     # Not a command naming an account (review of #444).
     ("curl -o out.txt https://example.invalid/x", False),
     ('curl -fsSLo "$f" "https://example.invalid/$f"', False),
