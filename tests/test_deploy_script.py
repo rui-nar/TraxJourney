@@ -600,3 +600,58 @@ def test_validation_build_of_a_clean_release_commit_also_pushes_its_tag(sandbox,
     deploy = _options(dict(_verifier_calls(read))["deploy"])
     assert deploy["--built-version"] == [described]
     assert deploy["--push"] == ["registry.invalid/owner/app:validation", "registry.invalid/owner/app:v1.2.3"]
+
+
+# -- DEPLOYMENT_VPS.md §1: copying the key from PowerShell (review of #444) -------
+
+DEPLOY_DOC = ROOT / "docs" / "DEPLOYMENT_VPS.md"
+PUBKEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIProbe444KeyMaterialOnly someone@workstation"
+
+# Records what the far side would get: its arguments and its stdin, as bytes.
+SSH_RECORDER = (
+    "import json, sys\n"
+    "out = sys.argv[1]\n"
+    "data = sys.stdin.buffer.read() if not sys.stdin.isatty() else b''\n"
+    "json.dump({'args': sys.argv[2:], 'stdin': data.decode('latin-1')}, open(out, 'w'))\n"
+)
+
+
+def _key_copy_snippet():
+    """The PowerShell lines of §1 that put the public key on the VPS."""
+    blocks = re.findall(r"```powershell\n(.*?)```", DEPLOY_DOC.read_text(encoding="utf-8"), re.DOTALL)
+    (block,) = [b for b in blocks if "authorized_keys" in b]
+    lines = block.splitlines()
+    last = next(i for i, line in enumerate(lines) if "authorized_keys" in line)
+    return "\n".join(line for line in lines[:last + 1] if not line.startswith("ssh-keygen"))
+
+
+@every_powershell
+def test_the_documented_key_copy_sends_no_carriage_return(tmp_path, exe):
+    """PowerShell pipes a string to a native command with CRLF line ends; a
+    CR in authorized_keys breaks the key. What reaches ssh must be LF only."""
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    (home / ".ssh" / "traxjourney_vps.pub").write_bytes(PUBKEY.encode() + b"\n")  # as ssh-keygen writes it
+    shims = tmp_path / "shims"
+    shims.mkdir()
+    (shims / "recorder.py").write_text(SSH_RECORDER, encoding="ascii")
+    record = tmp_path / "ssh.json"
+    python = os.environ.get("PYTHON_FOR_SHIMS") or shutil.which("python3") or shutil.which("python")
+    if os.name == "nt":
+        import sys
+        (shims / "ssh.bat").write_text(f'@"{sys.executable}" "%~dp0recorder.py" "{record}" %*\r\n', encoding="ascii")
+    else:
+        (shims / "ssh").write_text(f'#!/bin/sh\nexec "{python}" "$(dirname "$0")/recorder.py" "{record}" "$@"\n',
+                                   encoding="ascii")
+        (shims / "ssh").chmod(0o755)
+
+    # What the reader types: their home, and a value for each <placeholder>.
+    snippet = re.sub(r"<[a-z-]+>", "x", _key_copy_snippet().replace("$HOME", str(home)))
+    result = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", snippet],
+                            capture_output=True, text=True, timeout=60,
+                            env=dict(os.environ, PATH=f"{shims}{os.pathsep}{os.environ['PATH']}"))
+    assert result.returncode == 0, result.stdout + result.stderr
+    sent = json.loads(record.read_text())
+    everything = sent["stdin"] + "\n".join(sent["args"])
+    assert PUBKEY in everything
+    assert "\r" not in everything, repr(everything)

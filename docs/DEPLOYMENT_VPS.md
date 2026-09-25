@@ -64,13 +64,20 @@ sudo install -m 600 -o <deploy-user> -g <deploy-user> /dev/null /home/<deploy-us
 # then append the public key (traxjourney_vps.pub) to that authorized_keys
 ```
 
-On the dev machine (PowerShell; Windows has no `ssh-copy-id`):
+On the dev machine (PowerShell; Windows has no `ssh-copy-id`). This logs in
+with the provider's default account, which on the OVH image has `sudo`, to
+write the key into the new user's `authorized_keys`:
 
 ```powershell
 ssh-keygen -t ed25519 -f $HOME\.ssh\traxjourney_vps
-Get-Content $HOME\.ssh\traxjourney_vps.pub | ssh <default-user>@<vps-host> "sudo tee -a /home/<deploy-user>/.ssh/authorized_keys >/dev/null"
+$key = (Get-Content $HOME\.ssh\traxjourney_vps.pub -Raw).Trim()
+ssh <default-user>@<vps-host> "echo '$key' | sudo tee -a /home/<deploy-user>/.ssh/authorized_keys >/dev/null"
 ssh -i $HOME\.ssh\traxjourney_vps <deploy-user>@<vps-host> "id; docker ps"   # groups include docker
 ```
+
+The key travels inside the remote command, not through a pipe: PowerShell
+ends every line it pipes to `ssh` with CRLF, and that carriage return would
+land in `authorized_keys`, where it can break the entry.
 
 Then log in as `<deploy-user>` and run `docker login ghcr.io` there with the
 read-only token (below). The login lands in that user's `~/.docker/config.json`,
