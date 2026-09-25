@@ -123,3 +123,34 @@ def test_every_ip_allowlist_entry_is_still_needed():
 def test_scanner(tmp_path, line, flagged):
     (tmp_path / "doc.md").write_text(line + "\n")
     assert bool(_findings(["doc.md"], tmp_path)) is flagged
+
+
+_DEPLOY_DOC = ROOT / "docs" / "DEPLOYMENT_VPS.md"
+# A concrete account after the places the runbook names the deploy user.
+_CONCRETE_USER = re.compile(r"(?:(?:sudo -u|\bid| -[og])\s+|User=)(?!<)([a-z_][\w-]*)\b")
+
+
+def _named_users(doc: str) -> list[str]:
+    return [m.group(0) for m in _CONCRETE_USER.finditer(doc)]
+
+
+def test_deployment_doc_names_no_real_login_user():
+    """#444: the doc gave the deploy user as `debian`, and §8 as the owner's own
+    account. Both are the operator's, like the host: docs say <deploy-user>."""
+    doc = _DEPLOY_DOC.read_text(encoding="utf-8")
+    row = re.search(r"^\| SSH user \| (.+) \|$", doc, re.MULTILINE)
+    assert row and row.group(1).startswith("`<deploy-user>`"), row and row.group(1)
+    assert _named_users(doc) == []
+
+
+@pytest.mark.parametrize(("line", "named"), [
+    ("sudo -u someone -H docker ps", True),
+    ("id someone", True),
+    ("sudo install -d -o someone -g someone -m 755 /x", True),
+    ("User=someone", True),
+    ("sudo -u <deploy-user> -H docker ps", False),
+    ("sudo install -d -m 700 -o <deploy-user> -g <deploy-user> /x", False),
+    ("ssh -i key <deploy-user>@<vps-host> \"id; docker ps\"", False),
+])
+def test_named_user_scanner(line, named):
+    assert bool(_named_users(line)) is named

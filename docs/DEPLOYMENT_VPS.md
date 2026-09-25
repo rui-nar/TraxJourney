@@ -23,16 +23,65 @@ deployment target, and `deploy.ps1` no longer has a code path that reaches it.
 | Provider | OVH, VPS-1 2027 range |
 | Specs | 2 vCore, 4 GB RAM, 40 GB NVMe SSD, Strasbourg (FR) datacenter |
 | Image | Debian 12 - Docker (Docker preinstalled) |
-| SSH user | `debian` (OVH default account, sudo + docker group) |
+| SSH user | `<deploy-user>`: a personal account created at setup (§1), in the `docker` group; the same one in `deploy.env` and the webhook unit |
 | Prod directory | `/opt/traxjourney/` (`db/`, `config/`, `data/`, `docker-compose.yml`, `.env`) |
 | Val directory | `/opt/traxjourney-val/` (same layout, own `.env`, own data) |
 | Reverse proxy | Caddy (automatic Let's Encrypt TLS) |
 
 ## 1. VPS hardening
 
-- SSH key auth only: generated a dedicated key locally
-  (`~/.ssh/traxjourney_vps`), copied to `~/.ssh/authorized_keys` for the
-  `debian` user, then in `/etc/ssh/sshd_config`:
+### The deploy user
+
+Deploys don't log in as the image's default account. They use a personal
+account, written `<deploy-user>` here. `deploy.ps1` connects as it
+(`DEPLOY_USER` in `deploy.env`), the validation webhook runs as it (`User=` in
+`vps/webhook/webhook.service`), and it holds the GHCR login both of them pull
+with. What it needs:
+
+- **`docker` group.** `deploy.ps1` and the webhook only run `docker compose`
+  and `docker inspect` in `/opt/traxjourney` and `/opt/traxjourney-val`. They
+  never use `sudo`. Membership is root-equivalent, since anyone who can talk to
+  the Docker socket can mount `/`, so treat this key like a root key.
+- **An SSH key, and only a key.** Generate a dedicated key on the dev
+  machine and give it a passphrase: `deploy.ps1` asks for it once per deploy.
+- **`sudo`, for setup only.** The one-time steps in this runbook (packages,
+  Caddy, the webhook unit in §8, `chown` of the app directories) need root.
+  Keep sudo password-protected rather than `NOPASSWD`, so a stolen key alone
+  does not also give passwordless root through sudo. (The `docker` group
+  already amounts to root, so this is hygiene, not containment.)
+- **Ownership of the app directories**, so `docker compose` can read the
+  compose files and `.env` and the bind mounts stay writable:
+  `sudo chown -R <deploy-user>:<deploy-user> /opt/traxjourney /opt/traxjourney-val`.
+
+Created from the image's default sudo account, before key-only login is
+enforced:
+
+```bash
+sudo adduser <deploy-user>                  # sets the password sudo asks for
+sudo usermod -aG docker,sudo <deploy-user>
+sudo install -d -m 700 -o <deploy-user> -g <deploy-user> /home/<deploy-user>/.ssh
+sudo install -m 600 -o <deploy-user> -g <deploy-user> /dev/null /home/<deploy-user>/.ssh/authorized_keys
+# then append the public key (traxjourney_vps.pub) to that authorized_keys
+```
+
+On the dev machine (PowerShell; Windows has no `ssh-copy-id`):
+
+```powershell
+ssh-keygen -t ed25519 -f $HOME\.ssh\traxjourney_vps
+Get-Content $HOME\.ssh\traxjourney_vps.pub | ssh <default-user>@<vps-host> "sudo tee -a /home/<deploy-user>/.ssh/authorized_keys >/dev/null"
+ssh -i $HOME\.ssh\traxjourney_vps <deploy-user>@<vps-host> "id; docker ps"   # groups include docker
+```
+
+Then log in as `<deploy-user>` and run `docker login ghcr.io` there with the
+read-only token (below). The login lands in that user's `~/.docker/config.json`,
+which is where both `deploy.ps1`'s pull and the webhook's read it from. Once the
+new login works from a fresh terminal, the default account is no longer needed
+for anything.
+
+### SSH, firewall, registry
+
+- SSH key auth only: the key from above in `<deploy-user>`'s
+  `~/.ssh/authorized_keys`, then in `/etc/ssh/sshd_config`:
   - `PermitRootLogin no` (already default on the OVH image)
   - `PasswordAuthentication no`
   - `systemctl restart sshd` — **always verify the key login works from a
@@ -619,16 +668,16 @@ repository's current name, so installed earlier it never fires.
 
 ### Checklist
 
-Run the VPS steps as `rui`, the user `deploy.ps1` connects as. If the deploy
-user has another name, use it everywhere `rui` appears, including `User=` in
-the unit.
+Run the VPS steps as `<deploy-user>`, the user `deploy.ps1` connects as (§1).
+Replace `<deploy-user>` everywhere below with its name, and check that `User=`
+in `webhook.service` names it too before installing the unit in step 5.
 
 **1. [VPS] Check the deploy user can run the val stack.**
 
 ```bash
-id rui                                                  # groups must include docker
-sudo -u rui -H docker compose -f /opt/traxjourney-val/docker-compose.yml ps
-sudo -u rui -H docker pull ghcr.io/rui-nar/traxjourney:validation   # GHCR login works
+id <deploy-user>                                        # groups must include docker
+sudo -u <deploy-user> -H docker compose -f /opt/traxjourney-val/docker-compose.yml ps
+sudo -u <deploy-user> -H docker pull ghcr.io/rui-nar/traxjourney:validation   # GHCR login works
 ```
 
 The service runs as this user, with its groups and its `~/.docker/config.json`
@@ -649,7 +698,7 @@ unit from step 5, in `/etc/systemd/system`, replaces it.
 **3. [VPS] Copy the files.**
 
 ```bash
-sudo install -d -o rui -g rui -m 755 /opt/traxjourney-val/webhook
+sudo install -d -o <deploy-user> -g <deploy-user> -m 755 /opt/traxjourney-val/webhook
 cd /opt/traxjourney-val/webhook
 for f in deploy-validation.sh hooks.yaml.example webhook.service; do
   curl -fsSLo "$f" "https://raw.githubusercontent.com/rui-nar/TraxJourney/main/vps/webhook/$f"
@@ -664,11 +713,11 @@ cd /opt/traxjourney-val/webhook
 SECRET=$(openssl rand -hex 32)
 (umask 077; sed "s/secret: \"\"/secret: \"$SECRET\"/" hooks.yaml.example > hooks.yaml)
 grep -c "secret: \"$SECRET\"" hooks.yaml                # must print 1
-ls -l hooks.yaml                                        # -rw------- rui
+ls -l hooks.yaml                                        # -rw------- <deploy-user>
 echo "$SECRET"                                          # for step 7
 ```
 
-`hooks.yaml` holds the secret, so only `rui` can read it, and it is gitignored
+`hooks.yaml` holds the secret, so only `<deploy-user>` can read it, and it is gitignored
 in the repo. The example ships with an empty secret on purpose: `webhook`
 refuses to check a signature against an empty secret, so a copy nobody filled
 in rejects every delivery instead of accepting a key anyone can read on GitHub.
