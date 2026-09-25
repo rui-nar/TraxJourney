@@ -15,15 +15,15 @@ import re
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Any, Dict
+from typing import Annotated, Any, Dict, Literal, Optional
 
 import gpxpy
 import gpxpy.gpx
 import polyline as polyline_lib
 from models.db import get_session
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
 
@@ -35,6 +35,8 @@ from src.billing.entitlements import ensure_project_quota
 from src.brand import APP_NAME
 from src.models.great_circle import great_circle_points
 from src.project.project_io import InvalidProjectFile, ProjectIO
+from src.project.repo_transfer import ProjectNameTaken
+from src.utils.logging import request_id_var
 from src.utils.encryption_check import is_encrypted_envelope
 from src.utils.photo_paths import photo_file, photo_folder
 
@@ -45,6 +47,9 @@ router = APIRouter(prefix="/api/projects", tags=["projects"])
 
 class ImportedOut(BaseModel):
     name: str = Field(description="Name of the imported project")
+    outcome: Literal["created", "copied"] = Field(
+        description="created: under the file's name; copied: under a "
+                    "de-duplicated name, the file's name being taken")
 
 
 # ── Import ────────────────────────────────────────────────────────────────────
@@ -108,9 +113,31 @@ class _CappedUploadRoute(APIRoute):
         return capped
 
 
+def _name_conflict(name: str) -> JSONResponse:
+    """409 for a name the user already has a trip under (issue #452).
+
+    The name travels in its own field for the client to show; the detail
+    leaves it out, since a file name may hold a double quote and the client
+    reads the detail with a pattern that stops at one.
+    """
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={
+            "detail": "You already have a trip with this name.",
+            "code": "name_conflict",
+            "name": name,
+            "request_id": request_id_var.get(),
+        },
+    )
+
+
 async def import_project(
     file: Annotated[UploadFile, File()],
     current_user: Annotated[dict, Depends(get_current_user)],
+    on_conflict: Annotated[Optional[Literal["copy"]], Query(
+        description="What to do when the name is taken. Absent: refuse with "
+                    "409. copy: import under the first free \"<name> (n)\".",
+    )] = None,
 ):
     user_info_id = int(current_user["sub"])
 
@@ -134,11 +161,6 @@ async def import_project(
         raise _too_large()
     contents = await file.read()
 
-    # The storage quota does not apply: nothing lands on disk. The size is
-    # bounded by MAX_IMPORT_BYTES instead, whatever the plan (issue #434).
-    with get_session() as sess:
-        ensure_project_quota(sess, user_info_id)
-
     # Only the file's own faults are the uploader's (issue #451): anything else
     # raised while reading it, or during the ingest below, is a server bug and
     # stays a 500.
@@ -151,13 +173,27 @@ async def import_project(
         ) from None
 
     name = fname[: -len(ProjectIO.EXTENSION)]
+    copy = on_conflict == "copy"
     with get_session() as sess:
-        _repo.ingest_project(sess, user_info_id, name, project)
-    # Re-importing over an existing name replaces its content, so anything
-    # cached under that name is now wrong (issue #178).
-    bust_geo_cache(user_info_id, name)
+        # Refused before the plan limit is checked: at the limit the user must
+        # still learn the name is taken and get to choose (issue #452).
+        if not copy and _repo.project_exists(sess, user_info_id, name):
+            return _name_conflict(name)
+        # A copy or a new name is a new trip. The storage quota does not
+        # apply: nothing lands on disk. The size is bounded by
+        # MAX_IMPORT_BYTES instead, whatever the plan (issue #434).
+        ensure_project_quota(sess, user_info_id)
+        try:
+            imported = _repo.import_project(
+                sess, user_info_id, name, project, copy=copy)
+        except ProjectNameTaken:
+            # A concurrent request took the name after the check above.
+            return _name_conflict(name)
+    # A trip of that name may have existed, been cached, and been deleted
+    # (issue #178).
+    bust_geo_cache(user_info_id, imported)
 
-    return {"name": name, "filename": fname}
+    return {"name": imported, "outcome": "created" if imported == name else "copied"}
 
 
 router.add_api_route(
@@ -166,6 +202,8 @@ router.add_api_route(
     summary="Import a .traxj file",
     responses={
         400: {"description": "Not a .traxj file, or not a readable trip"},
+        409: {"description": "The name is taken and on_conflict was not given; "
+                             "the body's name field holds it"},
         413: {"description": "The file is larger than MAX_IMPORT_BYTES"},
     },
     route_class_override=_CappedUploadRoute,

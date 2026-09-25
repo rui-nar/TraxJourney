@@ -8,10 +8,12 @@ from __future__ import annotations
 import copy
 import dataclasses
 import json
+import re
 import uuid
-from typing import Dict, Optional
+from typing import Dict, Optional, Set
 
-from sqlmodel import Session
+from sqlalchemy.exc import IntegrityError
+from sqlmodel import Session, select
 
 from models.project_db import DBEncounter, DBMemory, DBPerson, DBPersonGroup, DBProject, DBProjectItem
 from src.models.activity import is_activity_id
@@ -20,6 +22,55 @@ from src.models.project import Project
 from src.project.local_ids import allocate_local_activity_id
 from src.project.project_io import ProjectIO
 from src.project.repo_core import _compute_low_res_geo
+
+
+class ProjectNameTaken(Exception):
+    """The owner already has a trip called ``name`` (issue #452)."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__(name)
+        self.name = name
+
+
+#: A trailing " (n)" counter, as "Keep both" appends it. Only a positive
+#: integer after a space counts, so "X(2)" or "Day (one)" are plain names.
+_COUNTER = re.compile(r"^(?P<base>.+) \((?P<n>[1-9][0-9]*)\)$")
+
+#: How many times an import picks again after losing a race for a name or a
+#: memory public_id to a concurrent request. Each loss means another request
+#: committed in between; five in a row is not a race, it is a bug.
+_ATTEMPTS = 5
+
+
+def copy_name(name: str, taken: Set[str]) -> str:
+    """*name* if it is free, else the first free "<base> (n)", n >= 2.
+
+    A name that already ends in a counter counts on from its base, so a copy
+    of "Alps (2)" is "Alps (3)", not "Alps (2) (2)".
+    """
+    if name not in taken:
+        return name
+    match = _COUNTER.match(name)
+    base = match.group("base") if match else name
+    n = 2
+    while f"{base} ({n})" in taken:
+        n += 1
+    return f"{base} ({n})"
+
+
+def _violates(exc: IntegrityError, *markers: str) -> bool:
+    # SQLite names the columns ("project.user_info_id, project.name"),
+    # PostgreSQL the index; accept either.
+    message = str(exc.orig)
+    return any(marker in message for marker in markers)
+
+
+def _is_name_clash(exc: IntegrityError) -> bool:
+    return _violates(exc, "project.user_info_id, project.name", "uq_project_user_name")
+
+
+def _is_public_id_clash(exc: IntegrityError) -> bool:
+    return _violates(exc, "memory.public_id", "ix_memory_public_id")
 
 
 class ImportExportMixin:
@@ -68,6 +119,43 @@ class ImportExportMixin:
         mine.rebuild_map()
         return mine
 
+    def _taken_names(self, sess: Session, user_info_id: int) -> Set[str]:
+        """Every trip name the owner has."""
+        return set(sess.exec(
+            select(DBProject.name).where(DBProject.user_info_id == user_info_id)
+        ).all())
+
+    def import_project(
+        self, sess: Session, user_info_id: int, name: str, project: Project,
+        *, copy: bool = False,
+    ) -> str:
+        """Write a parsed ``.traxj`` project as a new trip; return its name.
+
+        ``copy=False``: under *name* or not at all. ``copy=True`` ("Keep
+        both", issue #452): under *name* if free, else under
+        :func:`copy_name`. Raises :class:`ProjectNameTaken` when *name* is
+        taken and no copy was asked for, including when a concurrent request
+        took it first.
+
+        The unique index on (owner, name) and the unique memory public_id are
+        what settle a race: the loser's insert fails, everything it wrote is
+        rolled back, and it picks again from what is committed now.
+        """
+        for attempt in range(_ATTEMPTS):
+            taken = self._taken_names(sess, user_info_id)
+            target = copy_name(name, taken) if copy else name
+            if target in taken:
+                raise ProjectNameTaken(name)
+            try:
+                self.ingest_project(sess, user_info_id, target, project)
+                return target
+            except IntegrityError as exc:
+                sess.rollback()
+                retry = _is_name_clash(exc) or _is_public_id_clash(exc)
+                if not retry or attempt == _ATTEMPTS - 1:
+                    raise
+        raise AssertionError("unreachable")  # pragma: no cover
+
     def ingest_project(
         self, sess: Session, user_info_id: int, db_name: str, project: Project
     ) -> None:
@@ -80,21 +168,15 @@ class ImportExportMixin:
         Takes the parsed project rather than a path so an import never has to
         land the upload on disk (issue #434).
 
-        Idempotent: if the project already exists in the DB, the call is a
-        no-op.  Activity rows are upserted so enriched data is never overwritten.
+        Always creates a trip: if ``db_name`` is taken, the insert fails with
+        an ``IntegrityError`` and the session must be rolled back. Callers go
+        through :meth:`import_project`, which decides the name. Activity rows
+        are upserted so enriched data is never overwritten.
         """
-        # Check for existing project before inserting
-        row = self._get_project_row(sess, user_info_id, db_name)
-        if row is not None:
-            return
-
         project = self._as_importers_activities(sess, user_info_id, project)
 
-        # 1. Upsert activities (do NOT overwrite enriched data if row exists)
-        for act in project.activities:
-            self._upsert_activity(sess, user_info_id, act)
-
-        # 2. Create project row (name = filename slug, version from JSON)
+        # 1. Create the project row first (name = filename slug, version from
+        # JSON), so a taken name fails before anything else is written.
         row = DBProject(
             user_info_id=user_info_id,
             name=db_name,
@@ -115,6 +197,22 @@ class ImportExportMixin:
         )
         sess.add(row)
         sess.flush()  # populate row.id
+
+        # 1a. Upsert activities (do NOT overwrite enriched data if row exists)
+        for act in project.activities:
+            self._upsert_activity(sess, user_info_id, act)
+
+        # A memory keeps its exported public_id, which share deep links address
+        # it by (#15), only while no other memory holds it: a copy of a trip
+        # that still exists must not take its memories' ids (issue #463).
+        wanted = {
+            it.memory.public_id for it in project.items
+            if it.item_type == "memory" and it.memory is not None
+            and isinstance(it.memory.public_id, str) and it.memory.public_id
+        }
+        used_public_ids: Set[str] = set(sess.exec(
+            select(DBMemory.public_id).where(DBMemory.public_id.in_(wanted))
+        ).all()) if wanted else set()
 
         # 2a. Create groups first, mapping each file group id → new DB id so people
         # can be re-linked to their group below (issue #50).
@@ -182,9 +280,14 @@ class ImportExportMixin:
             elif item.item_type == "memory" and item.memory is not None:
                 # Persist the memory row so we get its DB id
                 mem = item.memory
+                public_id = mem.public_id
+                if (not isinstance(public_id, str) or not public_id
+                        or public_id in used_public_ids):
+                    public_id = uuid.uuid4().hex
+                used_public_ids.add(public_id)
                 mem_row = DBMemory(
                     project_id=row.id,
-                    public_id=mem.public_id or uuid.uuid4().hex,
+                    public_id=public_id,
                     name=mem.name,
                     date=mem.date,
                     time=mem.time,
