@@ -235,14 +235,13 @@ between scrapes. The pool-utilisation panel divides `in_use` by capacity
     anywhere. Before #455 they were plain gauges, whose files held a 0 per
     process: production showed 0 on the pool and file-size panels, and the
     Strava quota alert could never fire.
-  - Gauge files in a mode no current gauge uses are not read. An in-place
-    upgrade (`pull && up -d`, no `down`) that changed a gauge's mode (as #437
-    did, from `all`) leaves the old containers' files until the next clear;
-    prometheus_client would otherwise take that gauge's mode from whichever
-    file it read last. No one-off `down` is needed for this upgrade. A future
-    change between two modes that are both still in use (say `max` to
-    `mostrecent` while another gauge keeps `max`) is not covered: deploy that
-    one with `docker compose down && up -d`.
+  - Each gauge is read only from files in the mode the running code defines
+    for it. An in-place upgrade (`pull && up -d`, no `down`) that changed a
+    gauge's mode (as #437 did, from `all`) leaves the old containers' files
+    until the next clear; prometheus_client would otherwise take that gauge's
+    mode from whichever file it read last. The check is per gauge, so it also
+    covers a change between two modes that other gauges still use, and a gauge
+    that no longer exists is dropped. No one-off `down` is needed.
   - `/metrics` also serves prometheus_client's process collector
     (`process_resident_memory_bytes` and the other `process_*` series), for
     the API process: the one the scrape job `traxjourney` names. It lives on

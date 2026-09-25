@@ -252,15 +252,20 @@ def test_a_gauge_from_a_dead_and_a_live_process_is_one_series(
     assert samples[0].value == expected
 
 
+@pytest.mark.parametrize("other_gauge_uses_all", [False, True])
 @pytest.mark.parametrize("all_last", [False, True])
-def test_gauge_files_left_by_an_older_mode_are_not_read(tmp_path, monkeypatch, all_last):
+def test_gauge_files_left_by_an_older_mode_are_not_read(
+        tmp_path, monkeypatch, all_last, other_gauge_uses_all):
     """An in-place upgrade (``pull && up -d``, no ``down``) keeps the old
     containers' ``gauge_all_*`` files while live writers stop the directory
     from being cleared. prometheus_client takes a gauge's combine mode from
     whichever file it reads last, so an old ``all`` file read after the new
     ``max`` one brings back the frozen per-pid series, and with it the false
     "backup silently stopped" alarm. Checked with the files in either order,
-    since the glob order is the filesystem's."""
+    since the glob order is the filesystem's.
+
+    The expected mode is per gauge: another gauge still using ``all`` must not
+    make an ``all`` file readable for this one."""
     import api.metrics as metrics_endpoint
     from prometheus_client import generate_latest
     from src.utils import metrics as app_metrics
@@ -284,6 +289,14 @@ def test_gauge_files_left_by_an_older_mode_are_not_read(tmp_path, monkeypatch, a
     monkeypatch.setattr(glob, "glob", ordered_glob)
     monkeypatch.setenv("PROMETHEUS_MULTIPROC_DIR", str(tmp_path))
 
-    text = generate_latest(metrics_endpoint._registry()).decode()
+    from prometheus_client import REGISTRY, Gauge
+    other = None
+    if other_gauge_uses_all:
+        other = Gauge("traxjourney_test_other_all_mode", "Probe.", multiprocess_mode="all")
+    try:
+        text = generate_latest(metrics_endpoint._registry()).decode()
+    finally:
+        if other is not None:
+            REGISTRY.unregister(other)
     lines = [l for l in text.splitlines() if l.startswith(gauge._name + "{")]
     assert lines == [f'{gauge._name}{{job_name="daily_backup"}} 90000.0'], lines

@@ -134,36 +134,60 @@ def _scrape_time_gauge(name: str, documentation: str, labelnames=()) -> ScrapeTi
     return gauge
 
 
-def _gauge_modes_in_use() -> set[str]:
-    """The multiprocess modes the gauges defined by this code use."""
+def _gauge_modes_by_name() -> dict[str, str]:
+    """{gauge name: multiprocess mode} for every gauge this code defines."""
     return {
-        collector._multiprocess_mode
+        collector._name: collector._multiprocess_mode
         for collector in set(REGISTRY._names_to_collectors.values())
         if isinstance(collector, Gauge)
     }
 
 
-def _read_by_this_code(path: str, modes: set[str]) -> bool:
-    """False for a gauge file in a mode no gauge of this code uses.
+def _read_current_files(files: list[str]):
+    """Merge the per-process files, reading each gauge only from files in the
+    mode this code defines for it.
 
-    Such a file was written by an older version: an in-place upgrade
-    (``pull && up -d``, no ``down``) keeps the old containers' files while
-    live writers stop the directory from being cleared. prometheus_client takes
-    a gauge's mode from whichever file it reads last, so reading an old
-    ``gauge_all_*`` after the new ``gauge_max_*`` brings back one frozen series
-    per dead process. Skipping it hides nothing current: no live process of
-    this code writes a mode it doesn't define. The file goes at the next clear.
+    A gauge file in any other mode was written by an older version: an
+    in-place upgrade (``pull && up -d``, no ``down``) keeps the old
+    containers' files while live writers stop the directory from being
+    cleared. prometheus_client takes a gauge's mode from whichever file it
+    reads last, so an old ``gauge_all_*`` read after the new ``gauge_max_*``
+    brings back one frozen series per dead process. No live process of this
+    code writes a gauge in a mode it doesn't define, so skipping those hides
+    nothing current; the files go at the next clear. The check is per gauge,
+    not per mode in use, so another gauge still in ``all`` can't let an old
+    ``all`` file through for this one.
+
+    Gauge files are read one mode at a time for that, then merged with
+    everything else. This uses the two steps of prometheus_client's public
+    ``MultiProcessCollector.merge``, ``_read_metrics`` and
+    ``_accumulate_metrics``; the multiprocess tests fail if they change.
     """
-    parts = os.path.basename(path).split("_")
-    return parts[0] != "gauge" or parts[1] in modes
+    from prometheus_client.multiprocess import MultiProcessCollector as MPC
+
+    expected = _gauge_modes_by_name()
+    gauges_by_mode: dict[str, list[str]] = {}
+    others: list[str] = []
+    for path in files:
+        parts = os.path.basename(path).split("_")
+        if parts[0] == "gauge":
+            gauges_by_mode.setdefault(parts[1], []).append(path)
+        else:
+            others.append(path)
+
+    metrics = MPC._read_metrics(others)
+    for mode, mode_files in gauges_by_mode.items():
+        for name, metric in MPC._read_metrics(mode_files).items():
+            if expected.get(name) == mode:
+                metrics[name] = metric
+    return MPC._accumulate_metrics(metrics, True)
 
 
 def multiprocess_registry(path: str) -> CollectorRegistry:
     """The registry ``/metrics`` serves with ``PROMETHEUS_MULTIPROC_DIR`` set:
-    the per-process files, less any left by an older gauge mode, plus the
-    scrape-time gauges and the process collector, both computed by this, the
-    serving, process: the API, which is what the scrape job ``traxjourney``
-    means.
+    the per-process files (see :func:`_read_current_files`), the scrape-time
+    gauges and the process collector, both computed by this, the serving,
+    process: the API, which is what the scrape job ``traxjourney`` means.
 
     The process collector (``process_resident_memory_bytes`` and friends) lives
     on the default registry, which multiprocess mode never serves, so it is
@@ -174,10 +198,7 @@ def multiprocess_registry(path: str) -> CollectorRegistry:
 
     class _CurrentFiles(multiprocess.MultiProcessCollector):
         def collect(self):
-            modes = _gauge_modes_in_use()
-            files = [f for f in glob.glob(os.path.join(self._path, "*.db"))
-                     if _read_by_this_code(f, modes)]
-            return self.merge(files, accumulate=True)
+            return _read_current_files(glob.glob(os.path.join(self._path, "*.db")))
 
     registry = CollectorRegistry()
     _CurrentFiles(registry, path=path)
