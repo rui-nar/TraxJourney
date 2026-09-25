@@ -595,6 +595,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="translate non-English entries and add an "
                              "LLM-written highlights paragraph")
     parser.add_argument("--model", default="claude-opus-5")
+    parser.add_argument("--output", default=None,
+                        help="write the notes to this file (UTF-8) instead "
+                             "of stdout")
     args = parser.parse_args(argv)
 
     # The warnings quote the offending entries, which are exactly the ones full
@@ -620,7 +623,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Written as UTF-8 bytes rather than through sys.stdout: the section
     # headings carry emoji, and a Windows console defaults to cp1252, which
     # raises UnicodeEncodeError on them.
-    sys.stdout.buffer.write(body.encode("utf-8"))
+    if args.output:
+        # The release script hands this file straight to `gh --notes-file`, so
+        # the text never passes through a PowerShell string: Windows PowerShell
+        # 5.1 writes files in cp1252, which turned every emoji into "?" and
+        # every em dash into U+FFFD in the v0.49.0 and v0.51.0 release pages.
+        with open(args.output, "wb") as f:
+            f.write(body.encode("utf-8"))
+    else:
+        sys.stdout.buffer.write(body.encode("utf-8"))
     return 0
 
 
