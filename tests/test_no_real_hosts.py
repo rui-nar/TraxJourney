@@ -184,7 +184,7 @@ def test_tracked_deploy_config_names_no_real_login_user():
     ("sudo install -d -m 700 -o <deploy-user> -g <deploy-user> /x", False),
     ("ssh -i key <deploy-user>@<vps-host> \"id; docker ps\"", False),
     ("sudo usermod -aG docker,sudo <deploy-user>", False),
-    ("sudo chown -R $USER:$USER /opt/viewtrip", False),
+    ("sudo chown -R $USER:$USER /opt/app", False),
     ("a line that ends in `sudo chown -R", False),
     ('sed "s/^User=<deploy-user>$/User=$(id -un)/" webhook.service', False),
     # Not a command naming an account (review of #444).
