@@ -241,7 +241,11 @@ between scrapes. The pool-utilisation panel divides `in_use` by capacity
     until the next clear; prometheus_client would otherwise take that gauge's
     mode from whichever file it read last. The check is per gauge, so it also
     covers a change between two modes that other gauges still use, and a gauge
-    that no longer exists is dropped. No one-off `down` is needed.
+    that no longer exists is dropped. No one-off `down` is needed. The API
+    logs each skipped gauge and mode once (`metrics: skipped ...`). Every app
+    metric is defined in `src/utils/metrics.py`, which the API always imports,
+    so a gauge only a worker defines can't be skipped by mistake;
+    `tests/test_metrics_defined_in_one_place.py` enforces it.
   - `/metrics` also serves prometheus_client's process collector
     (`process_resident_memory_bytes` and the other `process_*` series), for
     the API process: the one the scrape job `traxjourney` names. It lives on

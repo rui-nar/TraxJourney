@@ -300,3 +300,27 @@ def test_gauge_files_left_by_an_older_mode_are_not_read(
             REGISTRY.unregister(other)
     lines = [l for l in text.splitlines() if l.startswith(gauge._name + "{")]
     assert lines == [f'{gauge._name}{{job_name="daily_backup"}} 90000.0'], lines
+
+
+def test_a_skipped_gauge_file_is_logged_once(tmp_path, monkeypatch, caplog):
+    """Say so when a gauge is dropped, but not on every 30 s scrape."""
+    import logging
+
+    import api.metrics as metrics_endpoint
+    from prometheus_client import generate_latest
+    from prometheus_client.mmap_dict import MmapedDict, mmap_key
+    from src.utils import metrics as app_metrics
+
+    gauge = app_metrics.JOB_LAST_SUCCESS
+    f = MmapedDict(str(tmp_path / "gauge_liveall_oldcontainer-3.db"))
+    f.write_value(mmap_key(gauge._name, gauge._name, list(gauge._labelnames),
+                           ["log_probe"], gauge._documentation), 1.0, 0.0)
+    f.close()
+    monkeypatch.setenv("PROMETHEUS_MULTIPROC_DIR", str(tmp_path))
+
+    with caplog.at_level(logging.INFO, logger="src.utils.metrics"):
+        generate_latest(metrics_endpoint._registry())
+        generate_latest(metrics_endpoint._registry())
+    lines = [r.getMessage() for r in caplog.records if "skipped" in r.getMessage()]
+    assert len(lines) == 1, lines
+    assert gauge._name in lines[0] and "liveall" in lines[0]

@@ -180,7 +180,18 @@ def _read_current_files(files: list[str]):
         for name, metric in MPC._read_metrics(mode_files).items():
             if expected.get(name) == mode:
                 metrics[name] = metric
+            elif (name, mode) not in _SKIPPED_GAUGE_FILES:
+                # Once per process: the files stay until the next clear, and
+                # a line per 30 s scrape would drown everything else.
+                _SKIPPED_GAUGE_FILES.add((name, mode))
+                _log.info(
+                    "metrics: skipped %s from gauge files in mode %r (this code "
+                    "defines %r); left by an older version until the next clear",
+                    name, mode, expected.get(name))
     return MPC._accumulate_metrics(metrics, True)
+
+
+_SKIPPED_GAUGE_FILES: set[tuple[str, str]] = set()
 
 
 def multiprocess_registry(path: str) -> CollectorRegistry:
