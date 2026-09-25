@@ -6,7 +6,7 @@ for the composed class and module docstring.
 from __future__ import annotations
 
 import json
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from sqlalchemy import delete
 from sqlmodel import Session, select
@@ -109,8 +109,13 @@ class ActivityMixin:
         activity_id: int,
         summary_polyline: Optional[str],
         elevation_profile_json: Optional[str],
+        *,
+        owner_id: int,
     ) -> None:
         """Update only the enrichment columns of an activity row.
+
+        ``owner_id`` is the account whose Strava streams these are; a row owned
+        by any other account is left alone.
 
         Skips a field whose EXISTING value is already a client-side E2EE
         ciphertext envelope (issue #29) — once a field is encrypted, a
@@ -118,7 +123,7 @@ class ActivityMixin:
         streams) must not silently overwrite it back to plaintext.
         """
         row = sess.get(DBActivity, activity_id)
-        if row is None:
+        if row is None or row.user_info_id != owner_id:
             return
         if summary_polyline is not None and not is_encrypted_envelope(row.summary_polyline):
             row.summary_polyline = summary_polyline
@@ -763,11 +768,14 @@ class ActivityMixin:
         if existing is None:
             self._upsert_activity(sess, user_info_id, act)
             return
+        # An activity row belongs to one account for good: another account's
+        # refresh neither rewrites it nor takes it over.
+        if existing.user_info_id != user_info_id:
+            return
 
         if project_id is not None:
             bump_lock_version(sess, project_id)
 
-        existing.user_info_id = user_info_id
         if not is_encrypted_envelope(existing.name):
             existing.name = act.name
         existing.type = act.type
@@ -817,6 +825,26 @@ class ActivityMixin:
     # Private helpers
     # ------------------------------------------------------------------
 
+    def activity_owners(self, sess: Session, activity_ids) -> Dict[int, int]:
+        """Owner account of each of *activity_ids* that has a row."""
+        ids = {aid for aid in activity_ids if aid is not None}
+        if not ids:
+            return {}
+        return dict(sess.exec(
+            select(DBActivity.id, DBActivity.user_info_id).where(DBActivity.id.in_(ids))
+        ).all())
+
+    def own_activities_only(
+        self, sess: Session, user_info_id: int, activities: List[Activity]
+    ) -> List[Activity]:
+        """*activities* less those whose row another account owns.
+
+        What an account adds to a trip must be its own: an activity whose id
+        already belongs to someone else is theirs, not the caller's.
+        """
+        owners = self.activity_owners(sess, [a.id for a in activities])
+        return [a for a in activities if owners.get(a.id, user_info_id) == user_info_id]
+
     def _upsert_activity(
         self, sess: Session, user_info_id: int, act: Activity
     ) -> None:
@@ -824,11 +852,14 @@ class ActivityMixin:
 
         Enriched data (summary_polyline, elevation_profile) is only written
         for new rows — existing rows may already have richer data from a
-        previous enrichment pass.
+        previous enrichment pass. A row owned by another account is never
+        written: an activity row belongs to the account that created it.
         """
         if act.id is None:
             return
         existing = sess.get(DBActivity, act.id)
+        if existing is not None and existing.user_info_id != user_info_id:
+            return
         if existing is not None:
             # Update mutable user-visible fields always — except name, once it's
             # already a client-side E2EE ciphertext envelope (issue #29): a

@@ -446,7 +446,10 @@ def strava_sync(
         all_raw = _fetch_all_strava(client)
         _save_cache(user_info_id, all_raw)
 
-        activities = parse_activities_or_log(all_raw, "strava_sync")
+        # An id another account already holds is theirs, even when both
+        # accounts are linked to the same Strava athlete.
+        activities = _project_repo.own_activities_only(
+            sess, user_info_id, parse_activities_or_log(all_raw, "strava_sync"))
         project_row_id = row.id
         _save_refreshed_token(sess, token_row, client)
 

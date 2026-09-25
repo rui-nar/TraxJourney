@@ -5,6 +5,8 @@ for the composed class and module docstring.
 """
 from __future__ import annotations
 
+import copy
+import dataclasses
 import json
 import uuid
 from typing import Dict, Optional
@@ -14,12 +16,53 @@ from sqlmodel import Session
 from models.project_db import DBEncounter, DBMemory, DBPerson, DBPersonGroup, DBProject, DBProjectItem
 from src.models.person import polarsteps_from_socials
 from src.models.project import Project
+from src.project.local_ids import allocate_local_activity_id
 from src.project.project_io import ProjectIO
 from src.project.repo_core import _compute_low_res_geo
 
 
 class ImportExportMixin:
     """Project file ingestion into the DB."""
+
+    def _as_importers_activities(
+        self, sess: Session, user_info_id: int, project: Project
+    ) -> Project:
+        """*project* with every activity it holds made the importer's own.
+
+        An activity row belongs to the account that created it, and a file can
+        name any id. The file's activities whose id another account holds
+        become the importer's own copies under fresh local ids: the file's
+        content is kept, the other account's row is neither written nor
+        referenced. An item naming an activity the file does not carry is kept
+        only if that activity is the importer's. Returns a new project; the
+        one given is not changed.
+        """
+        owners = self.activity_owners(sess, [a.id for a in project.activities] + [
+            it.activity_id for it in project.items if it.item_type == "activity"])
+        others = {aid for aid, owner in owners.items() if owner != user_info_id}
+        if not others:
+            return project
+
+        new_ids: Dict[int, int] = {}
+        activities = []
+        for act in project.activities:
+            if act.id in others:
+                new_ids.setdefault(act.id, allocate_local_activity_id(sess))
+                act = dataclasses.replace(act, id=new_ids[act.id])
+            activities.append(act)
+        items = []
+        for item in project.items:
+            if item.item_type == "activity" and item.activity_id in others:
+                if item.activity_id not in new_ids:
+                    continue
+                item = dataclasses.replace(item, activity_id=new_ids[item.activity_id])
+            items.append(item)
+
+        mine = copy.copy(project)
+        mine.activities = activities
+        mine.items = items
+        mine.rebuild_map()
+        return mine
 
     def ingest_project(
         self, sess: Session, user_info_id: int, db_name: str, project: Project
@@ -40,6 +83,8 @@ class ImportExportMixin:
         row = self._get_project_row(sess, user_info_id, db_name)
         if row is not None:
             return
+
+        project = self._as_importers_activities(sess, user_info_id, project)
 
         # 1. Upsert activities (do NOT overwrite enriched data if row exists)
         for act in project.activities:

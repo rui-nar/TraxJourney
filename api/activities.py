@@ -273,7 +273,8 @@ def _enrich_activities_background(
             if polyline_str or ep_json:
                 with get_session() as sess:
                     _repo.update_activity_enrichment(
-                        sess, activity_id, polyline_str, ep_json
+                        sess, activity_id, polyline_str, ep_json,
+                        owner_id=user_info_id,
                     )
                 any_enriched = True
         except RateLimitError:
@@ -360,6 +361,11 @@ def add_activities(
         row = resolve_project(sess, user_info_id, name, owner, min_role="editor")
         owner_id = row.user_info_id
         project_id = row.id
+        # Only the caller's own activities: an id another account already
+        # holds is theirs. save_project enforces the same within its own
+        # transaction; filtering here keeps the counts and the enrichment
+        # below to what can actually be added.
+        activities = _repo.own_activities_only(sess, user_info_id, activities)
 
     added_holder: Dict[str, int] = {}
 

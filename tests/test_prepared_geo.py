@@ -273,7 +273,8 @@ def test_enrichment_writes_the_row(repo_env):
     engine, _uid, _pid, repo = repo_env
     with Session(engine) as sess:
         repo.update_activity_enrichment(
-            sess, 111, polyline_lib.encode(_wiggly(500, lon=-71.0)), None)
+            sess, 111, polyline_lib.encode(_wiggly(500, lon=-71.0)), None,
+            owner_id=_uid)
     _assert_current(engine, 111)
 
 
@@ -345,7 +346,7 @@ def test_a_force_refresh_rewrites_the_row(repo_env):
 def test_a_force_refresh_that_drops_the_polyline_drops_the_row(repo_env):
     engine, uid, pid, repo = repo_env
     with Session(engine) as sess:
-        repo.update_activity_enrichment(sess, 111, polyline_lib.encode(_TRACK), None)
+        repo.update_activity_enrichment(sess, 111, polyline_lib.encode(_TRACK), None, owner_id=uid)
     assert _row(engine, 111) is not None
     with Session(engine) as sess:
         repo.force_update_activity(sess, uid, _activity(111, summary_polyline=None), pid)
@@ -379,7 +380,7 @@ def test_enrichment_of_an_encrypted_row_leaves_no_row(repo_env):
                             summary_polyline=_ENC_POLY, start_date="2026-01-01T00:00:00Z"))
         sess.commit()
     with Session(engine) as sess:
-        repo.update_activity_enrichment(sess, 555, polyline_lib.encode(_TRACK), None)
+        repo.update_activity_enrichment(sess, 555, polyline_lib.encode(_TRACK), None, owner_id=uid)
     assert _row(engine, 555) is None
 
 
@@ -390,7 +391,7 @@ def test_encrypting_a_track_removes_the_plaintext_row(repo_env):
     serving the very track the user just encrypted."""
     engine, uid, _pid, repo = repo_env
     with Session(engine) as sess:
-        repo.update_activity_enrichment(sess, 111, polyline_lib.encode(_TRACK), None)
+        repo.update_activity_enrichment(sess, 111, polyline_lib.encode(_TRACK), None, owner_id=uid)
     assert _row(engine, 111) is not None
 
     app = FastAPI()
@@ -428,7 +429,7 @@ def test_deleting_an_account_deletes_its_rows(repo_env):
     from src.auth.account_deletion import delete_user_and_data
     engine, uid, _pid, repo = repo_env
     with Session(engine) as sess:
-        repo.update_activity_enrichment(sess, 111, polyline_lib.encode(_TRACK), None)
+        repo.update_activity_enrichment(sess, 111, polyline_lib.encode(_TRACK), None, owner_id=uid)
     assert _row(engine, 111) is not None
     with Session(engine) as sess:
         delete_user_and_data(sess, uid)

@@ -133,6 +133,48 @@ class ProjectCoreMixin:
         ).all()
         return [{"name": r.name, "filename": r.name + ProjectIO.EXTENSION} for r in rows]
 
+    @staticmethod
+    def _drop_activities_of_other_accounts(
+        sess: Session, project_id: int, importer_id: int, project: Project,
+    ) -> None:
+        """Remove from *project* any activity it is about to start referencing
+        that another account owns.
+
+        An activity row belongs to the account that created it. A trip may
+        hold activities of several accounts (a companion adds their own, issue
+        #106), but only because each account added its own: an activity the
+        trip does not hold yet may join it only if its row is the saver's, or
+        does not exist and is about to be created as the saver's. Activities
+        the trip already holds are left alone, whoever owns them.
+        """
+        held = set(sess.exec(
+            select(DBProjectItem.activity_id).where(
+                DBProjectItem.project_id == project_id,
+                DBProjectItem.item_type == "activity",
+            )
+        ).all())
+        joining = {
+            it.activity_id for it in project.items
+            if it.item_type == "activity" and it.activity_id is not None
+            and it.activity_id not in held
+        }
+        if not joining:
+            return
+        others = set(sess.exec(
+            select(DBActivity.id).where(
+                DBActivity.id.in_(joining), DBActivity.user_info_id != importer_id)
+        ).all())
+        if not others:
+            return
+        _log.warning("project id=%s: left out %d activities owned by another account",
+                     project_id, len(others))
+        project.items = [
+            it for it in project.items
+            if not (it.item_type == "activity" and it.activity_id in others)
+        ]
+        project.activities = [a for a in project.activities if a.id not in others]
+        project.rebuild_map()
+
     def project_exists(self, sess: Session, user_info_id: int, name: str) -> bool:
         row = sess.exec(
             select(DBProject).where(
@@ -313,6 +355,9 @@ class ProjectCoreMixin:
             sess.refresh(row)
             project.lock_version = row.lock_version
 
+        importer_id = activity_user_id if activity_user_id is not None else user_info_id
+        self._drop_activities_of_other_accounts(sess, row.id, importer_id, project)
+
         row.version = project.version
         row.trip_start = project.trip_start
         row.trip_end = project.trip_end
@@ -348,7 +393,6 @@ class ProjectCoreMixin:
         row.updated_at = time.time()
 
         # Upsert all activities in the project's activity pool
-        importer_id = activity_user_id if activity_user_id is not None else user_info_id
         for act in project.activities:
             self._upsert_activity(sess, importer_id, act)
 
