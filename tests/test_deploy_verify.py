@@ -914,6 +914,25 @@ def test_a_container_gone_after_the_checks_passed_is_caught(capsys):
     assert "FAIL: traxjourney-val-worker-1 is not running" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("state", ["starting", "created"])
+def test_a_container_starting_again_at_the_re_check_fails(capsys, state):
+    """Back to `starting` (or `created`) means it went away and came back since
+    the checks passed. That is not a pass, even with no restart counted."""
+    if state == "starting":
+        again = "starting"  # the fixture: redis's healthcheck is starting
+    else:
+        _, ps, _ = snapshot("healthy")
+        ps = [dict(e, State="created", Status="Created") if e["Service"] == "worker" else e for e in ps]
+        again = transcript("healthy").replace(fixture("healthy", "compose_ps.ndjson"),
+                                              "\n".join(json.dumps(e) for e in ps))
+        assert '"State": "created"' in again
+    host = FakeHost(states=("healthy", again))
+    code, _, _ = deploy(host, *BUILT)
+    out = capsys.readouterr().out
+    assert code == 1, out
+    assert f"({dv.RECHECK_SECONDS:.0f}s after the other checks passed)" in out
+
+
 def test_the_re_check_waits_before_reading_again():
     host = FakeHost()
     _, _, clock = deploy(host, *BUILT)
