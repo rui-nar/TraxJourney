@@ -120,6 +120,9 @@ void main() {
       expect(find.textContaining('overwrites'), findsOneWidget);
       expect(find.textContaining('deleted'), findsOneWidget);
       expect(find.textContaining('share links'), findsOneWidget);
+      // An older file can lack photos a memory it keeps has since gained.
+      expect(find.textContaining('Photos that aren’t in the file are removed too'),
+          findsOneWidget);
 
       if (buttonText == null) {
         await tester.tapAt(const Offset(5, 5)); // outside: dismissed
@@ -145,6 +148,68 @@ void main() {
 
     testWidgets('dismissing is a cancel', (tester) async {
       expect(await pickWith(tester, null), isNull);
+    });
+  });
+
+  group('importResolvingNameConflicts', () {
+    test('asks again when the retried import also finds the name taken',
+        () async {
+      final sent = <ImportConflictChoice?>[];
+      final answers = [null, null, 'Alps (2)'];
+      final conflicts = ['Alps', 'Alps'];
+      final asked = <String>[];
+
+      final result = await importResolvingNameConflicts(
+        upload: (choice) async {
+          sent.add(choice);
+          return answers[sent.length - 1];
+        },
+        takeNameConflict: () => conflicts.isEmpty ? null : conflicts.removeAt(0),
+        ask: (name) async {
+          asked.add(name);
+          return asked.length == 1
+              ? ImportConflictChoice.replace
+              : ImportConflictChoice.keepBoth;
+        },
+      );
+
+      expect(result, 'Alps (2)');
+      expect(asked, ['Alps', 'Alps']);
+      expect(sent, [
+        null,
+        ImportConflictChoice.replace,
+        ImportConflictChoice.keepBoth,
+      ]);
+    });
+
+    test('stops when the user cancels', () async {
+      var uploads = 0;
+      final result = await importResolvingNameConflicts(
+        upload: (_) async {
+          uploads++;
+          return null;
+        },
+        takeNameConflict: () => 'Alps',
+        ask: (_) async => null,
+      );
+
+      expect(result, isNull);
+      expect(uploads, 1);
+    });
+
+    test('a failure that is not a name conflict ends it', () async {
+      var asked = false;
+      final result = await importResolvingNameConflicts(
+        upload: (_) async => null,
+        takeNameConflict: () => null,
+        ask: (_) async {
+          asked = true;
+          return ImportConflictChoice.keepBoth;
+        },
+      );
+
+      expect(result, isNull);
+      expect(asked, isFalse);
     });
   });
 }

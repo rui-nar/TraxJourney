@@ -3,6 +3,31 @@ import 'package:flutter/material.dart';
 import '../core/design_tokens.dart';
 import 'projects_notifier.dart';
 
+/// Imports, and while the server answers that the name is taken, asks the
+/// user what to do and imports again with that choice (issue #452).
+///
+/// The retry can itself find the name taken: another import can take it in
+/// between, or a replaced trip can be deleted and its name reused. The user
+/// is asked again rather than left without an answer. [upload] returns the
+/// saved name or null; [takeNameConflict] returns (and clears) the name the
+/// last upload was refused for, null for any other failure. Returns the
+/// saved name, or null if the import failed or the user cancelled.
+Future<String?> importResolvingNameConflicts({
+  required Future<String?> Function(ImportConflictChoice? choice) upload,
+  required String? Function() takeNameConflict,
+  required Future<ImportConflictChoice?> Function(String name) ask,
+}) async {
+  var result = await upload(null);
+  while (result == null) {
+    final taken = takeNameConflict();
+    if (taken == null) return null;
+    final choice = await ask(taken);
+    if (choice == null) return null;
+    result = await upload(choice);
+  }
+  return result;
+}
+
 /// Asks what to do with an imported trip whose name the user already has
 /// (issue #452): keep both, replace the existing trip, or cancel (null).
 ///
@@ -38,8 +63,9 @@ Future<ImportConflictChoice?> showImportConflictDialog(
                   child: Text(
                     'Replace overwrites that trip’s timeline, memories and your '
                     'journal with the file’s. Memories the file doesn’t have '
-                    'are deleted with their photos. Its share links and '
-                    'companions are kept.',
+                    'are deleted with their photos. Photos that aren’t in the '
+                    'file are removed too. Its share links and companions are '
+                    'kept.',
                     style: theme.textTheme.bodyMedium,
                   ),
                 ),

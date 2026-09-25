@@ -358,28 +358,26 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
                                     if (name == null || !context.mounted) {
                                       return;
                                     }
-                                    var result =
-                                        await notifier.uploadProjectFile(
-                                      bytes: picked.bytes,
-                                      name: name,
-                                    );
-                                    // The name is taken: keep both, replace,
-                                    // or leave it (issue #452).
-                                    final taken = notifier.nameConflict;
-                                    if (taken != null && context.mounted) {
-                                      notifier.clearNameConflict();
-                                      final choice =
-                                          await showImportConflictDialog(
-                                              context, taken);
-                                      if (choice == null || !context.mounted) {
-                                        return;
-                                      }
-                                      result = await notifier.uploadProjectFile(
+                                    // A taken name: keep both, replace, or
+                                    // leave it — asked again if a retry
+                                    // finds it taken too (issue #452).
+                                    final result =
+                                        await importResolvingNameConflicts(
+                                      upload: (choice) =>
+                                          notifier.uploadProjectFile(
                                         bytes: picked.bytes,
                                         name: name,
                                         onConflict: choice,
-                                      );
-                                    }
+                                      ),
+                                      takeNameConflict: () {
+                                        final taken = notifier.nameConflict;
+                                        notifier.clearNameConflict();
+                                        return context.mounted ? taken : null;
+                                      },
+                                      ask: (taken) =>
+                                          showImportConflictDialog(
+                                              context, taken),
+                                    );
                                     if (result != null && context.mounted) {
                                       context.go(
                                           '/view?project=${Uri.encodeComponent(result)}');
