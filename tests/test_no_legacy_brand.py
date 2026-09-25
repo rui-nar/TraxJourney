@@ -55,8 +55,8 @@ ALLOWED: dict[str, tuple[str, str]] = {
     "graphify-out/GRAPH_REPORT.md": ("generated; regenerated after the local folder rename", r"."),
     "tests/test_no_legacy_brand.py": ("this file", r"."),
     # TEMPORARY (issue #434): goes with the startup sweep it tests.
-    "tests/test_migrated_sweep.py": (
-        "pre-rename leftovers the sweep deletes, and an unmigrated file it keeps",
+    "tests/test_legacy_project_sweep.py": (
+        "pre-rename leftover files the sweep deletes",
         r'"(Old|Unmigrated)\.viewtrip(\.migrated)?"'),
 }
 

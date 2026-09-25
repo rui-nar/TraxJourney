@@ -1,9 +1,12 @@
-"""Startup sweep of leftover ``*.migrated`` project files (issue #434).
+"""Startup sweep of the obsolete ``data/users/<id>/projects/`` directories (issue #434).
 
-Every import before #434 left a ``<name>.traxj.migrated`` copy under
-``data/users/<id>/projects/``, counted against the user's storage. The sweep
-deletes those once on API startup and re-measures the affected users. It is
-temporary: once every deployed instance has booted a release carrying it, it
+Nothing has read that directory since #420 put every trip in the database, and
+since #434 nothing writes to it. What is left there is dead weight counted
+against the user's storage: ``*.migrated`` copies from every earlier import,
+plain ``.traxj`` uploads a failed import left behind, and pre-rename files that
+were never ingested. The sweep deletes every regular file in it once on API
+startup, removes the emptied directory, and re-measures the affected users. It
+is temporary: once every deployed instance has booted a release carrying it, it
 and these tests go.
 """
 
@@ -23,8 +26,8 @@ import models.db as db_module
 import src.admin.storage as storage_mod
 from models.billing import UserUsage
 from models.user import UserInfo
-from src.project import migrated_sweep
-from src.project.migrated_sweep import sweep_migrated_files
+from src.project import legacy_project_sweep
+from src.project.legacy_project_sweep import sweep_legacy_project_files
 
 
 @pytest.fixture
@@ -63,13 +66,16 @@ def data(monkeypatch, tmp_path):
     leftovers = [
         put(u1 / "projects" / "Trip.traxj.migrated"),
         put(u1 / "projects" / "Old.viewtrip.migrated"),
+        # A failed import's raw upload, and a pre-rename file never ingested.
+        put(u1 / "projects" / "Failed.traxj"),
+        put(u1 / "projects" / "Unmigrated.viewtrip"),
+        put(u1 / "projects" / "sub" / "stray.bin"),
         put(u2 / "projects" / "Other.traxj.migrated"),
     ]
     kept = [
-        put(u1 / "projects" / "Unmigrated.viewtrip"),
-        put(u1 / "projects" / "notes.txt"),
         # Only the projects directory is swept.
         put(u1 / "memories" / "5" / "photo.migrated"),
+        put(u1 / "memories" / "5" / "photo.jpg"),
         put(u2 / "memories" / "7" / "a.jpg"),
         put(u3 / "memories" / "1" / "b.jpg"),
     ]
@@ -83,28 +89,48 @@ def _counter(engine, uid: int) -> int:
         ).one().storage_bytes
 
 
-def test_sweep_deletes_leftovers_and_nothing_else(data):
+def test_sweep_deletes_every_file_under_projects_and_nothing_else(data):
     _engine, _uids, leftovers, kept = data
 
-    removed = sweep_migrated_files()
+    removed = sweep_legacy_project_files()
 
-    assert removed == 3
+    assert removed == len(leftovers)
     assert [p for p in leftovers if p.exists()] == []
     assert [p for p in kept if not p.exists()] == []
 
 
+def test_sweep_removes_the_emptied_projects_directories(data, tmp_path):
+    _engine, uids, _leftovers, _kept = data
+
+    sweep_legacy_project_files()
+
+    assert not any((tmp_path / "users" / str(uid) / "projects").exists() for uid in uids)
+    # The user directories themselves stay.
+    assert all((tmp_path / "users" / str(uid)).is_dir() for uid in uids)
+
+
+def test_an_already_empty_projects_directory_is_removed(data, tmp_path):
+    _engine, (_uid1, _uid2, uid3), _leftovers, _kept = data
+    empty = tmp_path / "users" / str(uid3) / "projects"
+    empty.mkdir()
+
+    sweep_legacy_project_files()
+
+    assert not empty.exists()
+
+
 def test_sweep_is_idempotent(data):
     _engine, _uids, _leftovers, kept = data
-    sweep_migrated_files()
+    sweep_legacy_project_files()
 
-    assert sweep_migrated_files() == 0
+    assert sweep_legacy_project_files() == 0
     assert all(p.exists() for p in kept)
 
 
 def test_sweep_reconciles_the_users_it_freed_space_for(data):
     engine, (uid1, uid2, uid3), _leftovers, _kept = data
 
-    sweep_migrated_files()
+    sweep_legacy_project_files()
 
     for uid in (uid1, uid2):
         assert _counter(engine, uid) == storage_mod.dir_size(storage_mod._user_dir(str(uid)))
@@ -115,11 +141,11 @@ def test_sweep_reconciles_the_users_it_freed_space_for(data):
 
 def test_sweep_of_a_deleted_accounts_directory_creates_no_usage_row(data, tmp_path):
     engine, _uids, _leftovers, _kept = data
-    ghost = tmp_path / "users" / "4242" / "projects" / "Gone.traxj.migrated"
+    ghost = tmp_path / "users" / "4242" / "projects" / "Gone.traxj"
     ghost.parent.mkdir(parents=True)
     ghost.write_bytes(b"x")
 
-    sweep_migrated_files()
+    sweep_legacy_project_files()
 
     assert not ghost.exists()
     with Session(engine) as sess:
@@ -132,7 +158,7 @@ def test_sweep_busts_the_dashboard_storage_cache(data, monkeypatch):
     _engine, (uid1, _uid2, _uid3), _leftovers, _kept = data
     monkeypatch.setattr(storage_mod, "_cache", {str(uid1): (999_999, 1e18)})
 
-    sweep_migrated_files()
+    sweep_legacy_project_files()
 
     assert str(uid1) not in storage_mod._cache
 
@@ -140,6 +166,7 @@ def test_sweep_busts_the_dashboard_storage_cache(data, monkeypatch):
 def test_a_file_that_cannot_be_deleted_does_not_stop_the_sweep(data, monkeypatch):
     _engine, _uids, leftovers, _kept = data
     locked = leftovers[0]
+    projects = locked.parent
     real_unlink = Path.unlink
 
     def unlink(self, *a, **kw):
@@ -149,17 +176,19 @@ def test_a_file_that_cannot_be_deleted_does_not_stop_the_sweep(data, monkeypatch
 
     monkeypatch.setattr(Path, "unlink", unlink)
 
-    removed = sweep_migrated_files()
+    removed = sweep_legacy_project_files()
 
-    assert removed == 2
+    assert removed == len(leftovers) - 1
     assert locked.exists()
     assert [p for p in leftovers[1:] if p.exists()] == []
+    # Not empty, so it stays; the next boot tries again.
+    assert projects.is_dir()
 
 
 def test_sweep_with_no_users_directory_is_a_no_op(monkeypatch, tmp_path):
     monkeypatch.setattr(storage_mod, "_DATA_DIR", str(tmp_path / "absent"))
 
-    assert sweep_migrated_files() == 0
+    assert sweep_legacy_project_files() == 0
 
 
 def test_sweep_does_not_follow_symlinked_directories(data, tmp_path):
@@ -168,18 +197,24 @@ def test_sweep_does_not_follow_symlinked_directories(data, tmp_path):
     _engine, (_uid1, _uid2, uid3), _leftovers, _kept = data
     outside = tmp_path / "outside"
     (outside / "projects").mkdir(parents=True)
-    victims = [outside / "a.migrated", outside / "projects" / "b.migrated"]
+    (outside / "deep").mkdir()
+    victims = [outside / "a.traxj", outside / "projects" / "b.traxj",
+               outside / "deep" / "c.traxj"]
     for v in victims:
         v.write_bytes(b"x")
     users = tmp_path / "users"
     try:
-        # <id>/projects -> elsewhere, and users/<id> -> elsewhere.
+        # <id>/projects -> elsewhere, users/<id> -> elsewhere, and a link
+        # inside a real projects directory -> elsewhere.
         os.symlink(outside, users / str(uid3) / "projects", target_is_directory=True)
         os.symlink(outside, users / "9999", target_is_directory=True)
+        os.symlink(outside / "deep", users / str(_uid2) / "projects" / "link",
+                   target_is_directory=True)
     except (OSError, NotImplementedError) as exc:
         pytest.skip(f"cannot create directory symlinks here: {exc}")
 
-    assert sweep_migrated_files() == 3  # only the fixture's real leftovers
+    # Only the fixture's real leftovers.
+    assert sweep_legacy_project_files() == len(_leftovers)
     assert all(v.exists() for v in victims)
 
 
@@ -208,7 +243,7 @@ def _run_lifespan(monkeypatch, tmp_path, *, is_api: bool, sweep, during=None) ->
     monkeypatch.setattr(router, "sweep_orphaned_jobs", lambda: None)
     monkeypatch.setattr(router, "sweep_orphaned_poster_jobs", lambda: None)
     monkeypatch.setattr(router, "_scheduler", _FakeScheduler())
-    monkeypatch.setattr(migrated_sweep, "sweep_migrated_files", sweep)
+    monkeypatch.setattr(legacy_project_sweep, "sweep_legacy_project_files", sweep)
 
     async def run():
         async with router.lifespan(router.app):
@@ -219,7 +254,7 @@ def _run_lifespan(monkeypatch, tmp_path, *, is_api: bool, sweep, during=None) ->
 
 
 def _sweep_thread() -> threading.Thread | None:
-    return next((t for t in threading.enumerate() if t.name == "migrated-sweep"), None)
+    return next((t for t in threading.enumerate() if t.name == "legacy-project-sweep"), None)
 
 
 def test_api_process_sweeps_once(monkeypatch, tmp_path):
@@ -279,7 +314,7 @@ def test_startup_and_shutdown_do_not_wait_for_the_sweep(monkeypatch, tmp_path):
 
 def test_a_failing_sweep_is_logged_and_does_not_stop_startup(monkeypatch, tmp_path):
     logged = []
-    monkeypatch.setattr(migrated_sweep._log, "exception",
+    monkeypatch.setattr(legacy_project_sweep._log, "exception",
                         lambda msg, *a, **kw: logged.append(msg % a if a else msg))
 
     def boom():
