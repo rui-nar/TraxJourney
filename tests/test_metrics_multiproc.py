@@ -250,3 +250,40 @@ def test_a_gauge_from_a_dead_and_a_live_process_is_one_series(
     assert len(samples) == 1, samples
     assert "pid" not in samples[0].labels
     assert samples[0].value == expected
+
+
+@pytest.mark.parametrize("all_last", [False, True])
+def test_gauge_files_left_by_an_older_mode_are_not_read(tmp_path, monkeypatch, all_last):
+    """An in-place upgrade (``pull && up -d``, no ``down``) keeps the old
+    containers' ``gauge_all_*`` files while live writers stop the directory
+    from being cleared. prometheus_client takes a gauge's combine mode from
+    whichever file it reads last, so an old ``all`` file read after the new
+    ``max`` one brings back the frozen per-pid series, and with it the false
+    "backup silently stopped" alarm. Checked with the files in either order,
+    since the glob order is the filesystem's."""
+    import api.metrics as metrics_endpoint
+    from prometheus_client import generate_latest
+    from src.utils import metrics as app_metrics
+
+    gauge = app_metrics.JOB_LAST_SUCCESS
+    old = tmp_path / "gauge_all_oldcontainer-1.db"
+    new = tmp_path / f"gauge_{gauge._multiprocess_mode}_newcontainer-1.db"
+    for path, value in ((old, 1_000.0), (new, 90_000.0)):
+        from prometheus_client.mmap_dict import MmapedDict, mmap_key
+        f = MmapedDict(str(path))
+        f.write_value(mmap_key(gauge._name, gauge._name, list(gauge._labelnames),
+                               ["daily_backup"], gauge._documentation), value, 0.0)
+        f.close()
+
+    real_glob = glob.glob
+
+    def ordered_glob(pattern, *args, **kwargs):
+        found = real_glob(pattern, *args, **kwargs)
+        return sorted(found, key=lambda f: ("gauge_all_" in f) == all_last)
+
+    monkeypatch.setattr(glob, "glob", ordered_glob)
+    monkeypatch.setenv("PROMETHEUS_MULTIPROC_DIR", str(tmp_path))
+
+    text = generate_latest(metrics_endpoint._registry()).decode()
+    lines = [l for l in text.splitlines() if l.startswith(gauge._name + "{")]
+    assert lines == [f'{gauge._name}{{job_name="daily_backup"}} 90000.0'], lines

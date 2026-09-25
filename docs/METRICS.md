@@ -234,6 +234,14 @@ between scrapes. The pool-utilisation panel divides `in_use` by capacity
     anywhere. Before #455 they were plain gauges, whose files held a 0 per
     process: production showed 0 on the pool and file-size panels, and the
     Strava quota alert could never fire.
+  - Gauge files in a mode no current gauge uses are not read. An in-place
+    upgrade (`pull && up -d`, no `down`) that changed a gauge's mode (as #437
+    did, from `all`) leaves the old containers' files until the next clear;
+    prometheus_client would otherwise take that gauge's mode from whichever
+    file it read last. No one-off `down` is needed for this upgrade. A future
+    change between two modes that are both still in use (say `max` to
+    `mostrecent` while another gauge keeps `max`) is not covered: deploy that
+    one with `docker compose down && up -d`.
   - `flock` needs a local filesystem seen by one kernel: a bind mount on the
     Docker host, not NFS or SMB.
 - **Restarts reset counters.** That is normal — PromQL's `rate()`/`increase()`

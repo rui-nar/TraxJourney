@@ -22,6 +22,7 @@ through ``normalise_path`` and statements through ``_operation_of`` first.
 """
 from __future__ import annotations
 
+import glob
 import os
 import re
 import time
@@ -133,14 +134,45 @@ def _scrape_time_gauge(name: str, documentation: str, labelnames=()) -> ScrapeTi
     return gauge
 
 
+def _gauge_modes_in_use() -> set[str]:
+    """The multiprocess modes the gauges defined by this code use."""
+    return {
+        collector._multiprocess_mode
+        for collector in set(REGISTRY._names_to_collectors.values())
+        if isinstance(collector, Gauge)
+    }
+
+
+def _read_by_this_code(path: str, modes: set[str]) -> bool:
+    """False for a gauge file in a mode no gauge of this code uses.
+
+    Such a file was written by an older version: an in-place upgrade
+    (``pull && up -d``, no ``down``) keeps the old containers' files while
+    live writers stop the directory from being cleared. prometheus_client takes
+    a gauge's mode from whichever file it reads last, so reading an old
+    ``gauge_all_*`` after the new ``gauge_max_*`` brings back one frozen series
+    per dead process. Skipping it hides nothing current: no live process of
+    this code writes a mode it doesn't define. The file goes at the next clear.
+    """
+    parts = os.path.basename(path).split("_")
+    return parts[0] != "gauge" or parts[1] in modes
+
+
 def multiprocess_registry(path: str) -> CollectorRegistry:
     """The registry ``/metrics`` serves with ``PROMETHEUS_MULTIPROC_DIR`` set:
-    the per-process files, plus the scrape-time gauges computed by this (the
-    serving) process."""
+    the per-process files, less any left by an older gauge mode, plus the
+    scrape-time gauges computed by this (the serving) process."""
     from prometheus_client import multiprocess
 
+    class _CurrentFiles(multiprocess.MultiProcessCollector):
+        def collect(self):
+            modes = _gauge_modes_in_use()
+            files = [f for f in glob.glob(os.path.join(self._path, "*.db"))
+                     if _read_by_this_code(f, modes)]
+            return self.merge(files, accumulate=True)
+
     registry = CollectorRegistry()
-    multiprocess.MultiProcessCollector(registry, path=path)
+    _CurrentFiles(registry, path=path)
     for gauge in SCRAPE_TIME_GAUGES:
         registry.register(gauge)
     return registry
