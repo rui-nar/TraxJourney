@@ -35,6 +35,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from PIL import Image, ImageDraw, ImageFilter
 
 from models.db import get_session
+from models.project_db import DBProject
 from src.billing.trip_days import bounds, normalise
 from src.poster.card_layout import (
     CARD_MAX_HEIGHT_MM,
@@ -382,6 +383,29 @@ def _day_number(value: Any, trip_start: Optional[str]) -> Optional[int]:
 
 
 # ── Drawing ───────────────────────────────────────────────────────────────────
+
+def _trip_memories(requested: List[Dict[str, Any]], project) -> List[Dict[str, Any]]:
+    """The requested memories that belong to *project*, each with only the
+    photos that memory holds.
+
+    The request names its memories itself: the client sends their text,
+    which on an encrypted trip only it can read. Their ids and photo names are
+    its word, though, and photos are read from disk by id, so anything not of
+    this trip is left out rather than drawn.
+    """
+    if project is None:
+        return []
+    held = {m.id: {p for p in (m.photos or []) if p} for m in project.memories
+            if m.id is not None}
+    kept = []
+    for memory in requested:
+        photos = held.get(memory.get("id"))
+        if photos is None:
+            continue
+        kept.append({**memory, "photo_uuids": [
+            p for p in (memory.get("photo_uuids") or []) if p in photos]})
+    return kept
+
 
 def _photo_resolver(user_id: str, memory_id: Any) -> Callable[[str], Optional[Path]]:
     """Map a photo uuid to its on-disk thumbnail, or None if absent."""
@@ -875,7 +899,6 @@ def _compose_poster_image(
     bounds = request["bounds"]
     config = request.get("config", {})
     memories: List[Dict[str, Any]] = request.get("memories", [])
-    user_id = str(user_info_id)
     scale = TypeScale(dpi)
     theme = get_theme(config.get("theme"))
     warning: Optional[str] = None
@@ -906,6 +929,10 @@ def _compose_poster_image(
     _notify(progress, "loading project")
     with get_session() as sess:
         project = _repo.get_project_by_id(sess, project_id)
+        owner_row = sess.get(DBProject, project_id)
+    # The trip's photos live in its owner's folder, whoever asks for the poster.
+    user_id = str(owner_row.user_info_id) if owner_row is not None else str(user_info_id)
+    memories = _trip_memories(memories, project)
 
     route_lines: List[List[Tuple[float, float]]] = []
     if project is not None:
