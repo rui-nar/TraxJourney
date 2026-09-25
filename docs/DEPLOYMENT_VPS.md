@@ -82,8 +82,8 @@ replaces ssh-keygen's default comment, your `USERNAME@COMPUTERNAME`, with plain
 ASCII. For an existing key the `Replace` stops a `'` in the comment (an account
 named O'Brien) from ending the remote `echo '...'` early, so the copy survives
 apostrophes and shell characters in the comment. The key itself is never
-altered, but under Windows PowerShell 5.1 the comment can be: a `"` is dropped,
-a trailing `\` loses one backslash, and non-ASCII characters are garbled.
+altered, but under Windows PowerShell 5.1 the comment can be: a `"` is dropped
+and non-ASCII characters are garbled.
 
 Then log in as `<deploy-user>` and run `docker login ghcr.io` there with the
 read-only token (below). The login lands in that user's `~/.docker/config.json`,
