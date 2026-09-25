@@ -57,6 +57,35 @@ class TestMetricsAuth:
         assert resp.status_code == 401
         assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
+    @pytest.mark.parametrize("presented, expected_status", [
+        (b"Bearer abc\xe9", 200),  # the very bytes the environment held
+        (b"Bearer wrong", 401),
+    ])
+    def test_a_token_that_is_not_utf8_still_works(
+            self, monkeypatch, presented, expected_status):
+        """On Linux os.environ decodes undecodable bytes as lone surrogates
+        (surrogateescape): METRICS_TOKEN=b"abc\\xe9" reads as "abc\\udce9".
+        Encoding that strictly as UTF-8 raises, a 500 on every scrape.
+
+        Driven through httpx's ASGI transport rather than TestClient, which
+        re-encodes header bytes as UTF-8 (``\\xe9`` -> ``\\xc3\\xa9``) where a
+        real server passes them through untouched."""
+        import asyncio
+
+        import httpx
+
+        import api.metrics as metrics_mod
+        import api.router as router
+
+        monkeypatch.setattr(metrics_mod, "_configured_token", lambda: "abc\udce9")
+
+        async def scrape():
+            transport = httpx.ASGITransport(app=router.app, raise_app_exceptions=False)
+            async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+                return await c.get("/metrics", headers={"Authorization": presented})
+
+        assert asyncio.run(scrape()).status_code == expected_status
+
     def test_rejects_a_non_bearer_scheme(self, client, monkeypatch):
         monkeypatch.setenv("METRICS_TOKEN", "right")
         assert client.get(
