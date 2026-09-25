@@ -362,3 +362,18 @@ def test_a_deploy_already_holding_the_lock_blocks_a_second_one(deploy):
     assert result.returncode == 1
     assert deploy.calls() == []
     assert "held" in deploy.log.read_text().splitlines()[-1]
+
+
+def test_vps_files_check_out_with_lf_everywhere():
+    """They are copied to the VPS as they are, by curl from GitHub or by hand
+    from a checkout. A Windows checkout (core.autocrlf=true) gave them CRLF,
+    and systemd and bash read the carriage return as part of each value."""
+    try:
+        listed = subprocess.run(["git", "ls-files", "-z", "vps"], cwd=ROOT, capture_output=True, check=True)
+        files = [f for f in listed.stdout.decode().split("\0") if f]
+        attrs = subprocess.run(["git", "check-attr", "eol", "--", *files], cwd=ROOT,
+                               capture_output=True, check=True, text=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        pytest.skip("needs a git checkout")
+    assert "vps/webhook/webhook.service" in files
+    assert attrs.splitlines() == [f"{f}: eol: lf" for f in files]
