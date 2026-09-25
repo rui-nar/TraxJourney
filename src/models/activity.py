@@ -224,14 +224,21 @@ class Activity:
         )
 
 
+#: The range an activity id can take: the database's 64-bit INTEGER. A value
+#: outside it cannot name a row, and binding one fails with OverflowError.
+ACTIVITY_ID_MIN = -(2 ** 63)
+ACTIVITY_ID_MAX = 2 ** 63 - 1
+
+
 def is_activity_id(value: Any) -> bool:
-    """True for a plain integer: not a bool, a float or a numeric string.
+    """True for a plain integer within 64 bits: not a bool, a float or a
+    numeric string.
 
     Activity ids are compared as Python values but stored in an INTEGER
     column, where SQLite turns "9001" or 9001.0 into 9001. Anything but a
     plain int would compare unequal to the row it ends up naming.
     """
-    return type(value) is int
+    return type(value) is int and ACTIVITY_ID_MIN <= value <= ACTIVITY_ID_MAX
 
 
 def activity_id_or_none(value: Any) -> Optional[int]:

@@ -63,7 +63,9 @@ def delete_item(
     # timeline item. remove_item only unlinks the item, so without this the
     # row is orphaned in the activity table and its negative id gets reused
     # by the next split → UNIQUE constraint failure. Delete the row once no
-    # remaining item references it.
+    # remaining item references it — and only if it is the trip's to delete:
+    # its owner is the trip's owner or a current member. Otherwise the item
+    # is unlinked and the row left alone (orphans are pruned separately).
     gone = removed["item"]
     if (
         gone.item_type == "activity"
@@ -74,7 +76,8 @@ def delete_item(
         )
     ):
         with get_session() as sess:
-            _repo.delete_local_activity(sess, project_row_id, gone.activity_id)
+            if _repo.activity_rewritable_by_trip(sess, project_row_id, gone.activity_id):
+                _repo.delete_local_activity(sess, project_row_id, gone.activity_id)
     bust_geo_cache(owner_id, name)
     queue_stats_refresh(background_tasks, owner_id, name)
     queue_share_tiles_refresh(background_tasks, owner_id, name)

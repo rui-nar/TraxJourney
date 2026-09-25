@@ -68,7 +68,7 @@ def env(monkeypatch, tmp_path):
         current["uid"] = ids[who]
 
     try:
-        yield TestClient(router.app), engine, ids, act_as
+        yield TestClient(router.app, raise_server_exceptions=False), engine, ids, act_as
     finally:
         router.app.dependency_overrides.pop(get_current_user, None)
 
@@ -605,3 +605,92 @@ def test_the_audit_lists_items_whose_activity_does_not_exist(env):
         refs = find_dangling_activity_refs(sess)
 
     assert [(r["project_name"], r["activity_id"]) for r in refs] == [("Mine", 4242)]
+
+
+# ── Removing an item ────────────────────────────────────────────────────────
+
+def test_removing_an_item_leaves_a_local_activity_of_an_account_outside_the_trip(env):
+    client, engine, ids, act_as = env
+    with Session(engine) as sess:
+        sess.add(DBActivity(id=-55, user_info_id=ids["bob"], name="Bob local",
+                            summary_polyline=_POLYLINE))
+        sess.commit()
+    _create_trip(client, "Mine")
+    _plant(engine, ids["alice"], "Mine", -55)
+
+    r = client.delete("/api/projects/Mine/items/0")
+
+    assert r.status_code == 204, r.text
+    assert _trip_activity_ids(engine, ids["alice"], "Mine") == set()
+    assert _row(engine, -55) is not None
+
+
+def test_removing_an_item_still_deletes_the_trips_own_local_activity(env):
+    client, engine, ids, act_as = env
+    _create_trip(client, "Japan")
+    _join(client, act_as, "alice", "carol", "Japan")
+    with Session(engine) as sess:
+        for aid, who in ((-56, "alice"), (-57, "carol")):
+            sess.add(DBActivity(id=aid, user_info_id=ids[who], name=f"local {aid}"))
+        sess.commit()
+    act_as("alice")
+    _plant(engine, ids["alice"], "Japan", -56)
+    _plant(engine, ids["alice"], "Japan", -57)
+
+    assert client.delete("/api/projects/Japan/items/0").status_code == 204
+    assert client.delete("/api/projects/Japan/items/0").status_code == 204
+
+    assert _row(engine, -56) is None
+    assert _row(engine, -57) is None
+
+
+# ── Ids beyond a 64-bit integer ─────────────────────────────────────────────
+
+_TOO_BIG = 2 ** 63
+_TOO_SMALL = -(2 ** 63) - 1
+
+
+@pytest.mark.parametrize("aid", [_TOO_BIG, _TOO_SMALL])
+def test_activity_routes_answer_an_out_of_range_id_without_a_server_error(env, aid):
+    client, engine, ids, act_as = env
+    _create_trip(client, "Mine")
+    base = f"/api/projects/Mine/activities/{aid}"
+    calls = [
+        ("get", f"{base}/track", None),
+        ("put", f"{base}/track", {"points": [{"lat": 48.0, "lng": 2.0},
+                                             {"lat": 48.1, "lng": 2.1}]}),
+        ("post", f"{base}/reset", None),
+        ("post", f"{base}/split", {"split_index": 1}),
+        ("post", f"{base}/refresh", None),
+        ("delete", f"{base}/local", None),
+        ("put", f"/api/activities/{aid}", {"name": "x"}),
+    ]
+    for method, path, body in calls:
+        kwargs = {"json": body} if body is not None else {}
+        r = getattr(client, method)(path, **kwargs)
+        assert r.status_code in (404, 422), (method, path, r.status_code, r.text)
+
+
+def test_adding_an_out_of_range_id_is_skipped(env):
+    client, engine, ids, act_as = env
+    _create_trip(client, "Mine")
+
+    r = _add(client, "Mine", [_activity(_TOO_BIG)])
+
+    assert r.status_code == 200, r.text
+    assert r.json()["added"] == 0
+
+
+@pytest.mark.parametrize("where", ["item", "activity"])
+def test_an_import_with_an_out_of_range_id_is_refused(env, where):
+    client, engine, ids, act_as = env
+    doc = {"version": 1, "name": "x", "items": [], "activities": []}
+    if where == "item":
+        doc["items"] = [{"item_type": "activity", "activity_id": _TOO_BIG}]
+    else:
+        doc["activities"] = [_activity(_TOO_BIG)]
+
+    r = client.post("/api/projects/import", files={
+        "file": (f"Mine{ProjectIO.EXTENSION}", json.dumps(doc).encode(), "application/json")})
+
+    assert r.status_code == 400, r.text

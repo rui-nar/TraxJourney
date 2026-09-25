@@ -26,7 +26,7 @@ from models.db import get_session
 from sqlmodel import select
 
 from starlette.concurrency import run_in_threadpool
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Path, UploadFile, status
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator
 
@@ -34,7 +34,7 @@ from api.deps import get_current_user
 from api.geo import bust_geo_cache, warm_geo_cache
 from api.project_access import OwnerParam, resolve_project
 from api.project_shared import _refresh_share_tiles, _refresh_stats_background, _repo, queue_share_tiles_refresh, queue_stats_refresh, warm_meta_cache
-from models.project_db import DBActivity, DBProject, DBProjectItem, DBProjectMember
+from models.project_db import DBActivity, DBProject, DBProjectItem
 from models.user import StravaToken
 from src.api.strava_client import RateLimiter, StravaAPI
 from src.billing.entitlements import ensure_trip_days_quota
@@ -51,7 +51,9 @@ from src.gpx.importer import (
     validate_candidate,
     validate_for_import,
 )
-from src.models.activity import Activity, parse_activities_or_log
+from src.models.activity import (
+    ACTIVITY_ID_MAX, ACTIVITY_ID_MIN, Activity, parse_activities_or_log,
+)
 from src.models.track_edit import points_to_elevation_profile, points_to_polyline, recompute_track_metrics
 from src.project.local_ids import LocalIdExhausted, allocate_local_activity_id, track_fingerprint
 from src.project.project_repo import bump_lock_version
@@ -67,6 +69,10 @@ if os.environ.get("STRAVA_CLIENT_SECRET"):
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
+
+#: An activity id in a URL: bounded to the database's 64-bit INTEGER, so a
+#: larger one is a 422 rather than an OverflowError on the first lookup.
+ActivityIdPath = Annotated[int, Path(ge=ACTIVITY_ID_MIN, le=ACTIVITY_ID_MAX)]
 
 # ── Response schemas ──────────────────────────────────────────────────────────
 
@@ -941,7 +947,7 @@ def _refresh_activity_job(
              summary="Trigger async activity refresh from Strava")
 def refresh_activity(
     name: str,
-    activity_id: int,
+    activity_id: ActivityIdPath,
     background_tasks: BackgroundTasks,
     current_user: Annotated[dict, Depends(get_current_user)],
     owner: OwnerParam = None,
@@ -1058,21 +1064,10 @@ class TrackEditRequest(BaseModel):
 
 
 def _require_rewritable_by_trip(sess, project_row: DBProject, activity_id: int) -> None:
-    """404 unless the trip may rewrite this activity's geometry.
-
-    An activity row is shared by every trip that holds it, so rewriting it
-    from one trip changes it in all of them. A trip may do that only to an
-    activity of its owner or of a current member: someone who is part of the
-    trip now. A row that does not exist is left to the caller's own 404.
-    """
-    act = sess.get(DBActivity, activity_id)
-    if act is None or act.user_info_id == project_row.user_info_id:
-        return
-    member = sess.exec(select(DBProjectMember.id).where(
-        DBProjectMember.project_id == project_row.id,
-        DBProjectMember.user_info_id == act.user_info_id,
-    )).first()
-    if member is None:
+    """404 unless the trip may rewrite this activity's geometry — see
+    ``activity_rewritable_by_trip``. A missing row is left to the caller's
+    own 404."""
+    if not _repo.activity_rewritable_by_trip(sess, project_row.id, activity_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not in project")
 
 
@@ -1087,7 +1082,7 @@ def _project_contains_activity(project, activity_id: int) -> bool:
             summary="Get a single activity's editable geometry")
 def get_activity_track(
     name: str,
-    activity_id: int,
+    activity_id: ActivityIdPath,
     current_user: Annotated[dict, Depends(get_current_user)],
     owner: OwnerParam = None,
 ):
@@ -1119,7 +1114,7 @@ def get_activity_track(
             summary="Replace an activity's track geometry")
 def edit_activity_track(
     name: str,
-    activity_id: int,
+    activity_id: ActivityIdPath,
     body: TrackEditRequest,
     current_user: Annotated[dict, Depends(get_current_user)],
     background_tasks: BackgroundTasks,
@@ -1195,7 +1190,7 @@ def edit_activity_track(
              summary="Reset an edited activity's track to the original")
 def reset_activity_track(
     name: str,
-    activity_id: int,
+    activity_id: ActivityIdPath,
     current_user: Annotated[dict, Depends(get_current_user)],
     background_tasks: BackgroundTasks,
     owner: OwnerParam = None,
@@ -1269,7 +1264,7 @@ class SplitRequest(BaseModel):
              summary="Split an activity into a head and a local tail")
 def split_activity(
     name: str,
-    activity_id: int,
+    activity_id: ActivityIdPath,
     body: SplitRequest,
     current_user: Annotated[dict, Depends(get_current_user)],
     background_tasks: BackgroundTasks,
@@ -1350,7 +1345,7 @@ def split_activity(
                summary="Delete a local (split-tail) activity")
 def delete_local_activity(
     name: str,
-    activity_id: int,
+    activity_id: ActivityIdPath,
     current_user: Annotated[dict, Depends(get_current_user)],
     background_tasks: BackgroundTasks,
     owner: OwnerParam = None,
@@ -1402,7 +1397,7 @@ class ActivityFieldsUpdate(BaseModel):
 
 @activity_fields_router.put("/{activity_id}", summary="Update an activity's E2EE-in-scope fields")
 def update_activity_fields(
-    activity_id: int,
+    activity_id: ActivityIdPath,
     body: ActivityFieldsUpdate,
     current_user: Annotated[dict, Depends(get_current_user)],
     background_tasks: BackgroundTasks,

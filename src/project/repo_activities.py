@@ -12,7 +12,7 @@ from sqlalchemy import delete
 from sqlmodel import Session, select
 
 from models.db import get_session
-from models.project_db import DBActivity, DBActivityGeoPrepared, DBProjectItem
+from models.project_db import DBActivity, DBActivityGeoPrepared, DBProject, DBProjectItem, DBProjectMember
 from src.models.activity import Activity, is_activity_id
 from src.models.prepared_geo import prepare_polyline
 from src.models.simplify import PREPARED_GEO_VERSION
@@ -825,6 +825,28 @@ class ActivityMixin:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def activity_rewritable_by_trip(
+        self, sess: Session, project_id: int, activity_id: int
+    ) -> bool:
+        """Whether a trip may rewrite or delete this activity's row.
+
+        An activity row is shared by every trip that holds it, so changing it
+        from one trip changes it in all of them. A trip may do that only to an
+        activity of its owner or of a current member: someone who is part of
+        the trip now. True for a row that does not exist: there is nothing to
+        protect, and the caller answers for the missing row itself.
+        """
+        act = sess.get(DBActivity, activity_id)
+        if act is None:
+            return True
+        project = sess.get(DBProject, project_id)
+        if project is not None and act.user_info_id == project.user_info_id:
+            return True
+        return sess.exec(select(DBProjectMember.id).where(
+            DBProjectMember.project_id == project_id,
+            DBProjectMember.user_info_id == act.user_info_id,
+        )).first() is not None
 
     def activity_owners(self, sess: Session, activity_ids) -> Dict[int, int]:
         """Owner account of each of *activity_ids* that has a row.
