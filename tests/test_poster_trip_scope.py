@@ -198,3 +198,19 @@ def test_the_owners_poster_still_draws_their_memories_with_photos(trips):
     assert drawn == [mb]
     assert any(pb in p.name for p in read)
 
+
+# ── A share link serves only its own trip's photos ──────────────────────────
+
+def test_a_share_link_serves_photos_of_its_own_trip_only(trips, monkeypatch):
+    import api.share as share_mod
+
+    (client, engine, ids, act_as, data, drawn, read), (ma, pa), (mb, pb) = trips
+    monkeypatch.setattr(share_mod, "_DATA_DIR", str(data))
+    act_as("alice")
+    token = client.post("/api/projects/A/share").json()["share_token"]
+
+    for suffix in ("", "/thumb"):
+        assert client.get(f"/api/share/{token}/photos/{ma}/{pa}{suffix}").status_code == 200
+        # The owner's other trip, not shared by this link.
+        r = client.get(f"/api/share/{token}/photos/{mb}/{pb}{suffix}")
+        assert r.status_code == 404, (suffix, r.status_code)
