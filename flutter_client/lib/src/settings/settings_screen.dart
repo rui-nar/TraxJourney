@@ -32,15 +32,18 @@ import 'theme_notifier.dart';
 ///
 /// Deleting the account cancels a paid plan immediately, so the user is told
 /// before confirming. [billing] is null when the plan could not be fetched —
-/// then the general sentence, which is true either way.
+/// then the general sentence, which is true either way. So is a subscription
+/// that may still bill while the plan in force is free (`unpaid`, `paused`,
+/// `incomplete`): naming "your Free plan" as the thing being cancelled would
+/// be nonsense.
 String deleteAccountWarning(BillingStatus? billing) {
   const base = 'This will permanently delete your account and all projects. '
       'This cannot be undone.';
-  if (billing == null) {
-    return '$base\n\nAny active paid plan will be cancelled immediately, and '
-        'you will not be charged again.';
-  }
+  const general = '$base\n\nAny active paid plan will be cancelled '
+      'immediately, and you will not be charged again.';
+  if (billing == null) return general;
   if (billing.mayStillBill) {
+    if (!billing.isPaid) return general;
     return '$base\n\nYour ${billing.planName} plan will be cancelled '
         'immediately, and you will not be charged again.';
   }
@@ -86,6 +89,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String? _restoringDate;
 
   // ── Account state ─────────────────────────────────────────────────────────
+  /// Last plan status the Plan card loaded, reused by the delete warning.
+  BillingStatus? _billingStatus;
+
+  /// True while deleting is fetching the plan or waiting on the server, so a
+  /// second tap cannot start a second deletion (issue #429).
+  bool _deleteBusy = false;
   final _displayNameCtrl = TextEditingController();
   String _email = '';
   String _authProvider = 'local';
@@ -199,13 +208,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _deleteAccount() async {
+    if (_deleteBusy) return;
     // Best effort: knowing the plan makes the warning precise, and the general
-    // wording is still true when it cannot be fetched.
-    BillingStatus? billing;
-    try {
-      billing = await BillingService().status().timeout(const Duration(seconds: 5));
-    } catch (_) {}
-    if (!mounted) return;
+    // wording is still true when it cannot be fetched. The Plan card has
+    // usually loaded it already.
+    var billing = _billingStatus;
+    if (billing == null) {
+      setState(() => _deleteBusy = true);
+      try {
+        billing = await BillingService().status().timeout(const Duration(seconds: 5));
+      } catch (_) {}
+      if (!mounted) return;
+      setState(() => _deleteBusy = false);
+    }
 
     final confirmed = await showDialog<bool>(
       context: context,
@@ -231,12 +246,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     final auth = context.read<AuthNotifier>();
     final router = GoRouter.of(context);
+    setState(() => _deleteBusy = true);
     try {
       await _service.deleteAccount();
       await auth.logout();
       router.go('/login');
     } on Exception catch (e) {
       if (!mounted) return;
+      setState(() => _deleteBusy = false);
       // A dialog, not a snackbar: a refusal (e.g. the paid plan could not be
       // cancelled) says why and what to do, and must not vanish unread.
       await showDialog<void>(
@@ -575,7 +592,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
                 // ── Plan ───────────────────────────────────────────────
                 // Renders nothing on a self-hosted instance (issue #121).
-                const BillingSection(),
+                BillingSection(onStatus: (s) => _billingStatus = s),
 
                 // ── Account ────────────────────────────────────────────
                 _SectionCard(
@@ -1124,8 +1141,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           foregroundColor: theme.colorScheme.error,
                           side: BorderSide(color: theme.colorScheme.error),
                         ),
-                        onPressed: _deleteAccount,
-                        child: const Text('Delete my account'),
+                        onPressed: _deleteBusy ? null : _deleteAccount,
+                        child: _deleteBusy
+                            ? const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  SizedBox(
+                                    width: 14,
+                                    height: 14,
+                                    child: CircularProgressIndicator(strokeWidth: 2),
+                                  ),
+                                  SizedBox(width: 8),
+                                  Text('Delete my account'),
+                                ],
+                              )
+                            : const Text('Delete my account'),
                       ),
                     ],
                   ),

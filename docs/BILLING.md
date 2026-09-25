@@ -253,9 +253,27 @@ it doubles as the fix for a mis-mapped price.
 
 ### Deleting an account
 
-Account deletion removes the local subscription and usage rows. It does **not**
-cancel anything at Stripe — that record is Stripe's, and must be cancelled
-through the dashboard or the customer portal first.
+Both deletion routes (`DELETE /api/auth/me` and the admin's
+`DELETE /api/admin/users/{id}`) stop billing at Stripe **before** removing any
+row (issue #429, `cancel_live_subscription` in `src/auth/account_deletion.py`):
+
+- when the account has a Stripe customer, Stripe is asked rather than our
+  cached row: the customer's open checkout sessions are expired, then every
+  subscription that has not ended is cancelled **immediately**, not at period
+  end. The customer itself is kept — its invoices are the accounting record;
+- a row with no customer falls back to its stored subscription id;
+- if that fails the deletion is refused with **502**, and with **409** when a
+  subscription may still bill but this deployment has no gateway configured.
+  Nothing is deleted either way, and retrying is safe.
+
+A first purchase has no customer until it is paid, so a checkout page opened
+before the deletion cannot be found then. If it is paid afterwards,
+`checkout.session.completed` / `customer.subscription.created` arrive naming a
+deleted account and a customer no account holds; the webhook cancels that
+subscription on arrival and logs a warning.
+
+Account ids are never reused (`userinfo` is `AUTOINCREMENT`), so the
+`user_info_id` in Stripe metadata can only ever name its buyer, or nobody.
 
 ## Where the plan UI lives
 

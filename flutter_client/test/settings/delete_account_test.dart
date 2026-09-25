@@ -5,6 +5,7 @@
 /// the user in the server's own words.
 library;
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -65,6 +66,16 @@ void main() {
       }
     });
 
+    test('never names the free plan as the one being cancelled', () {
+      for (final status in ['unpaid', 'paused', 'incomplete']) {
+        final text = deleteAccountWarning(
+            BillingStatus.fromJson(_billingMe(status: status, plan: 'free')));
+        expect(text, contains('Any active paid plan will be cancelled immediately'),
+            reason: status);
+        expect(text, isNot(contains('Free plan')), reason: status);
+      }
+    });
+
     test('falls back to the general sentence when the plan is unknown', () {
       expect(deleteAccountWarning(null),
           contains('Any active paid plan will be cancelled immediately'));
@@ -91,13 +102,18 @@ void main() {
   });
 
   group('SettingsScreen delete account', () {
-    late http.Response Function() billingMe;
+    late FutureOr<http.Response> Function() billingMe;
+    late int billingCalls;
 
     setUp(() {
       SharedPreferences.setMockInitialValues({});
+      billingCalls = 0;
       billingMe = () => _json(200, {'billing_enabled': false});
       api = ApiClient(httpClient: MockClient((req) async {
-        if (req.url.path == '/api/billing/me') return billingMe();
+        if (req.url.path == '/api/billing/me') {
+          billingCalls++;
+          return billingMe();
+        }
         return _json(200, {});
       }));
     });
@@ -135,6 +151,64 @@ void main() {
 
       expect(find.textContaining('Your Explorer plan will be cancelled immediately'),
           findsOneWidget);
+    });
+
+    testWidgets('a billing subscription on the free plan is not called "Free"',
+        (tester) async {
+      // unpaid / paused / incomplete: can still bill, grants nothing.
+      billingMe = () => _json(200, _billingMe(status: 'unpaid', plan: 'free'));
+      await pumpScreen(tester, _FakeSettingsService());
+
+      await openConfirmation(tester);
+
+      expect(find.textContaining('Any active paid plan will be cancelled immediately'),
+          findsOneWidget);
+      expect(find.textContaining('Free plan'), findsNothing);
+    });
+
+    testWidgets('reuses the plan the Plan card already loaded', (tester) async {
+      billingMe = () => _json(200, _billingMe(status: 'active'));
+      await pumpScreen(tester, _FakeSettingsService());
+      final loaded = billingCalls;
+
+      await openConfirmation(tester);
+
+      expect(billingCalls, loaded, reason: 'asked the server again');
+      expect(find.textContaining('Your Explorer plan will be cancelled immediately'),
+          findsOneWidget);
+    });
+
+    testWidgets('shows it is busy while the plan loads, and ignores a second tap',
+        (tester) async {
+      // The Plan card's own load fails, so the tap has to fetch — slowly.
+      final slow = Completer<http.Response>();
+      var first = true;
+      billingMe = () {
+        if (first) {
+          first = false;
+          return _json(500, {'detail': 'boom'});
+        }
+        return slow.future;
+      };
+      await pumpScreen(tester, _FakeSettingsService());
+      final before = billingCalls;
+
+      final button = find.widgetWithText(OutlinedButton, 'Delete my account');
+      await tester.ensureVisible(button);
+      await tester.tap(button);
+      await tester.pump();
+
+      expect(tester.widget<OutlinedButton>(button).onPressed, isNull);
+      expect(find.descendant(of: button, matching: find.byType(CircularProgressIndicator)),
+          findsOneWidget);
+      await tester.tap(button, warnIfMissed: false);
+      await tester.pump();
+
+      slow.complete(_json(200, _billingMe(status: 'active')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Delete account?'), findsOneWidget);
+      expect(billingCalls, before + 1);
     });
 
     testWidgets('a free user is not warned about a plan', (tester) async {

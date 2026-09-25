@@ -36,9 +36,23 @@ class AdminService {
   }
 
   /// Permanently delete a user and all their data.
-  /// Throws [ApiException] (409) when deleting your own account this way.
+  /// Throws an [Exception] carrying the server's message when the deletion is
+  /// refused — deleting your own account this way (409), or a paid plan that
+  /// could not be cancelled first (502/409, issue #429) — rather than the raw
+  /// response body.
   Future<void> deleteUser(int userInfoId) async {
-    await api.delete('/api/admin/users/$userInfoId');
+    try {
+      await api.delete('/api/admin/users/$userInfoId');
+    } on ApiException catch (e) {
+      throw Exception(_detail(e.body));
+    }
+  }
+
+  /// The `detail` of an error body, or the body itself when it has none.
+  /// Same reading as `SettingsService`.
+  static String _detail(String body) {
+    final m = RegExp(r'"detail"\s*:\s*"([^"]+)"').firstMatch(body);
+    return m?.group(1) ?? body;
   }
 
   /// Send a plain-text email to the given users, or to every user when
