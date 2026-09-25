@@ -14,6 +14,7 @@ from typing import Dict, Optional
 from sqlmodel import Session
 
 from models.project_db import DBEncounter, DBMemory, DBPerson, DBPersonGroup, DBProject, DBProjectItem
+from src.models.activity import is_activity_id
 from src.models.person import polarsteps_from_socials
 from src.models.project import Project
 from src.project.local_ids import allocate_local_activity_id
@@ -34,28 +35,31 @@ class ImportExportMixin:
         become the importer's own copies under fresh local ids: the file's
         content is kept, the other account's row is neither written nor
         referenced. An item naming an activity the file does not carry is kept
-        only if that activity is the importer's. Returns a new project; the
-        one given is not changed.
+        only if that activity is already the importer's: one naming someone
+        else's, or an id nobody holds yet, would start naming whichever
+        account later creates it. Returns a new project; the one given is not
+        changed.
         """
-        owners = self.activity_owners(sess, [a.id for a in project.activities] + [
+        activities = [a for a in project.activities if is_activity_id(a.id)]
+        carried = {a.id for a in activities}
+        owners = self.activity_owners(sess, list(carried) + [
             it.activity_id for it in project.items if it.item_type == "activity"])
-        others = {aid for aid, owner in owners.items() if owner != user_info_id}
-        if not others:
-            return project
+        others = {aid for aid in carried if owners.get(aid, user_info_id) != user_info_id}
 
         new_ids: Dict[int, int] = {}
-        activities = []
-        for act in project.activities:
+        for n, act in enumerate(activities):
             if act.id in others:
                 new_ids.setdefault(act.id, allocate_local_activity_id(sess))
-                act = dataclasses.replace(act, id=new_ids[act.id])
-            activities.append(act)
+                activities[n] = dataclasses.replace(act, id=new_ids[act.id])
         items = []
         for item in project.items:
-            if item.item_type == "activity" and item.activity_id in others:
-                if item.activity_id not in new_ids:
+            if item.item_type == "activity" and item.activity_id is not None:
+                aid = item.activity_id
+                if aid in new_ids:
+                    item = dataclasses.replace(item, activity_id=new_ids[aid])
+                elif not is_activity_id(aid) or (
+                        aid not in carried and owners.get(aid) != user_info_id):
                     continue
-                item = dataclasses.replace(item, activity_id=new_ids[item.activity_id])
             items.append(item)
 
         mine = copy.copy(project)

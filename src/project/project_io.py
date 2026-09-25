@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict
 
-from src.models.activity import Activity, parse_activities_or_log
+from src.models.activity import Activity, is_activity_id, parse_activities_or_log
 from src.models.encounter import Encounter
 from src.models.journal import JournalEntry
 from src.models.memory import Memory
@@ -284,7 +284,7 @@ class ProjectIO:
         for n, raw in enumerate(raw_activities):
             # The id keys the project's activity map and the items that point
             # into it, so a non-integer one breaks the trip, not one activity.
-            if isinstance(raw, dict) and not isinstance(raw.get("id"), (int, type(None))):
+            if isinstance(raw, dict) and raw.get("id") is not None and not is_activity_id(raw["id"]):
                 raise InvalidProjectFile(f"activities[{n}].id is not a whole number")
         activities = parse_activities_or_log(raw_activities, "project_io_load")
 
@@ -356,7 +356,10 @@ class ProjectIO:
         if item_type is not None and not isinstance(item_type, str):
             raise InvalidProjectFile(f"{where}.item_type is not text")
         if item_type == "activity":
-            return ProjectItem(item_type="activity", activity_id=d.get("activity_id"))
+            activity_id = d.get("activity_id")
+            if activity_id is not None and not is_activity_id(activity_id):
+                raise InvalidProjectFile(f"{where}.activity_id is not a whole number")
+            return ProjectItem(item_type="activity", activity_id=activity_id)
         if item_type in _ITEM_TYPE_DESERIALIZERS:
             # Each of these item types keeps its payload under its own name.
             _expect(d.get(item_type, {}), dict, f"{where}.{item_type}")

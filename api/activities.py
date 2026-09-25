@@ -34,7 +34,7 @@ from api.deps import get_current_user
 from api.geo import bust_geo_cache, warm_geo_cache
 from api.project_access import OwnerParam, resolve_project
 from api.project_shared import _refresh_share_tiles, _refresh_stats_background, _repo, queue_share_tiles_refresh, queue_stats_refresh, warm_meta_cache
-from models.project_db import DBActivity, DBProject, DBProjectItem
+from models.project_db import DBActivity, DBProject, DBProjectItem, DBProjectMember
 from models.user import StravaToken
 from src.api.strava_client import RateLimiter, StravaAPI
 from src.billing.entitlements import ensure_trip_days_quota
@@ -1057,6 +1057,25 @@ class TrackEditRequest(BaseModel):
                     "edited from a second tab. Omit to save unconditionally.")
 
 
+def _require_rewritable_by_trip(sess, project_row: DBProject, activity_id: int) -> None:
+    """404 unless the trip may rewrite this activity's geometry.
+
+    An activity row is shared by every trip that holds it, so rewriting it
+    from one trip changes it in all of them. A trip may do that only to an
+    activity of its owner or of a current member: someone who is part of the
+    trip now. A row that does not exist is left to the caller's own 404.
+    """
+    act = sess.get(DBActivity, activity_id)
+    if act is None or act.user_info_id == project_row.user_info_id:
+        return
+    member = sess.exec(select(DBProjectMember.id).where(
+        DBProjectMember.project_id == project_row.id,
+        DBProjectMember.user_info_id == act.user_info_id,
+    )).first()
+    if member is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not in project")
+
+
 def _project_contains_activity(project, activity_id: int) -> bool:
     return any(
         it.item_type == "activity" and it.activity_id == activity_id
@@ -1131,6 +1150,7 @@ def edit_activity_track(
     with get_session() as sess:
         row = resolve_project(sess, user_info_id, name, owner, min_role="editor")
         owner_id = row.user_info_id
+        _require_rewritable_by_trip(sess, row, activity_id)
         # include_heavy=False: this load is only used for the existence/
         # containment check below, never the track geometry — no reason to pull
         # every activity's summary_polyline/elevation_profile_json off disk just
@@ -1190,6 +1210,7 @@ def reset_activity_track(
     with get_session() as sess:
         row = resolve_project(sess, user_info_id, name, owner, min_role="editor")
         owner_id = row.user_info_id
+        _require_rewritable_by_trip(sess, row, activity_id)
         # include_heavy=False: only used for the containment check below — see
         # edit_activity_track for why.
         project = _repo.get_project(
@@ -1279,6 +1300,7 @@ def split_activity(
     with get_session() as sess:
         row = resolve_project(sess, user_info_id, name, owner, min_role="editor")
         owner_id = row.user_info_id
+        _require_rewritable_by_trip(sess, row, activity_id)
         # include_heavy=False: only used for the containment check below — see
         # edit_activity_track for why.
         project = _repo.get_project(
@@ -1290,7 +1312,7 @@ def split_activity(
         t1 = time.time()
         try:
             tail_id = _repo.split_activity(
-                sess, owner_id, row.id, activity_id, body.split_index,
+                sess, row.id, activity_id, body.split_index,
                 drop_boundary=body.drop_boundary, points=edited_points,
                 expected_version=body.lock_version)
         except ValueError as exc:
@@ -1342,6 +1364,7 @@ def delete_local_activity(
     with get_session() as sess:
         row = resolve_project(sess, user_info_id, name, owner, min_role="editor")
         owner_id = row.user_info_id
+        _require_rewritable_by_trip(sess, row, activity_id)
         if not _repo.delete_local_activity(sess, row.id, activity_id):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

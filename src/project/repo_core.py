@@ -16,7 +16,7 @@ from sqlmodel import Session, select
 
 from src.utils.logging import get_logger
 from models.project_db import DBActivity, DBEncounter, DBJournalEntry, DBMemory, DBMemoryComment, DBMemoryLike, DBPerson, DBPersonGroup, DBProject, DBProjectItem
-from src.models.activity import Activity
+from src.models.activity import Activity, is_activity_id
 from src.models.journal import JournalEntry
 from src.models.memory import Memory
 from src.models.project import (
@@ -138,14 +138,21 @@ class ProjectCoreMixin:
         sess: Session, project_id: int, importer_id: int, project: Project,
     ) -> None:
         """Remove from *project* any activity it is about to start referencing
-        that another account owns.
+        that is not the saver's own.
 
         An activity row belongs to the account that created it. A trip may
         hold activities of several accounts (a companion adds their own, issue
         #106), but only because each account added its own: an activity the
         trip does not hold yet may join it only if its row is the saver's, or
-        does not exist and is about to be created as the saver's. Activities
-        the trip already holds are left alone, whoever owns them.
+        does not exist and is about to be created as the saver's from the
+        project's own activities. A reference to an id with no row and nothing
+        to create it from is left out too: it would start naming whichever
+        account later creates that id. Activities the trip already holds are
+        left alone, whoever owns them.
+
+        Runs in the save's own write transaction. That settles a race on
+        SQLite, where a writer holds the database; a backend with concurrent
+        writers would need the owner rows locked here.
         """
         held = set(sess.exec(
             select(DBProjectItem.activity_id).where(
@@ -160,10 +167,16 @@ class ProjectCoreMixin:
         }
         if not joining:
             return
-        others = set(sess.exec(
-            select(DBActivity.id).where(
-                DBActivity.id.in_(joining), DBActivity.user_info_id != importer_id)
-        ).all())
+        ids = {aid for aid in joining if is_activity_id(aid)}
+        owners = dict(sess.exec(
+            select(DBActivity.id, DBActivity.user_info_id).where(DBActivity.id.in_(ids))
+        ).all()) if ids else {}
+        creatable = {a.id for a in project.activities if is_activity_id(a.id)}
+        others = {
+            aid for aid in joining
+            if not is_activity_id(aid)
+            or owners.get(aid, importer_id if aid in creatable else None) != importer_id
+        }
         if not others:
             return
         _log.warning("project id=%s: left out %d activities owned by another account",

@@ -13,7 +13,7 @@ from sqlmodel import Session, select
 
 from models.db import get_session
 from models.project_db import DBActivity, DBActivityGeoPrepared, DBProjectItem
-from src.models.activity import Activity
+from src.models.activity import Activity, is_activity_id
 from src.models.prepared_geo import prepare_polyline
 from src.models.simplify import PREPARED_GEO_VERSION
 from src.project.local_ids import allocate_local_activity_id
@@ -458,7 +458,6 @@ class ActivityMixin:
     def split_activity(
         self,
         sess: Session,
-        user_info_id: int,
         project_id: int,
         activity_id: int,
         split_index: int,
@@ -543,7 +542,9 @@ class ActivityMixin:
         # only as the fallback when that's skipped, e.g. an E2EE-encrypted name).
         tail = DBActivity(
             id=tail_id,
-            user_info_id=user_info_id,
+            # Cut out of the head, so owned by whoever owns the head: an
+            # activity row belongs to the account that created the original.
+            user_info_id=head.user_info_id,
             name=f"{head.name} (2)",
             split_root_id=root_id,
             # ...and the piece it was cut directly out of, which is the head
@@ -826,8 +827,12 @@ class ActivityMixin:
     # ------------------------------------------------------------------
 
     def activity_owners(self, sess: Session, activity_ids) -> Dict[int, int]:
-        """Owner account of each of *activity_ids* that has a row."""
-        ids = {aid for aid in activity_ids if aid is not None}
+        """Owner account of each of *activity_ids* that has a row.
+
+        Only plain integers are looked up: anything else names no row here,
+        though SQLite would match "9001" to 9001 (see ``is_activity_id``).
+        """
+        ids = {aid for aid in activity_ids if is_activity_id(aid)}
         if not ids:
             return {}
         return dict(sess.exec(
@@ -843,7 +848,11 @@ class ActivityMixin:
         already belongs to someone else is theirs, not the caller's.
         """
         owners = self.activity_owners(sess, [a.id for a in activities])
-        return [a for a in activities if owners.get(a.id, user_info_id) == user_info_id]
+        return [
+            a for a in activities
+            if a.id is None
+            or (is_activity_id(a.id) and owners.get(a.id, user_info_id) == user_info_id)
+        ]
 
     def _upsert_activity(
         self, sess: Session, user_info_id: int, act: Activity

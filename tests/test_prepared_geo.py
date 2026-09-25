@@ -303,7 +303,7 @@ def test_a_reset_writes_the_row_back_to_the_original(repo_env):
 def test_a_split_writes_a_row_for_both_pieces(repo_env):
     engine, uid, pid, repo = repo_env
     with Session(engine) as sess:
-        tail_id = repo.split_activity(sess, uid, pid, 111, split_index=200)
+        tail_id = repo.split_activity(sess, pid, 111, split_index=200)
     assert tail_id is not None and tail_id < 0
     _assert_current(engine, 111)
     _assert_current(engine, tail_id)
@@ -407,7 +407,7 @@ def test_encrypting_a_track_removes_the_plaintext_row(repo_env):
 def test_deleting_a_local_activity_deletes_its_row(repo_env):
     engine, uid, pid, repo = repo_env
     with Session(engine) as sess:
-        tail_id = repo.split_activity(sess, uid, pid, 111, split_index=200)
+        tail_id = repo.split_activity(sess, pid, 111, split_index=200)
     assert _row(engine, tail_id) is not None
     with Session(engine) as sess:
         assert repo.delete_local_activity(sess, pid, tail_id)
@@ -418,7 +418,7 @@ def test_deleting_a_local_activity_deletes_its_row(repo_env):
 def test_resetting_a_split_root_deletes_the_pieces_rows(repo_env):
     engine, uid, pid, repo = repo_env
     with Session(engine) as sess:
-        tail_id = repo.split_activity(sess, uid, pid, 111, split_index=200)
+        tail_id = repo.split_activity(sess, pid, 111, split_index=200)
     with Session(engine) as sess:
         assert repo.reset_activity_track(sess, pid, 111)
     assert _row(engine, tail_id) is None
