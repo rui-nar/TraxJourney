@@ -22,16 +22,16 @@ import gpxpy.gpx
 import polyline as polyline_lib
 from models.db import get_session
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
 
 from api.deps import get_current_user
 from api.geo import bust_geo_cache
 from api.project_access import OwnerParam, resolve_project
-from api.project_shared import _DATA_DIR, _projects_dir, _repo
-from src.billing.entitlements import ensure_project_quota, ensure_storage_quota
-from src.billing.usage import reconcile_usage
+from api.project_shared import _DATA_DIR, _repo
+from src.billing.entitlements import ensure_project_quota
 from src.brand import APP_NAME
 from src.models.great_circle import great_circle_points
 from src.project.project_io import ProjectIO
@@ -46,14 +46,72 @@ class ImportedOut(BaseModel):
     name: str = Field(description="Name of the imported project")
 
 
-@router.post("/import", status_code=status.HTTP_201_CREATED, response_model=ImportedOut,
-             summary="Import a .traxj file")
+# ── Import ────────────────────────────────────────────────────────────────────
+
+#: Largest project file the import accepts, whatever the plan or billing
+#: settings (issue #434). An export carries every track at full resolution:
+#: ~40-50 bytes per GPS point (encoded polyline plus the elevation profile's
+#: distance/elevation pair, pretty-printed), so 50 MB is roughly a million
+#: points, 50+ long days recorded every second or well over 100 at Strava's
+#: usual density. The import holds the file and its parsed form at once,
+#: measured at ~3.4x the file size, so 50 MB peaks near 170 MB inside the
+#: API container's 768 MB limit (docker-compose.yml.example); 100 MB would not
+#: leave the geo caches and concurrent requests room.
+MAX_IMPORT_BYTES = 50 * 1024 * 1024
+
+#: Room for the multipart envelope (boundaries, part headers) around the file.
+_MULTIPART_ALLOWANCE = 64 * 1024
+
+
+def _too_large() -> HTTPException:
+    return HTTPException(
+        status_code=413,
+        detail=(f"This file is too large to import. The limit is "
+                f"{MAX_IMPORT_BYTES // (1024 * 1024)} MB."),
+    )
+
+
+class _CappedUploadRoute(APIRoute):
+    """Refuses a request body larger than the import can accept, as it arrives.
+
+    FastAPI parses the multipart form before the endpoint runs, and Starlette
+    spools the file to a temp file as it goes, so a check in the endpoint alone
+    would only run once an arbitrarily large upload had been received and
+    written to disk. Here a declared ``Content-Length`` over the limit is
+    refused before any of the body is read, and a body without one (chunked)
+    is counted as it streams in and cut off once past the limit.
+    """
+
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def capped(request: Request):
+            limit = MAX_IMPORT_BYTES + _MULTIPART_ALLOWANCE
+            declared = request.headers.get("content-length", "")
+            if declared.isdigit() and int(declared) > limit:
+                raise _too_large()
+            receive = request.receive
+            seen = 0
+
+            async def bounded_receive():
+                nonlocal seen
+                message = await receive()
+                if message["type"] == "http.request":
+                    seen += len(message.get("body", b""))
+                    if seen > limit:
+                        raise _too_large()
+                return message
+
+            return await handler(Request(request.scope, bounded_receive))
+
+        return capped
+
+
 async def import_project(
     file: Annotated[UploadFile, File()],
     current_user: Annotated[dict, Depends(get_current_user)],
 ):
     user_info_id = int(current_user["sub"])
-    user_id = current_user["sub"]
 
     fname = os.path.basename(file.filename or "imported" + ProjectIO.EXTENSION)
     # Only the current format is accepted (issue #151). An older .viewtrip or
@@ -65,32 +123,40 @@ async def import_project(
             detail=f"Only {ProjectIO.EXTENSION} project files can be imported",
         )
 
-    # Write to a temp location so ingest_project can read it
-    pdir = _projects_dir(user_id)
-    tmp_path = os.path.join(pdir, fname)
+    # Parsed straight from the upload: nothing is written under the user's
+    # directory, so no copy is left behind to count against their storage,
+    # whether the import succeeds or fails (issue #434). Starlette already
+    # spools a large upload to a system temp file it deletes itself, and the
+    # JSON parse needs the whole document in memory regardless.
+    # The route already bounds the whole body; this is the exact file size.
+    if file.size is not None and file.size > MAX_IMPORT_BYTES:
+        raise _too_large()
     contents = await file.read()
 
-    # Plan limits (issue #121): an import creates a trip and lands its bytes on
-    # disk, so both quotas apply — checked before writing anything.
+    # The storage quota does not apply: nothing lands on disk. The size is
+    # bounded by MAX_IMPORT_BYTES instead, whatever the plan (issue #434).
     with get_session() as sess:
         ensure_project_quota(sess, user_info_id)
-        ensure_storage_quota(sess, user_info_id, len(contents))
 
-    with open(tmp_path, "wb") as fh:
-        fh.write(contents)
+    project = ProjectIO.from_dict(json.loads(contents.decode("utf-8")))
 
     name = fname[: -len(ProjectIO.EXTENSION)]
     with get_session() as sess:
-        _repo.ingest_project(sess, user_info_id, tmp_path)
+        _repo.ingest_project(sess, user_info_id, name, project)
     # Re-importing over an existing name replaces its content, so anything
     # cached under that name is now wrong (issue #178).
     bust_geo_cache(user_info_id, name)
 
-    # An archive expands into project files and photos; rather than trying to
-    # account for each write inside the ingest, re-measure the tree once.
-    reconcile_usage(user_info_id)
-
     return {"name": name, "filename": fname}
+
+
+router.add_api_route(
+    "/import", import_project, methods=["POST"],
+    status_code=status.HTTP_201_CREATED, response_model=ImportedOut,
+    summary="Import a .traxj file",
+    responses={413: {"description": "The file is larger than MAX_IMPORT_BYTES"}},
+    route_class_override=_CappedUploadRoute,
+)
 
 
 # ── GPX export ─────────────────────────────────────────────────────────────────

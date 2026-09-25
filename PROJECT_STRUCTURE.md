@@ -12,7 +12,7 @@ TraxJourney/
 │   ├── admin.py                  # Admin dashboard endpoints (is_admin-gated)
 │   ├── projects.py               # Project CRUD, day-meta, track style, sync-meta
 │   ├── project_access.py         # Shared (caller, name, ?owner) → DBProject resolver + role gating
-│   ├── project_shared.py         # Shared infra (no routes): ProjectRepo instance, project-file directory, background tasks
+│   ├── project_shared.py         # Shared infra (no routes): ProjectRepo instance, data directory, background tasks
 │   ├── project_items.py          # Item delete/reorder/sort
 │   ├── project_shares.py         # Share-token create/revoke, per-share content key, visitor stats
 │   ├── project_transfer.py       # Import/export (.traxj, GPX, ZIP)
