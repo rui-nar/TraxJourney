@@ -9,19 +9,33 @@ import copy
 import dataclasses
 import json
 import re
+import time
 import uuid
-from typing import Dict, Optional, Set
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
+from sqlalchemy import delete
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
-from models.project_db import DBEncounter, DBMemory, DBPerson, DBPersonGroup, DBProject, DBProjectItem
+from models.project_db import (
+    DBEncounter,
+    DBJournalEntry,
+    DBMemory,
+    DBMemoryComment,
+    DBMemoryLike,
+    DBMemoryTranslation,
+    DBPerson,
+    DBPersonGroup,
+    DBProject,
+    DBProjectItem,
+    DBShareMemoryContent,
+)
 from src.models.activity import is_activity_id
 from src.models.person import polarsteps_from_socials
 from src.models.project import Project
 from src.project.local_ids import allocate_local_activity_id
 from src.project.project_io import ProjectIO
-from src.project.repo_core import _compute_low_res_geo
+from src.project.repo_core import _compute_low_res_geo, bump_lock_version
 
 
 class ProjectNameTaken(Exception):
@@ -77,7 +91,8 @@ class ImportExportMixin:
     """Project file ingestion into the DB."""
 
     def _as_importers_activities(
-        self, sess: Session, user_info_id: int, project: Project
+        self, sess: Session, user_info_id: int, project: Project,
+        held: Set[int] = frozenset(),
     ) -> Project:
         """*project* with every activity it holds made the importer's own.
 
@@ -90,12 +105,17 @@ class ImportExportMixin:
         else's, or an id nobody holds yet, would start naming whichever
         account later creates it. Returns a new project; the one given is not
         changed.
+
+        *held* are the activities the trip being written already holds, when
+        it is an existing trip (a replace): those stay as they are, whoever
+        owns them, as they do through any save of the trip.
         """
         activities = [a for a in project.activities if is_activity_id(a.id)]
         carried = {a.id for a in activities}
         owners = self.activity_owners(sess, list(carried) + [
             it.activity_id for it in project.items if it.item_type == "activity"])
-        others = {aid for aid in carried if owners.get(aid, user_info_id) != user_info_id}
+        others = {aid for aid in carried
+                  if aid not in held and owners.get(aid, user_info_id) != user_info_id}
 
         new_ids: Dict[int, int] = {}
         for n, act in enumerate(activities):
@@ -109,7 +129,8 @@ class ImportExportMixin:
                 if aid in new_ids:
                     item = dataclasses.replace(item, activity_id=new_ids[aid])
                 elif not is_activity_id(aid) or (
-                        aid not in carried and owners.get(aid) != user_info_id):
+                        aid not in carried and aid not in held
+                        and owners.get(aid) != user_info_id):
                     continue
             items.append(item)
 
@@ -177,26 +198,132 @@ class ImportExportMixin:
 
         # 1. Create the project row first (name = filename slug, version from
         # JSON), so a taken name fails before anything else is written.
-        row = DBProject(
-            user_info_id=user_info_id,
-            name=db_name,
-            version=project.version,
-            filter_state_json=json.dumps({
-                "start_date": project.filter_state.start_date,
-                "end_date": project.filter_state.end_date,
-                "activity_types": project.filter_state.activity_types,
-            }),
-            day_meta_json=json.dumps({
-                dk: {"difficulty": dm.difficulty, "sleeping": dm.sleeping,
-                     "weather": dm.weather, "journal": dm.journal,
-                     "tags": dm.tags}
-                for dk, dm in project.day_meta.items()
-            }),
-            sleeping_options_json=json.dumps(project.sleeping_options),
-            low_res_geo_json=_compute_low_res_geo(project),
-        )
+        row = DBProject(user_info_id=user_info_id, name=db_name)
+        _set_content_columns(row, project)
         sess.add(row)
         sess.flush()  # populate row.id
+
+        self._write_content(sess, user_info_id, row.id, project)
+        sess.commit()
+
+    def replace_project(
+        self, sess: Session, user_info_id: int, name: str, project: Project
+    ) -> Optional[List["PhotoRemoval"]]:
+        """Overwrite the content of the owner's trip *name* with *project*.
+
+        "Replace" on import (issue #452). The trip itself is kept: its row
+        (id, name, creation time, share links), companions, invites, sync
+        settings, and the settings a .traxj import does not read. What the
+        file carries is rewritten from it:
+
+        * the timeline, people, groups and encounters;
+        * memories, matched to the trip's own by ``public_id`` and updated in
+          place, so their photos on disk, comments, likes and deep links
+          survive (translations and shared content go if the text changed);
+          the others are deleted with everything hanging off them;
+        * the owner's journal entries, matched by the exported id in the same
+          way. Companions' private entries are not in the owner's export and
+          are kept, placed back by date.
+
+        ``lock_version`` is advanced in SQL before any item row is touched, so
+        an editor still open on the old content gets a conflict (issue #397).
+
+        Returns the photo files the caller must delete once this has
+        committed, or None if the trip does not exist (any more).
+        """
+        row = self._get_project_row(sess, user_info_id, name)
+        if row is None:
+            return None
+        project_id = row.id
+        bump_lock_version(sess, project_id)
+        removals: List[PhotoRemoval] = []
+
+        # The same ownership rules as any import, except that what the trip
+        # already holds stays, as through any save of it: a companion's
+        # activity in the owner's export is not the owner's to copy.
+        held = set(sess.exec(select(DBProjectItem.activity_id).where(
+            DBProjectItem.project_id == project_id,
+            DBProjectItem.item_type == "activity",
+        )).all())
+        project = self._as_importers_activities(sess, user_info_id, project, held=held)
+
+        # Memories: the trip's own, by public_id. Those the file still has are
+        # kept for _write_content to update; the rest go.
+        wanted = {
+            it.memory.public_id for it in project.items
+            if it.item_type == "memory" and it.memory is not None
+            and isinstance(it.memory.public_id, str)
+        }
+        kept_memories: Dict[str, DBMemory] = {}
+        for mem in sess.exec(select(DBMemory).where(DBMemory.project_id == project_id)).all():
+            if mem.public_id in wanted:
+                kept_memories[mem.public_id] = mem
+                continue
+            removals.append(PhotoRemoval(
+                user_info_id, "memories", mem.id, _photos(mem.photos_json), True))
+            for model in (DBMemoryComment, DBMemoryLike, DBMemoryTranslation,
+                          DBShareMemoryContent):
+                sess.execute(delete(model).where(model.memory_id == mem.id))
+            sess.delete(mem)
+
+        # Journal: the owner's own entries (NULL author = the owner, #106), by
+        # the id the export carries. Companions' entries stay as they are.
+        wanted_journal_ids = {
+            it.journal.id for it in project.items
+            if it.item_type == "journal" and it.journal is not None
+            and type(it.journal.id) is int
+        }
+        kept_journals: Dict[int, DBJournalEntry] = {}
+        companion_journals: List[DBJournalEntry] = []
+        for entry in sess.exec(
+            select(DBJournalEntry).where(DBJournalEntry.project_id == project_id)
+        ).all():
+            author = entry.user_info_id if entry.user_info_id is not None else user_info_id
+            if author != user_info_id:
+                companion_journals.append(entry)
+            elif entry.id in wanted_journal_ids:
+                kept_journals[entry.id] = entry
+            else:
+                removals.append(PhotoRemoval(
+                    user_info_id, "journal", entry.id, _photos(entry.photos_json), True))
+                sess.delete(entry)
+
+        for model in (DBProjectItem, DBEncounter, DBPerson, DBPersonGroup):
+            sess.execute(delete(model).where(model.project_id == project_id))
+
+        _set_content_columns(row, project)
+        row.stats_json = None  # recomputed on the next read
+        row.updated_at = time.time()
+        sess.add(row)
+        sess.flush()
+
+        removals += self._write_content(
+            sess, user_info_id, project_id, project,
+            kept_memories=kept_memories, kept_journals=kept_journals,
+            companion_journals=companion_journals,
+        )
+        sess.commit()
+        return removals
+
+    def _write_content(
+        self, sess: Session, user_info_id: int, project_id: int, project: Project,
+        *,
+        kept_memories: Optional[Dict[str, DBMemory]] = None,
+        kept_journals: Optional[Dict[int, DBJournalEntry]] = None,
+        companion_journals: Sequence[DBJournalEntry] = (),
+    ) -> List["PhotoRemoval"]:
+        """Write *project*'s activities, people, groups and timeline into the
+        trip *project_id*, whose item rows are empty.
+
+        *kept_memories* (by public_id) and *kept_journals* (by id) are existing
+        rows the file's entries update in place instead of creating new ones;
+        *companion_journals* are other users' journal entries whose timeline
+        items are placed back among the file's by date. Returns the photos
+        the in-place updates dropped.
+        """
+        kept_memories = dict(kept_memories or {})
+        kept_journals = dict(kept_journals or {})
+        removals: List[PhotoRemoval] = []
 
         # 1a. Upsert activities (do NOT overwrite enriched data if row exists)
         for act in project.activities:
@@ -219,7 +346,7 @@ class ImportExportMixin:
         group_id_map: Dict[int, int] = {}
         for group in project.groups:
             g_row = DBPersonGroup(
-                project_id=row.id,
+                project_id=project_id,
                 name=group.name,
                 nationalities_json=json.dumps(group.nationalities) if group.nationalities else None,
                 socials_json=json.dumps(group.socials) if group.socials else None,
@@ -234,7 +361,7 @@ class ImportExportMixin:
         person_id_map: Dict[int, int] = {}
         for person in project.people:
             p_row = DBPerson(
-                project_id=row.id,
+                project_id=project_id,
                 name=person.name,
                 email=person.email,
                 phone=person.phone,
@@ -254,8 +381,10 @@ class ImportExportMixin:
                 person_id_map[person.id] = p_row.id
 
         # 3. Create project_item rows
-        for pos, item in enumerate(project.items):
+        db_items: List[Tuple[Optional[str], DBProjectItem]] = []
+        for item in project.items:
             memory_id: Optional[int] = None
+            journal_id: Optional[int] = None
             encounter_id: Optional[int] = None
             if item.item_type == "encounter" and item.encounter is not None:
                 enc = item.encounter
@@ -264,7 +393,7 @@ class ImportExportMixin:
                 if mapped_person is None and mapped_group is None:
                     continue  # orphan encounter (person/group missing) — skip
                 enc_row = DBEncounter(
-                    project_id=row.id,
+                    project_id=project_id,
                     person_id=mapped_person,
                     group_id=mapped_group,
                     date=enc.date,
@@ -278,32 +407,61 @@ class ImportExportMixin:
                 sess.flush()
                 encounter_id = enc_row.id
             elif item.item_type == "memory" and item.memory is not None:
-                # Persist the memory row so we get its DB id
                 mem = item.memory
-                public_id = mem.public_id
-                if (not isinstance(public_id, str) or not public_id
-                        or public_id in used_public_ids):
-                    public_id = uuid.uuid4().hex
-                used_public_ids.add(public_id)
-                mem_row = DBMemory(
-                    project_id=row.id,
-                    public_id=public_id,
-                    name=mem.name,
-                    date=mem.date,
-                    time=mem.time,
-                    description=mem.description,
-                    photos_json=json.dumps(mem.photos),
-                    geo_mode=mem.geo_mode,
-                    lat=mem.lat,
-                    lon=mem.lon,
-                )
-                sess.add(mem_row)
-                sess.flush()
+                mem_row = kept_memories.pop(mem.public_id, None) if isinstance(
+                    mem.public_id, str) else None
+                if mem_row is not None:
+                    # Same memory: update in place, keeping its id — and with
+                    # it its photos on disk, comments, likes and deep links.
+                    removals += _update_memory(sess, user_info_id, mem_row, mem)
+                    used_public_ids.add(mem_row.public_id)
+                else:
+                    public_id = mem.public_id
+                    if (not isinstance(public_id, str) or not public_id
+                            or public_id in used_public_ids):
+                        public_id = uuid.uuid4().hex
+                    used_public_ids.add(public_id)
+                    mem_row = DBMemory(
+                        project_id=project_id,
+                        public_id=public_id,
+                        name=mem.name,
+                        date=mem.date,
+                        time=mem.time,
+                        description=mem.description,
+                        photos_json=json.dumps(mem.photos),
+                        geo_mode=mem.geo_mode,
+                        lat=mem.lat,
+                        lon=mem.lon,
+                    )
+                    sess.add(mem_row)
+                    sess.flush()
                 memory_id = mem_row.id
+            elif item.item_type == "journal" and item.journal is not None:
+                # An imported journal entry is the importer's, like one they
+                # wrote. It used to get no row at all, and its item then read
+                # back as a segment at (0, 0).
+                entry = item.journal
+                j_row = kept_journals.pop(entry.id, None) if type(entry.id) is int else None
+                if j_row is not None:
+                    removals += _update_journal(sess, user_info_id, j_row, entry)
+                else:
+                    j_row = DBJournalEntry(
+                        project_id=project_id,
+                        user_info_id=user_info_id,
+                        date=entry.date,
+                        time=entry.time,
+                        description=entry.description,
+                        photos_json=json.dumps(entry.photos),
+                        geo_mode=entry.geo_mode,
+                        lat=entry.lat,
+                        lon=entry.lon,
+                    )
+                    sess.add(j_row)
+                    sess.flush()
+                journal_id = j_row.id
 
-            db_item = DBProjectItem(
-                project_id=row.id,
-                position=pos,
+            db_items.append((_item_day(item, project), DBProjectItem(
+                project_id=project_id,
                 uid=uuid.uuid4().hex,
                 item_type=item.item_type,
                 activity_id=item.activity_id if item.item_type == "activity" else None,
@@ -316,8 +474,108 @@ class ImportExportMixin:
                     if item.item_type == "segment" and item.segment is not None else None
                 ),
                 memory_id=memory_id,
+                journal_id=journal_id,
                 encounter_id=encounter_id,
-            )
-            sess.add(db_item)
+            )))
 
-        sess.commit()
+        # Other users' journal entries go back after the last item of their day
+        # or earlier; before everything if the file has nothing that early.
+        for entry in sorted(companion_journals, key=lambda e: (e.date or "", e.time or "")):
+            at = 0
+            for n, (day, _row) in enumerate(db_items):
+                if day is not None and day <= (entry.date or ""):
+                    at = n + 1
+            db_items.insert(at, (entry.date, DBProjectItem(
+                project_id=project_id, uid=uuid.uuid4().hex,
+                item_type="journal", journal_id=entry.id,
+            )))
+
+        for pos, (_day, db_item) in enumerate(db_items):
+            db_item.position = pos
+            sess.add(db_item)
+        return removals
+
+
+@dataclasses.dataclass
+class PhotoRemoval:
+    """Photo files to delete once a replace has committed.
+
+    ``kind`` is the directory under the user's tree ("memories" or
+    "journal"), ``content_id`` the memory or journal entry id naming the
+    folder. ``remove_dir`` when the entry itself is gone.
+    """
+    user_info_id: int
+    kind: str
+    content_id: int
+    uuids: List[str]
+    remove_dir: bool = False
+
+
+def _photos(photos_json: Optional[str]) -> List[str]:
+    try:
+        photos = json.loads(photos_json or "[]")
+    except ValueError:
+        return []
+    return [p for p in photos if isinstance(p, str)] if isinstance(photos, list) else []
+
+
+def _update_memory(sess: Session, owner_id: int, row: DBMemory, mem) -> List[PhotoRemoval]:
+    text_changed = (row.name, row.description) != (mem.name, mem.description)
+    dropped = [p for p in _photos(row.photos_json) if p not in set(mem.photos or [])]
+    row.name = mem.name
+    row.date = mem.date
+    row.time = mem.time
+    row.description = mem.description
+    row.photos_json = json.dumps(mem.photos)
+    row.geo_mode = mem.geo_mode
+    row.lat = mem.lat
+    row.lon = mem.lon
+    sess.add(row)
+    if text_changed:
+        # Both are derived from the old text: a stale translation, or a share
+        # link still showing what the owner just replaced.
+        for model in (DBMemoryTranslation, DBShareMemoryContent):
+            sess.execute(delete(model).where(model.memory_id == row.id))
+    return [PhotoRemoval(owner_id, "memories", row.id, dropped)] if dropped else []
+
+
+def _update_journal(sess: Session, owner_id: int, row: DBJournalEntry, entry) -> List[PhotoRemoval]:
+    dropped = [p for p in _photos(row.photos_json) if p not in set(entry.photos or [])]
+    row.date = entry.date
+    row.time = entry.time
+    row.description = entry.description
+    row.photos_json = json.dumps(entry.photos)
+    row.geo_mode = entry.geo_mode
+    row.lat = entry.lat
+    row.lon = entry.lon
+    sess.add(row)
+    return [PhotoRemoval(owner_id, "journal", row.id, dropped)] if dropped else []
+
+
+def _item_day(item, project: Project) -> Optional[str]:
+    """The "YYYY-MM-DD" an item belongs to, when it has one."""
+    if item.item_type == "activity":
+        act = project.activity_by_id(item.activity_id) if item.activity_id is not None else None
+        when = act.start_date_local if act is not None else None
+        return when.isoformat()[:10] if when is not None else None
+    content = getattr(item, item.item_type, None)
+    day = getattr(content, "date", None)
+    return day[:10] if isinstance(day, str) and day else None
+
+
+def _set_content_columns(row: DBProject, project: Project) -> None:
+    """The trip columns a .traxj import writes: the rest it does not read."""
+    row.version = project.version
+    row.filter_state_json = json.dumps({
+        "start_date": project.filter_state.start_date,
+        "end_date": project.filter_state.end_date,
+        "activity_types": project.filter_state.activity_types,
+    })
+    row.day_meta_json = json.dumps({
+        dk: {"difficulty": dm.difficulty, "sleeping": dm.sleeping,
+             "weather": dm.weather, "journal": dm.journal,
+             "tags": dm.tags}
+        for dk, dm in project.day_meta.items()
+    })
+    row.sleeping_options_json = json.dumps(project.sleeping_options)
+    row.low_res_geo_json = _compute_low_res_geo(project)
