@@ -602,10 +602,12 @@ def test_validation_build_of_a_clean_release_commit_also_pushes_its_tag(sandbox,
     assert deploy["--push"] == ["registry.invalid/owner/app:validation", "registry.invalid/owner/app:v1.2.3"]
 
 
+
+
 # -- DEPLOYMENT_VPS.md §1: copying the key from PowerShell (review of #444) -------
 
 DEPLOY_DOC = ROOT / "docs" / "DEPLOYMENT_VPS.md"
-PUBKEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIProbe444KeyMaterialOnly someone@workstation"
+KEY_MATERIAL = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIProbe444KeyMaterialOnly"
 
 # Records what the far side would get: its arguments and its stdin, as bytes.
 SSH_RECORDER = (
@@ -616,31 +618,50 @@ SSH_RECORDER = (
 )
 
 
-def _key_copy_snippet():
-    """The PowerShell lines of §1 that put the public key on the VPS."""
+def _key_block():
     blocks = re.findall(r"```powershell\n(.*?)```", DEPLOY_DOC.read_text(encoding="utf-8"), re.DOTALL)
     (block,) = [b for b in blocks if "authorized_keys" in b]
-    lines = block.splitlines()
+    return block.splitlines()
+
+
+def _key_copy_snippet():
+    """The PowerShell lines of §1 that put the public key on the VPS."""
+    lines = _key_block()
     last = next(i for i, line in enumerate(lines) if "authorized_keys" in line)
     return "\n".join(line for line in lines[:last + 1] if not line.startswith("ssh-keygen"))
 
 
+def test_the_documented_key_gets_a_fixed_comment():
+    """ssh-keygen's default comment is USERNAME@COMPUTERNAME, and a Windows
+    account name may hold an apostrophe (O'Brien)."""
+    (keygen,) = [line for line in _key_block() if line.startswith("ssh-keygen")]
+    assert re.search(r"\s-C\s+traxjourney-deploy(\s|$)", keygen), keygen
+
+
 @every_powershell
-def test_the_documented_key_copy_sends_no_carriage_return(tmp_path, exe):
-    """PowerShell pipes a string to a native command with CRLF line ends; a
-    CR in authorized_keys breaks the key. What reaches ssh must be LF only."""
+@pytest.mark.parametrize("comment", ["someone@workstation", "o'brien@workstation", "o'brien@o'brien-pc"],
+                         ids=["plain", "apostrophe", "two-apostrophes"])
+def test_the_documented_key_copy_lands_the_key_intact(tmp_path, exe, comment):
+    """PowerShell pipes a string to a native command with CRLF line ends, and a
+    quote in the key's comment can end the remote shell's string early. Run
+    the documented lines against a stand-in ssh, then the command it was given
+    in a real sh: authorized_keys must get the key line exactly, LF-ended."""
+    sh = shutil.which("sh")
+    if sh is None:
+        pytest.skip("needs a POSIX sh to play the remote side")
+    pubkey = f"{KEY_MATERIAL} {comment}"
     home = tmp_path / "home"
     (home / ".ssh").mkdir(parents=True)
-    (home / ".ssh" / "traxjourney_vps.pub").write_bytes(PUBKEY.encode() + b"\n")  # as ssh-keygen writes it
+    (home / ".ssh" / "traxjourney_vps.pub").write_bytes(pubkey.encode() + b"\n")  # as ssh-keygen writes it
     shims = tmp_path / "shims"
     shims.mkdir()
     (shims / "recorder.py").write_text(SSH_RECORDER, encoding="ascii")
     record = tmp_path / "ssh.json"
-    python = os.environ.get("PYTHON_FOR_SHIMS") or shutil.which("python3") or shutil.which("python")
     if os.name == "nt":
         import sys
         (shims / "ssh.bat").write_text(f'@"{sys.executable}" "%~dp0recorder.py" "{record}" %*\r\n', encoding="ascii")
     else:
+        python = shutil.which("python3") or shutil.which("python")
         (shims / "ssh").write_text(f'#!/bin/sh\nexec "{python}" "$(dirname "$0")/recorder.py" "{record}" "$@"\n',
                                    encoding="ascii")
         (shims / "ssh").chmod(0o755)
@@ -652,6 +673,13 @@ def test_the_documented_key_copy_sends_no_carriage_return(tmp_path, exe):
                             env=dict(os.environ, PATH=f"{shims}{os.pathsep}{os.environ['PATH']}"))
     assert result.returncode == 0, result.stdout + result.stderr
     sent = json.loads(record.read_text())
-    everything = sent["stdin"] + "\n".join(sent["args"])
-    assert PUBKEY in everything
-    assert "\r" not in everything, repr(everything)
+    assert "\r" not in sent["stdin"] + "".join(sent["args"]), repr(sent)
+
+    # The far side: sshd hands the command to the login shell, with ssh's stdin.
+    remote = sent["args"][-1]
+    keys = tmp_path / "authorized_keys"
+    assert "sudo tee -a /home/x/.ssh/authorized_keys" in remote, remote
+    remote = remote.replace("sudo tee -a /home/x/.ssh/authorized_keys", f"tee -a '{keys.as_posix()}'")
+    ran = subprocess.run([sh, "-c", remote], input=sent["stdin"].encode("latin-1"), capture_output=True)
+    assert ran.returncode == 0, ran.stderr.decode(errors="replace")
+    assert keys.read_bytes() == pubkey.encode() + b"\n"

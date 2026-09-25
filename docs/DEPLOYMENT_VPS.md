@@ -69,15 +69,18 @@ with the provider's default account, which on the OVH image has `sudo`, to
 write the key into the new user's `authorized_keys`:
 
 ```powershell
-ssh-keygen -t ed25519 -f $HOME\.ssh\traxjourney_vps
-$key = (Get-Content $HOME\.ssh\traxjourney_vps.pub -Raw).Trim()
+ssh-keygen -t ed25519 -C traxjourney-deploy -f $HOME\.ssh\traxjourney_vps
+$key = (Get-Content $HOME\.ssh\traxjourney_vps.pub -Raw).Trim().Replace("'", "'\''")
 ssh <default-user>@<vps-host> "echo '$key' | sudo tee -a /home/<deploy-user>/.ssh/authorized_keys >/dev/null"
 ssh -i $HOME\.ssh\traxjourney_vps <deploy-user>@<vps-host> "id; docker ps"   # groups include docker
 ```
 
 The key travels inside the remote command, not through a pipe: PowerShell
 ends every line it pipes to `ssh` with CRLF, and that carriage return would
-land in `authorized_keys`, where it can break the entry.
+land in `authorized_keys`, where it can break the entry. `-C` replaces
+ssh-keygen's default comment, your `USERNAME@COMPUTERNAME`; the `Replace`
+still keeps a key with a `'` in its comment (an account named O'Brien) from
+ending the remote `echo '...'` early.
 
 Then log in as `<deploy-user>` and run `docker login ghcr.io` there with the
 read-only token (below). The login lands in that user's `~/.docker/config.json`,
