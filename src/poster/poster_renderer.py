@@ -391,11 +391,13 @@ def _photo_resolver(user_id: str, memory_id: Any) -> Callable[[str], Optional[Pa
         _log.warning("Could not import api.memories; poster photos disabled", exc_info=True)
         return lambda uuid: None
 
+    from src.utils.photo_paths import photo_file
+
     photo_dir = _photo_dir(user_id, memory_id)
 
     def resolve(uuid: str) -> Optional[Path]:
-        path = photo_dir / f"{uuid}_thumb.jpg"
-        return path if path.exists() else None
+        path = photo_file(photo_dir, uuid, "_thumb")
+        return path if path is not None and path.exists() else None
 
     return resolve
 

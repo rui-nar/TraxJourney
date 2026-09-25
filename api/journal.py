@@ -48,6 +48,7 @@ from models.project_db import DBJournalEntry, DBProject, DBProjectItem
 from src.project.project_repo import bump_lock_version
 from src.billing.entitlements import ensure_storage_quota, ensure_trip_days_quota
 from src.billing.usage import record_written, unlink_and_record
+from src.utils.photo_paths import photo_file, photo_files, photo_folder
 from src.exceptions.errors import QuotaExceeded
 from src.utils.logging import get_logger
 
@@ -403,12 +404,8 @@ def delete_journal(
         row = _get_owned_journal(sess, journal_id, user_info_id)
 
         photos: List[str] = json.loads(row.photos_json or "[]")
-        photo_path = Path(_DATA_DIR) / "users" / current_user["sub"] / "journal" / str(journal_id)
-        unlink_and_record(current_user["sub"], [
-            photo_path / f"{photo_uuid}{suffix}.jpg"
-            for photo_uuid in photos
-            for suffix in ("", "_thumb")
-        ])
+        photo_path = photo_folder(_DATA_DIR, current_user["sub"], "journal", journal_id)
+        unlink_and_record(current_user["sub"], photo_files(photo_path, photos))
         if photo_path.exists():
             try:
                 photo_path.rmdir()
@@ -498,10 +495,8 @@ def delete_photo(
         if photo_uuid not in photos:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
 
-        photo_path = _photo_dir(current_user["sub"], journal_id)
-        unlink_and_record(current_user["sub"], [
-            photo_path / f"{photo_uuid}{suffix}.jpg" for suffix in ("", "_thumb")
-        ])
+        unlink_and_record(current_user["sub"], photo_files(
+            photo_folder(_DATA_DIR, current_user["sub"], "journal", journal_id), [photo_uuid]))
 
         photos.remove(photo_uuid)
         row.photos_json = json.dumps(photos)
@@ -549,10 +544,8 @@ async def replace_photo(
         sess.commit()
         bust_project_payloads(cache_ref)
 
-    photo_path = _photo_dir(current_user["sub"], journal_id)
-    unlink_and_record(current_user["sub"], [
-        photo_path / f"{old_uuid}{suffix}.jpg" for suffix in ("", "_thumb")
-    ])
+    unlink_and_record(current_user["sub"], photo_files(
+        photo_folder(_DATA_DIR, current_user["sub"], "journal", journal_id), [old_uuid]))
 
     return {"uuid": new_uuid}
 
@@ -571,9 +564,9 @@ def serve_photo(
         if photo_uuid not in photos:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
 
-    photo_path = Path(_DATA_DIR) / "users" / current_user["sub"] / "journal" / str(journal_id)
-    full_path = photo_path / f"{photo_uuid}.jpg"
-    if not full_path.exists():
+    full_path = photo_file(
+        photo_folder(_DATA_DIR, current_user["sub"], "journal", journal_id), photo_uuid)
+    if full_path is None or not full_path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     return FileResponse(str(full_path), media_type="image/jpeg")
 
@@ -592,11 +585,11 @@ def serve_photo_thumb(
         if photo_uuid not in photos:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
 
-    photo_path = Path(_DATA_DIR) / "users" / current_user["sub"] / "journal" / str(journal_id)
-    thumb_path = photo_path / f"{photo_uuid}_thumb.jpg"
-    if not thumb_path.exists():
-        full_path = photo_path / f"{photo_uuid}.jpg"
-        if full_path.exists():
+    photo_path = photo_folder(_DATA_DIR, current_user["sub"], "journal", journal_id)
+    thumb_path = photo_file(photo_path, photo_uuid, "_thumb")
+    if thumb_path is None or not thumb_path.exists():
+        full_path = photo_file(photo_path, photo_uuid)
+        if full_path is not None and full_path.exists():
             return FileResponse(str(full_path), media_type="image/jpeg")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     return FileResponse(str(thumb_path), media_type="image/jpeg")

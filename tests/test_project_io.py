@@ -43,7 +43,7 @@ def _make_journal_item(description: str = "Great day") -> ProjectItem:
         date="2024-05-01",
         time="09:30",
         description=description,
-        photos=["photo1"],
+        photos=["00000000-0000-4000-8000-000000000033"],
         geo_mode="custom",
         lat=48.85,
         lon=2.35,
@@ -193,7 +193,7 @@ class TestProjectIOHelpers:
         assert j_d["date"] == "2024-05-01"
         assert j_d["time"] == "09:30"
         assert j_d["description"] == "Serialise me"
-        assert j_d["photos"] == ["photo1"]
+        assert j_d["photos"] == ["00000000-0000-4000-8000-000000000033"]
         assert j_d["geo_mode"] == "custom"
         assert j_d["lat"] == pytest.approx(48.85)
         assert j_d["lon"] == pytest.approx(2.35)
@@ -206,7 +206,7 @@ class TestProjectIOHelpers:
                 "date": "2024-06-15",
                 "time": "14:00",
                 "description": "Deserialise me",
-                "photos": ["p1", "p2"],
+                "photos": ["00000000-0000-4000-8000-000000000031", "00000000-0000-4000-8000-000000000032"],
                 "geo_mode": "start_of_day",
                 "lat": 45.0,
                 "lon": 5.0,
@@ -216,7 +216,7 @@ class TestProjectIOHelpers:
         assert item.item_type == "journal"
         assert item.journal.id == 9
         assert item.journal.description == "Deserialise me"
-        assert item.journal.photos == ["p1", "p2"]
+        assert item.journal.photos == ["00000000-0000-4000-8000-000000000031", "00000000-0000-4000-8000-000000000032"]
         assert item.journal.lat == pytest.approx(45.0)
 
     def test_round_trip_item_journal(self):

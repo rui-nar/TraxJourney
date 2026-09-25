@@ -20,6 +20,7 @@ from src.models.project import (
     ProjectFilterState,
     ProjectItem,
 )
+from src.utils.photo_paths import is_photo_name
 
 
 # Dispatch tables for ProjectItem serialisation, keyed by item_type. "activity"
@@ -56,6 +57,22 @@ def _expect(value: Any, kind: type, where: str) -> Any:
         noun = "an object" if kind is dict else "a list"
         raise InvalidProjectFile(f"{where} is not {noun}")
     return value
+
+
+def _check_photo_names(photos: Any, where: str) -> None:
+    """A photo list names files the app stored itself: each entry is one of
+    its photo names (or null, a slot still being filled). A file holding any
+    other name was not written by the app, and is refused."""
+    for n, name in enumerate(_expect(photos, list, where)):
+        if name is not None and not is_photo_name(name):
+            raise InvalidProjectFile(f"{where}[{n}] is not a photo name")
+
+
+def _checked_avatar(d: Dict[str, Any], where: str) -> Dict[str, Any]:
+    avatar = d.get("avatar_photo")
+    if avatar is not None and not is_photo_name(avatar):
+        raise InvalidProjectFile(f"{where}.avatar_photo is not a photo name")
+    return d
 
 
 def _person_to_dict(p: Person) -> Dict[str, Any]:
@@ -312,7 +329,7 @@ class ProjectIO:
         )
 
         people = [
-            _person_from_dict(_expect(p, dict, f"people[{n}]"))
+            _person_from_dict(_checked_avatar(_expect(p, dict, f"people[{n}]"), f"people[{n}]"))
             for n, p in enumerate(_expect(data.get("people", []), list, "people"))
         ]
         groups = [
@@ -362,7 +379,9 @@ class ProjectIO:
             return ProjectItem(item_type="activity", activity_id=activity_id)
         if item_type in _ITEM_TYPE_DESERIALIZERS:
             # Each of these item types keeps its payload under its own name.
-            _expect(d.get(item_type, {}), dict, f"{where}.{item_type}")
+            content = _expect(d.get(item_type, {}), dict, f"{where}.{item_type}")
+            if item_type in ("memory", "journal"):
+                _check_photo_names(content.get("photos", []), f"{where}.{item_type}.photos")
             return _ITEM_TYPE_DESERIALIZERS[item_type](d)
         # segment — implicit default when item_type is missing/None or "segment"
         seg_raw = _expect(d.get("segment", {}), dict, f"{where}.segment")

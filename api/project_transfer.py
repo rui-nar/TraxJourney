@@ -36,6 +36,7 @@ from src.brand import APP_NAME
 from src.models.great_circle import great_circle_points
 from src.project.project_io import InvalidProjectFile, ProjectIO
 from src.utils.encryption_check import is_encrypted_envelope
+from src.utils.photo_paths import photo_file, photo_folder
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -400,18 +401,19 @@ def export_project_zip(
 
     zip_buffer = io.BytesIO()
     safe = _SAFE_NAME.sub("_", project.name)
-    memories_base = Path(_DATA_DIR) / "users" / owner_dir_id / "memories"
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(f"{safe}{ProjectIO.EXTENSION}", project_bytes)
         for item in project.items:
             if item.item_type != "memory" or item.memory is None or item.memory.id is None:
                 continue
             mem = item.memory
-            mem_dir = memories_base / str(mem.id)
+            mem_dir = photo_folder(_DATA_DIR, owner_dir_id, "memories", mem.id)
             for photo_uuid in mem.photos:
-                full_path = mem_dir / f"{photo_uuid}.jpg"
-                if full_path.exists():
-                    zf.write(full_path, f"photos/{mem.id}/{photo_uuid}.jpg")
+                # photo_file only answers for an app-made name inside the
+                # memory's folder, which also keeps the entry name plain.
+                full_path = photo_file(mem_dir, photo_uuid)
+                if full_path is not None and full_path.exists():
+                    zf.write(full_path, f"photos/{int(mem.id)}/{photo_uuid}.jpg")
 
     zip_buffer.seek(0)
     return StreamingResponse(

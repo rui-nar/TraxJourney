@@ -88,6 +88,8 @@ from src.project.project_repo import ProjectRepo, _compute_stats
 from src.tile_renderer import get_cached_tile, get_or_build_features, get_or_create_tile
 from src.utils.encryption_check import is_encrypted_envelope
 
+from src.utils.photo_paths import photo_file, photo_folder
+
 router = APIRouter(prefix="/api/share", tags=["share"])
 
 _repo = ProjectRepo()
@@ -613,9 +615,11 @@ def _shared_photo_path(token: str, memory_id: int, photo_uuid: str, thumb: bool)
         photos = json.loads(mem_row.photos_json or "[]")
         if photo_uuid not in photos:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    base = Path(_DATA_DIR) / "users" / str(owner_uid) / "memories" / str(memory_id)
-    suffix = "_thumb" if thumb else ""
-    return base / f"{photo_uuid}{suffix}.jpg"
+    base = photo_folder(_DATA_DIR, owner_uid, "memories", memory_id)
+    path = photo_file(base, photo_uuid, "_thumb" if thumb else "")
+    if path is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    return path
 
 
 @router.get("/{token}/photos/{memory_id}/{photo_uuid}/thumb", summary="Serve memory photo thumbnail")
@@ -624,8 +628,8 @@ def shared_photo_thumb(token: str, memory_id: int, photo_uuid: str):
     path = _shared_photo_path(token, memory_id, photo_uuid, thumb=True)
     if not path.exists():
         # Fall back to full-res
-        full = path.parent / f"{photo_uuid}.jpg"
-        if full.exists():
+        full = photo_file(path.parent, photo_uuid)
+        if full is not None and full.exists():
             return FileResponse(str(full), media_type="image/jpeg",
                                 headers={"Cache-Control": "public, max-age=86400"})
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")

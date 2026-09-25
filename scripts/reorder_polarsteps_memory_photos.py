@@ -55,6 +55,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 # `src` package imports (same convention as scripts/dedupe_polarsteps_memories.py).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.api.polarsteps_client import PolarstepsClient, format_step  # noqa: E402
+from src.utils.photo_paths import photo_file, photo_folder  # noqa: E402
 
 ClientFactory = Callable[[str], "object"]
 Downloader = Callable[[str], bytes]
@@ -66,11 +67,11 @@ def _sha256(data: bytes) -> str:
 
 def _local_photo_hashes(data_dir: Path, owner_id: int, memory_id: int, uuids: List[str]) -> Dict[str, str]:
     """uuid -> sha256 of its on-disk full-res file; skips any file that's missing."""
-    base = data_dir / "users" / str(owner_id) / "memories" / str(memory_id)
+    base = photo_folder(data_dir, owner_id, "memories", memory_id)
     hashes: Dict[str, str] = {}
     for u in uuids:
-        f = base / f"{u}.jpg"
-        if f.exists():
+        f = photo_file(base, u)
+        if f is not None and f.exists():
             hashes[u] = _sha256(f.read_bytes())
     return hashes
 
