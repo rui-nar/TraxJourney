@@ -168,7 +168,7 @@ def alps(env):
     person = {"id": 1, "name": "Ann"}
     r = _import(client, "Alps", _doc(
         [{"item_type": "activity", "activity_id": 1},
-         _memory("Lake", "pub-lake", "old text", photos=["ph1"]),
+         _memory("Lake", "pub-lake", "old text", photos=["00000000-0000-4000-8000-0000000000a1"]),
          _memory("Summit", "pub-summit"),
          {"item_type": "encounter", "encounter": {"person_id": 1, "date": "2024-06-01"}}],
         activities=[_activity(1, "Ride")], people=[person],
@@ -191,7 +191,7 @@ def alps(env):
     photo_dir = Path(data_dir) / "users" / str(ids["owner"]) / "memories" / str(lake.id)
     photo_dir.mkdir(parents=True)
     for suffix in ("", "_thumb"):
-        (photo_dir / f"ph1{suffix}.jpg").write_bytes(b"x" * 1000)
+        (photo_dir / f"00000000-0000-4000-8000-0000000000a1{suffix}.jpg").write_bytes(b"x" * 1000)
     with Session(engine) as sess:
         sess.add(UserUsage(user_info_id=ids["owner"], storage_bytes=5000))
         sess.add(DBMemoryComment(memory_id=lake.id, user_info_id=ids["companion"], text="nice"))
@@ -244,12 +244,12 @@ def test_replace_updates_a_matching_memory_in_place(alps):
     (client, engine, ids, act_as, _), project, lake, share, photo_dir = alps
 
     r = _import(client, "Alps", _doc(
-        [_memory("Lake", "pub-lake", "new text", photos=["ph1"])]), on_conflict="replace")
+        [_memory("Lake", "pub-lake", "new text", photos=["00000000-0000-4000-8000-0000000000a1"])]), on_conflict="replace")
 
     assert r.status_code == 201, r.text
     (kept,) = _rows(engine, DBMemory, project_id=project.id)
     assert (kept.id, kept.public_id, kept.description) == (lake.id, "pub-lake", "new text")
-    assert (photo_dir / "ph1.jpg").exists()
+    assert (photo_dir / "00000000-0000-4000-8000-0000000000a1.jpg").exists()
     assert len(_rows(engine, DBMemoryComment, memory_id=lake.id)) == 1
     assert len(_rows(engine, DBMemoryLike, memory_id=lake.id)) == 1
     # Derived from the old text, so no longer right.
@@ -261,7 +261,7 @@ def test_replace_keeps_derived_content_when_the_text_is_unchanged(alps):
     (client, engine, ids, act_as, _), project, lake, share, photo_dir = alps
 
     r = _import(client, "Alps", _doc(
-        [_memory("Lake", "pub-lake", "old text", photos=["ph1"])]), on_conflict="replace")
+        [_memory("Lake", "pub-lake", "old text", photos=["00000000-0000-4000-8000-0000000000a1"])]), on_conflict="replace")
 
     assert r.status_code == 201, r.text
     assert len(_rows(engine, DBMemoryTranslation, memory_id=lake.id)) == 1
@@ -279,8 +279,8 @@ def test_replace_deletes_a_memory_the_file_no_longer_has_with_all_it_holds(alps)
     assert [m.name for m in _rows(engine, DBMemory, project_id=project.id)] == ["Summit"]
     for model in (DBMemoryComment, DBMemoryLike, DBMemoryTranslation, DBShareMemoryContent):
         assert _rows(engine, model, memory_id=lake.id) == [], model
-    assert not (photo_dir / "ph1.jpg").exists()
-    assert not (photo_dir / "ph1_thumb.jpg").exists()
+    assert not (photo_dir / "00000000-0000-4000-8000-0000000000a1.jpg").exists()
+    assert not (photo_dir / "00000000-0000-4000-8000-0000000000a1_thumb.jpg").exists()
     assert _usage(engine, ids["owner"]) == before - 2000
 
 
@@ -383,7 +383,7 @@ def test_replacing_a_trip_with_its_own_export_loses_nothing(alps):
     assert {m.public_id: m.id for m in _rows(engine, DBMemory, project_id=project.id)} == memories
     assert {(j.id, j.user_info_id, j.description)
             for j in _rows(engine, DBJournalEntry, project_id=project.id)} == journals
-    assert (photo_dir / "ph1.jpg").exists()
+    assert (photo_dir / "00000000-0000-4000-8000-0000000000a1.jpg").exists()
     assert len(_rows(engine, DBMemoryComment, memory_id=lake.id)) == 1
     assert len(_rows(engine, DBMemoryTranslation, memory_id=lake.id)) == 1
     assert len(_rows(engine, DBPerson, project_id=project.id)) == 1
@@ -400,7 +400,7 @@ def test_replace_deletes_the_photos_a_kept_memory_no_longer_lists(alps):
                 on_conflict="replace")
 
     assert r.status_code == 201, r.text
-    assert not (photo_dir / "ph1.jpg").exists()
+    assert not (photo_dir / "00000000-0000-4000-8000-0000000000a1.jpg").exists()
     assert _usage(engine, ids["owner"]) == before - 2000
 
 
@@ -530,3 +530,32 @@ def test_replace_deletes_a_person_the_file_no_longer_has_with_their_avatar(alps)
     assert _rows(engine, DBPerson, project_id=project.id) == []
     assert not list(folder.glob("*.jpg"))
     assert _usage(engine, ids["owner"]) < usage
+
+
+@pytest.mark.parametrize("sep", ["/", "\\"])
+@pytest.mark.parametrize("whose", ["owner", "companion"])
+def test_replace_never_deletes_outside_an_entrys_folder(alps, sep, whose):
+    """Names stored before they were checked go through the same
+    containment as every other photo deletion: not into another account's
+    folder, nor into another folder of the owner's own."""
+    (client, engine, ids, act_as, data_dir), project, lake, share, _dir = alps
+    outside = data_dir / "users" / str(ids[whose]) / "memories" / "7"
+    outside.mkdir(parents=True)
+    victims = [outside / f"victim{s}.jpg" for s in ("", "_thumb")]
+    for v in victims:
+        v.write_bytes(b"keep me")
+    escape = sep.join(["..", "..", "..", str(ids[whose]), "memories", "7", "victim"])
+    ann = _rows(engine, DBPerson, project_id=project.id)[0].id
+    with Session(engine) as sess:
+        mem = sess.get(DBMemory, lake.id)
+        mem.photos_json = json.dumps([escape])
+        sess.add(mem)
+        person = sess.get(DBPerson, ann)
+        person.avatar_photo = escape
+        sess.add(person)
+        sess.commit()
+
+    r = _import(client, "Alps", _doc([]), on_conflict="replace")
+
+    assert r.status_code == 201, r.text
+    assert all(v.read_bytes() == b"keep me" for v in victims)

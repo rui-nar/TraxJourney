@@ -44,7 +44,7 @@ from src.project.project_io import InvalidProjectFile, ProjectIO
 from src.project.repo_transfer import PhotoRemoval, ProjectNameTaken
 from src.utils.logging import request_id_var
 from src.utils.encryption_check import is_encrypted_envelope
-from src.utils.photo_paths import photo_file, photo_folder
+from src.utils.photo_paths import photo_file, photo_files, photo_folder
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -142,13 +142,10 @@ def _name_conflict(name: str) -> JSONResponse:
 def _remove_photos(removals: list[PhotoRemoval]) -> None:
     """Delete the photo files a replace dropped, once it has committed."""
     for removal in removals:
-        folder = (Path(project_shared._DATA_DIR) / "users" / str(removal.user_info_id)
-                  / removal.kind / str(removal.content_id))
-        unlink_and_record(removal.user_info_id, [
-            folder / f"{photo_uuid}{suffix}.jpg"
-            for photo_uuid in removal.uuids
-            for suffix in ("", "_thumb")
-        ])
+        folder = photo_folder(project_shared._DATA_DIR, removal.user_info_id,
+                              removal.kind, removal.content_id)
+        # Only names that stay inside this entry's own folder (photo_paths).
+        unlink_and_record(removal.user_info_id, photo_files(folder, removal.uuids))
         if removal.remove_dir and folder.exists():
             try:
                 folder.rmdir()
