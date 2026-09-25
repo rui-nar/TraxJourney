@@ -161,8 +161,16 @@ def _read_by_this_code(path: str, modes: set[str]) -> bool:
 def multiprocess_registry(path: str) -> CollectorRegistry:
     """The registry ``/metrics`` serves with ``PROMETHEUS_MULTIPROC_DIR`` set:
     the per-process files, less any left by an older gauge mode, plus the
-    scrape-time gauges computed by this (the serving) process."""
-    from prometheus_client import multiprocess
+    scrape-time gauges and the process collector, both computed by this, the
+    serving, process: the API, which is what the scrape job ``traxjourney``
+    means.
+
+    The process collector (``process_resident_memory_bytes`` and friends) lives
+    on the default registry, which multiprocess mode never serves, so it is
+    added here too. The platform and GC collectors aren't: no dashboard reads
+    ``python_*``.
+    """
+    from prometheus_client import ProcessCollector, multiprocess
 
     class _CurrentFiles(multiprocess.MultiProcessCollector):
         def collect(self):
@@ -173,6 +181,7 @@ def multiprocess_registry(path: str) -> CollectorRegistry:
 
     registry = CollectorRegistry()
     _CurrentFiles(registry, path=path)
+    ProcessCollector(registry=registry)
     for gauge in SCRAPE_TIME_GAUGES:
         registry.register(gauge)
     return registry

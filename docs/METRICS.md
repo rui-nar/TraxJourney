@@ -142,8 +142,9 @@ without `honor_labels` Prometheus keeps the scrape's value and renames the
 app's to `exported_job`, so a `{job="daily_backup"}` filter matches nothing.
 No app metric may use a label the scrape attaches;
 `tests/test_dashboard_metrics_contract.py` enforces it, and also checks a
-multiprocess-mode scrape (the production setup): every dashboard metric is
-exported, none carries a `pid` label, and every metric-to-metric ratio in a
+multiprocess-mode scrape (the production setup): every metric a dashboard
+reads from the app's scrape job is exported (`process_*` included), no app
+series carries a `pid` label, and every metric-to-metric ratio in a
 dashboard divides series with the same labels. Series recorded before
 the rename carry `exported_job` and do not join the `job_name` ones.
 
@@ -242,6 +243,12 @@ between scrapes. The pool-utilisation panel divides `in_use` by capacity
     change between two modes that are both still in use (say `max` to
     `mostrecent` while another gauge keeps `max`) is not covered: deploy that
     one with `docker compose down && up -d`.
+  - `/metrics` also serves prometheus_client's process collector
+    (`process_resident_memory_bytes` and the other `process_*` series), for
+    the API process: the one the scrape job `traxjourney` names. It lives on
+    the default registry, which multiprocess mode doesn't otherwise serve. The
+    `python_*` platform and GC series are not served in this mode; no
+    dashboard reads them.
   - `flock` needs a local filesystem seen by one kernel: a bind mount on the
     Docker host, not NFS or SMB.
 - **Restarts reset counters.** That is normal — PromQL's `rate()`/`increase()`

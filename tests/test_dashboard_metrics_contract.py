@@ -547,12 +547,28 @@ def _single(samples, name, **labels) -> float:
     return found[0]
 
 
+# Families the app's own /metrics serves besides its prefixed ones:
+# prometheus_client's default process and platform/GC collectors.
+_APP_JOB_FOREIGN_PREFIXES = ("process_", "python_")
+
+
 def test_multiprocess_scrape_exports_every_dashboard_metric(multiproc_scrape):
+    """Every series a dashboard reads from the app's scrape job, not only the
+    prefixed ones: the default registry, where prometheus_client's process
+    collector lives, is never served in multiprocess mode."""
+    import sys
+
+    served = (APP_PREFIX,) + _APP_JOB_FOREIGN_PREFIXES
+    if sys.platform == "win32":
+        # The process collector reads /proc; there is none on Windows.
+        served = tuple(p for p in served if p != "process_")
     queryable = _queryable_series(dict(_TYPE_LINE.findall(multiproc_scrape)))
+    wanted = {n for n in _dashboard_metric_names() if n.startswith(served)}
+    assert any(n.startswith(_APP_JOB_FOREIGN_PREFIXES) for n in wanted) or sys.platform == "win32"
     missing = {
         name: sorted(files)
         for name, files in _dashboard_metric_names().items()
-        if name.startswith(APP_PREFIX) and name not in queryable
+        if name in wanted and name not in queryable
     }
     assert not missing, f"not exported in multiprocess mode: {missing}"
 
