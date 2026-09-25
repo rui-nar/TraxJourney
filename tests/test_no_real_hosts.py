@@ -126,12 +126,30 @@ def test_scanner(tmp_path, line, flagged):
 
 
 _DEPLOY_DOC = ROOT / "docs" / "DEPLOYMENT_VPS.md"
-# A concrete account after the places the runbook names the deploy user.
-_CONCRETE_USER = re.compile(r"(?:(?:sudo -u|\bid| -[og])\s+|User=)(?!<)([a-z_][\w-]*)\b")
+# Commands that take an account name, and where the name sits in each. Only
+# these count: `-o` is an account for `install`, an output file for `curl`.
+_ACCOUNT_ARGS = [
+    re.compile(r"\bsudo\s+-u\s+(\S+)"),
+    re.compile(r"(?:^|[;&|`(])\s*id\s+([^\s;`)|&]+)"),                    # a command, not the word
+    re.compile(r"^\s*User=(\S+)"),                                      # systemd unit
+    re.compile(r"\bchown\s+(?:-\w+\s+)*([^\s:-][^\s:]*)"),
+    re.compile(r"\badduser\s+(?:--?\S+\s+)*([^\s-]\S*)"),
+    re.compile(r"\busermod\s+-\w*G\s+\S+\s+(\S+)"),
+]
+_INSTALL_OWNER = re.compile(r"\s-[og]\s+(\S+)")
+# Placeholders, shell variables, and accounts every host has.
+_NOT_AN_ACCOUNT = re.compile(r"^(<.*|\$.*|root)$")
 
 
-def _named_users(doc: str) -> list[str]:
-    return [m.group(0) for m in _CONCRETE_USER.finditer(doc)]
+def _named_users(text: str) -> list[str]:
+    found = []
+    for line in text.splitlines():
+        names = [m.group(1) for rx in _ACCOUNT_ARGS for m in rx.finditer(line)]
+        if re.search(r"\binstall\b", line):
+            names += _INSTALL_OWNER.findall(line)
+        found += [f"{line.strip()} -> {n}" for n in (n.strip("`\"'") for n in names)
+                  if not _NOT_AN_ACCOUNT.match(n)]
+    return found
 
 
 def test_deployment_doc_names_no_real_login_user():
@@ -146,11 +164,26 @@ def test_deployment_doc_names_no_real_login_user():
 @pytest.mark.parametrize(("line", "named"), [
     ("sudo -u someone -H docker ps", True),
     ("id someone", True),
+    ("  id someone   # groups", True),
+    ("check with `id someone`", True),
     ("sudo install -d -o someone -g someone -m 755 /x", True),
+    ("sudo install -d -m 755 -g someone /x", True),
     ("User=someone", True),
+    ("sudo chown -R someone:someone /opt/x", True),
+    ("sudo adduser someone", True),
+    ("sudo usermod -aG docker,sudo someone", True),
     ("sudo -u <deploy-user> -H docker ps", False),
     ("sudo install -d -m 700 -o <deploy-user> -g <deploy-user> /x", False),
     ("ssh -i key <deploy-user>@<vps-host> \"id; docker ps\"", False),
+    ("sudo usermod -aG docker,sudo <deploy-user>", False),
+    ("sudo chown -R $USER:$USER /opt/viewtrip", False),
+    ("a line that ends in `sudo chown -R", False),
+    # Not a command naming an account (review of #444).
+    ("curl -o out.txt https://example.invalid/x", False),
+    ('curl -fsSLo "$f" "https://example.invalid/$f"', False),
+    ("the id of the trip is kept", False),
+    ("run it as `sudo -u root` if you must", False),
+    ("tar -g snapshot.file -cf x.tar /x", False),
 ])
 def test_named_user_scanner(line, named):
     assert bool(_named_users(line)) is named
