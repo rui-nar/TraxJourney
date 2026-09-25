@@ -101,6 +101,21 @@ def test_admin_can_restore(engine, restore_calls):
     assert restore_calls == ["2026-01-01"]
 
 
+@pytest.mark.parametrize("bad_date", [
+    "evil",
+    "2026-01-01.db",
+    "2026-1-1",
+    "20260101",
+    "2026-01-01x",
+    "old_2026-01-01",
+])
+def test_admin_restore_rejects_a_non_date(engine, restore_calls, bad_date):
+    uid = _mk_user(engine, email="admin@x.io", is_admin=True)
+    resp = _client(uid, is_admin_claim=True).post(f"/api/backup/{bad_date}/restore")
+    assert resp.status_code == 422
+    assert restore_calls == []
+
+
 def test_demoted_admin_with_stale_admin_token_is_refused(engine, restore_calls):
     uid = _mk_user(engine, email="was-admin@x.io", is_admin=True)
     with Session(engine) as sess:
