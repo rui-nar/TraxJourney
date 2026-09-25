@@ -17,6 +17,7 @@ from scripts.release_notes import (
     SERVER,
     Change,
     looks_non_english,
+    main,
     parse_commits,
     polish,
     render,
@@ -472,6 +473,26 @@ class TestTranslate:
         with patch.dict("sys.modules", {"anthropic": fake}):
             changes = self._pt()
             assert translate(changes) == changes
+
+
+class TestOutputFile:
+    """v0.49.0 and v0.51.0 went out with "?" for every emoji and U+FFFD for
+    every em dash: PowerShell 5.1 re-wrote the notes in cp1252 on their way to
+    gh. The release script now has Python write the file gh reads."""
+
+    def test_output_file_holds_utf8_bytes_and_stdout_stays_empty(self, tmp_path, capsys):
+        raw = _log(("feat(map): draw the café’s route", "", "flutter_client/lib/a.dart"),
+                   ("fix(map): restore the zoom", "", "flutter_client/lib/b.dart"))
+        out = tmp_path / "notes.md"
+        with patch("scripts.release_notes.git_log", return_value=raw):
+            assert main(["--from", "v1.0.0", "--to", "HEAD",
+                         "--version", "v1.1.0", "--output", str(out)]) == 0
+
+        data = out.read_bytes()
+        for text in ("🚀 New", "🐛 Fixed", "**Map** — draw the café’s route"):
+            assert text.encode("utf-8") in data
+        assert "�".encode("utf-8") not in data
+        assert capsys.readouterr().out == ""
 
 
 @pytest.mark.parametrize("subject,expected_area", [
