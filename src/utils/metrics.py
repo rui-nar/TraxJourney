@@ -110,6 +110,9 @@ STRAVA_RATE_LIMIT_CAPACITY = Gauge(
     "traxjourney_strava_rate_limit_capacity",
     "Strava requests allowed per quota window.",
     ["window"],
+    # The same constant in every process that imports the Strava client: one
+    # series, not one per process (PROMETHEUS_MULTIPROC_DIR, issue #437).
+    multiprocess_mode="max",
 )
 
 STRAVA_THROTTLED = Counter(
@@ -136,6 +139,11 @@ JOB_LAST_SUCCESS = Gauge(
     "traxjourney_job_last_success_timestamp_seconds",
     "Unix timestamp of the last successful run of each scheduled job.",
     ["job_name"],
+    # With PROMETHEUS_MULTIPROC_DIR, the default mode exports one series per
+    # process, and a replaced container's frozen one would trip the "backup
+    # silently stopped" alert. The timestamp only moves forward, so the
+    # largest across processes, live or dead, is the answer (issue #437).
+    multiprocess_mode="max",
 )
 
 # The backfill sweep for prepared geometry (issue #369). A gauge rather than a
@@ -147,6 +155,9 @@ PREPARED_GEOMETRY_BACKLOG = Gauge(
     "traxjourney_prepared_geometry_backlog",
     "Activities with a polyline and no current prepared row, including any that "
     "can never be prepared. Should fall to a small constant and stay there.",
+    # A measurement: the latest one wins, whichever process took it, not one
+    # series per process (PROMETHEUS_MULTIPROC_DIR, issue #437).
+    multiprocess_mode="mostrecent",
 )
 
 PREPARED_GEOMETRY_OUTCOMES = Counter(

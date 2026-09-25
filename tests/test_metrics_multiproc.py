@@ -201,3 +201,52 @@ class TestForgetProcess:
     def test_is_a_no_op_without_the_directory(self, monkeypatch):
         monkeypatch.delenv("PROMETHEUS_MULTIPROC_DIR", raising=False)
         metrics_multiproc.forget_process(4242)  # must not raise
+
+
+# ── Gauges from more than one process ────────────────────────────────────────
+# A container replaced without a full stop (``pull && up -d``) leaves its files
+# behind while a live writer keeps the directory from being cleared. A gauge in
+# the default ``all`` mode then exports one series per process, the dead one
+# frozen: 25 h later ``time() - job_last_success{job_name="daily_backup"}``
+# matches that series and raises a false "backup silently stopped".
+
+def _gauge_file(path, gauge, ident, labelvalues, value, timestamp):
+    from prometheus_client.mmap_dict import MmapedDict, mmap_key
+
+    f = MmapedDict(os.path.join(path, f"gauge_{gauge._multiprocess_mode}_{ident}.db"))
+    try:
+        key = mmap_key(gauge._name, gauge._name, list(gauge._labelnames),
+                       list(labelvalues), gauge._documentation)
+        f.write_value(key, value, timestamp)
+    finally:
+        f.close()
+
+
+def _aggregated(path, name):
+    from prometheus_client import CollectorRegistry, multiprocess
+
+    registry = CollectorRegistry()
+    multiprocess.MultiProcessCollector(registry, path=str(path))
+    return [s for m in registry.collect() for s in m.samples if s.name == name]
+
+
+@pytest.mark.parametrize("attr, labelvalues, old, new, expected", [
+    # A last-success timestamp only moves forward: the largest is the answer.
+    ("JOB_LAST_SUCCESS", ("daily_backup",), (1_000.0, 0.0), (90_000.0, 0.0), 90_000.0),
+    # The same constant in every process that imports the Strava client.
+    ("STRAVA_RATE_LIMIT_CAPACITY", ("daily",), (1000.0, 0.0), (1000.0, 0.0), 1000.0),
+    # A measurement: the latest one wins, even when it is the smaller.
+    ("PREPARED_GEOMETRY_BACKLOG", (), (50.0, 100.0), (3.0, 200.0), 3.0),
+])
+def test_a_gauge_from_a_dead_and_a_live_process_is_one_series(
+        tmp_path, attr, labelvalues, old, new, expected):
+    from src.utils import metrics as app_metrics
+
+    gauge = getattr(app_metrics, attr)
+    _gauge_file(tmp_path, gauge, "oldcontainer-1", labelvalues, *old)
+    _gauge_file(tmp_path, gauge, "newcontainer-1", labelvalues, *new)
+
+    samples = _aggregated(tmp_path, gauge._name)
+    assert len(samples) == 1, samples
+    assert "pid" not in samples[0].labels
+    assert samples[0].value == expected
