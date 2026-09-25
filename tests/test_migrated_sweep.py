@@ -10,6 +10,9 @@ and these tests go.
 from __future__ import annotations
 
 import asyncio
+import os
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -20,6 +23,7 @@ import models.db as db_module
 import src.admin.storage as storage_mod
 from models.billing import UserUsage
 from models.user import UserInfo
+from src.project import migrated_sweep
 from src.project.migrated_sweep import sweep_migrated_files
 
 
@@ -158,7 +162,28 @@ def test_sweep_with_no_users_directory_is_a_no_op(monkeypatch, tmp_path):
     assert sweep_migrated_files() == 0
 
 
-# ── Wiring: run once, by the API process only ─────────────────────────────────
+def test_sweep_does_not_follow_symlinked_directories(data, tmp_path):
+    """A symlinked ``users/<id>`` or ``<id>/projects`` is not the user's data:
+    following it would delete files wherever the link points."""
+    _engine, (_uid1, _uid2, uid3), _leftovers, _kept = data
+    outside = tmp_path / "outside"
+    (outside / "projects").mkdir(parents=True)
+    victims = [outside / "a.migrated", outside / "projects" / "b.migrated"]
+    for v in victims:
+        v.write_bytes(b"x")
+    users = tmp_path / "users"
+    try:
+        # <id>/projects -> elsewhere, and users/<id> -> elsewhere.
+        os.symlink(outside, users / str(uid3) / "projects", target_is_directory=True)
+        os.symlink(outside, users / "9999", target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"cannot create directory symlinks here: {exc}")
+
+    assert sweep_migrated_files() == 3  # only the fixture's real leftovers
+    assert all(v.exists() for v in victims)
+
+
+# ── Wiring: API process only, off the startup path ────────────────────────────
 
 class _FakeScheduler:
     def add_job(self, *a, **kw): pass
@@ -167,16 +192,15 @@ class _FakeScheduler:
     def shutdown(self, *a, **kw): pass
 
 
-def _run_lifespan(monkeypatch, *, is_api: bool, sweep=None) -> list[str]:
+def _run_lifespan(monkeypatch, tmp_path, *, is_api: bool, sweep, during=None) -> None:
+    """Run the real lifespan with every other startup step stubbed out and
+    ``sweep`` standing in for the sweep itself. ``during`` runs while the app
+    is up, between startup and shutdown."""
     import api.router as router
 
-    calls: list[str] = []
-
-    def record():
-        calls.append("sweep")
-        return 0
-
     monkeypatch.setenv("JWT_SECRET", "test-secret-" + "x" * 40)
+    # Belt and braces: never let a wiring test near the real data directory.
+    monkeypatch.setattr(storage_mod, "_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(router, "_IS_API_PROCESS", is_api)
     monkeypatch.setattr(router.alembic_command, "upgrade", lambda *a, **kw: None)
     monkeypatch.setattr(router, "_check_schema_contract", lambda: None)
@@ -184,26 +208,86 @@ def _run_lifespan(monkeypatch, *, is_api: bool, sweep=None) -> list[str]:
     monkeypatch.setattr(router, "sweep_orphaned_jobs", lambda: None)
     monkeypatch.setattr(router, "sweep_orphaned_poster_jobs", lambda: None)
     monkeypatch.setattr(router, "_scheduler", _FakeScheduler())
-    monkeypatch.setattr(router, "sweep_migrated_files", sweep or record)
+    monkeypatch.setattr(migrated_sweep, "sweep_migrated_files", sweep)
 
     async def run():
         async with router.lifespan(router.app):
-            pass
+            if during:
+                during()
 
     asyncio.run(run())
-    return calls
 
 
-def test_api_process_sweeps_once_at_startup(monkeypatch):
-    assert _run_lifespan(monkeypatch, is_api=True) == ["sweep"]
+def _sweep_thread() -> threading.Thread | None:
+    return next((t for t in threading.enumerate() if t.name == "migrated-sweep"), None)
 
 
-def test_worker_process_does_not_sweep(monkeypatch):
-    assert _run_lifespan(monkeypatch, is_api=False) == []
+def test_api_process_sweeps_once(monkeypatch, tmp_path):
+    calls = []
+    done = threading.Event()
+
+    def sweep():
+        calls.append(1)
+        done.set()
+        return 0
+
+    _run_lifespan(monkeypatch, tmp_path, is_api=True, sweep=sweep)
+
+    assert done.wait(5)
+    assert calls == [1]
 
 
-def test_a_failing_sweep_does_not_stop_startup(monkeypatch):
+def test_worker_process_does_not_sweep(monkeypatch, tmp_path):
+    calls = []
+    _run_lifespan(monkeypatch, tmp_path, is_api=False, sweep=lambda: calls.append(1))
+
+    time.sleep(0.2)  # give a wrongly started thread the chance to show up
+    assert calls == []
+
+
+def test_startup_and_shutdown_do_not_wait_for_the_sweep(monkeypatch, tmp_path):
+    """The sweep reconciles each affected user's whole tree; on a large
+    instance that must not hold up the API listening, or its shutdown."""
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    seen_while_up = {}
+
+    def slow_sweep():
+        started.set()
+        release.wait(10)
+        finished.set()
+        return 0
+
+    def during():
+        seen_while_up["finished"] = finished.is_set()
+
+    try:
+        _run_lifespan(monkeypatch, tmp_path, is_api=True, sweep=slow_sweep, during=during)
+        # Startup and shutdown have both returned; the sweep is still going.
+        assert started.wait(5), "the sweep never ran"
+        assert seen_while_up == {"finished": False}
+        assert not finished.is_set()
+        # A daemon thread, so the process can exit even mid-sweep; the sweep
+        # is idempotent, so the next boot finishes the job.
+        thread = _sweep_thread()
+        assert thread is not None and thread.daemon
+    finally:
+        release.set()
+    assert finished.wait(5)
+
+
+def test_a_failing_sweep_is_logged_and_does_not_stop_startup(monkeypatch, tmp_path):
+    logged = []
+    monkeypatch.setattr(migrated_sweep._log, "exception",
+                        lambda msg, *a, **kw: logged.append(msg % a if a else msg))
+
     def boom():
         raise OSError("disk gone")
 
-    _run_lifespan(monkeypatch, is_api=True, sweep=boom)  # must not raise
+    _run_lifespan(monkeypatch, tmp_path, is_api=True, sweep=boom)  # must not raise
+
+    thread = _sweep_thread()
+    if thread is not None:
+        thread.join(5)
+    assert len(logged) == 1 and "sweep" in logged[0]

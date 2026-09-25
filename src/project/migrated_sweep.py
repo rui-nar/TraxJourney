@@ -12,7 +12,9 @@ and ``tests/test_migrated_sweep.py``.
 """
 from __future__ import annotations
 
+import threading
 from pathlib import Path
+from typing import Iterator
 
 from sqlmodel import select
 
@@ -25,6 +27,48 @@ from src.utils.logging import get_logger
 _log = get_logger(__name__)
 
 
+def start_migrated_sweep() -> threading.Thread:
+    """Run :func:`sweep_migrated_files` on a background daemon thread.
+
+    Called from the API lifespan. The sweep re-measures each affected user's
+    whole tree, which on a large instance could hold up startup past the
+    deploy check's grace period, so the API starts listening without waiting.
+    A daemon thread, not the event loop's executor, so shutdown never waits on
+    it either: being cut off mid-sweep is harmless (each delete is atomic, an
+    interrupted counter write rolls back, and the next boot sweeps again).
+    """
+    thread = threading.Thread(target=_sweep_logged, name="migrated-sweep", daemon=True)
+    thread.start()
+    return thread
+
+
+def _sweep_logged() -> None:
+    # A thread's exception would otherwise only reach threading.excepthook.
+    try:
+        sweep_migrated_files()
+    except Exception:
+        _log.exception("Leftover *.migrated sweep failed")
+
+
+def _leftovers(users_root: Path) -> Iterator[Path]:
+    """``users/*/projects/*.migrated``, without following symlinks at any level.
+
+    A symlinked ``users/<id>`` or ``<id>/projects`` is not that user's data;
+    ``Path.glob`` would follow it and the sweep would delete wherever it points.
+    """
+    if not users_root.is_dir():
+        return
+    for user_dir in users_root.iterdir():
+        if user_dir.is_symlink() or not user_dir.is_dir():
+            continue
+        projects = user_dir / "projects"
+        if projects.is_symlink() or not projects.is_dir():
+            continue
+        for path in projects.iterdir():
+            if path.name.endswith(".migrated") and not path.is_symlink() and path.is_file():
+                yield path
+
+
 def sweep_migrated_files() -> int:
     """Delete ``data/users/*/projects/*.migrated``; return how many went.
 
@@ -33,12 +77,9 @@ def sweep_migrated_files() -> int:
     cache entry dropped, so the freed bytes show at once rather than after the
     nightly reconcile.
     """
-    users_root = Path(_storage._DATA_DIR) / "users"
     removed = 0
     freed_users: set[str] = set()
-    for path in users_root.glob("*/projects/*.migrated"):
-        if path.is_symlink() or not path.is_file():
-            continue
+    for path in _leftovers(Path(_storage._DATA_DIR) / "users"):
         try:
             path.unlink()
         except OSError:
