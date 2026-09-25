@@ -106,6 +106,11 @@ _MALFORMED = {
     "UTF-16 with a BOM": json.dumps(_trip()).encode("utf-16"),
     "UTF-16 without a BOM": json.dumps(_trip()).encode("utf-16-le"),
     "nested past the parser's depth": b"[" * 200_000 + b"]" * 200_000,
+    # Python refuses to convert an integer this long (a plain ValueError,
+    # not a JSONDecodeError).
+    "an integer past the parser's digit limit": (
+        b'{"items": [], "version": ' + b"1" * 5000 + b"}"
+    ),
     "a JSON array": _json([_trip()]),
     "a JSON string": _json("trip"),
     "JSON null": b"null",

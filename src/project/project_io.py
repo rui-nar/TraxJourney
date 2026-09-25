@@ -251,9 +251,13 @@ class ProjectIO:
             raise InvalidProjectFile(
                 f"it is not valid JSON (line {exc.lineno}, column {exc.colno})"
             ) from None
+        # json.loads reads nothing but the text it is given, so whatever else
+        # it raises is the document's fault, never a bug of ours: a plain
+        # ValueError for an integer past Python's digit limit, a RecursionError
+        # for nesting past the parser's depth.
+        except ValueError:
+            raise InvalidProjectFile("it holds a number too long to read") from None
         except RecursionError:
-            # json.loads is pure, so its RecursionError can only be the
-            # document's nesting, never a bug of ours.
             raise InvalidProjectFile("it is nested too deeply") from None
         return ProjectIO.from_dict(data)
 
