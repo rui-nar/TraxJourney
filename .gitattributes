@@ -17,7 +17,10 @@ flutter_client/**/GeneratedPluginRegistrant.swift  text eol=lf
 
 # Files installed on the VPS as they are (docs/DEPLOYMENT_VPS.md §8): fetched
 # from GitHub, or copied by hand from a checkout. From a Windows checkout they
-# arrived CRLF, and systemd reads `User=name\r`.
+# arrived CRLF, and systemd reads `User=name\r`. The repository already stores
+# them LF, so git never rewrites a checkout that has them as CRLF: not on
+# checkout, `git checkout -- vps` or `--renormalize`. A fresh clone gets LF; in
+# an existing one, delete the files (rm vps/webhook/*) and `git checkout -- vps`.
 vps/**                                             text eol=lf
 
 # OSM extracts are binary; tests/fixtures holds a real PBF (issue #345).
