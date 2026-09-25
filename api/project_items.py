@@ -65,7 +65,9 @@ def delete_item(
     # by the next split → UNIQUE constraint failure. Delete the row once no
     # remaining item references it — and only if it is the trip's to delete:
     # its owner is the trip's owner or a current member. Otherwise the item
-    # is unlinked and the row left alone (orphans are pruned separately).
+    # is unlinked and the row left in place, unreferenced; nothing prunes it
+    # automatically, but it costs no one quota and its owner can still
+    # delete it from a trip of their own.
     gone = removed["item"]
     if (
         gone.item_type == "activity"

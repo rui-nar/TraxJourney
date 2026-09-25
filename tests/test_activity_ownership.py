@@ -201,7 +201,9 @@ def test_an_import_of_a_local_activity_id_another_account_uses_gets_a_new_id(env
     assert new_id < 0 and new_id != -77
     assert _row(engine, new_id).name == "Alice GPX"
     assert _row(engine, -77).name == "Bob GPX"
-    assert "Bob GPX" not in client.get("/api/projects/Mine").text
+    r = client.get("/api/projects/Mine")
+    assert r.status_code == 200
+    assert "Bob GPX" not in r.text
 
 
 def test_an_import_of_the_importers_own_activity_reuses_it(env):
@@ -509,7 +511,9 @@ def test_an_import_item_naming_an_activity_nobody_holds_is_left_out(env):
     _create_trip(client, "Bob trip")
     assert _add(client, "Bob trip", [_activity(9005)]).json()["added"] == 1
     act_as("alice")
-    assert _NAME not in client.get("/api/projects/Mine").text
+    r = client.get("/api/projects/Mine")
+    assert r.status_code == 200
+    assert _NAME not in r.text
     assert _trip_activity_ids(engine, ids["alice"], "Mine") == set()
 
 
