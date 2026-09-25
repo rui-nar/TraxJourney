@@ -35,6 +35,7 @@ from pathlib import Path
 # never disagree about what counts as a duplicate.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.project.memory_match import step_key  # noqa: E402
+from src.utils.photo_paths import photo_files, photo_folder  # noqa: E402
 
 
 def _nphotos(photos_json: str | None) -> int:
@@ -50,16 +51,14 @@ def _richness(row: sqlite3.Row) -> tuple[int, int]:
 
 
 def _photo_files(data_dir: Path, user_id: int, memory_id: int, photos_json: str | None) -> list[Path]:
-    base = data_dir / "users" / str(user_id) / "memories" / str(memory_id)
-    out: list[Path] = []
     try:
         uuids = json.loads(photos_json or "[]")
     except (ValueError, TypeError):
         uuids = []
-    for u in uuids:
-        out.append(base / f"{u}.jpg")
-        out.append(base / f"{u}_thumb.jpg")
-    return out
+    if not isinstance(uuids, list):
+        return []
+    # Only names that stay inside this memory's folder (see photo_paths).
+    return photo_files(photo_folder(data_dir, user_id, "memories", memory_id), uuids)
 
 
 def find_duplicate_groups(con: sqlite3.Connection) -> list[list[sqlite3.Row]]:

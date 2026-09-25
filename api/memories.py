@@ -54,6 +54,7 @@ from models.project_db import DBMemory, DBMemoryComment, DBMemoryLike, DBMemoryT
 from models.user import UserInfo
 from src.billing.entitlements import ensure_storage_quota, ensure_trip_days_quota
 from src.billing.usage import record_written, unlink_and_record
+from src.utils.photo_paths import photo_file, photo_files, photo_folder
 from src.exceptions.errors import QuotaExceeded
 from src.models.memory import Memory
 from src.project.memory_match import step_key
@@ -470,12 +471,8 @@ def delete_memory(
 
         photos: List[str] = json.loads(mem_row.photos_json or "[]")
         owner_dir = _owner_dir_id(sess, mem_row)
-        photo_path = Path(_DATA_DIR) / "users" / owner_dir / "memories" / str(memory_id)
-        unlink_and_record(owner_dir, [
-            photo_path / f"{photo_uuid}{suffix}.jpg"
-            for photo_uuid in photos
-            for suffix in ("", "_thumb")
-        ])
+        photo_path = photo_folder(_DATA_DIR, owner_dir, "memories", memory_id)
+        unlink_and_record(owner_dir, photo_files(photo_path, photos))
         if photo_path.exists():
             try:
                 photo_path.rmdir()
@@ -528,12 +525,8 @@ def _save_photo_files(user_id: str, memory_id: int, uuid_str: str, raw: bytes) -
 
 def _delete_photo_files(user_id: str, memory_id: int, photo_uuids: List[str]) -> None:
     """Remove the on-disk full-res + thumbnail files for the given photo UUIDs."""
-    photo_path = _photo_dir(user_id, memory_id)
-    unlink_and_record(user_id, [
-        photo_path / f"{photo_uuid}{suffix}.jpg"
-        for photo_uuid in photo_uuids
-        for suffix in ("", "_thumb")
-    ])
+    unlink_and_record(user_id, photo_files(
+        photo_folder(_DATA_DIR, user_id, "memories", memory_id), photo_uuids))
 
 
 def _clear_memory_photos(sess, user_id: str, mem_row: DBMemory) -> None:
@@ -752,9 +745,8 @@ def serve_photo(
         if photo_uuid not in photos:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
 
-    photo_path = Path(_DATA_DIR) / "users" / owner_dir / "memories" / str(memory_id)
-    full_path = photo_path / f"{photo_uuid}.jpg"
-    if not full_path.exists():
+    full_path = photo_file(photo_folder(_DATA_DIR, owner_dir, "memories", memory_id), photo_uuid)
+    if full_path is None or not full_path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     return FileResponse(str(full_path), media_type="image/jpeg")
 
@@ -780,11 +772,11 @@ def serve_photo_thumb(
             if photo_uuid not in photos:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
 
-        photo_path = Path(_DATA_DIR) / "users" / owner_dir / "memories" / str(memory_id)
-        thumb_path = photo_path / f"{photo_uuid}_thumb.jpg"
-        if not thumb_path.exists():
-            full_path = photo_path / f"{photo_uuid}.jpg"
-            if full_path.exists():
+        photo_path = photo_folder(_DATA_DIR, owner_dir, "memories", memory_id)
+        thumb_path = photo_file(photo_path, photo_uuid, "_thumb")
+        if thumb_path is None or not thumb_path.exists():
+            full_path = photo_file(photo_path, photo_uuid)
+            if full_path is not None and full_path.exists():
                 return FileResponse(str(full_path), media_type="image/jpeg")
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
         return FileResponse(str(thumb_path), media_type="image/jpeg")

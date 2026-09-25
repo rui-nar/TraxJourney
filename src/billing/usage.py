@@ -74,12 +74,40 @@ def record_written(user_id: str | int, *paths: Path | str) -> None:
     record_delta(user_id, bytes_of(*paths))
 
 
+def _inside_user_dir(user_id: str | int, paths: Iterable[Path | str]) -> list[Path]:
+    """The paths among *paths* that resolve to inside a ``users/<user_id>/``
+    folder.
+
+    Judged from the resolved path itself rather than from one module's data
+    directory: every writer keeps its files under ``users/<id>/``, whichever
+    data directory it was configured with.
+    """
+    try:
+        uid = str(int(user_id))
+    except (TypeError, ValueError):
+        return []
+    kept = []
+    for p in paths:
+        try:
+            resolved = Path(p).resolve()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if any(d.name == uid and d.parent.name == "users" for d in resolved.parents):
+            kept.append(Path(p))
+        else:
+            _log.warning("refused to delete %s: outside user %s's folder", p, user_id)
+    return kept
+
+
 def unlink_and_record(user_id: str | int, paths: Iterable[Path | str]) -> None:
     """Delete files and subtract what they occupied.
 
     Sizes are read *before* unlinking — afterwards there is nothing to stat.
+    Only files inside *user_id*'s own folder are touched: the count is theirs,
+    and so is what may be deleted on their behalf. Callers resolve stored
+    names through ``src.utils.photo_paths`` first; this is the last line.
     """
-    paths = list(paths)
+    paths = _inside_user_dir(user_id, paths)
     freed = bytes_of(*paths)
     for p in paths:
         Path(p).unlink(missing_ok=True)

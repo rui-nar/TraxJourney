@@ -11,6 +11,7 @@ Two groups:
 from __future__ import annotations
 
 import io
+import json
 import logging
 from datetime import datetime
 
@@ -21,7 +22,7 @@ from sqlmodel import Session, SQLModel, create_engine
 
 import models.db as db_module
 import src.poster.tile_stitcher as tile_stitcher
-from models.project_db import DBProject
+from models.project_db import DBMemory, DBProject, DBProjectItem
 from models.user import UserInfo
 from src.exceptions.errors import APIError
 from src.poster.card_layout import card_width_px, layout_card, mm_to_px
@@ -456,6 +457,14 @@ def project_id(monkeypatch):
         sess.add(user); sess.commit(); sess.refresh(user)
         proj = DBProject(user_info_id=user.id, name="My Trip")
         sess.add(proj); sess.commit(); sess.refresh(proj)
+        # The memories the request bodies below pin: a poster only draws
+        # memories of its own trip.
+        for pos, (mid, day) in enumerate(((1, "2024-06-01"), (2, "2024-06-02"))):
+            sess.add(DBMemory(id=mid, project_id=proj.id, date=day,
+                              photos_json=json.dumps(["abc", "def"])))
+            sess.add(DBProjectItem(project_id=proj.id, position=pos,
+                                   item_type="memory", memory_id=mid))
+        sess.commit()
         return proj.id
 
 
