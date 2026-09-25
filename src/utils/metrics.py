@@ -245,6 +245,8 @@ EXTERNAL_DURATION = Histogram(
 # process-wide (issue #130), which is what makes these worth exporting.
 # Scrape-time: the limiter lives in the API process, the only one that calls
 # Strava (request handlers and their BackgroundTasks; no queued job does).
+# tests/test_jobs_never_call_strava.py fails if a queued job's code imports the
+# Strava client: a worker's limiter would be invisible to this gauge.
 STRAVA_RATE_LIMIT_USAGE = _scrape_time_gauge(
     "traxjourney_strava_rate_limit_usage",
     "Strava requests made in the current quota window.",
