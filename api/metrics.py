@@ -42,9 +42,16 @@ async def metrics(request: Request) -> Response:
     # re-encoding latin-1 recovers the bytes the client sent (issue #450).
     # surrogateescape does the same for the token: on Linux os.environ decodes
     # bytes that aren't UTF-8 as lone surrogates, which strict UTF-8 refuses.
-    if scheme.lower() != "bearer" or not hmac.compare_digest(
-        presented.strip().encode("latin-1"),
-        expected.encode("utf-8", "surrogateescape"),
+    # Only U+DC80..U+DCFF escape; any other lone surrogate can't be encoded
+    # and simply matches nothing.
+    try:
+        expected_bytes = expected.encode("utf-8", "surrogateescape")
+    except UnicodeEncodeError:
+        expected_bytes = None
+    if (
+        scheme.lower() != "bearer"
+        or expected_bytes is None
+        or not hmac.compare_digest(presented.strip().encode("latin-1"), expected_bytes)
     ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid metrics token"

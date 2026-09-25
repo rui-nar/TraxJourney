@@ -86,6 +86,17 @@ class TestMetricsAuth:
 
         assert asyncio.run(scrape()).status_code == expected_status
 
+    def test_a_token_no_encoding_can_represent_is_a_401(self, monkeypatch):
+        """surrogateescape only maps U+DC80..U+DCFF back to bytes; any other
+        lone surrogate still raises. os.environ can't produce one on Linux, but
+        a scrape must never become a 500."""
+        import api.metrics as metrics_mod
+        import api.router as router
+
+        monkeypatch.setattr(metrics_mod, "_configured_token", lambda: "abc\ud800")
+        lenient = TestClient(router.app, raise_server_exceptions=False)
+        assert _scrape(lenient, "abc").status_code == 401
+
     def test_rejects_a_non_bearer_scheme(self, client, monkeypatch):
         monkeypatch.setenv("METRICS_TOKEN", "right")
         assert client.get(
