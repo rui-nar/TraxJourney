@@ -6,18 +6,28 @@
 
 .DESCRIPTION
     -Target Validation (default) -> DEPLOY_VAL_URL, DEPLOY_VAL_DIR:
-      1. Checks the host's compose file uses the image being deployed.
-      2. Builds the Flutter web app.
-      3. Builds and pushes the Docker image to GHCR (:validation + version tag if present).
-      4. SSHes into the host and runs: docker compose down / pull / up -d.
-      5. Verifies the deploy (see VERIFICATION).
+      1. Builds the Flutter web app.
+      2. Builds the Docker image locally (:validation + version tag if present).
+      3. Over ONE SSH connection: checks the host's compose file uses the image
+         being deployed, pushes the image to GHCR, runs docker compose pull
+         then up -d on the host, and verifies the deploy (see VERIFICATION).
 
     -Target Prod -> DEPLOY_PROD_URL, DEPLOY_PROD_DIR:
       Skips the build entirely - prod runs whatever :latest CI has published for
-      the current tagged release (see .github/workflows). Steps 1, 4 and 5 only.
+      the current tagged release (see .github/workflows). Step 3 only, without
+      the push. Refuses to start from a working tree with uncommitted changes.
+
+    No "docker compose down": the pull runs while the old containers keep
+    serving, so a failed pull leaves the environment as it was, and up -d
+    recreates only the containers whose image or configuration changed.
+
+    One SSH connection, so a passphrase-protected key without an agent asks
+    once. Windows' OpenSSH has no ControlMaster, so scripts/deploy_verify.py
+    keeps one remote shell open and sends every host command down it.
 
     By default (Validation only) the image is built from the CURRENT working tree
-    (the fast path for validating local, possibly-uncommitted changes). Pass
+    (the fast path for validating local, possibly-uncommitted changes; the
+    version then ends in -dirty, and the script warns). Pass
     -FromMain to instead build a pristine export of origin/main in a throwaway
     git worktree, so the image is exactly what's on main - never contaminated by
     local edits. -FromMain has no effect with -Target Prod, since that path never
@@ -31,16 +41,18 @@
     VERIFICATION
     "docker compose pull" pulls whatever image the HOST's compose file names,
     and a container that crash-loops still counts as started, so a clean exit
-    from down / pull / up -d proves nothing (issue #423). The script fails, with
+    from pull / up -d proves nothing (issue #423). The script fails, with
     a non-zero exit, unless:
       a. the host's compose file names the image being deployed (checked
-         before anything is built or taken down);
+         before anything is pushed or changed on the host);
       b. the app containers run the image ID the tag was just pulled as;
       c. every compose service is running, healthy where it has a healthcheck,
-         and has not restarted since up -d;
+         and has not restarted since the deploy began;
       d. <url>/api/version reports the expected version within 120 s: the
          built version for a local build, validation-<sha of the validation
-         tag> for CI's :validation, the newest vX.Y.Z tag for :latest.
+         tag> for CI's :validation, the newest vX.Y.Z tag for :latest;
+      e. 30 s after all that passed, (b) and (c) still hold.
+    The banner shows the version from (d) before anything starts.
     The checks live in scripts/deploy_verify.py, which needs Python 3 (the
     repo's .venv, or python on PATH).
 
@@ -176,6 +188,18 @@ if ($TagOnly -and $Target -ne 'Validation') {
     Die '-TagOnly is only valid with -Target Validation - it moves the floating `validation` tag, which prod never uses.'
 }
 
+# Uncommitted changes to tracked files: the rule `git describe --dirty` uses to
+# mark a build of this tree -dirty. Untracked files don't count. Prod runs CI's
+# image, not this tree, but this tree runs the deploy (this script, its checks,
+# the tags they read), so prod starts only from a clean checkout (issue #439).
+$DirtyFiles = @(git status --porcelain --untracked-files=no)
+if ($LASTEXITCODE -ne 0) { Die "git status failed." }
+if ($Target -eq 'Prod' -and $DirtyFiles.Count -gt 0) {
+    Write-Host ""
+    foreach ($f in $DirtyFiles) { Write-Host "  $f" -ForegroundColor Yellow }
+    Die "The working tree has uncommitted changes (listed above). Prod deploys only from a clean checkout: commit or stash them and retry. Nothing was done."
+}
+
 # Resolve the source tree to build from. With -FromMain we build a pristine
 # export of origin/main in a throwaway git worktree, so the image is exactly
 # what's on main - never contaminated by local edits or untracked files. Without
@@ -291,9 +315,23 @@ $_tag = git describe --tags --exact-match $VersionRef 2>$null
 if ($LASTEXITCODE -eq 0) { $Version = $_tag.Trim() }
 
 $FullVersion = "dev"
-$_full = git describe --tags --long $VersionRef 2>$null
+if ($Worktree) {
+    # --dirty cannot name a commit, and the throwaway worktree is clean anyway.
+    $_full = git describe --tags --long origin/main 2>$null
+} else {
+    $_full = git describe --tags --long --dirty 2>$null
+}
 if ($LASTEXITCODE -eq 0) { $FullVersion = $_full.Trim() }
 $ErrorActionPreference = "Stop"
+
+# Val builds uncommitted work on purpose (the fast path above); the version
+# says so. It must never be published under the release tag its commit has.
+if ($Building -and -not $Worktree -and $DirtyFiles.Count -gt 0) {
+    $Version = ""
+    Write-Host ""
+    Write-Host "WARNING: the working tree has uncommitted changes; building it as ${FullVersion}:" -ForegroundColor Yellow
+    foreach ($f in $DirtyFiles) { Write-Host "  $f" -ForegroundColor Yellow }
+}
 
 if (-not $Building)  { $sourceLabel = "GHCR (no local build)" }
 elseif ($FromMain)   { $sourceLabel = "origin/main (hermetic)" }
@@ -304,20 +342,27 @@ $targetUrl  = if ($Target -eq 'Prod') { $Config['DEPLOY_PROD_URL'] } else { $Con
 $targetTag  = if ($Target -eq 'Prod') { "latest" } else { "validation" }
 $targetUrl  = $targetUrl.TrimEnd('/')
 
+# What the server will report once deployed. For Prod and -SkipBuild that is
+# CI's stamp on the image it pulls, not this checkout's HEAD (issue #439).
+$ExpectArgs = @('--target', $Target.ToLowerInvariant(), '--repo', $PSScriptRoot)
+if ($Building) { $ExpectArgs += @('--built-version', $FullVersion) }
+$DeployVersion = & $Python $Verifier expect @ExpectArgs
+if ($LASTEXITCODE -ne 0) { Die "Could not work out which version this deploy serves." }
+
 Write-Host ""
 Write-Host "--------------------------------------------" -ForegroundColor Green
-Write-Host "  TraxJourney  -  deploy $FullVersion ($Target)" -ForegroundColor Green
+Write-Host "  TraxJourney  -  deploy $DeployVersion ($Target)" -ForegroundColor Green
 Write-Host "  source: $sourceLabel" -ForegroundColor Green
 Write-Host "  -> ${Image}:${targetTag}" -ForegroundColor Green
 Write-Host "  -> ${DeployHost}:${targetBase}  ($targetUrl)" -ForegroundColor Green
 Write-Host "--------------------------------------------" -ForegroundColor Green
 
-# The same host, directory, image and URL for both verification calls.
-$StateFile = [System.IO.Path]::GetTempFileName()
-$VerifyArgs = @(
+$DeployArgs = @(
     '--ssh-host', $DeployHost, '--ssh-port', $SshPort, '--ssh-user', $DeployUser, '--ssh-key', $SshKey,
-    '--dir', $targetBase, '--image', "${Image}:${targetTag}", '--url', $targetUrl, '--state', $StateFile
+    '--dir', $targetBase, '--image', "${Image}:${targetTag}", '--url', $targetUrl,
+    '--target', $Target.ToLowerInvariant(), '--repo', $PSScriptRoot
 )
+if ($Building) { $DeployArgs += @('--built-version', $FullVersion) }
 
 try {
 
@@ -336,19 +381,10 @@ if (-not $Building) {
     }
 }
 
-# -- 1. Preflight --------------------------------------------------------------
-# Before building or taking anything down: the host must pull the image this
-# deploy is for. Also records the version served now and the one to expect.
-Step 1 5 "Checking the host ($Target) before deploying..."
-$preflightArgs = @('--target', $Target.ToLowerInvariant(), '--repo', $PSScriptRoot)
-if ($Building) { $preflightArgs += @('--built-version', $FullVersion) }
-& $Python $Verifier preflight @VerifyArgs @preflightArgs
-if ($LASTEXITCODE -ne 0) { Die "Preflight failed - nothing was built or deployed." }
-
 if ($Building) {
 
-# -- 2. Build Flutter web ------------------------------------------------------
-Step 2 5 "Building Flutter web..."
+# -- 1. Build Flutter web ------------------------------------------------------
+Step 1 3 "Building Flutter web..."
 Push-Location (Join-Path $SrcRoot 'flutter_client')
 flutter build web --release `
   --dart-define=APP_VERSION=$FullVersion `
@@ -360,8 +396,8 @@ if (Test-Path $webClient) { Remove-Item -Recurse -Force $webClient }
 Copy-Item -Recurse (Join-Path $SrcRoot 'flutter_client/build/web') $webClient
 Write-Host "  Flutter web build ready in $webClient"
 
-# -- 3. Build + push Docker image ----------------------------------------------
-Step 3 5 "Building and pushing Docker image..."
+# -- 2. Build Docker image -----------------------------------------------------
+Step 2 3 "Building Docker image..."
 
 # :validation is the rolling dev label pushed by this script.
 # :latest is reserved for clean version tags (set by GitHub Actions / CI).
@@ -372,49 +408,26 @@ if ($Version) { $tags += @("-t", "${Image}:${Version}") }
 docker build @tags --build-arg "APP_VERSION=$FullVersion" $SrcRoot
 if ($LASTEXITCODE -ne 0) { Die "Docker build failed." }
 
-docker push "${Image}:validation"
-if ($LASTEXITCODE -ne 0) { Die "docker push :validation failed." }
-if ($Version) {
-    docker push "${Image}:${Version}"
-    if ($LASTEXITCODE -ne 0) { Die "docker push :${Version} failed." }
-}
+# Pushed by the deploy step, once the host is known to pull this image.
+$DeployArgs += @('--push', "${Image}:validation")
+if ($Version) { $DeployArgs += @('--push', "${Image}:${Version}") }
 
 } else {
     Write-Host ""
-    Write-Host "[2-3/5] Skipping build - pulling :$targetTag as already published to GHCR." -ForegroundColor Cyan
+    Write-Host "[1-2/3] Skipping build - pulling :$targetTag as already published to GHCR." -ForegroundColor Cyan
 }
 
-# -- 4. Deploy -----------------------------------------------------------------
+# -- 3. Deploy -----------------------------------------------------------------
 # Both environments are plain Docker on the same Debian host, so one script
-# serves both - only $targetBase differs.
-Step 4 5 "Deploying ($Target) on $DeployHost..."
-
-$remoteScript = @"
-set -euo pipefail
-
-cd "$targetBase"
-
-echo "  Stopping containers..."
-docker compose down
-
-echo "  Pulling ${Image}:${targetTag}..."
-docker compose pull
-
-echo "  Starting containers..."
-docker compose up -d
-"@
-
-# `tr -d '\r'` on the far side: this file is checked out with CRLF on Windows,
-# PowerShell pipes a trailing CRLF, and bash reads "pipefail\r" as a bad option.
-$remoteScript | ssh -i $SshKey -p $SshPort "${DeployUser}@${DeployHost}" "tr -d '\r' | bash -s"
-if ($LASTEXITCODE -ne 0) { Die "Remote deployment failed." }
-
-# -- 5. Verify -----------------------------------------------------------------
-Step 5 5 "Verifying the deploy..."
-& $Python $Verifier verify @VerifyArgs
-if ($LASTEXITCODE -ne 0) {
-    Die "The deploy did not take effect as expected (see FAIL lines above). The containers were left as they are."
-}
+# serves both - only $targetBase differs. deploy_verify.py does every host step
+# over one SSH connection, so a passphrase is asked once (issue #439): it
+# checks the host's compose file, pushes a local build, runs docker compose
+# pull then up -d (no down: a failed pull leaves the running containers alone),
+# and verifies the result.
+Step 3 3 "Deploying ($Target) on $DeployHost..."
+& $Python $Verifier deploy @DeployArgs
+if ($LASTEXITCODE -eq 3) { Die "Stopped before the running containers were touched (see FAIL lines above)." }
+if ($LASTEXITCODE -ne 0) { Die "The deploy did not take effect as expected (see FAIL lines above). The containers were left as they are." }
 
 Write-Host ""
 Write-Host "===========================================" -ForegroundColor Green
@@ -425,7 +438,6 @@ Write-Host ""
 
 }
 finally {
-    Remove-Item -Force $StateFile -ErrorAction SilentlyContinue
     # Always tear down the throwaway worktree, even on failure. (PowerShell runs
     # finally on `exit` from within try; a stale registration is also swept by
     # `git worktree prune` at the next -FromMain run.)

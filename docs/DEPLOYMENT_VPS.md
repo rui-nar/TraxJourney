@@ -182,7 +182,7 @@ image and only the API runs migrations, so a worker left on an older tag would
 run stale job code against a schema it does not know about.
 
 `deploy.ps1` needs no changes for any of this: it builds/pushes the image and
-then runs `docker compose down && pull && up -d`, which is service-agnostic.
+then runs `docker compose pull` and `up -d`, which is service-agnostic.
 Adding the services to each host's compose file and the keys to its `.env` is
 the whole deployment change.
 
@@ -340,10 +340,25 @@ free space first, it is a full copy of prod's media onto a 40 GB disk.
 ## 6. `deploy.ps1`
 
 `-Target Validation|Prod` (default `Validation`). Both targets SSH to the VPS
-(the host, user and key from `deploy.env`) and run
-`docker compose down / pull / up -d`, then check that the deploy took
-effect. They differ in directory, image tag and whether anything is built
-locally.
+(the host, user and key from `deploy.env`) and run `docker compose pull`, then
+`docker compose up -d`, then check that the deploy took effect. They differ in
+directory, image tag and whether anything is built locally.
+
+There is no `docker compose down` (issue #439). The pull runs while the old
+containers keep serving, so a failed pull (a GHCR outage, an expired login)
+leaves the environment exactly as it was, and `up -d` recreates only the
+containers whose image or configuration changed; `redis` and `alloy` keep
+running. The deploy prints how long the pull took, which is roughly the
+downtime the old down-first order cost on every deploy, and how long after
+`up -d` the new version first answered.
+
+Everything on the host happens over **one** SSH connection, so a key with a
+passphrase and no agent asks for it once. Windows' OpenSSH cannot share a
+connection (`ControlMaster` is not supported there), so
+`scripts/deploy_verify.py` opens one remote shell and sends every command down
+it: the compose-file check, the pull, `up -d` and every read of the containers.
+A local build is pushed from inside that step too, once the host check has
+passed, so nothing leaves the machine for a host that would not pull it.
 
 | | `Validation` | `Prod` |
 |---|---|---|
@@ -362,6 +377,17 @@ locally.
 `-FromMain` builds a pristine export of `origin/main` in a throwaway git
 worktree, so the image is exactly what is on main, never contaminated by local
 edits or untracked files.
+
+**Uncommitted changes.** A validation build of a working tree with changes to
+tracked files is versioned by `git describe --dirty` (`v0.50.0-3-g3186c1b-dirty`),
+warns and lists the files, and is never pushed under the release tag its
+commit carries. `-Target Prod` refuses to start from such a tree at all: prod
+runs CI's image, but this checkout runs the deploy and its checks. Untracked
+files count in neither case, as with `git describe --dirty`.
+
+The banner at the start shows the version the deploy will serve: the build's
+own version, or for `-SkipBuild` and prod the one CI stamped on the image it
+pulls, not the local HEAD.
 
 Every path that skips the build first checks GitHub Actions for an in-progress
 `docker-build.yml` run and refuses to deploy while one is going, since the tag
@@ -405,10 +431,11 @@ and one `FAIL:` line per problem:
 
 | Check | When | Catches |
 |---|---|---|
-| The host's compose file names `DEPLOY_IMAGE:<tag>` (`docker compose config --images`), and no service is on another tag or another image from the same registry owner | before anything is built or taken down | a host compose file not updated after an image rename; a val host on `:latest` |
+| The host's compose file names `DEPLOY_IMAGE:<tag>` (`docker compose config --images`), and no service is on another tag or another image from the same registry owner | before anything is pushed or changed on the host | a host compose file not updated after an image rename; a val host on `:latest` |
 | Each container created from that image runs the image ID the tag was just pulled as (`docker inspect`) | after `up -d` | a container left on the previous image |
-| Every service has a container that is running, is healthy if it has a healthcheck, and has not restarted since `up -d` (`docker compose ps --format json`; restart counts from `docker inspect`) | at least 15 s after `up -d`; a healthcheck still `starting` gets 60 s more | crash loops, including a container caught running between two crashes; exited or unhealthy containers; a service with no container |
+| Every service has a container that is running, is healthy if it has a healthcheck, and has not restarted since the deploy began (`docker compose ps --format json`; restart counts from `docker inspect`, less the count each kept container had before) | at least 15 s after `up -d`; a healthcheck still `starting` gets 60 s more | crash loops, including a container caught running between two crashes; exited or unhealthy containers; a service with no container |
 | `<url>/api/version` reports the expected version | polled for up to 120 s after `up -d` | the old server still answering; a stale `:validation` or `:latest` |
+| The container checks above, once more | 30 s after everything else passed | a container that crashes a little after start: a first job, a first scheduled run |
 
 The expected version is the one the image was stamped with:
 
@@ -425,7 +452,9 @@ deploying and only requires the served version to change from the one served
 before the deploy. The summary then warns that the exact version was not
 checked.
 
-A failed check leaves the containers as they are, for inspection. The summary
+A failed check leaves the containers as they are, for inspection. The red
+`ERROR` line says whether the deploy stopped before the running containers
+were touched (host check, push or pull failed) or after `up -d`. The summary
 lists the expected, previous and served versions, the registry digest and image
 ID that were pulled, and every container's state.
 
