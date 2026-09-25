@@ -34,7 +34,7 @@ from api.project_shared import _DATA_DIR, _repo
 from src.billing.entitlements import ensure_project_quota
 from src.brand import APP_NAME
 from src.models.great_circle import great_circle_points
-from src.project.project_io import ProjectIO
+from src.project.project_io import InvalidProjectFile, ProjectIO
 from src.utils.encryption_check import is_encrypted_envelope
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -138,7 +138,16 @@ async def import_project(
     with get_session() as sess:
         ensure_project_quota(sess, user_info_id)
 
-    project = ProjectIO.from_dict(json.loads(contents.decode("utf-8")))
+    # Only the file's own faults are the uploader's (issue #451): anything else
+    # raised while reading it, or during the ingest below, is a server bug and
+    # stays a 500.
+    try:
+        project = ProjectIO.from_bytes(contents)
+    except InvalidProjectFile as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"This file isn't a valid {APP_NAME} trip: {exc}.",
+        ) from None
 
     name = fname[: -len(ProjectIO.EXTENSION)]
     with get_session() as sess:
@@ -154,7 +163,10 @@ router.add_api_route(
     "/import", import_project, methods=["POST"],
     status_code=status.HTTP_201_CREATED, response_model=ImportedOut,
     summary="Import a .traxj file",
-    responses={413: {"description": "The file is larger than MAX_IMPORT_BYTES"}},
+    responses={
+        400: {"description": "Not a .traxj file, or not a readable trip"},
+        413: {"description": "The file is larger than MAX_IMPORT_BYTES"},
+    },
     route_class_override=_CappedUploadRoute,
 )
 
