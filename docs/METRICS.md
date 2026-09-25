@@ -194,19 +194,36 @@ between scrapes.
 - **The multiprocess directory looks after itself** (issue #437,
   `src/utils/metrics_multiproc.py`). Nothing needs clearing by hand:
   - Files are named `<hostname>-<pid>`, not by PID alone. Every container has
-    its own PID namespace, so the API and both workers' parent processes are
-    all PID 1 and would otherwise write to the same file.
+    its own PID namespace, so PIDs repeat across containers: the RQ
+    work-horses of `worker` and `worker-poster` get the same small PIDs, and
+    two live processes on one file overwrite each other's samples. (The
+    workers' parent processes are PID 1 like the API, but normally write no
+    metrics: they only import the metrics module after a killed work-horse's
+    handler has run.)
   - The directory is cleared by the first process that starts writing while
     no other writer is alive: on a stack start (`docker compose down && up`,
     which `deploy.ps1` does), or mid-run when the last writer has exited
     before the next one starts (the API restarting while no job runs, say).
     Every writer holds a shared `flock` on `.writers.lock` there, so a process
     starting beside a live one never deletes its files.
-  - A container restarted on its own while others keep writing keeps the
-    earlier files. Their counters stay in the totals, so `rate()` sees no
-    false reset; their gauges (with a `pid` label) linger until the next clear.
+  - A container restarted or replaced on its own (`pull && up -d` without
+    `down`) while others keep writing keeps the earlier files. Their counters
+    stay in the totals, so `rate()` sees no false reset.
+  - Between full stack stops, every RQ work-horse (one per job) leaves its
+    counter, histogram and gauge files behind. That is by design: dropping
+    them would make the totals go backwards. The file count therefore grows
+    with the number of jobs run, and `/metrics` reads them all on every
+    scrape. A periodic `docker compose down` then `up -d`, or any planned
+    restart of the whole stack, clears them.
   - When an RQ work-horse exits, the worker calls prometheus_client's
     `mark_process_dead` for it, dropping its live-mode gauge files.
+  - Gauges written from several processes pick how they combine, so a dead
+    process never shows up as its own series: `job_last_success_timestamp_seconds`
+    and `strava_rate_limit_capacity` take the `max`, and
+    `prepared_geometry_backlog` the most recent value. None carries a `pid`
+    label. The pool, file-size and Strava-usage gauges are computed at scrape
+    time in the scraping process and write no files, so in multiprocess mode
+    `/metrics` does not export them at all.
   - `flock` needs a local filesystem seen by one kernel: a bind mount on the
     Docker host, not NFS or SMB.
 - **Restarts reset counters.** That is normal — PromQL's `rate()`/`increase()`

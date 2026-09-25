@@ -6,10 +6,13 @@ them. The API container and both worker containers mount the same directory.
 prometheus_client leaves three things to the application, all handled here:
 
 **Unique file names across containers.** prometheus_client names the files by
-PID. Each container has its own PID namespace: the API and every worker's
-parent process are all PID 1, and the work-horses RQ forks in the two worker
-containers get the same small PIDs. Two live processes on one file overwrite
-each other's samples, so the identifier is ``<hostname>-<pid>``. Docker sets
+PID. Each container has its own PID namespace, so PIDs repeat across them: the
+work-horses RQ forks in the two worker containers get the same small PIDs, and
+the API is PID 1. (A worker's parent is PID 1 too, but normally writes nothing:
+it never imports the metrics module, except after a killed work-horse's
+handler has imported ``poster_job_runner``, which pulls it in.) Two live
+processes on one file overwrite each other's samples, so the identifier is
+``<hostname>-<pid>``. Docker sets
 the hostname to the container ID, which is unique per container.
 
 **Clearing files left by an earlier run.** A dead process' counters and gauges
