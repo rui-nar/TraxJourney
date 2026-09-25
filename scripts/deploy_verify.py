@@ -51,7 +51,7 @@ import subprocess
 import sys
 import time
 import urllib.request
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 # The server's /api/version default when no APP_VERSION was baked in.
