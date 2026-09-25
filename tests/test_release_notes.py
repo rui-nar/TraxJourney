@@ -485,3 +485,46 @@ class TestTranslate:
 def test_scope_maps_to_a_user_facing_area(subject, expected_area):
     """Internal scope names ("e2ee", "track-edit") mean nothing to a reader."""
     assert _one(subject).area == expected_area
+
+
+class TestHtmlInText:
+    """GitHub renders the notes as markdown and strips what looks like an HTML
+    tag: "says User=<deploy-user>" came out as "says User=" (#444 review).
+    Text is escaped outside code spans; inside them it is already literal."""
+
+    def _render(self, *records):
+        return render(parse_commits(_log(*records)), version="v1.1.0", previous="v1.0.0")
+
+    def test_a_subject_keeps_its_angle_brackets(self):
+        out = self._render(("fix(webhook): the unit says User=<deploy-user> (#444)", "", "vps/x"))
+        assert r"User=\<deploy-user\>" in out
+        assert "User=<deploy-user>" not in out
+
+    def test_a_release_note_keeps_its_angle_brackets(self):
+        body = "Release-Note: Replace <deploy-user> & restart.\n"
+        out = self._render(("fix(webhook): x", body, "vps/x"))
+        assert r"Replace \<deploy-user\> \& restart" in out
+
+    def test_an_upgrade_note_keeps_its_angle_brackets(self):
+        body = "Upgrade-Note: Reinstall with User=<deploy-user>.\n"
+        out = self._render(("fix(webhook): x", body, "vps/x"))
+        assert r"Reinstall with User=\<deploy-user\>." in out
+
+    def test_an_internal_subject_keeps_its_angle_brackets(self):
+        out = self._render(("test(docs): pin <deploy-user> in the doc", "", "tests/x.py"))
+        assert r"- pin \<deploy-user\> in the doc" in out
+
+    def test_code_spans_are_left_alone(self):
+        """In a code span a backslash is shown, not read as an escape."""
+        out = self._render(("fix(webhook): `User=<deploy-user>` and ``a`<b`` then <c>", "", "vps/x"))
+        assert "`User=<deploy-user>`" in out
+        assert "``a`<b``" in out
+        assert r"then \<c\>" in out
+
+    def test_an_unmatched_backtick_does_not_hide_the_rest(self):
+        out = self._render(("fix(webhook): a ` then <c>", "", "vps/x"))
+        assert r"a ` then \<c\>" in out
+
+    def test_the_first_letter_is_still_capitalised(self):
+        out = self._render(("fix: <b> is kept", "", "vps/x"))
+        assert r"- \<b\> is kept." in out
