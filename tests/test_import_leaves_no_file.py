@@ -141,7 +141,7 @@ def test_import_of_a_malformed_file_leaves_no_file_behind(env):
 def test_rejected_upload_leaves_no_file_behind(env):
     client, _engine, _uid, user_dir = env
 
-    r = _import(client, "Trip.viewtrip", _project_bytes())
+    r = _import(client, "Trip.json", _project_bytes())
 
     assert r.status_code == 400, r.text
     assert _files_under(user_dir) == []

@@ -2,7 +2,7 @@
 
 Until #434, every project import left a ``<name>.traxj.migrated`` copy of the
 upload under ``data/users/<id>/projects/`` (so did the pre-#420 lazy ingest and
-``scripts/migrate_to_db.py``, as ``*.viewtrip.migrated``). The trip itself is in
+``scripts/migrate_to_db.py``, under the pre-rename extension). The trip itself is in
 the database; the file is dead weight that counted against the user's storage.
 Imports no longer write any file, so once each instance has booted a release
 carrying this sweep there is nothing left for it to find.
