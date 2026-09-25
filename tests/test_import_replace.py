@@ -29,6 +29,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 import api.journal as journal_mod
 import api.memories as memories_mod
+import api.people as people_mod
 import api.project_shared as project_shared_mod
 import models.db as db_module
 import src.admin.storage as storage_mod
@@ -43,6 +44,7 @@ from models.project_db import (
     DBMemoryLike,
     DBMemoryTranslation,
     DBPerson,
+    DBPersonGroup,
     DBProject,
     DBProjectInvite,
     DBProjectItem,
@@ -63,7 +65,7 @@ def env(monkeypatch, tmp_path):
         poolclass=StaticPool,
     )
     monkeypatch.setattr(db_module, "engine", engine)
-    for mod in (project_shared_mod, storage_mod, journal_mod, memories_mod):
+    for mod in (project_shared_mod, storage_mod, journal_mod, memories_mod, people_mod):
         monkeypatch.setattr(mod, "_DATA_DIR", str(tmp_path))
     for var in ("BILLING_ENABLED", "BILLING_ENFORCE_QUOTAS", "STRIPE_SECRET_KEY",
                 "FREE_MAX_PROJECTS"):
@@ -466,3 +468,65 @@ def test_replace_keeps_a_companions_activity_the_trip_holds(alps):
     assert 1 in ids_in_copy and 7001 not in ids_in_copy and len(ids_in_copy) == 2
     with Session(engine) as sess:
         assert sess.get(DBActivity, 7001).user_info_id == ids["companion"]
+
+
+def _avatar(client, person_id: int) -> None:
+    import io as _io
+    from PIL import Image
+    buf = _io.BytesIO()
+    Image.new("RGB", (8, 8), (30, 30, 200)).save(buf, "JPEG")
+    r = client.post(f"/api/people/{person_id}/avatar",
+                    files={"file": ("a.jpg", buf.getvalue(), "image/jpeg")})
+    assert r.status_code == 201, r.text
+
+
+def test_replacing_with_its_own_export_keeps_people_groups_and_avatars(alps):
+    (client, engine, ids, act_as, data_dir), project, lake, share, _dir = alps
+    ann = _rows(engine, DBPerson, project_id=project.id)[0].id
+    added = [client.post("/api/people/", json={"project_name": "Alps", "name": n}).json()["id"]
+             for n in ("Ben", "Cleo")]
+    group = client.post("/api/groups/", json={"project_name": "Alps", "name": "Climbers"}).json()["id"]
+    assert client.put(f"/api/groups/{group}/members",
+                      json={"person_ids": added}).status_code == 204
+    for pid in [ann, *added]:
+        _avatar(client, pid)
+    # A later trip's people take the next ids, so the Alps people's ids can
+    # only survive by being kept, not by the database handing them out again.
+    assert _import(client, "Later", _doc([], people=[{"id": 1, "name": "Zed"}])).status_code == 201
+
+    def people():
+        return {p.id: (p.name, p.avatar_photo, p.group_id)
+                for p in _rows(engine, DBPerson, project_id=project.id)}
+    before_people = people()
+    before_groups = {g.id: g.name for g in _rows(engine, DBPersonGroup, project_id=project.id)}
+    before_encounters = {e.person_id for e in _rows(engine, DBEncounter, project_id=project.id)}
+    avatar_files = sorted((data_dir / "users" / str(ids["owner"]) / "people").rglob("*.jpg"))
+    usage = _usage(engine, ids["owner"])
+    exported = client.get("/api/projects/Alps/export-traxj").content
+
+    r = _import(client, "Alps", exported, on_conflict="replace")
+
+    assert r.status_code == 201, r.text
+    assert people() == before_people
+    assert {g.id: g.name for g in _rows(engine, DBPersonGroup, project_id=project.id)} == before_groups
+    assert {e.person_id for e in _rows(engine, DBEncounter, project_id=project.id)} == before_encounters
+    for pid in before_people:
+        assert client.get(f"/api/people/{pid}/avatar").status_code == 200, pid
+    assert sorted((data_dir / "users" / str(ids["owner"]) / "people").rglob("*.jpg")) == avatar_files
+    assert _usage(engine, ids["owner"]) == usage
+
+
+def test_replace_deletes_a_person_the_file_no_longer_has_with_their_avatar(alps):
+    (client, engine, ids, act_as, data_dir), project, lake, share, _dir = alps
+    ann = _rows(engine, DBPerson, project_id=project.id)[0].id
+    _avatar(client, ann)
+    folder = data_dir / "users" / str(ids["owner"]) / "people" / str(ann)
+    assert list(folder.glob("*.jpg"))
+    usage = _usage(engine, ids["owner"])
+
+    r = _import(client, "Alps", _doc([]), on_conflict="replace")
+
+    assert r.status_code == 201, r.text
+    assert _rows(engine, DBPerson, project_id=project.id) == []
+    assert not list(folder.glob("*.jpg"))
+    assert _usage(engine, ids["owner"]) < usage

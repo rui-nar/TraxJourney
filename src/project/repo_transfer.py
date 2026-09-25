@@ -288,8 +288,31 @@ class ImportExportMixin:
                     user_info_id, "journal", entry.id, _photos(entry.photos_json), True))
                 sess.delete(entry)
 
-        for model in (DBProjectItem, DBEncounter, DBPerson, DBPersonGroup):
+        for model in (DBProjectItem, DBEncounter):
             sess.execute(delete(model).where(model.project_id == project_id))
+
+        # People and groups: by the id the export carries, like journal
+        # entries. A person's avatar lives in a folder named by their id, so a
+        # person kept is a person updated in place, not recreated.
+        wanted_people = {p.id for p in project.people if type(p.id) is int}
+        kept_people: Dict[int, DBPerson] = {}
+        for person in sess.exec(select(DBPerson).where(DBPerson.project_id == project_id)).all():
+            if person.id in wanted_people:
+                kept_people[person.id] = person
+                continue
+            if person.avatar_photo:
+                removals.append(PhotoRemoval(
+                    user_info_id, "people", person.id, [person.avatar_photo], True))
+            sess.delete(person)
+        wanted_groups = {g.id for g in project.groups if type(g.id) is int}
+        kept_groups: Dict[int, DBPersonGroup] = {}
+        for group in sess.exec(
+            select(DBPersonGroup).where(DBPersonGroup.project_id == project_id)
+        ).all():
+            if group.id in wanted_groups:
+                kept_groups[group.id] = group
+            else:
+                sess.delete(group)
 
         _set_content_columns(row, project)
         row.stats_json = None  # recomputed on the next read
@@ -300,6 +323,7 @@ class ImportExportMixin:
         removals += self._write_content(
             sess, user_info_id, project_id, project,
             kept_memories=kept_memories, kept_journals=kept_journals,
+            kept_people=kept_people, kept_groups=kept_groups,
             companion_journals=companion_journals,
         )
         sess.commit()
@@ -310,19 +334,24 @@ class ImportExportMixin:
         *,
         kept_memories: Optional[Dict[str, DBMemory]] = None,
         kept_journals: Optional[Dict[int, DBJournalEntry]] = None,
+        kept_people: Optional[Dict[int, DBPerson]] = None,
+        kept_groups: Optional[Dict[int, DBPersonGroup]] = None,
         companion_journals: Sequence[DBJournalEntry] = (),
     ) -> List["PhotoRemoval"]:
         """Write *project*'s activities, people, groups and timeline into the
         trip *project_id*, whose item rows are empty.
 
-        *kept_memories* (by public_id) and *kept_journals* (by id) are existing
-        rows the file's entries update in place instead of creating new ones;
+        *kept_memories* (by public_id), *kept_journals*, *kept_people* and
+        *kept_groups* (by id) are existing rows the file's entries update in
+        place instead of creating new ones;
         *companion_journals* are other users' journal entries whose timeline
         items are placed back among the file's by date. Returns the photos
         the in-place updates dropped.
         """
         kept_memories = dict(kept_memories or {})
         kept_journals = dict(kept_journals or {})
+        kept_people = dict(kept_people or {})
+        kept_groups = dict(kept_groups or {})
         removals: List[PhotoRemoval] = []
 
         # 1a. Upsert activities (do NOT overwrite enriched data if row exists)
@@ -345,12 +374,12 @@ class ImportExportMixin:
         # can be re-linked to their group below (issue #50).
         group_id_map: Dict[int, int] = {}
         for group in project.groups:
-            g_row = DBPersonGroup(
-                project_id=project_id,
-                name=group.name,
-                nationalities_json=json.dumps(group.nationalities) if group.nationalities else None,
-                socials_json=json.dumps(group.socials) if group.socials else None,
-            )
+            g_row = kept_groups.pop(group.id, None) if type(group.id) is int else None
+            if g_row is None:
+                g_row = DBPersonGroup(project_id=project_id)
+            g_row.name = group.name
+            g_row.nationalities_json = json.dumps(group.nationalities) if group.nationalities else None
+            g_row.socials_json = json.dumps(group.socials) if group.socials else None
             sess.add(g_row)
             sess.flush()
             if group.id is not None:
@@ -360,21 +389,27 @@ class ImportExportMixin:
         # encounter items can be re-linked below (issue #40).
         person_id_map: Dict[int, int] = {}
         for person in project.people:
-            p_row = DBPerson(
-                project_id=project_id,
-                name=person.name,
-                email=person.email,
-                phone=person.phone,
-                # Mirror the polarsteps handle out of socials so the shared-trip
-                # view keeps working; fall back to any legacy standalone value.
-                polarsteps=polarsteps_from_socials(person.socials) or person.polarsteps,
-                notes=person.notes,
-                avatar_photo=person.avatar_photo,
-                socials_json=json.dumps(person.socials) if person.socials else None,
-                nationalities_json=json.dumps(person.nationalities) if person.nationalities else None,
-                residence=person.residence,
-                group_id=group_id_map.get(person.group_id) if person.group_id is not None else None,
-            )
+            p_row = kept_people.pop(person.id, None) if type(person.id) is int else None
+            if p_row is None:
+                p_row = DBPerson(project_id=project_id)
+            elif p_row.avatar_photo and p_row.avatar_photo != person.avatar_photo:
+                # The file names another avatar (or none): the old one's files go.
+                removals.append(PhotoRemoval(
+                    user_info_id, "people", p_row.id, [p_row.avatar_photo]))
+            p_row.name = person.name
+            p_row.email = person.email
+            p_row.phone = person.phone
+            # Mirror the polarsteps handle out of socials so the shared-trip
+            # view keeps working; fall back to any legacy standalone value.
+            p_row.polarsteps = polarsteps_from_socials(person.socials) or person.polarsteps
+            p_row.notes = person.notes
+            p_row.avatar_photo = person.avatar_photo
+            p_row.socials_json = json.dumps(person.socials) if person.socials else None
+            p_row.nationalities_json = (
+                json.dumps(person.nationalities) if person.nationalities else None)
+            p_row.residence = person.residence
+            p_row.group_id = (
+                group_id_map.get(person.group_id) if person.group_id is not None else None)
             sess.add(p_row)
             sess.flush()
             if person.id is not None:
