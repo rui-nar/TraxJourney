@@ -118,7 +118,7 @@ return.</p>
   <li><strong>Free and paid plans.</strong> The free plan and each paid plan
     come with the limits (number of trips, storage, days per trip) shown on the
     plan page in the app. Prices are shown in euros on the plan page and at
-    checkout.</li>
+    checkout, and include VAT where applicable.</li>
   <li><strong>Billing.</strong> Paid plans are monthly subscriptions, paid in
     advance through Stripe, and renew automatically each month until you
     cancel.</li>
@@ -129,7 +129,17 @@ return.</p>
   <li><strong>Cancelling.</strong> You can cancel at any time from the plan
     page. Your paid plan stays active until the end of the period you have
     paid for, and you then move to the free plan.</li>
-  <li><strong>Refunds.</strong> {{REFUND_POLICY}}</li>
+  <li><strong>Refunds.</strong> At checkout you ask for your paid plan to
+    start immediately and confirm that you have read these terms. If you then
+    withdraw within 14 days of your first purchase (the day your first paid
+    subscription started; renewals, plan changes and later subscriptions do not
+    start a new 14 days), your subscription is cancelled at once and the unused
+    part of the current period is refunded to your payment method, pro rata to
+    the time left and rounded down to the cent. You pay only for the time you
+    used, and nothing is refunded for a period you did not pay for. You can
+    withdraw from the plan page in the app. After those 14 days, cancelling
+    stops the next renewal and there is no refund for the period you have
+    already paid for.</li>
   <li><strong>Failed payments.</strong> If a renewal fails, your plan stays
     active while Stripe retries the payment. If the payment still does not go
     through, the subscription ends and you move to the free plan.</li>
@@ -139,8 +149,10 @@ return.</p>
     until you are back under them or upgrade.</li>
   <li><strong>Price changes.</strong> We will tell you about a price change
     before it applies to your subscription, so you can cancel first.</li>
-  <li><strong>Deleting your account does not cancel your subscription.</strong>
-    Cancel it on the plan page first.</li>
+  <li><strong>Deleting your account cancels your subscription
+    immediately.</strong> Within 14 days of your first purchase, the unused
+    part of the current period is also refunded, as described under Refunds.
+    After those 14 days, nothing is refunded.</li>
 </ul>
 
 <h2>8. Availability, backups and encryption</h2>
