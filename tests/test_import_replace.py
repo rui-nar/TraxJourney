@@ -20,6 +20,7 @@ on the old content gets a conflict instead of overwriting the new one.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -532,7 +533,13 @@ def test_replace_deletes_a_person_the_file_no_longer_has_with_their_avatar(alps)
     assert _usage(engine, ids["owner"]) < usage
 
 
-@pytest.mark.parametrize("sep", ["/", "\\"])
+@pytest.mark.parametrize("sep", [
+    "/",
+    # A path separator only where the OS reads it as one; on POSIX it is an
+    # ordinary character, and the name could not leave the folder anyway.
+    pytest.param("\\", marks=pytest.mark.skipif(
+        sys.platform != "win32", reason="\ separates paths only on Windows")),
+])
 @pytest.mark.parametrize("whose", ["owner", "companion"])
 def test_replace_never_deletes_outside_an_entrys_folder(alps, sep, whose):
     """Names stored before they were checked go through the same
@@ -559,3 +566,73 @@ def test_replace_never_deletes_outside_an_entrys_folder(alps, sep, whose):
 
     assert r.status_code == 201, r.text
     assert all(v.read_bytes() == b"keep me" for v in victims)
+
+
+# ── A person's avatar on replace ─────────────────────────────────────────────
+
+def _person_folder(data_dir, ids, pid) -> Path:
+    return data_dir / "users" / str(ids["owner"]) / "people" / str(pid)
+
+
+def _avatar_of(engine, pid):
+    with Session(engine) as sess:
+        return sess.get(DBPerson, pid).avatar_photo
+
+
+def test_replace_keeps_the_current_avatar_when_the_files_one_is_not_on_disk(alps):
+    """A .traxj carries no image files: an export names the avatar the person
+    had then, which a newer upload has since deleted."""
+    (client, engine, ids, act_as, data_dir), project, lake, share, _dir = alps
+    ann = _rows(engine, DBPerson, project_id=project.id)[0].id
+    _avatar(client, ann)
+    exported = client.get("/api/projects/Alps/export-traxj").content
+    _avatar(client, ann)  # a newer avatar replaces the exported one
+    current = _avatar_of(engine, ann)
+    files = sorted(_person_folder(data_dir, ids, ann).glob("*.jpg"))
+
+    r = _import(client, "Alps", exported, on_conflict="replace")
+
+    assert r.status_code == 201, r.text
+    assert _avatar_of(engine, ann) == current
+    assert sorted(_person_folder(data_dir, ids, ann).glob("*.jpg")) == files
+    assert client.get(f"/api/people/{ann}/avatar").status_code == 200
+
+
+def test_replace_switches_to_the_files_avatar_when_it_is_on_disk(alps):
+    (client, engine, ids, act_as, data_dir), project, lake, share, _dir = alps
+    ann = _rows(engine, DBPerson, project_id=project.id)[0].id
+    _avatar(client, ann)
+    old = _avatar_of(engine, ann)
+    folder = _person_folder(data_dir, ids, ann)
+    other = "00000000-0000-4000-8000-0000000000b2"
+    for suffix in ("", "_thumb"):
+        (folder / f"{other}{suffix}.jpg").write_bytes((folder / f"{old}{suffix}.jpg").read_bytes())
+
+    r = _import(client, "Alps", _doc([], people=[{"id": ann, "name": "Ann",
+                                                  "avatar_photo": other}]),
+                on_conflict="replace")
+
+    assert r.status_code == 201, r.text
+    assert _avatar_of(engine, ann) == other
+    assert sorted(p.name for p in folder.glob("*.jpg")) == [
+        f"{other}.jpg", f"{other}_thumb.jpg"]
+
+
+def test_replace_deletes_a_group_the_file_no_longer_has(alps):
+    (client, engine, ids, act_as, data_dir), project, lake, share, _dir = alps
+    ann = _rows(engine, DBPerson, project_id=project.id)[0].id
+    group = client.post("/api/groups/", json={"project_name": "Alps", "name": "Gone"}).json()["id"]
+    assert client.put(f"/api/groups/{group}/members", json={"person_ids": [ann]}).status_code == 204
+    exported = json.loads(client.get("/api/projects/Alps/export-traxj").content)
+    exported["groups"] = []
+    for p in exported["people"]:
+        p["group_id"] = None
+
+    r = _import(client, "Alps", json.dumps(exported).encode(), on_conflict="replace")
+
+    assert r.status_code == 201, r.text
+    assert _rows(engine, DBPersonGroup, project_id=project.id) == []
+    with Session(engine) as sess:
+        assert sess.get(DBPersonGroup, group) is None
+        assert sess.exec(select(DBPerson).where(DBPerson.group_id == group)).all() == []
+        assert sess.exec(select(DBEncounter).where(DBEncounter.group_id == group)).all() == []

@@ -36,6 +36,7 @@ from src.models.project import Project
 from src.project.local_ids import allocate_local_activity_id
 from src.project.project_io import ProjectIO
 from src.project.repo_core import _compute_low_res_geo, bump_lock_version
+from src.utils.photo_paths import photo_file, photo_folder
 
 
 class ProjectNameTaken(Exception):
@@ -207,7 +208,8 @@ class ImportExportMixin:
         sess.commit()
 
     def replace_project(
-        self, sess: Session, user_info_id: int, name: str, project: Project
+        self, sess: Session, user_info_id: int, name: str, project: Project,
+        *, data_dir: Optional[str] = None,
     ) -> Optional[List["PhotoRemoval"]]:
         """Overwrite the content of the owner's trip *name* with *project*.
 
@@ -227,6 +229,10 @@ class ImportExportMixin:
 
         ``lock_version`` is advanced in SQL before any item row is touched, so
         an editor still open on the old content gets a conflict (issue #397).
+
+        A kept person takes the file's avatar only if that file is already in
+        their folder (*data_dir* is the data root): a .traxj carries no image
+        files, so an export usually names an avatar long replaced.
 
         Returns the photo files the caller must delete once this has
         committed, or None if the trip does not exist (any more).
@@ -324,7 +330,7 @@ class ImportExportMixin:
             sess, user_info_id, project_id, project,
             kept_memories=kept_memories, kept_journals=kept_journals,
             kept_people=kept_people, kept_groups=kept_groups,
-            companion_journals=companion_journals,
+            companion_journals=companion_journals, data_dir=data_dir,
         )
         sess.commit()
         return removals
@@ -337,6 +343,7 @@ class ImportExportMixin:
         kept_people: Optional[Dict[int, DBPerson]] = None,
         kept_groups: Optional[Dict[int, DBPersonGroup]] = None,
         companion_journals: Sequence[DBJournalEntry] = (),
+        data_dir: Optional[str] = None,
     ) -> List["PhotoRemoval"]:
         """Write *project*'s activities, people, groups and timeline into the
         trip *project_id*, whose item rows are empty.
@@ -390,12 +397,22 @@ class ImportExportMixin:
         person_id_map: Dict[int, int] = {}
         for person in project.people:
             p_row = kept_people.pop(person.id, None) if type(person.id) is int else None
+            avatar = person.avatar_photo
             if p_row is None:
                 p_row = DBPerson(project_id=project_id)
-            elif p_row.avatar_photo and p_row.avatar_photo != person.avatar_photo:
-                # The file names another avatar (or none): the old one's files go.
-                removals.append(PhotoRemoval(
-                    user_info_id, "people", p_row.id, [p_row.avatar_photo]))
+            elif p_row.avatar_photo != avatar:
+                # A .traxj carries no image files: switch only to an avatar
+                # already in this person's folder, and only then let the
+                # current one's files go. Otherwise keep the current avatar.
+                found = photo_file(
+                    photo_folder(data_dir, user_info_id, "people", p_row.id), avatar
+                ) if data_dir is not None else None
+                if found is not None and found.exists():
+                    if p_row.avatar_photo:
+                        removals.append(PhotoRemoval(
+                            user_info_id, "people", p_row.id, [p_row.avatar_photo]))
+                else:
+                    avatar = p_row.avatar_photo
             p_row.name = person.name
             p_row.email = person.email
             p_row.phone = person.phone
@@ -403,7 +420,7 @@ class ImportExportMixin:
             # view keeps working; fall back to any legacy standalone value.
             p_row.polarsteps = polarsteps_from_socials(person.socials) or person.polarsteps
             p_row.notes = person.notes
-            p_row.avatar_photo = person.avatar_photo
+            p_row.avatar_photo = avatar
             p_row.socials_json = json.dumps(person.socials) if person.socials else None
             p_row.nationalities_json = (
                 json.dumps(person.nationalities) if person.nationalities else None)

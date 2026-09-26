@@ -208,7 +208,8 @@ async def import_project(
             return _name_conflict(name)
         if taken and on_conflict == "replace":
             # The same trip, new content: no new trip, so no plan limit.
-            removals = _repo.replace_project(sess, user_info_id, name, project)
+            removals = _repo.replace_project(
+                sess, user_info_id, name, project, data_dir=project_shared._DATA_DIR)
         if removals is None:
             # A copy or a new name is a new trip. The storage quota does not
             # apply: nothing lands on disk. The size is bounded by
