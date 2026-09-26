@@ -69,6 +69,14 @@ MOVING_WINDOW_S = 30.0
 #: would hand a two-hour lunch to the ride's moving time.
 MAX_SAMPLE_GAP_S = 300
 
+#: Stamps further than this from every other stamp belong to another clock: a
+#: device that recorded a point before its clock synced stamps it 1970-01-01
+#: (or 1980-01-06, the GPS epoch), and taken at face value that one point made
+#: a morning ride 54 years long (issue #462). Thirty days, because a trip
+#: recorded as one track may well pause for a week, and no stray stamp lands
+#: that close to the real ones.
+MAX_CLOCK_GAP_S = 30 * 24 * 3600
+
 #: GPX ``<type>`` is free text and every tool writes it differently. Mapped into
 #: the types the app draws and colours; anything unrecognised stays None so the
 #: user picks, rather than being handed a confident wrong answer.
@@ -136,21 +144,35 @@ class GpxCandidate:
 
     @property
     def time_span(self) -> Optional[Tuple[datetime, datetime]]:
-        """Earliest and latest stamp, or None if the track has no usable clock.
+        """Earliest and latest stamp of the track's clock, or None if it has
+        no usable one.
 
         Earliest and latest rather than first and last: devices do emit the
         occasional backwards step after a clock resync, and taking the ends
         blindly reports a span shorter than the ride, or none at all.
+
+        The track's clock, not every stamp: sorted, the stamps split wherever
+        :data:`MAX_CLOCK_GAP_S` separates two, and the run holding the most
+        of them (the later on a tie) is the track's. A stray stamp from an
+        unsynced clock is its own run, and is left out.
 
         Everything that needs the track's own times goes through this, so
         the preview and the import cannot disagree about whether a file has
         a usable clock — a disagreement the user meets as a form that
         prefills happily and then refuses to submit.
         """
-        stamps = [t for t in self.times if t is not None]
+        stamps = sorted(t for t in self.times if t is not None)
         if len(stamps) < 2:
             return None
-        first, last = min(stamps), max(stamps)
+        best = (0, 0)                      # (count, start index) of the run
+        start = 0
+        for i in range(1, len(stamps) + 1):
+            if i == len(stamps) or (
+                    stamps[i] - stamps[i - 1]).total_seconds() > MAX_CLOCK_GAP_S:
+                if i - start >= best[0]:
+                    best = (i - start, start)
+                start = i
+        first, last = stamps[best[1]], stamps[best[1] + best[0] - 1]
         return (first, last) if last > first else None
 
     @property

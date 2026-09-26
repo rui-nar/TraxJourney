@@ -8,7 +8,8 @@ sum overflowed to Infinity.
 
 So the app's own writers stay inside the same bounds, or no trip it holds
 could be exported and imported back: a GPX upload or an edited track past
-them is refused as implausible, and an elevation outside them is no reading,
+them is refused as implausible (a span of decades: see
+test_gpx_stray_stamps.py), and an elevation outside them is no reading,
 wherever it comes from. The totals never overflow whatever they sum.
 """
 from __future__ import annotations
@@ -111,22 +112,6 @@ def test_a_gpx_track_past_100000_km_is_refused(app):  # noqa: F811
                     files={"file": ("t.gpx", xml.encode(), "application/gpx+xml")})
     assert r.status_code == 200, r.text
     assert any("100,000 km" in e for c in r.json()["candidates"] for e in c["errors"])
-
-
-def test_a_gpx_track_spanning_decades_is_refused(app):  # noqa: F811
-    client, _ = app
-    stamps = ["1990-01-01T00:00:00Z", "2000-01-01T00:00:00Z", "2030-01-01T00:00:00Z"]
-    pts = "".join(
-        f'<trkpt lat="{45 + i * 0.001}" lon="6.0"><ele>100</ele><time>{t}</time></trkpt>'
-        for i, t in enumerate(stamps))
-    xml = ('<?xml version="1.0"?><gpx version="1.1" creator="t" '
-           'xmlns="http://www.topografix.com/GPX/1/1"><trk><trkseg>'
-           f'{pts}</trkseg></trk></gpx>')
-
-    r = _post_gpx(client, xml, activity_type="Ride")
-
-    assert r.status_code == 422, r.text
-    assert "31 years" in json.dumps(r.json())
 
 
 def test_an_edited_track_past_100000_km_is_refused(app):  # noqa: F811

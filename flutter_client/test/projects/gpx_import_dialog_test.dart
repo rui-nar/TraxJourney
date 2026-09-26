@@ -38,6 +38,7 @@ Map<String, dynamic> _candidate({
   int? movingSeconds = 9810,
   double? gain = 610,
   List<String> errors = const [],
+  List<String> warnings = const [],
 }) =>
     {
       'index': index,
@@ -55,6 +56,7 @@ Map<String, dynamic> _candidate({
       'elevation_gain_estimated': true,
       'polyline': errors.isEmpty ? _outline : null,
       'errors': errors,
+      'warnings': warnings,
     };
 
 String _inspectBody({
@@ -427,6 +429,37 @@ void main() {
         find.byKey(const ValueKey('gpx_outside_trip_notice')), findsOneWidget);
     expect(_confirmButton(tester).onPressed, isNotNull,
         reason: 'importing a ride from the day before a trip is legitimate');
+  });
+
+  testWidgets('a clock that spans decades is a warning, and the times are sent',
+      (tester) async {
+    // Issue #462: a span past 31 years used to be an error, and an error
+    // keeps the user on the pick step, away from the fields that fix it.
+    final recorder = _Recorder();
+    await tester.pumpWidget(_harness(
+      recorder,
+      client: recorder.client(
+          inspect: _inspectBody(candidates: [
+        _candidate(
+            startedAt: '1990-01-01T07:33:00Z',
+            endedAt: '2024-08-12T10:37:00Z',
+            warnings: ['This track spans more than 31 years, which no real '
+                'track does.']),
+      ])),
+    ));
+    await _openAndPick(tester);
+
+    expect(find.byKey(const ValueKey('gpx_candidate_warning')), findsOneWidget);
+    expect(find.textContaining('31 years'), findsOneWidget);
+    expect(_confirmButton(tester).onPressed, isNotNull);
+
+    await tester.tap(find.byKey(const ValueKey('gpx_import_confirm')));
+    await tester.pumpAndSettle();
+
+    // What is on the form is what the import judges, not the file's clock.
+    expect(recorder.sent('date'), isTrue);
+    expect(recorder.field('start_time'), '07:33');
+    expect(recorder.field('end_time'), '10:37');
   });
 
   testWidgets('a date inside the trip is not flagged', (tester) async {

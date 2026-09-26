@@ -57,8 +57,8 @@ from src.models.activity import (
 from src.project.traxj_schema import activity_fault, stored_json_fault
 from src.utils.encryption_check import is_encrypted_envelope
 from src.models.track_edit import (
-    elevation_profile_from_streams, implausible_track, points_to_elevation_profile,
-    points_to_polyline, recompute_track_metrics,
+    elevation_profile_from_streams, implausible_span, implausible_track,
+    points_to_elevation_profile, points_to_polyline, recompute_track_metrics,
 )
 from src.project.local_ids import LocalIdExhausted, allocate_local_activity_id, track_fingerprint
 from src.project.project_repo import bump_lock_version
@@ -125,6 +125,11 @@ class GPXCandidateOut(BaseModel):
     errors: List[str] = Field(
         default_factory=list,
         description="Why this one cannot be imported; empty means it can")
+    warnings: List[str] = Field(
+        default_factory=list,
+        description="What looks wrong but can be put right in review, such as "
+                    "a clock that spans decades: import it with the date and "
+                    "times set")
 
 
 class GPXDuplicateOut(BaseModel):
@@ -626,11 +631,14 @@ def _describe_candidates(found):
         errors = validate_candidate(candidate)
         metrics = (recompute_track_metrics(candidate.points) if not errors
                    else None)
-        implausible = (implausible_track(metrics, candidate.elapsed_seconds)
-                       if metrics else None)
+        # The span only warns: it comes from the file's clock, and the user can
+        # still set the date and times in review. The import judges the times
+        # it is finally given.
+        implausible = implausible_track(metrics, None) if metrics else None
         if implausible is not None:
             errors = [*errors, implausible]
             metrics = None
+        span_warning = implausible_span(candidate.elapsed_seconds) if metrics else None
         span = candidate.time_span
         out.append({
             "index": candidate.index,
@@ -650,6 +658,7 @@ def _describe_candidates(found):
             "elevation_gain_estimated": True,
             "polyline": _preview_polyline(candidate.points) if not errors else None,
             "errors": errors,
+            "warnings": [span_warning] if span_warning else [],
         })
     return out
 

@@ -985,6 +985,13 @@ def implausible_track(metrics: "TrackMetrics", elapsed_s: Optional[float]) -> Op
         return "This track is longer than 100,000 km, which no real track is."
     if metrics.total_elevation_gain > GAIN_MAX_M:
         return "This track climbs more than 10,000 km, which no real track does."
+    return implausible_span(elapsed_s)
+
+
+def implausible_span(elapsed_s: Optional[float]) -> Optional[str]:
+    """Why a track's span is implausible, or None. Separate from the rest of
+    :func:`implausible_track` because it depends on the times alone, which the
+    user may still correct before the track is stored."""
     if elapsed_s is not None and elapsed_s > DURATION_MAX_S:
         return "This track spans more than 31 years, which no real track does."
     return None
