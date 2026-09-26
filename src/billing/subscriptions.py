@@ -15,6 +15,7 @@ from sqlmodel import select
 
 from models.billing import Subscription
 from models.user import UserInfo
+from src.billing.entitlements import subscription_is_live
 from src.billing.webhook_events import ScheduleUpdate, SubscriptionUpdate
 from src.utils.logging import get_logger
 
@@ -120,12 +121,22 @@ def is_orphaned(sess, update: SubscriptionUpdate) -> bool:
     return _by_customer(sess, update.customer_id) is None
 
 
+def _about_another_subscription(row: Subscription, update: SubscriptionUpdate) -> bool:
+    """True when both name a subscription and they are not the same one."""
+    return bool(
+        update.subscription_id
+        and row.provider_subscription_id
+        and update.subscription_id != row.provider_subscription_id
+    )
+
+
 def apply_update(sess, update: SubscriptionUpdate) -> bool:
     """Apply one event's state. Returns True when the row changed.
 
     Returns False — without an error — when the event is a duplicate, is older
-    than what we already applied, or cannot be attributed to any account. All
-    three are normal and must still be acknowledged with a 2xx, or Stripe will
+    than what we already applied, cannot be attributed to any account, or is
+    about another subscription than the one tracked and would not replace it.
+    All are normal and must still be acknowledged with a 2xx, or Stripe will
     retry them forever.
     """
     row = resolve_row(sess, update)
@@ -140,6 +151,17 @@ def apply_update(sess, update: SubscriptionUpdate) -> bool:
         return False  # already applied (Stripe redelivery)
     if update.event_at and row.last_event_at and update.event_at < row.last_event_at:
         return False  # out-of-order redelivery of an older event
+    if _about_another_subscription(row, update) and not subscription_is_live(update.status):
+        # The row tracks one subscription. Another one ending must not
+        # overwrite it: a paying user would lose their plan, and account
+        # deletion would read "canceled" while the tracked one still bills
+        # (issue #429). Only a live subscription takes over the row.
+        _log.info(
+            "Webhook %s: %s is %s but %s is the one tracked — ignoring",
+            update.event_id, update.subscription_id, update.status,
+            row.provider_subscription_id,
+        )
+        return False
 
     # A pending change that has now happened is no longer pending. Clearing it
     # on *any* plan move, not just the one that was scheduled, is deliberate:

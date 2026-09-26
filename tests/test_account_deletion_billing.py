@@ -703,9 +703,12 @@ class TestOwnCancellationDuringDeletion:
     ``customer.subscription.deleted``, the webhook recorded "canceled", and the
     re-check then refused a paying user with 409 "billing changed"."""
 
-    @pytest.mark.parametrize("sub_id", ["sub_live", "sub_second"])
+    @pytest.mark.parametrize("sub_id, recorded", [
+        ("sub_live", True),     # the tracked one: recorded as canceled
+        ("sub_second", False),  # another one ending never overwrites the row
+    ])
     def test_the_cancellation_event_does_not_stop_the_deletion(
-        self, file_engine, sub_id,
+        self, file_engine, sub_id, recorded,
     ):
         uid = _seed(file_engine, status="active")
         gw = _CancelThenNotify(file_engine, uid, [_subscription_event(
@@ -715,9 +718,32 @@ class TestOwnCancellationDuringDeletion:
 
         res = _delete_me(uid)
 
-        assert [r.json()["applied"] for r in gw.webhook_results] == [True]
+        assert [r.json()["applied"] for r in gw.webhook_results] == [recorded]
         assert res.status_code == 200, res.text
         assert _everything_gone(file_engine, uid)
+
+    def test_a_new_subscription_is_not_hidden_by_the_old_ones_cancellation(
+        self, file_engine,
+    ):
+        """Review round 4: sub_new starts, then the tracked sub_live's own
+        cancellation arrives. Recording that on the row made it read "the
+        tracked subscription ended" and the deletion went on while sub_new
+        kept billing."""
+        uid = _seed(file_engine, status="active")
+        gw = _CancelThenNotify(file_engine, uid, [
+            _subscription_event("customer.subscription.created", uid,
+                                sub_id="sub_new", status="active",
+                                event_id="evt_new"),
+            _subscription_event("customer.subscription.deleted", uid,
+                                sub_id="sub_live", status="canceled"),
+        ])
+        set_gateway(gw)
+
+        res = _delete_me(uid)
+
+        assert res.status_code == 409, res.text
+        assert res.json()["code"] == "billing_changed"
+        assert _everything_present(file_engine, uid)
 
     def test_a_subscription_that_can_still_bill_still_stops_it(self, file_engine):
         """A new subscription started in the same window must not be deleted
