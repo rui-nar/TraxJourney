@@ -15,28 +15,36 @@ import re
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Any, Dict
+from typing import Annotated, Any, Dict, Literal, Optional
 
 import gpxpy
 import gpxpy.gpx
 import polyline as polyline_lib
 from models.db import get_session
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
-from fastapi.responses import StreamingResponse
+from fastapi import (
+    APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, UploadFile, status,
+)
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
 
 from api.deps import get_current_user
 from api.geo import bust_geo_cache
 from api.project_access import OwnerParam, resolve_project
-from api.project_shared import _DATA_DIR, _repo
+import api.project_shared as project_shared
+from api.project_shared import (
+    _DATA_DIR, _repo, queue_share_tiles_refresh, queue_stats_refresh,
+)
 from src.billing.entitlements import ensure_project_quota
+from src.billing.usage import unlink_and_record
 from src.brand import APP_NAME
 from src.models.great_circle import great_circle_points
 from src.project.project_io import InvalidProjectFile, ProjectIO
+from src.project.repo_transfer import PhotoRemoval, ProjectNameTaken
+from src.utils.logging import request_id_var
 from src.utils.encryption_check import is_encrypted_envelope
-from src.utils.photo_paths import photo_file, photo_folder
+from src.utils.photo_paths import photo_file, photo_files, photo_folder
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -45,6 +53,11 @@ router = APIRouter(prefix="/api/projects", tags=["projects"])
 
 class ImportedOut(BaseModel):
     name: str = Field(description="Name of the imported project")
+    outcome: Literal["created", "copied", "replaced"] = Field(
+        description="created: a new trip under the file's name; copied: a new "
+                    "trip under a de-duplicated name, the file's name being "
+                    "taken; replaced: the content of the trip of that name "
+                    "was overwritten with the file's")
 
 
 # ── Import ────────────────────────────────────────────────────────────────────
@@ -108,9 +121,48 @@ class _CappedUploadRoute(APIRoute):
         return capped
 
 
+def _name_conflict(name: str) -> JSONResponse:
+    """409 for a name the user already has a trip under (issue #452).
+
+    The name travels in its own field for the client to show; the detail
+    leaves it out, since a file name may hold a double quote and the client
+    reads the detail with a pattern that stops at one.
+    """
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={
+            "detail": "You already have a trip with this name.",
+            "code": "name_conflict",
+            "name": name,
+            "request_id": request_id_var.get(),
+        },
+    )
+
+
+def _remove_photos(removals: list[PhotoRemoval]) -> None:
+    """Delete the photo files a replace dropped, once it has committed."""
+    for removal in removals:
+        folder = photo_folder(project_shared._DATA_DIR, removal.user_info_id,
+                              removal.kind, removal.content_id)
+        # Only names that stay inside this entry's own folder (photo_paths).
+        unlink_and_record(removal.user_info_id, photo_files(folder, removal.uuids))
+        if removal.remove_dir and folder.exists():
+            try:
+                folder.rmdir()
+            except OSError:
+                pass  # not empty: left for storage reconciliation
+
+
 async def import_project(
     file: Annotated[UploadFile, File()],
     current_user: Annotated[dict, Depends(get_current_user)],
+    background_tasks: BackgroundTasks,
+    on_conflict: Annotated[Optional[Literal["copy", "replace"]], Query(
+        description="What to do when the name is taken. Absent: refuse with "
+                    "409. copy: import under the first free \"<name> (n)\". "
+                    "replace: overwrite that trip's content with the file's, "
+                    "keeping the trip, its share links and companions.",
+    )] = None,
 ):
     user_info_id = int(current_user["sub"])
 
@@ -134,11 +186,6 @@ async def import_project(
         raise _too_large()
     contents = await file.read()
 
-    # The storage quota does not apply: nothing lands on disk. The size is
-    # bounded by MAX_IMPORT_BYTES instead, whatever the plan (issue #434).
-    with get_session() as sess:
-        ensure_project_quota(sess, user_info_id)
-
     # Only the file's own faults are the uploader's (issue #451): anything else
     # raised while reading it, or during the ingest below, is a server bug and
     # stays a 500.
@@ -151,13 +198,44 @@ async def import_project(
         ) from None
 
     name = fname[: -len(ProjectIO.EXTENSION)]
+    copy = on_conflict == "copy"
+    removals = None
     with get_session() as sess:
-        _repo.ingest_project(sess, user_info_id, name, project)
-    # Re-importing over an existing name replaces its content, so anything
-    # cached under that name is now wrong (issue #178).
-    bust_geo_cache(user_info_id, name)
+        taken = _repo.project_exists(sess, user_info_id, name)
+        # Refused before the plan limit is checked: at the limit the user must
+        # still learn the name is taken and get to choose (issue #452).
+        if taken and on_conflict is None:
+            return _name_conflict(name)
+        if taken and on_conflict == "replace":
+            # The same trip, new content: no new trip, so no plan limit.
+            removals = _repo.replace_project(
+                sess, user_info_id, name, project, data_dir=project_shared._DATA_DIR)
+        if removals is None:
+            # A copy or a new name is a new trip. The storage quota does not
+            # apply: nothing lands on disk. The size is bounded by
+            # MAX_IMPORT_BYTES instead, whatever the plan (issue #434).
+            ensure_project_quota(sess, user_info_id)
+            try:
+                imported = _repo.import_project(
+                    sess, user_info_id, name, project, copy=copy)
+            except ProjectNameTaken:
+                # A concurrent request took the name after the check above.
+                return _name_conflict(name)
+        else:
+            imported = name
+    if removals is not None:
+        _remove_photos(removals)
+        queue_stats_refresh(background_tasks, user_info_id, imported)
+        queue_share_tiles_refresh(background_tasks, user_info_id, imported)
+    # Cached payloads of this name are now wrong: the replaced trip's, or a
+    # deleted trip's of the same name (issue #178).
+    bust_geo_cache(user_info_id, imported)
 
-    return {"name": name, "filename": fname}
+    if removals is not None:
+        outcome = "replaced"
+    else:
+        outcome = "created" if imported == name else "copied"
+    return {"name": imported, "outcome": outcome}
 
 
 router.add_api_route(
@@ -166,6 +244,8 @@ router.add_api_route(
     summary="Import a .traxj file",
     responses={
         400: {"description": "Not a .traxj file, or not a readable trip"},
+        409: {"description": "The name is taken and on_conflict was not given; "
+                             "the body's name field holds it"},
         413: {"description": "The file is larger than MAX_IMPORT_BYTES"},
     },
     route_class_override=_CappedUploadRoute,

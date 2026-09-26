@@ -21,6 +21,13 @@ class DBProject(sqlmodel.SQLModel, table=True):
     """A named journey project owned by one user."""
 
     __tablename__ = "project"
+    # Trips are addressed by (owner, name), so a name names one trip. Checking
+    # a name is free before inserting cannot hold under concurrent requests;
+    # this is what makes the loser fail instead of shadowing the winner
+    # (issue #452). Mirrors migration 5e2b7c1d9a40.
+    __table_args__ = (
+        Index("uq_project_user_name", "user_info_id", "name", unique=True),
+    )
 
     id: Optional[int] = sqlmodel.Field(default=None, primary_key=True)
     user_info_id: int = sqlmodel.Field(foreign_key="userinfo.id", index=True)

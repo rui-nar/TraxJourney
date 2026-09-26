@@ -9,6 +9,20 @@ import '../billing/billing_service.dart';
 import 'project_file.dart';
 import 'projects_service.dart';
 
+/// What to do when an imported trip's name is already taken (issue #452).
+enum ImportConflictChoice {
+  /// Import as a new trip under the first free `<name> (n)`.
+  keepBoth('copy'),
+
+  /// Overwrite the existing trip's content with the file's.
+  replace('replace');
+
+  const ImportConflictChoice(this.queryValue);
+
+  /// The server's `on_conflict` value.
+  final String queryValue;
+}
+
 class ProjectsNotifier extends ChangeNotifier {
   final ProjectsService _service;
 
@@ -16,6 +30,7 @@ class ProjectsNotifier extends ChangeNotifier {
   bool _isLoading = false;
   String? _error;
   QuotaError? _quotaError;
+  String? _nameConflict;
 
   ProjectsNotifier(this._service);
 
@@ -29,6 +44,15 @@ class ProjectsNotifier extends ChangeNotifier {
 
   void clearQuotaError() {
     _quotaError = null;
+  }
+
+  /// The trip name the last import was refused for because the user already
+  /// has a trip called that (409 `name_conflict`, issue #452). Not an error:
+  /// the screen asks whether to keep both or replace, and imports again.
+  String? get nameConflict => _nameConflict;
+
+  void clearNameConflict() {
+    _nameConflict = null;
   }
 
   /// Called by [ChangeNotifierProxyProvider] whenever [AuthNotifier] changes.
@@ -122,23 +146,32 @@ class ProjectsNotifier extends ChangeNotifier {
   }
 
   /// Step 2 of import: upload [bytes] as project [name].
-  /// Returns the saved project name on success, null on failure.
+  /// Returns the saved project name on success, null on failure — or when the
+  /// name is taken and no [onConflict] was given, in which case
+  /// [nameConflict] holds it.
   Future<String?> uploadProjectFile({
     required List<int> bytes,
     required String name,
+    ImportConflictChoice? onConflict,
   }) async {
     _isLoading = true;
     _error = null;
     _quotaError = null;
+    _nameConflict = null;
     notifyListeners();
     try {
-      final data =
-          await _uploadBytes(bytes: bytes, filename: '$name.$kProjectFileExtension');
+      final data = await _uploadBytes(
+          bytes: bytes,
+          filename: '$name.$kProjectFileExtension',
+          onConflict: onConflict);
       await load();
       return data['name'] as String?;
     } on Exception catch (e) {
-      _quotaError = _quota(e);
-      _error = _msg(e);
+      _nameConflict = _conflictName(e);
+      if (_nameConflict == null) {
+        _quotaError = _quota(e);
+        _error = _msg(e);
+      }
       _isLoading = false;
       notifyListeners();
       return null;
@@ -151,11 +184,15 @@ class ProjectsNotifier extends ChangeNotifier {
   Future<Map<String, dynamic>> _uploadBytes({
     required List<int> bytes,
     required String filename,
+    ImportConflictChoice? onConflict,
   }) async {
     final token = api.tokenForUpload;
+    final url = Uri.parse('${api.baseUrl}/api/projects/import');
     final request = http.MultipartRequest(
       'POST',
-      Uri.parse('${api.baseUrl}/api/projects/import'),
+      onConflict == null
+          ? url
+          : url.replace(queryParameters: {'on_conflict': onConflict.queryValue}),
     );
     if (token != null) {
       request.headers['Authorization'] = 'Bearer $token';
@@ -189,6 +226,20 @@ class ProjectsNotifier extends ChangeNotifier {
       return 'This file is too large to import.';
     }
     return s.replaceFirst('Exception: ', '');
+  }
+
+  /// The taken name of a 409 `name_conflict`, or null for any other failure.
+  String? _conflictName(Exception e) {
+    if (e is! ApiException || e.statusCode != 409) return null;
+    try {
+      final body = jsonDecode(e.body);
+      if (body is Map && body['code'] == 'name_conflict' && body['name'] is String) {
+        return body['name'] as String;
+      }
+    } on FormatException {
+      // Not JSON: an ordinary failure.
+    }
+    return null;
   }
 
   /// A plan-limit refusal, or null for any other failure (issue #121).
