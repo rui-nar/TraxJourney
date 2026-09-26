@@ -159,7 +159,15 @@ class StripeGateway:
         return {
             "url": _field(session, "url") or "",
             "customer_id": str(_field(session, "customer") or customer_id or ""),
+            "session_id": str(_field(session, "id") or ""),
         }
+
+    def expire_checkout_session(self, session_id: str) -> None:
+        """Expire one checkout session; see :meth:`_expire_session`."""
+        stripe = _stripe()
+        if not session_id:
+            raise GatewayError("No checkout session to expire")
+        self._expire_session(stripe, session_id)
 
     def create_plan_change_session(
         self, *, customer_id: str, subscription_id: str, plan: str,

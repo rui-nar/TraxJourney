@@ -38,6 +38,7 @@ class FakeGateway:
         self.customer_calls: list[str] = []
         self.subscription_calls: list[str] = []
         self.checkout_calls: list[dict] = []
+        self.expired: list[str] = []
         self.rows_at_cancel: list[bool] = []
 
     def _record(self):
@@ -62,7 +63,13 @@ class FakeGateway:
 
     def create_checkout_session(self, **kwargs):
         self.checkout_calls.append(kwargs)
-        return {"url": "https://pay.test/session", "customer_id": "cus_new"}
+        return {"url": "https://pay.test/session", "customer_id": "cus_new",
+                "session_id": "cs_new"}
+
+    def expire_checkout_session(self, session_id):
+        self.expired.append(session_id)
+        if self.fail:
+            raise GatewayError("provider down")
 
     def parse_webhook(self, payload, signature):
         return self.event
@@ -876,3 +883,77 @@ class TestWebhookDoesNotBlockTheEventLoop:
         assert waited < 1.5, f"/ping waited {waited:.1f}s behind the webhook"
         # And the webhook itself still verifies and applies once the lock frees.
         assert webhook["res"].json() == {"received": True, "applied": True}
+
+
+# ── A checkout racing the deletion ───────────────────────────────────────────
+
+class _DeletedDuringCheckout(FakeGateway):
+    """The account is deleted while Stripe creates its checkout session —
+    fast for a first purchase, which has no customer to settle."""
+
+    def __init__(self, engine, uid, *, fail_expiry=False):
+        super().__init__(engine, cancelled=())
+        self.uid = uid
+        self.fail_expiry = fail_expiry
+        self.deletion = None
+
+    def create_checkout_session(self, **kwargs):
+        result = super().create_checkout_session(**kwargs)
+        self.deletion = _delete_me(self.uid)
+        _as(self.uid)  # the checkout request carries on as that user
+        return result
+
+    def expire_checkout_session(self, session_id):
+        self.expired.append(session_id)
+        if self.fail_expiry:
+            raise GatewayError("provider down")
+
+
+class TestCheckoutRacingTheDeletion:
+    """Review round 4: create_checkout checked the account, called Stripe, and
+    then recorded the new customer on a re-created row for the account the
+    deletion had just removed. The payment's webhook then found that row by
+    customer and applied the purchase instead of cancelling it."""
+
+    @pytest.mark.parametrize("fail_expiry", [False, True])
+    def test_no_billing_state_is_recreated_and_the_page_is_expired(
+        self, file_engine, fail_expiry,
+    ):
+        uid = _seed(file_engine, status="none", customer="", sub_id="")
+        gw = _DeletedDuringCheckout(file_engine, uid, fail_expiry=fail_expiry)
+        set_gateway(gw)
+
+        res = _as(uid).post("/api/billing/checkout", json={"plan": "tier_2"})
+
+        assert gw.deletion.status_code == 200, gw.deletion.text
+        assert res.status_code == 404, res.text
+        assert gw.expired == ["cs_new"]
+        assert _no_subscription_rows(file_engine)
+
+    def test_paying_that_page_anyway_is_still_cancelled(self, file_engine):
+        """If the page could not be expired, the safety net must still see the
+        purchase for what it is."""
+        uid = _seed(file_engine, status="none", customer="", sub_id="")
+        set_gateway(_DeletedDuringCheckout(file_engine, uid, fail_expiry=True))
+        assert _as(uid).post("/api/billing/checkout",
+                             json={"plan": "tier_2"}).status_code == 404
+
+        late = FakeGateway(file_engine, event=_checkout_completed(uid))
+        res = _post_webhook(late)
+
+        assert res.json() == {"received": True, "applied": False}
+        assert late.customer_calls == ["cus_new"]
+        assert _no_subscription_rows(file_engine)
+
+    def test_a_live_account_still_gets_its_customer_recorded(self, file_engine):
+        uid = _seed(file_engine, status="none", customer="", sub_id="")
+        gw = FakeGateway(file_engine)
+        set_gateway(gw)
+
+        res = _as(uid).post("/api/billing/checkout", json={"plan": "tier_2"})
+
+        assert res.status_code == 200, res.text
+        assert gw.expired == []
+        with Session(file_engine) as sess:
+            row = sess.exec(select(Subscription)).one()
+            assert (row.user_info_id, row.provider_customer_id) == (uid, "cus_new")

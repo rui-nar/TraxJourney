@@ -26,7 +26,19 @@ class BillingGateway(Protocol):
         self, *, user_info_id: int, plan: str, email: str, customer_id: str,
         success_url: str, cancel_url: str,
     ) -> dict:
-        """Start a subscription purchase. Returns ``{"url", "customer_id"}``."""
+        """Start a subscription purchase.
+
+        Returns ``{"url", "customer_id", "session_id"}``; ``session_id`` is
+        what :meth:`expire_checkout_session` takes.
+        """
+
+    def expire_checkout_session(self, session_id: str) -> None:
+        """Make a checkout page unpayable. A session already closed is fine.
+
+        Used when the account it was opened for is deleted before the page is
+        even handed out (issue #429). Raises :class:`GatewayError` when it may
+        still be open.
+        """
 
     def create_portal_session(self, *, customer_id: str, return_url: str) -> dict:
         """Open the provider's billing portal. Returns ``{"url"}``."""

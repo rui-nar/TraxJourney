@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from api.deps import get_current_user
+from models.billing import Subscription
 from models.db import get_session
 from models.user import UserInfo
 from src.billing import subscriptions as subs
@@ -252,15 +253,47 @@ def create_checkout(
 
     # Remember the customer id now: the user may abandon checkout, and next time
     # we want to reuse the same provider customer rather than create a second.
+    #
+    # Under the account's lock, and only if the account survived the Stripe
+    # call (issue #429): a deletion can commit meanwhile, and writing the row
+    # then re-creates billing state for an account that no longer exists —
+    # which the webhook safety net would take for a live account's purchase
+    # and apply instead of cancelling.
     new_customer = result.get("customer_id") or ""
-    if new_customer and new_customer != customer_id:
-        with get_session() as sess:
-            row = subs.get_or_create(sess, user_info_id)
+    with get_session() as sess:
+        subs.lock_account(sess, user_info_id)
+        still_there = sess.get(UserInfo, user_info_id) is not None
+        if still_there and new_customer and new_customer != customer_id:
+            # Not get_or_create: it commits a new row on its own, which would
+            # let go of the lock before the customer is written.
+            row = (subs.get_subscription(sess, user_info_id)
+                   or Subscription(user_info_id=user_info_id))
             row.provider_customer_id = new_customer
             sess.add(row)
             sess.commit()
+        else:
+            sess.rollback()
+    if not still_there:
+        _abandon_checkout(gateway, result.get("session_id") or "", user_info_id)
+        raise HTTPException(status_code=404, detail="User not found")
 
     return CheckoutOut(url=result.get("url") or "")
+
+
+def _abandon_checkout(gateway, session_id: str, user_info_id: int) -> None:
+    """Expire a checkout opened for an account deleted before it was handed out.
+
+    Best effort: if it cannot be expired and is paid anyway, the purchase
+    names a deleted account and a customer nobody holds, which the webhook
+    cancels on arrival (see :func:`_cancel_orphan`).
+    """
+    _log.warning("Checkout %s outlived account %s — expiring it",
+                 session_id or "(no id)", user_info_id)
+    try:
+        gateway.expire_checkout_session(session_id)
+    except GatewayError as exc:
+        _log.warning("Could not expire checkout %s: %s — the webhook cancels "
+                     "it if it is ever paid", session_id, exc)
 
 
 class ChangePlanBody(BaseModel):

@@ -647,3 +647,40 @@ class TestMissingSubscriptionWithAKnownCustomer:
                            customer_error=_missing("customer"))
         with pytest.raises(GatewayError):
             _install(monkeypatch, fake).cancel_subscription("sub_1", "cus_1")
+
+
+class TestExpireCheckoutSession:
+    """Expiring the page opened for an account deleted meanwhile (#429)."""
+
+    def test_the_session_id_is_returned_from_checkout(self, monkeypatch):
+        class _Session:
+            @staticmethod
+            def create(**params):
+                return _obj(id="cs_1", url="https://checkout/cs_1", customer=None)
+
+        fake = types.SimpleNamespace(checkout=types.SimpleNamespace(Session=_Session))
+        monkeypatch.setattr("src.billing.stripe_gateway._stripe", lambda: fake)
+        out = StripeGateway().create_checkout_session(
+            user_info_id=6, plan="tier_2", email="a@b.c", customer_id="",
+            success_url="https://app/ok", cancel_url="https://app/no",
+        )
+        assert out["session_id"] == "cs_1"
+
+    def test_expires_it(self, monkeypatch):
+        fake = _FakeStripe()
+        _install(monkeypatch, fake).expire_checkout_session("cs_1")
+        assert fake.calls("session.expire") == ["cs_1"]
+
+    def test_one_completed_meanwhile_is_fine(self, monkeypatch):
+        import stripe
+        fake = _FakeStripe(
+            expire_error=stripe.InvalidRequestError("not open", None, http_status=400),
+            session_status_after_expire_error="complete")
+        _install(monkeypatch, fake).expire_checkout_session("cs_1")  # no raise
+
+    def test_one_still_open_is_an_error(self, monkeypatch):
+        import stripe
+        fake = _FakeStripe(expire_error=stripe.APIConnectionError("reset"),
+                           session_status_after_expire_error="open")
+        with pytest.raises(GatewayError):
+            _install(monkeypatch, fake).expire_checkout_session("cs_1")
