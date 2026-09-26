@@ -143,8 +143,13 @@ a trip can see each other's display name and profile picture.</p>
 <p>If you buy a paid plan, payment is handled by Stripe. We send Stripe your
 email address, your TraxJourney account ID and the plan you chose, and we store the
 Stripe customer and subscription identifiers, your plan, its status, when the
-current period ends and any change you have scheduled. Your card details are
-entered on Stripe's own pages and never reach our servers.</p>
+current period ends and any change you have scheduled. To show that you agreed
+to the service starting straight away, and to handle a withdrawal, we also
+store when your current subscription started, when you accepted the terms at
+checkout and which version of them you saw, and when you asked to withdraw.
+Where VAT applies, Stripe asks for your billing address to work it out; Stripe
+keeps it and we do not store it. Your card details are entered on Stripe's own
+pages and never reach our servers.</p>
 
 <h3>Usage of storage and share links</h3>
 <ul>
@@ -319,9 +324,11 @@ network. We may also disclose data where the law requires it.</p>
   <li><strong>Delete it:</strong> <em>Settings → Delete account</em> permanently
     deletes your account, your trips, photos, memories, journal entries, people,
     comments and likes, and your Strava and Polarsteps connections, straight
-    away. Deleting your account does
-    not cancel a paid subscription at Stripe: cancel it first with <em>Cancel subscription</em> on
-    your plan page.</li>
+    away. If you have a paid plan, deleting your account first cancels it at
+    Stripe immediately, so you are not charged again, and refunds the unused
+    part of the current period if you are still within your withdrawal period
+    (see the terms). If the cancellation cannot be completed, your account is
+    not deleted and nothing is removed.</li>
   <li><strong>Withdraw consent</strong> for a connected service at any time by
     disconnecting it.</li>
 </ul>
