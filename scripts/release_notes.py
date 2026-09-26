@@ -39,9 +39,13 @@ REPO_URL = "https://github.com/rui-nar/TraxJourney"
 # the app" from "what changed on the server", because one tag ships both the
 # Flutter client and the FastAPI backend and the two have different readers.
 # `internal` never reaches the reader's sections at all.
+#
+# An audience of None keeps the label but reads the audience from the changed
+# paths, for a scope whose commits land on either side: billing ships plan-page
+# changes in the app and webhook fixes on the server alone.
 APP, SERVER, INTERNAL = "app", "server", "internal"
 
-AREAS: dict[str, tuple[str, str]] = {
+AREAS: dict[str, tuple[str, Optional[str]]] = {
     "e2ee": ("Encryption", APP),
     "encryption": ("Encryption", APP),
     "encounters": ("People & encounters", APP),
@@ -90,7 +94,7 @@ AREAS: dict[str, tuple[str, str]] = {
     "client": ("Web app", APP),
     "android": ("Android app", APP),
     "landing": ("Home page", APP),
-    "billing": ("Plans & billing", APP),
+    "billing": ("Plans & billing", None),
     "api": ("API", SERVER),
     "db": ("Database", SERVER),
     "alembic": ("Database", SERVER),
@@ -189,15 +193,17 @@ def _classify(scope: Optional[str], files: Iterable[str]) -> tuple[str, str]:
     doesn't, which tree the commit touched is the next best signal — anything
     under flutter_client/ is something a user can see.
     """
+    # No scope means no area label — under an "In the app" heading, a generic
+    # "**App** —" prefix on every bullet is noise.
+    label = scope.split(",")[0].strip().title() if scope else ""
     if scope:
         # `fix(map,stats)` — take the first, that's the primary area.
         primary = scope.split(",")[0].strip().lower()
         if primary in AREAS:
-            return AREAS[primary]
+            label, audience = AREAS[primary]
+            if audience is not None:
+                return label, audience
 
-    # No scope means no area label — under an "In the app" heading, a generic
-    # "**App** —" prefix on every bullet is noise.
-    label = scope.split(",")[0].strip().title() if scope else ""
     paths = list(files)
     if any(p.startswith("flutter_client/") for p in paths):
         return label, APP
