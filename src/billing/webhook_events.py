@@ -59,9 +59,10 @@ class SubscriptionUpdate:
     cancel_at_period_end: bool
     user_info_id: int | None = None
     #: When the subscription this event describes started being paid for, or 0
-    #: when the event does not show a paid subscription (issue #441). Only the
-    #: *first* one an account ever reports is kept — it opens the withdrawal
-    #: window — so a renewal or a plan change repeating it changes nothing.
+    #: when the event does not show a paid subscription (issue #441). It starts
+    #: a contract, and a withdrawal window, only for a subscription that began
+    #: while no other was running (``subscriptions._starts_a_contract``); a
+    #: renewal or a plan change repeating it changes nothing.
     paid_since: float = 0.0
     #: When the buyer ticked the terms box at checkout (express consent to
     #: start at once, and the withdrawal terms), and which wording it was.

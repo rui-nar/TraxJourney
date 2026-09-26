@@ -15,6 +15,7 @@ from __future__ import annotations
 import shutil
 import time
 
+from sqlalchemy import update
 from sqlmodel import Session, select
 
 from models.project_db import (
@@ -51,9 +52,9 @@ from models.user import (
 from src.project.repo_core import bump_lock_version
 from src.admin import storage as _storage_mod
 from src.billing.gateway import GatewayError, get_gateway
-from src.billing.refunds import withdrawal_window_open
+from src.billing.refunds import withdrawal_checked_at, withdrawal_window_open
 from src.billing.subscriptions import lock_account
-from src.billing.withdrawal import refund_unused_period
+from src.billing.withdrawal import settle_ended_subscription
 from src.exceptions.errors import AccountDeletionRefused
 from src.utils.logging import get_logger
 
@@ -142,59 +143,119 @@ def cancel_live_subscription(sess: Session, user_info_id: int) -> list[str]:
         ) from exc
 
 
+def _window_state(sess: Session, user_info_id: int) -> tuple | None:
+    """``(customer, contract start, contract subscription, requested at)``.
+
+    Read as columns, fresh from the database, not off an ORM row the session
+    may have loaded earlier with attributes a webhook has since changed.
+    """
+    row = sess.execute(
+        select(
+            Subscription.provider_customer_id,
+            Subscription.contract_started_at,
+            Subscription.contract_subscription_id,
+            Subscription.withdrawal_requested_at,
+        ).where(Subscription.user_info_id == user_info_id)
+    ).first()
+    return tuple(row) if row is not None else None
+
+
+def _record_withdrawal_request(sess: Session, user_info_id: int, now: float) -> None:
+    """Stamp ``withdrawal_requested_at`` unless already set; commit (#441).
+
+    Under the account's lock, and committed before the caller calls Stripe, so
+    it survives whatever happens next.
+    """
+    lock_account(sess, user_info_id)
+    sess.execute(
+        update(Subscription)
+        .where(Subscription.user_info_id == user_info_id,
+               Subscription.withdrawal_requested_at == 0)
+        .values(withdrawal_requested_at=now)
+    )
+    sess.commit()
+
+
+def record_deletion_request(sess: Session, user_info_id: int, now: float) -> None:
+    """A deletion inside the window is a withdrawal request: record it first.
+
+    Before anything is cancelled, so that if the refund then fails and the
+    deletion is retried after the deadline, the retry still refunds.
+    """
+    state = _window_state(sess, user_info_id)
+    if state is None:
+        return
+    _customer, start, subscription_id, requested = state
+    if requested or not subscription_id or not withdrawal_window_open(start, now):
+        return
+    _record_withdrawal_request(sess, user_info_id, now)
+
+
 def refund_inside_window(sess: Session, user_info_id: int, now: float) -> None:
     """Refund pro rata what deletion cancelled, inside the withdrawal window (#441).
 
     Runs after :func:`cancel_live_subscription` and before any row is deleted.
-    Outside the 14 days after the first purchase it does nothing: deleting then
-    only cancels. Inside them, every subscription of the customer that ended
-    since that purchase gets its unused part refunded — asked of the provider,
-    not taken from what this attempt cancelled, because on a retry after a
-    failed refund there is nothing left to cancel and the subscription must
-    still be found. A subscription already refunded (withdrawn from earlier, or
-    by the failed attempt) is not refunded again: the refund is made under one
-    idempotency key per subscription (``src.billing.withdrawal``).
+    Outside the window it does nothing: deleting then only cancels. Inside it,
+    the current contract's subscription gets its pending invoice items removed
+    and its unused part refunded. The contract is read from our row, so a retry
+    after a failed refund finds it even though nothing is left to cancel; the
+    window is judged when the deletion was first asked for
+    (:func:`record_deletion_request`), so that retry works after the deadline
+    too. A subscription already refunded (withdrawn from earlier, or by the
+    failed attempt) is not refunded again (``src.billing.withdrawal``).
+
+    When the row has no contract start yet — the payment's webhook has not
+    arrived — the start is taken from Stripe: the customer's most recently
+    started subscription.
 
     Raises :class:`AccountDeletionRefused` (502) if a refund fails, with nothing
-    deleted, so the user can retry. Writes nothing.
+    deleted, so the user can retry.
     """
-    row = sess.exec(
-        select(Subscription).where(Subscription.user_info_id == user_info_id)
-    ).first()
-    if row is None or not withdrawal_window_open(row.initial_paid_at, now):
+    state = _window_state(sess, user_info_id)
+    if state is None:
         return
-    # Every webhook that records a purchase names the customer, so a row
-    # inside the window always has one.
-    customer_id = row.provider_customer_id or ""
+    customer_id, start, subscription_id, requested = state
+    # Every webhook that records a purchase names the customer, so a contract
+    # always has one.
     if not customer_id:
+        return
+    at = withdrawal_checked_at(now, requested)
+    if start and (not subscription_id or not withdrawal_window_open(start, at)):
         return
     gateway = get_gateway()
     if gateway is None:
-        # Only reachable when nothing may still bill (cancel_live_subscription
-        # refused otherwise) and billing has since been switched off.
-        _log.warning(
-            "Deletion of account %s inside the withdrawal window: billing is "
-            "not configured, so customer %s must be refunded by hand",
-            user_info_id, customer_id,
-        )
+        if start:
+            # Only reachable when nothing may still bill (cancel_live_
+            # subscription refused otherwise) and billing was switched off.
+            _log.warning(
+                "Deletion of account %s inside the withdrawal window: billing "
+                "is not configured, so customer %s must be refunded by hand",
+                user_info_id, customer_id,
+            )
         return
     try:
-        for subscription_id in gateway.subscriptions_ended_since(
-            customer_id, row.initial_paid_at
-        ):
-            refund = refund_unused_period(gateway, subscription_id)
-            if refund.amount_cents:
-                _log.info("Deletion of account %s refunded %s %s for %s",
-                          user_info_id, refund.amount_cents, refund.currency,
-                          subscription_id)
+        if not start:
+            latest = gateway.latest_subscription(customer_id)
+            if latest is None:
+                return
+            subscription_id, start = latest
+            if not withdrawal_window_open(start, at):
+                return
+            if not requested:
+                _record_withdrawal_request(sess, user_info_id, now)
+        refund = settle_ended_subscription(gateway, customer_id, subscription_id)
     except GatewayError as exc:
         _log.warning("Deletion of account %s: refund failed: %s", user_info_id, exc)
         raise AccountDeletionRefused(
             "Your paid plan was cancelled, but the refund for the unused part "
             "could not be issued, so the account was not deleted. Please try "
-            "again in a few minutes. You will not be refunded twice.",
+            "again later: your request is recorded, and you will not be "
+            "refunded twice.",
             status_code=502, code="refund_failed",
         ) from exc
+    if refund.amount_cents:
+        _log.info("Deletion of account %s refunded %s %s for %s", user_info_id,
+                  refund.amount_cents, refund.currency, subscription_id)
 
 
 def _billing_state(sess: Session, user_info_id: int) -> tuple | None:
@@ -246,8 +307,10 @@ def delete_user_and_data(sess: Session, user_info_id: int) -> None:
     :func:`purge_user_files` afterwards, outside any DB session.
     """
     settled = _billing_state(sess, user_info_id)
+    now = time.time()
+    record_deletion_request(sess, user_info_id, now)
     cancel_live_subscription(sess, user_info_id)
-    refund_inside_window(sess, user_info_id, time.time())
+    refund_inside_window(sess, user_info_id, now)
     # Stripe was called without holding any lock (never hold SQLite's write
     # lock across the network). A webhook can land in that window and record
     # a first purchase on the row — a customer this deletion never cancelled.

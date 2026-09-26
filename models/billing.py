@@ -55,22 +55,30 @@ class Subscription(sqlmodel.SQLModel, table=True):
     # Provider timestamp of the last applied event, so a redelivered *older*
     # event cannot move state backwards (webhooks arrive out of order).
     last_event_at: float = sqlmodel.Field(default=0.0)
-    # Start of the account's first paid subscription, unix seconds (issue
-    # #441). The 14-day withdrawal window runs from here. Written once by the
-    # first webhook that reports a paid subscription and never moved after:
-    # renewals and plan changes do not reopen the window. 0 = none on record,
-    # which means no window. Accounts that had already subscribed when this was
-    # added were given 1.0 by the migration: their purchase date is not known
-    # here, so their window is closed.
-    initial_paid_at: float = sqlmodel.Field(default=0.0)
+    # The current contract (issue #441): the subscription that started while
+    # no other subscription of the account was running, and when it started
+    # being paid for, unix seconds. The withdrawal window runs from its day.
+    # Renewals and plan changes keep the same subscription, so they never move
+    # it; a new subscription after the previous one ended starts a new one.
+    # 0 = none on record, which means no window. Subscriptions already running
+    # when this shipped were given 1.0 by the migration (window closed).
+    contract_started_at: float = sqlmodel.Field(default=0.0)
+    contract_subscription_id: str = sqlmodel.Field(default="")
+    # When a withdrawal (or an account deletion) inside the window was first
+    # asked for, unix seconds. Written, and committed, before Stripe is called,
+    # so a request whose refund fails can still be completed after the
+    # deadline. Cleared when a new contract starts.
+    withdrawal_requested_at: float = sqlmodel.Field(default=0.0)
     # Proof of the express consent collected at checkout (issue #441): when
     # the buyer ticked the terms box, and which wording of the withdrawal
     # terms (refunds.WITHDRAWAL_TERMS_VERSION) that box stood for. The latest
     # purchase's; Stripe keeps every session's own record too.
     terms_accepted_at: float = sqlmodel.Field(default=0.0)
     terms_version: str = sqlmodel.Field(default="")
-    # When the user last withdrew through POST /api/billing/withdraw (#441).
+    # When the user last withdrew through POST /api/billing/withdraw (#441),
+    # and from which subscription: the withdrawal is done for that one only.
     withdrawn_at: float = sqlmodel.Field(default=0.0)
+    withdrawn_subscription_id: str = sqlmodel.Field(default="")
     updated_at: float = sqlmodel.Field(default_factory=time.time)
 
 

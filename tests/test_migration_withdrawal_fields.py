@@ -72,9 +72,10 @@ def _seed(cfg) -> None:
         conn.commit()
 
 
-def test_it_is_the_single_head():
+def test_it_follows_the_account_id_migration():
+    """The single head is 3828d92db32c, which follows this one; see
+    test_migration_withdrawal_per_contract.py."""
     script = ScriptDirectory.from_config(Config(str(_PROJECT_ROOT / "alembic.ini")))
-    assert script.get_heads() == [_REVISION]
     assert script.get_revision(_REVISION).down_revision == _BEFORE
 
 

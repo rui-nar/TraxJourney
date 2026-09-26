@@ -44,12 +44,16 @@ from src.billing.entitlements import (
 )
 from src.billing.gateway import GatewayError, get_gateway
 from src.billing.plans import FREE, PAID_PLANS, catalogue
-from src.billing.refunds import withdrawal_window_closes_at, withdrawal_window_open
+from src.billing.refunds import (
+    withdrawal_checked_at,
+    withdrawal_window_closes_at,
+    withdrawal_window_open,
+)
 from src.billing.webhook_events import (
     schedule_update_from_event,
     subscription_update_from_event,
 )
-from src.billing.withdrawal import refund_quote, refund_unused_period
+from src.billing.withdrawal import refund_quote, settle_ended_subscription
 from src.utils.logging import get_logger
 
 _log = get_logger(__name__)
@@ -107,13 +111,15 @@ class BillingMeOut(BaseModel):
     withdrawal_open: bool = Field(
         default=False,
         description="True while withdrawing refunds the unused part of the "
-                    "current period (14 days from the first purchase) and "
-                    "there is a subscription to withdraw from",
+                    "current period — until the end of the 14th day (UTC) "
+                    "after the current subscription started, or later for a "
+                    "withdrawal asked for in time — and it has not been "
+                    "withdrawn from yet",
     )
     withdrawal_closes_at: float = Field(
         default=0.0,
-        description="When the withdrawal window closes, unix seconds; 0 when "
-                    "no purchase is on record",
+        description="The first instant the window is closed (midnight UTC), "
+                    "unix seconds; 0 when no subscription start is on record",
     )
     limits: dict
     usage: UsageOut
@@ -179,7 +185,7 @@ def billing_me(current_user: Annotated[dict, Depends(get_current_user)]):
         pending_plan_at=(row.pending_plan_at if row and pending else 0.0),
         withdrawal_open=_withdrawal_offered(row, time.time()),
         withdrawal_closes_at=(
-            withdrawal_window_closes_at(row.initial_paid_at) if row else 0.0
+            withdrawal_window_closes_at(row.contract_started_at) if row else 0.0
         ),
         limits=limits.as_dict(),
         usage=usage,
@@ -449,43 +455,72 @@ class WithdrawalOut(BaseModel):
 def _withdrawal_offered(row: Subscription | None, now: float) -> bool:
     """Whether the app offers "Withdraw and get a refund" right now.
 
-    A live subscription inside the window — or one that ended inside it and
-    has not been withdrawn from: that is what a refund which failed after the
-    cancellation looks like, and the user must be able to try it again.
+    While the contract's window is open — judged when the withdrawal was first
+    asked for, if it was — and that contract's subscription has not been
+    withdrawn from. That includes one that already ended: it is what a refund
+    which failed after the cancellation looks like, and the user must be able
+    to try again, even past the deadline.
     """
-    if row is None or not billing_enabled() or not row.provider_subscription_id:
+    if row is None or not billing_enabled() or not row.contract_subscription_id:
         return False
-    if not withdrawal_window_open(row.initial_paid_at, now):
+    at = withdrawal_checked_at(now, row.withdrawal_requested_at)
+    if not withdrawal_window_open(row.contract_started_at, at):
         return False
-    return subscription_is_live(row.status or "") or not row.withdrawn_at
+    return row.withdrawn_subscription_id != row.contract_subscription_id
 
 
-def _withdrawal_target(user_info_id: int, now: float):
-    """``(customer, subscription, closes_at)``, or the 409 refusing it."""
+def _no_subscription() -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={"detail": "There is no subscription to withdraw from.",
+                 "code": NOT_SUBSCRIBED},
+    )
+
+
+def _window_closed() -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={
+            "detail": "The 14-day withdrawal period for this subscription has "
+                      "ended, so there is no refund. You can still cancel from "
+                      "the billing portal: your plan then stays until the end "
+                      "of the period you paid for, and is not renewed.",
+            "code": WITHDRAWAL_WINDOW_CLOSED,
+        },
+    )
+
+
+def _withdrawal_target(user_info_id: int, now: float, *, record: bool):
+    """``(customer, subscription, closes_at)``, or the 409 refusing it.
+
+    The subscription is the current contract's: the window belongs to it. With
+    ``record``, the request is written — and committed, under the account's
+    lock — before anything is asked of Stripe, so that a request made inside
+    the window can still be completed after it if Stripe fails meanwhile.
+    """
     with get_session() as sess:
+        if record:
+            subs.lock_account(sess, user_info_id)
         row = subs.get_subscription(sess, user_info_id)
-        customer_id = row.provider_customer_id if row else ""
-        subscription_id = row.provider_subscription_id if row else ""
-        initial_paid_at = row.initial_paid_at if row else 0.0
-    if not subscription_id:
-        return JSONResponse(
-            status_code=status.HTTP_409_CONFLICT,
-            content={"detail": "There is no subscription to withdraw from.",
-                     "code": NOT_SUBSCRIBED},
-        )
-    if not withdrawal_window_open(initial_paid_at, now):
-        return JSONResponse(
-            status_code=status.HTTP_409_CONFLICT,
-            content={
-                "detail": "The 14-day withdrawal period after your first "
-                          "purchase has ended, so there is no refund. You can "
-                          "still cancel from the billing portal: your plan "
-                          "then stays until the end of the period you paid "
-                          "for, and is not renewed.",
-                "code": WITHDRAWAL_WINDOW_CLOSED,
-            },
-        )
-    return customer_id, subscription_id, withdrawal_window_closes_at(initial_paid_at)
+        if row is None or not (row.contract_subscription_id or row.provider_subscription_id):
+            sess.rollback()
+            return _no_subscription()
+        at = withdrawal_checked_at(now, row.withdrawal_requested_at)
+        if not row.contract_subscription_id or not withdrawal_window_open(
+            row.contract_started_at, at
+        ):
+            sess.rollback()
+            return _window_closed()
+        target = (row.provider_customer_id, row.contract_subscription_id,
+                  withdrawal_window_closes_at(row.contract_started_at))
+        if record and not row.withdrawal_requested_at:
+            row.withdrawal_requested_at = now
+            row.updated_at = time.time()
+            sess.add(row)
+            sess.commit()
+        else:
+            sess.rollback()
+    return target
 
 
 @router.get("/withdraw", response_model=WithdrawalQuoteOut,
@@ -494,7 +529,7 @@ def withdrawal_quote(current_user: Annotated[dict, Depends(get_current_user)]):
     """Estimate for the confirmation dialog, from the invoice at the provider."""
     gateway = _require_gateway()
     now = time.time()
-    target = _withdrawal_target(int(current_user["sub"]), now)
+    target = _withdrawal_target(int(current_user["sub"]), now, record=False)
     if isinstance(target, JSONResponse):
         return target
     _customer_id, subscription_id, closes_at = target
@@ -512,20 +547,21 @@ def withdrawal_quote(current_user: Annotated[dict, Depends(get_current_user)]):
 def withdraw(current_user: Annotated[dict, Depends(get_current_user)]):
     """Cancel immediately and refund the unused part, inside the window (#441).
 
-    Cancel first, then refund — see :mod:`src.billing.withdrawal` for why, and
-    for what makes a retry safe: cancelling again is a no-op, and the refund is
-    made under one idempotency key per subscription, shared with account
-    deletion. A call that fails after cancelling can be repeated; so can one
-    that succeeded, which reports the refund already made.
+    1. Record the request (``withdrawal_requested_at``) under the account's
+       lock, and commit: from then on this contract's withdrawal is judged at
+       that instant, however late it completes.
+    2. Cancel, drop the subscription's pending invoice items, refund — see
+       :mod:`src.billing.withdrawal` for the order and for what makes a retry
+       safe. None of these holds the lock (issue #429's discipline).
+    3. Record the result under the lock.
 
-    Stripe is never called while the account's lock is held. The lock is only
-    taken to record the withdrawal once both calls are done, the same
-    discipline as account deletion (issue #429).
+    A call that fails after cancelling can be repeated, before or after the
+    deadline; so can one that succeeded, which reports the refund made.
     """
     gateway = _require_gateway()
     user_info_id = int(current_user["sub"])
     now = time.time()
-    target = _withdrawal_target(user_info_id, now)
+    target = _withdrawal_target(user_info_id, now, record=True)
     if isinstance(target, JSONResponse):
         return target
     customer_id, subscription_id, _closes_at = target
@@ -537,21 +573,25 @@ def withdraw(current_user: Annotated[dict, Depends(get_current_user)]):
         raise HTTPException(
             status_code=502,
             detail="Your subscription could not be cancelled, so nothing was "
-                   "refunded. Please try again in a few minutes.",
+                   "refunded. Your request is recorded: please try again in a "
+                   "few minutes.",
         )
     try:
-        refund = refund_unused_period(gateway, subscription_id)
+        refund = settle_ended_subscription(gateway, customer_id, subscription_id)
     except GatewayError as exc:
         _log.error(
             "Withdrawal: %s was cancelled but the refund failed: %s — the user "
-            "can retry; if they do not, refund it by hand", subscription_id, exc,
+            "can retry, also after the deadline; if they do not, refund it by "
+            "hand", subscription_id, exc,
         )
         return JSONResponse(
             status_code=status.HTTP_502_BAD_GATEWAY,
             content={
                 "detail": "Your subscription was cancelled, but the refund "
-                          "could not be issued yet. Please try again in a few "
-                          "minutes. You will not be refunded twice.",
+                          "could not be issued yet. Please try again later — "
+                          "your request is recorded, so the 14-day limit does "
+                          "not stop the retry, and you will not be refunded "
+                          "twice.",
                 "code": REFUND_FAILED,
             },
         )
@@ -559,25 +599,29 @@ def withdraw(current_user: Annotated[dict, Depends(get_current_user)]):
     with get_session() as sess:
         subs.lock_account(sess, user_info_id)
         row = subs.get_subscription(sess, user_info_id)
-        if row is not None and row.provider_subscription_id == subscription_id:
+        if row is not None and row.contract_subscription_id == subscription_id:
             row.withdrawn_at = now
-            # What customer.subscription.deleted will say, recorded now: the
-            # refund was only made because Stripe reports the subscription
-            # ended. Waiting for the webhook would show the paid plan — and
-            # the withdraw action — on the page the app reloads straight away.
-            row.status = "canceled"
-            row.plan = FREE
-            row.cancel_at_period_end = False
-            row.pending_plan = ""
-            row.pending_plan_at = 0.0
+            row.withdrawn_subscription_id = subscription_id
+            if row.provider_subscription_id == subscription_id:
+                # What customer.subscription.deleted will say, recorded now:
+                # the refund was only made because Stripe reports the
+                # subscription ended. Waiting for the webhook would show the
+                # paid plan on the page the app reloads straight away.
+                row.status = "canceled"
+                row.plan = FREE
+                row.cancel_at_period_end = False
+                row.pending_plan = ""
+                row.pending_plan_at = 0.0
             row.updated_at = time.time()
             sess.add(row)
             sess.commit()
         else:
-            sess.rollback()  # deleted meanwhile, or another subscription now
+            sess.rollback()  # deleted meanwhile, or a new contract since
     _log.info("Withdrawal: account %s withdrew from %s, refunded %s %s",
               user_info_id, subscription_id, refund.amount_cents, refund.currency)
     return WithdrawalOut(refunded_cents=refund.amount_cents, currency=refund.currency)
+
+
 
 
 #: Events announcing a subscription that has just started. One that belongs to

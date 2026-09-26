@@ -1,47 +1,65 @@
 """Withdrawal window and pro-rata refund arithmetic (issue #441). Pure.
 
-The policy the owner set on 2026-09-23 (not legal advice; see docs/BILLING.md):
+The policy the owner set on 2026-09-23 and refined on 2026-09-26 (not legal
+advice; see docs/BILLING.md):
 
 * Checkout collects the buyer's express consent to start the service at once.
-* Withdrawing within 14 days of the **initial** purchase — the start of the
-  account's first paid subscription, not a renewal or a plan change — refunds
-  the unused part of the current period, pro rata.
+* Each **contract** — a subscription started while no other subscription of the
+  account was running — can be withdrawn from until the end of the 14th day
+  after the day it started (UTC), and the unused part of the current period is
+  refunded pro rata. Renewals and plan changes do not start a new contract.
 * After that, cancelling only stops the renewal. No refund.
 * Deleting the account cancels at once; inside the window it also refunds.
 
 Every instant here is a unix timestamp in seconds (float), the same unit the
-``Subscription`` model and Stripe's payloads use, so nothing is ever converted
-between timezones.
+``Subscription`` model and Stripe's payloads use. The only calendar arithmetic
+is the deadline's, and it is done in UTC.
 """
 from __future__ import annotations
 
 import math
+from datetime import datetime, time, timedelta, timezone
 
-#: How long after the initial purchase a withdrawal is refunded.
-WITHDRAWAL_WINDOW_SECONDS = 14 * 24 * 60 * 60
+#: Whole calendar days after the day the contract started, in UTC.
+WITHDRAWAL_WINDOW_DAYS = 14
 
 #: Which wording of the withdrawal terms a buyer consented to at checkout.
 #: Stamped into the checkout session's metadata and stored with the consent, so
 #: the proof says what was shown. Bump it whenever the checkout text changes.
-WITHDRAWAL_TERMS_VERSION = "2026-09-26"
+WITHDRAWAL_TERMS_VERSION = "2026-09-26.2"
 
 
-def withdrawal_window_closes_at(initial_start: float) -> float:
-    """When the window closes, or 0 when there is no initial purchase on record."""
-    if not initial_start or initial_start <= 0:
-        return 0.0
-    return initial_start + WITHDRAWAL_WINDOW_SECONDS
+def withdrawal_window_closes_at(contract_start: float) -> float:
+    """The first instant the window is closed, or 0 when no start is on record.
 
-
-def withdrawal_window_open(initial_start: float, now: float) -> bool:
-    """True while a withdrawal is still refunded.
-
-    Open while ``initial_start + 14 days > now``: at exactly 14 days it is
-    closed. No initial purchase on record (0) means no window — that is how an
-    account that subscribed before the purchase date was tracked is treated.
+    The window runs to the end of the 14th day after the day the contract
+    started, in UTC — 23:59:59.999… on (start date + 14 days) — so this is
+    midnight UTC at the start of the day after that.
     """
-    closes_at = withdrawal_window_closes_at(initial_start)
-    return bool(closes_at) and closes_at > now
+    if not contract_start or contract_start <= 0:
+        return 0.0
+    started = datetime.fromtimestamp(contract_start, tz=timezone.utc).date()
+    first_closed_day = started + timedelta(days=WITHDRAWAL_WINDOW_DAYS + 1)
+    return datetime.combine(first_closed_day, time.min, tzinfo=timezone.utc).timestamp()
+
+
+def withdrawal_window_open(contract_start: float, at: float) -> bool:
+    """True while a withdrawal made at ``at`` is still refunded.
+
+    No start on record (0) means no window. So does 1.0, which the migrations
+    write for subscriptions that were already running when this shipped.
+    """
+    closes_at = withdrawal_window_closes_at(contract_start)
+    return bool(closes_at) and at < closes_at
+
+
+def withdrawal_checked_at(now: float, requested_at: float) -> float:
+    """The instant a withdrawal is judged at: when it was first asked for.
+
+    A withdrawal asked for inside the window stays inside it, even when a
+    provider failure means it only completes after the deadline.
+    """
+    return min(now, requested_at) if requested_at and requested_at > 0 else now
 
 
 def prorated_refund_amount(

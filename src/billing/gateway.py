@@ -109,28 +109,37 @@ class BillingGateway(Protocol):
         provider does not know the customer at all.
         """
 
-    def subscriptions_ended_since(self, customer_id: str, since: float) -> list[str]:
-        """Ids of ``customer_id``'s subscriptions that ended at or after ``since``.
+    def latest_subscription(self, customer_id: str) -> tuple[str, float] | None:
+        """``(id, start)`` of the customer's most recently started paid-for
+        subscription, or None (#441).
 
-        What account deletion refunds inside the withdrawal window (#441). Asked
-        of the provider rather than taken from :meth:`cancel_all_for_customer`'s
-        answer, so a retry after a failed refund still finds the subscription
-        the first attempt cancelled.
+        Only for when our row has no contract start on record — its webhook has
+        not arrived yet — and account deletion must still decide the window.
+        """
+
+    def discard_pending_items(self, customer_id: str, subscription_id: str) -> int:
+        """Delete the customer's not-yet-invoiced items from ``subscription_id``.
+
+        An upgrade's prorated difference waits as a pending invoice item for
+        the next renewal. After a withdrawal or a deletion there is none, and
+        the item must not be billed on some later invoice (#441). Returns how
+        many were deleted. Raises :class:`GatewayError` on failure.
         """
 
     def refund_basis(self, subscription_id: str) -> RefundBasis:
         """The provider's facts a pro-rata refund is computed from (#441)."""
 
     def refund_unused(
-        self, subscription_id: str, amount_cents: int, idempotency_key: str
+        self, subscription_id: str, amount_cents: int, refund_key: str
     ) -> int:
-        """Refund ``amount_cents`` of the latest paid invoice's payment (#441).
+        """Refund up to ``amount_cents`` of the latest paid invoice (#441).
 
-        Returns the amount refunded under ``idempotency_key``, which may be one
-        made by an earlier call: the key is sent to the provider (so a retry
-        within its expiry is deduplicated there) and stamped on the refund (so
-        one after it is found and not repeated). Never refunds more than is
-        left unrefunded on the payment. Raises :class:`GatewayError` on failure.
+        ``amount_cents`` is the *total* the subscription's unused period is
+        owed: every refund already made on that payment — by an earlier call,
+        or by hand in the dashboard — counts towards it, so only the rest is
+        refunded. ``refund_key`` is stamped on what this creates, and one found
+        carrying it means the work is done. Returns the amount refunded under
+        the key (0 when nothing was left). Raises :class:`GatewayError`.
         """
 
 

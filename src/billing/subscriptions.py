@@ -130,18 +130,36 @@ def _about_another_subscription(row: Subscription, update: SubscriptionUpdate) -
     )
 
 
+def _starts_a_contract(row: Subscription, update: SubscriptionUpdate) -> bool:
+    """True when this paid event opens a new contract (see below)."""
+    if not update.paid_since or not update.subscription_id:
+        return False
+    if update.subscription_id == row.contract_subscription_id:
+        return False  # a renewal or a plan change of the contract in force
+    other = row.provider_subscription_id
+    other_running = (bool(other) and other != update.subscription_id
+                     and subscription_is_live(row.status or ""))
+    return not other_running
+
+
 def _record_purchase_facts(row: Subscription, update: SubscriptionUpdate) -> bool:
     """Record what the event proves about the purchase. True when it changed.
 
-    * The first paid start ever reported opens the withdrawal window (#441) and
-      is never moved afterwards — not by a renewal, a plan change, or a later
-      subscription — so the window cannot be reopened.
+    * A subscription becoming paid while no *other* subscription of the account
+      is running starts a new contract, and with it a new withdrawal window
+      (#441, owner decision 2026-09-26). The contract is that subscription's:
+      its renewals and plan changes keep the same id, so they never move it. A
+      second subscription bought while one is still live does not start one.
     * The checkout consent is the latest one given; an older one arriving late
       does not replace it.
     """
     changed = False
-    if update.paid_since and not row.initial_paid_at:
-        row.initial_paid_at = update.paid_since
+    if _starts_a_contract(row, update):
+        row.contract_started_at = update.paid_since
+        row.contract_subscription_id = update.subscription_id
+        # A withdrawal asked for under the previous contract says nothing
+        # about this one.
+        row.withdrawal_requested_at = 0.0
         changed = True
     if update.terms_accepted_at and update.terms_accepted_at > (row.terms_accepted_at or 0):
         row.terms_accepted_at = update.terms_accepted_at

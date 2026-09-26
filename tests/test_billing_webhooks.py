@@ -649,19 +649,23 @@ class TestPurchaseFactsMapping:
         assert update.terms_accepted_at == 0 and update.terms_version == ""
 
 
-class TestInitialPurchaseIsSetOnce:
-    """The window runs from the first paid subscription and nothing moves it."""
+class TestContractStart:
+    """The window runs from the start of the current contract (owner decision
+    2026-09-26): a subscription that became paid while no other was running.
+    Renewals and plan changes keep the contract; a new subscription after the
+    previous one ended starts a new one."""
 
-    def test_the_first_paid_event_sets_it(self, sess):
+    def test_the_first_paid_event_starts_a_contract(self, sess):
         apply_update(sess, _update(paid_since=950.0))
-        assert _committed(sess).initial_paid_at == 950.0
+        row = _committed(sess)
+        assert (row.contract_started_at, row.contract_subscription_id) == (950.0, "sub_1")
 
     def test_a_renewal_does_not_move_it(self, sess):
         apply_update(sess, _update(paid_since=950.0))
         apply_update(sess, _update(event_id="evt_2", event_at=3_000_000.0,
                                    current_period_end=6_000_000.0,
                                    paid_since=950.0 + 2_592_000))
-        assert _committed(sess).initial_paid_at == 950.0
+        assert _committed(sess).contract_started_at == 950.0
 
     def test_a_plan_change_does_not_move_it(self, sess):
         apply_update(sess, _update(paid_since=950.0))
@@ -669,32 +673,53 @@ class TestInitialPurchaseIsSetOnce:
                                    plan=TIER_3, paid_since=1900.0))
         row = _committed(sess)
         assert row.plan == TIER_3
-        assert row.initial_paid_at == 950.0
+        assert row.contract_started_at == 950.0
 
-    def test_a_later_subscription_does_not_reopen_it(self, sess):
+    def test_a_new_subscription_after_the_last_ended_starts_a_new_contract(self, sess):
         apply_update(sess, _update(paid_since=950.0))
         apply_update(sess, _update(event_id="evt_2", event_at=2000.0,
                                    status="canceled", plan=FREE))
+        row = get_subscription(sess, 1)
+        row.withdrawal_requested_at = 1500.0  # asked under the old contract
+        sess.add(row)
+        sess.commit()
         apply_update(sess, _update(event_id="evt_3", event_at=9_000_000.0,
                                    subscription_id="sub_2",
                                    paid_since=9_000_000.0))
         row = _committed(sess)
-        assert row.provider_subscription_id == "sub_2"
-        assert row.initial_paid_at == 950.0
+        assert (row.contract_started_at, row.contract_subscription_id) == (
+            9_000_000.0, "sub_2")
+        assert row.withdrawal_requested_at == 0  # belonged to the old contract
 
-    def test_an_event_that_is_not_paid_leaves_it_unset(self, sess):
+    def test_a_second_subscription_while_one_is_live_does_not(self, sess):
+        apply_update(sess, _update(paid_since=950.0))
+        apply_update(sess, _update(event_id="evt_2", event_at=2000.0,
+                                   subscription_id="sub_2", paid_since=2000.0))
+        row = _committed(sess)
+        assert (row.contract_started_at, row.contract_subscription_id) == (950.0, "sub_1")
+
+    def test_the_checkout_and_subscription_events_of_one_purchase_agree(self, sess):
+        """Both carry the start; the second must not move the first."""
+        apply_update(sess, _update(event_id="evt_co", event_at=1000.0,
+                                   paid_since=1000.0))
+        apply_update(sess, _update(event_id="evt_sub", event_at=1001.0,
+                                   paid_since=998.0))
+        assert _committed(sess).contract_started_at == 1000.0
+
+    def test_an_event_that_is_not_paid_starts_nothing(self, sess):
         apply_update(sess, _update(status="trialing"))
-        assert _committed(sess).initial_paid_at == 0
+        assert _committed(sess).contract_started_at == 0
 
-    def test_the_backfilled_value_is_never_replaced(self, sess):
-        """Migration 2d5c660f9f6e closes pre-existing subscribers' window with
-        1.0; their next webhook must not open it."""
+    def test_a_backfilled_contract_is_never_reopened_by_its_renewals(self, sess):
+        """Migration 3828d92db32c gives a subscription already running when
+        this shipped a contract started at 1.0; its renewals keep it closed."""
         sess.add(Subscription(user_info_id=1, status="active",
                               provider_subscription_id="sub_1",
-                              initial_paid_at=1.0))
+                              contract_subscription_id="sub_1",
+                              contract_started_at=1.0))
         sess.commit()
         apply_update(sess, _update(paid_since=1_780_000_000.0))
-        assert _committed(sess).initial_paid_at == 1.0
+        assert _committed(sess).contract_started_at == 1.0
 
     def test_recorded_even_when_the_event_arrives_out_of_order(self, sess):
         """A stale event is not applied, but what it proves still holds."""
@@ -703,8 +728,9 @@ class TestInitialPurchaseIsSetOnce:
         assert apply_update(sess, _update(event_id="evt_1", event_at=1000.0,
                                           paid_since=950.0)) is True
         row = _committed(sess)
-        assert row.initial_paid_at == 950.0
+        assert row.contract_started_at == 950.0
         assert row.status == "past_due"  # the stale state was not applied
+
 
 
 class TestConsentIsKept:

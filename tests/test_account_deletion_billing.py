@@ -61,6 +61,11 @@ class FakeGateway:
         self.subscription_calls.append(subscription_id)
         self._record()
 
+    def latest_subscription(self, customer_id):
+        # Asked only for a row with no contract start on record (#441); these
+        # tests are about cancelling, so there is nothing paid to refund.
+        return None
+
     def create_checkout_session(self, **kwargs):
         self.checkout_calls.append(kwargs)
         return {"url": "https://pay.test/session", "customer_id": "cus_new",

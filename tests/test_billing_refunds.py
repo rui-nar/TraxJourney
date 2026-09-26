@@ -1,50 +1,87 @@
 """The withdrawal window and the pro-rata refund arithmetic (issue #441).
 
-Pure functions, so every boundary the policy names is pinned exactly: open on
-day 0, open one second before 14 days, closed at exactly 14 days and after.
+Pure functions, so every boundary the policy names is pinned exactly. The
+window runs to the end of the 14th calendar day after the day the contract
+started, in UTC (owner decision, 2026-09-26): open at 23:59:59.999 UTC on that
+day, closed at the midnight that follows — whatever time of day it started.
 """
 from __future__ import annotations
+
+from datetime import datetime, timezone
 
 import pytest
 
 from src.billing.refunds import (
-    WITHDRAWAL_WINDOW_SECONDS,
     prorated_refund_amount,
+    withdrawal_checked_at,
     withdrawal_window_closes_at,
     withdrawal_window_open,
 )
 
 DAY = 24 * 60 * 60
-T0 = 1_780_000_000.0  # an arbitrary purchase instant
+
+
+def _utc(*args) -> float:
+    return datetime(*args, tzinfo=timezone.utc).timestamp()
+
+
+T0 = _utc(2026, 9, 10, 15, 30)  # an arbitrary purchase instant
+#: The first instant after the 14th day after 10 September.
+CLOSES = _utc(2026, 9, 25)
+T0_END_OF_WINDOW = _utc(2026, 9, 24, 23, 59, 59, 999000)
 
 
 class TestWindow:
-    def test_is_fourteen_days(self):
-        assert WITHDRAWAL_WINDOW_SECONDS == 14 * DAY
-
     def test_open_at_the_moment_of_purchase(self):
         assert withdrawal_window_open(T0, T0) is True
 
-    def test_open_one_second_before_fourteen_days(self):
-        assert withdrawal_window_open(T0, T0 + 14 * DAY - 1) is True
+    def test_open_on_the_last_instant_of_the_fourteenth_day(self):
+        assert withdrawal_window_open(T0, T0_END_OF_WINDOW) is True
 
-    def test_closed_at_exactly_fourteen_days(self):
-        assert withdrawal_window_open(T0, T0 + 14 * DAY) is False
+    def test_closed_at_the_midnight_after_it(self):
+        assert withdrawal_window_open(T0, CLOSES) is False
 
-    def test_closed_one_second_after_fourteen_days(self):
-        assert withdrawal_window_open(T0, T0 + 14 * DAY + 1) is False
+    def test_closed_one_second_later(self):
+        assert withdrawal_window_open(T0, CLOSES + 1) is False
 
-    @pytest.mark.parametrize("initial", [0, 0.0, -5.0])
-    def test_no_purchase_on_record_means_no_window(self, initial):
-        assert withdrawal_window_open(initial, T0) is False
-        assert withdrawal_window_closes_at(initial) == 0.0
+    def test_still_open_after_exactly_fourteen_days_of_seconds(self):
+        """Counted in calendar days, not in 14 x 86400 s from the purchase."""
+        assert withdrawal_window_open(T0, T0 + 14 * DAY + 1) is True
 
-    def test_a_purchase_from_before_tracking_is_closed(self):
-        """The migration's backfill value (1.0) must never open a window."""
+    @pytest.mark.parametrize("start", [
+        _utc(2026, 9, 10, 0, 0, 0),              # first instant of the day
+        _utc(2026, 9, 10, 23, 59, 59, 999000),   # last instant of the day
+    ])
+    def test_the_time_of_day_of_the_purchase_does_not_matter(self, start):
+        assert withdrawal_window_closes_at(start) == CLOSES
+
+    def test_the_day_is_the_utc_day(self):
+        """23:30 on 9 September in UTC-2 is 01:30 on the 10th in UTC."""
+        assert withdrawal_window_closes_at(_utc(2026, 9, 10, 1, 30)) == CLOSES
+
+    def test_across_a_month_end(self):
+        assert withdrawal_window_closes_at(_utc(2026, 1, 25, 12)) == _utc(2026, 2, 9)
+
+    @pytest.mark.parametrize("start", [0, 0.0, -5.0])
+    def test_no_start_on_record_means_no_window(self, start):
+        assert withdrawal_window_open(start, T0) is False
+        assert withdrawal_window_closes_at(start) == 0.0
+
+    def test_a_subscription_from_before_tracking_is_closed(self):
+        """The migrations' backfill value (1.0) must never open a window."""
         assert withdrawal_window_open(1.0, T0) is False
 
-    def test_closes_at(self):
-        assert withdrawal_window_closes_at(T0) == T0 + 14 * DAY
+
+class TestCheckedAt:
+    def test_a_request_is_judged_when_it_was_first_made(self):
+        assert withdrawal_checked_at(CLOSES + DAY, T0_END_OF_WINDOW) == T0_END_OF_WINDOW
+
+    @pytest.mark.parametrize("requested", [0, 0.0])
+    def test_without_one_it_is_now(self, requested):
+        assert withdrawal_checked_at(CLOSES, requested) == CLOSES
+
+    def test_a_request_stamped_later_than_now_does_not_move_now(self):
+        assert withdrawal_checked_at(T0, T0 + DAY) == T0
 
 
 class TestProratedRefund:

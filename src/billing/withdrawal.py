@@ -1,8 +1,8 @@
 """Refunding the unused part of a cancelled subscription (issue #441).
 
 Shared by ``POST /api/billing/withdraw`` and account deletion, so the two can
-never refund the same subscription twice: both derive the same idempotency key
-from the subscription id, and the amount from the same facts.
+never refund the same subscription twice: both use the same refund key for a
+subscription, and derive the amount from the same facts.
 
 **Cancel first, then refund.** A refund is only ever made for a subscription
 that has already ended at the provider:
@@ -10,11 +10,13 @@ that has already ended at the provider:
 * there is never a refund without a cancellation — the failure the other order
   leaves behind (refunded, still billing) is the one that costs money;
 * the amount is measured at the subscription's ``ended_at``, an instant the
-  provider has recorded, not at "now". A retry therefore computes the same
-  amount as the first attempt, which is what lets it reuse the idempotency key
-  (the provider rejects a key reused with different parameters);
+  provider has recorded, not at "now", so every retry computes the same amount;
 * a failure between the two leaves a cancelled subscription and no refund.
   Cancelling again is a no-op and the refund is simply attempted again.
+
+Between the two, the subscription's pending invoice items are removed: an
+upgrade's prorated difference would otherwise wait on the customer for some
+later invoice.
 """
 from __future__ import annotations
 
@@ -30,14 +32,22 @@ class Refund:
     currency: str
 
 
-def refund_idempotency_key(subscription_id: str) -> str:
-    """The one key a subscription's unused-period refund is ever made under.
+def refund_key(subscription_id: str) -> str:
+    """The key a subscription's unused-period refund is recorded under.
 
-    Derived from the subscription and the purpose alone — not from which route
-    asked — because a subscription has one unused period to refund, whether
-    the user withdrew, deleted the account, or did both.
+    Derived from the subscription and the purpose alone, not from which route
+    asked: a subscription has one unused period to refund, whether the user
+    withdrew, deleted the account, or did both.
     """
     return f"traxjourney-unused-period-refund-{subscription_id}"
+
+
+def settle_ended_subscription(
+    gateway: BillingGateway, customer_id: str, subscription_id: str
+) -> Refund:
+    """After a cancellation: drop pending items, then refund the unused part."""
+    gateway.discard_pending_items(customer_id, subscription_id)
+    return refund_unused_period(gateway, subscription_id)
 
 
 def refund_unused_period(gateway: BillingGateway, subscription_id: str) -> Refund:
@@ -57,9 +67,7 @@ def refund_unused_period(gateway: BillingGateway, subscription_id: str) -> Refun
     )
     if amount <= 0:
         return Refund(0, basis.currency)
-    refunded = gateway.refund_unused(
-        subscription_id, amount, refund_idempotency_key(subscription_id)
-    )
+    refunded = gateway.refund_unused(subscription_id, amount, refund_key(subscription_id))
     return Refund(refunded, basis.currency)
 
 
