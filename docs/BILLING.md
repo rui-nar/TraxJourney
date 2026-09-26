@@ -266,11 +266,17 @@ row (issue #429, `cancel_live_subscription` in `src/auth/account_deletion.py`):
   subscription may still bill but this deployment has no gateway configured.
   Nothing is deleted either way, and retrying is safe.
 - Stripe is called without holding any database lock. The deletion then takes
-  the account's write lock and re-reads the billing row; if a webhook changed
-  it in between (a first purchase completing), it rolls back and answers
-  **409** `billing_changed`, and the retry cancels what that purchase started.
+  the account's write lock and re-reads the billing row. It refuses with
+  **409** `billing_changed` (rolling back; the retry cancels it) only when the
+  change could leave something billing: a new customer (a first purchase
+  completing), or a subscription whose new status can still bill. The
+  `customer.subscription.deleted` its own cancellation triggers is not a
+  reason to refuse. If a concurrent deletion of the same account got the lock
+  first, the second one finds the account gone and reports success.
   Webhooks naming an account take the same lock before reading anything, so a
-  start event arriving mid-deletion waits and then sees the account gone.
+  start event arriving mid-deletion waits and then sees the account gone. That
+  wait (and the Stripe call a webhook may make) runs in the threadpool, off the
+  event loop.
 
 A first purchase has no customer until it is paid, so a checkout page opened
 before the deletion cannot be found then. If it is paid afterwards,
@@ -292,7 +298,9 @@ The account's cached subscription status says it may still bill, but this
 deployment has no Stripe keys, so it cannot ask Stripe or cancel anything.
 This happens when billing was switched off after the account subscribed.
 There is deliberately no force-delete: the one safe way out is to confirm at
-Stripe that nothing bills any more, then record that here.
+Stripe that nothing bills any more, then record that here. A user deleting
+their own account is only told to contact the administrator; the admin panel's
+refusal and a server-log warning point here.
 
 1. Find the account and its billing row in the deployment's database (the
    file `DATABASE_URL` points at, `traxjourney.db` by default):

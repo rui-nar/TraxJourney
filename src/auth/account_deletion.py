@@ -52,6 +52,12 @@ from src.admin import storage as _storage_mod
 from src.billing.gateway import GatewayError, get_gateway
 from src.billing.subscriptions import lock_account
 from src.exceptions.errors import AccountDeletionRefused
+from src.utils.logging import get_logger
+
+_log = get_logger(__name__)
+
+#: Refusal code for "may still bill, and no gateway to cancel it with".
+BILLING_UNAVAILABLE = "billing_unavailable"
 
 #: Provider statuses after which a subscription can never charge again.
 #: Deliberately the complement of "may still bill" rather than a list of live
@@ -106,12 +112,17 @@ def cancel_live_subscription(sess: Session, user_info_id: int) -> list[str]:
             return []
         # 409, not 502: nothing upstream failed and retrying will not help —
         # the server is not in a state where this deletion can be done.
+        _log.warning(
+            "Deletion of account %s refused: status %r may still bill customer "
+            "%r and billing is not configured. Resolve it as described under "
+            "\"Deleting an account\" in docs/BILLING.md.",
+            user_info_id, row.status, customer_id,
+        )
         raise AccountDeletionRefused(
             "This account has a paid plan that this server cannot cancel, "
             "because billing is not configured here. The account was not "
-            "deleted. Please contact the administrator (see \"Deleting an "
-            "account\" in docs/BILLING.md).",
-            status_code=409, code="billing_unavailable",
+            "deleted. Please contact the administrator.",
+            status_code=409, code=BILLING_UNAVAILABLE,
         )
     try:
         if customer_id:
@@ -144,6 +155,28 @@ def _billing_state(sess: Session, user_info_id: int) -> tuple | None:
     return tuple(row) if row is not None else None
 
 
+def _billing_moved(settled: tuple | None, current: tuple | None) -> bool:
+    """True when billing changed in a way that might leave something billing.
+
+    Deletion's own cancellation makes Stripe send
+    ``customer.subscription.deleted``, which can land before the deletion takes
+    the lock and rewrite the row to that (other, or same) subscription as
+    ``canceled``. That is the cancellation succeeding, not a reason to refuse.
+    What must stop the deletion is a customer it never settled, or a
+    subscription left in a state that can still bill. A row that vanished is
+    treated as moved: only a deletion removes it, and a deleted account is
+    caught before this is asked.
+    """
+    if current == settled:
+        return False
+    if current is None:
+        return True
+    customer, _subscription, status = current
+    if customer != (settled[0] if settled else ""):
+        return True
+    return (status or "") not in _ENDED_SUBSCRIPTION_STATUSES
+
+
 def delete_user_and_data(sess: Session, user_info_id: int) -> None:
     """Delete a ``UserInfo`` and every row it owns, directly or via a project.
 
@@ -161,7 +194,16 @@ def delete_user_and_data(sess: Session, user_info_id: int) -> None:
     # So take the lock the webhook takes too, and only go on if billing is
     # still what was settled; otherwise roll back and let the retry cancel it.
     lock_account(sess, user_info_id)
-    if _billing_state(sess, user_info_id) != settled:
+    if sess.execute(
+        select(UserInfo.id).where(UserInfo.id == user_info_id)
+    ).first() is None:
+        # A concurrent deletion of the same account won the lock and has
+        # committed. What this call was asked to do is done; reporting "billing
+        # changed" (or an error at all) would tell the user their account is
+        # still there.
+        sess.rollback()
+        return
+    if _billing_moved(settled, _billing_state(sess, user_info_id)):
         sess.rollback()
         raise AccountDeletionRefused(
             "Your billing changed while the account was being deleted, so "

@@ -22,6 +22,7 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from api.deps import get_current_user
 from models.db import get_session
@@ -416,10 +417,20 @@ async def webhook(request: Request):
     Verification is on the raw body — re-serialising the JSON would change the
     bytes the signature was computed over. Anything we do not act on is still
     answered 2xx: a non-2xx makes the provider retry an event forever.
+
+    Only the body is read here, on the event loop. Everything after it runs in
+    the threadpool: it can wait up to ``busy_timeout`` for an account's write
+    lock and call Stripe, and doing either on the loop would stall every other
+    async endpoint meanwhile (issue #429).
     """
     gateway = _require_gateway()
     payload = await request.body()
     signature = request.headers.get("stripe-signature", "")
+    return await run_in_threadpool(_handle_webhook, gateway, payload, signature)
+
+
+def _handle_webhook(gateway, payload: bytes, signature: str) -> WebhookAck:
+    """The blocking part of :func:`webhook`: verify, then apply."""
     try:
         event = gateway.parse_webhook(payload, signature)
     except GatewayError as exc:

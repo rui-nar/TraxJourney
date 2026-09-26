@@ -621,17 +621,35 @@ def _documented_update() -> str:
 
 class TestNoGatewayEscape:
     """With billing switched off, a cached live status refuses deletion for
-    good — deliberately, with no force flag. The refusal points at the
-    documented way out, and that way out works."""
+    good — deliberately, with no force flag. The documented way out is for
+    the operator: the user is told to ask them, the operator is pointed at it,
+    and that way out works."""
 
-    def test_the_refusal_points_at_the_procedure(self, engine):
+    def test_the_user_is_told_to_ask_the_administrator(self, engine, caplog):
         uid = _seed(engine)
         set_gateway(None)
 
-        detail = _delete_me(uid).json()["detail"]
+        with caplog.at_level("WARNING"):
+            detail = _delete_me(uid).json()["detail"]
 
-        assert "docs/BILLING.md" in detail
-        assert "Deleting an account" in detail
+        # A file path in the repository means nothing to someone deleting
+        # their own account.
+        assert "contact the administrator" in detail
+        assert "docs/" not in detail
+        # The operator finds the way out in the server log.
+        assert any("docs/BILLING.md" in r.getMessage() for r in caplog.records)
+
+    def test_the_admin_is_pointed_at_the_procedure(self, engine):
+        uid = _seed(engine)
+        set_gateway(None)
+
+        res = _admin_delete(engine, uid)
+
+        assert res.status_code == 409
+        assert res.json()["code"] == "billing_unavailable"
+        assert "docs/BILLING.md" in res.json()["detail"]
+        assert "Deleting an account" in res.json()["detail"]
+        assert _everything_present(engine, uid)
 
     def test_the_documented_update_lets_the_deletion_through(self, engine):
         from sqlalchemy import text
@@ -646,3 +664,189 @@ class TestNoGatewayEscape:
 
         assert _delete_me(uid).status_code == 200
         assert _everything_gone(engine, uid)
+
+
+# ── The deletion's own cancellation, and a second deletion ──────────────────
+
+def _post_raw_webhook(event) -> "object":
+    """Deliver one event, keeping the deletion's gateway installed."""
+    from src.billing import gateway as gateway_mod
+
+    deleting = gateway_mod._override
+    set_gateway(FakeGateway(None, event=event))
+    try:
+        return TestClient(app).post("/api/billing/webhook", content=b"{}",
+                                    headers={"stripe-signature": "good"})
+    finally:
+        set_gateway(deleting)
+
+
+class _CancelThenNotify(FakeGateway):
+    """Stripe tells us about the cancellation we just asked for — and the event
+    can arrive before the deletion takes the lock."""
+
+    def __init__(self, engine, uid, events):
+        super().__init__(engine, cancelled=("sub_live",))
+        self.uid = uid
+        self.events = events
+        self.webhook_results = []
+
+    def cancel_all_for_customer(self, customer_id):
+        cancelled = super().cancel_all_for_customer(customer_id)
+        for event in self.events:
+            self.webhook_results.append(_post_raw_webhook(event))
+        return cancelled
+
+
+class TestOwnCancellationDuringDeletion:
+    """Review round 3: the deletion's own cancel produced
+    ``customer.subscription.deleted``, the webhook recorded "canceled", and the
+    re-check then refused a paying user with 409 "billing changed"."""
+
+    @pytest.mark.parametrize("sub_id", ["sub_live", "sub_second"])
+    def test_the_cancellation_event_does_not_stop_the_deletion(
+        self, file_engine, sub_id,
+    ):
+        uid = _seed(file_engine, status="active")
+        gw = _CancelThenNotify(file_engine, uid, [_subscription_event(
+            "customer.subscription.deleted", uid, sub_id=sub_id,
+            status="canceled")])
+        set_gateway(gw)
+
+        res = _delete_me(uid)
+
+        assert [r.json()["applied"] for r in gw.webhook_results] == [True]
+        assert res.status_code == 200, res.text
+        assert _everything_gone(file_engine, uid)
+
+    def test_a_subscription_that_can_still_bill_still_stops_it(self, file_engine):
+        """A new subscription started in the same window must not be deleted
+        past: that is what the re-check exists for."""
+        uid = _seed(file_engine, status="active")
+        gw = _CancelThenNotify(file_engine, uid, [_subscription_event(
+            "customer.subscription.created", uid, sub_id="sub_new",
+            status="active", event_id="evt_new")])
+        set_gateway(gw)
+
+        res = _delete_me(uid)
+
+        assert res.status_code == 409, res.text
+        assert res.json()["code"] == "billing_changed"
+        assert _everything_present(file_engine, uid)
+
+    def test_a_new_customer_still_stops_it(self, file_engine, monkeypatch):
+        """Even an ended subscription: a customer the deletion never settled
+        may hold others."""
+        import src.auth.account_deletion as deletion
+
+        uid = _seed(file_engine, status="none", customer="", sub_id="")
+        gw = _CancelThenNotify(file_engine, uid, [_subscription_event(
+            "customer.subscription.deleted", uid, customer="cus_other",
+            sub_id="sub_x", status="canceled")])
+        set_gateway(gw)
+        # No customer on the row, so deletion never calls the gateway: post the
+        # event from the pre-lock window directly instead.
+        real = deletion.cancel_live_subscription
+
+        def settle_then_notify(sess, user_info_id):
+            out = real(sess, user_info_id)
+            gw.webhook_results.append(_post_raw_webhook(gw.events[0]))
+            return out
+
+        monkeypatch.setattr(deletion, "cancel_live_subscription", settle_then_notify)
+
+        res = _delete_me(uid)
+
+        assert [r.json()["applied"] for r in gw.webhook_results] == [True]
+        assert res.status_code == 409, res.text
+        assert res.json()["code"] == "billing_changed"
+
+
+class TestConcurrentDoubleDeletion:
+    """Two deletions of the same account at once — a double tap, or the user
+    and an admin. The one that loses the lock finds the account gone."""
+
+    def test_the_second_deletion_succeeds_rather_than_reporting_a_change(
+        self, file_engine, monkeypatch,
+    ):
+        import src.auth.account_deletion as deletion
+
+        uid = _seed(file_engine, status="active")
+        set_gateway(FakeGateway(file_engine))
+        both_settled = threading.Barrier(2, timeout=30)
+        real = deletion.cancel_live_subscription
+
+        def settle_together(sess, user_info_id):
+            out = real(sess, user_info_id)
+            both_settled.wait()  # neither has taken the lock yet
+            return out
+
+        monkeypatch.setattr(deletion, "cancel_live_subscription", settle_together)
+        errors = []
+
+        def delete():
+            try:
+                with Session(file_engine) as sess:
+                    deletion.delete_user_and_data(sess, uid)
+            except Exception as exc:  # noqa: BLE001 - reported below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=delete) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+
+        assert errors == []
+        assert _everything_gone(file_engine, uid)
+
+
+class TestWebhookDoesNotBlockTheEventLoop:
+    """The webhook can wait up to busy_timeout for an account's write lock.
+    Doing that on the event loop froze every async endpoint meanwhile."""
+
+    def test_other_requests_are_served_while_it_waits(self, file_engine):
+        import time
+
+        from fastapi import FastAPI
+
+        from api.billing import router as billing_router
+        from src.billing.subscriptions import lock_account
+
+        mini = FastAPI()
+        mini.include_router(billing_router)
+
+        @mini.get("/ping")
+        async def ping():
+            return {"ok": True}
+
+        uid = _seed(file_engine, with_subscription=False)
+        set_gateway(FakeGateway(file_engine, event=_checkout_completed(uid)))
+        webhook = {}
+
+        with TestClient(mini) as client:  # one event loop for every request
+            holder = Session(file_engine)
+            lock_account(holder, uid)  # someone else holds the account lock
+
+            def post():
+                webhook["res"] = client.post(
+                    "/api/billing/webhook", content=b"{}",
+                    headers={"stripe-signature": "good"})
+
+            racer = threading.Thread(target=post)
+            racer.start()
+            time.sleep(0.5)  # let the webhook reach the lock and wait on it
+            release = threading.Timer(3.0, holder.rollback)
+            release.start()
+
+            started = time.monotonic()
+            assert client.get("/ping").json() == {"ok": True}
+            waited = time.monotonic() - started
+
+            release.join()
+            racer.join(timeout=60)
+            holder.close()
+
+        assert waited < 1.5, f"/ping waited {waited:.1f}s behind the webhook"
+        # And the webhook itself still verifies and applies once the lock frees.
+        assert webhook["res"].json() == {"received": True, "applied": True}

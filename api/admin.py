@@ -483,14 +483,31 @@ def delete_user(
             status_code=status.HTTP_409_CONFLICT,
             detail="You cannot delete your own account here.",
         )
-    from src.auth.account_deletion import delete_user_and_data, purge_user_files
+    from src.auth.account_deletion import (
+        BILLING_UNAVAILABLE,
+        delete_user_and_data,
+        purge_user_files,
+    )
+    from src.exceptions.errors import AccountDeletionRefused
 
     with get_session() as sess:
         if sess.get(UserInfo, user_info_id) is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
             )
-        delete_user_and_data(sess, user_info_id)
+        try:
+            delete_user_and_data(sess, user_info_id)
+        except AccountDeletionRefused as exc:
+            if exc.code != BILLING_UNAVAILABLE:
+                raise
+            # The operator is the one who can fix this, so they get the way
+            # out; the user deleting themselves is only told to ask them.
+            raise AccountDeletionRefused(
+                "This user has a paid plan that this server cannot cancel, "
+                "because billing is not configured. Nothing was deleted. To "
+                "resolve it, follow \"Deleting an account\" in docs/BILLING.md.",
+                status_code=exc.status_code, code=exc.code,
+            ) from exc
     purge_user_files(user_info_id)
 
     _log.info("Admin deleted user_info_id=%s", user_info_id)
