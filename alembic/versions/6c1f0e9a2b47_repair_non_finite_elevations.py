@@ -18,19 +18,23 @@ same code (imported from the app, as c4a9e1f70b38 and b7f1a3c9d204 do):
   is filled by distance like a missing ``<ele>``, a sample with no usable
   distance is dropped, and a profile left with no reading becomes NULL. The
   low-res copy the chart loads first is rebuilt from it;
-* on a row whose figures the app computed itself (a GPX upload or an edited
-  track), gain, high and low are recomputed from the repaired profile, as
-  c4a9e1f70b38 recomputes them: they were measured from the same broken
-  readings. A Strava row keeps Strava's own figures;
+* on an uploaded GPX track, whose figures the app measured itself from the
+  same broken readings, gain, high and low are recomputed from the repaired
+  profile, as c4a9e1f70b38 recomputes them, and so is the gain its undo
+  snapshot keeps when that snapshot is repaired. A Strava activity keeps
+  Strava's own figures, and an edited one its share of them (#386);
 * a figure still not finite after that is recomputed from the profile if
   there is one, and otherwise cleared: gain to 0.0 (its NOT NULL column's
   default, what an activity without elevation stores), high and low to NULL,
   the snapshot's gain to NULL (a reset then recomputes it);
 * every trip holding a repaired row has its cached totals dropped and its
-  lock_version advanced, so a client's on-device copy is refetched (#173).
+  lock_version advanced, so a client's on-device copy is refetched (#173);
+  a trip whose cached totals overflowed to Infinity on their own (summing huge
+  but finite figures) has them dropped too.
 
-A profile that is a client-side E2EE envelope is left alone: the server holds
-no key for it (issue #366).
+A profile that is a client-side E2EE envelope is never selected: the server
+holds no key for it (issue #366). Rows are found by id in SQL and read one at
+a time, since this runs at startup and a profile can be megabytes.
 
 Idempotent: a repaired row holds no non-finite value, so a second run finds
 nothing. The downgrade does nothing: the values replaced are not worth
@@ -61,18 +65,37 @@ _PROFILES = ("elevation_profile_json", "elevation_profile_low_res_json",
 _FIGURES = ("total_elevation_gain", "elev_high", "elev_low",
             "original_total_elevation_gain")
 
-#: Finds the rows to look at in SQL, so a database of clean activities is not
-#: read into Python. The JSON tokens json.dumps writes for a non-finite float,
-#: and a REAL past the largest finite double (on PostgreSQL NaN also sorts
-#: above it). Ciphertext can spell a token too: those rows are skipped below.
-_CANDIDATES = (
-    "SELECT id, source, is_edited, " + ", ".join(_PROFILES + _FIGURES)
-    + " FROM activity WHERE "
-    + " OR ".join(f"{c} LIKE '%NaN%' OR {c} LIKE '%Infinity%'" for c in _PROFILES)
-    + " OR "
-    + " OR ".join(f"{c} > 1.7976931348623157e308 OR {c} < -1.7976931348623157e308"
-                  for c in _FIGURES)
-)
+def _candidate_ids(bind) -> list:
+    """The ids of the rows to repair, found in SQL so that no clean or
+    encrypted profile is read into Python.
+
+    A plaintext profile is a JSON object, so it starts with ``{``; an E2EE
+    envelope starts with ``v1.`` and is never selected. Within a plaintext
+    profile, the tokens json.dumps writes for a non-finite float, matched
+    case-sensitively: SQLite's LIKE ignores ASCII case, and base64 spells
+    "nan" often. And a REAL past the largest finite double (on PostgreSQL
+    NaN also sorts above it).
+    """
+    if bind.dialect.name == "sqlite":
+        def has(col, token):
+            return f"{col} GLOB '*{token}*'"
+        plain = "GLOB '{*'"
+    else:
+        def has(col, token):
+            return f"{col} LIKE '%{token}%'"
+        plain = "LIKE '{%'"
+    profiles = " OR ".join(
+        f"({c} {plain} AND ({has(c, 'NaN')} OR {has(c, 'Infinity')}))"
+        for c in _PROFILES)
+    figures = " OR ".join(
+        f"{c} > 1.7976931348623157e308 OR {c} < -1.7976931348623157e308"
+        for c in _FIGURES)
+    return [r[0] for r in bind.execute(sa.text(
+        f"SELECT id FROM activity WHERE {profiles} OR {figures} ORDER BY id"))]
+
+
+_ROW = ("SELECT id, source, is_edited, " + ", ".join(_PROFILES + _FIGURES)
+        + " FROM activity WHERE id = :id")
 
 
 def _finite(value) -> bool:
@@ -115,7 +138,9 @@ def upgrade() -> None:
 
     bind = op.get_bind()
     repaired_ids = []
-    for row in bind.execute(sa.text(_CANDIDATES)).mappings().all():
+    # One row at a time: this runs at startup, and a profile can be megabytes.
+    for row_id in _candidate_ids(bind):
+        row = bind.execute(sa.text(_ROW), {"id": row_id}).mappings().one()
         values = {c: row[c] for c in _PROFILES + _FIGURES}
         profiles = {}
         for col in ("elevation_profile_json", "original_elevation_profile_json"):
@@ -145,9 +170,16 @@ def upgrade() -> None:
                 values["elevation_profile_low_res_json"] = _low_res(current)
 
         gain, high, low_ = _figures(current)
-        app_measured = row["source"] == "gpx" or bool(row["is_edited"])
+        # Only an uploaded GPX track's figures were measured by the app, from
+        # the readings being repaired. A Strava activity's are Strava's own,
+        # and an edited one keeps its share of them (#386).
+        app_measured = row["source"] == "gpx"
         if "elevation_profile_json" in profiles and app_measured:
             values.update(total_elevation_gain=gain, elev_high=high, elev_low=low_)
+        if "original_elevation_profile_json" in profiles and app_measured:
+            original = profiles["original_elevation_profile_json"]
+            values["original_total_elevation_gain"] = (
+                _figures(original)[0] if original else None)
         if not _finite(values["total_elevation_gain"]):
             values["total_elevation_gain"] = gain
         if not _finite(values["elev_high"]):
@@ -170,6 +202,12 @@ def upgrade() -> None:
         repaired_ids.append(row["id"])
 
     _tell_the_trips(bind, repaired_ids)
+    # Cached totals can overflow on their own, summing huge but finite
+    # figures: a cache, so dropping it is enough (readers recompute on NULL).
+    has = "GLOB '*{}*'" if bind.dialect.name == "sqlite" else "LIKE '%{}%'"
+    bind.execute(sa.text(
+        "UPDATE project SET stats_json = NULL WHERE stats_json "
+        + has.format("Infinity") + " OR stats_json " + has.format("NaN")))
     _log.info("non-finite elevation repair: %d activities repaired", len(repaired_ids))
 
 

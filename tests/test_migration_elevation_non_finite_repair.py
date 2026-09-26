@@ -10,8 +10,10 @@ already stored, to exactly what they would store now.
 Builds a throwaway SQLite DB up to the revision before the repair, seeds one
 row per case, runs it, and checks who was repaired and who was left alone.
 """
+import importlib.util
 import json
 import math
+import tracemalloc
 from pathlib import Path
 
 import pytest
@@ -32,6 +34,8 @@ _INF, _NAN = float("inf"), float("nan")
 _DISTANCES = [i * 0.01 for i in range(40)]
 _CLEAN = [500.0 + (i % 10) * 2.0 for i in range(40)]
 _ENVELOPE = "v1.NaNInfinity.Y2lwaGVyTmFO"   # ciphertext may spell anything
+#: SQLite's LIKE ignores ASCII case, so "nan" in base64 matched '%NaN%'.
+_LOWER_ENVELOPE = "v1.bmFuYW5hbmFu.aW5maW5pdHluYW4"
 
 
 def _broken(*positions, value=_NAN):
@@ -121,13 +125,130 @@ def seeded(tmp_path, monkeypatch):
         elevation_profile_low_res_json=_profile([_NAN] * 40), total_elevation_gain=0.0,
         elev_high=None, elev_low=None)
 
+    # 8: a GPX upload whose totals are finite but wrong: measured from the
+    #    NaN reading (comparisons with NaN are all false). Only the recompute
+    #    of app-measured rows can fix them; nothing about them is non-finite.
+    act(8, source="gpx", elevation_profile_json=_profile(_broken(4)),
+        total_elevation_gain=0.0, elev_high=9999.0, elev_low=-5.0)
+    # 9: an edited Strava activity: since #386 its gain is its share of
+    #    Strava's own, and a NaN in its profile does not make that wrong.
+    act(9, source=None, is_edited=True, elevation_profile_json=_profile(_broken(6)),
+        total_elevation_gain=33.0, elev_high=518.0, elev_low=500.0)
+    # 10: an edited GPX upload whose undo snapshot holds a NaN: the gain the
+    #     snapshot keeps was measured from it too, so a reset would restore it.
+    act(10, source="gpx", is_edited=True, elevation_profile_json=_profile(_CLEAN),
+        original_elevation_profile_json=_profile(_broken(8)),
+        original_total_elevation_gain=77.0)
+    # 11: ciphertext whose letters spell "nan" and "infinity" in lower case.
+    act(11, is_edited=True, elevation_profile_json=_LOWER_ENVELOPE,
+        elevation_profile_low_res_json=_LOWER_ENVELOPE)
+
     for pid, aid in ((1, 1), (2, 6)):
         _seed_row(engine, "project", DBProject(
             id=pid, user_info_id=1, name=f"trip{pid}", lock_version=5,
             stats_json=json.dumps({"total_elev_m": 1.0})))
         _seed_row(engine, "projectitem", DBProjectItem(
             project_id=pid, position=0, item_type="activity", activity_id=aid))
+    # 3: a trip whose cached totals overflowed (two huge but finite
+    #    distances), with no activity to repair.
+    _seed_row(engine, "project", DBProject(
+        id=3, user_info_id=1, name="trip3", lock_version=5,
+        stats_json='{"total_distance_m": Infinity}'))
     return cfg, engine
+
+
+def _migration():
+    path = _PROJECT_ROOT / "alembic" / "versions" / f"{_REPAIR_REV}_repair_non_finite_elevations.py"
+    spec = importlib.util.spec_from_file_location("repair_migration", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_only_plaintext_rows_are_candidates(seeded):
+    """Ciphertext is never selected, whatever letters it holds, so the
+    startup scan does not load every encrypted profile into memory."""
+    _, engine = seeded
+    with engine.connect() as conn:
+        ids = set(_migration()._candidate_ids(conn))
+
+    assert ids == {1, -2, 3, 4, 7, 8, 9, 10}
+
+
+def test_an_app_measured_row_with_finite_but_wrong_totals_is_recomputed(seeded):
+    cfg, engine = seeded
+    command.upgrade(cfg, _REPAIR_REV)
+    row = _rows(engine)[8]
+
+    dists, elevs = _expected(_broken(4))
+    assert row["total_elevation_gain"] == pytest.approx(elevation_gain(elevs, dists))
+    assert (row["elev_high"], row["elev_low"]) == (max(elevs), min(elevs))
+
+
+def test_an_edited_strava_activity_keeps_its_share_of_stravas_gain(seeded):
+    cfg, engine = seeded
+    command.upgrade(cfg, _REPAIR_REV)
+    row = _rows(engine)[9]
+
+    assert json.loads(row["elevation_profile_json"])["elevations_m"] == _expected(_broken(6))[1]
+    assert (row["total_elevation_gain"], row["elev_high"], row["elev_low"]) == (33.0, 518.0, 500.0)
+
+
+def test_an_edited_gpx_upload_gets_its_snapshot_gain_remeasured(seeded):
+    cfg, engine = seeded
+    command.upgrade(cfg, _REPAIR_REV)
+    row = _rows(engine)[10]
+
+    dists, elevs = _expected(_broken(8))
+    assert row["original_total_elevation_gain"] == pytest.approx(elevation_gain(elevs, dists))
+    assert row["total_elevation_gain"] == 40.0   # its own profile was clean
+
+
+def test_cached_totals_holding_a_non_finite_number_are_dropped(seeded):
+    cfg, engine = seeded
+    command.upgrade(cfg, _REPAIR_REV)
+
+    assert _projects(engine)[3] == (None, 5)
+
+
+def test_rows_are_read_one_at_a_time(tmp_path, monkeypatch):
+    """The repair runs at startup, in a process with little memory to spare:
+    it must not hold every candidate row at once."""
+    db_path = tmp_path / "many.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path.as_posix()}")
+    cfg = _cfg(db_path)
+    command.upgrade(cfg, _PREV_REV)
+    engine = create_engine(f"sqlite:///{db_path.as_posix()}")
+    n = 20_000
+    dists = [i * 0.01 for i in range(n)]
+    elevs = [500.0 + (i % 50) for i in range(n)]
+    elevs[n // 2] = _NAN
+    big = _profile(elevs, dists)
+    tbl = Table("activity", MetaData(), autoload_with=engine)
+    rows = 40
+    with engine.begin() as conn:
+        for aid in range(1, rows + 1):
+            data = {k: v for k, v in DBActivity(
+                id=aid, user_info_id=1, name="x", type="Ride", source="gpx",
+                elevation_profile_json=big, elevation_profile_low_res_json=big,
+            ).__dict__.items() if not k.startswith("_sa_") and k in tbl.columns}
+            conn.execute(insert(tbl), data)
+    engine.dispose()
+    stored = rows * 2 * len(big)
+
+    tracemalloc.start()
+    try:
+        command.upgrade(cfg, _REPAIR_REV)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak < stored / 4, (peak, stored)
+    check = create_engine(f"sqlite:///{db_path.as_posix()}")
+    with check.connect() as conn:
+        left = conn.execute(text(
+            "SELECT count(*) FROM activity WHERE elevation_profile_json GLOB '*NaN*'")).scalar()
+    assert left == 0
 
 
 def test_it_is_the_single_head():
@@ -196,6 +317,7 @@ def test_encrypted_and_clean_rows_are_untouched(seeded):
 
     assert after[5] == before[5]
     assert after[6] == before[6]
+    assert after[11] == before[11]
 
 
 def test_no_stored_value_is_left_non_finite(seeded):
