@@ -302,3 +302,70 @@ def test_a_day_note_that_is_not_finite_is_still_refused(env):
     doc["day_meta"] = {"2024-06-01": {"journal": float("nan")}}
 
     assert _import(client, _bytes(doc)).status_code == 400
+
+
+@pytest.mark.parametrize("parent", [[1], {"id": 1}], ids=["list", "object"])
+def test_a_split_parent_that_is_not_an_id_is_refused_not_a_500(env, parent):
+    client, _ = env
+    doc = _trip(source=None, split_parent_id=parent)
+
+    r = _import(client, _bytes(doc))
+
+    assert r.status_code == 400, r.text
+    assert "activities[0].split_parent_id" in r.json()["detail"]
+
+
+def _chain(n):
+    """n pieces, each split out of the one before, the first a GPX upload."""
+    acts = [{"id": 1, "source": "gpx", "total_elevation_gain": 1.0}]
+    acts += [{"id": i, "source": None, "split_parent_id": i - 1,
+              "total_elevation_gain": 1.0} for i in range(2, n + 1)]
+    return {"items": [], "activities": acts}
+
+
+def test_finding_a_split_family_s_source_takes_linear_time():
+    import time
+    from src.project import traxj_schema
+
+    def cost(n):
+        doc = _chain(n)
+        began = time.perf_counter()
+        traxj_schema.normalise(doc)
+        return time.perf_counter() - began
+
+    cost(500)
+    small = min(cost(2_000) for _ in range(3))
+    large = min(cost(4_000) for _ in range(3))
+    assert large / small < 3.0, (small, large)
+
+
+def test_a_loop_of_split_parents_ends(env):
+    """Two pieces each naming the other as its parent: not a chain the app
+    writes, but reading it must end."""
+    import threading
+    client, _ = env
+    doc = _trip(source=None, split_parent_id=-7)
+    other = copy.deepcopy(doc["activities"][0])
+    other.update(id=-7, split_parent_id=1)
+    doc["activities"].append(other)
+    result = {}
+
+    worker = threading.Thread(target=lambda: result.update(r=_import(client, _bytes(doc))),
+                              daemon=True)
+    worker.start()
+    worker.join(timeout=20)
+
+    assert not worker.is_alive(), "the import did not end"
+    assert result["r"].status_code in (201, 400), result["r"].text
+
+
+def test_the_bounds_helpers_never_convert_a_huge_int():
+    from src.models.track_edit import _all_within
+    from src.models.value_bounds import finite_or_none, plausible_elevation
+
+    huge = 10 ** 400
+    assert finite_or_none(huge) == huge
+    assert plausible_elevation(huge) is None
+    assert _all_within([huge], 0, 1e5) is False
+    assert _all_within([1.5, huge], 0, 1e5) is False
+    assert _all_within([1, 2, 3], 0, 1e5) is True

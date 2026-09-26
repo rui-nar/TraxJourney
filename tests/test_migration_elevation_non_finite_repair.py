@@ -172,6 +172,12 @@ def seeded(tmp_path, monkeypatch):
     act(19, source=None, is_edited=True, split_root_id=20, split_parent_id=20,
         elevation_profile_json=_profile(_broken(3, value=65535)),
         total_elevation_gain=33.0, elev_high=518.0, elev_low=500.0)
+    # 22: a tail whose parent piece is gone: only its family's root (23)
+    #     says it came from a GPX upload.
+    act(23, source="gpx", elevation_profile_json=_profile(_CLEAN))
+    act(22, source=None, is_edited=True, split_root_id=23, split_parent_id=99,
+        elevation_profile_json=_profile(_broken(6, value=65535)),
+        total_elevation_gain=4e6, elev_high=9999.0, elev_low=500.0)
     # 21: a profile holding an elevation json.dumps writes as 1e+20.
     act(21, source="gpx", elevation_profile_json=_profile(_broken(4, value=1e20)))
 
@@ -204,7 +210,7 @@ def test_only_plaintext_rows_are_candidates(seeded):
     with engine.connect() as conn:
         ids = set(_migration()._candidate_ids(conn))
 
-    assert ids == {1, -2, 3, 4, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 19, 21}
+    assert ids == {1, -2, 3, 4, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 19, 21, 22}
 
 
 def test_an_app_measured_row_with_finite_but_wrong_totals_is_recomputed(seeded):
@@ -460,3 +466,13 @@ def test_the_import_and_the_repair_agree(seeded):
     assert act.elevation_profile == tuple(json.loads(after["elevation_profile_json"]).values())
     assert (act.total_elevation_gain, act.elev_high, act.elev_low) == (
         after["total_elevation_gain"], after["elev_high"], after["elev_low"])
+
+
+def test_a_tail_whose_parent_is_gone_is_measured_as_its_root(seeded):
+    cfg, engine = seeded
+    command.upgrade(cfg, _REPAIR_REV)
+    row = _rows(engine)[22]
+
+    dists, elevs = _expected(_broken(6, value=65535))
+    assert row["total_elevation_gain"] == pytest.approx(elevation_gain(elevs, dists))
+    assert row["elev_high"] == max(elevs)

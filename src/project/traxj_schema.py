@@ -517,17 +517,40 @@ def check(document: Dict[str, Any]) -> Optional[str]:
     return fault(document)
 
 
-def _app_measured(act: Dict[str, Any], by_id: Dict[int, Dict[str, Any]]) -> bool:
+def _app_measured(act: Dict[str, Any], by_id: Dict[int, Dict[str, Any]],
+                  known: Dict[int, bool]) -> bool:
     """Whether the app measured *act*'s figures: a GPX upload, or a piece
     split out of one. Tails split before #462 have no source of their own, so
-    theirs is found up the chain of pieces they were cut from, in the file."""
-    seen = set()
-    while isinstance(act, dict) and id(act) not in seen:
-        if act.get("source") is not None:
-            return act.get("source") == "gpx"
-        seen.add(id(act))
-        act = by_id.get(act.get("split_parent_id"))
-    return False
+    theirs is found up the chain of pieces they were cut from, in the file.
+
+    *known* holds each answer found, by ``id()`` of the activity, so a long
+    chain is walked once, not once per piece. Only an integer
+    ``split_parent_id`` is followed: anything else is left for fault() to
+    name. A loop ends where it meets a piece already on the path.
+    """
+    path = []
+    on_path = set()
+    answer = False
+    while isinstance(act, dict):
+        key = id(act)
+        if key in known:
+            answer = known[key]
+            break
+        if key in on_path:
+            break                           # a loop: no source found
+        source = act.get("source")
+        if source is not None:
+            answer = source == "gpx"
+            break
+        path.append(key)
+        on_path.add(key)
+        parent = act.get("split_parent_id")
+        act = by_id.get(parent) if type(parent) is int else None
+    for key in path:
+        known[key] = answer
+    if isinstance(act, dict) and id(act) not in known:
+        known[id(act)] = answer
+    return answer
 
 
 _DAY_TEXT = ("difficulty", "sleeping", "weather", "journal")
@@ -587,6 +610,7 @@ def normalise(document: Dict[str, Any]) -> None:
         return
     by_id = {a.get("id"): a for a in activities
              if isinstance(a, dict) and type(a.get("id")) is int}
+    known: Dict[int, bool] = {}
     for act in activities:
         if not isinstance(act, dict):
             continue
@@ -600,7 +624,7 @@ def normalise(document: Dict[str, Any]) -> None:
                    for v in figures.values()):
             continue            # a wrong type: fault() names it
         new_profile, gain, high, low = repair_elevations(
-            profile, *figures.values(), app_measured=_app_measured(act, by_id))
+            profile, *figures.values(), app_measured=_app_measured(act, by_id, known))
         if new_profile is not profile:
             act["elevation_profile"] = (
                 None if new_profile is None
