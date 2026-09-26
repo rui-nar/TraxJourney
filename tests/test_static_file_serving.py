@@ -179,8 +179,8 @@ def _symlink_or_skip(link, target, target_is_directory=False):
 
 def test_symlinked_file_pointing_outside_is_refused(site):
     app, web, sentinel = site
-    _symlink_or_skip(web / "assets" / "leak.txt", sentinel)
-    _assert_refused(app, "/assets/leak.txt")
+    _symlink_or_skip(web / "assets" / "outside.txt", sentinel)
+    _assert_refused(app, "/assets/outside.txt")
 
 
 def test_symlinked_directory_pointing_outside_is_refused(site):
@@ -197,6 +197,29 @@ def test_symlink_inside_the_build_is_still_served(site):
     assert status == 200
     assert body == "// bundle"
     assert headers["cache-control"] == "no-cache"
+
+
+def test_web_dir_that_is_itself_a_symlink_still_serves_the_build(site, monkeypatch, tmp_path):
+    """A deploy may point web_client at the real build through a symlink."""
+    import api.router as router
+
+    app, web, _sentinel = site
+    link = tmp_path / "web_link"
+    _symlink_or_skip(link, web, target_is_directory=True)
+    monkeypatch.setattr(router, "_web_dir", str(link))
+
+    status, headers, body = _raw_get(app, "/main.dart.js")
+    assert status == 200
+    assert body == "// bundle"
+    assert headers["cache-control"] == "no-cache"
+
+    status, headers, body = _raw_get(app, "/assets/data.json")
+    assert status == 200
+    assert headers["cache-control"] == "public, max-age=86400"
+
+    status, _headers, body = _raw_get(app, "/trips/foo")
+    assert status == 200
+    assert body == _INDEX
 
 
 def test_http_client_spellings_are_refused(site):
