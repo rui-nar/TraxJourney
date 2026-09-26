@@ -427,6 +427,7 @@ passed, so nothing leaves the machine for a host that would not pull it.
 | Directory | `DEPLOY_VAL_DIR` (`/opt/traxjourney-val`) | `DEPLOY_PROD_DIR` (`/opt/traxjourney`) |
 | Image tag | `:validation` | `:latest` |
 | Builds locally | yes (unless `-SkipBuild`) | never |
+| Tags a local build pushes | `:validation` only | none |
 | URL | `DEPLOY_VAL_URL` (val.traxjourney.com) | `DEPLOY_PROD_URL` (traxjourney.com) |
 
 ```powershell
@@ -440,10 +441,17 @@ passed, so nothing leaves the machine for a host that would not pull it.
 worktree, so the image is exactly what is on main, never contaminated by local
 edits or untracked files.
 
+**Release tags are CI's.** A local build is only ever pushed as `:validation`,
+even when the commit it was built from carries a release tag. `vX.Y.Z` and
+`:latest` are published by the `docker-build.yml` workflow when the tag is
+pushed, so the image prod pulls for a release is always CI's reproducible
+build, never a workstation's. A validation build of a tagged commit is still
+stamped with that version (`v0.50.0-0-g3186c1b`), and its banner and checks
+expect that.
+
 **Uncommitted changes.** A validation build of a working tree with changes to
 tracked files is versioned by `git describe --dirty` (`v0.50.0-3-g3186c1b-dirty`),
-warns and lists the files, and is never pushed under the release tag its
-commit carries. `-Target Prod` refuses to start from such a tree at all: prod
+and warns and lists the files. `-Target Prod` refuses to start from such a tree at all: prod
 runs CI's image, but this checkout runs the deploy and its checks. Untracked
 files count in neither case, as with `git describe --dirty`.
 
