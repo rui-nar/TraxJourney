@@ -14,7 +14,12 @@ import json
 import os
 import time
 
-from src.billing.gateway import GatewayError, RefundBasis
+from src.billing.gateway import (
+    GatewayError,
+    PermanentGatewayError,
+    RefundBasis,
+    RefundResult,
+)
 from src.billing.plans import FREE, PAID_PLANS, price_lookup_key
 from src.billing.refunds import WITHDRAWAL_TERMS_VERSION
 from src.billing.webhook_events import price_id_for_plan
@@ -462,12 +467,14 @@ class StripeGateway:
             currency=str(_field(invoice, "currency") or ""),
             period_start=start,
             period_end=end,
+            total=int(_field(invoice, "total") or 0),
         )
 
     def refund_unused(
-        self, subscription_id: str, amount_cents: int, refund_key: str
-    ) -> int:
-        """Refund the unused period through a credit note, once per key (#441).
+        self, subscription_id: str, amount_cents: int, refund_key: str, *,
+        invoice_id: str, attempt: int = 0,
+    ) -> RefundResult:
+        """Refund the unused period of ``invoice_id`` through a credit note (#441).
 
         A credit note rather than a bare refund, whether or not Stripe Tax is
         on: it is what reverses the VAT in Stripe Tax's reports, and it gives
@@ -475,79 +482,99 @@ class StripeGateway:
         invoice's payment for it.
 
         Before creating anything:
-        * a credit note of the invoice, or a refund of its payment, stamped
-          with ``refund_key`` means the work is done — a retry after a lost
-          response, or after the provider forgot the idempotency key;
+        * a credit note of the invoice (not void), or a refund of its payment,
+          stamped with ``refund_key`` means the work is done — whatever
+          provider key it was made under;
         * every other refund of the payment — one made by hand in the
-          dashboard, say — counts towards ``amount_cents``, so only the rest
-          of what the unused period is owed goes out.
+          dashboard, say — counts towards ``amount_cents``, and so does
+          everything the invoice has already been credited (credit notes to the
+          balance or out of band too): only the rest can go out. What is owed
+          but cannot go out is reported, never silently dropped.
 
-        The provider's idempotency key is ``refund_key`` plus the UTC hour.
-        Two requests racing inside the same hour are one refund at Stripe; an
-        error Stripe cached for a key stops blocking retries at the next hour
-        instead of for 24 hours. The metadata check above is what makes a new
-        key safe: it sees every earlier attempt, whatever its key.
+        The provider idempotency key is ``refund_key:attempt``. The caller's
+        ledger bumps ``attempt`` only after a definite refusal, so a timeout's
+        retry reuses the key and Stripe deduplicates it.
         """
         if amount_cents <= 0:
-            return 0
-        if not refund_key:
-            raise GatewayError("A refund needs a refund key")
+            return RefundResult(0)
+        if not refund_key or not invoice_id:
+            raise GatewayError("A refund needs a refund key and an invoice")
         stripe = _stripe()
         try:
-            invoice = _latest_paid_invoice(stripe, subscription_id)
-            if invoice is None:
-                raise GatewayError(f"Subscription {subscription_id} has no paid invoice")
-            invoice_id = str(_field(invoice, "id") or "")
+            invoice = stripe.Invoice.retrieve(invoice_id)
+            credited = 0
             for note in stripe.CreditNote.list(invoice=invoice_id, limit=100).auto_paging_iter():
                 if str(_field(note, "status") or "") == "void":
                     continue
                 if _field(_field(note, "metadata") or {}, "refund_key") == refund_key:
-                    return int(_field(note, "amount") or 0)
+                    return RefundResult(int(_field(note, "amount") or 0),
+                                        str(_field(note, "id") or ""))
+                credited += int(_field(note, "amount") or 0)
+            paid = int(_field(invoice, "amount_paid") or 0)
+            creditable = max(0, int(_field(invoice, "total") or paid) - credited)
             target = _invoice_payment(stripe, invoice)
+            already = 0
+            if target is not None:
+                for refund in stripe.Refund.list(limit=100, **target).auto_paging_iter():
+                    if str(_field(refund, "status") or "") in ("failed", "canceled"):
+                        continue
+                    if _field(_field(refund, "metadata") or {}, "refund_key") == refund_key:
+                        return RefundResult(int(_field(refund, "amount") or 0))
+                    already += int(_field(refund, "amount") or 0)
+            owed = max(0, min(amount_cents, paid) - already)
             if target is None:
                 # Paid without a payment to refund: from the customer's credit
-                # balance, or marked paid by hand. A retry cannot change that,
-                # and refusing would trap an account deletion for good.
-                _log.warning(
-                    "Invoice %s of %s was paid without a refundable payment — "
-                    "refund %s cents by hand in the Stripe dashboard",
-                    invoice_id, subscription_id, amount_cents,
-                )
-                return 0
-            already = 0
-            for refund in stripe.Refund.list(limit=100, **target).auto_paging_iter():
-                if str(_field(refund, "status") or "") in ("failed", "canceled"):
-                    continue
-                if _field(_field(refund, "metadata") or {}, "refund_key") == refund_key:
-                    return int(_field(refund, "amount") or 0)
-                already += int(_field(refund, "amount") or 0)
-            paid = int(_field(invoice, "amount_paid") or 0)
-            amount = max(0, min(amount_cents, paid) - already)
+                # balance, or marked paid by hand. A retry cannot change that.
+                return RefundResult(0, unrefunded_cents=owed,
+                                    reason="paid without a refundable payment")
+            amount = min(owed, creditable)
+            short = owed - amount
             if amount <= 0:
                 if already:
-                    _log.info(
-                        "Refund of %s: %s cents owed, %s already refunded on its "
-                        "payment (by hand, or earlier) — nothing more to refund",
-                        subscription_id, amount_cents, already,
-                    )
-                return 0
+                    _log.info("Refund of %s: %s cents owed, %s already refunded "
+                              "on its payment (by hand, or earlier)",
+                              subscription_id, amount_cents, already)
+                return RefundResult(0, unrefunded_cents=short,
+                                    reason="the invoice was already credited" if short else "")
             note = stripe.CreditNote.create(
                 invoice=invoice_id,
                 amount=amount,
                 refund_amount=amount,
                 memo="Withdrawal: the unused part of the period is refunded.",
                 metadata={"refund_key": refund_key, "subscription": subscription_id},
-                idempotency_key=f"{refund_key}:{_utc_hour()}",
+                idempotency_key=f"{refund_key}:{attempt}",
             )
         except GatewayError:
             raise
         except Exception as exc:
             _log.warning("Stripe refund failed for %s: %s", subscription_id, exc)
+            if _is_definite_refusal(exc):
+                raise PermanentGatewayError(str(exc)) from exc
             raise GatewayError(str(exc)) from exc
         _log.info("Stripe credit note %s: refunded %s cents of %s (%s already "
-                  "refunded; key %s)", _field(note, "id"), amount, subscription_id,
-                  already, refund_key)
-        return amount
+                  "refunded; key %s:%s)", _field(note, "id"), amount,
+                  subscription_id, already, refund_key, attempt)
+        return RefundResult(amount, str(_field(note, "id") or ""),
+                            unrefunded_cents=short,
+                            reason="the invoice was already credited" if short else "")
+
+    def subscriptions_in_force(self, customer_id: str) -> list[str]:
+        """The customer's subscriptions still in force at Stripe (#441)."""
+        stripe = _stripe()
+        if not customer_id:
+            return []
+        try:
+            subscriptions = stripe.Subscription.list(
+                customer=customer_id, status="all", limit=100
+            )
+            return [
+                str(_field(sub, "id") or "")
+                for sub in subscriptions.auto_paging_iter()
+                if str(_field(sub, "status") or "") in IN_FORCE_STATUSES
+            ]
+        except Exception as exc:
+            _log.warning("Stripe listing failed for customer %s: %s", customer_id, exc)
+            raise GatewayError(str(exc)) from exc
 
     def discard_pending_items(self, customer_id: str, subscription_id: str) -> int:
         """Delete ``subscription_id``'s pending invoice items (#441)."""
@@ -655,6 +682,20 @@ def _is_terms_url_missing(exc: Exception) -> bool:
     if param.startswith("consent_collection"):
         return True
     return "terms of service" in str(exc).lower()
+
+
+#: Statuses of a subscription still in force: it may renew or bill. Matches
+#: migration 3828d92db32c and ``subscriptions.IN_FORCE_STATUSES``.
+IN_FORCE_STATUSES = frozenset({"active", "trialing", "past_due", "unpaid", "paused"})
+
+
+def _is_definite_refusal(exc: Exception) -> bool:
+    """True when Stripe answered, and refused for good: a 4xx other than a
+    conflict (409, e.g. the idempotency key in use by a concurrent request)
+    or a rate limit (429). Timeouts, connection errors and 5xx are not: the
+    request may have succeeded, and must be retried under the same key."""
+    status = getattr(exc, "http_status", None)
+    return isinstance(status, int) and 400 <= status < 500 and status not in (409, 429)
 
 
 #: Statuses of a subscription whose first payment never went through.

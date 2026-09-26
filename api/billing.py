@@ -45,7 +45,6 @@ from src.billing.entitlements import (
 from src.billing.gateway import GatewayError, get_gateway
 from src.billing.plans import FREE, PAID_PLANS, catalogue
 from src.billing.refunds import (
-    withdrawal_checked_at,
     withdrawal_window_closes_at,
     withdrawal_window_open,
 )
@@ -53,7 +52,16 @@ from src.billing.webhook_events import (
     schedule_update_from_event,
     subscription_update_from_event,
 )
-from src.billing.withdrawal import refund_quote, settle_ended_subscription
+from src.billing.withdrawal import (
+    DONE,
+    FAILED_PERMANENT,
+    PENDING,
+    NotEligible,
+    RefundInProgress,
+    ledger_state,
+    refund_quote,
+    settle,
+)
 from src.utils.logging import get_logger
 
 _log = get_logger(__name__)
@@ -166,6 +174,7 @@ def billing_me(current_user: Annotated[dict, Depends(get_current_user)]):
             projects=project_count(sess, user_info_id),
             storage_bytes=storage_used(sess, user_info_id),
         )
+        ledger = ledger_state(sess, row.contract_subscription_id if row else "")
     # A scheduled change to the plan already in force says nothing worth
     # showing — it would read as "switching to the tier you are on".
     pending = (row.pending_plan if row else "") or ""
@@ -183,7 +192,7 @@ def billing_me(current_user: Annotated[dict, Depends(get_current_user)]):
         pending_plan=pending,
         pending_plan_name=plan_display_name(pending) if pending else "",
         pending_plan_at=(row.pending_plan_at if row and pending else 0.0),
-        withdrawal_open=_withdrawal_offered(row, time.time()),
+        withdrawal_open=_withdrawal_offered(row, ledger, time.time()),
         withdrawal_closes_at=(
             withdrawal_window_closes_at(row.contract_started_at) if row else 0.0
         ),
@@ -436,9 +445,10 @@ def create_portal(
 
 # ── Withdrawal (issue #441) ───────────────────────────────────────────────────
 
-#: 409 codes, in a flat body like ``not_subscribed`` above.
+#: Codes, in a flat body like ``not_subscribed`` above.
 WITHDRAWAL_WINDOW_CLOSED = "withdrawal_window_closed"
 REFUND_FAILED = "refund_failed"
+REFUND_IN_PROGRESS = "refund_in_progress"
 
 
 class WithdrawalQuoteOut(BaseModel):
@@ -450,23 +460,26 @@ class WithdrawalQuoteOut(BaseModel):
 class WithdrawalOut(BaseModel):
     refunded_cents: int = Field(description="Refunded, smallest currency unit")
     currency: str
+    owed_cents: int = Field(
+        default=0,
+        description="Owed but not refundable automatically; recorded, and "
+                    "refunded by hand",
+    )
 
 
-def _withdrawal_offered(row: Subscription | None, now: float) -> bool:
+def _withdrawal_offered(row: Subscription | None, ledger: str, now: float) -> bool:
     """Whether the app offers "Withdraw and get a refund" right now.
 
-    While the contract's window is open — judged when the withdrawal was first
-    asked for, if it was — and that contract's subscription has not been
-    withdrawn from. That includes one that already ended: it is what a refund
-    which failed after the cancellation looks like, and the user must be able
-    to try again, even past the deadline.
+    While the contract's window is open, or — after it — while a refund whose
+    cancellation already landed is still pending, so a failed refund can be
+    retried. Never once the contract's refund is done or recorded as owed:
+    that includes a refund made by an account deletion that was then refused.
     """
     if row is None or not billing_enabled() or not row.contract_subscription_id:
         return False
-    at = withdrawal_checked_at(now, row.withdrawal_requested_at)
-    if not withdrawal_window_open(row.contract_started_at, at):
+    if ledger in (DONE, FAILED_PERMANENT):
         return False
-    return row.withdrawn_subscription_id != row.contract_subscription_id
+    return ledger == PENDING or withdrawal_window_open(row.contract_started_at, now)
 
 
 def _no_subscription() -> JSONResponse:
@@ -490,37 +503,34 @@ def _window_closed() -> JSONResponse:
     )
 
 
-def _withdrawal_target(user_info_id: int, now: float, *, record: bool):
-    """``(customer, subscription, closes_at)``, or the 409 refusing it.
+def _in_progress() -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={"detail": "Your refund is already being processed. Please "
+                           "check again in a few minutes.",
+                 "code": REFUND_IN_PROGRESS},
+    )
 
-    The subscription is the current contract's: the window belongs to it. With
-    ``record``, the request is written — and committed, under the account's
-    lock — before anything is asked of Stripe, so that a request made inside
-    the window can still be completed after it if Stripe fails meanwhile.
+
+def _withdrawal_target(user_info_id: int, now: float):
+    """``(customer, subscription, contract start, closes_at)``, or the 409.
+
+    The subscription is the current contract's: the window belongs to it.
+    After the window, only a refund whose cancellation already landed (a
+    ``pending`` ledger row) may still be completed — never a new withdrawal.
+    Nothing is written here.
     """
     with get_session() as sess:
-        if record:
-            subs.lock_account(sess, user_info_id)
         row = subs.get_subscription(sess, user_info_id)
         if row is None or not (row.contract_subscription_id or row.provider_subscription_id):
-            sess.rollback()
             return _no_subscription()
-        at = withdrawal_checked_at(now, row.withdrawal_requested_at)
-        if not row.contract_subscription_id or not withdrawal_window_open(
-            row.contract_started_at, at
-        ):
-            sess.rollback()
+        subscription_id = row.contract_subscription_id
+        ledger = ledger_state(sess, subscription_id)
+        in_time = withdrawal_window_open(row.contract_started_at, now)
+        if not subscription_id or not (in_time or ledger in (PENDING, DONE, FAILED_PERMANENT)):
             return _window_closed()
-        target = (row.provider_customer_id, row.contract_subscription_id,
-                  withdrawal_window_closes_at(row.contract_started_at))
-        if record and not row.withdrawal_requested_at:
-            row.withdrawal_requested_at = now
-            row.updated_at = time.time()
-            sess.add(row)
-            sess.commit()
-        else:
-            sess.rollback()
-    return target
+        return (row.provider_customer_id, subscription_id, row.contract_started_at,
+                withdrawal_window_closes_at(row.contract_started_at))
 
 
 @router.get("/withdraw", response_model=WithdrawalQuoteOut,
@@ -529,10 +539,10 @@ def withdrawal_quote(current_user: Annotated[dict, Depends(get_current_user)]):
     """Estimate for the confirmation dialog, from the invoice at the provider."""
     gateway = _require_gateway()
     now = time.time()
-    target = _withdrawal_target(int(current_user["sub"]), now, record=False)
+    target = _withdrawal_target(int(current_user["sub"]), now)
     if isinstance(target, JSONResponse):
         return target
-    _customer_id, subscription_id, closes_at = target
+    _customer_id, subscription_id, _start, closes_at = target
     try:
         quote = refund_quote(gateway, subscription_id, now)
     except GatewayError as exc:
@@ -547,24 +557,23 @@ def withdrawal_quote(current_user: Annotated[dict, Depends(get_current_user)]):
 def withdraw(current_user: Annotated[dict, Depends(get_current_user)]):
     """Cancel immediately and refund the unused part, inside the window (#441).
 
-    1. Record the request (``withdrawal_requested_at``) under the account's
-       lock, and commit: from then on this contract's withdrawal is judged at
-       that instant, however late it completes.
-    2. Cancel, drop the subscription's pending invoice items, refund — see
-       :mod:`src.billing.withdrawal` for the order and for what makes a retry
-       safe. None of these holds the lock (issue #429's discipline).
-    3. Record the result under the lock.
+    1. Cancel at Stripe. If that fails, nothing is recorded: the request did
+       not happen, and after the deadline it cannot be made any more.
+    2. Refund through the ledger (:func:`src.billing.withdrawal.settle`): the
+       row it creates is what lets a refund that fails now be completed later,
+       also after the deadline; its claim is what stops a concurrent deletion
+       or a second tap from refunding too.
+    3. Record the result under the account's lock.
 
-    A call that fails after cancelling can be repeated, before or after the
-    deadline; so can one that succeeded, which reports the refund made.
+    Stripe is never called while the lock is held (issue #429's discipline).
     """
     gateway = _require_gateway()
     user_info_id = int(current_user["sub"])
     now = time.time()
-    target = _withdrawal_target(user_info_id, now, record=True)
+    target = _withdrawal_target(user_info_id, now)
     if isinstance(target, JSONResponse):
         return target
-    customer_id, subscription_id, _closes_at = target
+    customer_id, subscription_id, contract_start, _closes_at = target
 
     try:
         gateway.cancel_subscription(subscription_id, customer_id)
@@ -573,25 +582,28 @@ def withdraw(current_user: Annotated[dict, Depends(get_current_user)]):
         raise HTTPException(
             status_code=502,
             detail="Your subscription could not be cancelled, so nothing was "
-                   "refunded. Your request is recorded: please try again in a "
-                   "few minutes.",
+                   "refunded. Please try again in a few minutes.",
         )
     try:
-        refund = settle_ended_subscription(gateway, customer_id, subscription_id)
+        refund = settle(gateway, user_info_id=user_info_id, customer_id=customer_id,
+                        subscription_id=subscription_id,
+                        contract_start=contract_start, requested_at=now, now=now)
+    except RefundInProgress:
+        return _in_progress()
+    except NotEligible:
+        return _window_closed()
     except GatewayError as exc:
         _log.error(
             "Withdrawal: %s was cancelled but the refund failed: %s — the user "
-            "can retry, also after the deadline; if they do not, refund it by "
-            "hand", subscription_id, exc,
+            "can retry, also after the deadline", subscription_id, exc,
         )
         return JSONResponse(
             status_code=status.HTTP_502_BAD_GATEWAY,
             content={
                 "detail": "Your subscription was cancelled, but the refund "
                           "could not be issued yet. Please try again later — "
-                          "your request is recorded, so the 14-day limit does "
-                          "not stop the retry, and you will not be refunded "
-                          "twice.",
+                          "it will still be refunded after the 14 days, and "
+                          "never twice.",
                 "code": REFUND_FAILED,
             },
         )
@@ -601,12 +613,12 @@ def withdraw(current_user: Annotated[dict, Depends(get_current_user)]):
         row = subs.get_subscription(sess, user_info_id)
         if row is not None and row.contract_subscription_id == subscription_id:
             row.withdrawn_at = now
-            row.withdrawn_subscription_id = subscription_id
+            if refund.settled:
+                row.withdrawn_subscription_id = subscription_id
             if row.provider_subscription_id == subscription_id:
                 # What customer.subscription.deleted will say, recorded now:
-                # the refund was only made because Stripe reports the
-                # subscription ended. Waiting for the webhook would show the
-                # paid plan on the page the app reloads straight away.
+                # the cancellation has landed. Waiting for the webhook would
+                # show the paid plan on the page the app reloads straight away.
                 row.status = "canceled"
                 row.plan = FREE
                 row.cancel_at_period_end = False
@@ -617,11 +629,11 @@ def withdraw(current_user: Annotated[dict, Depends(get_current_user)]):
             sess.commit()
         else:
             sess.rollback()  # deleted meanwhile, or a new contract since
-    _log.info("Withdrawal: account %s withdrew from %s, refunded %s %s",
-              user_info_id, subscription_id, refund.amount_cents, refund.currency)
-    return WithdrawalOut(refunded_cents=refund.amount_cents, currency=refund.currency)
-
-
+    _log.info("Withdrawal: account %s withdrew from %s, refunded %s %s, owed %s",
+              user_info_id, subscription_id, refund.amount_cents, refund.currency,
+              refund.owed_cents)
+    return WithdrawalOut(refunded_cents=refund.amount_cents, currency=refund.currency,
+                         owed_cents=refund.owed_cents)
 
 
 #: Events announcing a subscription that has just started. One that belongs to
@@ -679,6 +691,32 @@ async def webhook(request: Request):
     return await run_in_threadpool(_handle_webhook, gateway, payload, signature)
 
 
+def _others_in_force(gateway, update) -> bool | None:
+    """Whether another subscription of the customer is in force at Stripe (#441).
+
+    Decides whether a paid subscription starts a new contract — a withdrawal
+    window — which it does only when nothing else of the account is running.
+    Our row tracks one subscription and can be moved by the next event, so the
+    provider is asked instead. Only for an event that could start a contract,
+    and before the account's lock is taken: never hold it across Stripe.
+    Returns None when there is nothing to decide. A provider failure answers
+    502, so Stripe delivers the event again.
+    """
+    if not update.paid_since or not update.subscription_id or not update.customer_id:
+        return None
+    with get_session() as sess:
+        row = subs.resolve_row(sess, update)
+        if row is not None and row.contract_subscription_id == update.subscription_id:
+            return None  # a renewal or a plan change of the contract in force
+    try:
+        running = gateway.subscriptions_in_force(update.customer_id)
+    except GatewayError as exc:
+        _log.warning("Webhook %s: could not list subscriptions of %s: %s",
+                     update.event_id, update.customer_id, exc)
+        raise HTTPException(status_code=502, detail="Could not reach the billing service")
+    return any(sid != update.subscription_id for sid in running)
+
+
 def _handle_webhook(gateway, payload: bytes, signature: str) -> WebhookAck:
     """The blocking part of :func:`webhook`: verify, then apply."""
     try:
@@ -706,6 +744,8 @@ def _handle_webhook(gateway, payload: bytes, signature: str) -> WebhookAck:
     if update is None:
         return WebhookAck(received=True, applied=False)
 
+    others_in_force = _others_in_force(gateway, update)
+
     # One session, holding the account's write lock before anything is read
     # (issue #429): an account deletion in flight either commits first — and
     # the account is then seen gone — or starts after this commits, and then
@@ -719,7 +759,7 @@ def _handle_webhook(gateway, payload: bytes, signature: str) -> WebhookAck:
         if orphaned:
             sess.rollback()
         else:
-            applied = subs.apply_update(sess, update)
+            applied = subs.apply_update(sess, update, others_in_force=others_in_force)
             sess.rollback()  # release the lock when nothing was written
     if orphaned:
         # After the lock is released: never hold it across a Stripe call. The

@@ -737,6 +737,14 @@ class _RefundStripe:
                 fake.log.append(("invoice.list", params))
                 return _page(*invoices)
 
+            @staticmethod
+            def retrieve(invoice_id):
+                fake.log.append(("invoice.retrieve", invoice_id))
+                for inv in invoices:
+                    if inv["id"] == invoice_id:
+                        return _obj(**inv)
+                raise _missing("invoice")
+
         class InvoicePayment:
             @staticmethod
             def list(**params):
@@ -821,6 +829,12 @@ class TestRefundBasis:
         basis = _install(monkeypatch, fake).refund_basis("sub_1")
         assert (basis.period_start, basis.period_end) == (_START, _END)
 
+    def test_the_total_is_read_too(self, monkeypatch):
+        """F4: above amount_paid when the balance paid part of it."""
+        fake = _RefundStripe(invoices=[_invoice(amount_paid=0, total=399)])
+        basis = _install(monkeypatch, fake).refund_basis("sub_1")
+        assert (basis.amount_paid, basis.total) == (0, 399)
+
     def test_nothing_ever_paid(self, monkeypatch):
         fake = _RefundStripe(invoices=[])
         basis = _install(monkeypatch, fake).refund_basis("sub_1")
@@ -841,64 +855,59 @@ _PAID_BY_PI = [{"id": "inpay_1", "status": "paid",
                 "payment": {"type": "payment_intent", "payment_intent": "pi_1"}}]
 
 
-class TestRefundUnused:
-    """Refunds go through a credit note (finding 5), and everything already
-    refunded on the payment counts towards what is owed (finding 2)."""
+def _refund(gateway, amount=266, *, key=KEY, attempt=0, invoice_id="in_1"):
+    return gateway.refund_unused("sub_1", amount, key, invoice_id=invoice_id,
+                                 attempt=attempt)
 
-    def test_refunds_through_a_credit_note_on_the_latest_invoice(self, monkeypatch):
+
+class TestRefundUnused:
+    """Refunds go through a credit note on the contract's invoice; everything
+    already refunded counts towards what is owed; what cannot go out is
+    reported, not dropped."""
+
+    def test_refunds_through_a_credit_note_on_the_given_invoice(self, monkeypatch):
         fake = _RefundStripe(invoices=[_invoice()], invoice_payments=_PAID_BY_PI)
-        out = _install(monkeypatch, fake).refund_unused("sub_1", 266, KEY)
-        assert out == 266
+        out = _refund(_install(monkeypatch, fake))
+        assert (out.refunded_cents, out.credit_note_id, out.unrefunded_cents) == (
+            266, "cn_new", 0)
         (params,) = fake.created
         assert params["invoice"] == "in_1"
         assert params["amount"] == 266
         assert params["refund_amount"] == 266
         assert params["metadata"] == {"refund_key": KEY, "subscription": "sub_1"}
-        assert ("refund.create",) not in [c[:1] for c in fake.log]
+        # The invoice named, never "the latest": a retry cannot reach a renewal.
+        assert ("invoice.retrieve", "in_1") in fake.log
+        assert not [c for c in fake.log if c[0] == "invoice.list"]
 
     def test_the_same_path_with_stripe_tax_on(self, monkeypatch):
         """A credit note is what reverses the VAT in Stripe Tax's reports."""
         monkeypatch.setenv("STRIPE_AUTOMATIC_TAX", "1")
         fake = _RefundStripe(invoices=[_invoice()], invoice_payments=_PAID_BY_PI)
-        _install(monkeypatch, fake).refund_unused("sub_1", 266, KEY)
+        _refund(_install(monkeypatch, fake))
         assert fake.created[0]["refund_amount"] == 266
 
-    def test_the_provider_key_is_the_refund_key_plus_the_utc_hour(self, monkeypatch):
-        """Finding 11: an error Stripe cached under a key stops blocking the
-        retry at the next hour; a double tap in the same hour shares the key."""
-        monkeypatch.setattr(gw, "_utc_hour", lambda: "2026092614")
+    @pytest.mark.parametrize("attempt", [0, 3])
+    def test_the_provider_key_is_the_refund_key_and_the_attempt(self, monkeypatch, attempt):
+        """F2: the ledger's attempt, never the clock."""
         fake = _RefundStripe(invoices=[_invoice()], invoice_payments=_PAID_BY_PI)
-        _install(monkeypatch, fake).refund_unused("sub_1", 266, KEY)
-        assert fake.created[0]["idempotency_key"] == f"{KEY}:2026092614"
-
-    def test_a_new_hour_gives_a_new_provider_key(self, monkeypatch):
-        hours = iter(["2026092614", "2026092615"])
-        monkeypatch.setattr(gw, "_utc_hour", lambda: next(hours))
-        import stripe
-        fake = _RefundStripe(invoices=[_invoice()], invoice_payments=_PAID_BY_PI,
-                             create_error=stripe.InvalidRequestError("x", "amount"))
-        gateway = _install(monkeypatch, fake)
-        for _ in range(2):
-            with pytest.raises(GatewayError):
-                gateway.refund_unused("sub_1", 266, KEY)
-        keys = [c[1]["idempotency_key"] for c in fake.log if c[0] == "credit_note.create"]
-        assert keys == [f"{KEY}:2026092614", f"{KEY}:2026092615"]
+        _refund(_install(monkeypatch, fake), attempt=attempt)
+        assert fake.created[0]["idempotency_key"] == f"{KEY}:{attempt}"
 
     def test_a_credit_note_already_carrying_the_key_is_not_made_again(self, monkeypatch):
-        """Whatever hour its provider key had: the metadata sees every attempt."""
         fake = _RefundStripe(
             invoices=[_invoice()], invoice_payments=_PAID_BY_PI,
             credit_notes=[{"id": "cn_old", "amount": 266, "status": "issued",
                            "metadata": {"refund_key": KEY}}])
-        assert _install(monkeypatch, fake).refund_unused("sub_1", 266, KEY) == 266
+        out = _refund(_install(monkeypatch, fake))
+        assert (out.refunded_cents, out.credit_note_id) == (266, "cn_old")
         assert fake.created == []
 
-    def test_a_void_credit_note_does_not_count_as_done(self, monkeypatch):
+    def test_a_void_credit_note_does_not_count(self, monkeypatch):
         fake = _RefundStripe(
             invoices=[_invoice()], invoice_payments=_PAID_BY_PI,
             credit_notes=[{"id": "cn_void", "amount": 266, "status": "void",
                            "metadata": {"refund_key": KEY}}])
-        assert _install(monkeypatch, fake).refund_unused("sub_1", 266, KEY) == 266
+        assert _refund(_install(monkeypatch, fake)).refunded_cents == 266
         assert len(fake.created) == 1
 
     def test_a_refund_carrying_the_key_is_not_made_again(self, monkeypatch):
@@ -906,17 +915,17 @@ class TestRefundUnused:
             invoices=[_invoice(payment_intent="pi_1")],
             refunds=[{"id": "re_old", "amount": 266, "status": "succeeded",
                       "metadata": {"refund_key": KEY}}])
-        assert _install(monkeypatch, fake).refund_unused("sub_1", 266, KEY) == 266
+        assert _refund(_install(monkeypatch, fake)).refunded_cents == 266
         assert fake.created == []
 
     def test_a_manual_refund_of_it_all_leaves_nothing_to_refund(self, monkeypatch):
-        """Finding 2: the owner refunded the €2.66 by hand; the retry must not
-        send another €1.33 (399 - 266)."""
+        """The owner refunded the €2.66 by hand; nothing more goes out."""
         fake = _RefundStripe(
             invoices=[_invoice(amount_paid=399, payment_intent="pi_1")],
             refunds=[{"id": "re_hand", "amount": 266, "status": "succeeded",
                       "metadata": {}}])
-        assert _install(monkeypatch, fake).refund_unused("sub_1", 266, KEY) == 0
+        out = _refund(_install(monkeypatch, fake))
+        assert (out.refunded_cents, out.unrefunded_cents) == (0, 0)
         assert fake.created == []
 
     def test_a_partial_manual_refund_is_topped_up_to_what_is_owed(self, monkeypatch):
@@ -924,54 +933,126 @@ class TestRefundUnused:
             invoices=[_invoice(amount_paid=399, payment_intent="pi_1")],
             refunds=[{"id": "re_hand", "amount": 100, "status": "succeeded",
                       "metadata": {}}])
-        assert _install(monkeypatch, fake).refund_unused("sub_1", 266, KEY) == 166
-        assert fake.created[0]["amount"] == 166
+        assert _refund(_install(monkeypatch, fake)).refunded_cents == 166
 
-    def test_never_more_than_was_paid(self, monkeypatch):
-        fake = _RefundStripe(invoices=[_invoice(amount_paid=200, payment_intent="pi_1")])
-        assert _install(monkeypatch, fake).refund_unused("sub_1", 266, KEY) == 200
+    def test_never_more_than_the_card_paid(self, monkeypatch):
+        """Part of the invoice paid from the balance: the card took 200 of
+        399, and a refund to the card can return at most that."""
+        fake = _RefundStripe(invoices=[_invoice(amount_paid=200, total=399,
+                                                payment_intent="pi_1")])
+        assert _refund(_install(monkeypatch, fake)).refunded_cents == 200
+
+    def test_capped_at_what_the_invoice_can_still_be_credited(self, monkeypatch):
+        """F3: a credit note to the balance, or out of band, already used part
+        of the invoice. The rest is reported as owed, not silently dropped."""
+        fake = _RefundStripe(
+            invoices=[_invoice(amount_paid=399, total=399, payment_intent="pi_1")],
+            credit_notes=[{"id": "cn_balance", "amount": 300, "status": "issued",
+                           "metadata": {}}])
+        out = _refund(_install(monkeypatch, fake))
+        assert out.refunded_cents == 99
+        assert out.unrefunded_cents == 167
+        assert "credited" in out.reason
+        assert fake.created[0]["amount"] == 99
+
+    def test_fully_credited_already_is_owed_in_full(self, monkeypatch):
+        fake = _RefundStripe(
+            invoices=[_invoice(amount_paid=399, total=399, payment_intent="pi_1")],
+            credit_notes=[{"id": "cn_all", "amount": 399, "status": "issued",
+                           "metadata": {}}])
+        out = _refund(_install(monkeypatch, fake))
+        assert (out.refunded_cents, out.unrefunded_cents) == (0, 266)
+        assert fake.created == []
 
     def test_a_failed_earlier_refund_does_not_count(self, monkeypatch):
         fake = _RefundStripe(
             invoices=[_invoice(amount_paid=399, payment_intent="pi_1")],
             refunds=[{"id": "re_f", "amount": 266, "status": "failed",
                       "metadata": {"refund_key": KEY}}])
-        assert _install(monkeypatch, fake).refund_unused("sub_1", 266, KEY) == 266
+        assert _refund(_install(monkeypatch, fake)).refunded_cents == 266
         assert len(fake.created) == 1
 
     def test_reads_the_older_invoice_shape_too(self, monkeypatch):
         fake = _RefundStripe(invoices=[_invoice(charge="ch_1")])
-        _install(monkeypatch, fake).refund_unused("sub_1", 100, KEY)
+        _refund(_install(monkeypatch, fake), 100)
         assert ("refund.list", {"limit": 100, "charge": "ch_1"}) in fake.log
         assert len(fake.created) == 1
 
     def test_zero_does_not_call_stripe(self, monkeypatch):
         fake = _RefundStripe(invoices=[_invoice(amount_paid=0)])
-        assert _install(monkeypatch, fake).refund_unused("sub_1", 0, KEY) == 0
+        assert _refund(_install(monkeypatch, fake), 0).refunded_cents == 0
         assert fake.log == []
 
-    def test_paid_without_a_payment_refunds_nothing_rather_than_trap(self, monkeypatch):
+    def test_paid_without_a_payment_is_reported_owed(self, monkeypatch):
+        """F4: nothing to refund against — owed, with the reason."""
         fake = _RefundStripe(invoices=[_invoice()], invoice_payments=[])
-        assert _install(monkeypatch, fake).refund_unused("sub_1", 266, KEY) == 0
+        out = _refund(_install(monkeypatch, fake))
+        assert (out.refunded_cents, out.unrefunded_cents) == (0, 266)
+        assert "payment" in out.reason
         assert fake.created == []
 
-    def test_a_refusal_is_a_gateway_error(self, monkeypatch):
+    @pytest.mark.parametrize("status", [400, 402, 404])
+    def test_a_definite_refusal_is_permanent(self, monkeypatch, status):
         import stripe
+        from src.billing.gateway import PermanentGatewayError
         fake = _RefundStripe(
             invoices=[_invoice(payment_intent="pi_1")],
-            create_error=stripe.InvalidRequestError("nope", "amount"))
-        with pytest.raises(GatewayError):
-            _install(monkeypatch, fake).refund_unused("sub_1", 266, KEY)
+            create_error=stripe.InvalidRequestError("charge_disputed", "amount",
+                                                    http_status=status))
+        with pytest.raises(PermanentGatewayError):
+            _refund(_install(monkeypatch, fake))
 
-    def test_no_paid_invoice_is_a_gateway_error(self, monkeypatch):
+    @pytest.mark.parametrize("error", [
+        "timeout", "5xx", "409", "429",
+    ])
+    def test_anything_that_may_pass_is_transient(self, monkeypatch, error):
+        import stripe
+        from src.billing.gateway import PermanentGatewayError
+        exc = {
+            "timeout": stripe.APIConnectionError("read timed out"),
+            "5xx": stripe.APIError("boom", http_status=500),
+            "409": stripe.IdempotencyError("in use", http_status=409),
+            "429": stripe.RateLimitError("slow down", http_status=429),
+        }[error]
+        fake = _RefundStripe(invoices=[_invoice(payment_intent="pi_1")], create_error=exc)
+        with pytest.raises(GatewayError) as caught:
+            _refund(_install(monkeypatch, fake))
+        assert not isinstance(caught.value, PermanentGatewayError)
+
+    def test_an_unknown_invoice_is_an_error(self, monkeypatch):
         fake = _RefundStripe(invoices=[])
         with pytest.raises(GatewayError):
-            _install(monkeypatch, fake).refund_unused("sub_1", 266, KEY)
+            _refund(_install(monkeypatch, fake))
 
-    def test_a_key_is_required(self, monkeypatch):
+    def test_a_key_and_an_invoice_are_required(self, monkeypatch):
         fake = _RefundStripe(invoices=[_invoice(payment_intent="pi_1")])
+        gateway = _install(monkeypatch, fake)
         with pytest.raises(GatewayError):
-            _install(monkeypatch, fake).refund_unused("sub_1", 266, "")
+            _refund(gateway, key="")
+        with pytest.raises(GatewayError):
+            _refund(gateway, invoice_id="")
+
+
+class TestSubscriptionsInForce:
+    def test_only_those_that_may_still_bill(self, monkeypatch):
+        fake = _RefundStripe(subscriptions=[
+            {"id": f"sub_{s}", "status": s}
+            for s in ("active", "trialing", "past_due", "unpaid", "paused",
+                      "canceled", "incomplete", "incomplete_expired")
+        ])
+        out = _install(monkeypatch, fake).subscriptions_in_force("cus_1")
+        assert out == ["sub_active", "sub_trialing", "sub_past_due", "sub_unpaid",
+                       "sub_paused"]
+
+    def test_a_failure_is_a_gateway_error(self, monkeypatch):
+        import stripe
+        fake = _RefundStripe()
+
+        def boom(**params):
+            raise stripe.APIConnectionError("reset")
+        fake.Subscription.list = staticmethod(boom)
+        with pytest.raises(GatewayError):
+            _install(monkeypatch, fake).subscriptions_in_force("cus_1")
 
 
 class TestDiscardPendingItems:

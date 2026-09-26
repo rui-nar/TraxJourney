@@ -94,9 +94,10 @@ def _contracts(cfg) -> dict[int, tuple]:
         }
 
 
-def test_it_is_the_single_head():
+def test_it_follows_the_withdrawal_fields_migration():
+    """The single head is e3bb990551f8, which follows this one; see
+    test_migration_refund_ledger.py."""
     script = ScriptDirectory.from_config(Config(str(_PROJECT_ROOT / "alembic.ini")))
-    assert script.get_heads() == [_REVISION]
     assert script.get_revision(_REVISION).down_revision == _BEFORE
 
 

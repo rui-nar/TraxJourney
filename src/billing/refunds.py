@@ -53,15 +53,6 @@ def withdrawal_window_open(contract_start: float, at: float) -> bool:
     return bool(closes_at) and at < closes_at
 
 
-def withdrawal_checked_at(now: float, requested_at: float) -> float:
-    """The instant a withdrawal is judged at: when it was first asked for.
-
-    A withdrawal asked for inside the window stays inside it, even when a
-    provider failure means it only completes after the deadline.
-    """
-    return min(now, requested_at) if requested_at and requested_at > 0 else now
-
-
 def prorated_refund_amount(
     period_start: float, period_end: float, amount_paid_cents: int, now: float
 ) -> int:

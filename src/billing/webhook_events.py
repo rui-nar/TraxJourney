@@ -218,23 +218,19 @@ def _subscription_id(obj: dict) -> str:
     return str(sub or "")
 
 
-#: Checkout ``payment_status`` values after which the subscription is paid for.
-#: ``no_payment_required`` is a 100%-off promotion code: the contract is made
-#: all the same, and the window runs from it. ``unpaid`` (a delayed method such
-#: as SEPA) is not paid yet; the subscription event that follows payment says so.
-_CHECKOUT_PAID = frozenset({"paid", "no_payment_required"})
-
-
-def _paid_since(obj: dict, event_at: float) -> float:
+def _paid_since(obj: dict) -> float:
     """When an ``active`` subscription object started, for the window (#441).
 
-    ``start_date`` is the subscription's own start and does not move on
-    renewal or on a plan change. Only ``active`` counts: ``trialing`` has not
-    been paid for and ``incomplete`` has not been paid yet.
+    Always the subscription's own ``start_date``: it does not move on renewal
+    or on a plan change, and — unlike an event's timestamp — it does not depend
+    on which event arrives first, so the window's day cannot either. Only
+    ``active`` counts: ``trialing`` has not been paid for and ``incomplete``
+    has not been paid yet. The checkout event starts nothing: it carries no
+    start date, and its subscription's own event follows.
     """
     if str(obj.get("status") or "") != "active":
         return 0.0
-    return _as_float(obj.get("start_date")) or event_at
+    return _as_float(obj.get("start_date"))
 
 
 def _terms_consent(obj: dict, event_at: float) -> tuple[float, str]:
@@ -356,8 +352,6 @@ def subscription_update_from_event(event: dict) -> SubscriptionUpdate | None:
             current_period_end=0.0,
             cancel_at_period_end=False,
             user_info_id=_user_info_id(obj),
-            paid_since=(event_at if str(obj.get("payment_status") or "")
-                        in _CHECKOUT_PAID else 0.0),
             terms_accepted_at=terms_at,
             terms_version=terms_version,
         )
@@ -392,5 +386,5 @@ def subscription_update_from_event(event: dict) -> SubscriptionUpdate | None:
         current_period_end=_period_end(obj),
         cancel_at_period_end=bool(obj.get("cancel_at_period_end")),
         user_info_id=_user_info_id(obj),
-        paid_since=_paid_since(obj, event_at),
+        paid_since=_paid_since(obj),
     )

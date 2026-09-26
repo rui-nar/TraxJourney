@@ -13,7 +13,6 @@ import pytest
 
 from src.billing.refunds import (
     prorated_refund_amount,
-    withdrawal_checked_at,
     withdrawal_window_closes_at,
     withdrawal_window_open,
 )
@@ -70,18 +69,6 @@ class TestWindow:
     def test_a_subscription_from_before_tracking_is_closed(self):
         """The migrations' backfill value (1.0) must never open a window."""
         assert withdrawal_window_open(1.0, T0) is False
-
-
-class TestCheckedAt:
-    def test_a_request_is_judged_when_it_was_first_made(self):
-        assert withdrawal_checked_at(CLOSES + DAY, T0_END_OF_WINDOW) == T0_END_OF_WINDOW
-
-    @pytest.mark.parametrize("requested", [0, 0.0])
-    def test_without_one_it_is_now(self, requested):
-        assert withdrawal_checked_at(CLOSES, requested) == CLOSES
-
-    def test_a_request_stamped_later_than_now_does_not_move_now(self):
-        assert withdrawal_checked_at(T0, T0 + DAY) == T0
 
 
 class TestProratedRefund:

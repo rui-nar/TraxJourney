@@ -17,7 +17,26 @@ from typing import Protocol
 
 
 class GatewayError(Exception):
-    """A call to the payment provider failed."""
+    """A call to the payment provider failed. Retrying may succeed."""
+
+
+class PermanentGatewayError(GatewayError):
+    """The provider refused definitely (a 4xx other than a conflict or a rate
+    limit): the same request will be refused again. A refund refused like this
+    is owed, and settled by hand (#441)."""
+
+
+@dataclass(frozen=True)
+class RefundResult:
+    """What :meth:`BillingGateway.refund_unused` did."""
+
+    #: Refunded under the refund key — by this call, or an earlier one.
+    refunded_cents: int
+    credit_note_id: str = ""
+    #: Owed but not refundable automatically (paid without a payment, or the
+    #: invoice already credited another way), and why. The owner settles it.
+    unrefunded_cents: int = 0
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -41,6 +60,9 @@ class RefundBasis:
     #: The service period that invoice paid for, unix seconds.
     period_start: float
     period_end: float
+    #: The invoice's total. Above ``amount_paid`` when part was paid from the
+    #: customer's credit balance, which a refund to the card cannot return.
+    total: int = 0
 
 
 class BillingGateway(Protocol):
@@ -129,17 +151,24 @@ class BillingGateway(Protocol):
     def refund_basis(self, subscription_id: str) -> RefundBasis:
         """The provider's facts a pro-rata refund is computed from (#441)."""
 
+    def subscriptions_in_force(self, customer_id: str) -> list[str]:
+        """Ids of the customer's subscriptions still in force at the provider:
+        active, trialing, past due, unpaid or paused (#441)."""
+
     def refund_unused(
-        self, subscription_id: str, amount_cents: int, refund_key: str
-    ) -> int:
-        """Refund up to ``amount_cents`` of the latest paid invoice (#441).
+        self, subscription_id: str, amount_cents: int, refund_key: str, *,
+        invoice_id: str, attempt: int = 0,
+    ) -> RefundResult:
+        """Refund up to ``amount_cents`` of ``invoice_id`` (#441).
 
         ``amount_cents`` is the *total* the subscription's unused period is
         owed: every refund already made on that payment — by an earlier call,
         or by hand in the dashboard — counts towards it, so only the rest is
-        refunded. ``refund_key`` is stamped on what this creates, and one found
-        carrying it means the work is done. Returns the amount refunded under
-        the key (0 when nothing was left). Raises :class:`GatewayError`.
+        refunded. It is also capped at what the invoice can still be credited.
+        ``refund_key`` is stamped on what this creates, and one found carrying
+        it means the work is done; ``attempt`` makes the provider idempotency
+        key. Raises :class:`PermanentGatewayError` on a definite refusal and
+        :class:`GatewayError` on anything that may pass.
         """
 
 

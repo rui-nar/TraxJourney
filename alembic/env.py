@@ -20,7 +20,7 @@ if config.config_file_name is not None:
 # Import all SQLModel table models so they register with the shared metadata
 # before autogenerate inspects it.
 import sqlmodel  # noqa: F401
-from models.billing import Subscription, UserUsage  # noqa: F401
+from models.billing import Subscription, SubscriptionRefund, UserUsage  # noqa: F401
 from models.user import LocalUser, StravaToken, UserInfo  # noqa: F401
 from models.project_db import (  # noqa: F401
     DBActivity,

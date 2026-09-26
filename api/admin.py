@@ -24,7 +24,7 @@ from sqlalchemy import func
 from sqlmodel import select
 
 from api.deps import require_admin
-from models.billing import Subscription
+from models.billing import Subscription, SubscriptionRefund
 from models.db import get_session
 from models.project_db import DBActivity, DBMemory, DBProject
 from models.user import LocalUser, UserInfo
@@ -33,6 +33,7 @@ from src.admin.tiers import user_encryption_tier
 from src.billing.entitlements import plan_display_name, plan_from_subscription
 from src.billing.plans import FREE, PLAN_ORDER
 from src.billing.subscriptions import set_admin_override
+from src.billing.withdrawal import FAILED_PERMANENT
 from src.email.service import EmailMessage, get_email_service
 from src.utils.logging import (
     LEVEL_NAMES,
@@ -415,6 +416,68 @@ def set_plan(
         set_admin_override(sess, user_info_id, plan)
 
     _log.info("Admin set plan override '%s' for user_info_id=%s", plan, user_info_id)
+    return {"ok": True}
+
+
+class OwedRefundOut(BaseModel):
+    subscription_id: str
+    customer_id: str
+    owed_cents: int = Field(description="Still to refund by hand")
+    refunded_cents: int
+    currency: str
+    reason: str
+    invoice_id: str
+    updated_at: float
+
+
+@router.get("/billing/owed-refunds", response_model=list[OwedRefundOut],
+            summary="Refunds owed that Stripe would not make automatically")
+def owed_refunds(_admin: Annotated[dict, Depends(require_admin)]):
+    """Withdrawal refunds recorded as owed (issue #441).
+
+    Stripe refused them for good, or there was nothing to refund against.
+    Each outlives the account it came from. Refund it in the Stripe dashboard,
+    then mark it settled. Only Stripe identifiers, amounts and the reason are
+    kept.
+    """
+    with get_session() as sess:
+        rows = sess.exec(
+            select(SubscriptionRefund)
+            .where(SubscriptionRefund.state == FAILED_PERMANENT)
+            .order_by(SubscriptionRefund.updated_at)
+        ).all()
+        return [
+            OwedRefundOut(
+                subscription_id=r.subscription_id, customer_id=r.customer_id,
+                owed_cents=max(0, r.amount - r.refunded), refunded_cents=r.refunded,
+                currency=r.currency, reason=r.reason, invoice_id=r.invoice_id,
+                updated_at=r.updated_at,
+            )
+            for r in rows
+        ]
+
+
+@router.post("/billing/owed-refunds/{subscription_id}/settle",
+             response_model=OkResponse,
+             summary="Mark an owed refund settled (deletes its record)")
+def settle_owed_refund(
+    subscription_id: str,
+    _admin: Annotated[dict, Depends(require_admin)],
+):
+    """The owner refunded it by hand: the record has served its purpose.
+
+    Deleted, not flagged: the privacy policy promises the record is kept only
+    until the refund is settled. Only an owed refund can be settled; a pending
+    one is still the app's to finish.
+    """
+    with get_session() as sess:
+        row = sess.get(SubscriptionRefund, subscription_id)
+        if row is None or row.state != FAILED_PERMANENT:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                detail="No owed refund for that subscription")
+        sess.delete(row)
+        sess.commit()
+    _log.info("Admin settled the owed refund of subscription %s", subscription_id)
     return {"ok": True}
 
 
