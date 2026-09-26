@@ -30,7 +30,9 @@ Idempotency has three handles:
   this creates a *new* price, moves the lookup key onto it
   (`transfer_lookup_key`), and archives the old one. Subscriptions already on
   the old price keep paying the old amount; Stripe does not re-price anyone
-  behind your back, and neither does this script.
+  behind your back, and neither does this script. Prices are tax-inclusive
+  (``TAX_BEHAVIOR``); a price with no tax behaviour yet is given it in place,
+  the one change Stripe allows on an existing price.
 * **The portal configuration** carries `metadata.managed_by`, since Stripe
   assigns its id — the run finds its own configuration by that mark instead of
   creating another one each time.
@@ -74,6 +76,11 @@ AMOUNTS_CENTS = {
     plans.TIER_2: 399,
     plans.TIER_3: 999,
 }
+
+#: The amounts above include VAT (issue #441): EU consumer prices must be shown
+#: tax-inclusive, so with Stripe Tax on (``STRIPE_AUTOMATIC_TAX``) the VAT is
+#: carved out of €3.99 rather than added to it.
+TAX_BEHAVIOR = "inclusive"
 
 
 def product_id(plan: str) -> str:
@@ -143,36 +150,55 @@ def _sync_price(stripe, plan: str, *, apply: bool) -> tuple[str, list[str]]:
             and recurring is not None
             and recurring["interval"] == INTERVAL
         )
-        if matches:
+        # A price made before tax behaviour was declared has none on record.
+        tax = str(_field(current, "tax_behavior") or "unspecified")
+        if matches and tax == TAX_BEHAVIOR:
             return current["id"], [f"  price   {key}: ok  ({amount / 100:.2f} {CURRENCY.upper()})"]
-        # Immutable — reprice by replacing, and carry the lookup key across so
-        # nothing else has to be repointed.
+        if matches and tax == "unspecified":
+            # The one field Stripe lets you set on an existing price, once.
+            # Setting it in place rather than replacing the price is what
+            # reaches existing subscribers: a replacement would leave them on
+            # the old price, which Stripe Tax would then tax by the account's
+            # default — possibly adding VAT on top of what they were charged.
+            if apply:
+                stripe.Price.modify(current["id"], tax_behavior=TAX_BEHAVIOR)
+            return current["id"], [
+                f"  price   {key}: SET tax_behavior {tax} → {TAX_BEHAVIOR} "
+                f"on {current['id']} (in place; subscribers keep it)"
+            ]
+        # Immutable otherwise — reprice by replacing, and carry the lookup key
+        # across so nothing else has to be repointed. Also the only way off an
+        # "exclusive" price: once declared, tax behaviour cannot change.
         was = current["unit_amount"]
+        change = f"{was / 100:.2f} → {amount / 100:.2f} {CURRENCY.upper()}"
+        if tax != TAX_BEHAVIOR:
+            change += f", tax_behavior {tax} → {TAX_BEHAVIOR}"
         if not apply:
             return "(new)", [
-                f"  price   {key}: REPLACE {was / 100:.2f} → {amount / 100:.2f} "
-                f"{CURRENCY.upper()} (archives {current['id']})"
+                f"  price   {key}: REPLACE {change} (archives {current['id']})"
             ]
         new = stripe.Price.create(
             product=product_id(plan), unit_amount=amount, currency=CURRENCY,
             recurring={"interval": INTERVAL}, lookup_key=key,
             transfer_lookup_key=True, nickname=f"{plans.plan_name(plan)} monthly ({CURRENCY.upper()})",
-            metadata={"plan": plan},
+            metadata={"plan": plan}, tax_behavior=TAX_BEHAVIOR,
         )
         stripe.Price.modify(current["id"], active=False)
         stripe.Product.modify(product_id(plan), default_price=new["id"])
         return new["id"], [
-            f"  price   {key}: REPLACED {was / 100:.2f} → {amount / 100:.2f} "
-            f"{CURRENCY.upper()}; archived {current['id']}"
+            f"  price   {key}: REPLACED {change}; archived {current['id']}"
         ]
 
     if not apply:
-        return "(new)", [f"  price   {key}: CREATE  {amount / 100:.2f} {CURRENCY.upper()}/{INTERVAL}"]
+        return "(new)", [
+            f"  price   {key}: CREATE  {amount / 100:.2f} {CURRENCY.upper()}/{INTERVAL} "
+            f"(tax {TAX_BEHAVIOR})"
+        ]
     new = stripe.Price.create(
         product=product_id(plan), unit_amount=amount, currency=CURRENCY,
         recurring={"interval": INTERVAL}, lookup_key=key,
         nickname=f"{plans.plan_name(plan)} monthly ({CURRENCY.upper()})",
-        metadata={"plan": plan},
+        metadata={"plan": plan}, tax_behavior=TAX_BEHAVIOR,
     )
     stripe.Product.modify(product_id(plan), default_price=new["id"])
     return new["id"], [f"  price   {key}: CREATED {new['id']}"]
