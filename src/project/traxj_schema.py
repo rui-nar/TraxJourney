@@ -557,8 +557,8 @@ _DAY_TEXT = ("difficulty", "sleeping", "weather", "journal")
 
 
 def _as_text(value: Any) -> Any:
-    """A day note as the text the client reads it as: a number or true/false
-    as JSON writes it, anything text cannot stand for dropped (None). A
+    """A day note kept as text: a number or true/false as JSON writes it,
+    which loses nothing; anything text cannot stand for dropped (None). A
     non-finite number is left for fault() to refuse."""
     if isinstance(value, bool) or (isinstance(value, int)) or (
             isinstance(value, float) and math.isfinite(value)):
@@ -569,11 +569,15 @@ def _as_text(value: Any) -> Any:
 
 
 def _normalise_days(day_meta: Any) -> None:
-    """Day notes as the client reads them: text, and tags a list of text.
+    """Day notes brought into the format: text, and tags a list of text.
 
     Nothing checked their types until #462, and PUT /day-meta still keeps a
     field a save leaves as it was, so a stored day may hold ``journal: 5``
-    or a bare tag. Such a trip must export to a file its import takes.
+    or a bare tag. Such a trip must export to a file its import takes. The
+    client never showed either: it reads a note as a String (and throws on a
+    number) and ignores tags that are not a list, so the day inherits the
+    tags before it. So a number becomes its text, and a bare tag is dropped,
+    which leaves the day inheriting exactly as it was shown.
     """
     if not isinstance(day_meta, dict):
         return
@@ -584,9 +588,7 @@ def _normalise_days(day_meta: Any) -> None:
             if key in day and day[key] is not None and not isinstance(day[key], str):
                 day[key] = _as_text(day[key])
         tags = day.get("tags")
-        if isinstance(tags, str):
-            day["tags"] = [tags]
-        elif isinstance(tags, list):
+        if isinstance(tags, list):
             day["tags"] = [t if isinstance(t, str) else _as_text(t)
                            for t in tags if isinstance(t, str) or _as_text(t) is not None]
         elif tags is not None and not (isinstance(tags, float) and not math.isfinite(tags)):

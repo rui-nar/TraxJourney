@@ -259,7 +259,10 @@ def _day_meta(engine):
 
 def test_a_day_note_stored_as_another_type_imports_as_text(env):
     """A day saved before its notes were typed may hold a number or a bare
-    tag. The client reads each as text, so that is what they become; a
+    tag. The client never showed either (it reads a note as a String and
+    throws on a number; it ignores tags that are not a list, so the day
+    inherits the tags before it). A number becomes its text, which loses
+    nothing; a bare tag is dropped, so the day still inherits as shown; a
     value text cannot stand for is dropped."""
     client, engine = env
     doc = copy.deepcopy(_TRIP)
@@ -275,7 +278,7 @@ def test_a_day_note_stored_as_another_type_imports_as_text(env):
     assert days["2024-06-01"]["sleeping"] == "true"
     assert days["2024-06-01"]["difficulty"] == "2.5"
     assert days["2024-06-01"]["weather"] is None
-    assert days["2024-06-01"]["tags"] == ["old"]
+    assert days["2024-06-01"]["tags"] is None
     assert days["2024-06-02"]["tags"] == ["a", "7"]
 
 
