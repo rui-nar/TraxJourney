@@ -54,7 +54,10 @@ from src.gpx.importer import (
 from src.models.activity import (
     ACTIVITY_ID_MAX, ACTIVITY_ID_MIN, Activity, parse_activities_or_log,
 )
-from src.models.track_edit import points_to_elevation_profile, points_to_polyline, recompute_track_metrics
+from src.models.track_edit import (
+    elevation_profile_from_streams, points_to_elevation_profile, points_to_polyline,
+    recompute_track_metrics,
+)
 from src.project.local_ids import LocalIdExhausted, allocate_local_activity_id, track_fingerprint
 from src.project.project_repo import bump_lock_version
 from src.project.repo_activities import store_prepared_geometry
@@ -195,12 +198,9 @@ def _enrich_activities(
                     act.start_latlng = [latlng[0][0], latlng[0][1]]
                 if not act.end_latlng:
                     act.end_latlng = [latlng[-1][0], latlng[-1][1]]
-            n = min(len(altitude), len(distance))
-            if n >= 2:
-                act.elevation_profile = (
-                    [distance[i] / 1000 for i in range(n)],
-                    [altitude[i]        for i in range(n)],
-                )
+            profile = elevation_profile_from_streams(distance, altitude)
+            if profile is not None:
+                act.elevation_profile = profile
         except RateLimitError:
             # The quota window filled between the check above and the call
             # (another request got there first — the limiter is process-wide
@@ -269,11 +269,11 @@ def _enrich_activities_background(
 
             if latlng:
                 polyline_str = polyline_lib.encode([(pt[0], pt[1]) for pt in latlng])
-            n = min(len(altitude), len(distance))
-            if n >= 2:
+            profile = elevation_profile_from_streams(distance, altitude)
+            if profile is not None:
                 ep_json = json.dumps({
-                    "distances_km": [distance[i] / 1000 for i in range(n)],
-                    "elevations_m": [altitude[i]        for i in range(n)],
+                    "distances_km": profile[0],
+                    "elevations_m": profile[1],
                 })
 
             if polyline_str or ep_json:
@@ -904,12 +904,9 @@ def _refresh_activity_job(
                         act.start_latlng = [latlng[0][0], latlng[0][1]]
                     if not act.end_latlng:
                         act.end_latlng = [latlng[-1][0], latlng[-1][1]]
-                n = min(len(altitude), len(distance))
-                if n >= 2:
-                    act.elevation_profile = (
-                        [distance[i] / 1000 for i in range(n)],
-                        [altitude[i]        for i in range(n)],
-                    )
+                profile = elevation_profile_from_streams(distance, altitude)
+                if profile is not None:
+                    act.elevation_profile = profile
             except Exception:
                 pass  # streams failed — still save the refreshed metadata
 

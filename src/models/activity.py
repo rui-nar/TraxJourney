@@ -1,5 +1,6 @@
 """Activity data model for Strava activities."""
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
@@ -174,7 +175,7 @@ class Activity:
             distance=data.get("distance", 0.0),
             moving_time=data.get("moving_time", 0),
             elapsed_time=data.get("elapsed_time", 0),
-            total_elevation_gain=data.get("total_elevation_gain", 0.0),
+            total_elevation_gain=_elevation(data.get("total_elevation_gain", 0.0), 0.0),
             start_date=datetime.fromisoformat(data.get("start_date", "").replace("Z", "+00:00")) if data.get("start_date") else datetime.now(),
             start_date_local=datetime.fromisoformat(data.get("start_date_local", "").replace("Z", "+00:00")) if data.get("start_date_local") else datetime.now(),
             timezone=data.get("timezone", "UTC"),
@@ -199,8 +200,8 @@ class Activity:
             max_heartrate=data.get("max_heartrate"),
             heartrate_opt_out=data.get("heartrate_opt_out", False),
             display_hide_heartrate_option=data.get("display_hide_heartrate_option", False),
-            elev_high=data.get("elev_high"),
-            elev_low=data.get("elev_low"),
+            elev_high=_elevation(data.get("elev_high"), None),
+            elev_low=_elevation(data.get("elev_low"), None),
             start_latlng=data.get("start_latlng"),
             end_latlng=data.get("end_latlng"),
             summary_polyline=data.get("map", {}).get("summary_polyline") or None,
@@ -222,6 +223,15 @@ class Activity:
             end_latlng_enc=data.get("end_latlng_enc"),
             elevation_profile_enc=data.get("elevation_profile_enc"),
         )
+
+
+def _elevation(value: Any, missing: Any) -> Any:
+    """*value*, or *missing* when it is NaN or ±Infinity: a non-finite
+    elevation is no reading (issue #462), not a value to store and serve to a
+    client whose JSON parser refuses it."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return missing
+    return value
 
 
 #: The range an activity id can take: the database's 64-bit INTEGER. A value

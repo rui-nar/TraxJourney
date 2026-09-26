@@ -29,11 +29,32 @@ import polyline as polyline_lib
 from src.models.great_circle import haversine_km
 
 
+def finite_or_none(value) -> Optional[float]:
+    """*value* as a reading: a finite number, or None for none.
+
+    NaN and ±Infinity are not readings (gpxpy parses ``<ele>NaN</ele>`` and
+    ``<ele>inf</ele>`` as floats, and JSON from Strava or a request body can
+    carry the tokens too), so they are treated as a missing value. Storing
+    them breaks the trip: the client's JSON parser refuses them, and so does
+    the trip-file import (issue #462).
+    """
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+        return value
+    return None
+
+
 @dataclass
 class TrackPoint:
     lat: float
     lng: float
     elev: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        # Every elevation the app stores or measures passes through here (GPX
+        # upload, track editor, a profile read back): a non-finite one is a
+        # missing one (issue #462).
+        if self.elev is not None:
+            self.elev = finite_or_none(self.elev)
 
 
 def align_points(
@@ -177,6 +198,47 @@ def interpolate_elevation_gaps(
             frac = (distances_km[i] - d0) / span if span else 0.0
             filled[i] = e0 + frac * (e1 - e0)
     return filled
+
+
+def clean_elevation_profile(
+    distances_km: List, elevations: List,
+) -> Optional[Tuple[List[float], List[float]]]:
+    """A stored-form ``(distances_km, elevations_m)`` from raw samples, with
+    no value that is not a finite number (issue #462).
+
+    A sample whose distance is not a finite number has no place on the
+    profile and is left out. An elevation that is not one (NaN, ±Infinity,
+    null) is a missing reading, filled by :func:`interpolate_elevation_gaps`
+    as :func:`points_to_elevation_profile` fills a point without ``<ele>``.
+    Returns ``None`` when fewer than two samples or no elevation remain: no
+    profile, rather than a degenerate one.
+
+    Shared with the repair migration for issue #462, so already-stored rows
+    are repaired to exactly what the writers now store.
+    """
+    dists: List[float] = []
+    elevs: List[Optional[float]] = []
+    for d, e in zip(distances_km, elevations):
+        d = finite_or_none(d)
+        if d is None:
+            continue
+        dists.append(d)
+        elevs.append(finite_or_none(e))
+    if len(dists) < 2 or all(e is None for e in elevs):
+        return None
+    return dists, interpolate_elevation_gaps(dists, elevs)
+
+
+def elevation_profile_from_streams(
+    distance_m: List, altitude_m: List,
+) -> Optional[Tuple[List[float], List[float]]]:
+    """An activity's elevation profile from its Strava ``distance`` and
+    ``altitude`` streams (metres), cleaned by :func:`clean_elevation_profile`.
+    Samples past the shorter stream are dropped."""
+    n = min(len(distance_m), len(altitude_m))
+    distances_km = [
+        d / 1000 if finite_or_none(d) is not None else None for d in distance_m[:n]]
+    return clean_elevation_profile(distances_km, altitude_m[:n])
 
 
 #: Distance, in metres of travel, spanned by the centred moving average applied
