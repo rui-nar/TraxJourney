@@ -590,16 +590,29 @@ def test_validation_build_of_a_dirty_tree_warns_and_says_dirty(sandbox, exe):
 
 
 @every_powershell
-def test_validation_build_of_a_clean_release_commit_also_pushes_its_tag(sandbox, exe):
+def test_validation_build_of_a_clean_release_commit_pushes_no_release_tag(sandbox, exe):
+    """Only CI publishes vX.Y.Z (and :latest), from its own reproducible build
+    (issue #456). A local build of the very commit a release was cut from is
+    still a local build: it goes out as :validation only, stamped with the
+    version it was built from."""
     _commit_release(sandbox)
     described = _git(sandbox, "describe", "--tags", "--long")
     result, read, _ = _deploy_with_shims(sandbox, exe, "-Target", "Validation", expect=described)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "WARNING" not in result.stdout
     assert not described.endswith("-dirty")
-    deploy = _options(dict(_verifier_calls(read))["deploy"])
+    assert f"deploy {described} (Validation)" in result.stdout
+
+    docker = read("docker.log")
+    assert f"APP_VERSION={described}" in docker
+    assert "registry.invalid/owner/app:validation" in docker
+    assert ":v1.2.3" not in docker
+
+    calls = dict(_verifier_calls(read))
+    assert _options(calls["expect"])["--built-version"] == [described]
+    deploy = _options(calls["deploy"])
     assert deploy["--built-version"] == [described]
-    assert deploy["--push"] == ["registry.invalid/owner/app:validation", "registry.invalid/owner/app:v1.2.3"]
+    assert deploy["--push"] == ["registry.invalid/owner/app:validation"]
 
 
 

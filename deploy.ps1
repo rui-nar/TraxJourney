@@ -7,7 +7,8 @@
 .DESCRIPTION
     -Target Validation (default) -> DEPLOY_VAL_URL, DEPLOY_VAL_DIR:
       1. Builds the Flutter web app.
-      2. Builds the Docker image locally (:validation + version tag if present).
+      2. Builds the Docker image locally, tagged :validation only. Release
+         tags (vX.Y.Z) and :latest are published by CI alone.
       3. Over ONE SSH connection: checks the host's compose file uses the image
          being deployed, pushes the image to GHCR, runs docker compose pull
          then up -d on the host, and verifies the deploy (see VERIFICATION).
@@ -302,18 +303,13 @@ if ($FromMain -and $Building) {
     git worktree add --detach $Worktree origin/main | Out-Null
     if ($LASTEXITCODE -ne 0) { Die "git worktree add failed." }
     $SrcRoot    = $Worktree
-    $VersionRef = "origin/main"
 } else {
     $SrcRoot    = (Get-Location).Path
-    $VersionRef = "HEAD"
 }
 
-# Resolve version tag - only set if the source ref is exactly on a tag.
+# The version a local build is stamped with. It is never published as a release
+# tag: only CI builds and pushes vX.Y.Z and :latest (issue #456).
 $ErrorActionPreference = "Continue"
-$Version = ""
-$_tag = git describe --tags --exact-match $VersionRef 2>$null
-if ($LASTEXITCODE -eq 0) { $Version = $_tag.Trim() }
-
 $FullVersion = "dev"
 if ($Worktree) {
     # --dirty cannot name a commit, and the throwaway worktree is clean anyway.
@@ -325,9 +321,8 @@ if ($LASTEXITCODE -eq 0) { $FullVersion = $_full.Trim() }
 $ErrorActionPreference = "Stop"
 
 # Val builds uncommitted work on purpose (the fast path above); the version
-# says so. It must never be published under the release tag its commit has.
+# says so.
 if ($Building -and -not $Worktree -and $DirtyFiles.Count -gt 0) {
-    $Version = ""
     Write-Host ""
     Write-Host "WARNING: the working tree has uncommitted changes; building it as ${FullVersion}:" -ForegroundColor Yellow
     foreach ($f in $DirtyFiles) { Write-Host "  $f" -ForegroundColor Yellow }
@@ -399,10 +394,11 @@ Write-Host "  Flutter web build ready in $webClient"
 # -- 2. Build Docker image -----------------------------------------------------
 Step 2 3 "Building Docker image..."
 
-# :validation is the rolling dev label pushed by this script.
-# :latest is reserved for clean version tags (set by GitHub Actions / CI).
+# :validation is the rolling dev label, and the only tag a local build carries.
+# Release tags (vX.Y.Z) and :latest are CI's alone: a release image is the one
+# CI built from the tag, never a workstation build of the same commit, clean
+# or not (issue #456).
 $tags = @("-t", "${Image}:validation")
-if ($Version) { $tags += @("-t", "${Image}:${Version}") }
 # The server reports APP_VERSION from /api/version; without the build arg a
 # local image says "dev" while its web client carries $FullVersion.
 docker build @tags --build-arg "APP_VERSION=$FullVersion" $SrcRoot
@@ -410,7 +406,6 @@ if ($LASTEXITCODE -ne 0) { Die "Docker build failed." }
 
 # Pushed by the deploy step, once the host is known to pull this image.
 $DeployArgs += @('--push', "${Image}:validation")
-if ($Version) { $DeployArgs += @('--push', "${Image}:${Version}") }
 
 } else {
     Write-Host ""
