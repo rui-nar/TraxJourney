@@ -103,6 +103,24 @@ void main() {
         ['€7.77 / month']);
   });
 
+  testWidgets('the price says it is a starting price', (tester) async {
+    await _pumpWelcome(tester, _selling);
+
+    // Without "from", the cheapest plan reads as *the* price of the hosted
+    // service, the kind of overclaim #432 is about.
+    final from = find.descendant(of: _cloudCard(), matching: find.text('from'));
+    final price =
+        find.descendant(of: _cloudCard(), matching: find.text('€7.77 / month'));
+    expect(from, findsOneWidget);
+    expect(price, findsOneWidget);
+
+    // Directly above it: on its own line, ending where the price starts.
+    final fromRect = tester.getRect(from);
+    final priceRect = tester.getRect(price);
+    expect(fromRect.bottom, moreOrLessEquals(priceRect.top, epsilon: 0.5));
+    expect(fromRect.left, moreOrLessEquals(priceRect.left, epsilon: 0.5));
+  });
+
   testWidgets('a server that sells nothing gets no price at all',
       (tester) async {
     await _pumpWelcome(tester, _selfHosted);

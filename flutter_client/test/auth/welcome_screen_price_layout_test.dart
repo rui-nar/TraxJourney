@@ -82,7 +82,7 @@ void main() {
             of: _cloudCard(),
             matching: find.byWidgetPredicate((w) =>
                 w is RichText &&
-                w.text.toPlainText().replaceAll(' ', ' ') == _label));
+                w.text.toPlainText().replaceAll('\u00A0', ' ') == _label));
         expect(price, findsOneWidget);
         final paragraph = tester.renderObject<RenderParagraph>(price);
         // What was actually laid out: the label, unless the widget rewrote it.
@@ -92,9 +92,23 @@ void main() {
         final applied = scale > 2 ? 2.0 : scale;
         expect(paragraph.textScaler.scale(28), moreOrLessEquals(28 * applied));
 
+        // All of it is shown: not cut short by a line limit, and every visible
+        // character laid out somewhere.
+        expect(paragraph.didExceedMaxLines, isFalse);
+        for (var i = 0; i < text.length; i++) {
+          if (text[i].trim().isEmpty) continue;
+          expect(
+              paragraph.getBoxesForSelection(
+                  TextSelection(baseOffset: i, extentOffset: i + 1)),
+              isNotEmpty,
+              reason: '"${text[i]}" at $i is not shown');
+        }
+
         // Every line break falls at a (breakable) space: never inside "€0.99"
         // or "month".
         final lines = _lines(paragraph, text);
+        expect(lines.join().replaceAll(' ', ''), text.replaceAll(' ', ''),
+            reason: 'the lines $lines do not add up to the price');
         var at = 0;
         for (final line in lines.skip(1)) {
           at = text.indexOf(line, at + 1);
@@ -112,6 +126,12 @@ void main() {
           }
         }
         expect(tester.getRect(price).right, lessThanOrEqualTo(width));
+
+        // Nothing shrinks it on the way to the screen: drawn size = laid-out
+        // size, so the text size above is the size the reader sees.
+        final drawn = tester.getRect(price);
+        expect(drawn.width, moreOrLessEquals(paragraph.size.width, epsilon: 0.5));
+        expect(drawn.height, moreOrLessEquals(paragraph.size.height, epsilon: 0.5));
       });
     }
   }
