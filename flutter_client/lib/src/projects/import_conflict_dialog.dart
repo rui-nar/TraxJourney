@@ -64,9 +64,9 @@ Future<ImportConflictChoice?> showImportConflictDialog(
                     'Replace overwrites that trip’s timeline, memories and your '
                     'journal with the file’s. Memories the file doesn’t have '
                     'are deleted with their photos. Photos that aren’t in the '
-                    'file are removed too. People the file doesn’t have are '
-                    'deleted with their avatars. Its share links and '
-                    'companions are kept.',
+                    'file are removed too. People and groups the file doesn’t '
+                    'have are deleted, with the people’s avatars. Its share '
+                    'links and companions are kept.',
                     style: theme.textTheme.bodyMedium,
                   ),
                 ),

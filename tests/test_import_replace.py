@@ -538,7 +538,7 @@ def test_replace_deletes_a_person_the_file_no_longer_has_with_their_avatar(alps)
     # A path separator only where the OS reads it as one; on POSIX it is an
     # ordinary character, and the name could not leave the folder anyway.
     pytest.param("\\", marks=pytest.mark.skipif(
-        sys.platform != "win32", reason="\ separates paths only on Windows")),
+        sys.platform != "win32", reason=r"\ separates paths only on Windows")),
 ])
 @pytest.mark.parametrize("whose", ["owner", "companion"])
 def test_replace_never_deletes_outside_an_entrys_folder(alps, sep, whose):
@@ -636,3 +636,37 @@ def test_replace_deletes_a_group_the_file_no_longer_has(alps):
         assert sess.get(DBPersonGroup, group) is None
         assert sess.exec(select(DBPerson).where(DBPerson.group_id == group)).all() == []
         assert sess.exec(select(DBEncounter).where(DBEncounter.group_id == group)).all() == []
+
+
+def test_a_person_replace_recreates_gets_no_avatar_name(alps):
+    """A .traxj carries no image files, and a person created from the file
+    has a new id, so a new, empty folder: the file's avatar name would name
+    nothing there."""
+    (client, engine, ids, act_as, data_dir), project, lake, share, _dir = alps
+    ann = _rows(engine, DBPerson, project_id=project.id)[0].id
+    _avatar(client, ann)
+    exported = client.get("/api/projects/Alps/export-traxj").content
+    assert client.delete(f"/api/people/{ann}").status_code == 204
+
+    r = _import(client, "Alps", exported, on_conflict="replace")
+
+    assert r.status_code == 201, r.text
+    (again,) = _rows(engine, DBPerson, project_id=project.id)
+    assert again.name == "Ann" and again.avatar_photo is None
+    r = client.get(f"/api/people/{again.id}/avatar")
+    assert (r.status_code, r.json()["detail"]) == (404, "No avatar")
+
+
+@pytest.mark.parametrize("on_conflict", [None, "copy"])
+def test_an_imported_person_gets_no_avatar_name(env, on_conflict):
+    client, engine, ids, act_as, _ = env
+    doc = _doc([], people=[{"id": 1, "name": "Ann",
+                            "avatar_photo": "00000000-0000-4000-8000-0000000000c3"}])
+    assert _import(client, "Alps", doc).status_code == 201
+
+    r = _import(client, "Alps", doc, on_conflict=on_conflict)
+    if on_conflict is None:
+        r = _import(client, "Other", doc)
+
+    assert r.status_code == 201, r.text
+    assert [p.avatar_photo for p in _rows(engine, DBPerson)] == [None, None]

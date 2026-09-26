@@ -399,7 +399,12 @@ class ImportExportMixin:
             p_row = kept_people.pop(person.id, None) if type(person.id) is int else None
             avatar = person.avatar_photo
             if p_row is None:
+                # A new person has a new id, so an empty avatar folder: a
+                # .traxj carries no image files, and the file's avatar name
+                # would name nothing there (at best a deleted person's
+                # leftover under a reused id). Create, copy and replace alike.
                 p_row = DBPerson(project_id=project_id)
+                avatar = None
             elif p_row.avatar_photo != avatar:
                 # A .traxj carries no image files: switch only to an avatar
                 # already in this person's folder, and only then let the

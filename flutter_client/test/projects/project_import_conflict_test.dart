@@ -124,7 +124,8 @@ void main() {
       expect(find.textContaining('Photos that aren’t in the file are removed too'),
           findsOneWidget);
       expect(find.textContaining(
-              'People the file doesn’t have are deleted with their avatars'),
+              'People and groups the file doesn’t have are deleted, with the '
+              'people’s avatars'),
           findsOneWidget);
 
       if (buttonText == null) {
