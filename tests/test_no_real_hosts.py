@@ -46,6 +46,10 @@ _SSH_TARGET = re.compile(
 # path -> why a public address in it is fine
 ALLOWED_IPS: dict[str, str] = {
     "src/services/overpass_service.py": "public Overpass API mirrors, logged in a comment",
+    "tests/test_safe_fetch.py": "public vs private address rules need public addresses; "
+                                "resolution and connections are stubbed, nothing connects",
+    "tests/test_immich_api.py": "a stubbed resolver maps example names to a public address; "
+                                "nothing connects",
 }
 
 

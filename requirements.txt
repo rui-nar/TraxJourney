@@ -15,6 +15,9 @@ PyJWT>=2.8.0
 bcrypt>=4.0.0
 google-auth>=2.28.0
 requests>=2.28.0
+# Imported directly by src/utils/safe_fetch.py (pinned connections, v2 API;
+# 2.6 bounds decompression).
+urllib3>=2.6,<3
 gpxpy>=1.5.0
 polyline>=2.0.0
 Pillow>=10.0.0

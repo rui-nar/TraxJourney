@@ -55,6 +55,7 @@ from models.user import UserInfo
 from src.billing.entitlements import ensure_storage_quota, ensure_trip_days_quota
 from src.billing.usage import record_written, unlink_and_record
 from src.utils.photo_paths import photo_file, photo_files, photo_folder
+from src.utils.safe_fetch import fetch_bytes
 from src.exceptions.errors import QuotaExceeded
 from src.models.memory import Memory
 from src.project.memory_match import step_key
@@ -74,6 +75,8 @@ _THUMB_SIZE = (400, 400)
 # arbitrarily large upload; 25MB is generous for a phone camera JPEG (typically
 # a few MB) while still bounding the memory/CPU one request can consume.
 _MAX_PHOTO_UPLOAD_BYTES = 25 * 1024 * 1024
+# A photo fetched from a URL is held to the same limit as an upload.
+_MAX_PHOTO_FETCH_BYTES = _MAX_PHOTO_UPLOAD_BYTES
 
 # A burst of concurrent thumbnail requests — e.g. opening the trip map for a
 # photo-heavy project, which fires one request per marker with no throttling
@@ -577,10 +580,10 @@ def _write_memory_photo(memory_id: int, uuid_str: str, order: Optional[int] = No
 def _download_photo_from_url(
     memory_id: int, url: str, user_id: str, project_id: Optional[int] = None, order: Optional[int] = None,
 ) -> None:
-    import requests as _req
     try:
-        resp = _req.get(url, timeout=30)
-        resp.raise_for_status()
+        # The client picks this URL: fetch it only from a public address
+        # (src/utils/safe_fetch), capped like a direct upload.
+        content = fetch_bytes(url, max_bytes=_MAX_PHOTO_FETCH_BYTES, total_timeout=60)
     except Exception:
         _log.exception(
             "Photo download failed for memory: memory_id=%s project_id=%s user_id=%s url=%s",
@@ -591,12 +594,12 @@ def _download_photo_from_url(
     # there is no request left to answer 402 on, so it just declines to store.
     try:
         with get_session() as sess:
-            ensure_storage_quota(sess, int(user_id), len(resp.content))
+            ensure_storage_quota(sess, int(user_id), len(content))
     except QuotaExceeded:
         _log.info("Skipped photo download for user %s: storage quota reached", user_id)
         return
     uuid_str = str(uuid_lib.uuid4())
-    _save_photo_files(user_id, memory_id, uuid_str, resp.content)
+    _save_photo_files(user_id, memory_id, uuid_str, content)
     _write_memory_photo(memory_id, uuid_str, order)
 
 

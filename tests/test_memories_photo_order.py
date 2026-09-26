@@ -27,7 +27,6 @@ import threading
 import time
 
 import pytest
-import requests
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
@@ -174,14 +173,6 @@ class TestWriteJournalPhotoOrdering:
 
 # ── End-to-end via the from-url route ───────────────────────────────────────
 
-class _FakeResponse:
-    def __init__(self, content: bytes):
-        self.content = content
-
-    def raise_for_status(self):
-        pass
-
-
 def _jpeg_bytes() -> bytes:
     import io
     from PIL import Image
@@ -197,13 +188,13 @@ class TestFromUrlRouteOrdering:
         client, engine, _, memory_id, _ = env
         photo_bytes = _jpeg_bytes()
 
-        def fake_get(url, timeout=30):
+        def fake_fetch(url, **kwargs):
             # Simulate the slowest download being for order=0, the fastest for order=2.
             delay = {"http://x/0.jpg": 0.06, "http://x/1.jpg": 0.03, "http://x/2.jpg": 0.0}[url]
             time.sleep(delay)
-            return _FakeResponse(photo_bytes)
+            return photo_bytes
 
-        monkeypatch.setattr(requests, "get", fake_get)
+        monkeypatch.setattr(mem_mod, "fetch_bytes", fake_fetch)
 
         for i in range(3):
             resp = client.post(
@@ -221,7 +212,7 @@ class TestFromUrlRouteOrdering:
     def test_omitted_order_still_appends(self, env, monkeypatch):
         client, engine, _, memory_id, _ = env
         photo_bytes = _jpeg_bytes()
-        monkeypatch.setattr(requests, "get", lambda url, timeout=30: _FakeResponse(photo_bytes))
+        monkeypatch.setattr(mem_mod, "fetch_bytes", lambda url, **kwargs: photo_bytes)
 
         resp = client.post(
             f"/api/memories/{memory_id}/photos/from-url",
