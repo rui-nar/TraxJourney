@@ -33,8 +33,9 @@ for the user, decided once — not a finding.
 **Default envelope**
 
 - **E1 — Deployment.** One self-hosted VPS: one API process, optional RQ workers
-  that each run one job at a time (`docs/DEPLOYMENT_VPS.md`). Failures that need
-  several API hosts or horizontal scaling are out.
+  that each run one job at a time (`docs/DEPLOYMENT_VPS.md`). Sized for a few
+  hundred users and a few thousand trips. Failures that need several API hosts,
+  horizontal scaling, or data volumes well beyond that are out.
 - **E2 — Untrusted input.** Everything a client sends (web, Android, iOS),
   including requests that arrive through public share and join links, and every
   response from a third party (Strava, Polarsteps, Immich, Overpass, HAFAS,
