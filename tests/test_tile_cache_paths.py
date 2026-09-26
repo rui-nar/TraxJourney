@@ -21,13 +21,27 @@ def cache(monkeypatch, tmp_path):
     root = tmp_path / "data" / "tiles"
     root.mkdir(parents=True)
     monkeypatch.setattr(tr, "_CACHE_ROOT", root)
-    # A tile-shaped file beside the cache directory, not inside it.
-    (tmp_path / "data" / "0" / "0").mkdir(parents=True)
-    (tmp_path / "data" / "0" / "0" / "0.png").write_bytes(b"not-a-cached-tile")
+    # A tile-shaped file at every place the tokens below resolve to: beside
+    # the cache directory, at its top level, and (on Windows, where "\" is a
+    # separator) under data/data.
+    for where in (tmp_path / "data", root, tmp_path / "data" / "data"):
+        (where / "0" / "0").mkdir(parents=True, exist_ok=True)
+        (where / "0" / "0" / "0.png").write_bytes(b"not-a-cached-tile")
+    # Real directories, so the kernel can walk "a/.." and "x/../..".
+    (root / "a").mkdir()
+    (root / "x").mkdir()
     return root
 
 
-@pytest.mark.parametrize("token", ["..", ".", "../tiles", "a/..", "..\\data", ""])
+@pytest.mark.parametrize("token", [
+    "..",        # -> data/0/0/0.png
+    ".",         # -> tiles/0/0/0.png
+    "",          # -> tiles/0/0/0.png
+    "../tiles",  # -> tiles/0/0/0.png
+    "a/..",      # -> tiles/0/0/0.png
+    "x/../..",   # -> data/0/0/0.png
+    "..\\data",  # -> data/data/0/0/0.png on Windows
+])
 def test_token_that_is_not_one_directory_name_reads_nothing(cache, token):
     assert tr.get_cached_tile(token, 0, 0, 0) is None
 
