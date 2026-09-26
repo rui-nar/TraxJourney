@@ -35,7 +35,7 @@ from sqlmodel import select
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from api.deps import get_current_user
 from api.geo import (
@@ -73,6 +73,7 @@ from src.billing.entitlements import ensure_project_quota, ensure_trip_days_quot
 from src.models.activity import parse_activities_or_log
 from src.models.project import DEFAULT_SLEEPING_GROUPS, tag_options_with_untagged
 from src.project.project_io import ProjectIO
+from src.project.traxj_schema import day_meta_fault
 from src.project.repo_core import _parse_day_meta_json, bump_lock_version
 from src.project.project_repo import _compute_stats
 from src.utils.logging import get_logger
@@ -586,6 +587,18 @@ class DayMetaUpdateRequest(BaseModel):
     sleeping_options: Optional[List[str]] = None
     sleeping_option_groups: Optional[Dict[str, str]] = None  # name → "Outdoors"|"Indoors"|"Other"
     counters: Optional[List[Dict[str, Any]]] = None  # [{name, start}]
+
+    # A day's notes are typed as the trip-file import reads them, or the trip
+    # could not be exported and imported back (issue #462). HTTPException
+    # rather than ValueError, as TrackPointIn explains.
+    @field_validator("day_meta")
+    @classmethod
+    def _days_the_import_takes(cls, v: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        fault = day_meta_fault(v)
+        if fault is not None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                                detail=f"These day notes cannot be stored: {fault}.")
+        return v
 
 
 def _stored_day_meta(existing_json: str | None) -> dict:

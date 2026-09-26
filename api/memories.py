@@ -52,6 +52,7 @@ from api.project_shared import bust_project_payloads, project_cache_ref
 from api.translations import translate_text
 from models.project_db import DBMemory, DBMemoryComment, DBMemoryLike, DBMemoryTranslation, DBProject, DBProjectItem
 from models.user import UserInfo
+from src.models.value_bounds import Lat, Lon
 from src.billing.entitlements import ensure_storage_quota, ensure_trip_days_quota
 from src.billing.usage import record_written, unlink_and_record
 from src.utils.photo_paths import photo_file, photo_files, photo_folder
@@ -300,8 +301,8 @@ class MemoryBody(BaseModel):
     name: Optional[str] = Field(None, description="Optional memory title")
     time: Optional[str] = Field(None, description="Optional time of day (HH:MM)")
     description: Optional[str] = Field(None, description="Free-text notes")
-    lat: Optional[float] = Field(None, description="Latitude (required when geo_mode='custom')")
-    lon: Optional[float] = Field(None, description="Longitude (required when geo_mode='custom')")
+    lat: Optional[Lat] = Field(None, description="Latitude (required when geo_mode='custom')")
+    lon: Optional[Lon] = Field(None, description="Longitude (required when geo_mode='custom')")
     insert_after_index: Optional[int] = Field(None, description="Position in the project item list to insert after")
     polarsteps_step_id: Optional[int] = Field(None, description="Polarsteps step ID for deduplication during import")
 
@@ -415,8 +416,8 @@ class MemoryUpdateBody(BaseModel):
     name: Optional[str] = Field(None, description="Optional memory title")
     time: Optional[str] = Field(None, description="Optional time of day (HH:MM)")
     description: Optional[str] = Field(None, description="Free-text notes")
-    lat: Optional[float] = Field(None, description="Latitude (required when geo_mode='custom')")
-    lon: Optional[float] = Field(None, description="Longitude (required when geo_mode='custom')")
+    lat: Optional[Lat] = Field(None, description="Latitude (required when geo_mode='custom')")
+    lon: Optional[Lon] = Field(None, description="Longitude (required when geo_mode='custom')")
 
 
 @router.put("/{memory_id}", status_code=status.HTTP_204_NO_CONTENT,

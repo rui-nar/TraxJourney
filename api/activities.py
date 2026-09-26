@@ -54,6 +54,8 @@ from src.gpx.importer import (
 from src.models.activity import (
     ACTIVITY_ID_MAX, ACTIVITY_ID_MIN, Activity, parse_activities_or_log,
 )
+from src.project.traxj_schema import activity_fault, stored_json_fault
+from src.utils.encryption_check import is_encrypted_envelope
 from src.models.track_edit import (
     elevation_profile_from_streams, implausible_track, points_to_elevation_profile,
     points_to_polyline, recompute_track_metrics,
@@ -356,6 +358,18 @@ def add_activities(
     user_info_id = int(current_user["sub"])
 
     activities: List[Activity] = parse_activities_or_log(body.activities, "activities_add")
+    # An activity the trip-file import would refuse is dropped as a malformed
+    # one is (#205): the trip it joined could not be exported and imported
+    # back (issue #462).
+    kept = []
+    for n, act in enumerate(activities):
+        fault = activity_fault(act.to_strava_dict(), n)
+        if fault is None:
+            kept.append(act)
+        else:
+            _log.warning("activities_add: dropped activity %s, which a trip file "
+                         "could not hold: %s", act.id, fault)
+    activities = kept
 
     # Permission/ownership check runs once, outside the retry loop below: the
     # caller and the project's ownership/membership can't change mid-request,
@@ -1406,6 +1420,21 @@ class ActivityFieldsUpdate(BaseModel):
     original_polyline: Optional[str] = None
     original_elevation_profile_json: Optional[str] = None
 
+    # A value that is not a ciphertext envelope is plaintext the export parses
+    # and writes as the activity's start, end or profile, so it must be one
+    # the trip-file import takes (issue #462). HTTPException rather than
+    # ValueError, for the reason TrackPointIn gives.
+    @field_validator("start_latlng_json", "end_latlng_json", "elevation_profile_json",
+                     "elevation_profile_low_res_json", "original_elevation_profile_json")
+    @classmethod
+    def _exportable(cls, v: Optional[str], info) -> Optional[str]:
+        if v is not None and not is_encrypted_envelope(v):
+            fault = stored_json_fault(info.field_name, v)
+            if fault is not None:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                                    detail=fault)
+        return v
+
 
 @activity_fields_router.put("/{activity_id}", summary="Update an activity's E2EE-in-scope fields")
 def update_activity_fields(
@@ -1421,8 +1450,8 @@ def update_activity_fields(
     repeatedly (idempotent: re-sending the same ciphertext is a no-op).
 
     The server does not interpret these values — once encrypted they're opaque
-    ciphertext envelopes — so there is intentionally no JSON/polyline
-    validation here, unlike the track-edit endpoints.
+    ciphertext envelopes — so an envelope is taken as it is. A plaintext
+    start, end or profile must be one the trip-file import takes (#462).
     """
     user_info_id = int(current_user["sub"])
     data = body.model_dump(exclude_unset=True)

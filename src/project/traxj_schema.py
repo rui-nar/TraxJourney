@@ -32,7 +32,7 @@ from datetime import datetime
 from typing import Annotated, Any, Dict, List, Optional, Tuple
 
 from pydantic import (
-    AfterValidator, BaseModel, ConfigDict, ValidationError,
+    AfterValidator, BaseModel, ConfigDict, TypeAdapter, ValidationError,
 )
 from pydantic_core import PydanticCustomError
 
@@ -513,3 +513,55 @@ def fault(document: Dict[str, Any]) -> Optional[str]:
         except ValidationError as exc:
             return _described(exc, ("items", n))
     return None
+
+
+# ── The same rules, for a part of a trip written through the API ────────────
+#
+# Every trip the app holds must export to a file this module accepts, so the
+# endpoints that write a part of one check it by the same models.
+
+_DAYS = TypeAdapter(Dict[str, _DayMeta])
+_LATLNG = TypeAdapter(Optional[LatLng], config=ConfigDict(strict=True))
+_PROFILE = TypeAdapter(Optional[_ElevationProfile])
+
+
+def _part_fault(adapter: TypeAdapter, value: Any, where: Tuple[Any, ...]) -> Optional[str]:
+    """The fault of *value*, named by where it sits in a trip file."""
+    wrapped = value
+    for key in reversed(where):
+        wrapped = {key: wrapped}
+    found = _bad_value(wrapped)
+    if found is not None:
+        return found
+    try:
+        adapter.validate_python(value)
+    except ValidationError as exc:
+        return _described(exc, where)
+    return None
+
+
+def day_meta_fault(day_meta: Any) -> Optional[str]:
+    """What is wrong with a trip's day notes, or None."""
+    return _part_fault(_DAYS, day_meta, ("day_meta",))
+
+
+def activity_fault(activity: Dict[str, Any], n: int) -> Optional[str]:
+    """What is wrong with the *n*-th activity of a trip, as
+    ``Activity.to_strava_dict`` writes it, or None."""
+    return _part_fault(TypeAdapter(_Activity), activity, ("activities", n))
+
+
+def stored_json_fault(field: str, text: Optional[str]) -> Optional[str]:
+    """What is wrong with the plaintext an activity stores in its
+    ``start_latlng_json``/``end_latlng_json`` (a start or end) or one of its
+    ``*elevation_profile*_json`` columns (a profile), or None. The export
+    parses and writes it as that field."""
+    try:
+        value = json.loads(text) if text is not None else None
+    except (ValueError, RecursionError):
+        return f"{field} is not valid JSON"
+    adapter, exported_as = (
+        (_LATLNG, field[:-len("_json")]) if "latlng" in field
+        else (_PROFILE, "elevation_profile"))
+    found = _part_fault(adapter, value, (exported_as,))
+    return None if found is None else f"{field} holds what cannot be exported: {found}"
