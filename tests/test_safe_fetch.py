@@ -136,7 +136,7 @@ def wire(monkeypatch):
     calls: list = []
     script: list = []
 
-    def open_once(method, scheme, host, port, ip, path, headers, body, timeout):
+    def open_once(method, scheme, host, port, ip, path, headers, body, timeout, watchdog=None):
         calls.append({"method": method, "ip": ip, "host": host, "port": port, "path": path,
                       "headers": dict(headers), "body": body, "timeout": timeout})
         return script.pop(0)
@@ -321,37 +321,14 @@ def test_a_request_body_is_not_sent_to_another_origin(dns, wire):
     assert len(calls) == 1
 
 
-class _Trickle(_Raw):
-    """Sends one byte per read, each read taking `step` seconds of fake time."""
-
-    def __init__(self, clock, step, size):
-        super().__init__(200, b"x" * size)
-        self._clock, self._step = clock, step
-
-    def read1(self, n):
-        self._clock[0] += self._step
-        return super().read1(1)
-
-
-def test_a_trickled_body_is_cut_off_at_the_total_time(dns, wire, monkeypatch):
-    _, script = wire
-    clock = [1000.0]
-    monkeypatch.setattr(safe_fetch.time, "monotonic", lambda: clock[0])
-    dns["slow.example"] = ["93.184.216.34"]
-    script.append(_Trickle(clock, 0.25, 100))
-    with pytest.raises(FetchRefused):
-        fetch_bytes("https://slow.example/p.jpg", max_bytes=1000, total_timeout=1)
-    assert clock[0] <= 1000.0 + 1.25  # one read past the deadline at most
-
-
 def test_each_read_waits_at_most_the_idle_timeout(dns, wire):
     calls, script = wire
     dns["cdn.example"] = ["93.184.216.34"]
     script += [_Raw(200, b"a"), _Raw(200, b"b")]
     open_url("https://cdn.example/1", max_bytes=10, total_timeout=600, idle_timeout=20).read_all()
     open_url("https://cdn.example/2", max_bytes=10, total_timeout=5, idle_timeout=20).read_all()
-    assert calls[0]["timeout"].read_timeout == 20
-    assert calls[1]["timeout"].read_timeout <= 5
+    assert calls[0]["timeout"] == 20
+    assert calls[1]["timeout"] <= 5
 
 
 def test_an_internationalised_host_name_is_used_in_its_ascii_form(dns):
@@ -361,40 +338,135 @@ def test_an_internationalised_host_name_is_used_in_its_ascii_form(dns):
 
 # ── The real connection setup (no connection is made) ────────────────────────
 
-class _PoolRecorder:
+class _ConnRecorder:
     made: list = []
 
     def __init__(self, host, **kwargs):
-        self.host, self.kwargs = host, kwargs
-        _PoolRecorder.made.append(self)
+        self.host, self.kwargs, self.sock, self.closed = host, kwargs, None, False
+        _ConnRecorder.made.append(self)
 
-    def urlopen(self, method, path, **kwargs):
-        self.urlopen_kwargs = kwargs
+    def connect(self):
+        pass
+
+    def request(self, method, path, **kwargs):
+        self.request_kwargs = kwargs
+
+    def getresponse(self):
         return _Raw(200, b"")
+
+    def close(self):
+        self.closed = True
 
 
 @pytest.fixture
-def pools(monkeypatch):
-    import urllib3
-    _PoolRecorder.made = []
-    monkeypatch.setattr(urllib3, "HTTPSConnectionPool", _PoolRecorder)
-    monkeypatch.setattr(urllib3, "HTTPConnectionPool", _PoolRecorder)
-    return _PoolRecorder.made
+def conns(monkeypatch):
+    import urllib3.connection
+    _ConnRecorder.made = []
+    monkeypatch.setattr(urllib3.connection, "HTTPSConnection", _ConnRecorder)
+    monkeypatch.setattr(urllib3.connection, "HTTPConnection", _ConnRecorder)
+    return _ConnRecorder.made
 
 
-def test_https_connects_to_the_vetted_address_and_checks_the_certificate_for_the_name(pools):
+def test_https_connects_to_the_vetted_address_and_checks_the_certificate_for_the_name(conns):
     safe_fetch._open_once("GET", "https", "cdn.example", 443, "93.184.216.34", "/p.jpg",
-                          {"x": "1"}, None, None)
-    pool = pools[0]
-    assert pool.host == "93.184.216.34"
-    assert pool.kwargs["server_hostname"] == "cdn.example"
-    assert pool.kwargs["assert_hostname"] == "cdn.example"
-    assert pool.kwargs["cert_reqs"] == "CERT_REQUIRED"
-    assert pool.urlopen_kwargs["headers"]["Host"] == "cdn.example"
-    assert pool.urlopen_kwargs["redirect"] is False
+                          {"x": "1"}, None, 5.0)
+    conn = conns[0]
+    assert conn.host == "93.184.216.34"
+    assert conn.kwargs["server_hostname"] == "cdn.example"
+    assert conn.kwargs["assert_hostname"] == "cdn.example"
+    assert conn.kwargs["cert_reqs"] == "CERT_REQUIRED"
+    assert conn.request_kwargs["headers"]["Host"] == "cdn.example"
 
 
-def test_an_ipv6_literal_goes_in_brackets_in_the_host_header(pools):
+def test_an_ipv6_literal_goes_in_brackets_in_the_host_header(conns):
     safe_fetch._open_once("GET", "http", "2606:4700::1111", 8080, "2606:4700::1111", "/",
-                          {}, None, None)
-    assert pools[0].urlopen_kwargs["headers"]["Host"] == "[2606:4700::1111]:8080"
+                          {}, None, 5.0)
+    assert conns[0].request_kwargs["headers"]["Host"] == "[2606:4700::1111]:8080"
+
+
+# ── The watchdog: a hard limit on the whole exchange ─────────────────────────
+
+class _HungSock:
+    """A socket whose reads block until it is shut down."""
+
+    def __init__(self):
+        import threading
+        self.shut = threading.Event()
+
+    def shutdown(self, how):
+        self.shut.set()
+
+
+class _HungConn(_ConnRecorder):
+    """Connects, then never finishes sending its response headers."""
+
+    def connect(self):
+        self.sock = _HungSock()
+
+    def getresponse(self):
+        if not self.sock.shut.wait(10):
+            raise AssertionError("the watchdog never shut the socket")
+        raise ConnectionResetError("socket shut down")
+
+
+def test_the_watchdog_ends_an_exchange_that_outlasts_the_deadline(dns, monkeypatch):
+    import time as _time
+    import urllib3.connection
+    monkeypatch.setattr(urllib3.connection, "HTTPSConnection", _HungConn)
+    dns["slow.example"] = ["93.184.216.34"]
+    started = _time.monotonic()
+    with pytest.raises(FetchRefused, match="longer than allowed"):
+        open_url("https://slow.example/p.jpg", max_bytes=1000, total_timeout=0.3, idle_timeout=30)
+    assert _time.monotonic() - started < 5
+
+
+class _Stuck(_Raw):
+    """A body whose single read never returns until the socket is shut."""
+
+    def __init__(self, sock):
+        super().__init__(200, b"")
+        self._sock = sock
+
+    def read1(self, n):
+        if not self._sock.shut.wait(10):
+            raise AssertionError("the watchdog never shut the socket")
+        raise ConnectionResetError("socket shut down")
+
+
+class _StuckBodyConn(_ConnRecorder):
+    def connect(self):
+        self.sock = _HungSock()
+
+    def getresponse(self):
+        return _Stuck(self.sock)
+
+
+def test_the_watchdog_ends_a_body_read_that_never_returns(dns, monkeypatch):
+    import time as _time
+    import urllib3.connection
+    monkeypatch.setattr(urllib3.connection, "HTTPSConnection", _StuckBodyConn)
+    dns["slow.example"] = ["93.184.216.34"]
+    started = _time.monotonic()
+    with pytest.raises(FetchRefused, match="longer than allowed"):
+        fetch_bytes("https://slow.example/p.jpg", max_bytes=1000, total_timeout=0.3)
+    assert _time.monotonic() - started < 5
+
+
+# ── Origins ───────────────────────────────────────────────────────────────────
+
+def test_an_upgrade_to_https_on_the_same_host_keeps_headers_and_body(dns, wire):
+    calls, script = wire
+    dns["immich.example"] = ["93.184.216.34"]
+    script += [_Raw(308, headers={"location": "https://immich.example/search"}), _Raw(200, b"{}")]
+    open_url("http://immich.example/search", method="POST", body=b"{}",
+             headers={"x-api-key": "SECRET"}, max_bytes=1000, total_timeout=5).read_all()
+    assert calls[1]["headers"] == {"x-api-key": "SECRET"} and calls[1]["body"] == b"{}"
+
+
+def test_redirect_refusals_are_not_reported_as_a_refused_destination(dns, wire):
+    _, script = wire
+    dns["cdn.example"] = ["93.184.216.34"]
+    script.append(_Raw(302, headers={"location": "http://cdn.example/p.jpg"}))
+    with pytest.raises(FetchRefused) as exc:
+        fetch_bytes("https://cdn.example/p.jpg", max_bytes=1000, total_timeout=5)
+    assert not isinstance(exc.value, safe_fetch.DestinationRefused)

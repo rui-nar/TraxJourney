@@ -114,6 +114,8 @@ class _GuardedHttp:
             raise requests.RequestException(str(exc)) from None
         except (urllib3.exceptions.HTTPError, OSError) as exc:
             raise requests.ConnectionError(str(exc)) from None
+        except ValueError as exc:  # http.client refuses e.g. a header with a line break
+            raise requests.RequestException(str(exc)) from None
         try:
             return _Response(resp, stream=stream)
         except FetchRefused as exc:
@@ -349,7 +351,13 @@ def immich_search(
             detail=f"Immich search failed (HTTP {resp.status_code})",
         )
 
-    items = resp.json().get("assets", {}).get("items", [])
+    try:
+        items = resp.json().get("assets", {}).get("items", [])
+    except (ValueError, AttributeError):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Immich search returned an unreadable answer",
+        )
     candidates = []
     for item in items:
         asset_id = item.get("id")

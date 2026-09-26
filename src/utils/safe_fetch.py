@@ -15,20 +15,23 @@ containers, the LAN, or the cloud metadata service. So every fetch here:
 - follows redirects itself, vetting every hop the same way, and never
   carries the caller's headers (an API key, say) or body to another origin,
   nor from https down to http;
-- caps the bytes read, the wait for each read (`idle_timeout`) and the time
-  the whole body may take (`total_timeout`). A server that trickles its
-  response headers is bounded by the per-read wait only.
+- caps the bytes read, the wait for each read (`idle_timeout`) and the
+  whole exchange (`total_timeout`): at the deadline a watchdog shuts the
+  connection's socket down, whatever it is doing (trickled headers, a
+  compressed body that never decodes, an endless chunked trailer).
 """
 from __future__ import annotations
 
 import ipaddress
 import socket
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Iterable, Iterator, Mapping, Optional, Tuple
 from urllib.parse import urljoin, urlsplit
 
 import urllib3
+import urllib3.connection
 
 try:  # requests depends on certifi; fall back to the system store without it
     import certifi
@@ -156,6 +159,56 @@ def vet(url: str, allowed_private_hosts: Iterable[str] = ()) -> Tuple[str, str, 
     return scheme, host, port, addresses[0], path
 
 
+class _Watchdog:
+    """Shuts the current connection's socket down at the deadline.
+
+    Per-read timeouts cannot bound a whole exchange: a read that keeps
+    receiving a byte now and then never times out, and a single urllib3
+    read can loop over many socket reads (a compressed body that yields
+    nothing, a chunked trailer that never ends). Shutting the socket down
+    from here makes whatever read is in progress fail at once.
+    """
+
+    def __init__(self, deadline: float):
+        self.conn = None
+        self.fired = False
+        self._lock = threading.Lock()
+        self._timer = threading.Timer(max(0.0, deadline - time.monotonic()), self._fire)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def watch(self, conn) -> None:
+        """Watch `conn` (already connected); shut it at once if already late."""
+        with self._lock:
+            self.conn = conn
+            late = self.fired
+        if late:
+            self._shut(conn)
+
+    def _fire(self) -> None:
+        with self._lock:
+            self.fired = True
+            conn = self.conn
+        if conn is not None:
+            self._shut(conn)
+
+    @staticmethod
+    def _shut(conn) -> None:
+        sock = getattr(conn, "sock", None)
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def stop(self) -> None:
+        self._timer.cancel()
+        with self._lock:
+            conn, self.conn = self.conn, None
+        if conn is not None:
+            conn.close()
+
+
 @dataclass
 class SafeResponse:
     """A vetted response. Read it with `iter_bytes` or `read_all`, then close."""
@@ -163,19 +216,24 @@ class SafeResponse:
     headers: Mapping[str, str]
     url: str
     _raw: urllib3.BaseHTTPResponse = field(repr=False)
-    _deadline: float = field(repr=False)
     _max_bytes: int = field(repr=False)
+    _watchdog: Optional[_Watchdog] = field(default=None, repr=False)
 
     def iter_bytes(self) -> Iterator[bytes]:
-        # read1 returns as soon as any bytes arrive, so the deadline is checked
-        # after every read; each read itself waits at most idle_timeout.
         total = 0
         try:
             while True:
-                if time.monotonic() > self._deadline:
-                    raise FetchRefused("the download took longer than allowed")
-                chunk = self._raw.read1(_CHUNK)
+                try:
+                    chunk = self._raw.read1(_CHUNK)
+                except Exception:
+                    if self._watchdog is not None and self._watchdog.fired:
+                        raise FetchRefused("the download took longer than allowed") from None
+                    raise
                 if not chunk:
+                    # A shut-down socket reads as end of file: that is the
+                    # watchdog's cut, not the end of the body.
+                    if self._watchdog is not None and self._watchdog.fired:
+                        raise FetchRefused("the download took longer than allowed")
                     return
                 total += len(chunk)
                 if total > self._max_bytes:
@@ -188,25 +246,43 @@ class SafeResponse:
         return b"".join(self.iter_bytes())
 
     def close(self) -> None:
-        self._raw.release_conn()
         self._raw.close()
+        if self._watchdog is not None:
+            self._watchdog.stop()
 
 
-def _open_once(method, scheme, host, port, ip, path, headers, body, timeout):
+def _same_origin(a, b) -> bool:
+    """Same scheme, host and port; an http to https upgrade on the default
+    ports of the same host counts as the same origin, as browsers and
+    requests treat it."""
+    if a == b:
+        return True
+    return (a[1] == b[1] and a[0] == "http" and a[2] == 80
+            and b[0] == "https" and b[2] == 443)
+
+
+def _open_once(method, scheme, host, port, ip, path, headers, body, timeout, watchdog=None):
+    """Send one request to `ip`, presenting `host` (Host header, TLS name)."""
     name = f"[{host}]" if ":" in host else host  # an IPv6 literal
     host_header = name if port == (443 if scheme == "https" else 80) else f"{name}:{port}"
     if scheme == "https":
-        pool = urllib3.HTTPSConnectionPool(
-            ip, port=port, timeout=timeout, retries=False, maxsize=1,
+        conn = urllib3.connection.HTTPSConnection(
+            ip, port=port, timeout=timeout,
             cert_reqs="CERT_REQUIRED", ca_certs=_CA_CERTS,
             assert_hostname=host, server_hostname=host,
         )
     else:
-        pool = urllib3.HTTPConnectionPool(ip, port=port, timeout=timeout, retries=False, maxsize=1)
-    return pool.urlopen(
-        method, path, body=body, headers={**headers, "Host": host_header},
-        redirect=False, retries=False, preload_content=False, assert_same_host=False,
-    )
+        conn = urllib3.connection.HTTPConnection(ip, port=port, timeout=timeout)
+    try:
+        conn.connect()
+        if watchdog is not None:
+            watchdog.watch(conn)
+        conn.request(method, path, body=body, headers={**headers, "Host": host_header},
+                     preload_content=False)
+        return conn.getresponse()
+    except BaseException:
+        conn.close()
+        raise
 
 
 def open_url(
@@ -229,29 +305,36 @@ def open_url(
     origin = None
     for _ in range(max_redirects + 1):
         scheme, host, port, ip, path = vet(url, allowed)
-        if origin is not None and (scheme, host, port) != origin:
+        if origin is not None and not _same_origin(origin, (scheme, host, port)):
             if origin[0] == "https" and scheme == "http":
-                raise DestinationRefused("a redirect from https to http is not followed")
+                raise FetchRefused("a redirect from https to http is not followed")
             if body is not None:
-                raise DestinationRefused("a request body is not sent to another origin")
+                raise FetchRefused("a request body is not sent to another origin")
             headers = {}  # never carry the caller's headers to another origin
         origin = (scheme, host, port)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise FetchRefused("the download took longer than allowed")
         wait = min(idle_timeout, remaining)
-        timeout = urllib3.Timeout(connect=min(10.0, wait), read=wait)
-        raw = _open_once(method, scheme, host, port, ip, path, headers, body, timeout)
+        watchdog = _Watchdog(deadline)
+        try:
+            raw = _open_once(method, scheme, host, port, ip, path, headers, body, wait,
+                             watchdog=watchdog)
+        except Exception:
+            watchdog.stop()
+            if watchdog.fired:
+                raise FetchRefused("the download took longer than allowed") from None
+            raise
         if raw.status in _REDIRECT_CODES and raw.headers.get("location"):
             location = raw.headers["location"]
-            raw.release_conn()
             raw.close()
+            watchdog.stop()
             url = urljoin(url, location)
             if raw.status == 303 or (raw.status in (301, 302) and method == "POST"):
                 method, body = "GET", None
             continue
         return SafeResponse(status=raw.status, headers=raw.headers, url=url,
-                            _raw=raw, _deadline=deadline, _max_bytes=max_bytes)
+                            _raw=raw, _max_bytes=max_bytes, _watchdog=watchdog)
     raise FetchRefused("too many redirects")
 
 

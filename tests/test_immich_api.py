@@ -450,7 +450,7 @@ def net(monkeypatch):
     script: list = []
     monkeypatch.setattr(safe_fetch, "_resolve", lambda host, port: list(dns[host]))
 
-    def open_once(method, scheme, host, port, ip, path, headers, body, timeout):
+    def open_once(method, scheme, host, port, ip, path, headers, body, timeout, watchdog=None):
         opened.append({"host": host, "ip": ip, "path": path})
         return script.pop(0)
 
@@ -606,3 +606,57 @@ def test_the_asset_proxy_allows_a_long_download(env, net, monkeypatch):
     assert client.get("/api/immich/assets/abc/original").status_code == 200
     assert seen["total_timeout"] == immich_module._DOWNLOAD_TOTAL_SECONDS
     assert seen["idle_timeout"] == immich_module._DOWNLOAD_TIMEOUT[1]
+
+
+
+def test_config_with_an_api_key_holding_a_line_break_is_a_422_not_a_500(env, net, monkeypatch):
+    client, engine, uid = env
+    dns, opened, script = net
+    dns["immich.example.com"] = ["93.184.216.34"]
+
+    def refuse_header(*a, **k):
+        raise ValueError("Invalid header value")
+
+    monkeypatch.setattr(immich_module, "open_url", refuse_header)
+    resp = client.put("/api/immich/config",
+                      json={"server_url": "https://immich.example.com", "api_key": "a\r\nb"})
+    assert resp.status_code == 422
+    assert _stored_token(engine, uid) is None
+
+
+def test_search_answers_502_for_an_unreadable_answer(env, net):
+    client, engine, uid = env
+    dns, opened, script = net
+    _connect(engine, uid, server_url="https://immich.example.com")
+    dns["immich.example.com"] = ["93.184.216.34"]
+    script.append(_Raw(200, b"<html>not json</html>"))
+    assert client.post("/api/immich/search", json=_SEARCH).status_code == 502
+
+
+def test_a_redirect_downgrade_is_not_blamed_on_the_allowed_hosts(env, net):
+    client, engine, uid = env
+    dns, opened, script = net
+    _connect(engine, uid, server_url="https://immich.example.com")
+    dns["immich.example.com"] = ["93.184.216.34"]
+    script.append(_Raw(302, headers={"location": "http://immich.example.com/x"}))
+    resp = client.get("/api/immich/assets/abc/thumbnail")
+    assert resp.status_code == 502
+    assert "IMMICH_ALLOWED_HOSTS" not in resp.json()["detail"]
+
+
+class _Closing(_Raw):
+    closed = False
+
+    def close(self):
+        _Closing.closed = True
+
+
+def test_the_asset_proxy_closes_a_non_200_answer(env, net):
+    client, engine, uid = env
+    dns, opened, script = net
+    _connect(engine, uid, server_url="https://immich.example.com")
+    dns["immich.example.com"] = ["93.184.216.34"]
+    _Closing.closed = False
+    script.append(_Closing(500, b"boom"))
+    assert client.get("/api/immich/assets/abc/thumbnail").status_code == 502
+    assert _Closing.closed
