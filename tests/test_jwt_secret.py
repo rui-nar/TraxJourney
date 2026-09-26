@@ -85,3 +85,88 @@ class TestTokensUseIt:
         monkeypatch.delenv("JWT_SECRET", raising=False)
         with pytest.raises(RuntimeError):
             create_access_token(self._user())
+
+
+# ── A secret PyJWT cannot use (issue #453) ─────────────────────────────────
+
+import os  # noqa: E402
+
+_PEM = ("-----BEGIN PUBLIC KEY-----\n"
+        "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n"
+        "-----END PUBLIC KEY-----")
+_SSH = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGx operator@host"
+#: What os.environ holds on Linux for a Windows-1252 "é" in an .env file:
+#: bytes that aren't UTF-8 come through as lone surrogates.
+_NOT_UTF8 = "caf\udce9-" + "x" * 32
+_HEX = "3f" * 32
+
+
+def _set_secret(monkeypatch, value: str) -> None:
+    # A copy of the environment rather than setenv: Windows cannot hold a
+    # lone surrogate in a real environment variable.
+    monkeypatch.setattr(os, "environ", {**os.environ, "JWT_SECRET": value})
+
+
+class TestUnusableSecretIsRefused:
+    @pytest.mark.parametrize("value, says", [
+        (_NOT_UTF8, "UTF-8"),
+        (_PEM, "key"),
+        (_SSH, "key"),
+    ], ids=["not-utf8", "pem", "ssh"])
+    def test_refused_with_a_readable_message(self, monkeypatch, value, says):
+        _set_secret(monkeypatch, value)
+
+        with pytest.raises(RuntimeError) as exc:
+            jwt_secret()
+
+        message = str(exc.value)
+        assert "JWT_SECRET" in message and says in message
+        assert "openssl rand -hex 32" in message
+
+    @pytest.mark.parametrize("value", [_NOT_UTF8, _PEM, _SSH],
+                             ids=["not-utf8", "pem", "ssh"])
+    def test_startup_fails_before_anything_else(self, monkeypatch, value):
+        import api.router as router
+        from fastapi.testclient import TestClient
+
+        _set_secret(monkeypatch, value)
+        # The worker path: the lifespan checks the secret and then yields,
+        # touching nothing else, so a passing check boots cleanly here.
+        monkeypatch.setattr(router, "_IS_API_PROCESS", False)
+
+        with pytest.raises(RuntimeError, match="JWT_SECRET"):
+            with TestClient(router.app):
+                pass
+
+    def test_a_hex_secret_boots(self, monkeypatch):
+        import api.router as router
+        from fastapi.testclient import TestClient
+
+        _set_secret(monkeypatch, _HEX)
+        monkeypatch.setattr(router, "_IS_API_PROCESS", False)
+
+        with TestClient(router.app) as client:
+            assert client.get("/api/version").status_code == 200
+        assert jwt_secret() == _HEX
+
+    def test_the_check_runs_once_per_value_not_per_request(self, monkeypatch):
+        """jwt_secret() is on every authenticated request (decode_token)."""
+        import api.deps as deps
+
+        calls = []
+        real_encode = deps.jwt.encode
+
+        def counting_encode(*a, **kw):
+            calls.append(1)
+            return real_encode(*a, **kw)
+
+        monkeypatch.setattr(deps.jwt, "encode", counting_encode)
+        _set_secret(monkeypatch, "a" * 64)
+        for _ in range(5):
+            jwt_secret()
+        assert len(calls) == 1
+
+        _set_secret(monkeypatch, "b" * 64)
+        jwt_secret()
+        jwt_secret()
+        assert len(calls) == 2

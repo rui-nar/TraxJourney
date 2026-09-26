@@ -52,7 +52,47 @@ def jwt_secret() -> str:
             "`openssl rand -hex 32` and set it as an environment variable "
             "(see .env.example). Note that changing it signs everyone out."
         )
+    if secret != _usable_secret:
+        _check_usable(secret)
     return secret
+
+
+#: The last secret :func:`_check_usable` accepted. jwt_secret() runs on every
+#: authenticated request, so the check is done once per value, not per call.
+_usable_secret: Optional[str] = None
+
+
+def _check_usable(secret: str) -> None:
+    """Refuse a secret PyJWT cannot sign with (issue #453).
+
+    Two shapes pass the checks above yet fail every login and authenticated
+    request with a 500: bytes that are not UTF-8 (Linux hands them over as lone
+    surrogates, which PyJWT cannot encode), and a PEM or SSH key, which PyJWT
+    refuses as an HMAC secret. Signing and verifying one token with it follows
+    PyJWT's own rules rather than a copy of them, and fails at boot instead.
+    """
+    global _usable_secret
+    fix = ("Generate one with `openssl rand -hex 32` and set it as an "
+           "environment variable (see .env.example).")
+    try:
+        secret.encode("utf-8")
+    except UnicodeEncodeError:
+        raise RuntimeError(
+            "JWT_SECRET is not valid UTF-8 text: check the encoding of the file "
+            f"it was set from. {fix}") from None
+    try:
+        probe = jwt.encode({"probe": True}, secret, algorithm=_JWT_ALGORITHM)
+        jwt.decode(probe, secret, algorithms=[_JWT_ALGORITHM])
+    except jwt.InvalidKeyError as exc:
+        # PyJWT's reason names the key's shape, never its value.
+        raise RuntimeError(
+            f"JWT_SECRET cannot sign sessions ({exc}): it must be a random "
+            f"shared secret, not a public or private key. {fix}") from None
+    except Exception as exc:  # noqa: BLE001 — any refusal is a boot failure
+        raise RuntimeError(
+            f"JWT_SECRET cannot be used as a signing key ({type(exc).__name__}). "
+            f"{fix}") from None
+    _usable_secret = secret
 
 
 def create_access_token(
@@ -124,7 +164,12 @@ def decode_token_quietly(token: str) -> Optional[dict]:
     """
     try:
         return _verify(token)
-    except jwt.PyJWTError:  # bad/expired token, and a key PyJWT won't use
+    except jwt.PyJWTError:  # a bad or expired token
+        return None
+    except RuntimeError:
+        # jwt_secret() refusing the key. Boot refuses it first (issue #453);
+        # this only matters if the variable changes under a running process,
+        # and an observer still must not turn that into a 500.
         return None
 
 
