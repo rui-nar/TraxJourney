@@ -35,7 +35,7 @@ final _catalogue = [
 class _FakeBilling implements BillingService {
   // Withdrawal (issue #441) is not exercised here.
   @override
-  Future<Money> withdrawalQuote() => throw UnimplementedError();
+  Future<Withdrawal> withdrawalQuote() => throw UnimplementedError();
   @override
   Future<Withdrawal> withdraw() => throw UnimplementedError();
 

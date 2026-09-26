@@ -309,11 +309,16 @@ class BillingService {
     return data['url'] as String? ?? '';
   }
 
-  /// What withdrawing now would refund, estimated from the provider's invoice
-  /// (issue #441). Changes nothing.
-  Future<Money> withdrawalQuote() async {
+  /// What withdrawing now would do, estimated from the provider's invoice
+  /// the way the refund itself is computed (issue #441): what would go back
+  /// to the card, and what would be owed and refunded by hand. Changes
+  /// nothing.
+  Future<Withdrawal> withdrawalQuote() async {
     final data = await _api.get('/api/billing/withdraw') as Map<String, dynamic>;
-    return Money.fromJson(data, 'amount_cents');
+    return Withdrawal(
+      refunded: Money.fromJson(data, 'amount_cents'),
+      owed: Money.fromJson(data, 'owed_cents'),
+    );
   }
 
   /// Withdraw: cancel the subscription now and refund the unused part.

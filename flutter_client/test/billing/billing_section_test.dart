@@ -21,7 +21,7 @@ import 'package:traxjourney_client/src/core/theme.dart';
 class _FakeBilling implements BillingService {
   // Withdrawal (issue #441) is not exercised here.
   @override
-  Future<Money> withdrawalQuote() => throw UnimplementedError();
+  Future<Withdrawal> withdrawalQuote() => throw UnimplementedError();
   @override
   Future<Withdrawal> withdraw() => throw UnimplementedError();
 
@@ -97,7 +97,7 @@ Future<void> _pump(
 class _SequenceBilling implements BillingService {
   // Withdrawal (issue #441) is not exercised here.
   @override
-  Future<Money> withdrawalQuote() => throw UnimplementedError();
+  Future<Withdrawal> withdrawalQuote() => throw UnimplementedError();
   @override
   Future<Withdrawal> withdraw() => throw UnimplementedError();
 
@@ -144,7 +144,7 @@ class _SequenceBilling implements BillingService {
 class _PendingBilling implements BillingService {
   // Withdrawal (issue #441) is not exercised here.
   @override
-  Future<Money> withdrawalQuote() => throw UnimplementedError();
+  Future<Withdrawal> withdrawalQuote() => throw UnimplementedError();
   @override
   Future<Withdrawal> withdraw() => throw UnimplementedError();
 

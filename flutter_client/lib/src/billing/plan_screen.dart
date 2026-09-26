@@ -21,16 +21,27 @@ import '../core/design_tokens.dart';
 import 'billing_service.dart';
 import 'plan_widgets.dart';
 
-/// What the withdrawal confirmation says (issue #441). [refund] is the
+/// What the withdrawal confirmation says (issue #441). [quote] is the
 /// server's estimate: the refund itself is measured the moment the
-/// cancellation lands, so it can differ by a cent.
-String withdrawalConfirmation(Money refund) {
+/// cancellation lands, so it can differ by a cent. A part that cannot go back
+/// to the card (paid from the Stripe balance, say) is said separately.
+String withdrawalConfirmation(Withdrawal quote) {
   const ends = 'Your plan ends immediately and is not renewed.';
-  if (refund.cents <= 0) {
+  final card = quote.refunded;
+  final owed = quote.owed;
+  if (card.cents <= 0 && owed.cents <= 0) {
     return '$ends Nothing is left to refund for the period you paid for.';
   }
-  return '$ends About ${refund.label} — the unused part of the period you '
-      'paid for — is refunded to your payment method.';
+  final parts = <String>[ends];
+  if (card.cents > 0) {
+    parts.add('About ${card.label} — the unused part of the period you paid '
+        'for — is refunded to your payment method.');
+  }
+  if (owed.cents > 0) {
+    parts.add('About ${owed.label} cannot go back to your payment method '
+        'automatically; it will be refunded to you separately.');
+  }
+  return parts.join(' ');
 }
 
 /// What the page says once the withdrawal went through.
@@ -202,7 +213,7 @@ class _PlanScreenState extends State<PlanScreen> {
       _busyWithdraw = true;
       _failure = null;
     });
-    final Money quote;
+    final Withdrawal quote;
     try {
       quote = await _billing.withdrawalQuote();
     } catch (e) {

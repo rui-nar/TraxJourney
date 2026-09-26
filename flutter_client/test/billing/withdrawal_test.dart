@@ -44,6 +44,7 @@ class _FakeBilling implements BillingService {
   final Money quote;
   final Object? withdrawError;
   final Money owed;
+  final Money quoteOwed;
   int statusCalls = 0;
   int quoteCalls = 0;
   int withdrawCalls = 0;
@@ -52,7 +53,8 @@ class _FakeBilling implements BillingService {
       {List<Map<String, dynamic>>? then,
       this.quote = const Money(266, 'eur'),
       this.withdrawError,
-      this.owed = const Money(0, 'eur')})
+      this.owed = const Money(0, 'eur'),
+      this.quoteOwed = const Money(0, 'eur')})
       : payloads = [payload, ...?then];
 
   @override
@@ -70,9 +72,9 @@ class _FakeBilling implements BillingService {
       ];
 
   @override
-  Future<Money> withdrawalQuote() async {
+  Future<Withdrawal> withdrawalQuote() async {
     quoteCalls++;
-    return quote;
+    return Withdrawal(refunded: quote, owed: quoteOwed);
   }
 
   @override
@@ -220,9 +222,34 @@ void main() {
     });
   });
 
+  group('the quote', () {
+    testWidgets('says what cannot go back to the card, before anything is done',
+        (tester) async {
+      // Item 10: an invoice paid partly from the Stripe balance.
+      final billing = _FakeBilling(_inWindow,
+          quote: const Money(200, 'eur'), quoteOwed: const Money(66, 'eur'));
+      await _pump(tester, billing);
+
+      await tester.tap(find.text(_action));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('About €2.00'), findsOneWidget);
+      expect(find.textContaining('About €0.66 cannot go back'), findsOneWidget);
+      expect(billing.withdrawCalls, 0);
+    });
+
+    test('nothing owed says nothing about it', () {
+      final text = withdrawalConfirmation(const Withdrawal(
+          refunded: Money(266, 'eur'), owed: Money(0, 'eur')));
+      expect(text, contains('About €2.66'));
+      expect(text, isNot(contains('cannot go back')));
+    });
+  });
+
   group('wording', () {
     test('nothing left to refund says so rather than "€0.00"', () {
-      final text = withdrawalConfirmation(const Money(0, 'eur'));
+      final text = withdrawalConfirmation(const Withdrawal(
+          refunded: Money(0, 'eur'), owed: Money(0, 'eur')));
       expect(text, contains('Nothing is left to refund'));
       expect(text, isNot(contains('€0.00')));
     });
@@ -274,7 +301,8 @@ void main() {
         httpClient: MockClient((req) async {
           requests.add('${req.method} ${req.url.path}');
           final body = req.method == 'GET'
-              ? {'amount_cents': 266, 'currency': 'eur', 'closes_at': 1.0}
+              ? {'amount_cents': 200, 'owed_cents': 66, 'currency': 'eur',
+                  'closes_at': 1.0}
               : {'refunded_cents': 265, 'currency': 'eur', 'owed_cents': 1};
           return http.Response(jsonEncode(body), 200,
               headers: {'content-type': 'application/json'});
@@ -286,7 +314,8 @@ void main() {
 
       expect(requests,
           ['GET /api/billing/withdraw', 'POST /api/billing/withdraw']);
-      expect(quote.cents, 266);
+      expect(quote.refunded.cents, 200);
+      expect(quote.owed.cents, 66);
       expect(done.refunded.cents, 265);
       expect(done.owed.cents, 1);
       expect(done.refunded.currency, 'eur');
