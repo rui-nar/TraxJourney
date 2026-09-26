@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from models.billing import Subscription
 from models.user import UserInfo
@@ -21,6 +21,7 @@ from src.billing.subscriptions import (
     apply_schedule,
     apply_update,
     get_subscription,
+    is_orphaned,
     set_admin_override,
 )
 from src.billing.webhook_events import (
@@ -344,6 +345,90 @@ class TestApplyUpdate:
         row = get_subscription(sess, 1)
         assert row.admin_override_plan == TIER_2
         assert row.plan == FREE  # provider state is still recorded faithfully
+
+
+class TestDeletedAccounts:
+    """The metadata id can outlive the account it names (issue #429).
+
+    Deleting an account cancels its subscription, so Stripe's
+    ``customer.subscription.deleted`` arrives after the account is gone. Ids
+    are never reused, so "the account exists" is the whole test.
+    """
+
+    def test_an_event_for_a_deleted_account_creates_no_row(self, sess):
+        assert apply_update(sess, _update(
+            user_info_id=99, plan=FREE, status="canceled",
+        )) is False
+        assert sess.exec(select(Subscription)).all() == []
+
+    def test_the_buyer_is_matched_whatever_the_clocks_say(self, sess):
+        """No comparison with the account's creation time any more: a server
+        clock running ahead of Stripe's must not disown a real first purchase."""
+        user = sess.get(UserInfo, 1)
+        event = _subscription_event("customer.subscription.created",
+                                    created=int(user.created_at), user_info_id=1)
+        # Stripe's clock an hour behind ours: the subscription looks older
+        # than the account that bought it.
+        event["data"]["object"]["created"] = int(user.created_at) - 3600
+        assert apply_update(sess, subscription_update_from_event(event)) is True
+        assert get_subscription(sess, 1).provider_customer_id == "cus_1"
+
+
+class TestOneTrackedSubscription:
+    """The row tracks one subscription (issue #429, review round 4)."""
+
+    def test_another_subscription_ending_leaves_a_live_one_alone(self, sess):
+        """A paying user must not lose their plan because some other
+        subscription of theirs ended."""
+        apply_update(sess, _update(subscription_id="sub_a", status="active",
+                                   plan=TIER_2))
+        applied = apply_update(sess, _update(
+            event_id="evt_2", event_at=2000.0, subscription_id="sub_b",
+            status="canceled", plan=FREE,
+        ))
+        assert applied is False
+        row = get_subscription(sess, 1)
+        assert (row.provider_subscription_id, row.status, row.plan) == (
+            "sub_a", "active", TIER_2)
+
+    def test_the_tracked_subscription_ending_is_recorded(self, sess):
+        apply_update(sess, _update(subscription_id="sub_a", status="active"))
+        assert apply_update(sess, _update(
+            event_id="evt_2", event_at=2000.0, subscription_id="sub_a",
+            status="canceled", plan=FREE,
+        )) is True
+        assert get_subscription(sess, 1).status == "canceled"
+
+    def test_a_new_live_subscription_takes_over(self, sess):
+        """Buying again after cancelling, or a second subscription started
+        from the dashboard: the live one is what the account now has."""
+        apply_update(sess, _update(subscription_id="sub_a", status="canceled",
+                                   plan=FREE))
+        assert apply_update(sess, _update(
+            event_id="evt_2", event_at=2000.0, subscription_id="sub_b",
+            status="active", plan=TIER_3,
+        )) is True
+        row = get_subscription(sess, 1)
+        assert (row.provider_subscription_id, row.status, row.plan) == (
+            "sub_b", "active", TIER_3)
+
+
+class TestIsOrphaned:
+    """A subscription that belongs to no account at all (issue #429)."""
+
+    def test_a_deleted_account_whose_customer_no_one_holds(self, sess):
+        assert is_orphaned(sess, _update(user_info_id=99, customer_id="cus_x"))
+
+    def test_a_live_account_is_not(self, sess):
+        assert not is_orphaned(sess, _update(user_info_id=1))
+
+    def test_a_customer_another_account_holds_is_not(self, sess):
+        apply_update(sess, _update(customer_id="cus_held"))
+        assert not is_orphaned(sess, _update(user_info_id=99, customer_id="cus_held"))
+
+    def test_an_event_naming_no_account_is_not(self, sess):
+        """Without metadata there is nothing to say whose it was."""
+        assert not is_orphaned(sess, _update(user_info_id=None, customer_id="cus_x"))
 
 
 # ── Scheduled changes (issue #153) ────────────────────────────────────────────

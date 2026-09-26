@@ -163,6 +163,24 @@ class ApiClient {
   }
 }
 
+/// The server's human-readable `detail` from an error response [body], or the
+/// body itself when it carries none (not JSON, or a `detail` that is not a
+/// string, e.g. a validation error list).
+///
+/// Parsed as JSON rather than matched with a regex: a message containing an
+/// escaped quote or non-ASCII text used to come out cut short (issue #429).
+String apiErrorDetail(String body) {
+  try {
+    final decoded = jsonDecode(body);
+    if (decoded is Map && decoded['detail'] is String) {
+      return decoded['detail'] as String;
+    }
+  } on FormatException {
+    // Not JSON — a proxy error page, say. Show it as it came.
+  }
+  return body;
+}
+
 class ApiException implements Exception {
   final int statusCode;
   final String body;

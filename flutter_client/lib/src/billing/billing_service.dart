@@ -121,6 +121,16 @@ class BillingStatus {
   bool get isLive =>
       status == 'active' || status == 'trialing' || status == 'past_due';
 
+  /// True while the provider could still charge for this subscription, so
+  /// deleting the account cancels it (issue #429).
+  ///
+  /// Wider than [isLive]: an `unpaid`, `incomplete` or `paused` subscription
+  /// grants nothing but can still take money. Mirrors
+  /// `_ENDED_SUBSCRIPTION_STATUSES` in `src/auth/account_deletion.py`, which
+  /// decides what the server actually cancels.
+  bool get mayStillBill =>
+      !const {'', 'none', 'canceled', 'incomplete_expired'}.contains(status);
+
   /// Fraction of the storage allowance in use, or null when unlimited.
   double? get storageFraction {
     final limit = limits.maxStorageBytes;

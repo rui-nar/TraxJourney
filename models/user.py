@@ -34,6 +34,12 @@ class LocalUser(sqlmodel.SQLModel, table=True):
 class UserInfo(sqlmodel.SQLModel, table=True):
     """Stores profile data for each registered user."""
 
+    # AUTOINCREMENT: SQLite would otherwise hand a deleted account's id to the
+    # next one registered, and that id lives on outside this table — in Stripe
+    # metadata above all, where a late event would then name a stranger
+    # (issue #429). No effect on Postgres, whose sequences never reuse.
+    __table_args__ = {"sqlite_autoincrement": True}
+
     id: int | None = sqlmodel.Field(default=None, primary_key=True)
     local_auth_id: int | None = sqlmodel.Field(
         default=None, foreign_key="localuser.id"

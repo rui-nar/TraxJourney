@@ -108,8 +108,5 @@ class SettingsService {
     }
   }
 
-  static String _detail(String body) {
-    final m = RegExp(r'"detail"\s*:\s*"([^"]+)"').firstMatch(body);
-    return m?.group(1) ?? body;
-  }
+  static String _detail(String body) => apiErrorDetail(body);
 }

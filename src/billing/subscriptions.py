@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import time
 
+from sqlalchemy import update
 from sqlmodel import select
 
 from models.billing import Subscription
+from models.user import UserInfo
+from src.billing.entitlements import subscription_is_live
 from src.billing.webhook_events import ScheduleUpdate, SubscriptionUpdate
 from src.utils.logging import get_logger
 
@@ -43,26 +46,97 @@ def _by_customer(sess, customer_id: str) -> Subscription | None:
     ).first()
 
 
+def lock_account(sess, user_info_id: int) -> None:
+    """Take the write lock that serialises an account's billing and deletion.
+
+    Account deletion and a webhook naming that account each call this before
+    reading what they act on (issue #429). Without it, a start event landing
+    between the deletion's read of the subscription row and its deletes saw
+    the account still there, recorded the new customer on the row — and the
+    deletion then removed the row without cancelling anything.
+
+    A no-op UPDATE of the account row, the same idiom as
+    ``repo_core.bump_lock_version``: a write is what takes the lock.
+    - SQLite: pysqlite issues ``BEGIN`` only before the first write, so this
+      must be the first write *and* come before the reads it protects. It
+      takes the database write lock, waiting out ``busy_timeout`` while
+      another writer holds it, and every read after it sees the latest
+      committed state.
+    - Postgres: it takes a row lock that conflicts with the deletion's
+      ``DELETE`` of the same row (equivalent to ``SELECT … FOR UPDATE``), and
+      READ COMMITTED reads after it see what the other side committed.
+
+    A deleted account matches no row; the statement still waits for the
+    deletion that removed it, which is the point.
+    """
+    sess.execute(
+        update(UserInfo)
+        .where(UserInfo.id == user_info_id)
+        .values(created_at=UserInfo.created_at)
+    )
+
+
+def _account_exists(sess, user_info_id: int) -> bool:
+    """True when ``user_info_id`` still names an account.
+
+    The id in the metadata was stamped at checkout and outlives the account
+    (issue #429): deleting it cancels the subscription, and the provider's
+    ``customer.subscription.deleted`` arrives afterwards. Account ids are never
+    reused (``userinfo`` is AUTOINCREMENT), so existing is enough to trust it.
+    """
+    return sess.get(UserInfo, user_info_id) is not None
+
+
 def resolve_row(sess, update: SubscriptionUpdate) -> Subscription | None:
     """Find the subscription row an event belongs to.
 
     Prefers our own user id (carried in checkout metadata) and falls back to the
-    provider customer id, which is all most subscription events contain.
+    provider customer id, which is all most subscription events contain. An id
+    whose account has been deleted is not trusted — creating a row for it would
+    leave an orphan — and only the customer id is left to go on.
     """
     if update.user_info_id:
-        row = get_subscription(sess, update.user_info_id)
-        if row is None:
-            row = Subscription(user_info_id=update.user_info_id)
-        return row
+        if _account_exists(sess, update.user_info_id):
+            row = get_subscription(sess, update.user_info_id)
+            if row is None:
+                row = Subscription(user_info_id=update.user_info_id)
+            return row
+        _log.info(
+            "Webhook %s: account %s no longer exists — matching by customer only",
+            update.event_id, update.user_info_id,
+        )
     return _by_customer(sess, update.customer_id)
+
+
+def is_orphaned(sess, update: SubscriptionUpdate) -> bool:
+    """True when the event's subscription belongs to no account at all.
+
+    That is: it names an account (metadata) that has been deleted, and its
+    customer matches no remaining one. The case this exists for is a checkout
+    page opened before the account was deleted and paid afterwards — nothing
+    would ever cancel what it started (issue #429).
+    """
+    if not update.user_info_id or _account_exists(sess, update.user_info_id):
+        return False
+    return _by_customer(sess, update.customer_id) is None
+
+
+def _about_another_subscription(row: Subscription, update: SubscriptionUpdate) -> bool:
+    """True when both name a subscription and they are not the same one."""
+    return bool(
+        update.subscription_id
+        and row.provider_subscription_id
+        and update.subscription_id != row.provider_subscription_id
+    )
 
 
 def apply_update(sess, update: SubscriptionUpdate) -> bool:
     """Apply one event's state. Returns True when the row changed.
 
     Returns False — without an error — when the event is a duplicate, is older
-    than what we already applied, or cannot be attributed to any account. All
-    three are normal and must still be acknowledged with a 2xx, or Stripe will
+    than what we already applied, cannot be attributed to any account, or is
+    about another subscription than the one tracked and would not replace it.
+    All are normal and must still be acknowledged with a 2xx, or Stripe will
     retry them forever.
     """
     row = resolve_row(sess, update)
@@ -77,6 +151,17 @@ def apply_update(sess, update: SubscriptionUpdate) -> bool:
         return False  # already applied (Stripe redelivery)
     if update.event_at and row.last_event_at and update.event_at < row.last_event_at:
         return False  # out-of-order redelivery of an older event
+    if _about_another_subscription(row, update) and not subscription_is_live(update.status):
+        # The row tracks one subscription. Another one ending must not
+        # overwrite it: a paying user would lose their plan, and account
+        # deletion would read "canceled" while the tracked one still bills
+        # (issue #429). Only a live subscription takes over the row.
+        _log.info(
+            "Webhook %s: %s is %s but %s is the one tracked — ignoring",
+            update.event_id, update.subscription_id, update.status,
+            row.provider_subscription_id,
+        )
+        return False
 
     # A pending change that has now happened is no longer pending. Clearing it
     # on *any* plan move, not just the one that was scheduled, is deliberate:

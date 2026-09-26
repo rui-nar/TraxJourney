@@ -11,7 +11,12 @@ from scalar_fastapi import get_scalar_api_reference
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src.brand import APP_NAME
-from src.exceptions.errors import APIError, AuthenticationError, QuotaExceeded
+from src.exceptions.errors import (
+    AccountDeletionRefused,
+    APIError,
+    AuthenticationError,
+    QuotaExceeded,
+)
 from src.jobs.prepared_geo_jobs import sweep_unprepared_geometry
 from src.jobs.route_jobs import (
     sweep_degraded_segments,
@@ -266,6 +271,24 @@ async def _quota_handler(_request, exc: QuotaExceeded):
             "limit": exc.limit,
             "used": exc.used,
             "needed": exc.needed,
+            "request_id": request_id_var.get(),
+        },
+    )
+
+
+@app.exception_handler(AccountDeletionRefused)
+async def _deletion_refused_handler(_request, exc: AccountDeletionRefused):
+    """An account deletion stopped before removing anything (issue #429).
+
+    One handler for both deletion routes (self-service and admin), so they
+    cannot disagree on the status or the wording the app shows.
+    """
+    _log.warning("Account deletion refused (%s): %s", exc.code, exc)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "detail": str(exc),
+            "code": exc.code,
             "request_id": request_id_var.get(),
         },
     )
