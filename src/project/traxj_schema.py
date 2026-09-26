@@ -446,27 +446,42 @@ def _bad_text(text: str) -> bool:
 
 
 def _bad_value(document: Any) -> Optional[str]:
-    """The first value no field of the format may hold, wherever it is."""
-    stack: List[Tuple[Any, Tuple[Any, ...]]] = [(document, ())]
+    """The first value no field of the format may hold, wherever it is.
+
+    Depth first, holding one open iterator and one key per level of nesting,
+    never a path per container: a file of a million tiny lists would
+    otherwise cost a queued path for each, well past the memory reading it
+    takes. The path is only put together once a fault is found.
+    """
+    keys: List[Any] = []            # the key each open level was entered by
+    stack = [_pairs(document)]
     while stack:
-        node, path = stack.pop()
-        pairs = node.items() if type(node) is dict else enumerate(node)
-        for key, value in pairs:
+        for key, value in stack[-1]:
             if type(key) is str and _bad_text(key):
-                return f"{_where(path)} has a field name that is not valid text"
+                return f"{_where(tuple(keys))} has a field name that is not valid text"
             kind = type(value)
             if kind is float:
                 if value - value != 0:  # inf - inf and nan - nan are nan
-                    return f"{_where(path + (key,))} is not a finite number"
+                    return f"{_where((*keys, key))} is not a finite number"
             elif kind is str:
                 if _bad_text(value):
-                    return f"{_where(path + (key,))} is not valid text"
+                    return f"{_where((*keys, key))} is not valid text"
             elif kind is int:
                 if not _INT_MIN <= value <= _INT_MAX:
-                    return f"{_where(path + (key,))} is a number out of range"
+                    return f"{_where((*keys, key))} is a number out of range"
             elif kind is dict or kind is list:
-                stack.append((value, path + (key,)))
+                keys.append(key)
+                stack.append(_pairs(value))
+                break
+        else:
+            stack.pop()
+            if keys:
+                keys.pop()
     return None
+
+
+def _pairs(node: Any):
+    return iter(node.items()) if type(node) is dict else enumerate(node)
 
 
 def fault(document: Dict[str, Any]) -> Optional[str]:

@@ -334,3 +334,22 @@ def test_unknown_fields_are_still_ignored(env):
     r = _import(client, _bytes(doc))
 
     assert r.status_code == 201, r.text
+
+
+@pytest.mark.parametrize("container", ["[0]", '{"a":0}'])
+def test_checking_a_file_costs_little_more_memory_than_reading_it(container):
+    """The check walks every value of the file, and must not keep a record
+    of where each one is while it does: a file of 300,000 tiny containers
+    peaked at 67 times its size, where reading it alone peaks at 25."""
+    import tracemalloc
+
+    raw = (json.dumps(_TRIP)[:-1] + ',"junk":['
+           + ",".join([container] * 300_000) + "]}").encode()
+    tracemalloc.start()
+    try:
+        ProjectIO.from_bytes(raw)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak / len(raw) < 30, peak / len(raw)
