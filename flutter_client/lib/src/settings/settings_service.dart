@@ -88,9 +88,16 @@ class SettingsService {
   Future<void> disconnectImmich() async =>
       api.delete('/api/immich/disconnect');
 
+  /// Backups are admin-only. A 403 (e.g. admin rights revoked since sign-in)
+  /// yields an empty list rather than an error.
   Future<List<Map<String, dynamic>>> listBackups() async {
-    final data = await api.get('/api/backup/') as List<dynamic>;
-    return data.cast<Map<String, dynamic>>();
+    try {
+      final data = await api.get('/api/backup/') as List<dynamic>;
+      return data.cast<Map<String, dynamic>>();
+    } on ApiException catch (e) {
+      if (e.statusCode == 403) return const [];
+      rethrow;
+    }
   }
 
   Future<void> restoreBackup(String date) async {
