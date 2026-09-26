@@ -59,6 +59,10 @@ Launch `adversarial-reviewer` with: the subject (plan path or diff file), the
 envelope, the ledger path and the round number. Do not pass your own reasoning
 for the design: the reviewer judges the artifact, not the argument for it.
 
+The reviewer runs on Fable by default. If the user named a model for the review
+("an Opus adversarial review"), launch the same agent with that model as an
+override; its tools and instructions stay the same.
+
 ### 5. Validate
 
 - Every finding has every §3 field, and its trigger names an actor, an action
