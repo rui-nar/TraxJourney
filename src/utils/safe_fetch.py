@@ -12,8 +12,12 @@ containers, the LAN, or the cloud metadata service. So every fetch here:
   multicast, reserved or unspecified addresses;
 - connects to the address it vetted, not to whatever the name resolves to a
   moment later, keeping the original Host header and TLS name;
-- follows redirects itself, vetting every hop the same way;
-- caps the bytes read and the total time taken.
+- follows redirects itself, vetting every hop the same way, and never
+  carries the caller's headers (an API key, say) or body to another origin,
+  nor from https down to http;
+- caps the bytes read, the wait for each read (`idle_timeout`) and the time
+  the whole body may take (`total_timeout`). A server that trickles its
+  response headers is bounded by the per-read wait only.
 """
 from __future__ import annotations
 
@@ -41,6 +45,12 @@ class FetchRefused(Exception):
     """The URL, one of its redirects, or its response broke the policy."""
 
 
+class DestinationRefused(FetchRefused):
+    """The destination itself is not allowed: its scheme, its address, or
+    where a redirect tried to take the request. Other refusals (size, time,
+    an unresolvable name) are about the fetch, not the destination."""
+
+
 def _embedded_v4(addr: ipaddress.IPv6Address) -> list:
     """IPv4 addresses an IPv6 address carries, which also have to be public."""
     out = []
@@ -57,7 +67,8 @@ def _embedded_v4(addr: ipaddress.IPv6Address) -> list:
 
 def _never_allowed(addr) -> bool:
     return (addr.is_loopback or addr.is_link_local or addr.is_multicast
-            or addr.is_unspecified or addr.is_reserved)
+            or addr.is_unspecified or addr.is_reserved
+            or (isinstance(addr, ipaddress.IPv6Address) and addr.is_site_local))
 
 
 def address_allowed(addr, *, private_ok: bool = False) -> bool:
@@ -88,8 +99,15 @@ def _resolve(host: str, port: int) -> list:
     return [info[4][0].split("%", 1)[0] for info in infos]
 
 
-def _normalise_host(host: str) -> str:
-    return host.strip().lower().rstrip(".")
+def _ascii_host(host: str) -> str:
+    """The host as it goes on the wire: lower case, IDNA A-label."""
+    host = host.strip().lower().rstrip(".")
+    if host.isascii():
+        return host
+    try:
+        return host.encode("idna").decode("ascii")
+    except UnicodeError:
+        raise FetchRefused("the host name is not valid") from None
 
 
 def vet(url: str, allowed_private_hosts: Iterable[str] = ()) -> Tuple[str, str, int, str, str]:
@@ -104,14 +122,21 @@ def vet(url: str, allowed_private_hosts: Iterable[str] = ()) -> Tuple[str, str, 
         raise FetchRefused(f"not a valid URL: {exc}") from None
     scheme = (parts.scheme or "").lower()
     if scheme not in ("http", "https"):
-        raise FetchRefused("only http and https URLs are allowed")
+        raise DestinationRefused("only http and https URLs are allowed")
     if parts.username or parts.password:
-        raise FetchRefused("URLs with credentials are not allowed")
-    host = parts.hostname
-    if not host:
+        raise DestinationRefused("URLs with credentials are not allowed")
+    if not parts.hostname:
         raise FetchRefused("the URL has no host")
+    host = _ascii_host(parts.hostname)
     port = port or (443 if scheme == "https" else 80)
-    private_ok = _normalise_host(host) in {_normalise_host(h) for h in allowed_private_hosts if h}
+    allowed = set()
+    for h in allowed_private_hosts:
+        if h and h.strip():
+            try:
+                allowed.add(_ascii_host(h))
+            except FetchRefused:
+                pass
+    private_ok = host in allowed
     try:
         addresses = _resolve(host, port)
     except (socket.gaierror, UnicodeError, OSError) as exc:
@@ -124,7 +149,7 @@ def vet(url: str, allowed_private_hosts: Iterable[str] = ()) -> Tuple[str, str, 
         except ValueError:
             ok = False
         if not ok:
-            raise FetchRefused("the host resolves to an address that is not allowed")
+            raise DestinationRefused("the host resolves to an address that is not allowed")
     path = parts.path or "/"
     if parts.query:
         path += "?" + parts.query
@@ -142,14 +167,19 @@ class SafeResponse:
     _max_bytes: int = field(repr=False)
 
     def iter_bytes(self) -> Iterator[bytes]:
+        # read1 returns as soon as any bytes arrive, so the deadline is checked
+        # after every read; each read itself waits at most idle_timeout.
         total = 0
         try:
-            for chunk in self._raw.stream(_CHUNK):
+            while True:
+                if time.monotonic() > self._deadline:
+                    raise FetchRefused("the download took longer than allowed")
+                chunk = self._raw.read1(_CHUNK)
+                if not chunk:
+                    return
                 total += len(chunk)
                 if total > self._max_bytes:
                     raise FetchRefused("the response is larger than allowed")
-                if time.monotonic() > self._deadline:
-                    raise FetchRefused("the download took longer than allowed")
                 yield chunk
         finally:
             self.close()
@@ -163,7 +193,8 @@ class SafeResponse:
 
 
 def _open_once(method, scheme, host, port, ip, path, headers, body, timeout):
-    host_header = host if port == (443 if scheme == "https" else 80) else f"{host}:{port}"
+    name = f"[{host}]" if ":" in host else host  # an IPv6 literal
+    host_header = name if port == (443 if scheme == "https" else 80) else f"{name}:{port}"
     if scheme == "https":
         pool = urllib3.HTTPSConnectionPool(
             ip, port=port, timeout=timeout, retries=False, maxsize=1,
@@ -187,6 +218,7 @@ def open_url(
     max_bytes: int,
     total_timeout: float,
     max_redirects: int = 3,
+    idle_timeout: float = 30.0,
     allowed_private_hosts: Iterable[str] = (),
 ) -> SafeResponse:
     """Open `url` under the policy. Raises FetchRefused, or urllib3 errors
@@ -194,12 +226,21 @@ def open_url(
     allowed = tuple(allowed_private_hosts)
     deadline = time.monotonic() + total_timeout
     headers = dict(headers or {})
+    origin = None
     for _ in range(max_redirects + 1):
         scheme, host, port, ip, path = vet(url, allowed)
+        if origin is not None and (scheme, host, port) != origin:
+            if origin[0] == "https" and scheme == "http":
+                raise DestinationRefused("a redirect from https to http is not followed")
+            if body is not None:
+                raise DestinationRefused("a request body is not sent to another origin")
+            headers = {}  # never carry the caller's headers to another origin
+        origin = (scheme, host, port)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise FetchRefused("the download took longer than allowed")
-        timeout = urllib3.Timeout(connect=min(10.0, remaining), read=remaining)
+        wait = min(idle_timeout, remaining)
+        timeout = urllib3.Timeout(connect=min(10.0, wait), read=wait)
         raw = _open_once(method, scheme, host, port, ip, path, headers, body, timeout)
         if raw.status in _REDIRECT_CODES and raw.headers.get("location"):
             location = raw.headers["location"]

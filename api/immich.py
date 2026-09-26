@@ -31,7 +31,7 @@ from sqlmodel import select
 from api.deps import get_current_user
 from models.db import get_session
 from models.user import ImmichToken
-from src.utils.safe_fetch import FetchRefused, SafeResponse, open_url
+from src.utils.safe_fetch import DestinationRefused, FetchRefused, SafeResponse, open_url
 
 router = APIRouter(prefix="/api/immich", tags=["immich"])
 
@@ -45,6 +45,10 @@ _DOWNLOAD_TIMEOUT: tuple = (5, 60)
 # Body caps: a JSON answer is small; an original can be a large photo.
 _MAX_JSON_BYTES = 20 * 1024 * 1024
 _MAX_ASSET_BYTES = 200 * 1024 * 1024
+# A streamed original may take a while on a slow uplink (and is paced by the
+# downstream client); the per-read wait, _DOWNLOAD_TIMEOUT's read part, still
+# bounds a stalled server.
+_DOWNLOAD_TOTAL_SECONDS = 30 * 60
 
 # The Immich server URL is the user's choice, so every call to it goes through
 # the guarded fetch (src/utils/safe_fetch): public addresses only, unless the
@@ -63,16 +67,27 @@ class ImmichAddressNotAllowed(Exception):
 
 
 class _Response:
-    """The slice of a requests.Response this module uses."""
+    """The slice of a requests.Response this module uses. A non-streamed
+    response is read in full when it is opened, so a failure while reading
+    the body surfaces there, as a requests exception, like before."""
 
-    def __init__(self, resp: SafeResponse, max_bytes: int):
+    def __init__(self, resp: SafeResponse, *, stream: bool):
         self._resp = resp
-        self._max_bytes = max_bytes
         self.status_code = resp.status
         self.headers = resp.headers
+        self._body = None if stream else resp.read_all()
 
     def json(self):
-        return _json.loads(self._resp.read_all())
+        body = self._body if self._body is not None else self._resp.read_all()
+        charset = None
+        for part in (self.headers.get("content-type") or "").split(";")[1:]:
+            key, _, value = part.strip().partition("=")
+            if key.lower() == "charset" and value:
+                charset = value.strip().strip('"')
+        try:
+            return _json.loads(body.decode(charset) if charset else body)
+        except LookupError:  # an unknown charset: let json detect UTF-8/16/32
+            return _json.loads(body)
 
     def iter_content(self, chunk_size=None):
         return self._resp.iter_bytes()
@@ -86,28 +101,38 @@ class _GuardedHttp:
     back as requests exceptions, as before; a refused address as
     ImmichAddressNotAllowed."""
 
-    def _open(self, method, url, *, headers, body, timeout, max_bytes):
+    def _open(self, method, url, *, headers, body, timeout, max_bytes, total, stream):
         try:
             resp = open_url(
                 url, method=method, headers=headers, body=body,
-                max_bytes=max_bytes, total_timeout=float(sum(timeout)),
+                max_bytes=max_bytes, total_timeout=total, idle_timeout=float(timeout[1]),
                 allowed_private_hosts=_allowed_private_hosts(),
             )
-        except FetchRefused as exc:
+        except DestinationRefused as exc:
             raise ImmichAddressNotAllowed(str(exc)) from None
+        except FetchRefused as exc:
+            raise requests.RequestException(str(exc)) from None
         except (urllib3.exceptions.HTTPError, OSError) as exc:
             raise requests.ConnectionError(str(exc)) from None
-        return _Response(resp, max_bytes)
+        try:
+            return _Response(resp, stream=stream)
+        except FetchRefused as exc:
+            raise requests.RequestException(str(exc)) from None
+        except (urllib3.exceptions.HTTPError, OSError) as exc:
+            raise requests.ConnectionError(str(exc)) from None
 
     def get(self, url, headers=None, timeout=_VALIDATE_TIMEOUT, stream=False):
+        if stream:
+            return self._open("GET", url, headers=headers, body=None, timeout=timeout,
+                              max_bytes=_MAX_ASSET_BYTES, total=_DOWNLOAD_TOTAL_SECONDS, stream=True)
         return self._open("GET", url, headers=headers, body=None, timeout=timeout,
-                          max_bytes=_MAX_ASSET_BYTES if stream else _MAX_JSON_BYTES)
+                          max_bytes=_MAX_JSON_BYTES, total=float(sum(timeout)), stream=False)
 
     def post(self, url, headers=None, json=None, timeout=_SEARCH_TIMEOUT):
         body = _json.dumps(json).encode() if json is not None else None
         hdrs = {**(headers or {}), "Content-Type": "application/json"}
         return self._open("POST", url, headers=hdrs, body=body, timeout=timeout,
-                          max_bytes=_MAX_JSON_BYTES)
+                          max_bytes=_MAX_JSON_BYTES, total=float(sum(timeout)), stream=False)
 
 
 _http = _GuardedHttp()
@@ -195,6 +220,8 @@ def _proxy_asset(tok: ImmichToken, asset_id: str, subpath: str) -> StreamingResp
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Could not reach Immich: {exc}",
         )
+    if resp.status_code != 200:
+        resp.close()
     if resp.status_code == 404:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Immich asset not found")
     if resp.status_code != 200:

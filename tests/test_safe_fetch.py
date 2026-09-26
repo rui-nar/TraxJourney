@@ -33,7 +33,7 @@ def test_public_addresses_are_allowed(addr):
     "10.0.0.1", "172.16.0.1", "192.168.1.5", "100.64.0.1", "fc00::1",
     "127.0.0.1", "::1", "169.254.169.254", "fe80::1", "0.0.0.0", "::",
     "224.0.0.1", "ff0e::1", "::ffff:127.0.0.1", "::ffff:10.0.0.1",
-    "64:ff9b::a00:1", "2002:0a00:0001::1",
+    "64:ff9b::a00:1", "2002:0a00:0001::1", "fec0::1",
 ])
 def test_non_public_addresses_are_refused(addr):
     assert not address_allowed(addr)
@@ -119,9 +119,9 @@ class _Raw:
         self.headers = dict(headers or {})
         self._body = body
 
-    def stream(self, n):
-        for i in range(0, len(self._body), n):
-            yield self._body[i:i + n]
+    def read1(self, n):
+        chunk, self._body = self._body[:n], self._body[n:]
+        return chunk
 
     def release_conn(self):
         pass
@@ -137,7 +137,8 @@ def wire(monkeypatch):
     script: list = []
 
     def open_once(method, scheme, host, port, ip, path, headers, body, timeout):
-        calls.append({"method": method, "ip": ip, "host": host, "port": port, "path": path})
+        calls.append({"method": method, "ip": ip, "host": host, "port": port, "path": path,
+                      "headers": dict(headers), "body": body, "timeout": timeout})
         return script.pop(0)
 
     monkeypatch.setattr(safe_fetch, "_open_once", open_once)
@@ -149,8 +150,8 @@ def test_the_connection_goes_to_the_vetted_address(dns, wire):
     dns["cdn.example"] = ["93.184.216.34"]
     script.append(_Raw(200, b"jpegbytes"))
     assert fetch_bytes("https://cdn.example/p.jpg", max_bytes=1000, total_timeout=5) == b"jpegbytes"
-    assert calls == [{"method": "GET", "ip": "93.184.216.34", "host": "cdn.example",
-                      "port": 443, "path": "/p.jpg"}]
+    assert [{k: c[k] for k in ("method", "ip", "host", "port", "path")} for c in calls] == [
+        {"method": "GET", "ip": "93.184.216.34", "host": "cdn.example", "port": 443, "path": "/p.jpg"}]
 
 
 def test_a_redirect_to_a_private_address_is_refused_before_connecting(dns, wire):
@@ -275,3 +276,125 @@ def test_a_journal_photo_url_on_a_non_public_address_is_never_fetched(dns, monke
     journal_mod._download_photo_from_url(1, "http://photos.example/p.jpg", "1", 1)
 
     assert opened == [] and stored == []
+
+
+# ── Redirects across origins, timing, names ──────────────────────────────────
+
+def test_a_redirect_to_another_host_does_not_carry_the_callers_headers(dns, wire):
+    calls, script = wire
+    dns["immich.example"] = ["93.184.216.34"]
+    dns["elsewhere.example"] = ["93.184.216.35"]
+    script += [_Raw(302, headers={"location": "https://elsewhere.example/x"}), _Raw(200, b"ok")]
+    resp = open_url("https://immich.example/a", headers={"x-api-key": "SECRET"},
+                    max_bytes=1000, total_timeout=5)
+    resp.read_all()
+    assert calls[0]["headers"] == {"x-api-key": "SECRET"}
+    assert calls[1]["host"] == "elsewhere.example" and calls[1]["headers"] == {}
+
+
+def test_a_redirect_within_the_same_origin_keeps_the_headers(dns, wire):
+    calls, script = wire
+    dns["immich.example"] = ["93.184.216.34"]
+    script += [_Raw(302, headers={"location": "/b"}), _Raw(200, b"ok")]
+    open_url("https://immich.example/a", headers={"x-api-key": "SECRET"},
+             max_bytes=1000, total_timeout=5).read_all()
+    assert calls[1]["headers"] == {"x-api-key": "SECRET"}
+
+
+def test_a_redirect_from_https_to_http_is_refused(dns, wire):
+    calls, script = wire
+    dns["cdn.example"] = ["93.184.216.34"]
+    script.append(_Raw(302, headers={"location": "http://cdn.example/p.jpg"}))
+    with pytest.raises(FetchRefused):
+        fetch_bytes("https://cdn.example/p.jpg", max_bytes=1000, total_timeout=5)
+    assert len(calls) == 1
+
+
+def test_a_request_body_is_not_sent_to_another_origin(dns, wire):
+    calls, script = wire
+    dns["immich.example"] = ["93.184.216.34"]
+    dns["elsewhere.example"] = ["93.184.216.35"]
+    script.append(_Raw(307, headers={"location": "https://elsewhere.example/search"}))
+    with pytest.raises(FetchRefused):
+        open_url("https://immich.example/search", method="POST", body=b"{}",
+                 max_bytes=1000, total_timeout=5)
+    assert len(calls) == 1
+
+
+class _Trickle(_Raw):
+    """Sends one byte per read, each read taking `step` seconds of fake time."""
+
+    def __init__(self, clock, step, size):
+        super().__init__(200, b"x" * size)
+        self._clock, self._step = clock, step
+
+    def read1(self, n):
+        self._clock[0] += self._step
+        return super().read1(1)
+
+
+def test_a_trickled_body_is_cut_off_at_the_total_time(dns, wire, monkeypatch):
+    _, script = wire
+    clock = [1000.0]
+    monkeypatch.setattr(safe_fetch.time, "monotonic", lambda: clock[0])
+    dns["slow.example"] = ["93.184.216.34"]
+    script.append(_Trickle(clock, 0.25, 100))
+    with pytest.raises(FetchRefused):
+        fetch_bytes("https://slow.example/p.jpg", max_bytes=1000, total_timeout=1)
+    assert clock[0] <= 1000.0 + 1.25  # one read past the deadline at most
+
+
+def test_each_read_waits_at_most_the_idle_timeout(dns, wire):
+    calls, script = wire
+    dns["cdn.example"] = ["93.184.216.34"]
+    script += [_Raw(200, b"a"), _Raw(200, b"b")]
+    open_url("https://cdn.example/1", max_bytes=10, total_timeout=600, idle_timeout=20).read_all()
+    open_url("https://cdn.example/2", max_bytes=10, total_timeout=5, idle_timeout=20).read_all()
+    assert calls[0]["timeout"].read_timeout == 20
+    assert calls[1]["timeout"].read_timeout <= 5
+
+
+def test_an_internationalised_host_name_is_used_in_its_ascii_form(dns):
+    dns["xn--bcher-kva.example"] = ["93.184.216.34"]
+    assert vet("https://b\u00fccher.example/p.jpg")[1] == "xn--bcher-kva.example"
+
+
+# ── The real connection setup (no connection is made) ────────────────────────
+
+class _PoolRecorder:
+    made: list = []
+
+    def __init__(self, host, **kwargs):
+        self.host, self.kwargs = host, kwargs
+        _PoolRecorder.made.append(self)
+
+    def urlopen(self, method, path, **kwargs):
+        self.urlopen_kwargs = kwargs
+        return _Raw(200, b"")
+
+
+@pytest.fixture
+def pools(monkeypatch):
+    import urllib3
+    _PoolRecorder.made = []
+    monkeypatch.setattr(urllib3, "HTTPSConnectionPool", _PoolRecorder)
+    monkeypatch.setattr(urllib3, "HTTPConnectionPool", _PoolRecorder)
+    return _PoolRecorder.made
+
+
+def test_https_connects_to_the_vetted_address_and_checks_the_certificate_for_the_name(pools):
+    safe_fetch._open_once("GET", "https", "cdn.example", 443, "93.184.216.34", "/p.jpg",
+                          {"x": "1"}, None, None)
+    pool = pools[0]
+    assert pool.host == "93.184.216.34"
+    assert pool.kwargs["server_hostname"] == "cdn.example"
+    assert pool.kwargs["assert_hostname"] == "cdn.example"
+    assert pool.kwargs["cert_reqs"] == "CERT_REQUIRED"
+    assert pool.urlopen_kwargs["headers"]["Host"] == "cdn.example"
+    assert pool.urlopen_kwargs["redirect"] is False
+
+
+def test_an_ipv6_literal_goes_in_brackets_in_the_host_header(pools):
+    safe_fetch._open_once("GET", "http", "2606:4700::1111", 8080, "2606:4700::1111", "/",
+                          {}, None, None)
+    assert pools[0].urlopen_kwargs["headers"]["Host"] == "[2606:4700::1111]:8080"

@@ -36,6 +36,9 @@ class _FakeResponse:
     def iter_content(self, chunk_size=None):
         return iter(self._chunks)
 
+    def close(self):
+        pass
+
 
 def _seed_user(engine) -> int:
     with Session(engine) as sess:
@@ -428,9 +431,9 @@ class _Raw:
         self.headers = dict(headers or {})
         self._body = body
 
-    def stream(self, n):
-        for i in range(0, len(self._body), n):
-            yield self._body[i:i + n]
+    def read1(self, n):
+        chunk, self._body = self._body[:n], self._body[n:]
+        return chunk
 
     def release_conn(self):
         pass
@@ -542,3 +545,64 @@ def test_the_asset_proxy_streams_from_a_public_server(env, net):
     assert resp.content == b"JPEGBYTES"
     assert opened == [{"host": "immich.example.com", "ip": "93.184.216.34",
                        "path": "/api/assets/abc/thumbnail"}]
+
+
+
+class _BrokenBody(_Raw):
+    def read1(self, n):
+        import urllib3
+        raise urllib3.exceptions.ProtocolError("connection broken")
+
+
+_SEARCH = {"taken_after": "2024-01-01T00:00:00Z", "taken_before": "2024-01-02T00:00:00Z"}
+
+
+def test_search_answers_502_when_the_body_cannot_be_read(env, net):
+    client, engine, uid = env
+    dns, opened, script = net
+    _connect(engine, uid, server_url="https://immich.example.com")
+    dns["immich.example.com"] = ["93.184.216.34"]
+    script.append(_BrokenBody(200))
+    assert client.post("/api/immich/search", json=_SEARCH).status_code == 502
+
+
+def test_search_answers_502_when_the_body_is_over_the_cap(env, net, monkeypatch):
+    client, engine, uid = env
+    dns, opened, script = net
+    monkeypatch.setattr(immich_module, "_MAX_JSON_BYTES", 10)
+    _connect(engine, uid, server_url="https://immich.example.com")
+    dns["immich.example.com"] = ["93.184.216.34"]
+    script.append(_Raw(200, b'{"assets": {"items": []}, "padding": "xxxxxxxx"}'))
+    assert client.post("/api/immich/search", json=_SEARCH).status_code == 502
+
+
+def test_search_decodes_json_in_the_declared_charset(env, net):
+    client, engine, uid = env
+    dns, opened, script = net
+    _connect(engine, uid, server_url="https://immich.example.com")
+    dns["immich.example.com"] = ["93.184.216.34"]
+    body = '{"assets": {"items": [{"id": "caf\u00e9", "fileCreatedAt": "2024-01-01"}]}}'
+    script.append(_Raw(200, body.encode("iso-8859-1"),
+                       {"content-type": "application/json; charset=iso-8859-1"}))
+    resp = client.post("/api/immich/search", json=_SEARCH)
+    assert resp.status_code == 200
+    assert resp.json()["candidates"][0]["id"] == "caf\u00e9"
+
+
+def test_the_asset_proxy_allows_a_long_download(env, net, monkeypatch):
+    client, engine, uid = env
+    dns, opened, script = net
+    _connect(engine, uid, server_url="https://immich.example.com")
+    dns["immich.example.com"] = ["93.184.216.34"]
+    script.append(_Raw(200, b"JPEG", {"content-type": "image/jpeg"}))
+    seen = {}
+    real_open_url = immich_module.open_url
+
+    def spy(url, **kwargs):
+        seen.update(kwargs)
+        return real_open_url(url, **kwargs)
+
+    monkeypatch.setattr(immich_module, "open_url", spy)
+    assert client.get("/api/immich/assets/abc/original").status_code == 200
+    assert seen["total_timeout"] == immich_module._DOWNLOAD_TOTAL_SECONDS
+    assert seen["idle_timeout"] == immich_module._DOWNLOAD_TIMEOUT[1]
