@@ -118,7 +118,8 @@ void main() {
       }));
     });
 
-    Future<void> pumpScreen(WidgetTester tester, SettingsService service) async {
+    Future<void> pumpScreen(WidgetTester tester, SettingsService service,
+        {AuthNotifier Function()? auth}) async {
       final router = GoRouter(routes: [
         GoRoute(path: '/', builder: (_, __) => SettingsScreen(service: service)),
         GoRoute(path: '/login', builder: (_, __) => const Text('login page')),
@@ -126,7 +127,7 @@ void main() {
       await tester.pumpWidget(MultiProvider(
         providers: [
           ChangeNotifierProvider<AuthNotifier>(
-              create: (_) => AuthNotifier(AuthService())),
+              create: (_) => auth?.call() ?? AuthNotifier(AuthService())),
           ChangeNotifierProvider<ThemeNotifier>(create: (_) => ThemeNotifier()),
         ],
         child: MaterialApp.router(routerConfig: router),
@@ -211,6 +212,20 @@ void main() {
       expect(billingCalls, before + 1);
     });
 
+    testWidgets('a deletion that went through is never reported as failed',
+        (tester) async {
+      // The account is gone; wiping this device's caches afterwards fails.
+      await pumpScreen(tester, _FakeSettingsService(),
+          auth: () => _FailingLogoutNotifier());
+
+      await openConfirmation(tester);
+      await tester.tap(find.widgetWithText(TextButton, 'Delete'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Account not deleted'), findsNothing);
+      expect(find.text('login page'), findsOneWidget);
+    });
+
     testWidgets('a free user is not warned about a plan', (tester) async {
       billingMe = () => _json(200, _billingMe(status: 'none', plan: 'free'));
       await pumpScreen(tester, _FakeSettingsService());
@@ -252,6 +267,13 @@ void main() {
           findsOneWidget);
     });
   });
+}
+
+class _FailingLogoutNotifier extends AuthNotifier {
+  _FailingLogoutNotifier() : super(AuthService());
+
+  @override
+  Future<void> logout() async => throw Exception('cache wipe failed');
 }
 
 class _FakeSettingsService extends SettingsService {

@@ -249,8 +249,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() => _deleteBusy = true);
     try {
       await _service.deleteAccount();
-      await auth.logout();
-      router.go('/login');
     } on Exception catch (e) {
       if (!mounted) return;
       setState(() => _deleteBusy = false);
@@ -269,7 +267,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ],
         ),
       );
+      return;
     }
+    // The account is gone. Nothing after this may say otherwise: logout signs
+    // out before it wipes caches, so a wipe that fails still leaves this
+    // device signed out, and it is safe to carry on to the login page.
+    try {
+      await auth.logout();
+    } catch (_) {}
+    router.go('/login');
   }
 
   Future<void> _clearCachedTripData() async {
