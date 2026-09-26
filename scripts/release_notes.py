@@ -89,6 +89,8 @@ AREAS: dict[str, tuple[str, str]] = {
     "web": ("Web app", APP),
     "client": ("Web app", APP),
     "android": ("Android app", APP),
+    "landing": ("Home page", APP),
+    "billing": ("Plans & billing", APP),
     "api": ("API", SERVER),
     "db": ("Database", SERVER),
     "alembic": ("Database", SERVER),
