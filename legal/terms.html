@@ -130,16 +130,20 @@ return.</p>
     page. Your paid plan stays active until the end of the period you have
     paid for, and you then move to the free plan.</li>
   <li><strong>Refunds.</strong> At checkout you ask for your paid plan to
-    start immediately and confirm that you have read these terms. If you then
-    withdraw within 14 days of your first purchase (the day your first paid
-    subscription started; renewals, plan changes and later subscriptions do not
-    start a new 14 days), your subscription is cancelled at once and the unused
+    start immediately and confirm that you have read these terms. You can
+    withdraw until the end of the 14th day after the day your subscription
+    started (days counted in UTC, the withdrawal period ending at 23:59:59
+    UTC). If you do, your subscription is cancelled at once and the unused
     part of the current period is refunded to your payment method, pro rata to
     the time left and rounded down to the cent. You pay only for the time you
-    used, and nothing is refunded for a period you did not pay for. You can
-    withdraw from the plan page in the app. After those 14 days, cancelling
-    stops the next renewal and there is no refund for the period you have
-    already paid for.</li>
+    used, and nothing is refunded for a period you did not pay for. A new
+    subscription that you start after a previous one has fully ended has its
+    own 14 days. Renewals, plan changes, and moving to a higher or lower plan
+    do not start new ones. You can withdraw from the plan page in the app. A
+    withdrawal you ask for in time is completed even if a payment problem
+    means the refund goes through after the 14 days. After the 14 days,
+    cancelling stops the next renewal and there is no refund for the period
+    you have already paid for.</li>
   <li><strong>Failed payments.</strong> If a renewal fails, your plan stays
     active while Stripe retries the payment. If the payment still does not go
     through, the subscription ends and you move to the free plan.</li>
@@ -150,9 +154,10 @@ return.</p>
   <li><strong>Price changes.</strong> We will tell you about a price change
     before it applies to your subscription, so you can cancel first.</li>
   <li><strong>Deleting your account cancels your subscription
-    immediately.</strong> Within 14 days of your first purchase, the unused
-    part of the current period is also refunded, as described under Refunds.
-    After those 14 days, nothing is refunded.</li>
+    immediately.</strong> If you are still within your subscription's
+    withdrawal period (until the end of the 14th day after the day it started,
+    UTC), the unused part of the current period is also refunded, as described
+    under Refunds. After it, nothing is refunded.</li>
 </ul>
 
 <h2>8. Availability, backups and encryption</h2>
