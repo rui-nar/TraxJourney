@@ -24,6 +24,9 @@ they pin what later writers stopped or started emitting:
   an empty id at (0, 0);
 * end-to-end encrypted names, descriptions and tracks, with null geometry;
 * the ZIP export's own document, whose memories carry ``photo_refs``.
+* a GPX upload from before #462, with a ``65535`` and a ``NaN`` reading, an
+  infinite gain and a stray 1970 stamp that made it 54 years long, beside a
+  Strava activity whose stream held the same sentinel.
 
 The round trips below cover what today's writers emit: the trip export, the
 trip file inside the ZIP export, ``ProjectIO.save``, and a trip whose content

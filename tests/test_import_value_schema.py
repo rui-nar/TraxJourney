@@ -9,7 +9,9 @@ the app's JSON parser refuses.
 A real export never holds such values, so the file is refused, with a 400
 naming the offending field (never its content), and nothing is ingested.
 Every shape of file a past version wrote still imports: see
-test_import_historical_exports.py.
+test_import_historical_exports.py. An implausible elevation or elapsed time,
+which past writers did store, is normalised rather than refused: see
+test_import_normalises_elevations.py.
 """
 
 from __future__ import annotations
@@ -183,9 +185,6 @@ _BAD = {
     "Infinity as a segment latitude": (_bytes(_set(_SEG + ("start", "lat"), _INF)), "items[4].segment.start.lat"),
     "-Infinity as a memory longitude": (_bytes(_set(_MEM + ("lon",), -_INF)), "items[1].memory.lon"),
     "NaN in filter_state": (_bytes(_set(("filter_state", "start_date"), _NAN)), "filter_state.start_date"),
-    "NaN in an elevation profile": (
-        _bytes(_set(_ACT + ("elevation_profile", "elevations_m"), [800.0, _NAN])),
-        "activities[0].elevation_profile.elevations_m[1]"),
     "NaN in a field the import ignores": (_bytes(_set(("track_width",), _NAN)), "track_width"),
     "a number too large for a float": (
         _bytes(_set(_ACT + ("distance",), 1.5)).replace(b"1.5", b"1e999"), "activities[0].distance"),
@@ -250,17 +249,10 @@ _BAD = {
     "a distance past 100,000 km": (_bytes(_set(_ACT + ("distance",), 1e308)), "activities[0].distance"),
     "a negative distance": (_bytes(_set(_ACT + ("distance",), -1.0)), "activities[0].distance"),
     "a moving time past 31 years": (_bytes(_set(_ACT + ("moving_time",), 2e9)), "activities[0].moving_time"),
-    "an elapsed time past 31 years": (_bytes(_set(_ACT + ("elapsed_time",), 10 ** 12)), "activities[0].elapsed_time"),
-    "a gain past 10,000 km": (_bytes(_set(_ACT + ("total_elevation_gain",), 1e308)), "activities[0].total_elevation_gain"),
-    "a high point above 20 km": (_bytes(_set(_ACT + ("elev_high",), 20001.0)), "activities[0].elev_high"),
-    "a low point below -20 km": (_bytes(_set(_ACT + ("elev_low",), -20001.0)), "activities[0].elev_low"),
     "a speed past the distance bound per second": (_bytes(_set(_ACT + ("average_speed",), 1e300)), "activities[0].average_speed"),
     "a max speed that is negative": (_bytes(_set(_ACT + ("max_speed",), -3.0)), "activities[0].max_speed"),
     "a heart rate of 5000": (_bytes(_set(_ACT + ("max_heartrate",), 5000)), "activities[0].max_heartrate"),
     "a count past a billion": (_bytes(_set(_ACT + ("kudos_count",), 10 ** 12)), "activities[0].kudos_count"),
-    "a profile elevation above 20 km": (
-        _bytes(_set(_ACT + ("elevation_profile", "elevations_m"), [800.0, 1e300])),
-        "activities[0].elevation_profile.elevations_m"),
     "a profile distance past 100,000 km": (
         _bytes(_set(_ACT + ("elevation_profile", "distances_km"), [0.0, 1e300])),
         "activities[0].elevation_profile.distances_km"),

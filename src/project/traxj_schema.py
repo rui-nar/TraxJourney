@@ -36,6 +36,7 @@ from pydantic import (
 )
 from pydantic_core import PydanticCustomError
 
+from src.models.track_edit import repair_elapsed, repair_elevations
 from src.models.value_bounds import (
     DISTANCE_MAX_M, ELEVATION_MAX_M, ELEVATION_MIN_M, Count, Distance, Duration,
     Elevation, Gain, HeartRate, Lat, Lon, Speed,
@@ -493,6 +494,45 @@ def _bad_value(document: Any) -> Optional[str]:
 
 def _pairs(node: Any):
     return iter(node.items()) if type(node) is dict else enumerate(node)
+
+
+def normalise(document: Dict[str, Any]) -> None:
+    """Bring what past writers stored into the format, in place.
+
+    Before issue #462 an activity could be exported holding a non-finite or
+    implausible elevation (a GPX ``NaN``, ``inf`` or ``65535`` in its profile
+    and high/low, a gain measured from them) or an elapsed time decades long
+    (one stray GPX stamp). Every file a past version wrote must still import,
+    so these are repaired as the writers now store them
+    (``repair_elevations``, ``repair_elapsed``), not refused. Anything else
+    is left for :func:`fault` to judge.
+    """
+    activities = document.get("activities")
+    if not isinstance(activities, list):
+        return
+    for act in activities:
+        if not isinstance(act, dict):
+            continue
+        ep = act.get("elevation_profile")
+        profile = None
+        if (isinstance(ep, dict) and isinstance(ep.get("distances_km"), list)
+                and isinstance(ep.get("elevations_m"), list)):
+            profile = (ep["distances_km"], ep["elevations_m"])
+        figures = {k: act.get(k) for k in ("total_elevation_gain", "elev_high", "elev_low")}
+        if not all(v is None or (isinstance(v, (int, float)) and not isinstance(v, bool))
+                   for v in figures.values()):
+            continue            # a wrong type: fault() names it
+        new_profile, gain, high, low = repair_elevations(
+            profile, *figures.values(), app_measured=act.get("source") == "gpx")
+        if new_profile is not profile:
+            act["elevation_profile"] = (
+                None if new_profile is None
+                else {**ep, "distances_km": new_profile[0], "elevations_m": new_profile[1]})
+        for key, value in zip(figures, (gain, high, low)):
+            if key in act:
+                act[key] = value
+        if "elapsed_time" in act:
+            act["elapsed_time"] = repair_elapsed(act["elapsed_time"], act.get("moving_time"))
 
 
 def fault(document: Dict[str, Any]) -> Optional[str]:

@@ -28,7 +28,8 @@ import polyline as polyline_lib
 
 from src.models.great_circle import haversine_km
 from src.models.value_bounds import (
-    DISTANCE_MAX_M, DURATION_MAX_S, GAIN_MAX_M, finite_or_none, plausible_elevation,
+    DISTANCE_MAX_M, DURATION_MAX_S, ELEVATION_MAX_M, ELEVATION_MIN_M, GAIN_MAX_M,
+    finite_or_none, plausible_elevation,
 )
 
 
@@ -230,6 +231,95 @@ def elevation_profile_from_streams(
     distances_km = [
         d / 1000 if finite_or_none(d) is not None else None for d in distance_m[:n]]
     return clean_elevation_profile(distances_km, altitude_m[:n])
+
+
+
+def _reading(value) -> bool:
+    return value is None or (isinstance(value, (int, float)) and not isinstance(value, bool))
+
+
+def _all_within(values, lo: float, hi: float) -> bool:
+    """True if *values* are all finite numbers within [lo, hi]. Checked in C
+    for the common case, a clean list of floats, since a profile can hold
+    millions: a finite sum means no NaN or infinity, and then min and max
+    can be trusted. Anything else is judged value by value."""
+    if set(map(type, values)) <= {int, float} and math.isfinite(sum(values)):
+        return not values or (lo <= min(values) and max(values) <= hi)
+    return all(finite_or_none(v) is not None and lo <= v <= hi for v in values)
+
+
+def profile_needs_repair(profile) -> bool:
+    """True if a stored ``(distances_km, elevations_m)`` holds a sample the
+    writers no longer store: a distance that is not a finite number, or an
+    elevation that is not a plausible reading (NaN, ±Infinity, null, past
+    ±20 km). Such profiles were written before issue #462."""
+    dists, elevs = profile
+    return not (_all_within(dists, -math.inf, math.inf)
+                and _all_within(elevs, ELEVATION_MIN_M, ELEVATION_MAX_M))
+
+
+def repair_elevations(profile, gain, high, low, *, app_measured: bool):
+    """An activity's elevation figures as the writers now store them.
+
+    Before issue #462 an activity could store a non-finite or implausible
+    elevation (a GPX ``<ele>NaN</ele>``, ``inf``, or a device's ``65535``) in
+    its profile, its high/low and, measured from them, its gain. This returns
+    ``(profile, gain, high, low)`` repaired to what the writers would store
+    from the same readings; the trip-file import and the repair migration
+    6c1f0e9a2b47 both go through it, so an old export and an old row come out
+    the same. The profile returned is the one given unless it was repaired.
+
+    * A profile needing repair is rebuilt by :func:`clean_elevation_profile`.
+      One holding anything but numbers and nulls is not a profile any writer
+      made, and is returned as it is, for the caller to refuse.
+    * *app_measured* (an uploaded GPX track): the app measured gain, high and
+      low from those readings, so once the profile is repaired they are
+      measured again from it. Anyone else's (Strava's, or its share of them
+      on an edited activity, #386) are kept.
+    * Any figure still not plausible is measured from the profile, or else
+      cleared: gain to 0.0, high and low to None. A None stays None.
+    """
+    repaired = False
+    if (profile is not None and profile_needs_repair(profile)
+            and all(map(_reading, profile[0])) and all(map(_reading, profile[1]))):
+        profile = clean_elevation_profile(*profile)
+        repaired = True
+
+    def measured():
+        if profile is None or profile_needs_repair(profile):
+            return 0.0, None, None
+        dists, elevs = profile
+        return float(elevation_gain(elevs, dists)), max(elevs), min(elevs)
+
+    if repaired and app_measured:
+        new_gain, high, low = measured()
+        gain = new_gain if gain is not None else None
+    bad_gain = gain is not None and not (
+        finite_or_none(gain) is not None and 0 <= gain <= GAIN_MAX_M)
+    bad_high = high is not None and plausible_elevation(high) is None
+    bad_low = low is not None and plausible_elevation(low) is None
+    if bad_gain or bad_high or bad_low:
+        m_gain, m_high, m_low = measured()
+        gain = m_gain if bad_gain else gain
+        high = m_high if bad_high else high
+        low = m_low if bad_low else low
+    return profile, gain, high, low
+
+
+def repair_elapsed(elapsed, moving):
+    """An activity's elapsed time as the writers now store it.
+
+    Before issue #462 a GPX upload took its span from the file's earliest and
+    latest stamps, so one stray stamp (a clock that read 1970) made it
+    decades long. Elapsed time past :data:`DURATION_MAX_S` is no measurement:
+    it becomes the moving time, which never counted such a gap (#462), or 0.
+    """
+    if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool) and (
+            finite_or_none(elapsed) is None or elapsed > DURATION_MAX_S):
+        plausible = (isinstance(moving, (int, float)) and not isinstance(moving, bool)
+                     and finite_or_none(moving) is not None and 0 <= moving <= DURATION_MAX_S)
+        return int(moving) if plausible else 0
+    return elapsed
 
 
 #: Distance, in metres of travel, spanned by the centred moving average applied

@@ -280,6 +280,7 @@ class ProjectIO:
         # a settings file) would otherwise import as an empty trip.
         if not isinstance(data, dict) or "items" not in data:
             raise InvalidProjectFile("it does not contain a trip")
+        traxj_schema.normalise(data)
         fault = traxj_schema.fault(data)
         if fault is not None:
             raise InvalidProjectFile(fault)

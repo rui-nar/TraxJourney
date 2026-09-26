@@ -142,6 +142,24 @@ def seeded(tmp_path, monkeypatch):
     # 11: ciphertext whose letters spell "nan" and "infinity" in lower case.
     act(11, is_edited=True, elevation_profile_json=_LOWER_ENVELOPE,
         elevation_profile_low_res_json=_LOWER_ENVELOPE)
+    # 12: a GPX upload from a device writing <ele>65535</ele> for no reading:
+    #     finite, but no elevation, and the gain measured through it.
+    act(12, source="gpx", elevation_profile_json=_profile(_broken(5, value=65535)),
+        elevation_profile_low_res_json=_profile(_broken(5, value=65535)),
+        total_elevation_gain=5e6, elev_high=65535.0, elev_low=500.0)
+    # 13: a Strava activity whose summary high is the sentinel.
+    act(13, source=None, elevation_profile_json=_profile(_CLEAN),
+        total_elevation_gain=55.0, elev_high=65535.0, elev_low=500.0)
+    # 14: a GPX upload whose one stray 1970 stamp made it 54 years long.
+    act(14, source="gpx", elevation_profile_json=_profile(_CLEAN),
+        moving_time=3600, elapsed_time=1_700_000_000)
+    # 15: an edited GPX upload whose undo snapshot holds the sentinel.
+    act(15, source="gpx", is_edited=True, elevation_profile_json=_profile(_CLEAN),
+        original_elevation_profile_json=_profile(_broken(2, value=65535)),
+        original_total_elevation_gain=9e6)
+    # 16: a clean profile that merely holds a five-digit number (12 km up is
+    #     in range): selected by the scan, left as it is.
+    act(16, source="gpx", elevation_profile_json=_profile(_broken(1, value=12345.0)))
 
     for pid, aid in ((1, 1), (2, 6)):
         _seed_row(engine, "project", DBProject(
@@ -172,7 +190,7 @@ def test_only_plaintext_rows_are_candidates(seeded):
     with engine.connect() as conn:
         ids = set(_migration()._candidate_ids(conn))
 
-    assert ids == {1, -2, 3, 4, 7, 8, 9, 10}
+    assert ids == {1, -2, 3, 4, 7, 8, 9, 10, 12, 13, 14, 15, 16}
 
 
 def test_an_app_measured_row_with_finite_but_wrong_totals_is_recomputed(seeded):
@@ -219,13 +237,13 @@ def test_rows_are_read_one_at_a_time(tmp_path, monkeypatch):
     cfg = _cfg(db_path)
     command.upgrade(cfg, _PREV_REV)
     engine = create_engine(f"sqlite:///{db_path.as_posix()}")
-    n = 20_000
+    n = 10_000
     dists = [i * 0.01 for i in range(n)]
     elevs = [500.0 + (i % 50) for i in range(n)]
     elevs[n // 2] = _NAN
     big = _profile(elevs, dists)
     tbl = Table("activity", MetaData(), autoload_with=engine)
-    rows = 40
+    rows = 80
     with engine.begin() as conn:
         for aid in range(1, rows + 1):
             data = {k: v for k, v in DBActivity(
@@ -318,6 +336,35 @@ def test_encrypted_and_clean_rows_are_untouched(seeded):
     assert after[5] == before[5]
     assert after[6] == before[6]
     assert after[11] == before[11]
+    assert after[16] == before[16]
+
+
+def test_a_finite_sentinel_is_repaired_like_a_non_finite_one(seeded):
+    """Pre-#462 writers stored <ele>65535</ele> as it came, and the import now
+    treats it as no reading: a stored one must go too, or the trip it is in
+    exports to a file its own import normalises differently."""
+    cfg, engine = seeded
+    command.upgrade(cfg, _REPAIR_REV)
+    rows = _rows(engine)
+
+    dists, elevs = _expected(_broken(5, value=65535))
+    assert json.loads(rows[12]["elevation_profile_json"])["elevations_m"] == elevs
+    assert rows[12]["total_elevation_gain"] == pytest.approx(elevation_gain(elevs, dists))
+    assert (rows[12]["elev_high"], rows[12]["elev_low"]) == (max(elevs), min(elevs))
+    # Strava's gain kept; its impossible high measured from its profile.
+    assert (rows[13]["total_elevation_gain"], rows[13]["elev_high"]) == (55.0, max(_CLEAN))
+    # The snapshot a reset restores, and the gain it keeps.
+    o_dists, o_elevs = _expected(_broken(2, value=65535))
+    assert json.loads(rows[15]["original_elevation_profile_json"])["elevations_m"] == o_elevs
+    assert rows[15]["original_total_elevation_gain"] == pytest.approx(elevation_gain(o_elevs, o_dists))
+
+
+def test_an_elapsed_time_of_decades_falls_back_to_the_moving_time(seeded):
+    cfg, engine = seeded
+    command.upgrade(cfg, _REPAIR_REV)
+    with engine.connect() as conn:
+        assert conn.execute(text(
+            "SELECT moving_time, elapsed_time FROM activity WHERE id = 14")).one() == (3600, 3600)
 
 
 def test_no_stored_value_is_left_non_finite(seeded):
