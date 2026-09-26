@@ -205,6 +205,21 @@ class TestNamesAndPrices:
             assert price_label(plan) == f"€{cents / 100:.2f} / month", plan
 
 
+    def test_paid_prices_rise_along_the_plan_order(self):
+        """The landing page quotes the *first* purchasable plan as the cheapest
+        ("from €0.99 / month", #432), trusting that plan order is price order.
+        Pin that here, so a reprice that breaks it fails instead of quietly
+        advertising a starting price that is not the lowest."""
+        import re
+
+        amounts = []
+        for plan in plans.PAID_PLANS:
+            match = re.search(r"(\d+(?:\.\d+)?)", price_label(plan))
+            assert match, (plan, price_label(plan))
+            amounts.append(float(match.group(1)))
+        assert all(a < b for a, b in zip(amounts, amounts[1:])), amounts
+
+
 class TestFeatures:
     def test_bullets_are_generated_from_the_limits(self, monkeypatch):
         """The bullets and the limits drifted apart when both were hand-written;
