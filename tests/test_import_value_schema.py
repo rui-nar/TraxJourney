@@ -212,6 +212,12 @@ _BAD = {
     "an elevation profile without elevations": (
         _bytes(_set(_ACT + ("elevation_profile",), {"distances_km": [0.0]})),
         "activities[0].elevation_profile.elevations_m"),
+    "an elevation that is text": (
+        _bytes(_set(_ACT + ("elevation_profile", "elevations_m"), [800.0, "810"])),
+        "activities[0].elevation_profile.elevations_m"),
+    "an elevation profile that is not lists": (
+        _bytes(_set(_ACT + ("elevation_profile", "distances_km"), {"0": 0.0})),
+        "activities[0].elevation_profile.distances_km"),
     "a string version": (_bytes(_set(("version",), "1")), "version"),
     "a person's socials that is text": (_bytes(_set(("people", 0, "socials"), "x")), "people[0].socials"),
     "a social entry that is text": (_bytes(_set(("people", 0, "socials"), ["x"])), "people[0].socials[0]"),

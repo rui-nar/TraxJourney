@@ -117,6 +117,19 @@ def _route_polyline(value: Optional[str]) -> Optional[str]:
 RoutePolyline = Annotated[Optional[str], AfterValidator(_route_polyline)]
 
 
+def _numbers(value: Any) -> Any:
+    """A list of numbers, checked where it stands. An elevation profile can
+    hold millions of them, and ``List[float]`` would validate a copy."""
+    if type(value) is not list:
+        raise _refuse("is not a list")
+    if not set(map(type, value)) <= {int, float}:
+        raise _refuse("is not a list of numbers")
+    return value
+
+
+Numbers = Annotated[Any, AfterValidator(_numbers)]
+
+
 # ── The format ──────────────────────────────────────────────────────────────
 
 class _Model(BaseModel):
@@ -260,8 +273,8 @@ class _Map(_Model):
 
 
 class _ElevationProfile(_Model):
-    distances_km: List[float]
-    elevations_m: List[float]
+    distances_km: Numbers
+    elevations_m: Numbers
 
 
 class _Activity(_Model):
