@@ -215,11 +215,38 @@ def test_web_dir_that_is_itself_a_symlink_still_serves_the_build(site, monkeypat
 
     status, headers, body = _raw_get(app, "/assets/data.json")
     assert status == 200
+    assert body == '{"asset": true}'
     assert headers["cache-control"] == "public, max-age=86400"
 
     status, _headers, body = _raw_get(app, "/trips/foo")
     assert status == 200
     assert body == _INDEX
+
+
+def test_repointing_the_web_dir_symlink_serves_the_new_build(site, monkeypatch, tmp_path):
+    """A deploy that swaps the link is picked up on the next request."""
+    import api.router as router
+
+    app, web, _sentinel = site
+    link = tmp_path / "web_link"
+    _symlink_or_skip(link, web, target_is_directory=True)
+    monkeypatch.setattr(router, "_web_dir", str(link))
+    assert _raw_get(app, "/main.dart.js")[2] == "// bundle"
+
+    new_build = tmp_path / "web_next"
+    new_build.mkdir()
+    (new_build / "index.html").write_text(_INDEX)
+    (new_build / "main.dart.js").write_text("// bundle, next build")
+    try:
+        os.unlink(link)
+    except OSError:  # a directory link on Windows
+        os.rmdir(link)
+    os.symlink(new_build, link, target_is_directory=True)
+
+    status, headers, body = _raw_get(app, "/main.dart.js")
+    assert status == 200
+    assert body == "// bundle, next build"
+    assert headers["cache-control"] == "no-cache"
 
 
 def test_http_client_spellings_are_refused(site):
