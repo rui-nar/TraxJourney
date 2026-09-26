@@ -18,7 +18,11 @@ from __future__ import annotations
 
 from typing import Annotated, List, Optional
 
+import json as _json
+import os
+
 import requests
+import urllib3
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -27,6 +31,7 @@ from sqlmodel import select
 from api.deps import get_current_user
 from models.db import get_session
 from models.user import ImmichToken
+from src.utils.safe_fetch import FetchRefused, SafeResponse, open_url
 
 router = APIRouter(prefix="/api/immich", tags=["immich"])
 
@@ -36,6 +41,84 @@ _VALIDATE_TIMEOUT: tuple = (5, 10)
 _SEARCH_TIMEOUT: tuple = (5, 30)
 # Original photos can be multi-MB, so downloads get a more generous read budget.
 _DOWNLOAD_TIMEOUT: tuple = (5, 60)
+
+# Body caps: a JSON answer is small; an original can be a large photo.
+_MAX_JSON_BYTES = 20 * 1024 * 1024
+_MAX_ASSET_BYTES = 200 * 1024 * 1024
+
+# The Immich server URL is the user's choice, so every call to it goes through
+# the guarded fetch (src/utils/safe_fetch): public addresses only, unless the
+# operator lists the host in IMMICH_ALLOWED_HOSTS (a self-hosted Immich on the
+# LAN or another container). Loopback and link-local stay refused regardless.
+_ALLOWED_HOSTS_ENV = "IMMICH_ALLOWED_HOSTS"
+
+
+def _allowed_private_hosts() -> list:
+    """Hosts the operator allows to be private, read per call (runtime env)."""
+    return [h.strip() for h in os.environ.get(_ALLOWED_HOSTS_ENV, "").split(",") if h.strip()]
+
+
+class ImmichAddressNotAllowed(Exception):
+    """The Immich server URL points at an address the policy refuses."""
+
+
+class _Response:
+    """The slice of a requests.Response this module uses."""
+
+    def __init__(self, resp: SafeResponse, max_bytes: int):
+        self._resp = resp
+        self._max_bytes = max_bytes
+        self.status_code = resp.status
+        self.headers = resp.headers
+
+    def json(self):
+        return _json.loads(self._resp.read_all())
+
+    def iter_content(self, chunk_size=None):
+        return self._resp.iter_bytes()
+
+    def close(self):
+        self._resp.close()
+
+
+class _GuardedHttp:
+    """requests-shaped get/post over the guarded fetch. Network failures come
+    back as requests exceptions, as before; a refused address as
+    ImmichAddressNotAllowed."""
+
+    def _open(self, method, url, *, headers, body, timeout, max_bytes):
+        try:
+            resp = open_url(
+                url, method=method, headers=headers, body=body,
+                max_bytes=max_bytes, total_timeout=float(sum(timeout)),
+                allowed_private_hosts=_allowed_private_hosts(),
+            )
+        except FetchRefused as exc:
+            raise ImmichAddressNotAllowed(str(exc)) from None
+        except (urllib3.exceptions.HTTPError, OSError) as exc:
+            raise requests.ConnectionError(str(exc)) from None
+        return _Response(resp, max_bytes)
+
+    def get(self, url, headers=None, timeout=_VALIDATE_TIMEOUT, stream=False):
+        return self._open("GET", url, headers=headers, body=None, timeout=timeout,
+                          max_bytes=_MAX_ASSET_BYTES if stream else _MAX_JSON_BYTES)
+
+    def post(self, url, headers=None, json=None, timeout=_SEARCH_TIMEOUT):
+        body = _json.dumps(json).encode() if json is not None else None
+        hdrs = {**(headers or {}), "Content-Type": "application/json"}
+        return self._open("POST", url, headers=hdrs, body=body, timeout=timeout,
+                          max_bytes=_MAX_JSON_BYTES)
+
+
+_http = _GuardedHttp()
+
+
+def _not_allowed(status_code: int) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail=("This Immich server's address is not allowed. A server on a private "
+                f"network must be listed by the operator in {_ALLOWED_HOSTS_ENV}."),
+    )
 
 
 # ── Response / request schemas ─────────────────────────────────────────────────
@@ -102,9 +185,11 @@ def _proxy_asset(tok: ImmichToken, asset_id: str, subpath: str) -> StreamingResp
     """Stream an asset's bytes from the user's Immich server through to the caller."""
     url = f"{tok.server_url}/api/assets/{asset_id}/{subpath}"
     try:
-        resp = requests.get(
+        resp = _http.get(
             url, headers=_headers(tok.api_key), timeout=_DOWNLOAD_TIMEOUT, stream=True,
         )
+    except ImmichAddressNotAllowed:
+        raise _not_allowed(status.HTTP_502_BAD_GATEWAY)
     except requests.RequestException as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -151,9 +236,11 @@ def immich_config(
     api_key = body.api_key.strip()
 
     try:
-        resp = requests.get(
+        resp = _http.get(
             f"{server_url}/api/users/me", headers=_headers(api_key), timeout=_VALIDATE_TIMEOUT,
         )
+    except ImmichAddressNotAllowed:
+        raise _not_allowed(status.HTTP_422_UNPROCESSABLE_ENTITY)
     except requests.RequestException as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -216,12 +303,14 @@ def immich_search(
         "withExif": True,
     }
     try:
-        resp = requests.post(
+        resp = _http.post(
             f"{tok.server_url}/api/search/metadata",
             headers=_headers(tok.api_key),
             json=payload,
             timeout=_SEARCH_TIMEOUT,
         )
+    except ImmichAddressNotAllowed:
+        raise _not_allowed(status.HTTP_502_BAD_GATEWAY)
     except requests.RequestException as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,

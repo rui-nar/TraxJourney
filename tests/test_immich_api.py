@@ -114,7 +114,7 @@ def test_config_success_validates_and_saves(env, monkeypatch):
         captured["headers"] = headers
         return _FakeResponse(status_code=200, json_data={"id": "user-1"})
 
-    monkeypatch.setattr(immich_module.requests, "get", fake_get)
+    monkeypatch.setattr(immich_module._http, "get", fake_get)
 
     resp = client.put(
         "/api/immich/config",
@@ -139,7 +139,7 @@ def test_config_upserts_existing_row(env, monkeypatch):
     _connect(engine, uid, server_url="https://old.example.com", api_key="old-key")
 
     monkeypatch.setattr(
-        immich_module.requests, "get",
+        immich_module._http, "get",
         lambda *a, **k: _FakeResponse(status_code=200, json_data={}),
     )
     resp = client.put(
@@ -158,7 +158,7 @@ def test_config_upserts_existing_row(env, monkeypatch):
 def test_config_rejects_invalid_key(env, monkeypatch):
     client, engine, uid = env
     monkeypatch.setattr(
-        immich_module.requests, "get",
+        immich_module._http, "get",
         lambda *a, **k: _FakeResponse(status_code=401),
     )
     resp = client.put(
@@ -176,7 +176,7 @@ def test_config_rejects_unreachable_server(env, monkeypatch):
     def fake_get(*a, **k):
         raise requests.ConnectionError("no route to host")
 
-    monkeypatch.setattr(immich_module.requests, "get", fake_get)
+    monkeypatch.setattr(immich_module._http, "get", fake_get)
     resp = client.put(
         "/api/immich/config",
         json={"server_url": "https://unreachable.example.com", "api_key": "k"},
@@ -248,7 +248,7 @@ def test_search_proxies_params_and_reshapes_response(env, monkeypatch):
             "albums": {"items": [], "total": 0, "count": 0, "nextPage": None, "facets": []},
         })
 
-    monkeypatch.setattr(immich_module.requests, "post", fake_post)
+    monkeypatch.setattr(immich_module._http, "post", fake_post)
 
     resp = client.post(
         "/api/immich/search",
@@ -284,7 +284,7 @@ def test_search_upstream_failure_maps_to_502(env, monkeypatch):
     client, engine, uid = env
     _connect(engine, uid)
     monkeypatch.setattr(
-        immich_module.requests, "post",
+        immich_module._http, "post",
         lambda *a, **k: _FakeResponse(status_code=500),
     )
     resp = client.post(
@@ -307,7 +307,7 @@ def test_thumbnail_streams_bytes_through(env, monkeypatch):
         return _FakeResponse(status_code=200, headers={"content-type": "image/jpeg"},
                               content=b"\xff\xd8\xff\xfake-jpeg-bytes")
 
-    monkeypatch.setattr(immich_module.requests, "get", fake_get)
+    monkeypatch.setattr(immich_module._http, "get", fake_get)
     resp = client.get("/api/immich/assets/asset-1/thumbnail")
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "image/jpeg"
@@ -324,7 +324,7 @@ def test_original_streams_bytes_through(env, monkeypatch):
         return _FakeResponse(status_code=200, headers={"content-type": "image/heic"},
                               content=b"original-bytes")
 
-    monkeypatch.setattr(immich_module.requests, "get", fake_get)
+    monkeypatch.setattr(immich_module._http, "get", fake_get)
     resp = client.get("/api/immich/assets/asset-1/original")
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "image/heic"
@@ -335,7 +335,7 @@ def test_asset_not_found_maps_to_404(env, monkeypatch):
     client, engine, uid = env
     _connect(engine, uid)
     monkeypatch.setattr(
-        immich_module.requests, "get",
+        immich_module._http, "get",
         lambda *a, **k: _FakeResponse(status_code=404),
     )
     resp = client.get("/api/immich/assets/missing/thumbnail")
@@ -411,3 +411,134 @@ def test_routes_require_auth(unauth_client, method, path):
     # a present-but-invalid token would 401 via decode_token — either way, no route
     # here answers without a valid bearer token.
     assert resp.status_code in (401, 403)
+
+
+# ── Which Immich servers may be reached ───────────────────────────────────────
+# The server URL is the user's choice, so it goes through the guarded fetch:
+# public addresses only, unless the operator lists the host in
+# IMMICH_ALLOWED_HOSTS. Name resolution and the connection are stubbed; no
+# network is used.
+
+from src.utils import safe_fetch  # noqa: E402
+
+
+class _Raw:
+    def __init__(self, status=200, body=b"", headers=None):
+        self.status = status
+        self.headers = dict(headers or {})
+        self._body = body
+
+    def stream(self, n):
+        for i in range(0, len(self._body), n):
+            yield self._body[i:i + n]
+
+    def release_conn(self):
+        pass
+
+    def close(self):
+        pass
+
+
+@pytest.fixture
+def net(monkeypatch):
+    """Real _http over a stubbed resolver and connection."""
+    dns: dict = {}
+    opened: list = []
+    script: list = []
+    monkeypatch.setattr(safe_fetch, "_resolve", lambda host, port: list(dns[host]))
+
+    def open_once(method, scheme, host, port, ip, path, headers, body, timeout):
+        opened.append({"host": host, "ip": ip, "path": path})
+        return script.pop(0)
+
+    monkeypatch.setattr(safe_fetch, "_open_once", open_once)
+    # The old code called requests directly; it must not be used any more.
+    monkeypatch.setattr(requests, "get", lambda *a, **k: pytest.fail("requests.get used"))
+    monkeypatch.setattr(requests, "post", lambda *a, **k: pytest.fail("requests.post used"))
+    monkeypatch.delenv("IMMICH_ALLOWED_HOSTS", raising=False)
+    return dns, opened, script
+
+
+@pytest.mark.parametrize("address", ["10.0.0.5", "192.168.1.20", "127.0.0.1", "169.254.169.254", "::1"])
+def test_config_refuses_a_non_public_server_that_is_not_allowed(env, net, address):
+    client, engine, uid = env
+    dns, opened, _ = net
+    dns["immich.internal"] = [address]
+    resp = client.put("/api/immich/config",
+                      json={"server_url": "http://immich.internal:2283", "api_key": "k"})
+    assert resp.status_code == 422
+    assert "IMMICH_ALLOWED_HOSTS" in resp.json()["detail"]
+    assert opened == []
+    assert _stored_token(engine, uid) is None
+
+
+def test_config_accepts_a_private_server_the_operator_allows(env, net, monkeypatch):
+    client, engine, uid = env
+    dns, opened, script = net
+    monkeypatch.setenv("IMMICH_ALLOWED_HOSTS", "photos.lan, other.lan")
+    dns["photos.lan"] = ["192.168.1.20"]
+    script.append(_Raw(200, b'{"id": "u1"}'))
+    resp = client.put("/api/immich/config",
+                      json={"server_url": "http://photos.lan:2283", "api_key": "k"})
+    assert resp.status_code == 200, resp.text
+    assert opened == [{"host": "photos.lan", "ip": "192.168.1.20", "path": "/api/users/me"}]
+    assert _stored_token(engine, uid).server_url == "http://photos.lan:2283"
+
+
+@pytest.mark.parametrize("address", ["127.0.0.1", "169.254.169.254", "::1"])
+def test_loopback_and_link_local_stay_refused_even_when_listed(env, net, monkeypatch, address):
+    client, _engine, _uid = env
+    dns, opened, _ = net
+    monkeypatch.setenv("IMMICH_ALLOWED_HOSTS", "sneaky.lan")
+    dns["sneaky.lan"] = [address]
+    resp = client.put("/api/immich/config",
+                      json={"server_url": "http://sneaky.lan", "api_key": "k"})
+    assert resp.status_code == 422
+    assert opened == []
+
+
+def test_the_asset_proxy_refuses_a_stored_server_that_is_no_longer_allowed(env, net):
+    client, engine, uid = env
+    dns, opened, _ = net
+    _connect(engine, uid, server_url="http://photos.lan:2283")
+    dns["photos.lan"] = ["192.168.1.20"]  # not listed in IMMICH_ALLOWED_HOSTS
+    resp = client.get("/api/immich/assets/abc/thumbnail")
+    assert resp.status_code == 502
+    assert "IMMICH_ALLOWED_HOSTS" in resp.json()["detail"]
+    assert opened == []
+
+
+def test_search_refuses_a_stored_server_on_a_non_public_address(env, net):
+    client, engine, uid = env
+    dns, opened, _ = net
+    _connect(engine, uid, server_url="http://immich.example.com")
+    dns["immich.example.com"] = ["10.1.2.3"]  # DNS changed since it was saved
+    resp = client.post("/api/immich/search",
+                       json={"taken_after": "2024-01-01T00:00:00Z", "taken_before": "2024-01-02T00:00:00Z"})
+    assert resp.status_code == 502
+    assert opened == []
+
+
+def test_the_asset_proxy_does_not_follow_a_redirect_to_a_refused_address(env, net):
+    client, engine, uid = env
+    dns, opened, script = net
+    _connect(engine, uid, server_url="https://immich.example.com")
+    dns["immich.example.com"] = ["93.184.216.34"]
+    dns["metadata.internal"] = ["169.254.169.254"]
+    script.append(_Raw(302, headers={"location": "http://metadata.internal/latest/"}))
+    resp = client.get("/api/immich/assets/abc/original")
+    assert resp.status_code == 502
+    assert [o["host"] for o in opened] == ["immich.example.com"]
+
+
+def test_the_asset_proxy_streams_from_a_public_server(env, net):
+    client, engine, uid = env
+    dns, opened, script = net
+    _connect(engine, uid, server_url="https://immich.example.com")
+    dns["immich.example.com"] = ["93.184.216.34"]
+    script.append(_Raw(200, b"JPEGBYTES", {"content-type": "image/jpeg"}))
+    resp = client.get("/api/immich/assets/abc/thumbnail")
+    assert resp.status_code == 200
+    assert resp.content == b"JPEGBYTES"
+    assert opened == [{"host": "immich.example.com", "ip": "93.184.216.34",
+                       "path": "/api/assets/abc/thumbnail"}]
