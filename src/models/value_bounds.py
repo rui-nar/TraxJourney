@@ -51,8 +51,17 @@ Count = Annotated[float, _bounded(0, COUNT_MAX)]
 
 
 def finite_or_none(value: Any) -> Optional[float]:
-    """*value* if it is a finite number (not a bool), else None."""
-    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+    """*value* if it is a finite number (not a bool), else None.
+
+    An int is finite however large, and is never converted: one past a
+    float's range (json.loads reads ``1`` and 400 zeros as one) would raise
+    OverflowError. Comparing it with a float bound is exact and safe.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and math.isfinite(value):
         return value
     return None
 

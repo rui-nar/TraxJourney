@@ -176,3 +176,31 @@ def test_a_trip_stored_before_the_repair_exports_to_a_file_that_imports(env):
     act = ProjectIO.from_bytes(exported.content).activities[0]
     assert act.elev_high == 840.0
     assert max(act.elevation_profile[1]) == 840.0
+
+
+_HUGE = "1" + "0" * 400      # json.loads reads it as an int past any float
+
+
+@pytest.mark.parametrize("path, field", [
+    (("elevation_profile", "elevations_m", 2), "activities[0].elevation_profile.elevations_m[2]"),
+    (("elevation_profile", "distances_km", 2), "activities[0].elevation_profile.distances_km[2]"),
+    (("total_elevation_gain",), "activities[0].total_elevation_gain"),
+    (("elev_high",), "activities[0].elev_high"),
+    (("elapsed_time",), "activities[0].elapsed_time"),
+    (("moving_time",), "activities[0].moving_time"),
+], ids=["profile elevation", "profile distance", "gain", "high", "elapsed", "moving"])
+def test_an_integer_too_large_for_a_float_is_refused_not_a_500(env, path, field):
+    """Normalising compares such a number with a float bound, which raised
+    OverflowError before the file was ever judged."""
+    client, _ = env
+    doc = _trip(source="gpx", elevation_profile=_profile(list(_CLEAN)))
+    node = doc["activities"][0]
+    for key in path[:-1]:
+        node = node[key]
+    node[path[-1]] = 7777777
+    raw = _bytes(doc).replace(b"7777777", _HUGE.encode())
+
+    r = _import(client, raw)
+
+    assert r.status_code == 400, r.text
+    assert f": {field} " in r.json()["detail"], r.json()["detail"]

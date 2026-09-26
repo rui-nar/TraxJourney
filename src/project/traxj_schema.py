@@ -457,8 +457,13 @@ def _bad_text(text: str) -> bool:
     return False
 
 
-def _bad_value(document: Any) -> Optional[str]:
+def _bad_value(document: Any, *, floats: bool = True) -> Optional[str]:
     """The first value no field of the format may hold, wherever it is.
+
+    With *floats* False, a non-finite float is let through: :func:`check`
+    runs this first so that :func:`normalise` never meets an integer past 64
+    bits or a lone surrogate, and normalise repairs the non-finite
+    elevations past writers stored.
 
     Depth first, holding one open iterator and one key per level of nesting,
     never a path per container: a file of a million tiny lists would
@@ -473,7 +478,7 @@ def _bad_value(document: Any) -> Optional[str]:
                 return f"{_where(tuple(keys))} has a field name that is not valid text"
             kind = type(value)
             if kind is float:
-                if value - value != 0:  # inf - inf and nan - nan are nan
+                if floats and value - value != 0:  # inf - inf and nan - nan are nan
                     return f"{_where((*keys, key))} is not a finite number"
             elif kind is str:
                 if _bad_text(value):
@@ -494,6 +499,21 @@ def _bad_value(document: Any) -> Optional[str]:
 
 def _pairs(node: Any):
     return iter(node.items()) if type(node) is dict else enumerate(node)
+
+
+def check(document: Dict[str, Any]) -> Optional[str]:
+    """What is wrong with the trip *document*, or None, once what past
+    writers stored has been brought into the format (in place).
+
+    Integers past 64 bits and lone surrogates are refused before anything
+    is normalised: normalising compares figures with float bounds, and such
+    an integer cannot be made a float (issue #462).
+    """
+    found = _bad_value(document, floats=False)
+    if found is not None:
+        return found
+    normalise(document)
+    return fault(document)
 
 
 def normalise(document: Dict[str, Any]) -> None:

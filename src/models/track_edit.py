@@ -243,8 +243,10 @@ def _all_within(values, lo: float, hi: float) -> bool:
     for the common case, a clean list of floats, since a profile can hold
     millions: a finite sum means no NaN or infinity, and then min and max
     can be trusted. Anything else is judged value by value."""
-    if set(map(type, values)) <= {int, float} and math.isfinite(sum(values)):
-        return not values or (lo <= min(values) and max(values) <= hi)
+    if set(map(type, values)) <= {int, float}:
+        total = sum(values)    # an int when all are: finite, and never converted
+        if isinstance(total, int) or math.isfinite(total):
+            return not values or (lo <= min(values) and max(values) <= hi)
     return all(finite_or_none(v) is not None and lo <= v <= hi for v in values)
 
 
