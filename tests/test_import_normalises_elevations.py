@@ -246,3 +246,59 @@ def test_a_tail_exported_without_its_source_is_measured_as_its_parent(env):
     dists, elevs = clean_elevation_profile(_DISTS, broken["elevations_m"])
     assert row.total_elevation_gain == pytest.approx(elevation_gain(elevs, dists))
     assert (row.elev_high, row.elev_low) == (840.0, 800.0)
+
+
+# ── Legacy day notes (issue #462) ───────────────────────────────────────────
+
+def _day_meta(engine):
+    from models.project_db import DBProject
+    with Session(engine) as sess:
+        rows = sess.exec(select(DBProject)).all()
+        return {r.name: json.loads(r.day_meta_json or "{}") for r in rows}
+
+
+def test_a_day_note_stored_as_another_type_imports_as_text(env):
+    """A day saved before its notes were typed may hold a number or a bare
+    tag. The client reads each as text, so that is what they become; a
+    value text cannot stand for is dropped."""
+    client, engine = env
+    doc = copy.deepcopy(_TRIP)
+    doc["day_meta"] = {"2024-06-01": {"journal": 5, "sleeping": True, "difficulty": 2.5,
+                                      "weather": ["clear"], "tags": "old"},
+                       "2024-06-02": {"tags": ["a", 7, {"x": 1}]}}
+
+    r = _import(client, _bytes(doc))
+
+    assert r.status_code == 201, r.text
+    days = _day_meta(engine)["Trip"]
+    assert days["2024-06-01"]["journal"] == "5"
+    assert days["2024-06-01"]["sleeping"] == "true"
+    assert days["2024-06-01"]["difficulty"] == "2.5"
+    assert days["2024-06-01"]["weather"] is None
+    assert days["2024-06-01"]["tags"] == ["old"]
+    assert days["2024-06-02"]["tags"] == ["a", "7"]
+
+
+def test_a_trip_holding_a_legacy_day_exports_to_a_file_that_imports(env):
+    client, engine = env
+    assert _import(client, _bytes(_TRIP)).status_code == 201
+    from models.project_db import DBProject
+    with Session(engine) as sess:
+        row = sess.exec(select(DBProject)).one()
+        row.day_meta_json = json.dumps({"2024-05-01": {"journal": 5, "tags": "old"}})
+        sess.add(row)
+        sess.commit()
+    exported = client.get("/api/projects/Trip/export-traxj")
+
+    r = client.post("/api/projects/import", files={
+        "file": (f"Again{ProjectIO.EXTENSION}", exported.content, "application/json")})
+
+    assert r.status_code == 201, r.text
+
+
+def test_a_day_note_that_is_not_finite_is_still_refused(env):
+    client, _ = env
+    doc = copy.deepcopy(_TRIP)
+    doc["day_meta"] = {"2024-06-01": {"journal": float("nan")}}
+
+    assert _import(client, _bytes(doc)).status_code == 400

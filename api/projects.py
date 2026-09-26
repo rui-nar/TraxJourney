@@ -684,6 +684,12 @@ def _merge_day_meta_preserve_counters(incoming: dict, existing_json: str | None)
     return merged
 
 
+def _same(a, b) -> bool:
+    """Equal as JSON: in Python 1 == True == 1.0, and each is a different
+    value to store."""
+    return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+
+
 def _check_written_day_notes(incoming: dict, existing_json: str | None) -> None:
     """Refuse a day note of a type the trip-file import does not read, or the
     trip could not be exported and imported back (issue #462).
@@ -698,7 +704,7 @@ def _check_written_day_notes(incoming: dict, existing_json: str | None) -> None:
         before = stored.get(day)
         before = before if isinstance(before, dict) else {}
         written[day] = {k: v for k, v in fields.items()
-                        if not (k in before and before[k] == v)}
+                        if not (k in before and _same(before[k], v))}
     fault = day_meta_fault(written)
     if fault is not None:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,

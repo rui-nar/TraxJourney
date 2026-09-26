@@ -299,3 +299,15 @@ def test_a_changed_field_of_a_legacy_day_is_still_checked(app):  # noqa: F811
     r = client.put("/api/projects/Trip/day-meta", json={"day_meta": {
         "2024-05-01": {"journal": 5, "sleeping": "Tent"}}})
     assert r.status_code == 204, r.text
+
+
+def test_a_changed_type_is_a_change(app):  # noqa: F811
+    """1 == True in Python: a stored 1 rewritten as true is still a write,
+    and is judged."""
+    client, engine = app
+    _store_day_meta(engine, {"2024-05-01": {"journal": 1}})
+
+    r = client.put("/api/projects/Trip/day-meta", json={"day_meta": {
+        "2024-05-01": {"journal": True}}})
+
+    assert r.status_code == 422, r.text

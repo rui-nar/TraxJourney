@@ -28,6 +28,7 @@ lifts out of the response.
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime
 from typing import Annotated, Any, Dict, List, Optional, Tuple
 
@@ -529,6 +530,46 @@ def _app_measured(act: Dict[str, Any], by_id: Dict[int, Dict[str, Any]]) -> bool
     return False
 
 
+_DAY_TEXT = ("difficulty", "sleeping", "weather", "journal")
+
+
+def _as_text(value: Any) -> Any:
+    """A day note as the text the client reads it as: a number or true/false
+    as JSON writes it, anything text cannot stand for dropped (None). A
+    non-finite number is left for fault() to refuse."""
+    if isinstance(value, bool) or (isinstance(value, int)) or (
+            isinstance(value, float) and math.isfinite(value)):
+        return json.dumps(value)
+    if isinstance(value, (list, dict)):
+        return None
+    return value
+
+
+def _normalise_days(day_meta: Any) -> None:
+    """Day notes as the client reads them: text, and tags a list of text.
+
+    Nothing checked their types until #462, and PUT /day-meta still keeps a
+    field a save leaves as it was, so a stored day may hold ``journal: 5``
+    or a bare tag. Such a trip must export to a file its import takes.
+    """
+    if not isinstance(day_meta, dict):
+        return
+    for day in day_meta.values():
+        if not isinstance(day, dict):
+            continue
+        for key in _DAY_TEXT:
+            if key in day and day[key] is not None and not isinstance(day[key], str):
+                day[key] = _as_text(day[key])
+        tags = day.get("tags")
+        if isinstance(tags, str):
+            day["tags"] = [tags]
+        elif isinstance(tags, list):
+            day["tags"] = [t if isinstance(t, str) else _as_text(t)
+                           for t in tags if isinstance(t, str) or _as_text(t) is not None]
+        elif tags is not None and not (isinstance(tags, float) and not math.isfinite(tags)):
+            day["tags"] = None
+
+
 def normalise(document: Dict[str, Any]) -> None:
     """Bring what past writers stored into the format, in place.
 
@@ -540,6 +581,7 @@ def normalise(document: Dict[str, Any]) -> None:
     (``repair_elevations``, ``repair_elapsed``), not refused. Anything else
     is left for :func:`fault` to judge.
     """
+    _normalise_days(document.get("day_meta"))
     activities = document.get("activities")
     if not isinstance(activities, list):
         return

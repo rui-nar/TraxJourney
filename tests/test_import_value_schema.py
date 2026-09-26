@@ -10,8 +10,8 @@ A real export never holds such values, so the file is refused, with a 400
 naming the offending field (never its content), and nothing is ingested.
 Every shape of file a past version wrote still imports: see
 test_import_historical_exports.py. An implausible elevation or elapsed time,
-which past writers did store, is normalised rather than refused: see
-test_import_normalises_elevations.py.
+which past writers did store, and a day note of another type than text, are
+normalised rather than refused: see test_import_normalises_elevations.py.
 """
 
 from __future__ import annotations
@@ -232,8 +232,6 @@ _BAD = {
     # ── Imported, then broke every load of the trip ─────────────────────
     "a sleeping option that is not text": (_bytes(_set(("sleeping_options",), ["Hut", 3])), "sleeping_options[1]"),
     "sleeping options that are not a list": (_bytes(_set(("sleeping_options",), "Hut")), "sleeping_options"),
-    "a day's tags that are not a list": (_bytes(_set(_DAY + ("tags",), "alps")), "day_meta.<day>.tags"),
-    "a day's journal that is a number": (_bytes(_set(_DAY + ("journal",), 1)), "day_meta.<day>.journal"),
     "activity_types that are not a list": (_bytes(_set(("filter_state", "activity_types"), "Ride")), "filter_state.activity_types"),
     "a routed segment whose polyline is not JSON": (
         _bytes(_set(_SEG, {**_TRIP["items"][4]["segment"], "route_mode": "rail",
@@ -293,13 +291,13 @@ def test_the_refusal_never_echoes_the_file(env):
     """The day's key, and the value itself, are the file's content."""
     client, _ = env
     doc = copy.deepcopy(_TRIP)
-    doc["day_meta"] = {"secret-day-key": {"journal": 12345}}
+    doc["day_meta"] = {"secret-day-key": {"tags": ["12345\ud800"]}}
 
     r = _import(client, _bytes(doc))
 
     assert r.status_code == 400, r.text
     detail = r.json()["detail"]
-    assert "day_meta.<day>.journal" in detail
+    assert "day_meta.<day>.tags[0]" in detail
     assert "secret-day-key" not in detail
     assert "12345" not in detail
 
