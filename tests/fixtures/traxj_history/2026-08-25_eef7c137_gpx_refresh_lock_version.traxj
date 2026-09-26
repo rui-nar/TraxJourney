@@ -1,0 +1,138 @@
+{
+  "version": 1,
+  "lock_version": 57,
+  "name": "Alps",
+  "trip_start": "2026-03-01",
+  "trip_end": null,
+  "filter_state": {
+    "start_date": null,
+    "end_date": null,
+    "activity_types": null
+  },
+  "items": [
+    {
+      "item_type": "activity",
+      "activity_id": -3074457345618258602
+    },
+    {
+      "item_type": "segment",
+      "segment": {
+        "id": "0b6f2c1e-8a8d-4c49-9d7e-2f0c5e1d9a11",
+        "segment_type": "bus",
+        "label": "GVA → LIS",
+        "start": {
+          "lat": 46.2381,
+          "lon": 6.1089,
+          "source": "auto"
+        },
+        "end": {
+          "lat": 38.7742,
+          "lon": -9.1342,
+          "source": "manual"
+        },
+        "date": "2026-03-06",
+        "route_mode": "bus",
+        "train_number": null,
+        "hafas_provider": null,
+        "route_polyline": "[[6.87, 45.92], [6.5, 46.05], [6.14, 46.21]]",
+        "route_status": "resolved",
+        "route_error": null,
+        "route_started_at": null,
+        "route_degraded": false,
+        "route_hafas_failed": true,
+        "route_degrade_retries": 2,
+        "route_edited": true
+      }
+    }
+  ],
+  "activities": [
+    {
+      "id": -3074457345618258602,
+      "name": "Col.gpx",
+      "type": "Hike",
+      "distance": 42195.3,
+      "moving_time": 5400,
+      "elapsed_time": 6120,
+      "total_elevation_gain": 612.0,
+      "start_date": "2026-03-01T06:00:00.123456Z",
+      "start_date_local": "2026-03-01T07:00:00+01:00",
+      "timezone": "UTC",
+      "achievement_count": 0,
+      "kudos_count": 0,
+      "comment_count": 1,
+      "athlete_count": 2,
+      "photo_count": 0,
+      "trainer": false,
+      "commute": false,
+      "manual": true,
+      "private": false,
+      "flagged": false,
+      "average_speed": 7.814,
+      "max_speed": 16.2,
+      "has_heartrate": false,
+      "pr_count": 1,
+      "total_photo_count": 2,
+      "has_kudoed": false,
+      "gear_id": null,
+      "average_heartrate": null,
+      "max_heartrate": null,
+      "heartrate_opt_out": false,
+      "display_hide_heartrate_option": true,
+      "elev_high": null,
+      "elev_low": null,
+      "start_latlng": [
+        45.92,
+        6.87
+      ],
+      "end_latlng": [
+        46.21,
+        6.14
+      ],
+      "map": {
+        "summary_polyline": "_p~iF~ps|U_ulLnnqC_mqNvxq`@"
+      },
+      "elevation_profile": {
+        "distances_km": [
+          0.0,
+          0.01324567891234,
+          0.0268
+        ],
+        "elevations_m": [
+          1200.4,
+          1201.9,
+          1203.35
+        ]
+      },
+      "is_edited": false,
+      "split_parent_id": null,
+      "refresh_status": "failed",
+      "refresh_started_at": "2026-08-01T10:00:00Z",
+      "refresh_error": "Strava said 404",
+      "source": "gpx",
+      "start_latlng_enc": null,
+      "end_latlng_enc": null,
+      "elevation_profile_enc": null
+    }
+  ],
+  "people": [],
+  "groups": [],
+  "day_meta": {
+    "2026-03-01": {
+      "tags": []
+    }
+  },
+  "sleeping_options": [
+    "Camping"
+  ],
+  "sleeping_option_groups": {},
+  "counters": [],
+  "track_color": "#F97316",
+  "track_secondary_color": null,
+  "track_width": 2.5,
+  "alternating_track_colors": false,
+  "elevation_chart_color": null,
+  "elevation_chart_show_line": true,
+  "color_by_type": false,
+  "type_styles": {},
+  "languages": null
+}

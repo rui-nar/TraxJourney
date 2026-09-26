@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict
 
-from src.models.activity import Activity, is_activity_id, parse_activities_or_log
+from src.models.activity import Activity, parse_activities_or_log
 from src.models.encounter import Encounter
 from src.models.journal import JournalEntry
 from src.models.memory import Memory
@@ -20,7 +20,7 @@ from src.models.project import (
     ProjectFilterState,
     ProjectItem,
 )
-from src.utils.photo_paths import is_photo_name
+from src.project import traxj_schema
 
 
 # Dispatch tables for ProjectItem serialisation, keyed by item_type. "activity"
@@ -45,34 +45,11 @@ class InvalidProjectFile(ValueError):
     """The document is not a readable .traxj trip (issue #451).
 
     Raised only for a fault in the document itself (its encoding, its JSON, or
-    the structure :meth:`ProjectIO.from_dict` walks), never for a bug in the
+    a value the format does not allow: see :mod:`src.project.traxj_schema`,
+    issue #462), never for a bug in the
     code reading it, so a caller can put it to whoever supplied the file. The
     message names what is wrong without echoing the file's content.
     """
-
-
-def _expect(value: Any, kind: type, where: str) -> Any:
-    """Return *value* if it is a *kind* (dict or list), else refuse the file."""
-    if not isinstance(value, kind):
-        noun = "an object" if kind is dict else "a list"
-        raise InvalidProjectFile(f"{where} is not {noun}")
-    return value
-
-
-def _check_photo_names(photos: Any, where: str) -> None:
-    """A photo list names files the app stored itself: each entry is one of
-    its photo names (or null, a slot still being filled). A file holding any
-    other name was not written by the app, and is refused."""
-    for n, name in enumerate(_expect(photos, list, where)):
-        if name is not None and not is_photo_name(name):
-            raise InvalidProjectFile(f"{where}[{n}] is not a photo name")
-
-
-def _checked_avatar(d: Dict[str, Any], where: str) -> Dict[str, Any]:
-    avatar = d.get("avatar_photo")
-    if avatar is not None and not is_photo_name(avatar):
-        raise InvalidProjectFile(f"{where}.avatar_photo is not a photo name")
-    return d
 
 
 def _person_to_dict(p: Person) -> Dict[str, Any]:
@@ -294,39 +271,31 @@ class ProjectIO:
     def from_dict(data: Dict[str, Any]) -> Project:
         """Build a :class:`Project` from a parsed .traxj document.
 
-        Refuses, with :class:`InvalidProjectFile`, a document whose structure
-        it cannot walk: every object and list it reads into is checked before
-        it reads into it. Leaf values are taken as they come.
+        Refuses, with :class:`InvalidProjectFile`, a document the app could
+        not have written: its structure, and every value it holds, are checked
+        against the format (:mod:`src.project.traxj_schema`) before anything
+        is read from it.
         """
         # Every exporter writes "items"; an object without it (a GeoJSON file,
         # a settings file) would otherwise import as an empty trip.
         if not isinstance(data, dict) or "items" not in data:
             raise InvalidProjectFile("it does not contain a trip")
-        fs_raw = _expect(data.get("filter_state", {}) or {}, dict, "filter_state")
+        fault = traxj_schema.fault(data)
+        if fault is not None:
+            raise InvalidProjectFile(fault)
+        fs_raw = data.get("filter_state", {}) or {}
         filter_state = ProjectFilterState(
             start_date=fs_raw.get("start_date"),
             end_date=fs_raw.get("end_date"),
             activity_types=fs_raw.get("activity_types"),
         )
 
-        raw_activities = _expect(data.get("activities", []), list, "activities")
-        for n, raw in enumerate(raw_activities):
-            # The id keys the project's activity map and the items that point
-            # into it, so a non-integer one breaks the trip, not one activity.
-            if isinstance(raw, dict) and raw.get("id") is not None and not is_activity_id(raw["id"]):
-                raise InvalidProjectFile(f"activities[{n}].id is not a whole number")
-        activities = parse_activities_or_log(raw_activities, "project_io_load")
+        activities = parse_activities_or_log(data.get("activities", []), "project_io_load")
 
-        items = [
-            ProjectIO._deserialise_item(_expect(i, dict, f"items[{n}]"), f"items[{n}]")
-            for n, i in enumerate(_expect(data["items"], list, "items"))
-        ]
+        items = [ProjectIO._deserialise_item(i) for i in data["items"]]
 
-        raw_dm = _expect(data.get("day_meta") or {}, dict, "day_meta")
         day_meta = {}
-        for dk, v in raw_dm.items():
-            # Not named by its key: the message must not echo the file's text.
-            _expect(v, dict, "a day_meta entry")
+        for dk, v in (data.get("day_meta") or {}).items():
             day_meta[dk] = DayMeta(
                 difficulty=v.get("difficulty"),
                 sleeping=v.get("sleeping"),
@@ -340,14 +309,8 @@ class ProjectIO:
             else list(DEFAULT_SLEEPING_OPTIONS)
         )
 
-        people = [
-            _person_from_dict(_checked_avatar(_expect(p, dict, f"people[{n}]"), f"people[{n}]"))
-            for n, p in enumerate(_expect(data.get("people", []), list, "people"))
-        ]
-        groups = [
-            _group_from_dict(_expect(g, dict, f"groups[{n}]"))
-            for n, g in enumerate(_expect(data.get("groups", []), list, "groups"))
-        ]
+        people = [_person_from_dict(p) for p in data.get("people", [])]
+        groups = [_group_from_dict(g) for g in data.get("groups", [])]
 
         project = Project(
             name=data.get("name", "Untitled"),
@@ -380,24 +343,12 @@ class ProjectIO:
         return d
 
     @staticmethod
-    def _deserialise_item(d: Dict[str, Any], where: str = "an item") -> ProjectItem:
+    def _deserialise_item(d: Dict[str, Any]) -> ProjectItem:
         item_type = d.get("item_type")
-        if item_type is not None and not isinstance(item_type, str):
-            raise InvalidProjectFile(f"{where}.item_type is not text")
         if item_type == "activity":
-            activity_id = d.get("activity_id")
-            if activity_id is not None and not is_activity_id(activity_id):
-                raise InvalidProjectFile(f"{where}.activity_id is not a whole number")
-            return ProjectItem(item_type="activity", activity_id=activity_id)
+            return ProjectItem(item_type="activity", activity_id=d.get("activity_id"))
         if item_type in _ITEM_TYPE_DESERIALIZERS:
-            # Each of these item types keeps its payload under its own name.
-            content = _expect(d.get(item_type, {}), dict, f"{where}.{item_type}")
-            if item_type in ("memory", "journal"):
-                _check_photo_names(content.get("photos", []), f"{where}.{item_type}.photos")
             return _ITEM_TYPE_DESERIALIZERS[item_type](d)
         # segment — implicit default when item_type is missing/None or "segment"
-        seg_raw = _expect(d.get("segment", {}), dict, f"{where}.segment")
-        for end in ("start", "end"):
-            _expect(seg_raw.get(end, {}), dict, f"{where}.segment.{end}")
-        seg = ConnectingSegment.from_dict(seg_raw)
+        seg = ConnectingSegment.from_dict(d.get("segment", {}))
         return ProjectItem(item_type="segment", segment=seg)

@@ -1,0 +1,126 @@
+{
+  "version": 1,
+  "name": "Alps",
+  "trip_start": "2026-03-01",
+  "filter_state": {
+    "start_date": null,
+    "end_date": null,
+    "activity_types": null
+  },
+  "items": [
+    {
+      "item_type": "activity",
+      "activity_id": 16900000001
+    },
+    {
+      "item_type": "memory",
+      "memory": {
+        "id": 3,
+        "name": "Lac Blanc",
+        "date": "2026-03-01",
+        "time": "12:30",
+        "description": "Lunch",
+        "photos": [
+          "3f2b8c1e-5a4d-4e6f-9b7a-1c2d3e4f5a6b",
+          "7d9e0f1a-2b3c-4d5e-8f6a-7b8c9d0e1f2a"
+        ],
+        "geo_mode": "custom",
+        "lat": 45.98,
+        "lon": 6.89
+      }
+    },
+    {
+      "item_type": "memory",
+      "memory": {
+        "id": 4,
+        "name": null,
+        "date": "2026-03-02",
+        "time": null,
+        "description": null,
+        "photos": [],
+        "geo_mode": "start_of_day",
+        "lat": null,
+        "lon": null
+      }
+    }
+  ],
+  "activities": [
+    {
+      "id": 16900000001,
+      "name": "Morning Ride",
+      "type": "Ride",
+      "distance": 42195.3,
+      "moving_time": 5400,
+      "elapsed_time": 6120,
+      "total_elevation_gain": 612.0,
+      "start_date": "2026-03-01T07:12:44Z",
+      "start_date_local": "2026-03-01T08:12:44Z",
+      "timezone": "(GMT+01:00) Europe/Paris",
+      "achievement_count": 3,
+      "kudos_count": 12,
+      "comment_count": 1,
+      "athlete_count": 2,
+      "photo_count": 0,
+      "trainer": false,
+      "commute": false,
+      "manual": false,
+      "private": false,
+      "flagged": false,
+      "average_speed": 7.814,
+      "max_speed": 16.2,
+      "has_heartrate": true,
+      "pr_count": 1,
+      "total_photo_count": 2,
+      "has_kudoed": false,
+      "gear_id": "b1234567",
+      "average_heartrate": 141.3,
+      "max_heartrate": 178.0,
+      "heartrate_opt_out": false,
+      "display_hide_heartrate_option": true,
+      "elev_high": 1024.6,
+      "elev_low": 412.2,
+      "start_latlng": [
+        45.92,
+        6.87
+      ],
+      "end_latlng": [
+        46.21,
+        6.14
+      ],
+      "map": {
+        "summary_polyline": "_p~iF~ps|U_ulLnnqC_mqNvxq`@"
+      },
+      "elevation_profile": {
+        "distances_km": [
+          0.0,
+          0.52,
+          1.37,
+          2.08
+        ],
+        "elevations_m": [
+          412,
+          418.4,
+          431.0,
+          429.2
+        ]
+      }
+    }
+  ],
+  "day_meta": {
+    "2026-03-01": {
+      "difficulty": "hard",
+      "sleeping": "Camping",
+      "weather": "clear",
+      "journal": "Long climb"
+    },
+    "2026-03-02": {}
+  },
+  "sleeping_options": [
+    "Camping",
+    "Bivouac",
+    "Shelter",
+    "Pension/Guesthouse",
+    "Hotel",
+    "Apartment"
+  ]
+}
