@@ -34,9 +34,20 @@ String withdrawalConfirmation(Money refund) {
 }
 
 /// What the page says once the withdrawal went through.
-String withdrawalDone(Money refunded) => refunded.cents > 0
-    ? 'Withdrawn. ${refunded.label} is on its way back to your payment method.'
-    : 'Withdrawn. Your plan has ended.';
+///
+/// When part of the refund could not be made automatically, the server has
+/// recorded it as owed (issue #441): say so, rather than a smaller number
+/// that reads as the whole refund.
+String withdrawalDone(Withdrawal done) {
+  final refunded = done.refunded;
+  final owed = done.owed;
+  final head = refunded.cents > 0
+      ? 'Withdrawn. ${refunded.label} is on its way back to your payment method.'
+      : 'Withdrawn. Your plan has ended.';
+  if (owed.cents <= 0) return head;
+  return '$head ${owed.label} could not be refunded automatically. It is '
+      'recorded and will be refunded to you.';
+}
 
 class PlanScreen extends StatefulWidget {
   /// Injected in tests; defaults to the live service.
@@ -228,10 +239,10 @@ class _PlanScreenState extends State<PlanScreen> {
       return;
     }
     try {
-      final refunded = await _billing.withdraw();
+      final done = await _billing.withdraw();
       if (!mounted) return;
       ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(withdrawalDone(refunded))));
+          .showSnackBar(SnackBar(content: Text(withdrawalDone(done))));
     } catch (e) {
       if (mounted) {
         setState(() =>

@@ -33,7 +33,7 @@ class _FakeBilling implements BillingService {
   @override
   Future<Money> withdrawalQuote() => throw UnimplementedError();
   @override
-  Future<Money> withdraw() => throw UnimplementedError();
+  Future<Withdrawal> withdraw() => throw UnimplementedError();
 
   @override
   Future<List<PlanInfo>> plans() async => const [

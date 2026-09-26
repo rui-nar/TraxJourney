@@ -317,13 +317,26 @@ class BillingService {
   }
 
   /// Withdraw: cancel the subscription now and refund the unused part.
-  /// Returns what was refunded. Safe to repeat — the server never refunds a
-  /// subscription twice.
-  Future<Money> withdraw() async {
+  /// Safe to repeat — the server never refunds a subscription twice.
+  Future<Withdrawal> withdraw() async {
     final data =
         await _api.post('/api/billing/withdraw', const {}) as Map<String, dynamic>;
-    return Money.fromJson(data, 'refunded_cents');
+    return Withdrawal(
+      refunded: Money.fromJson(data, 'refunded_cents'),
+      owed: Money.fromJson(data, 'owed_cents'),
+    );
   }
+}
+
+/// What a withdrawal did (issue #441).
+class Withdrawal {
+  final Money refunded;
+
+  /// Owed but not refundable automatically: the server recorded it, and it is
+  /// refunded by hand. Zero almost always.
+  final Money owed;
+
+  const Withdrawal({required this.refunded, required this.owed});
 }
 
 /// An amount in the smallest currency unit, as the server sends it.

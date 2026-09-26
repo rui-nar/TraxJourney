@@ -37,7 +37,7 @@ class _FakeBilling implements BillingService {
   @override
   Future<Money> withdrawalQuote() => throw UnimplementedError();
   @override
-  Future<Money> withdraw() => throw UnimplementedError();
+  Future<Withdrawal> withdraw() => throw UnimplementedError();
 
   final List<PlanInfo> catalogue;
   final bool failCheckout;

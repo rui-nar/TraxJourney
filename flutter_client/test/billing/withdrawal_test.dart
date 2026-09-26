@@ -43,6 +43,7 @@ class _FakeBilling implements BillingService {
   final List<Map<String, dynamic>> payloads;
   final Money quote;
   final Object? withdrawError;
+  final Money owed;
   int statusCalls = 0;
   int quoteCalls = 0;
   int withdrawCalls = 0;
@@ -50,7 +51,8 @@ class _FakeBilling implements BillingService {
   _FakeBilling(Map<String, dynamic> payload,
       {List<Map<String, dynamic>>? then,
       this.quote = const Money(266, 'eur'),
-      this.withdrawError})
+      this.withdrawError,
+      this.owed = const Money(0, 'eur')})
       : payloads = [payload, ...?then];
 
   @override
@@ -74,10 +76,10 @@ class _FakeBilling implements BillingService {
   }
 
   @override
-  Future<Money> withdraw() async {
+  Future<Withdrawal> withdraw() async {
     withdrawCalls++;
     if (withdrawError != null) throw withdrawError!;
-    return quote;
+    return Withdrawal(refunded: quote, owed: owed);
   }
 
   @override
@@ -196,6 +198,28 @@ void main() {
     });
   });
 
+  group('an owed refund', () {
+    testWidgets('is said, not passed off as the whole refund', (tester) async {
+      final billing = _FakeBilling(_inWindow,
+          quote: const Money(0, 'eur'), owed: const Money(266, 'eur'));
+      await _pump(tester, billing);
+      await tester.tap(find.text(_action));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Withdraw'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('€2.66 could not be refunded automatically'),
+          findsOneWidget);
+    });
+
+    test('nothing owed says nothing about it', () {
+      final text = withdrawalDone(const Withdrawal(
+          refunded: Money(266, 'eur'), owed: Money(0, 'eur')));
+      expect(text, contains('€2.66 is on its way back'));
+      expect(text, isNot(contains('automatically')));
+    });
+  });
+
   group('wording', () {
     test('nothing left to refund says so rather than "€0.00"', () {
       final text = withdrawalConfirmation(const Money(0, 'eur'));
@@ -251,7 +275,7 @@ void main() {
           requests.add('${req.method} ${req.url.path}');
           final body = req.method == 'GET'
               ? {'amount_cents': 266, 'currency': 'eur', 'closes_at': 1.0}
-              : {'refunded_cents': 265, 'currency': 'eur'};
+              : {'refunded_cents': 265, 'currency': 'eur', 'owed_cents': 1};
           return http.Response(jsonEncode(body), 200,
               headers: {'content-type': 'application/json'});
         }),
@@ -263,8 +287,9 @@ void main() {
       expect(requests,
           ['GET /api/billing/withdraw', 'POST /api/billing/withdraw']);
       expect(quote.cents, 266);
-      expect(done.cents, 265);
-      expect(done.currency, 'eur');
+      expect(done.refunded.cents, 265);
+      expect(done.owed.cents, 1);
+      expect(done.refunded.currency, 'eur');
     });
   });
 }

@@ -23,7 +23,7 @@ class _FakeBilling implements BillingService {
   @override
   Future<Money> withdrawalQuote() => throw UnimplementedError();
   @override
-  Future<Money> withdraw() => throw UnimplementedError();
+  Future<Withdrawal> withdraw() => throw UnimplementedError();
 
   final Map<String, dynamic> payload;
   int statusCalls = 0;
@@ -99,7 +99,7 @@ class _SequenceBilling implements BillingService {
   @override
   Future<Money> withdrawalQuote() => throw UnimplementedError();
   @override
-  Future<Money> withdraw() => throw UnimplementedError();
+  Future<Withdrawal> withdraw() => throw UnimplementedError();
 
   final List<Map<String, dynamic>> payloads;
   int calls = 0;
@@ -146,7 +146,7 @@ class _PendingBilling implements BillingService {
   @override
   Future<Money> withdrawalQuote() => throw UnimplementedError();
   @override
-  Future<Money> withdraw() => throw UnimplementedError();
+  Future<Withdrawal> withdraw() => throw UnimplementedError();
 
   final _completer = Completer<BillingStatus>();
 
