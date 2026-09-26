@@ -41,11 +41,6 @@ from src.utils.photo_paths import is_photo_name
 #: An integer the database can bind: a 64-bit INTEGER.
 _INT_MIN, _INT_MAX = -(2 ** 63), 2 ** 63 - 1
 
-#: Where a route's geometry is read from its route_polyline, not drawn as a
-#: great circle (see _segment_feature in api/geo.py).
-_ROUTED_MODES = ("rail", "ferry", "bus")
-
-
 def _refuse(message: str) -> PydanticCustomError:
     return PydanticCustomError("traxj", message)
 
@@ -93,7 +88,12 @@ PhotoName = Annotated[Optional[str], AfterValidator(_photo_name)]
 
 
 def _route_polyline(value: Optional[str]) -> Optional[str]:
-    """A resolved route: JSON text of ``[[lon, lat], …]``."""
+    """A resolved route: JSON text of ``[[lon, lat], …]``, which the map
+    draws in place of a great circle (``_segment_feature`` in api/geo.py).
+
+    Checked whatever the segment's route_mode: every writer stored it in this
+    form, and switching a segment back to a great circle leaves it in place.
+    """
     if not value:
         return value
 
@@ -278,7 +278,12 @@ class _ElevationProfile(_Model):
 
 
 class _Activity(_Model):
-    """``Activity.to_strava_dict``: a Strava activity, plus the app's own."""
+    """``Activity.to_strava_dict``: a Strava activity, plus the app's own.
+
+    Its numbers are typed as numbers, not as the int or float of the
+    dataclass: Strava sends ``max_heartrate`` as a float, SQLite hands a
+    whole REAL back as an int, and the database binds either.
+    """
     id: Optional[int] = None
     name: str = ""
     type: str = ""
