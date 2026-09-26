@@ -410,14 +410,15 @@ def _trip_memories(requested: List[Dict[str, Any]], project) -> List[Dict[str, A
 def _photo_resolver(user_id: str, memory_id: Any) -> Callable[[str], Optional[Path]]:
     """Map a photo uuid to its on-disk thumbnail, or None if absent."""
     try:
-        from api.memories import _photo_dir
+        import api.memories as memories_api
     except Exception:  # pragma: no cover - import guard for non-API contexts
         _log.warning("Could not import api.memories; poster photos disabled", exc_info=True)
         return lambda uuid: None
 
-    from src.utils.photo_paths import photo_file
+    from src.utils.photo_paths import photo_file, photo_folder
 
-    photo_dir = _photo_dir(user_id, memory_id)
+    # Only reads: the folder is not created if the memory has none.
+    photo_dir = photo_folder(memories_api._DATA_DIR, user_id, "memories", memory_id)
 
     def resolve(uuid: str) -> Optional[Path]:
         path = photo_file(photo_dir, uuid, "_thumb")

@@ -130,13 +130,15 @@ def _body(*memories) -> dict:
     }
 
 
-@pytest.fixture
-def trips(env):
-    """Alice's trips A (Carol is a companion) and B, one memory with a photo each."""
+@pytest.fixture(params=["editor", "viewer"])
+def trips(env, request):
+    """Alice's trips A (Carol is a companion, editor or viewer) and B, one
+    memory with a photo each."""
     client, engine, ids, act_as, data, drawn, read = env
     a = _trip_with_memory(client, engine, data, ids["alice"], "A")
     b = _trip_with_memory(client, engine, data, ids["alice"], "B")
-    token = client.post("/api/projects/A/members/invite").json()["token"]
+    token = client.post("/api/projects/A/members/invite",
+                        json={"role": request.param}).json()["token"]
     act_as("carol")
     assert client.post(f"/api/invites/{token}/accept").status_code == 200
     return env, a, b
@@ -214,3 +216,21 @@ def test_a_share_link_serves_photos_of_its_own_trip_only(trips, monkeypatch):
         # The owner's other trip, not shared by this link.
         r = client.get(f"/api/share/{token}/photos/{mb}/{pb}{suffix}")
         assert r.status_code == 404, (suffix, r.status_code)
+
+
+def test_a_companions_poster_creates_no_folder_for_a_memory_without_photos(trips):
+    (client, engine, ids, act_as, data, drawn, read), (ma, pa), (mb, pb) = trips
+    act_as("alice")
+    r = client.post("/api/memories/", json={
+        "project_name": "A", "name": "no photos", "date": "2024-06-01",
+        "geo_mode": "custom", "lat": 48.85, "lon": 2.35})
+    assert r.status_code == 201, r.text
+    bare = r.json()["id"]
+    folder = data / "users" / str(ids["alice"]) / "memories" / str(bare)
+    assert not folder.exists()
+    act_as("carol")
+
+    _poster(client, "A", _body((bare, [])), f"?owner={ids['alice']}")
+
+    assert drawn == [bare]
+    assert not folder.exists()
