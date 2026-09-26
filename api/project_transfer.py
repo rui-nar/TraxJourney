@@ -64,10 +64,10 @@ class ImportedOut(BaseModel):
 
 #: Largest project file the import accepts, whatever the plan or billing
 #: settings (issue #434). An export carries every track at full resolution:
-#: ~40-50 bytes per GPS point (encoded polyline plus the elevation profile's
-#: distance/elevation pair, pretty-printed), so 50 MB is roughly a million
-#: points, 50+ long days recorded every second or well over 100 at Strava's
-#: usual density. The import holds the file and its parsed form at once,
+#: ~18 bytes per GPS point (encoded polyline plus the elevation profile's
+#: distance/elevation pair, written compact since #454; ~40 when it was
+#: indented), so 50 MB is over two million points: 100+ long days recorded
+#: every second, or several hundred at Strava's usual density. The import holds the file and its parsed form at once,
 #: measured at ~3.4x the file size, so 50 MB peaks near 170 MB inside the
 #: API container's 768 MB limit (docker-compose.yml.example); 100 MB would not
 #: leave the geo caches and concurrent requests room.
@@ -423,7 +423,7 @@ def export_project_traxj(
     data: Dict[str, Any] = ProjectIO.to_dict(project)
     # Override activities with the raw Strava format (no elevation_profile pairs) for the backup file
     data["activities"] = [a.to_strava_dict() for a in project.activities]
-    json_bytes = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
+    json_bytes = ProjectIO.dumps(data)
     safe = _SAFE_NAME.sub("_", project.name)
     return StreamingResponse(
         io.BytesIO(json_bytes),
@@ -477,7 +477,7 @@ def export_project_zip(
         "items": items_serialised,
         "activities": [a.to_strava_dict() for a in project.activities],
     }
-    project_bytes = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
+    project_bytes = ProjectIO.dumps(data)
 
     zip_buffer = io.BytesIO()
     safe = _SAFE_NAME.sub("_", project.name)

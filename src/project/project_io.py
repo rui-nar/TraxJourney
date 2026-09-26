@@ -168,8 +168,20 @@ class ProjectIO:
             },
             "sleeping_options": project.sleeping_options,
         }
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2, ensure_ascii=False)
+        with open(path, "wb") as fh:
+            fh.write(ProjectIO.dumps(data))
+
+    @staticmethod
+    def dumps(data: Dict[str, Any]) -> bytes:
+        """A .traxj document as the bytes of its file: compact UTF-8 JSON.
+
+        Compact rather than indented (issue #454): indentation more than
+        doubled the size of an export, while the import takes any valid JSON
+        and is capped (MAX_IMPORT_BYTES), so an indented export of a long trip
+        could be refused by the very server that wrote it. Non-ASCII text is
+        written as UTF-8, not escaped, as it always was.
+        """
+        return json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
     @staticmethod
     def to_dict(project: Project) -> Dict[str, Any]:
