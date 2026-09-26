@@ -81,7 +81,7 @@ void main() {
           contains('Any active paid plan will be cancelled immediately'));
     });
 
-    // Issue #441: inside the 14 days after the first purchase, deleting also
+    // Issue #441: inside the withdrawal window of the subscription, deleting also
     // refunds the unused part; outside them it only cancels.
     BillingStatus inWindow(String status) => BillingStatus.fromJson(
         {..._billingMe(status: status), 'withdrawal_open': true});
@@ -91,6 +91,8 @@ void main() {
       expect(text, contains('Your Explorer plan will be cancelled immediately'));
       expect(text, contains('unused part of the period you paid for will be '
           'refunded'));
+      // The window is the subscription's, not the first purchase's (#441).
+      expect(text, contains('within 14 days of starting it'));
     });
 
     test('promises no refund outside it', () {

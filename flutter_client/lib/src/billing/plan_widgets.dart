@@ -232,16 +232,20 @@ String? pendingPlanNotice(BillingStatus status) {
 }
 
 /// What the plan page says above "Withdraw and get a refund" (issue #441).
+///
+/// The window runs to the end of a UTC calendar day, and the server sends the
+/// first instant after it; the day named is the one before that, in UTC — a
+/// local date could name the next day east of Greenwich.
 String withdrawalNotice(BillingStatus status) {
   const rest = 'you can withdraw: your plan ends now and the unused part of '
       'the period you paid for is refunded.';
   if (status.withdrawalClosesAt <= 0) {
-    return 'Within 14 days of your first purchase, $rest';
+    return 'Within 14 days of starting this subscription, $rest';
   }
-  final until = DateTime.fromMillisecondsSinceEpoch(
-      (status.withdrawalClosesAt * 1000).round(),
-      isUtc: true).toLocal();
-  return 'Until ${_dayAndMonth(until)}, $rest';
+  final lastDay = DateTime.fromMillisecondsSinceEpoch(
+      (status.withdrawalClosesAt * 1000).round() - 1,
+      isUtc: true);
+  return 'Until the end of ${_dayAndMonth(lastDay)} (UTC), $rest';
 }
 
 const _months = [

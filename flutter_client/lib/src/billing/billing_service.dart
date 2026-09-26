@@ -65,7 +65,8 @@ class BillingStatus {
   final double pendingPlanAt;
 
   /// True while withdrawing refunds the unused part of the current period —
-  /// the 14 days after the first purchase (issue #441). The server decides;
+  /// until the end of the 14th day after the subscription started (issue
+  /// #441). The server decides;
   /// the client only uses it to show the "Withdraw" action.
   final bool withdrawalOpen;
 

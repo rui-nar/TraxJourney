@@ -1,4 +1,4 @@
-/// Withdrawing inside the 14 days after the first purchase (issue #441).
+/// Withdrawing inside the 14 days after a subscription starts (issue #441).
 ///
 /// The action appears only while the server says the window is open, the
 /// confirmation states the refund before anything happens, and a refusal
@@ -209,9 +209,19 @@ void main() {
       expect(const Money(1999, 'usd').label, '19.99 USD');
     });
 
-    test('the notice names the last day when it is known', () {
-      final status = BillingStatus.fromJson(_inWindow);
-      expect(withdrawalNotice(status), startsWith('Until '));
+    test('the notice names the last day of the window, in UTC', () {
+      // The server sends the first instant after the window: midnight UTC at
+      // the start of 25 September 2026. The last day is the 24th, wherever
+      // the device is.
+      final closes =
+          DateTime.utc(2026, 9, 25).millisecondsSinceEpoch / 1000;
+      final status = BillingStatus.fromJson(
+          {..._inWindow, 'withdrawal_closes_at': closes});
+      expect(withdrawalNotice(status),
+          startsWith('Until the end of 24 September (UTC), '));
+    });
+
+    test('without a known deadline it says 14 days', () {
       final unknown =
           BillingStatus.fromJson({..._inWindow, 'withdrawal_closes_at': 0});
       expect(withdrawalNotice(unknown), startsWith('Within 14 days'));
