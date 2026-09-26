@@ -691,3 +691,22 @@ def test_search_skips_assets_it_cannot_use(env, net):
     resp = client.post("/api/immich/search", json=_SEARCH)
     assert resp.status_code == 200
     assert [c["id"] for c in resp.json()["candidates"]] == ["ok"]
+
+
+
+def test_search_keeps_only_finite_in_range_coordinates(env, net):
+    client, engine, uid = env
+    dns, opened, script = net
+    _connect(engine, uid, server_url="https://immich.example.com")
+    dns["immich.example.com"] = ["93.184.216.34"]
+    huge = "1" * 401
+    script.append(_Raw(200, (
+        '{"assets": {"items": ['
+        '{"id": "a", "fileCreatedAt": "2024-01-01", "exifInfo": {"latitude": %s, "longitude": 12.5}},'
+        '{"id": "b", "fileCreatedAt": "2024-01-01", "exifInfo": {"latitude": true, "longitude": 200}},'
+        '{"id": "c", "fileCreatedAt": "2024-01-01", "exifInfo": {"latitude": 45.5, "longitude": -73.5}}'
+        ']}}' % huge).encode()))
+    resp = client.post("/api/immich/search", json=_SEARCH)
+    assert resp.status_code == 200
+    got = {c["id"]: (c["lat"], c["lon"]) for c in resp.json()["candidates"]}
+    assert got == {"a": (None, 12.5), "b": (None, None), "c": (45.5, -73.5)}

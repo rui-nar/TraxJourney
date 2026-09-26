@@ -348,6 +348,14 @@ class _FakeSock:
         self.shut = shut or threading.Event()
         self.closed = False
         self.dups: list = []
+        self._fileno = 3
+
+    def fileno(self):
+        return self._fileno
+
+    def detach(self):
+        """What TLS does to the socket it wraps."""
+        self._fileno = -1
 
     def settimeout(self, t):
         pass
@@ -376,6 +384,8 @@ class _ConnRecorder:
 
     def connect(self):
         self.sock = self._new_conn()
+        if "server_hostname" in self.kwargs:  # HTTPS: TLS takes the socket over
+            self.sock.detach()
 
     def request(self, method, path, **kwargs):
         self.request_kwargs = kwargs
@@ -495,6 +505,59 @@ def test_the_watchdog_ends_an_exchange_that_outlasts_the_deadline(dns, conns, mo
     with pytest.raises(FetchRefused, match="longer than allowed"):
         fetch_bytes("https://slow.example/p.jpg", max_bytes=1000, total_timeout=0.3)
     assert _time.monotonic() - started < 5
+
+
+def test_a_watchdog_that_fired_before_watching_shuts_the_connection_at_once():
+    import time as _time
+    dog = safe_fetch._Watchdog(_time.monotonic() - 1)  # already past the deadline
+    dog._timer.join(5)
+    assert dog.fired
+    sock = _FakeSock()
+    dog.watch(sock, _ConnRecorder("93.184.216.34"))
+    assert sock.shut.is_set()
+    dog.stop()
+
+
+class _IgnoresHook(_ConnRecorder):
+    """A urllib3 that no longer calls _new_conn: it would open its own socket."""
+
+    def connect(self):
+        self.sock = _FakeSock()
+
+
+def test_a_connection_urllib3_opened_itself_is_refused(conns, monkeypatch):
+    import urllib3.connection
+    made, socks = conns
+    monkeypatch.setattr(urllib3.connection, "HTTPConnection", _IgnoresHook)
+    with pytest.raises(RuntimeError, match="did not use the vetted connection"):
+        safe_fetch._open_once("GET", "http", "cdn.example", 80, "93.184.216.34", "/", {}, None, 5.0)
+    assert made[-1].closed and socks[0].closed
+
+
+def test_real_urllib3_talks_over_the_vetted_socket(dns, monkeypatch):
+    """Real urllib3 and http.client over a socketpair: no listening socket,
+    no network. If urllib3 opened its own connection, it would be refused."""
+    import socket as _socket
+    import threading as _threading
+    import urllib3.util.connection as u3conn
+    client, server = _socket.socketpair()
+    monkeypatch.setattr(safe_fetch.socket, "create_connection", lambda address, timeout=None: client)
+    monkeypatch.setattr(u3conn, "create_connection",
+                        lambda *a, **k: pytest.fail("urllib3 opened its own connection"))
+    dns["cdn.example"] = ["93.184.216.34"]
+
+    def serve():
+        request = b""
+        while b"\r\n\r\n" not in request:
+            request += server.recv(4096)
+        assert b"Host: cdn.example" in request
+        server.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+        server.close()
+
+    thread = _threading.Thread(target=serve, daemon=True)
+    thread.start()
+    assert fetch_bytes("http://cdn.example/p.jpg", max_bytes=100, total_timeout=5) == b"ok"
+    thread.join(5)
 
 
 class _FiredDog:

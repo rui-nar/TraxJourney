@@ -301,6 +301,12 @@ def _open_once(method, scheme, host, port, ip, path, headers, body, timeout, wat
             watchdog.watch(sock, conn)
         conn._new_conn = lambda: sock  # urllib3 connects (and wraps TLS) over our socket
         conn.connect()
+        # Fail closed if urllib3 ever stops using that hook: it would then open
+        # its own connection, which the watchdog does not watch. TLS takes the
+        # socket over (detaching it, so its fileno is -1); plain HTTP keeps it.
+        took_ours = (sock.fileno() == -1) if scheme == "https" else (conn.sock is sock)
+        if not took_ours:
+            raise RuntimeError("urllib3 did not use the vetted connection")
         conn.request(method, path, body=body, headers={**headers, "Host": host_header},
                      preload_content=False)
         return conn.getresponse()

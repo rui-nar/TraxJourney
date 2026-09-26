@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Annotated, List, Optional
 
 import json as _json
+import math
 import os
 
 import requests
@@ -138,6 +139,17 @@ class _GuardedHttp:
 
 
 _http = _GuardedHttp()
+
+
+def _coordinate(value, limit: float):
+    """A finite number within +/-limit, else None (bool is not a number here)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        value = float(value)
+    except OverflowError:
+        return None
+    return value if math.isfinite(value) and -limit <= value <= limit else None
 
 
 def _not_allowed(status_code: int) -> HTTPException:
@@ -369,8 +381,8 @@ def immich_search(
             candidates.append({
                 "id": asset_id,
                 "taken_at": taken_at,
-                "lat": exif.get("latitude") if isinstance(exif.get("latitude"), (int, float)) else None,
-                "lon": exif.get("longitude") if isinstance(exif.get("longitude"), (int, float)) else None,
+                "lat": _coordinate(exif.get("latitude"), 90.0),
+                "lon": _coordinate(exif.get("longitude"), 180.0),
                 "thumb_url": f"/api/immich/assets/{asset_id}/thumbnail",
             })
     except (ValueError, AttributeError, TypeError):
