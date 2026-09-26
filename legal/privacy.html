@@ -146,10 +146,17 @@ Stripe customer and subscription identifiers, your plan, its status, when the
 current period ends and any change you have scheduled. To show that you agreed
 to the service starting straight away, and to handle a withdrawal, we also
 store when your current subscription started, when you accepted the terms at
-checkout and which version of them you saw, and when you asked to withdraw.
-Where VAT applies, Stripe asks for your billing address to work it out; Stripe
-keeps it and we do not store it. Your card details are entered on Stripe's own
-pages and never reach our servers.</p>
+checkout and which version of them you saw, and, for each refund of an unused
+period, the Stripe subscription it was for, the amount and when you asked for
+it. Where VAT applies, Stripe asks for your billing address, and may also ask
+for your name, to work it out; Stripe keeps them and we do not store them.
+Your card details are entered on Stripe's own pages and never reach our
+servers.</p>
+<p>If we owe you a refund that could not be made automatically (for example
+because the payment is disputed), we keep a minimal record of it — the Stripe
+customer and subscription identifiers, the amount and the reason — until the
+refund is settled, and then delete it. This record is kept even if you delete
+your account, because it is how we make sure you are paid.</p>
 
 <h3>Usage of storage and share links</h3>
 <ul>
@@ -328,7 +335,10 @@ network. We may also disclose data where the law requires it.</p>
     Stripe immediately, so you are not charged again, and refunds the unused
     part of the current period if you are still within your withdrawal period
     (see the terms). If the cancellation cannot be completed, your account is
-    not deleted and nothing is removed.</li>
+    not deleted and nothing is removed. If the refund cannot be made
+    automatically, your account is still deleted, and we keep only the
+    minimal record of the refund we owe you described under Payments, until
+    it is settled.</li>
   <li><strong>Withdraw consent</strong> for a connected service at any time by
     disconnecting it.</li>
 </ul>
