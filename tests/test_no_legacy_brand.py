@@ -54,10 +54,6 @@ ALLOWED: dict[str, tuple[str, str]] = {
     "docs/RENAME_TRAXJOURNEY_RUNBOOK.md": ("the cut-over runbook names the old layout", r"."),
     "graphify-out/GRAPH_REPORT.md": ("generated; regenerated after the local folder rename", r"."),
     "tests/test_no_legacy_brand.py": ("this file", r"."),
-    # TEMPORARY (issue #434): goes with the startup sweep it tests.
-    "tests/test_legacy_project_sweep.py": (
-        "pre-rename leftover files the sweep deletes",
-        r'"(Old|Unmigrated)\.viewtrip(\.migrated)?"'),
 }
 
 
