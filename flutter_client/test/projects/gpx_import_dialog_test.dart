@@ -431,35 +431,33 @@ void main() {
         reason: 'importing a ride from the day before a trip is legitimate');
   });
 
-  testWidgets('a clock that spans decades is a warning, and the times are sent',
+  testWidgets("a warning is shown in review, and the file's times still go",
       (tester) async {
-    // Issue #462: a span past 31 years used to be an error, and an error
-    // keeps the user on the pick step, away from the fields that fix it.
+    // Issue #462: stamps left out as a clock error are said, not hidden. The
+    // track's own times are still the ones used: echoing the form's HH:MM
+    // would cut a track spanning days down to one.
     final recorder = _Recorder();
     await tester.pumpWidget(_harness(
       recorder,
       client: recorder.client(
           inspect: _inspectBody(candidates: [
-        _candidate(
-            startedAt: '1990-01-01T07:33:00Z',
-            endedAt: '2024-08-12T10:37:00Z',
-            warnings: ['This track spans more than 31 years, which no real '
-                'track does.']),
+        _candidate(warnings: [
+          '1 timestamp dated 1970-01-01 looks like a clock error, and was '
+              "left out of the track's times."
+        ]),
       ])),
     ));
     await _openAndPick(tester);
 
     expect(find.byKey(const ValueKey('gpx_candidate_warning')), findsOneWidget);
-    expect(find.textContaining('31 years'), findsOneWidget);
+    expect(find.textContaining('1970-01-01'), findsOneWidget);
     expect(_confirmButton(tester).onPressed, isNotNull);
 
     await tester.tap(find.byKey(const ValueKey('gpx_import_confirm')));
     await tester.pumpAndSettle();
 
-    // What is on the form is what the import judges, not the file's clock.
-    expect(recorder.sent('date'), isTrue);
-    expect(recorder.field('start_time'), '07:33');
-    expect(recorder.field('end_time'), '10:37');
+    expect(recorder.sent('date'), isFalse);
+    expect(recorder.sent('start_time'), isFalse);
   });
 
   testWidgets('a date inside the trip is not flagged', (tester) async {

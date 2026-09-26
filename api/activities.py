@@ -127,9 +127,9 @@ class GPXCandidateOut(BaseModel):
         description="Why this one cannot be imported; empty means it can")
     warnings: List[str] = Field(
         default_factory=list,
-        description="What looks wrong but can be put right in review, such as "
-                    "a clock that spans decades: import it with the date and "
-                    "times set")
+        description="What the user should know before importing, such as "
+                    "timestamps left out as a clock error; never a reason "
+                    "not to import")
 
 
 class GPXDuplicateOut(BaseModel):
@@ -658,9 +658,24 @@ def _describe_candidates(found):
             "elevation_gain_estimated": True,
             "polyline": _preview_polyline(candidate.points) if not errors else None,
             "errors": errors,
-            "warnings": [span_warning] if span_warning else [],
+            "warnings": [w for w in (_left_out_warning(candidate), span_warning) if w],
         })
     return out
+
+
+def _left_out_warning(candidate) -> Optional[str]:
+    """What the preview says of stamps left out as a clock error (#462)."""
+    left_out = candidate.left_out_stamps
+    if left_out is None:
+        return None
+    count, first, last = left_out
+    dates = (f"{first:%Y-%m-%d}" if first.date() == last.date()
+             else f"{first:%Y-%m-%d} to {last:%Y-%m-%d}")
+    if count == 1:
+        return (f"1 timestamp dated {dates} looks like a clock error, and was "
+                f"left out of the track's times.")
+    return (f"{count} timestamps dated {dates} look like a clock error, and were "
+            f"left out of the track's times.")
 
 
 def _preview_polyline(points) -> Optional[str]:

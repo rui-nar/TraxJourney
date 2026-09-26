@@ -60,8 +60,8 @@ class GpxCandidate {
   /// Why this one cannot be imported. Empty means it can.
   final List<String> errors;
 
-  /// What looks wrong but can be put right in review, such as a clock that
-  /// spans decades (issue #462). Never a reason not to import.
+  /// What the user should know before importing, such as timestamps left
+  /// out as a clock error (issue #462). Never a reason not to import.
   final List<String> warnings;
 
   bool get isImportable => errors.isEmpty;

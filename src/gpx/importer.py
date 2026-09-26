@@ -22,7 +22,8 @@ This module does the first two and is pure: no HTTP, no database, no clock.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from functools import cached_property
 from typing import List, Optional, Sequence, Tuple
 
 import gpxpy
@@ -69,13 +70,27 @@ MOVING_WINDOW_S = 30.0
 #: would hand a two-hour lunch to the ride's moving time.
 MAX_SAMPLE_GAP_S = 300
 
-#: Stamps further than this from every other stamp belong to another clock: a
-#: device that recorded a point before its clock synced stamps it 1970-01-01
-#: (or 1980-01-06, the GPS epoch), and taken at face value that one point made
-#: a morning ride 54 years long (issue #462). Thirty days, because a trip
-#: recorded as one track may well pause for a week, and no stray stamp lands
-#: that close to the real ones.
+#: A stamp before this is a clock error, not a time a track was recorded: a
+#: device that records a point before its clock syncs stamps it 1970-01-01, or
+#: 1980-01-06 (the GPS epoch), and taken at face value one such point made a
+#: morning ride 54 years long (issue #462).
+CLOCK_FLOOR = datetime(2000, 1, 1, tzinfo=timezone.utc)
+
+#: A run of stamps this far from all the others is a clock error when it is
+#: also tiny (at most :data:`STRAY_RUN_MAX` stamps and under
+#: :data:`STRAY_RUN_SHARE` of them): a stamp from a clock that was wrong, in a
+#: year that is not implausible in itself. A run of real size is never left
+#: out, however long the pause before it: a trip recorded as one track may
+#: stop for a month and a half.
 MAX_CLOCK_GAP_S = 30 * 24 * 3600
+STRAY_RUN_MAX = 3
+STRAY_RUN_SHARE = 0.05
+
+
+def _utc(t: datetime) -> datetime:
+    """*t* comparable with an aware bound: a stamp without a zone is UTC,
+    as GPX says its times are."""
+    return t if t.tzinfo is not None else t.replace(tzinfo=timezone.utc)
 
 #: GPX ``<type>`` is free text and every tool writes it differently. Mapped into
 #: the types the app draws and colours; anything unrecognised stays None so the
@@ -142,6 +157,44 @@ class GpxCandidate:
     def ended_at(self) -> Optional[datetime]:
         return next((t for t in reversed(self.times) if t is not None), None)
 
+    @cached_property
+    def _clock(self) -> Tuple[List[Tuple[datetime, datetime]], List[datetime]]:
+        """The runs of stamps that are the track's clock, as (first, last)
+        in time order, and the stamps left out as a clock error.
+
+        Left out: a stamp before :data:`CLOCK_FLOOR` or more than a day in
+        the future, and a tiny run (:data:`STRAY_RUN_MAX`,
+        :data:`STRAY_RUN_SHARE`) more than :data:`MAX_CLOCK_GAP_S` from the
+        rest. If every run is tiny, none is left out: there is no telling
+        which is the error.
+        """
+        stamps = sorted((t for t in self.times if t is not None), key=_utc)
+        ceiling = datetime.now(timezone.utc) + timedelta(days=1)
+        plausible = [t for t in stamps if CLOCK_FLOOR <= _utc(t) <= ceiling]
+        left_out = [t for t in stamps if not CLOCK_FLOOR <= _utc(t) <= ceiling]
+        runs: List[List[datetime]] = []
+        for t in plausible:
+            if runs and (_utc(t) - _utc(runs[-1][-1])).total_seconds() <= MAX_CLOCK_GAP_S:
+                runs[-1].append(t)
+            else:
+                runs.append([t])
+        real = [r for r in runs
+                if len(r) > STRAY_RUN_MAX or len(r) >= STRAY_RUN_SHARE * len(plausible)]
+        if not real:
+            real = runs
+        left_out += [t for r in runs if r not in real for t in r]
+        return [(r[0], r[-1]) for r in real], sorted(left_out, key=_utc)
+
+    def _on_clock(self, t: datetime) -> bool:
+        return any(_utc(a) <= _utc(t) <= _utc(b) for a, b in self._clock[0])
+
+    @property
+    def left_out_stamps(self) -> Optional[Tuple[int, datetime, datetime]]:
+        """How many stamps were left out as a clock error, and the earliest
+        and latest of them, or None when none was."""
+        left_out = self._clock[1]
+        return (len(left_out), left_out[0], left_out[-1]) if left_out else None
+
     @property
     def time_span(self) -> Optional[Tuple[datetime, datetime]]:
         """Earliest and latest stamp of the track's clock, or None if it has
@@ -149,31 +202,20 @@ class GpxCandidate:
 
         Earliest and latest rather than first and last: devices do emit the
         occasional backwards step after a clock resync, and taking the ends
-        blindly reports a span shorter than the ride, or none at all.
-
-        The track's clock, not every stamp: sorted, the stamps split wherever
-        :data:`MAX_CLOCK_GAP_S` separates two, and the run holding the most
-        of them (the later on a tie) is the track's. A stray stamp from an
-        unsynced clock is its own run, and is left out.
+        blindly reports a span shorter than the ride, or none at all. Stamps
+        that are a clock error are left out (see :attr:`_clock`), and
+        :attr:`left_out_stamps` says which.
 
         Everything that needs the track's own times goes through this, so
         the preview and the import cannot disagree about whether a file has
         a usable clock — a disagreement the user meets as a form that
         prefills happily and then refuses to submit.
         """
-        stamps = sorted(t for t in self.times if t is not None)
-        if len(stamps) < 2:
+        runs = self._clock[0]
+        if not runs:
             return None
-        best = (0, 0)                      # (count, start index) of the run
-        start = 0
-        for i in range(1, len(stamps) + 1):
-            if i == len(stamps) or (
-                    stamps[i] - stamps[i - 1]).total_seconds() > MAX_CLOCK_GAP_S:
-                if i - start >= best[0]:
-                    best = (i - start, start)
-                start = i
-        first, last = stamps[best[1]], stamps[best[1] + best[0] - 1]
-        return (first, last) if last > first else None
+        first, last = runs[0][0], runs[-1][1]
+        return (first, last) if _utc(last) > _utc(first) else None
 
     @property
     def elapsed_seconds(self) -> Optional[int]:
@@ -198,8 +240,10 @@ class GpxCandidate:
         if not self.has_times:
             return None
 
+        # Over the track's clock only: a stamp left out as a clock error
+        # neither counts nor bridges two real ones.
         stamped = [(p, t) for p, t in zip(self.points, self.times)
-                   if t is not None]
+                   if t is not None and self._on_clock(t)]
         if len(stamped) < 2:
             return 0
 

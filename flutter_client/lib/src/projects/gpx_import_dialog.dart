@@ -242,9 +242,7 @@ class _GpxImportDialogState extends State<GpxImportDialog> {
       _startTime = TimeOfDay.fromDateTime(started);
       final ended = candidate.endedAt;
       _endTime = ended != null ? TimeOfDay.fromDateTime(ended) : null;
-      // A warning is about the file's clock (issue #462): what the form
-      // shows, the user's to correct, is then what the import is given.
-      _timesUntouched = candidate.warnings.isEmpty;
+      _timesUntouched = true;
     } else {
       // A planned route has no clock, so these have to be asked for. Leaving
       // them empty and marked required is the honest version of that.
@@ -697,7 +695,7 @@ class _GpxImportDialogState extends State<GpxImportDialog> {
       for (final warning in candidate.warnings) ...[
         const SizedBox(height: 10),
         _notice(theme, Icons.warning_amber_outlined, kWarning,
-            '$warning Check the date and times.',
+            warning,
             key: const ValueKey('gpx_candidate_warning')),
       ],
       if (_outsideTrip) ...[
