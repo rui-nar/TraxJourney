@@ -21,7 +21,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from models.user import UserInfo
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
-_BEFORE = "04a606ace483"
+_BEFORE = "5e2b7c1d9a40"
 _REVISION = "6abe17b5d61f"
 
 

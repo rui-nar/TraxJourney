@@ -15,7 +15,7 @@ Postgres (and any other backend) already never reuses sequence values, so
 this is SQLite-only.
 
 Revision ID: 6abe17b5d61f
-Revises: 04a606ace483
+Revises: 5e2b7c1d9a40
 Create Date: 2026-09-24
 
 """
@@ -24,7 +24,7 @@ from typing import Sequence, Union
 from alembic import op
 
 revision: str = '6abe17b5d61f'
-down_revision: Union[str, Sequence[str], None] = '04a606ace483'
+down_revision: Union[str, Sequence[str], None] = '5e2b7c1d9a40'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
