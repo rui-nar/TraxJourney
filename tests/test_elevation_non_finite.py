@@ -296,17 +296,37 @@ def test_a_gpx_upload_whose_every_ele_is_non_finite_has_no_elevation(app):
     assert row.elev_high is None and row.elev_low is None
 
 
+def _edit(client, activity_id, elevs, token=None):
+    points = [{"lat": 48.0 + i * 0.001, "lng": 2.0 + i * 0.001, "elev": e}
+              for i, e in enumerate(elevs)]
+    body = json.dumps({"points": points})
+    if token is not None:
+        body = body.replace('"elev": 0.0', f'"elev": {token}')
+        assert token in body
+    return client.put(f"/api/projects/Trip/activities/{activity_id}/track", content=body,
+                      headers={"Content-Type": "application/json"})
+
+
 @pytest.mark.parametrize("token", _BAD.keys())
-def test_the_track_editor_takes_a_non_finite_elev_as_missing(app, token):
+def test_the_track_editor_refuses_a_non_finite_elev(app, token):
+    """A body holding NaN or Infinity is refused before any route runs
+    (api/json_guard.py): no JSON document the app writes holds one."""
     client, engine = app
     activity_id = _upload_gpx(client, [100.0, 110.0, 120.0, 130.0, 125.0])
-    points = [{"lat": 48.0 + i * 0.001, "lng": 2.0 + i * 0.001, "elev": e}
-              for i, e in enumerate([100.0, 110.0, 0.0, 130.0])]
-    body = json.dumps({"points": points}).replace('"elev": 0.0', f'"elev": {token}')
-    assert token in body
+    before = _activity_row(engine, activity_id).summary_polyline
 
-    r = client.put(f"/api/projects/Trip/activities/{activity_id}/track", content=body,
-                   headers={"Content-Type": "application/json"})
+    r = _edit(client, activity_id, [100.0, 110.0, 0.0, 130.0], token)
+
+    assert r.status_code == 422, r.text
+    assert _activity_row(engine, activity_id).summary_polyline == before
+
+
+@pytest.mark.parametrize("elev", [99999.0, -30000.0])
+def test_the_track_editor_takes_an_implausible_elev_as_missing(app, elev):
+    client, engine = app
+    activity_id = _upload_gpx(client, [100.0, 110.0, 120.0, 130.0, 125.0])
+
+    r = _edit(client, activity_id, [100.0, 110.0, elev, 130.0])
 
     assert r.status_code == 200, r.text
     _strict_json(r.text)
