@@ -246,6 +246,27 @@ _BAD = {
     "a routed segment whose polyline is not a list of points": (
         _bytes(_set(_SEG, {**_TRIP["items"][4]["segment"], "route_mode": "ferry",
                            "route_polyline": "[1, 2]"})), "items[4].segment.route_polyline"),
+    # ── Finite but implausible: huge figures overflow the trip's totals ──
+    "a distance past 100,000 km": (_bytes(_set(_ACT + ("distance",), 1e308)), "activities[0].distance"),
+    "a negative distance": (_bytes(_set(_ACT + ("distance",), -1.0)), "activities[0].distance"),
+    "a moving time past 31 years": (_bytes(_set(_ACT + ("moving_time",), 2e9)), "activities[0].moving_time"),
+    "an elapsed time past 31 years": (_bytes(_set(_ACT + ("elapsed_time",), 10 ** 12)), "activities[0].elapsed_time"),
+    "a gain past 10,000 km": (_bytes(_set(_ACT + ("total_elevation_gain",), 1e308)), "activities[0].total_elevation_gain"),
+    "a high point above 20 km": (_bytes(_set(_ACT + ("elev_high",), 20001.0)), "activities[0].elev_high"),
+    "a low point below -20 km": (_bytes(_set(_ACT + ("elev_low",), -20001.0)), "activities[0].elev_low"),
+    "a speed past the distance bound per second": (_bytes(_set(_ACT + ("average_speed",), 1e300)), "activities[0].average_speed"),
+    "a max speed that is negative": (_bytes(_set(_ACT + ("max_speed",), -3.0)), "activities[0].max_speed"),
+    "a heart rate of 5000": (_bytes(_set(_ACT + ("max_heartrate",), 5000)), "activities[0].max_heartrate"),
+    "a count past a billion": (_bytes(_set(_ACT + ("kudos_count",), 10 ** 12)), "activities[0].kudos_count"),
+    "a profile elevation above 20 km": (
+        _bytes(_set(_ACT + ("elevation_profile", "elevations_m"), [800.0, 1e300])),
+        "activities[0].elevation_profile.elevations_m"),
+    "a profile distance past 100,000 km": (
+        _bytes(_set(_ACT + ("elevation_profile", "distances_km"), [0.0, 1e300])),
+        "activities[0].elevation_profile.distances_km"),
+    "a negative profile distance": (
+        _bytes(_set(_ACT + ("elevation_profile", "distances_km"), [-1.0, 1.0])),
+        "activities[0].elevation_profile.distances_km"),
     # ── Coordinates out of range ─────────────────────────────────────────
     "a memory latitude past the pole": (_bytes(_set(_MEM + ("lat",), 90.5)), "items[1].memory.lat"),
     "an encounter longitude past 180": (_bytes(_set(_ENC + ("lon",), -180.5)), "items[3].encounter.lon"),

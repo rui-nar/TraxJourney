@@ -55,8 +55,8 @@ from src.models.activity import (
     ACTIVITY_ID_MAX, ACTIVITY_ID_MIN, Activity, parse_activities_or_log,
 )
 from src.models.track_edit import (
-    elevation_profile_from_streams, points_to_elevation_profile, points_to_polyline,
-    recompute_track_metrics,
+    elevation_profile_from_streams, implausible_track, points_to_elevation_profile,
+    points_to_polyline, recompute_track_metrics,
 )
 from src.project.local_ids import LocalIdExhausted, allocate_local_activity_id, track_fingerprint
 from src.project.project_repo import bump_lock_version
@@ -612,6 +612,11 @@ def _describe_candidates(found):
         errors = validate_candidate(candidate)
         metrics = (recompute_track_metrics(candidate.points) if not errors
                    else None)
+        implausible = (implausible_track(metrics, candidate.elapsed_seconds)
+                       if metrics else None)
+        if implausible is not None:
+            errors = [*errors, implausible]
+            metrics = None
         span = candidate.time_span
         out.append({
             "index": candidate.index,
@@ -723,6 +728,10 @@ async def import_gpx_activity(
 
     points = candidate.points
     metrics = recompute_track_metrics(points)
+    implausible = implausible_track(metrics, elapsed_time)
+    if implausible is not None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            detail={"errors": [implausible]})
     fingerprint = _import_fingerprint(candidate, start_dt)
 
     resolved_name = (activity_name
@@ -1132,6 +1141,12 @@ def edit_activity_track(
             detail="A track needs at least 2 points",
         )
     points = [TrackPoint(lat=p.lat, lng=p.lng, elev=p.elev) for p in body.points]
+    # Checked on the new track alone: an edit only ever apportions the times
+    # down, so the span cannot grow.
+    implausible = implausible_track(recompute_track_metrics(points), None)
+    if implausible is not None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            detail=implausible)
 
     # Phase-timed (issue #45 follow-up): the align_points O(N*M) fix cut most
     # of the hang, but split/edit-track were still blowing past the client's

@@ -32,10 +32,14 @@ from datetime import datetime
 from typing import Annotated, Any, Dict, List, Optional, Tuple
 
 from pydantic import (
-    AfterValidator, BaseModel, ConfigDict, Field, ValidationError,
+    AfterValidator, BaseModel, ConfigDict, ValidationError,
 )
 from pydantic_core import PydanticCustomError
 
+from src.models.value_bounds import (
+    DISTANCE_MAX_M, ELEVATION_MAX_M, ELEVATION_MIN_M, Count, Distance, Duration,
+    Elevation, Gain, HeartRate, Lat, Lon, Speed,
+)
 from src.utils.photo_paths import is_photo_name
 
 #: An integer the database can bind: a 64-bit INTEGER.
@@ -47,8 +51,6 @@ def _refuse(message: str) -> PydanticCustomError:
 
 # ── Value types ─────────────────────────────────────────────────────────────
 
-Lat = Annotated[float, Field(ge=-90, le=90)]
-Lon = Annotated[float, Field(ge=-180, le=180)]
 
 
 def _latlng(value: List[float]) -> List[float]:
@@ -117,17 +119,24 @@ def _route_polyline(value: Optional[str]) -> Optional[str]:
 RoutePolyline = Annotated[Optional[str], AfterValidator(_route_polyline)]
 
 
-def _numbers(value: Any) -> Any:
-    """A list of numbers, checked where it stands. An elevation profile can
-    hold millions of them, and ``List[float]`` would validate a copy."""
-    if type(value) is not list:
-        raise _refuse("is not a list")
-    if not set(map(type, value)) <= {int, float}:
-        raise _refuse("is not a list of numbers")
-    return value
+def _numbers(lo: float, hi: float) -> Any:
+    """A list of numbers within [*lo*, *hi*], checked where it stands. An
+    elevation profile can hold millions of them, and ``List[float]`` would
+    validate a copy."""
+    def check(value: Any) -> Any:
+        if type(value) is not list:
+            raise _refuse("is not a list")
+        if not set(map(type, value)) <= {int, float}:
+            raise _refuse("is not a list of numbers")
+        if value and not (lo <= min(value) and max(value) <= hi):
+            raise _refuse("holds a number out of range")
+        return value
+    return AfterValidator(check)
 
 
-Numbers = Annotated[Any, AfterValidator(_numbers)]
+#: A profile's distances, km, and elevations, m (src/models/value_bounds.py).
+Distances = Annotated[Any, _numbers(0, DISTANCE_MAX_M / 1000)]
+Elevations = Annotated[Any, _numbers(ELEVATION_MIN_M, ELEVATION_MAX_M)]
 
 
 # ── The format ──────────────────────────────────────────────────────────────
@@ -273,8 +282,8 @@ class _Map(_Model):
 
 
 class _ElevationProfile(_Model):
-    distances_km: Numbers
-    elevations_m: Numbers
+    distances_km: Distances
+    elevations_m: Elevations
 
 
 class _Activity(_Model):
@@ -282,41 +291,43 @@ class _Activity(_Model):
 
     Its numbers are typed as numbers, not as the int or float of the
     dataclass: Strava sends ``max_heartrate`` as a float, SQLite hands a
-    whole REAL back as an int, and the database binds either.
+    whole REAL back as an int, and the database binds either. Each is bounded
+    by physical plausibility (src/models/value_bounds.py): past the bounds,
+    the trip's totals overflow.
     """
     id: Optional[int] = None
     name: str = ""
     type: str = ""
-    distance: float = 0.0
-    moving_time: float = 0
-    elapsed_time: float = 0
-    total_elevation_gain: float = 0.0
+    distance: Distance = 0.0
+    moving_time: Duration = 0
+    elapsed_time: Duration = 0
+    total_elevation_gain: Gain = 0.0
     start_date: DateTime = ""
     start_date_local: DateTime = ""
     timezone: str = "UTC"
-    achievement_count: float = 0
-    kudos_count: float = 0
-    comment_count: float = 0
-    athlete_count: float = 0
-    photo_count: float = 0
+    achievement_count: Count = 0
+    kudos_count: Count = 0
+    comment_count: Count = 0
+    athlete_count: Count = 0
+    photo_count: Count = 0
     trainer: bool = False
     commute: bool = False
     manual: bool = False
     private: bool = False
     flagged: bool = False
-    average_speed: float = 0.0
-    max_speed: float = 0.0
+    average_speed: Speed = 0.0
+    max_speed: Speed = 0.0
     has_heartrate: bool = False
-    pr_count: float = 0
-    total_photo_count: float = 0
+    pr_count: Count = 0
+    total_photo_count: Count = 0
     has_kudoed: bool = False
     gear_id: Optional[str] = None
-    average_heartrate: Optional[float] = None
-    max_heartrate: Optional[float] = None
+    average_heartrate: Optional[HeartRate] = None
+    max_heartrate: Optional[HeartRate] = None
     heartrate_opt_out: bool = False
     display_hide_heartrate_option: bool = False
-    elev_high: Optional[float] = None
-    elev_low: Optional[float] = None
+    elev_high: Optional[Elevation] = None
+    elev_low: Optional[Elevation] = None
     start_latlng: Optional[LatLng] = None
     end_latlng: Optional[LatLng] = None
     map: _Map = _Map()

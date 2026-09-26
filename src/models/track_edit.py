@@ -27,20 +27,9 @@ from typing import List, Optional, Tuple
 import polyline as polyline_lib
 
 from src.models.great_circle import haversine_km
-
-
-def finite_or_none(value) -> Optional[float]:
-    """*value* as a reading: a finite number, or None for none.
-
-    NaN and ±Infinity are not readings (gpxpy parses ``<ele>NaN</ele>`` and
-    ``<ele>inf</ele>`` as floats, and JSON from Strava or a request body can
-    carry the tokens too), so they are treated as a missing value. Storing
-    them breaks the trip: the client's JSON parser refuses them, and so does
-    the trip-file import (issue #462).
-    """
-    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
-        return value
-    return None
+from src.models.value_bounds import (
+    DISTANCE_MAX_M, DURATION_MAX_S, GAIN_MAX_M, finite_or_none, plausible_elevation,
+)
 
 
 @dataclass
@@ -51,10 +40,10 @@ class TrackPoint:
 
     def __post_init__(self) -> None:
         # Every elevation the app stores or measures passes through here (GPX
-        # upload, track editor, a profile read back): a non-finite one is a
+        # upload, track editor, a profile read back): an implausible one is a
         # missing one (issue #462).
         if self.elev is not None:
-            self.elev = finite_or_none(self.elev)
+            self.elev = plausible_elevation(self.elev)
 
 
 def align_points(
@@ -207,8 +196,10 @@ def clean_elevation_profile(
     no value that is not a finite number (issue #462).
 
     A sample whose distance is not a finite number has no place on the
-    profile and is left out. An elevation that is not one (NaN, ±Infinity,
-    null) is a missing reading, filled by :func:`interpolate_elevation_gaps`
+    profile and is left out. An elevation that is not a plausible reading
+    (NaN, ±Infinity, null, past ±20 km: see
+    :func:`~src.models.value_bounds.plausible_elevation`) is a missing one,
+    filled by :func:`interpolate_elevation_gaps`
     as :func:`points_to_elevation_profile` fills a point without ``<ele>``.
     Returns ``None`` when fewer than two samples or no elevation remain: no
     profile, rather than a degenerate one.
@@ -223,7 +214,7 @@ def clean_elevation_profile(
         if d is None:
             continue
         dists.append(d)
-        elevs.append(finite_or_none(e))
+        elevs.append(plausible_elevation(e))
     if len(dists) < 2 or all(e is None for e in elevs):
         return None
     return dists, interpolate_elevation_gaps(dists, elevs)
@@ -891,6 +882,22 @@ class TrackMetrics:
     average_speed: float          # m/s
     moving_time: int              # seconds (apportioned)
     elapsed_time: int             # seconds (apportioned)
+
+
+def implausible_track(metrics: "TrackMetrics", elapsed_s: Optional[float]) -> Optional[str]:
+    """Why a track the app is about to store is implausible, or None.
+
+    Its figures must stay inside the bounds the trip-file import enforces
+    (src/models/value_bounds.py), or the trip could not be exported and
+    imported back. Only garbage reaches them: a real track never does.
+    """
+    if metrics.distance > DISTANCE_MAX_M:
+        return "This track is longer than 100,000 km, which no real track is."
+    if metrics.total_elevation_gain > GAIN_MAX_M:
+        return "This track climbs more than 10,000 km, which no real track does."
+    if elapsed_s is not None and elapsed_s > DURATION_MAX_S:
+        return "This track spans more than 31 years, which no real track does."
+    return None
 
 
 def recompute_track_metrics(
