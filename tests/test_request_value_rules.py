@@ -263,3 +263,39 @@ def test_a_trip_written_through_the_api_exports_and_imports_back(app, monkeypatc
         "file": (f"Back{ProjectIO.EXTENSION}", exported.content, "application/json")})
 
     assert r.status_code == 201, r.text
+
+
+def _store_day_meta(engine, day_meta: dict) -> None:
+    with Session(engine) as sess:
+        row = sess.exec(select(DBProject)).one()
+        row.day_meta_json = json.dumps(day_meta)
+        sess.add(row)
+        sess.commit()
+
+
+def test_a_stored_legacy_day_does_not_block_a_save(app):  # noqa: F811
+    """A day stored before its notes were typed may hold anything. The client
+    sends every day back on each save; one it did not touch must not make
+    every save of the trip a 422."""
+    client, engine = app
+    _store_day_meta(engine, {"2024-05-01": {"journal": 5, "tags": "old", "sleeping": "Hut"}})
+
+    r = client.put("/api/projects/Trip/day-meta", json={"day_meta": {
+        "2024-05-01": {"journal": 5, "tags": "old", "sleeping": "Hut"},
+        "2024-06-01": {"journal": "Big day", "tags": ["alps"]}}})
+
+    assert r.status_code == 204, r.text
+
+
+def test_a_changed_field_of_a_legacy_day_is_still_checked(app):  # noqa: F811
+    client, engine = app
+    _store_day_meta(engine, {"2024-05-01": {"journal": 5, "sleeping": "Hut"}})
+
+    # The untouched field passes; the one being written is judged.
+    r = client.put("/api/projects/Trip/day-meta", json={"day_meta": {
+        "2024-05-01": {"journal": 5, "sleeping": ["Tent"]}}})
+    assert r.status_code == 422, r.text
+
+    r = client.put("/api/projects/Trip/day-meta", json={"day_meta": {
+        "2024-05-01": {"journal": 5, "sleeping": "Tent"}}})
+    assert r.status_code == 204, r.text

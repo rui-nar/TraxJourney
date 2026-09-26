@@ -35,7 +35,7 @@ from sqlmodel import select
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from fastapi.responses import Response
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 from api.deps import get_current_user
 from api.geo import (
@@ -588,18 +588,6 @@ class DayMetaUpdateRequest(BaseModel):
     sleeping_option_groups: Optional[Dict[str, str]] = None  # name → "Outdoors"|"Indoors"|"Other"
     counters: Optional[List[Dict[str, Any]]] = None  # [{name, start}]
 
-    # A day's notes are typed as the trip-file import reads them, or the trip
-    # could not be exported and imported back (issue #462). HTTPException
-    # rather than ValueError, as TrackPointIn explains.
-    @field_validator("day_meta")
-    @classmethod
-    def _days_the_import_takes(cls, v: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-        fault = day_meta_fault(v)
-        if fault is not None:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                                detail=f"These day notes cannot be stored: {fault}.")
-        return v
-
 
 def _stored_day_meta(existing_json: str | None) -> dict:
     """The stored day-meta map, or ``{}`` for anything that is not one.
@@ -696,6 +684,27 @@ def _merge_day_meta_preserve_counters(incoming: dict, existing_json: str | None)
     return merged
 
 
+def _check_written_day_notes(incoming: dict, existing_json: str | None) -> None:
+    """Refuse a day note of a type the trip-file import does not read, or the
+    trip could not be exported and imported back (issue #462).
+
+    Only what this save writes is judged: the client sends every day back on
+    each save, and a field it leaves as stored (a day saved before notes were
+    typed may hold anything) must not make every save of the trip a 422.
+    """
+    stored = _stored_day_meta(existing_json)
+    written = {}
+    for day, fields in incoming.items():
+        before = stored.get(day)
+        before = before if isinstance(before, dict) else {}
+        written[day] = {k: v for k, v in fields.items()
+                        if not (k in before and before[k] == v)}
+    fault = day_meta_fault(written)
+    if fault is not None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            detail=f"These day notes cannot be stored: {fault}.")
+
+
 @router.put("/{name}/day-meta", status_code=status.HTTP_204_NO_CONTENT,
             summary="Update day metadata")
 def update_day_meta(
@@ -710,6 +719,7 @@ def update_day_meta(
     with get_session() as sess:
         row = resolve_project(sess, user_info_id, name, owner, min_role="editor")
         owner_id = row.user_info_id
+        _check_written_day_notes(body.day_meta, row.day_meta_json)
         row.day_meta_json = json.dumps(
             _merge_day_meta_preserve_counters(
                 _keep_days_the_caller_cannot_see(
