@@ -660,3 +660,34 @@ def test_the_asset_proxy_closes_a_non_200_answer(env, net):
     script.append(_Closing(500, b"boom"))
     assert client.get("/api/immich/assets/abc/thumbnail").status_code == 502
     assert _Closing.closed
+
+
+
+@pytest.mark.parametrize("answer", [
+    b'{"assets": {"items": null}}',
+    b'{"assets": []}',
+    b'[1, 2]',
+])
+def test_search_answers_502_for_an_answer_of_the_wrong_shape(env, net, answer):
+    client, engine, uid = env
+    dns, opened, script = net
+    _connect(engine, uid, server_url="https://immich.example.com")
+    dns["immich.example.com"] = ["93.184.216.34"]
+    script.append(_Raw(200, answer))
+    assert client.post("/api/immich/search", json=_SEARCH).status_code == 502
+
+
+def test_search_skips_assets_it_cannot_use(env, net):
+    client, engine, uid = env
+    dns, opened, script = net
+    _connect(engine, uid, server_url="https://immich.example.com")
+    dns["immich.example.com"] = ["93.184.216.34"]
+    script.append(_Raw(200, b'{"assets": {"items": ['
+                            b'1,'
+                            b'{"id": 5, "fileCreatedAt": "2024-01-01"},'
+                            b'{"id": "no-date"},'
+                            b'{"id": "ok", "fileCreatedAt": "2024-01-01", "exifInfo": 5}'
+                            b']}}'))
+    resp = client.post("/api/immich/search", json=_SEARCH)
+    assert resp.status_code == 200
+    assert [c["id"] for c in resp.json()["candidates"]] == ["ok"]

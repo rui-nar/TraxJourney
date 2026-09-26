@@ -15,10 +15,13 @@ containers, the LAN, or the cloud metadata service. So every fetch here:
 - follows redirects itself, vetting every hop the same way, and never
   carries the caller's headers (an API key, say) or body to another origin,
   nor from https down to http;
-- caps the bytes read, the wait for each read (`idle_timeout`) and the
-  whole exchange (`total_timeout`): at the deadline a watchdog shuts the
-  connection's socket down, whatever it is doing (trickled headers, a
-  compressed body that never decodes, an endless chunked trailer).
+- caps the bytes read, the wait for each read (`idle_timeout`), the TCP
+  connect (10 s) and the rest of the exchange (`total_timeout`): from the
+  moment the TCP connection is up, a watchdog shuts it down at the deadline,
+  whatever it is doing (a stalled TLS handshake, trickled headers, a
+  compressed body that never decodes, an endless chunked trailer). Name
+  resolution comes first and is bounded by the system resolver's own
+  timeout, not by this module.
 """
 from __future__ import annotations
 
@@ -160,53 +163,58 @@ def vet(url: str, allowed_private_hosts: Iterable[str] = ()) -> Tuple[str, str, 
 
 
 class _Watchdog:
-    """Shuts the current connection's socket down at the deadline.
+    """Shuts the connection down at the deadline.
 
     Per-read timeouts cannot bound a whole exchange: a read that keeps
     receiving a byte now and then never times out, and a single urllib3
     read can loop over many socket reads (a compressed body that yields
-    nothing, a chunked trailer that never ends). Shutting the socket down
-    from here makes whatever read is in progress fail at once.
+    nothing, a chunked trailer that never ends). Shutting the connection
+    down makes whatever read is in progress fail at once.
+
+    It holds its own duplicate of the TCP socket, taken as soon as the
+    connection is up, so it also covers the TLS handshake (TLS wraps, and
+    detaches, the original socket object). Shutting down and closing both
+    happen under one lock, so it never touches a socket once it is closed.
     """
 
     def __init__(self, deadline: float):
-        self.conn = None
         self.fired = False
+        self._dup = None
+        self._conn = None
         self._lock = threading.Lock()
         self._timer = threading.Timer(max(0.0, deadline - time.monotonic()), self._fire)
         self._timer.daemon = True
         self._timer.start()
 
-    def watch(self, conn) -> None:
-        """Watch `conn` (already connected); shut it at once if already late."""
+    def watch(self, sock, conn) -> None:
+        """Watch the connected TCP `sock`, and close `conn` when done."""
+        dup = sock.dup()
         with self._lock:
-            self.conn = conn
-            late = self.fired
-        if late:
-            self._shut(conn)
+            self._dup, self._conn = dup, conn
+            if self.fired:
+                self._shut_locked()
 
     def _fire(self) -> None:
         with self._lock:
             self.fired = True
-            conn = self.conn
-        if conn is not None:
-            self._shut(conn)
+            self._shut_locked()
 
-    @staticmethod
-    def _shut(conn) -> None:
-        sock = getattr(conn, "sock", None)
-        if sock is not None:
+    def _shut_locked(self) -> None:
+        if self._dup is not None:
             try:
-                sock.shutdown(socket.SHUT_RDWR)
+                self._dup.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
 
     def stop(self) -> None:
         self._timer.cancel()
         with self._lock:
-            conn, self.conn = self.conn, None
-        if conn is not None:
-            conn.close()
+            dup, conn = self._dup, self._conn
+            self._dup = self._conn = None
+            if conn is not None:
+                conn.close()
+            if dup is not None:
+                dup.close()
 
 
 @dataclass
@@ -229,11 +237,12 @@ class SafeResponse:
                     if self._watchdog is not None and self._watchdog.fired:
                         raise FetchRefused("the download took longer than allowed") from None
                     raise
+                if self._watchdog is not None and self._watchdog.fired:
+                    # Past the deadline nothing more is handed out: a shut
+                    # socket reads as end of file, and a shut TLS socket
+                    # can still return raw bytes it had buffered.
+                    raise FetchRefused("the download took longer than allowed")
                 if not chunk:
-                    # A shut-down socket reads as end of file: that is the
-                    # watchdog's cut, not the end of the body.
-                    if self._watchdog is not None and self._watchdog.fired:
-                        raise FetchRefused("the download took longer than allowed")
                     return
                 total += len(chunk)
                 if total > self._max_bytes:
@@ -261,8 +270,15 @@ def _same_origin(a, b) -> bool:
             and b[0] == "https" and b[2] == 443)
 
 
+_CONNECT_TIMEOUT = 10.0
+
+
 def _open_once(method, scheme, host, port, ip, path, headers, body, timeout, watchdog=None):
-    """Send one request to `ip`, presenting `host` (Host header, TLS name)."""
+    """Send one request to `ip`, presenting `host` (Host header, TLS name).
+
+    The TCP connection is made here, to the vetted address, and handed to
+    urllib3, so the watchdog is on it before any TLS handshake starts.
+    """
     name = f"[{host}]" if ":" in host else host  # an IPv6 literal
     host_header = name if port == (443 if scheme == "https" else 80) else f"{name}:{port}"
     if scheme == "https":
@@ -273,15 +289,25 @@ def _open_once(method, scheme, host, port, ip, path, headers, body, timeout, wat
         )
     else:
         conn = urllib3.connection.HTTPConnection(ip, port=port, timeout=timeout)
+    sock = None
     try:
-        conn.connect()
+        sock = socket.create_connection((ip, port), timeout=min(_CONNECT_TIMEOUT, timeout))
+        sock.settimeout(timeout)
+        try:
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:  # not every socket family has it; it is only a speed-up
+            pass
         if watchdog is not None:
-            watchdog.watch(conn)
+            watchdog.watch(sock, conn)
+        conn._new_conn = lambda: sock  # urllib3 connects (and wraps TLS) over our socket
+        conn.connect()
         conn.request(method, path, body=body, headers={**headers, "Host": host_header},
                      preload_content=False)
         return conn.getresponse()
     except BaseException:
         conn.close()
+        if sock is not None:
+            sock.close()
         raise
 
 

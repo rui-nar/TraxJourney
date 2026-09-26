@@ -353,24 +353,31 @@ def immich_search(
 
     try:
         items = resp.json().get("assets", {}).get("items", [])
-    except (ValueError, AttributeError):
+        candidates = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            asset_id = item.get("id")
+            if not isinstance(asset_id, str) or not asset_id:
+                continue
+            taken_at = item.get("fileCreatedAt")
+            if not isinstance(taken_at, str) or not taken_at:
+                continue
+            exif = item.get("exifInfo")
+            if not isinstance(exif, dict):
+                exif = {}
+            candidates.append({
+                "id": asset_id,
+                "taken_at": taken_at,
+                "lat": exif.get("latitude") if isinstance(exif.get("latitude"), (int, float)) else None,
+                "lon": exif.get("longitude") if isinstance(exif.get("longitude"), (int, float)) else None,
+                "thumb_url": f"/api/immich/assets/{asset_id}/thumbnail",
+            })
+    except (ValueError, AttributeError, TypeError):
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Immich search returned an unreadable answer",
         )
-    candidates = []
-    for item in items:
-        asset_id = item.get("id")
-        if not asset_id:
-            continue
-        exif = item.get("exifInfo") or {}
-        candidates.append({
-            "id": asset_id,
-            "taken_at": item.get("fileCreatedAt"),
-            "lat": exif.get("latitude"),
-            "lon": exif.get("longitude"),
-            "thumb_url": f"/api/immich/assets/{asset_id}/thumbnail",
-        })
     return {"candidates": candidates}
 
 

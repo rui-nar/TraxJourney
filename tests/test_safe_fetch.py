@@ -338,6 +338,35 @@ def test_an_internationalised_host_name_is_used_in_its_ascii_form(dns):
 
 # ── The real connection setup (no connection is made) ────────────────────────
 
+import threading  # noqa: E402
+
+
+class _FakeSock:
+    """A connected TCP socket stand-in; its duplicates share one shutdown flag."""
+
+    def __init__(self, shut=None):
+        self.shut = shut or threading.Event()
+        self.closed = False
+        self.dups: list = []
+
+    def settimeout(self, t):
+        pass
+
+    def setsockopt(self, *a):
+        pass
+
+    def dup(self):
+        d = _FakeSock(self.shut)
+        self.dups.append(d)
+        return d
+
+    def shutdown(self, how):
+        self.shut.set()
+
+    def close(self):
+        self.closed = True
+
+
 class _ConnRecorder:
     made: list = []
 
@@ -346,7 +375,7 @@ class _ConnRecorder:
         _ConnRecorder.made.append(self)
 
     def connect(self):
-        pass
+        self.sock = self._new_conn()
 
     def request(self, method, path, **kwargs):
         self.request_kwargs = kwargs
@@ -362,66 +391,83 @@ class _ConnRecorder:
 def conns(monkeypatch):
     import urllib3.connection
     _ConnRecorder.made = []
+    socks: list = []
+
+    def create_connection(address, timeout=None):
+        sock = _FakeSock()
+        sock.address, sock.connect_timeout = address, timeout
+        socks.append(sock)
+        return sock
+
     monkeypatch.setattr(urllib3.connection, "HTTPSConnection", _ConnRecorder)
     monkeypatch.setattr(urllib3.connection, "HTTPConnection", _ConnRecorder)
-    return _ConnRecorder.made
+    monkeypatch.setattr(safe_fetch.socket, "create_connection", create_connection)
+    return _ConnRecorder.made, socks
 
 
 def test_https_connects_to_the_vetted_address_and_checks_the_certificate_for_the_name(conns):
+    made, socks = conns
     safe_fetch._open_once("GET", "https", "cdn.example", 443, "93.184.216.34", "/p.jpg",
-                          {"x": "1"}, None, 5.0)
-    conn = conns[0]
-    assert conn.host == "93.184.216.34"
+                          {"x": "1"}, None, 30.0)
+    conn = made[0]
+    assert socks[0].address == ("93.184.216.34", 443)
+    assert conn.sock is socks[0]  # TLS runs over the socket we connected
     assert conn.kwargs["server_hostname"] == "cdn.example"
     assert conn.kwargs["assert_hostname"] == "cdn.example"
     assert conn.kwargs["cert_reqs"] == "CERT_REQUIRED"
     assert conn.request_kwargs["headers"]["Host"] == "cdn.example"
 
 
+def test_the_tcp_connect_waits_at_most_ten_seconds(conns):
+    _, socks = conns
+    safe_fetch._open_once("GET", "http", "cdn.example", 80, "93.184.216.34", "/", {}, None, 60.0)
+    assert socks[0].connect_timeout == 10.0
+
+
 def test_an_ipv6_literal_goes_in_brackets_in_the_host_header(conns):
+    made, _ = conns
     safe_fetch._open_once("GET", "http", "2606:4700::1111", 8080, "2606:4700::1111", "/",
                           {}, None, 5.0)
-    assert conns[0].request_kwargs["headers"]["Host"] == "[2606:4700::1111]:8080"
+    assert made[0].request_kwargs["headers"]["Host"] == "[2606:4700::1111]:8080"
 
 
-# ── The watchdog: a hard limit on the whole exchange ─────────────────────────
-
-class _HungSock:
-    """A socket whose reads block until it is shut down."""
-
-    def __init__(self):
-        import threading
-        self.shut = threading.Event()
-
-    def shutdown(self, how):
-        self.shut.set()
+class _FailingConn(_ConnRecorder):
+    def request(self, method, path, **kwargs):
+        raise ConnectionResetError("reset")
 
 
-class _HungConn(_ConnRecorder):
-    """Connects, then never finishes sending its response headers."""
+def test_a_failed_request_closes_the_connection_and_the_socket(conns, monkeypatch):
+    import urllib3.connection
+    made, socks = conns
+    monkeypatch.setattr(urllib3.connection, "HTTPConnection", _FailingConn)
+    with pytest.raises(ConnectionResetError):
+        safe_fetch._open_once("GET", "http", "cdn.example", 80, "93.184.216.34", "/", {}, None, 5.0)
+    assert made[-1].closed and socks[0].closed
+
+
+# ── The watchdog: a hard limit on the exchange once connected ─────────────────
+
+class _HandshakeStall(_ConnRecorder):
+    """TLS handshake that never completes until the connection is shut."""
 
     def connect(self):
-        self.sock = _HungSock()
+        self.sock = self._new_conn()
+        if not self.sock.shut.wait(10):
+            raise AssertionError("the watchdog never shut the connection")
+        raise ConnectionResetError("shut during the handshake")
+
+
+class _HeaderStall(_ConnRecorder):
+    """Connects, then never finishes sending its response headers."""
 
     def getresponse(self):
         if not self.sock.shut.wait(10):
-            raise AssertionError("the watchdog never shut the socket")
+            raise AssertionError("the watchdog never shut the connection")
         raise ConnectionResetError("socket shut down")
 
 
-def test_the_watchdog_ends_an_exchange_that_outlasts_the_deadline(dns, monkeypatch):
-    import time as _time
-    import urllib3.connection
-    monkeypatch.setattr(urllib3.connection, "HTTPSConnection", _HungConn)
-    dns["slow.example"] = ["93.184.216.34"]
-    started = _time.monotonic()
-    with pytest.raises(FetchRefused, match="longer than allowed"):
-        open_url("https://slow.example/p.jpg", max_bytes=1000, total_timeout=0.3, idle_timeout=30)
-    assert _time.monotonic() - started < 5
-
-
 class _Stuck(_Raw):
-    """A body whose single read never returns until the socket is shut."""
+    """A body whose single read never returns until the connection is shut."""
 
     def __init__(self, sock):
         super().__init__(200, b"")
@@ -429,27 +475,89 @@ class _Stuck(_Raw):
 
     def read1(self, n):
         if not self._sock.shut.wait(10):
-            raise AssertionError("the watchdog never shut the socket")
+            raise AssertionError("the watchdog never shut the connection")
         raise ConnectionResetError("socket shut down")
 
 
-class _StuckBodyConn(_ConnRecorder):
-    def connect(self):
-        self.sock = _HungSock()
-
+class _BodyStall(_ConnRecorder):
     def getresponse(self):
         return _Stuck(self.sock)
 
 
-def test_the_watchdog_ends_a_body_read_that_never_returns(dns, monkeypatch):
+@pytest.mark.parametrize("conn_class", [_HandshakeStall, _HeaderStall, _BodyStall],
+                         ids=["tls-handshake", "headers", "body"])
+def test_the_watchdog_ends_an_exchange_that_outlasts_the_deadline(dns, conns, monkeypatch, conn_class):
     import time as _time
     import urllib3.connection
-    monkeypatch.setattr(urllib3.connection, "HTTPSConnection", _StuckBodyConn)
+    monkeypatch.setattr(urllib3.connection, "HTTPSConnection", conn_class)
     dns["slow.example"] = ["93.184.216.34"]
     started = _time.monotonic()
     with pytest.raises(FetchRefused, match="longer than allowed"):
         fetch_bytes("https://slow.example/p.jpg", max_bytes=1000, total_timeout=0.3)
     assert _time.monotonic() - started < 5
+
+
+class _FiredDog:
+    fired = True
+
+    def stop(self):
+        pass
+
+
+def test_nothing_is_handed_out_once_the_deadline_has_passed():
+    # A shut TLS socket can still return raw bytes it had buffered.
+    resp = safe_fetch.SafeResponse(status=200, headers={}, url="https://x.example/",
+                                   _raw=_Raw(200, b"ciphertext"), _max_bytes=1000,
+                                   _watchdog=_FiredDog())
+    with pytest.raises(FetchRefused, match="longer than allowed"):
+        resp.read_all()
+
+
+def test_an_end_of_file_after_the_deadline_is_a_timeout_not_a_short_body():
+    resp = safe_fetch.SafeResponse(status=200, headers={}, url="https://x.example/",
+                                   _raw=_Raw(200, b""), _max_bytes=1000, _watchdog=_FiredDog())
+    with pytest.raises(FetchRefused, match="longer than allowed"):
+        resp.read_all()
+
+
+def test_stopping_the_watchdog_cancels_the_timer_and_closes_the_connection():
+    import time as _time
+    dog = safe_fetch._Watchdog(_time.monotonic() + 60)
+    sock, conn = _FakeSock(), _ConnRecorder("93.184.216.34")
+    dog.watch(sock, conn)
+    dog.stop()
+    assert conn.closed and sock.dups[0].closed
+    assert not dog._timer.is_alive() or dog._timer.finished.is_set()
+
+
+def test_closing_a_response_stops_its_watchdog():
+    stopped = []
+
+    class Dog:
+        fired = False
+
+        def stop(self):
+            stopped.append(True)
+
+    safe_fetch.SafeResponse(status=200, headers={}, url="https://x.example/",
+                            _raw=_Raw(200, b"ok"), _max_bytes=1000, _watchdog=Dog()).close()
+    assert stopped == [True]
+
+
+def test_a_redirect_stops_the_watchdog_of_its_hop(dns, wire, monkeypatch):
+    _, script = wire
+    dns["cdn.example"] = ["93.184.216.34"]
+    stops = []
+    real = safe_fetch._Watchdog.stop
+
+    def counting_stop(self):
+        stops.append(self)
+        real(self)
+
+    monkeypatch.setattr(safe_fetch._Watchdog, "stop", counting_stop)
+    script += [_Raw(302, headers={"location": "/b"}), _Raw(200, b"ok")]
+    fetch_bytes("https://cdn.example/a", max_bytes=1000, total_timeout=5)
+    assert len(stops) == 2 and stops[0] is not stops[1]  # the first hop's, then the response's
 
 
 # ── Origins ───────────────────────────────────────────────────────────────────
@@ -461,6 +569,29 @@ def test_an_upgrade_to_https_on_the_same_host_keeps_headers_and_body(dns, wire):
     open_url("http://immich.example/search", method="POST", body=b"{}",
              headers={"x-api-key": "SECRET"}, max_bytes=1000, total_timeout=5).read_all()
     assert calls[1]["headers"] == {"x-api-key": "SECRET"} and calls[1]["body"] == b"{}"
+
+
+@pytest.mark.parametrize("a, b, same", [
+    (("http", "a.example", 80), ("https", "a.example", 443), True),
+    (("https", "a.example", 443), ("https", "a.example", 443), True),
+    (("http", "a.example", 80), ("https", "b.example", 443), False),
+    (("http", "a.example", 8080), ("https", "a.example", 443), False),
+    (("http", "a.example", 80), ("https", "a.example", 8443), False),
+    (("https", "a.example", 443), ("http", "a.example", 80), False),
+    (("https", "a.example", 443), ("https", "a.example", 8443), False),
+])
+def test_what_counts_as_the_same_origin(a, b, same):
+    assert safe_fetch._same_origin(a, b) is same
+
+
+def test_an_upgrade_to_https_on_another_host_does_not_keep_headers(dns, wire):
+    calls, script = wire
+    dns["immich.example"] = ["93.184.216.34"]
+    dns["evil.example"] = ["93.184.216.35"]
+    script += [_Raw(301, headers={"location": "https://evil.example/x"}), _Raw(200, b"ok")]
+    open_url("http://immich.example/a", headers={"x-api-key": "SECRET"},
+             max_bytes=1000, total_timeout=5).read_all()
+    assert calls[1]["host"] == "evil.example" and calls[1]["headers"] == {}
 
 
 def test_redirect_refusals_are_not_reported_as_a_refused_destination(dns, wire):
