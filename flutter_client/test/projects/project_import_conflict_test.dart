@@ -123,6 +123,9 @@ void main() {
       // An older file can lack photos a memory it keeps has since gained.
       expect(find.textContaining('Photos that aren’t in the file are removed too'),
           findsOneWidget);
+      expect(find.textContaining(
+              'People the file doesn’t have are deleted with their avatars'),
+          findsOneWidget);
 
       if (buttonText == null) {
         await tester.tapAt(const Offset(5, 5)); // outside: dismissed

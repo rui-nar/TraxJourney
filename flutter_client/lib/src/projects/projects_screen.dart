@@ -30,34 +30,10 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
 
   Future<String?> _askImportName(
       BuildContext ctx, String defaultName) async {
-    final ctrl = TextEditingController(text: defaultName);
     final name = await showDialog<String>(
       context: ctx,
-      builder: (dlgCtx) => AlertDialog(
-        title: const Text('Project name'),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          decoration:
-              const InputDecoration(hintText: 'Enter a name for this project'),
-          textInputAction: TextInputAction.done,
-          onSubmitted: (v) =>
-              Navigator.of(dlgCtx).pop(v.trim()),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dlgCtx).pop(null),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () =>
-                Navigator.of(dlgCtx).pop(ctrl.text.trim()),
-            child: const Text('Import'),
-          ),
-        ],
-      ),
+      builder: (_) => _ImportNameDialog(defaultName: defaultName),
     );
-    ctrl.dispose();
     return (name == null || name.isEmpty) ? null : name;
   }
 
@@ -547,4 +523,50 @@ class _SectionCard extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Asks for the name to import a trip under. Owns its text controller, so
+/// the controller lives exactly as long as the dialog, closing animation
+/// included: disposing it as soon as showDialog returned left the fading
+/// dialog using a disposed controller.
+class _ImportNameDialog extends StatefulWidget {
+  final String defaultName;
+  const _ImportNameDialog({required this.defaultName});
+
+  @override
+  State<_ImportNameDialog> createState() => _ImportNameDialogState();
+}
+
+class _ImportNameDialogState extends State<_ImportNameDialog> {
+  late final TextEditingController _ctrl =
+      TextEditingController(text: widget.defaultName);
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('Project name'),
+        content: TextField(
+          controller: _ctrl,
+          autofocus: true,
+          decoration:
+              const InputDecoration(hintText: 'Enter a name for this project'),
+          textInputAction: TextInputAction.done,
+          onSubmitted: (v) => Navigator.of(context).pop(v.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(null),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(context).pop(_ctrl.text.trim()),
+            child: const Text('Import'),
+          ),
+        ],
+      );
 }
