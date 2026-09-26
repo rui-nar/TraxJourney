@@ -516,6 +516,19 @@ def check(document: Dict[str, Any]) -> Optional[str]:
     return fault(document)
 
 
+def _app_measured(act: Dict[str, Any], by_id: Dict[int, Dict[str, Any]]) -> bool:
+    """Whether the app measured *act*'s figures: a GPX upload, or a piece
+    split out of one. Tails split before #462 have no source of their own, so
+    theirs is found up the chain of pieces they were cut from, in the file."""
+    seen = set()
+    while isinstance(act, dict) and id(act) not in seen:
+        if act.get("source") is not None:
+            return act.get("source") == "gpx"
+        seen.add(id(act))
+        act = by_id.get(act.get("split_parent_id"))
+    return False
+
+
 def normalise(document: Dict[str, Any]) -> None:
     """Bring what past writers stored into the format, in place.
 
@@ -530,6 +543,8 @@ def normalise(document: Dict[str, Any]) -> None:
     activities = document.get("activities")
     if not isinstance(activities, list):
         return
+    by_id = {a.get("id"): a for a in activities
+             if isinstance(a, dict) and type(a.get("id")) is int}
     for act in activities:
         if not isinstance(act, dict):
             continue
@@ -543,7 +558,7 @@ def normalise(document: Dict[str, Any]) -> None:
                    for v in figures.values()):
             continue            # a wrong type: fault() names it
         new_profile, gain, high, low = repair_elevations(
-            profile, *figures.values(), app_measured=act.get("source") == "gpx")
+            profile, *figures.values(), app_measured=_app_measured(act, by_id))
         if new_profile is not profile:
             act["elevation_profile"] = (
                 None if new_profile is None

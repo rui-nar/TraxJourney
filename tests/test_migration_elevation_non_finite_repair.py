@@ -161,6 +161,19 @@ def seeded(tmp_path, monkeypatch):
     # 16: a clean profile that merely holds a five-digit number (12 km up is
     #     in range): selected by the scan, left as it is.
     act(16, source="gpx", elevation_profile_json=_profile(_broken(1, value=12345.0)))
+    # 17: the tail of a split GPX upload (18), split before tails kept their
+    #     source: the app measured it, so it is remeasured as its root is.
+    act(18, source="gpx", elevation_profile_json=_profile(_CLEAN))
+    act(17, source=None, is_edited=True, split_root_id=18, split_parent_id=18,
+        elevation_profile_json=_profile(_broken(3, value=65535)),
+        total_elevation_gain=4e6, elev_high=9999.0, elev_low=500.0)
+    # 19: the tail of a split Strava activity (20): Strava's share, kept.
+    act(20, source=None, elevation_profile_json=_profile(_CLEAN))
+    act(19, source=None, is_edited=True, split_root_id=20, split_parent_id=20,
+        elevation_profile_json=_profile(_broken(3, value=65535)),
+        total_elevation_gain=33.0, elev_high=518.0, elev_low=500.0)
+    # 21: a profile holding an elevation json.dumps writes as 1e+20.
+    act(21, source="gpx", elevation_profile_json=_profile(_broken(4, value=1e20)))
 
     for pid, aid in ((1, 1), (2, 6)):
         _seed_row(engine, "project", DBProject(
@@ -191,7 +204,7 @@ def test_only_plaintext_rows_are_candidates(seeded):
     with engine.connect() as conn:
         ids = set(_migration()._candidate_ids(conn))
 
-    assert ids == {1, -2, 3, 4, 7, 8, 9, 10, 12, 13, 14, 15, 16}
+    assert ids == {1, -2, 3, 4, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 19, 21}
 
 
 def test_an_app_measured_row_with_finite_but_wrong_totals_is_recomputed(seeded):
@@ -406,3 +419,44 @@ def test_it_is_idempotent_and_its_downgrade_keeps_the_repair(seeded):
 
     assert _rows(engine) == repaired
     assert _projects(engine) == projects
+
+
+def test_a_tail_of_a_gpx_upload_is_remeasured_like_its_root(seeded):
+    cfg, engine = seeded
+    command.upgrade(cfg, _REPAIR_REV)
+    rows = _rows(engine)
+
+    dists, elevs = _expected(_broken(3, value=65535))
+    assert rows[17]["total_elevation_gain"] == pytest.approx(elevation_gain(elevs, dists))
+    assert (rows[17]["elev_high"], rows[17]["elev_low"]) == (max(elevs), min(elevs))
+    # A tail of a Strava activity keeps its share of Strava's gain.
+    assert (rows[19]["total_elevation_gain"], rows[19]["elev_high"]) == (33.0, 518.0)
+
+
+def test_an_elevation_written_with_an_exponent_is_found(seeded):
+    """json.dumps writes 1e20 as 1e+20: no run of five digits to scan for."""
+    cfg, engine = seeded
+    command.upgrade(cfg, _REPAIR_REV)
+
+    assert json.loads(_rows(engine)[21]["elevation_profile_json"])["elevations_m"] ==         _expected(_broken(4, value=1e20))[1]
+
+
+def test_the_import_and_the_repair_agree(seeded):
+    """An old export of a row and the row itself come out the same."""
+    cfg, engine = seeded
+    before = _rows(engine)[12]
+    command.upgrade(cfg, _REPAIR_REV)
+    after = _rows(engine)[12]
+    from src.project.project_io import ProjectIO
+    doc = {"items": [], "activities": [{
+        "id": 12, "name": "x", "type": "Hike", "source": "gpx",
+        "start_date": "2024-06-01T08:00:00Z",
+        "total_elevation_gain": before["total_elevation_gain"],
+        "elev_high": before["elev_high"], "elev_low": before["elev_low"],
+        "elevation_profile": json.loads(before["elevation_profile_json"])}]}
+
+    act = ProjectIO.from_dict(doc).activities[0]
+
+    assert act.elevation_profile == tuple(json.loads(after["elevation_profile_json"]).values())
+    assert (act.total_elevation_gain, act.elev_high, act.elev_low) == (
+        after["total_elevation_gain"], after["elev_high"], after["elev_low"])

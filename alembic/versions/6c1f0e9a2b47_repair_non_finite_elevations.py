@@ -23,8 +23,10 @@ and an old export of it come out alike:
   NULL. The low-res copy the chart loads first is rebuilt from it;
 * on an uploaded GPX track, whose figures the app measured itself from the
   same readings, gain, high and low are measured again from the repaired
-  profile, and so is the gain its undo snapshot keeps. A Strava activity
-  keeps Strava's own figures, and an edited one its share of them (#386);
+  profile, and so is the gain its undo snapshot keeps; so on a piece split
+  out of one, whose source is its family's when it has none of its own. A
+  Strava activity keeps Strava's own figures, and an edited one its share
+  of them (#386);
 * a figure still implausible is measured from the profile if there is one,
   and otherwise cleared: gain to 0.0 (its NOT NULL column's default), high
   and low to NULL, the snapshot's gain to NULL (a reset then remeasures it);
@@ -107,8 +109,25 @@ def _candidate_ids(bind) -> list:
         f"SELECT id FROM activity WHERE {profiles} OR {figures} ORDER BY id"))]
 
 
-_ROW = ("SELECT id, source, " + ", ".join(_PROFILES + _FIGURES)
-        + " FROM activity WHERE id = :id")
+_ROW = ("SELECT id, source, split_root_id, split_parent_id, "
+        + ", ".join(_PROFILES + _FIGURES) + " FROM activity WHERE id = :id")
+
+
+def _app_measured(bind, row) -> bool:
+    """Whether the app measured the row's figures: a GPX upload, or a piece
+    split out of one. Tails split before #462 have no source of their own, so
+    theirs is their family's: its root, else up the chain of parents."""
+    source, seen = row["source"], set()
+    parent = row["split_root_id"] or row["split_parent_id"]
+    while source is None and parent is not None and parent not in seen:
+        seen.add(parent)
+        found = bind.execute(sa.text(
+            "SELECT source, split_parent_id FROM activity WHERE id = :id"),
+            {"id": parent}).first()
+        if found is None:
+            break
+        source, parent = found
+    return source == "gpx"
 
 
 def _parsed(ep_json):
@@ -142,7 +161,7 @@ def upgrade() -> None:
     for row_id in _candidate_ids(bind):
         row = bind.execute(sa.text(_ROW), {"id": row_id}).mappings().one()
         values = {c: row[c] for c in _PROFILES + _FIGURES}
-        app_measured = row["source"] == "gpx"
+        app_measured = _app_measured(bind, row)
 
         current = _readable(row["elevation_profile_json"])
         profile, gain, high, low = repair_elevations(

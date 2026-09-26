@@ -26,6 +26,7 @@ from sqlmodel import Session, select
 from models.project_db import DBActivity
 from src.models.track_edit import clean_elevation_profile, elevation_gain
 from src.project.project_io import ProjectIO
+from tests.test_elevation_non_finite import _upload_gpx, app  # noqa: F401
 from tests.test_import_value_schema import _TRIP, _import, env  # noqa: F401
 
 _NAN, _INF = float("nan"), float("inf")
@@ -49,7 +50,8 @@ def _row(engine) -> DBActivity:
 
 
 def _profile(elevs):
-    return {"distances_km": _DISTS, "elevations_m": elevs}
+    # Copies: a case that edits a profile in place must not edit the next.
+    return {"distances_km": list(_DISTS), "elevations_m": list(elevs)}
 
 
 _SENTINELS = {
@@ -204,3 +206,43 @@ def test_an_integer_too_large_for_a_float_is_refused_not_a_500(env, path, field)
 
     assert r.status_code == 400, r.text
     assert f": {field} " in r.json()["detail"], r.json()["detail"]
+
+
+# ── A split piece of a GPX upload (issue #462) ──────────────────────────────
+
+def test_splitting_a_gpx_upload_keeps_the_source_on_the_tail(app):  # noqa: F811
+    """The app measured both pieces' figures, so both say where they came
+    from; a tail without it read as a Strava activity."""
+    client, engine = app
+    activity_id = _upload_gpx(client, [100.0, 110.0, 120.0, 130.0, 125.0, 118.0])
+
+    r = client.post(f"/api/projects/Trip/activities/{activity_id}/split",
+                    json={"split_index": 2})
+
+    assert r.status_code == 200, r.text
+    with Session(engine) as sess:
+        rows = sess.exec(select(DBActivity)).all()
+    assert len(rows) == 2
+    assert {row.source for row in rows} == {"gpx"}
+
+
+def test_a_tail_exported_without_its_source_is_measured_as_its_parent(env):
+    """Tails split before the fix have no source; their parent in the file
+    says whether the app measured them."""
+    client, engine = env
+    broken = _profile([800.0, 810.0, 65535.0, 830.0, 840.0])
+    doc = _trip(source="gpx", elevation_profile=_profile(_CLEAN))
+    tail = copy.deepcopy(doc["activities"][0])
+    tail.update(id=-5, source=None, split_parent_id=1, elevation_profile=broken,
+                total_elevation_gain=4e6, elev_high=9999.0, elev_low=800.0)
+    doc["activities"].append(tail)
+    doc["items"].append({"item_type": "activity", "activity_id": -5})
+
+    r = _import(client, _bytes(doc))
+
+    assert r.status_code == 201, r.text
+    with Session(engine) as sess:
+        row = sess.get(DBActivity, -5)
+    dists, elevs = clean_elevation_profile(_DISTS, broken["elevations_m"])
+    assert row.total_elevation_gain == pytest.approx(elevation_gain(elevs, dists))
+    assert (row.elev_high, row.elev_low) == (840.0, 800.0)

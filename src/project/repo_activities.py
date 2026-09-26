@@ -562,6 +562,9 @@ class ActivityMixin:
             manual=True,
             private=head.private,
             gear_id=head.gear_id,
+            # Measured by the app exactly as its head is: a tail of a GPX
+            # upload is one too (issue #462), not a Strava activity.
+            source=head.source,
         )
         # Seed the tail with the FULL pre-split geometry + the original scalar
         # times so _write_track_geometry apportions the tail's time to its own
