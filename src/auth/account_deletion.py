@@ -50,6 +50,7 @@ from models.user import (
 from src.project.repo_core import bump_lock_version
 from src.admin import storage as _storage_mod
 from src.billing.gateway import GatewayError, get_gateway
+from src.billing.subscriptions import lock_account
 from src.exceptions.errors import AccountDeletionRefused
 
 #: Provider statuses after which a subscription can never charge again.
@@ -108,7 +109,8 @@ def cancel_live_subscription(sess: Session, user_info_id: int) -> list[str]:
         raise AccountDeletionRefused(
             "This account has a paid plan that this server cannot cancel, "
             "because billing is not configured here. The account was not "
-            "deleted. Please contact the administrator.",
+            "deleted. Please contact the administrator (see \"Deleting an "
+            "account\" in docs/BILLING.md).",
             status_code=409, code="billing_unavailable",
         )
     try:
@@ -126,6 +128,22 @@ def cancel_live_subscription(sess: Session, user_info_id: int) -> list[str]:
         ) from exc
 
 
+def _billing_state(sess: Session, user_info_id: int) -> tuple | None:
+    """What deletion settles billing from: customer, subscription, status.
+
+    Read as columns, not as the ORM row: the session's identity map would hand
+    back the object loaded earlier, with its stale attributes.
+    """
+    row = sess.execute(
+        select(
+            Subscription.provider_customer_id,
+            Subscription.provider_subscription_id,
+            Subscription.status,
+        ).where(Subscription.user_info_id == user_info_id)
+    ).first()
+    return tuple(row) if row is not None else None
+
+
 def delete_user_and_data(sess: Session, user_info_id: int) -> None:
     """Delete a ``UserInfo`` and every row it owns, directly or via a project.
 
@@ -135,7 +153,21 @@ def delete_user_and_data(sess: Session, user_info_id: int) -> None:
     Commits internally. Does not touch the filesystem — call
     :func:`purge_user_files` afterwards, outside any DB session.
     """
+    settled = _billing_state(sess, user_info_id)
     cancel_live_subscription(sess, user_info_id)
+    # Stripe was called without holding any lock (never hold SQLite's write
+    # lock across the network). A webhook can land in that window and record
+    # a first purchase on the row — a customer this deletion never cancelled.
+    # So take the lock the webhook takes too, and only go on if billing is
+    # still what was settled; otherwise roll back and let the retry cancel it.
+    lock_account(sess, user_info_id)
+    if _billing_state(sess, user_info_id) != settled:
+        sess.rollback()
+        raise AccountDeletionRefused(
+            "Your billing changed while the account was being deleted, so "
+            "nothing was removed. Please try again.",
+            status_code=409, code="billing_changed",
+        )
 
     project_ids = sess.exec(
         select(DBProject.id).where(DBProject.user_info_id == user_info_id)

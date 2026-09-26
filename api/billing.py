@@ -445,15 +445,27 @@ async def webhook(request: Request):
     if update is None:
         return WebhookAck(received=True, applied=False)
 
-    if (event.get("type") or "") in _SUBSCRIPTION_START_TYPES:
-        with get_session() as sess:
+    # One session, holding the account's write lock before anything is read
+    # (issue #429): an account deletion in flight either commits first — and
+    # the account is then seen gone — or starts after this commits, and then
+    # sees what this recorded and refuses to go on without cancelling it.
+    orphaned = False
+    with get_session() as sess:
+        if update.user_info_id:
+            subs.lock_account(sess, update.user_info_id)
+        if (event.get("type") or "") in _SUBSCRIPTION_START_TYPES:
             orphaned = subs.is_orphaned(sess, update)
         if orphaned:
-            _cancel_orphan(gateway, update)
-            return WebhookAck(received=True, applied=False)
-
-    with get_session() as sess:
-        applied = subs.apply_update(sess, update)
+            sess.rollback()
+        else:
+            applied = subs.apply_update(sess, update)
+            sess.rollback()  # release the lock when nothing was written
+    if orphaned:
+        # After the lock is released: never hold it across a Stripe call. The
+        # account is gone for good (ids are never reused), so the verdict
+        # cannot go stale.
+        _cancel_orphan(gateway, update)
+        return WebhookAck(received=True, applied=False)
     if applied:
         _log.info(
             "Billing: %s → plan=%s status=%s (event %s)",

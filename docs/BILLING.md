@@ -265,6 +265,12 @@ row (issue #429, `cancel_live_subscription` in `src/auth/account_deletion.py`):
 - if that fails the deletion is refused with **502**, and with **409** when a
   subscription may still bill but this deployment has no gateway configured.
   Nothing is deleted either way, and retrying is safe.
+- Stripe is called without holding any database lock. The deletion then takes
+  the account's write lock and re-reads the billing row; if a webhook changed
+  it in between (a first purchase completing), it rolls back and answers
+  **409** `billing_changed`, and the retry cancels what that purchase started.
+  Webhooks naming an account take the same lock before reading anything, so a
+  start event arriving mid-deletion waits and then sees the account gone.
 
 A first purchase has no customer until it is paid, so a checkout page opened
 before the deletion cannot be found then. If it is paid afterwards,
@@ -272,8 +278,44 @@ before the deletion cannot be found then. If it is paid afterwards,
 deleted account and a customer no account holds; the webhook cancels that
 subscription on arrival and logs a warning.
 
-Account ids are never reused (`userinfo` is `AUTOINCREMENT`), so the
-`user_info_id` in Stripe metadata can only ever name its buyer, or nobody.
+Account ids are never reused (`userinfo` is `AUTOINCREMENT`, migration
+`6abe17b5d61f`), so the `user_info_id` in Stripe metadata names its buyer or
+nobody — with one exception. The migration can only start the sequence above
+the *current* highest id: an account deleted before the migration with an id
+above that is not remembered anywhere, and its id is handed out once more to
+the next account registered. Late events for such an account, if any
+subscription of it was left running, would name that newcomer.
+
+#### When deletion is refused with 409 "billing is not configured here"
+
+The account's cached subscription status says it may still bill, but this
+deployment has no Stripe keys, so it cannot ask Stripe or cancel anything.
+This happens when billing was switched off after the account subscribed.
+There is deliberately no force-delete: the one safe way out is to confirm at
+Stripe that nothing bills any more, then record that here.
+
+1. Find the account and its billing row in the deployment's database (the
+   file `DATABASE_URL` points at, `traxjourney.db` by default):
+
+   ```sql
+   SELECT id, email FROM userinfo WHERE email = 'user@example.com';
+   SELECT provider_customer_id, provider_subscription_id, status
+     FROM subscription WHERE user_info_id = <id>;
+   ```
+
+2. In the Stripe dashboard of the account this deployment used, open the
+   customer `provider_customer_id` (or search for `provider_subscription_id`)
+   and make sure **every** subscription is canceled. Cancel any that is not,
+   and expire any open checkout session.
+
+3. Only then, record it (back up the database first):
+
+   ```sql
+   UPDATE subscription SET status = 'canceled' WHERE user_info_id = <id>;
+   ```
+
+4. Delete the account again. With a customer on record and a status that
+   has ended, deletion no longer needs the gateway.
 
 ## Where the plan UI lives
 

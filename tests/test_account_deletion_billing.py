@@ -10,6 +10,8 @@ must *not* reach it installs one anyway and asserts it stayed untouched.
 """
 from __future__ import annotations
 
+import threading
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
@@ -458,3 +460,189 @@ class TestCheckoutPaidAfterDeletion:
         assert not gw.touched
         with Session(engine) as sess:
             assert sess.exec(select(Subscription)).one().user_info_id == keeper
+
+
+# ── A start event racing the deletion ────────────────────────────────────────
+
+@pytest.fixture
+def file_engine(monkeypatch, tmp_path):
+    """A real file database, one connection per session, WAL and busy_timeout
+    as in production — the in-memory StaticPool shares one connection between
+    sessions and cannot show two writers contending."""
+    test_engine = db_module._make_engine(f"sqlite:///{(tmp_path / 'race.db').as_posix()}")
+    db_module._configure_sqlite(test_engine)
+    monkeypatch.setattr(db_module, "engine", test_engine)
+    monkeypatch.setattr(storage_mod, "_DATA_DIR", str(tmp_path))
+    SQLModel.metadata.create_all(test_engine)
+    for var in ("BILLING_ENABLED", "BILLING_ENFORCE_QUOTAS", "STRIPE_SECRET_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    yield test_engine
+    app.dependency_overrides.clear()
+    set_gateway(None)
+    test_engine.dispose()
+
+
+class TestStartEventRacingTheDeletion:
+    """A first purchase has no customer on the row, so deletion settles
+    billing without asking Stripe. Its completion event can land while the
+    deletion is running (issue #429, review round 2)."""
+
+    def test_landing_before_the_deletes_refuses_and_the_retry_cancels(
+        self, file_engine, monkeypatch,
+    ):
+        """The event lands after deletion read the row and before it deleted
+        anything: it records the new customer on the row. Deleting on would
+        drop the only record of a subscription nobody cancelled."""
+        import src.auth.account_deletion as deletion
+
+        uid = _seed(file_engine, status="none", customer="", sub_id="")
+        gw = FakeGateway(file_engine, cancelled=("sub_new",))
+        set_gateway(gw)
+        webhook = {}
+        real = deletion.cancel_live_subscription
+
+        def settle_then_race(sess, user_info_id):
+            cancelled = real(sess, user_info_id)
+            if not webhook:
+                webhook["res"] = _post_webhook(
+                    FakeGateway(file_engine, event=_checkout_completed(uid)))
+                set_gateway(gw)
+            return cancelled
+
+        monkeypatch.setattr(deletion, "cancel_live_subscription", settle_then_race)
+
+        res = _delete_me(uid)
+
+        assert webhook["res"].json() == {"received": True, "applied": True}
+        assert res.status_code == 409, res.text
+        assert res.json()["code"] == "billing_changed"
+        assert _everything_present(file_engine, uid)
+        assert gw.customer_calls == []
+
+        # The retry sees the customer and cancels what it started.
+        res = _delete_me(uid)
+        assert res.status_code == 200, res.text
+        assert gw.customer_calls == ["cus_new"]
+        assert _everything_gone(file_engine, uid)
+
+    def test_landing_during_the_deletes_waits_and_cancels(self, file_engine):
+        """The event lands while the deletion holds the write lock. It must
+        wait for the deletion to commit, then see the account gone and
+        cancel — not read the account as alive and write to its rows."""
+        from sqlalchemy import event as sa_event
+
+        from src.auth.account_deletion import delete_user_and_data
+
+        uid = _seed(file_engine, status="none", customer="", sub_id="")
+        late = FakeGateway(file_engine, event=_checkout_completed(uid))
+        set_gateway(late)
+        webhook = {}
+
+        def post():
+            webhook["res"] = TestClient(app).post(
+                "/api/billing/webhook", content=b"{}",
+                headers={"stripe-signature": "good"})
+
+        racer = threading.Thread(target=post)
+
+        with Session(file_engine) as sess:
+            def race(_session):
+                if not racer.is_alive() and "started" not in webhook:
+                    webhook["started"] = True
+                    racer.start()
+                    # Long enough for the event to read everything it would
+                    # read, were it not waiting for the lock.
+                    racer.join(timeout=1.5)
+
+            sa_event.listen(sess, "before_commit", race)
+            delete_user_and_data(sess, uid)
+        racer.join(timeout=60)
+
+        assert webhook["res"].status_code == 200, webhook["res"].text
+        assert webhook["res"].json() == {"received": True, "applied": False}
+        assert late.customer_calls == ["cus_new"]
+        assert _everything_gone(file_engine, uid)
+
+    def test_landing_after_the_recheck_waits_for_the_deletion(
+        self, file_engine, monkeypatch,
+    ):
+        """The re-check only helps if nothing can write between it and the
+        deletes: the deletion holds the lock from before the re-check to its
+        commit, so an event arriving just after the re-check waits too."""
+        import src.auth.account_deletion as deletion
+
+        uid = _seed(file_engine, status="none", customer="", sub_id="")
+        late = FakeGateway(file_engine, event=_checkout_completed(uid))
+        set_gateway(late)
+        webhook = {}
+        calls = []
+        real = deletion._billing_state
+
+        def post():
+            webhook["res"] = TestClient(app).post(
+                "/api/billing/webhook", content=b"{}",
+                headers={"stripe-signature": "good"})
+
+        def recheck_then_race(sess, user_info_id):
+            state = real(sess, user_info_id)
+            calls.append(state)
+            if len(calls) == 2:  # the re-check, under the lock
+                racer = threading.Thread(target=post)
+                webhook["racer"] = racer
+                racer.start()
+                racer.join(timeout=1.5)
+            return state
+
+        monkeypatch.setattr(deletion, "_billing_state", recheck_then_race)
+
+        with Session(file_engine) as sess:
+            deletion.delete_user_and_data(sess, uid)
+        webhook["racer"].join(timeout=60)
+
+        assert webhook["res"].json() == {"received": True, "applied": False}
+        assert late.customer_calls == ["cus_new"]
+        assert _everything_gone(file_engine, uid)
+
+
+# ── Billing switched off while a live status is cached ───────────────────────
+
+def _documented_update() -> str:
+    """The UPDATE docs/BILLING.md tells an operator to run."""
+    import re
+    from pathlib import Path
+
+    doc = (Path(__file__).resolve().parents[1] / "docs" / "BILLING.md").read_text(
+        encoding="utf-8")
+    found = re.findall(r"^\s*(UPDATE subscription SET status = 'canceled'[^;]*;)",
+                       doc, re.MULTILINE)
+    assert len(found) == 1, "docs/BILLING.md must document exactly one such UPDATE"
+    return found[0]
+
+
+class TestNoGatewayEscape:
+    """With billing switched off, a cached live status refuses deletion for
+    good — deliberately, with no force flag. The refusal points at the
+    documented way out, and that way out works."""
+
+    def test_the_refusal_points_at_the_procedure(self, engine):
+        uid = _seed(engine)
+        set_gateway(None)
+
+        detail = _delete_me(uid).json()["detail"]
+
+        assert "docs/BILLING.md" in detail
+        assert "Deleting an account" in detail
+
+    def test_the_documented_update_lets_the_deletion_through(self, engine):
+        from sqlalchemy import text
+
+        uid = _seed(engine)
+        set_gateway(None)
+        assert _delete_me(uid).status_code == 409
+
+        # What the operator runs once Stripe shows nothing billing.
+        with engine.begin() as conn:
+            conn.execute(text(_documented_update().replace("<id>", str(uid))))
+
+        assert _delete_me(uid).status_code == 200
+        assert _everything_gone(engine, uid)

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import time
 
+from sqlalchemy import update
 from sqlmodel import select
 
 from models.billing import Subscription
@@ -42,6 +43,36 @@ def _by_customer(sess, customer_id: str) -> Subscription | None:
     return sess.exec(
         select(Subscription).where(Subscription.provider_customer_id == customer_id)
     ).first()
+
+
+def lock_account(sess, user_info_id: int) -> None:
+    """Take the write lock that serialises an account's billing and deletion.
+
+    Account deletion and a webhook naming that account each call this before
+    reading what they act on (issue #429). Without it, a start event landing
+    between the deletion's read of the subscription row and its deletes saw
+    the account still there, recorded the new customer on the row — and the
+    deletion then removed the row without cancelling anything.
+
+    A no-op UPDATE of the account row, the same idiom as
+    ``repo_core.bump_lock_version``: a write is what takes the lock.
+    - SQLite: pysqlite issues ``BEGIN`` only before the first write, so this
+      must be the first write *and* come before the reads it protects. It
+      takes the database write lock, waiting out ``busy_timeout`` while
+      another writer holds it, and every read after it sees the latest
+      committed state.
+    - Postgres: it takes a row lock that conflicts with the deletion's
+      ``DELETE`` of the same row (equivalent to ``SELECT … FOR UPDATE``), and
+      READ COMMITTED reads after it see what the other side committed.
+
+    A deleted account matches no row; the statement still waits for the
+    deletion that removed it, which is the point.
+    """
+    sess.execute(
+        update(UserInfo)
+        .where(UserInfo.id == user_info_id)
+        .values(created_at=UserInfo.created_at)
+    )
 
 
 def _account_exists(sess, user_info_id: int) -> bool:
