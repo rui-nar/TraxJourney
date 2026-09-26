@@ -8,7 +8,7 @@ sum overflowed to Infinity.
 
 So the app's own writers stay inside the same bounds, or no trip it holds
 could be exported and imported back: a GPX upload or an edited track past
-them is refused as implausible (a span of decades: see
+them is refused as implausible (a span of decades is repaired instead: see
 test_gpx_stray_stamps.py), and an elevation outside them is no reading,
 wherever it comes from. The totals never overflow whatever they sum.
 """
@@ -131,6 +131,5 @@ def test_a_track_inside_the_bounds_is_not_implausible():
     metrics = track_edit.recompute_track_metrics(
         [TrackPoint(45.0, 6.0, 500.0), TrackPoint(45.1, 6.1, 900.0)])
 
-    assert track_edit.implausible_track(metrics, elapsed_s=3600) is None
-    assert track_edit.implausible_track(metrics, elapsed_s=None) is None
+    assert track_edit.implausible_track(metrics) is None
 

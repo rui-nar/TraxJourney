@@ -433,17 +433,17 @@ void main() {
 
   testWidgets("a warning is shown in review, and the file's times still go",
       (tester) async {
-    // Issue #462: stamps left out as a clock error are said, not hidden. The
-    // track's own times are still the ones used: echoing the form's HH:MM
-    // would cut a track spanning days down to one.
+    // Issue #462: a clock that looks wrong is said, not hidden. The track's
+    // own times are still the ones used unless the user edits them: echoing
+    // the form's HH:MM would cut a track spanning days down to one.
     final recorder = _Recorder();
     await tester.pumpWidget(_harness(
       recorder,
       client: recorder.client(
           inspect: _inspectBody(candidates: [
         _candidate(warnings: [
-          '1 timestamp dated 1970-01-01 looks like a clock error, and was '
-              "left out of the track's times."
+          "This file's clock looks wrong: 1 timestamp is dated 1970-01-01. "
+              'Check the date and times before importing.'
         ]),
       ])),
     ));

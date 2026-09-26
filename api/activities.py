@@ -54,10 +54,11 @@ from src.gpx.importer import (
 from src.models.activity import (
     ACTIVITY_ID_MAX, ACTIVITY_ID_MIN, Activity, parse_activities_or_log,
 )
+from src.models.value_bounds import DURATION_MAX_S
 from src.project.traxj_schema import activity_fault, stored_json_fault
 from src.utils.encryption_check import is_encrypted_envelope
 from src.models.track_edit import (
-    elevation_profile_from_streams, implausible_span, implausible_track,
+    elevation_profile_from_streams, implausible_track, repair_elapsed,
     points_to_elevation_profile, points_to_polyline, recompute_track_metrics,
 )
 from src.project.local_ids import LocalIdExhausted, allocate_local_activity_id, track_fingerprint
@@ -128,8 +129,7 @@ class GPXCandidateOut(BaseModel):
     warnings: List[str] = Field(
         default_factory=list,
         description="What the user should know before importing, such as "
-                    "timestamps left out as a clock error; never a reason "
-                    "not to import")
+                    "a clock that looks wrong; never a reason not to import")
 
 
 class GPXDuplicateOut(BaseModel):
@@ -631,14 +631,10 @@ def _describe_candidates(found):
         errors = validate_candidate(candidate)
         metrics = (recompute_track_metrics(candidate.points) if not errors
                    else None)
-        # The span only warns: it comes from the file's clock, and the user can
-        # still set the date and times in review. The import judges the times
-        # it is finally given.
-        implausible = implausible_track(metrics, None) if metrics else None
+        implausible = implausible_track(metrics) if metrics else None
         if implausible is not None:
             errors = [*errors, implausible]
             metrics = None
-        span_warning = implausible_span(candidate.elapsed_seconds) if metrics else None
         span = candidate.time_span
         out.append({
             "index": candidate.index,
@@ -658,24 +654,44 @@ def _describe_candidates(found):
             "elevation_gain_estimated": True,
             "polyline": _preview_polyline(candidate.points) if not errors else None,
             "errors": errors,
-            "warnings": [w for w in (_left_out_warning(candidate), span_warning) if w],
+            "warnings": [w for w in (_clock_warning(candidate),) if w],
         })
     return out
 
 
-def _left_out_warning(candidate) -> Optional[str]:
-    """What the preview says of stamps left out as a clock error (#462)."""
-    left_out = candidate.left_out_stamps
-    if left_out is None:
+#: A stamp before this is a clock error more likely than a track: a device
+#: stamps a point 1970-01-01, or 1980-01-06 (the GPS epoch), before its clock
+#: syncs (issue #462).
+_CLOCK_FLOOR = datetime(2000, 1, 1, tzinfo=timezone.utc)
+
+
+def _clock_warning(candidate) -> Optional[str]:
+    """What the preview says of a clock that looks wrong (issue #462): stamps
+    before :data:`_CLOCK_FLOOR` or more than a day ahead, or a span past the
+    31-year bound. Only said, never refused, and no stamp is left out of
+    anything: the user can set the date and times in review, and a span past
+    the bound is repaired at import (repair_elapsed)."""
+    ceiling = datetime.now(timezone.utc) + timedelta(days=1)
+
+    def utc(t):
+        return t if t.tzinfo is not None else t.replace(tzinfo=timezone.utc)
+
+    odd = sorted((t for t in candidate.times
+                  if t is not None and not _CLOCK_FLOOR <= utc(t) <= ceiling), key=utc)
+    too_long = (candidate.elapsed_seconds or 0) > DURATION_MAX_S
+    if not odd and not too_long:
         return None
-    count, first, last = left_out
-    dates = (f"{first:%Y-%m-%d}" if first.date() == last.date()
-             else f"{first:%Y-%m-%d} to {last:%Y-%m-%d}")
-    if count == 1:
-        return (f"1 timestamp dated {dates} looks like a clock error, and was "
-                f"left out of the track's times.")
-    return (f"{count} timestamps dated {dates} look like a clock error, and were "
-            f"left out of the track's times.")
+    parts = []
+    if odd:
+        first, last = odd[0], odd[-1]
+        dates = (f"{first:%Y-%m-%d}" if first.date() == last.date()
+                 else f"{first:%Y-%m-%d} to {last:%Y-%m-%d}")
+        parts.append(f"1 timestamp is dated {dates}" if len(odd) == 1
+                     else f"{len(odd)} timestamps are dated {dates}")
+    if too_long:
+        parts.append("the track spans more than 31 years")
+    return ("This file's clock looks wrong: " + ", and ".join(parts)
+            + ". Check the date and times before importing.")
 
 
 def _preview_polyline(points) -> Optional[str]:
@@ -764,9 +780,14 @@ async def import_gpx_activity(
         # is the very thing unit 3 stopped doing.
         moving_time = min(moving_time, elapsed_time)
 
+    if all(v is None for v in (date, start_time, end_time)):
+        # The file's own clock: one wrong stamp can make it decades long.
+        # Repaired as a stored or imported one is; times the user set win.
+        elapsed_time = repair_elapsed(elapsed_time, moving_time)
+
     points = candidate.points
     metrics = recompute_track_metrics(points)
-    implausible = implausible_track(metrics, elapsed_time)
+    implausible = implausible_track(metrics)
     if implausible is not None:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                             detail={"errors": [implausible]})
@@ -1181,7 +1202,7 @@ def edit_activity_track(
     points = [TrackPoint(lat=p.lat, lng=p.lng, elev=p.elev) for p in body.points]
     # Checked on the new track alone: an edit only ever apportions the times
     # down, so the span cannot grow.
-    implausible = implausible_track(recompute_track_metrics(points), None)
+    implausible = implausible_track(recompute_track_metrics(points))
     if implausible is not None:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                             detail=implausible)

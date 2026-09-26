@@ -311,10 +311,12 @@ def repair_elevations(profile, gain, high, low, *, app_measured: bool):
 def repair_elapsed(elapsed, moving):
     """An activity's elapsed time as the writers now store it.
 
-    Before issue #462 a GPX upload took its span from the file's earliest and
-    latest stamps, so one stray stamp (a clock that read 1970) made it
-    decades long. Elapsed time past :data:`DURATION_MAX_S` is no measurement:
-    it becomes the moving time, which never counted such a gap (#462), or 0.
+    A GPX upload's span is its file's earliest and latest stamps, so one
+    stray stamp (a clock that read 1970) makes it decades long. Elapsed time
+    past :data:`DURATION_MAX_S` is no measurement: it becomes the moving
+    time, which skips such a gap (consecutive stamps further apart than
+    MAX_SAMPLE_GAP_S never count), or 0. The GPX upload, the trip-file
+    import and the repair migration all go through this (issue #462).
     """
     if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool) and (
             finite_or_none(elapsed) is None or elapsed > DURATION_MAX_S):
@@ -976,26 +978,19 @@ class TrackMetrics:
     elapsed_time: int             # seconds (apportioned)
 
 
-def implausible_track(metrics: "TrackMetrics", elapsed_s: Optional[float]) -> Optional[str]:
+def implausible_track(metrics: "TrackMetrics") -> Optional[str]:
     """Why a track the app is about to store is implausible, or None.
 
     Its figures must stay inside the bounds the trip-file import enforces
     (src/models/value_bounds.py), or the trip could not be exported and
-    imported back. Only garbage reaches them: a real track never does.
+    imported back. Only garbage reaches them: a real track never does. Its
+    span is not judged here: a clock error is a common, harmless fault of
+    real files, repaired with :func:`repair_elapsed` rather than refused.
     """
     if metrics.distance > DISTANCE_MAX_M:
         return "This track is longer than 100,000 km, which no real track is."
     if metrics.total_elevation_gain > GAIN_MAX_M:
         return "This track climbs more than 10,000 km, which no real track does."
-    return implausible_span(elapsed_s)
-
-
-def implausible_span(elapsed_s: Optional[float]) -> Optional[str]:
-    """Why a track's span is implausible, or None. Separate from the rest of
-    :func:`implausible_track` because it depends on the times alone, which the
-    user may still correct before the track is stored."""
-    if elapsed_s is not None and elapsed_s > DURATION_MAX_S:
-        return "This track spans more than 31 years, which no real track does."
     return None
 
 
