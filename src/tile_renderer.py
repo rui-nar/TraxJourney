@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import io
+import re
 import shutil
 import threading
 import time
@@ -290,8 +291,15 @@ def get_or_build_features(
     return features
 
 
+# Share tokens are UUIDs. get_cached_tile is reached before the token has been
+# looked up, so it checks the token is one plain directory name first.
+_TOKEN = re.compile(r"[A-Za-z0-9_-]+")
+
+
 def get_cached_tile(token: str, z: int, x: int, y: int) -> Optional[bytes]:
     """Return cached PNG bytes if the tile exists on disk, otherwise None."""
+    if not _TOKEN.fullmatch(token):
+        return None
     path = _CACHE_ROOT / token / str(z) / str(x) / f"{y}.png"
     return path.read_bytes() if path.exists() else None
 

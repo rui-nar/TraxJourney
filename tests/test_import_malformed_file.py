@@ -133,6 +133,10 @@ _MALFORMED = {
     "people is not a list": _json(_trip(people="Ann")),
     "a person is not an object": _json(_trip(people=["Ann"])),
     "a group is not an object": _json(_trip(groups=[3])),
+    # Photo-name shapes test_photo_path_containment.py does not cover.
+    "memory photos is not a list": _json(_trip(items=[{"item_type": "memory", "memory": {"photos": "p1"}}])),
+    "a journal photo name has a parent segment": _json(_trip(items=[{"item_type": "journal", "journal": {"photos": ["../p1"]}}])),
+    "an avatar photo name is not text": _json(_trip(people=[{"name": "Ann", "avatar_photo": ["p1"]}])),
 }
 
 
