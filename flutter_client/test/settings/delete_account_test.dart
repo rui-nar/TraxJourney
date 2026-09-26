@@ -80,6 +80,29 @@ void main() {
       expect(deleteAccountWarning(null),
           contains('Any active paid plan will be cancelled immediately'));
     });
+
+    // Issue #441: inside the 14 days after the first purchase, deleting also
+    // refunds the unused part; outside them it only cancels.
+    BillingStatus inWindow(String status) => BillingStatus.fromJson(
+        {..._billingMe(status: status), 'withdrawal_open': true});
+
+    test('mentions the refund inside the withdrawal window', () {
+      final text = deleteAccountWarning(inWindow('active'));
+      expect(text, contains('Your Explorer plan will be cancelled immediately'));
+      expect(text, contains('unused part of the period you paid for will be '
+          'refunded'));
+    });
+
+    test('promises no refund outside it', () {
+      expect(deleteAccountWarning(_billing('active')), isNot(contains('refund')));
+      expect(deleteAccountWarning(null), isNot(contains('refund')));
+    });
+
+    test('a withdrawal whose refund failed is finished by deleting', () {
+      final text = deleteAccountWarning(inWindow('canceled'));
+      expect(text, contains('will be refunded'));
+      expect(text, isNot(contains('cancelled')));
+    });
   });
 
   group('SettingsService.deleteAccount', () {

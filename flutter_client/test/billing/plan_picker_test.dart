@@ -33,6 +33,12 @@ final _catalogue = [
 ];
 
 class _FakeBilling implements BillingService {
+  // Withdrawal (issue #441) is not exercised here.
+  @override
+  Future<Money> withdrawalQuote() => throw UnimplementedError();
+  @override
+  Future<Money> withdraw() => throw UnimplementedError();
+
   final List<PlanInfo> catalogue;
   final bool failCheckout;
   final List<String> bought = [];

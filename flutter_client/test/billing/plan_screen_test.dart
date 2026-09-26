@@ -17,6 +17,12 @@ import 'package:traxjourney_client/src/core/theme.dart';
 const _mb = 1024 * 1024;
 
 class _FakeBilling implements BillingService {
+  // Withdrawal (issue #441) is not exercised here.
+  @override
+  Future<Money> withdrawalQuote() => throw UnimplementedError();
+  @override
+  Future<Money> withdraw() => throw UnimplementedError();
+
   /// Successive `/api/billing/me` payloads; the last one repeats.
   final List<Map<String, dynamic>> payloads;
   final bool subscribedOnServer;

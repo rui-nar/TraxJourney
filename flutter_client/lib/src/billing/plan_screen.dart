@@ -16,8 +16,27 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../api/client.dart';
+import '../core/design_tokens.dart';
 import 'billing_service.dart';
 import 'plan_widgets.dart';
+
+/// What the withdrawal confirmation says (issue #441). [refund] is the
+/// server's estimate: the refund itself is measured the moment the
+/// cancellation lands, so it can differ by a cent.
+String withdrawalConfirmation(Money refund) {
+  const ends = 'Your plan ends immediately and is not renewed.';
+  if (refund.cents <= 0) {
+    return '$ends Nothing is left to refund for the period you paid for.';
+  }
+  return '$ends About ${refund.label} — the unused part of the period you '
+      'paid for — is refunded to your payment method.';
+}
+
+/// What the page says once the withdrawal went through.
+String withdrawalDone(Money refunded) => refunded.cents > 0
+    ? 'Withdrawn. ${refunded.label} is on its way back to your payment method.'
+    : 'Withdrawn. Your plan has ended.';
 
 class PlanScreen extends StatefulWidget {
   /// Injected in tests; defaults to the live service.
@@ -48,6 +67,7 @@ class _PlanScreenState extends State<PlanScreen> {
 
   String? _busyPlan;
   bool _busyPortal = false;
+  bool _busyWithdraw = false;
   String? _failure;
 
   /// How long, and how often, to wait for the webhook after a payment.
@@ -155,6 +175,74 @@ class _PlanScreenState extends State<PlanScreen> {
     } finally {
       if (mounted) setState(() => _busyPortal = false);
     }
+  }
+
+  /// The destructive-action colour of the design system, per brightness.
+  static Color _accent(ThemeData theme) =>
+      theme.brightness == Brightness.dark ? kAccentDark : kAccent;
+
+  /// The server's words when it refused, else [fallback].
+  static String _errorText(Object e, String fallback) =>
+      e is ApiException ? apiErrorDetail(e.body) : fallback;
+
+  /// Quote, confirm, withdraw (issue #441).
+  Future<void> _withdraw() async {
+    setState(() {
+      _busyWithdraw = true;
+      _failure = null;
+    });
+    final Money quote;
+    try {
+      quote = await _billing.withdrawalQuote();
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _busyWithdraw = false;
+          _failure = _errorText(e, 'Could not reach the billing service.');
+        });
+      }
+      return;
+    }
+    if (!mounted) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Withdraw and get a refund?'),
+        content: Text(withdrawalConfirmation(quote)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Keep my plan'),
+          ),
+          TextButton(
+            style: TextButton.styleFrom(foregroundColor: _accent(Theme.of(ctx))),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Withdraw'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (confirmed != true) {
+      setState(() => _busyWithdraw = false);
+      return;
+    }
+    try {
+      final refunded = await _billing.withdraw();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(withdrawalDone(refunded))));
+    } catch (e) {
+      if (mounted) {
+        setState(() =>
+            _failure = _errorText(e, 'Could not withdraw. Please try again.'));
+      }
+    } finally {
+      if (mounted) setState(() => _busyWithdraw = false);
+    }
+    // Either way the subscription may have changed: a refund can fail after
+    // the cancellation went through.
+    if (mounted) await _refresh();
   }
 
   @override
@@ -286,6 +374,24 @@ class _PlanScreenState extends State<PlanScreen> {
                     onPressed: _busyPortal ? null : _openPortal,
                     icon: const Icon(Icons.receipt_long_outlined, size: 18),
                     label: const Text('Manage billing'),
+                  ),
+                ),
+              ],
+              if (status.withdrawalOpen) ...[
+                const SizedBox(height: 20),
+                Text(withdrawalNotice(status), style: theme.textTheme.bodySmall),
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size(0, 40),
+                      foregroundColor: _accent(theme),
+                      side: BorderSide(color: _accent(theme)),
+                    ),
+                    onPressed: _busyWithdraw ? null : _withdraw,
+                    icon: const Icon(Icons.undo, size: 18),
+                    label: const Text('Withdraw and get a refund'),
                   ),
                 ),
               ],

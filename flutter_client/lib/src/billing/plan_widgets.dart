@@ -231,6 +231,19 @@ String? pendingPlanNotice(BillingStatus status) {
   return 'Switching to $name on ${_dayAndMonth(when)}.';
 }
 
+/// What the plan page says above "Withdraw and get a refund" (issue #441).
+String withdrawalNotice(BillingStatus status) {
+  const rest = 'you can withdraw: your plan ends now and the unused part of '
+      'the period you paid for is refunded.';
+  if (status.withdrawalClosesAt <= 0) {
+    return 'Within 14 days of your first purchase, $rest';
+  }
+  final until = DateTime.fromMillisecondsSinceEpoch(
+      (status.withdrawalClosesAt * 1000).round(),
+      isUtc: true).toLocal();
+  return 'Until ${_dayAndMonth(until)}, $rest';
+}
+
 const _months = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',

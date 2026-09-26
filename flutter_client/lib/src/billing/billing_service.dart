@@ -64,6 +64,14 @@ class BillingStatus {
   /// When [pendingPlan] takes effect; unix seconds, 0 when nothing is pending.
   final double pendingPlanAt;
 
+  /// True while withdrawing refunds the unused part of the current period —
+  /// the 14 days after the first purchase (issue #441). The server decides;
+  /// the client only uses it to show the "Withdraw" action.
+  final bool withdrawalOpen;
+
+  /// When the withdrawal window closes; unix seconds, 0 when unknown.
+  final double withdrawalClosesAt;
+
   final PlanLimits limits;
   final int projects;
   final int storageBytes;
@@ -80,6 +88,8 @@ class BillingStatus {
     this.pendingPlan = '',
     this.pendingPlanName = '',
     this.pendingPlanAt = 0,
+    this.withdrawalOpen = false,
+    this.withdrawalClosesAt = 0,
     required this.limits,
     required this.projects,
     required this.storageBytes,
@@ -99,6 +109,9 @@ class BillingStatus {
       pendingPlan: json['pending_plan'] as String? ?? '',
       pendingPlanName: json['pending_plan_name'] as String? ?? '',
       pendingPlanAt: (json['pending_plan_at'] as num?)?.toDouble() ?? 0,
+      withdrawalOpen: json['withdrawal_open'] == true,
+      withdrawalClosesAt:
+          (json['withdrawal_closes_at'] as num?)?.toDouble() ?? 0,
       limits: PlanLimits.fromJson((json['limits'] as Map?)?.cast<String, dynamic>()),
       projects: (usage['projects'] as num?)?.toInt() ?? 0,
       storageBytes: (usage['storage_bytes'] as num?)?.toInt() ?? 0,
@@ -293,6 +306,45 @@ class BillingService {
       'return_path': returnPath,
     }) as Map<String, dynamic>;
     return data['url'] as String? ?? '';
+  }
+
+  /// What withdrawing now would refund, estimated from the provider's invoice
+  /// (issue #441). Changes nothing.
+  Future<Money> withdrawalQuote() async {
+    final data = await _api.get('/api/billing/withdraw') as Map<String, dynamic>;
+    return Money.fromJson(data, 'amount_cents');
+  }
+
+  /// Withdraw: cancel the subscription now and refund the unused part.
+  /// Returns what was refunded. Safe to repeat — the server never refunds a
+  /// subscription twice.
+  Future<Money> withdraw() async {
+    final data =
+        await _api.post('/api/billing/withdraw', const {}) as Map<String, dynamic>;
+    return Money.fromJson(data, 'refunded_cents');
+  }
+}
+
+/// An amount in the smallest currency unit, as the server sends it.
+class Money {
+  final int cents;
+
+  /// ISO code, lower case, as the payment provider reports it ("eur").
+  final String currency;
+
+  const Money(this.cents, this.currency);
+
+  factory Money.fromJson(Map<String, dynamic> json, String field) => Money(
+        (json[field] as num?)?.toInt() ?? 0,
+        json['currency'] as String? ?? '',
+      );
+
+  /// "€2.66" — euro, the one currency sold, the way the plan prices read.
+  /// Anything else falls back to "2.66 USD".
+  String get label {
+    final amount = (cents / 100).toStringAsFixed(2);
+    if (currency.toLowerCase() == 'eur' || currency.isEmpty) return '€$amount';
+    return '$amount ${currency.toUpperCase()}';
   }
 }
 
