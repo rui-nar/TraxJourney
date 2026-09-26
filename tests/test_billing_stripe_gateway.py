@@ -774,7 +774,8 @@ class _RefundStripe:
                 if create_error is not None:
                     raise create_error
                 fake.created.append(params)
-                return _obj(id="cn_new", amount=params["amount"], status="issued")
+                return _obj(id="cn_new", amount=params["amount"], status="issued",
+                            refunds=[{"refund": "re_new", "amount_refunded": params["amount"]}])
 
         class InvoiceItem:
             @staticmethod
@@ -972,7 +973,8 @@ class TestRefundPlan:
 class TestIssueRefund:
     def test_a_credit_note_for_exactly_the_frozen_amount(self, monkeypatch):
         fake = _RefundStripe(invoices=[_invoice()], invoice_payments=_PAID_BY_PI)
-        assert _issue(_install(monkeypatch, fake), 200) == "cn_new"
+        issued = _issue(_install(monkeypatch, fake), 200)
+        assert (issued.credit_note_id, issued.refund_id) == ("cn_new", "re_new")
         (params,) = fake.created
         assert (params["invoice"], params["amount"], params["refund_amount"]) == (
             "in_1", 200, 200)
@@ -996,7 +998,7 @@ class TestIssueRefund:
             invoices=[_invoice()],
             credit_notes=[{"id": "cn_old", "amount": 266, "status": "issued",
                            "metadata": {"refund_key": KEY}}])
-        assert _issue(_install(monkeypatch, fake)) == "cn_old"
+        assert _issue(_install(monkeypatch, fake)).credit_note_id == "cn_old"
         assert fake.created == []
 
     def test_nothing_to_send_is_an_error(self, monkeypatch):
@@ -1071,6 +1073,62 @@ class TestClassification:
         fake.Invoice.retrieve = staticmethod(boom)
         with pytest.raises(GatewayError):
             _plan(_install(monkeypatch, fake))
+
+
+class TestReviewRound4:
+    """Items 3 and 4: missing objects, a deleted customer, the refund id."""
+
+    def test_the_refund_id_is_read_off_either_credit_note_shape(self):
+        assert gw._note_refund_id(_obj(refunds=[_obj(refund="re_a",
+                                                     amount_refunded=1)])) == "re_a"
+        assert gw._note_refund_id(_obj(refund="re_b")) == "re_b"
+        assert gw._note_refund_id(_obj(id="cn")) == ""
+
+    def test_an_existing_note_reports_its_refund(self, monkeypatch):
+        fake = _RefundStripe(
+            invoices=[_invoice(payment_intent="pi_1")],
+            credit_notes=[{"id": "cn_old", "amount": 266, "status": "issued",
+                           "metadata": {"refund_key": KEY},
+                           "refunds": [{"refund": "re_old", "amount_refunded": 266}]}])
+        assert _plan(_install(monkeypatch, fake)).existing_refund_id == "re_old"
+
+    def test_a_missing_object_is_a_logged_probable_misconfiguration(
+        self, monkeypatch, caplog
+    ):
+        import logging
+        from src.billing.gateway import CustomerGone, PermanentGatewayError
+        fake = _RefundStripe(invoices=[_invoice()], create_error=_missing("invoice"))
+        with caplog.at_level(logging.ERROR, logger="src.billing.stripe_gateway"):
+            with pytest.raises(GatewayError) as caught:
+                _issue(_install(monkeypatch, fake))
+        assert not isinstance(caught.value, (PermanentGatewayError, CustomerGone))
+        assert any("STRIPE_SECRET_KEY" in r.getMessage() for r in caplog.records
+                   if r.levelno == logging.ERROR)
+
+    def test_a_deleted_customer_is_owed_not_retried(self, monkeypatch):
+        from src.billing.gateway import CustomerGone
+        fake = _RefundStripe(invoices=[_invoice()], create_error=_missing("customer"))
+        with pytest.raises(CustomerGone):
+            _issue(_install(monkeypatch, fake))
+
+    def test_no_pending_items_for_a_deleted_customer(self, monkeypatch):
+        """The way cancel_all_for_customer tolerates it: nothing left to bill."""
+        fake = _RefundStripe()
+
+        def gone(**params):
+            raise _missing("customer")
+        fake.InvoiceItem.list = staticmethod(gone)
+        assert _install(monkeypatch, fake).discard_pending_items("cus_1", "sub_1") == 0
+
+    def test_the_basis_lookup_is_classified(self, monkeypatch):
+        from src.billing.gateway import CustomerGone
+        fake = _RefundStripe(invoices=[_invoice()])
+
+        def gone(**params):
+            raise _missing("customer")
+        fake.Invoice.list = staticmethod(gone)
+        with pytest.raises(CustomerGone):
+            _install(monkeypatch, fake).refund_basis("sub_1")
 
 
 class TestSdkLimits:

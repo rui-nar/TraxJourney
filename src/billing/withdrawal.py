@@ -35,12 +35,14 @@ from dataclasses import dataclass
 
 from sqlmodel import Session, select
 
-from models.billing import SubscriptionRefund
+from models.billing import Subscription, SubscriptionRefund
 from models.db import get_session
+from models.user import UserInfo
 from src.billing.gateway import (
     BillingGateway,
     GatewayError,
     IdempotencyConflict,
+    IssuedRefund,
     PermanentGatewayError,
     RefundPlan,
 )
@@ -65,6 +67,12 @@ FINAL = frozenset({DONE, OWED, SETTLED})
 #: died holding a claim delays the retry by at most this.
 LEASE_SECONDS = 15 * 60.0
 
+#: How long after the request its cancellation may land and still be refunded
+#: automatically. The request is the withdrawal; the cancellation follows it
+#: within one SDK call — at most 45 s — and this leaves ample slack. One that
+#: lands later than this is recorded as owed, for the owner to check.
+CANCEL_BOUND_SECONDS = 10 * 60.0
+
 
 class RefundInProgress(Exception):
     """Another request is refunding this subscription right now."""
@@ -76,8 +84,12 @@ class LostClaim(RefundInProgress):
     note this one made by its refund key."""
 
 
+class AccountGone(Exception):
+    """The account was deleted meanwhile: no refund row is created for it."""
+
+
 class NotEligible(Exception):
-    """The subscription has not ended, or not inside its withdrawal window."""
+    """The withdrawal was asked for outside its window: nothing to refund."""
 
 
 @dataclass(frozen=True)
@@ -130,13 +142,27 @@ def _detached(sess: Session, row: SubscriptionRefund) -> SubscriptionRefund:
 
 
 def _claim(user_info_id: int, customer_id: str, subscription_id: str,
-           contract_start: float, requested_at: float,
-           now: float) -> tuple[SubscriptionRefund, str]:
-    """Take the row for this request: ``(row, token)``, token "" when final."""
+           contract_start: float, requested_at: float, *,
+           create: bool = True) -> tuple[SubscriptionRefund | None, str]:
+    """Take the row for this request: ``(row, token)``, token "" when final.
+
+    The lease is timed from the claim itself, not from when the request
+    began. A row is created only for an account that still exists — checked
+    under its lock — so a withdrawal that lost a race with the account's
+    deletion leaves nothing behind (:class:`AccountGone`). With ``create``
+    off, a missing row is ``(None, "")``.
+    """
     with get_session() as sess:
         lock_account(sess, user_info_id)
+        now = time.time()
         row = sess.get(SubscriptionRefund, subscription_id)
         if row is None:
+            if not create:
+                sess.rollback()
+                return None, ""
+            if sess.get(UserInfo, user_info_id) is None:
+                sess.rollback()
+                raise AccountGone(subscription_id)
             row = SubscriptionRefund(subscription_id=subscription_id,
                                      customer_id=customer_id,
                                      contract_started_at=contract_start,
@@ -194,25 +220,30 @@ def _forget(subscription_id: str, user_info_id: int, token: str) -> None:
             sess.rollback()
 
 
+def _log_owed(row: SubscriptionRefund) -> None:
+    _log.error(
+        "OWED REFUND: %s cents (%s) of subscription %s, customer %s, invoice %s "
+        "could not be refunded automatically: %s. Refund it in the Stripe "
+        "dashboard, then mark it settled (docs/BILLING.md, \"Owed refunds\").",
+        row.owed, row.currency, row.subscription_id, row.customer_id,
+        row.invoice_id, row.reason,
+    )
+
+
 def _finish(row: SubscriptionRefund, user_info_id: int, token: str, *,
-            refunded: int, note_id: str, owed: int, reason: str) -> Refund:
+            refunded: int, note_id: str, owed: int, reason: str,
+            refund_id: str = "", owed_anyway: bool = False) -> Refund:
     row = _save(row.subscription_id, user_info_id, token,
-                state=OWED if owed > 0 else DONE, refunded=refunded,
-                credit_note_id=note_id, owed=owed, reason=reason,
+                state=OWED if owed > 0 or owed_anyway else DONE, refunded=refunded,
+                credit_note_id=note_id, refund_id=refund_id, owed=owed, reason=reason,
                 lease_until=0.0, claim_token="")
     if row.state == OWED:
-        _log.error(
-            "OWED REFUND: %s cents (%s) of subscription %s, customer %s, invoice "
-            "%s could not be refunded automatically: %s. Refund it in the Stripe "
-            "dashboard, then mark it settled (docs/BILLING.md, \"Owed refunds\").",
-            row.owed, row.currency, row.subscription_id, row.customer_id,
-            row.invoice_id, reason,
-        )
+        _log_owed(row)
     return _outcome(row)
 
 
 def _issue(gateway: BillingGateway, row: SubscriptionRefund, user_info_id: int,
-           token: str) -> str:
+           token: str) -> IssuedRefund:
     """Issue the frozen refund; on a key conflict, once more under a new key."""
     key = refund_key(row.subscription_id)
     try:
@@ -226,49 +257,71 @@ def _issue(gateway: BillingGateway, row: SubscriptionRefund, user_info_id: int,
 
 def settle(gateway: BillingGateway, *, user_info_id: int, customer_id: str,
            subscription_id: str, contract_start: float, requested_at: float,
-           now: float) -> Refund:
+           now: float = 0.0) -> Refund:
     """Refund what is left of the *cancelled* subscription, once.
 
-    Call only after its cancellation succeeded. Raises
-    :class:`RefundInProgress`, :class:`NotEligible`, or :class:`GatewayError`
+    Call only after its cancellation succeeded, with ``requested_at`` taken
+    when the user asked — before the cancellation. A withdrawal is the
+    request: it is refunded when it was made inside the window, however late
+    in its last second the cancellation then lands (up to
+    :data:`CANCEL_BOUND_SECONDS`). A cancellation Stripe records later than
+    that is not refunded automatically — something went wrong — but recorded
+    as owed for the owner: this is never a refusal after cancelling.
+
+    Raises :class:`RefundInProgress`, :class:`AccountGone`,
+    :class:`NotEligible` (asked outside the window), or :class:`GatewayError`
     for a transient failure (the row stays ``pending`` to retry). A definite
     refusal does not raise: the refund is recorded as owed and returned with
     ``owed_cents``.
     """
     row, token = _claim(user_info_id, customer_id, subscription_id,
-                        contract_start, requested_at, now)
+                        contract_start, requested_at)
     if not token:
         return _outcome(row)
     key = refund_key(subscription_id)
+    late = ""
     try:
         gateway.discard_pending_items(customer_id, subscription_id)
         if row.amount < 0:
-            basis = gateway.refund_basis(subscription_id)
-            # Late or not, the cancellation must have landed inside the
-            # window: that is what the terms promise, and all they promise.
             start = row.contract_started_at or contract_start
-            if not basis.ended_at or not withdrawal_window_open(start, basis.ended_at):
+            if not withdrawal_window_open(start, row.requested_at):
                 raise NotEligible(subscription_id)
+            basis = gateway.refund_basis(subscription_id)
+            if not basis.ended_at:
+                # Cancelled, but Stripe does not show it ended yet: try again.
+                raise GatewayError(f"{subscription_id} has not ended at Stripe yet")
+            if basis.ended_at > row.requested_at + CANCEL_BOUND_SECONDS:
+                late = (f"the cancellation landed {int(basis.ended_at - row.requested_at)} s "
+                        f"after the request; check it before refunding")
             total = basis.total or basis.amount_paid
             row = _save(subscription_id, user_info_id, token,
                         amount=prorated_refund_amount(basis.period_start,
                                                       basis.period_end, total,
                                                       basis.ended_at),
                         invoice_id=basis.invoice_id, currency=basis.currency)
+            if late:
+                return _finish(row, user_info_id, token, refunded=0, note_id="",
+                               owed=row.amount, reason=late)
         if row.to_refund < 0:
             plan = (RefundPlan(0) if row.amount == 0 else gateway.refund_plan(
                 subscription_id, row.amount, key, invoice_id=row.invoice_id))
             if plan.existing_note_id:
                 return _finish(row, user_info_id, token, refunded=plan.existing_cents,
                                note_id=plan.existing_note_id, owed=plan.owed_cents,
-                               reason=plan.reason)
+                               reason=plan.reason, refund_id=plan.existing_refund_id)
             row = _save(subscription_id, user_info_id, token, to_refund=plan.send_cents,
                         owed=plan.owed_cents, reason=plan.reason)
-        note_id = _issue(gateway, row, user_info_id, token) if row.to_refund > 0 else ""
+        issued = (_issue(gateway, row, user_info_id, token) if row.to_refund > 0
+                  else IssuedRefund(""))
     except PermanentGatewayError as exc:
         owed = max(0, row.to_refund) + row.owed if row.to_refund >= 0 else max(0, row.amount)
+        reason = str(exc)[:500]
+        if row.amount < 0:
+            # Refused before the amount could be read (a deleted customer,
+            # say): owed all the same, for the owner to work out from Stripe.
+            reason += " (amount unknown: see the subscription's last invoice)"
         return _finish(row, user_info_id, token, refunded=0, note_id="", owed=owed,
-                       reason=str(exc)[:500])
+                       reason=reason, owed_anyway=True)
     except NotEligible:
         _forget(subscription_id, user_info_id, token)
         raise
@@ -278,7 +331,8 @@ def settle(gateway: BillingGateway, *, user_info_id: int, customer_id: str,
         _release(subscription_id, user_info_id, token)
         raise
     return _finish(row, user_info_id, token, refunded=max(0, row.to_refund),
-                   note_id=note_id, owed=row.owed, reason=row.reason)
+                   note_id=issued.credit_note_id, refund_id=issued.refund_id,
+                   owed=row.owed, reason=row.reason)
 
 
 def finish_pending(gateway: BillingGateway, *, user_info_id: int, customer_id: str,
@@ -297,23 +351,130 @@ def finish_pending(gateway: BillingGateway, *, user_info_id: int, customer_id: s
         try:
             done.append(settle(gateway, user_info_id=user_info_id,
                                customer_id=customer_id, subscription_id=subscription_id,
-                               contract_start=start, requested_at=requested_at, now=now))
+                               contract_start=start, requested_at=requested_at))
         except NotEligible:
             continue
     return done
 
 
-def refund_quote(gateway: BillingGateway, subscription_id: str, now: float) -> Refund:
-    """What withdrawing at ``now`` would refund to the card. Nothing changes.
+def owner_account(sess: Session, customer_id: str) -> int:
+    """The account holding a Stripe customer, or 0 when it is gone."""
+    if not customer_id:
+        return 0
+    found = sess.exec(
+        select(Subscription.user_info_id).where(
+            Subscription.provider_customer_id == customer_id)
+    ).first()
+    return int(found or 0)
 
-    An estimate for the confirmation dialog: the refund itself is measured at
-    the moment the cancellation lands, a few seconds later.
+
+def resolve_pending(gateway: BillingGateway, subscription_id: str) -> str:
+    """Settle a stuck pending row's fate from what Stripe shows (admin).
+
+    A pending row whose lease ran out may hide a credit note that was made
+    but whose answer was lost. Looked up by refund key on the frozen invoice:
+    found, the row becomes ``done`` (or ``owed`` for any shortfall); not found
+    — or nothing was frozen, so nothing can have been issued — it stays
+    ``pending``, and it is certain that nothing was refunded under it.
+    Returns the state. Raises :class:`RefundInProgress` if a request holds it
+    and :class:`GatewayError` if Stripe cannot be asked.
+    """
+    with get_session() as sess:
+        row = sess.get(SubscriptionRefund, subscription_id)
+        if row is None:
+            return ""
+        user_info_id = owner_account(sess, row.customer_id)
+    row, token = _claim(user_info_id, row.customer_id, subscription_id,
+                        row.contract_started_at, row.requested_at, create=False)
+    if row is None:
+        return ""
+    if not token:
+        return row.state
+    try:
+        if row.to_refund > 0:
+            plan = gateway.refund_plan(subscription_id, row.amount,
+                                       refund_key(subscription_id),
+                                       invoice_id=row.invoice_id)
+            if plan.existing_note_id:
+                _finish(row, user_info_id, token, refunded=plan.existing_cents,
+                        note_id=plan.existing_note_id, owed=plan.owed_cents,
+                        reason=plan.reason, refund_id=plan.existing_refund_id)
+                return _state(subscription_id)
+    except GatewayError:
+        _release(subscription_id, user_info_id, token)
+        raise
+    _release(subscription_id, user_info_id, token)
+    return PENDING
+
+
+def _state(subscription_id: str) -> str:
+    with get_session() as sess:
+        return ledger_state(sess, subscription_id)
+
+
+def record_refund_failure(refund_id: str, amount: int, reason: str) -> bool:
+    """A refund of ours failed after it was created (``refund.failed``).
+
+    The money did not go back: the row moves from ``done`` to ``owed`` by that
+    amount, loudly. Matched by the refund id stored when the credit note was
+    made, which is cleared here, so a redelivered event changes nothing.
+    Returns whether a row changed.
+    """
+    if not refund_id:
+        return False
+    with get_session() as sess:
+        row = sess.exec(select(SubscriptionRefund).where(
+            SubscriptionRefund.refund_id == refund_id)).first()
+        if row is None:
+            sess.rollback()
+            return False
+        user_info_id = owner_account(sess, row.customer_id)
+    with get_session() as sess:
+        lock_account(sess, user_info_id)
+        row = sess.exec(select(SubscriptionRefund).where(
+            SubscriptionRefund.refund_id == refund_id)).first()
+        if row is None:
+            sess.rollback()
+            return False
+        failed = min(max(0, amount or row.refunded), row.refunded)
+        row.refunded -= failed
+        row.owed += failed
+        row.state = OWED
+        row.refund_id = ""
+        row.reason = f"the refund failed after it was made: {reason or 'no reason given'}"
+        row.updated_at = time.time()
+        sess.add(row)
+        sess.commit()
+        row = _detached(sess, row)
+    _log_owed(row)
+    return True
+
+
+@dataclass(frozen=True)
+class Quote:
+    """What withdrawing now would refund: to the card, and owed by hand."""
+
+    to_card_cents: int
+    owed_cents: int
+    currency: str
+
+
+def refund_quote(gateway: BillingGateway, subscription_id: str, now: float) -> Quote:
+    """What withdrawing at ``now`` would refund. Nothing changes.
+
+    Computed exactly as the refund is: the unused part of the invoice *total*,
+    split by the same plan into what goes back to the card and what would be
+    owed. An estimate: the refund itself is measured when the cancellation
+    lands, a few seconds later.
     """
     basis = gateway.refund_basis(subscription_id)
     at = basis.ended_at or now
-    return Refund(
-        prorated_refund_amount(
-            basis.period_start, basis.period_end, basis.amount_paid, at
-        ),
-        basis.currency,
-    )
+    amount = prorated_refund_amount(basis.period_start, basis.period_end,
+                                    basis.total or basis.amount_paid, at)
+    if amount <= 0 or not basis.invoice_id:
+        return Quote(0, 0, basis.currency)
+    plan = gateway.refund_plan(subscription_id, amount, refund_key(subscription_id),
+                               invoice_id=basis.invoice_id)
+    if plan.existing_note_id:
+        return Quote(plan.existing_cents, plan.owed_cents, basis.currency)
+    return Quote(plan.send_cents, plan.owed_cents, basis.currency)

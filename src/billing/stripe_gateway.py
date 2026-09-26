@@ -20,6 +20,8 @@ from src.billing.gateway import (
     RefundBasis,
     RefundPlan,
     IdempotencyConflict,
+    CustomerGone,
+    IssuedRefund,
 )
 from src.billing.plans import FREE, PAID_PLANS, price_lookup_key
 from src.billing.refunds import WITHDRAWAL_TERMS_VERSION
@@ -468,7 +470,7 @@ class StripeGateway:
             invoice = _latest_paid_invoice(stripe, subscription_id)
         except Exception as exc:
             _log.warning("Stripe refund lookup failed for %s: %s", subscription_id, exc)
-            raise GatewayError(str(exc)) from exc
+            raise _classified(exc) from exc
         if invoice is None:
             return RefundBasis(subscription_id, _ended_at(sub), "", 0, "", 0.0, 0.0)
         start, end = _invoice_period(invoice)
@@ -524,7 +526,8 @@ class StripeGateway:
             still = max(0, amount_cents - mine - by_hand)
             return RefundPlan(0, still, "part of the refund could not be made" if still else "",
                               existing_note_id=str(_field(ours, "id") or ""),
-                              existing_cents=mine)
+                              existing_cents=mine,
+                              existing_refund_id=_note_refund_id(ours))
         owed = max(0, amount_cents - already)
         if target is None:
             return RefundPlan(0, owed, "paid without a refundable payment" if owed else "")
@@ -540,7 +543,7 @@ class StripeGateway:
     def issue_refund(
         self, subscription_id: str, send_cents: int, refund_key: str, *,
         invoice_id: str, attempt: int = 0,
-    ) -> str:
+    ) -> IssuedRefund:
         """Refund exactly ``send_cents`` through a credit note (#441).
 
         A credit note already carrying ``refund_key`` is the refund, made by an
@@ -554,7 +557,7 @@ class StripeGateway:
         try:
             ours, _credited = _find_credit_note(stripe, invoice_id, refund_key)
             if ours is not None:
-                return str(_field(ours, "id") or "")
+                return IssuedRefund(str(_field(ours, "id") or ""), _note_refund_id(ours))
             note = stripe.CreditNote.create(
                 invoice=invoice_id,
                 amount=send_cents,
@@ -570,7 +573,7 @@ class StripeGateway:
             raise _classified(exc) from exc
         _log.info("Stripe credit note %s: refunded %s cents of %s (key %s:%s)",
                   _field(note, "id"), send_cents, subscription_id, refund_key, attempt)
-        return str(_field(note, "id") or "")
+        return IssuedRefund(str(_field(note, "id") or ""), _note_refund_id(note))
 
     def subscriptions_in_force(self, customer_id: str) -> list[str]:
         """The customer's subscriptions still in force at Stripe (#441)."""
@@ -610,7 +613,10 @@ class StripeGateway:
         except Exception as exc:
             _log.warning("Stripe pending items of %s could not be removed: %s",
                          subscription_id, exc)
-            raise GatewayError(str(exc)) from exc
+            error = _classified(exc)
+            if isinstance(error, CustomerGone):
+                return deleted  # a deleted customer has nothing left to bill
+            raise error from exc
         if deleted:
             _log.info("Stripe: removed %s pending item(s) of %s", deleted, subscription_id)
         return deleted
@@ -736,6 +742,16 @@ def _classified(exc: Exception) -> GatewayError:
 
     if isinstance(exc, stripe.IdempotencyError):
         return IdempotencyConflict(str(exc))
+    if _is_missing(exc):
+        if "customer" in (str(getattr(exc, "param", "") or "") + str(exc)).lower():
+            # Deleted at Stripe: nothing can be refunded through it any more.
+            return CustomerGone(str(exc))
+        # Our ids should all exist. One that does not is most likely a key
+        # for another Stripe account, or a record edited by hand.
+        _log.error("Stripe does not know an object the refund needs (%s): "
+                   "check that STRIPE_SECRET_KEY belongs to the account the "
+                   "subscription was sold in. The refund is retried.", exc)
+        return GatewayError(str(exc))
     if isinstance(exc, (stripe.InvalidRequestError, stripe.CardError)):
         if str(getattr(exc, "code", "") or "") in DEFINITE_REFUSAL_CODES:
             return PermanentGatewayError(str(exc))
@@ -746,6 +762,16 @@ def _classified(exc: Exception) -> GatewayError:
                    "fixed.", type(exc).__name__)
         return GatewayError(str(exc))
     return GatewayError(str(exc))
+
+
+def _note_refund_id(note) -> str:
+    """The refund a credit note made: ``refunds[0].refund`` (2025+ API
+    versions) or the older ``refund`` field. "" when neither says."""
+    for entry in (_field(note, "refunds") or []):
+        found = _object_id(_field(entry, "refund"))
+        if found:
+            return found
+    return _object_id(_field(note, "refund"))
 
 
 def _find_credit_note(stripe, invoice_id: str, refund_key: str):

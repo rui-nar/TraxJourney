@@ -123,6 +123,10 @@ class SubscriptionRefund(sqlmodel.SQLModel, table=True):
     # retry can never refund a later invoice.
     invoice_id: str = sqlmodel.Field(default="")
     credit_note_id: str = sqlmodel.Field(default="")
+    # The refund the credit note made, so a refund that fails after it was
+    # created (``refund.failed``) is matched to this row. Cleared once such a
+    # failure is recorded, so a redelivered event changes nothing.
+    refund_id: str = sqlmodel.Field(default="", index=True)
     reason: str = sqlmodel.Field(default="")
     # When the withdrawal or deletion that cancelled it was asked for.
     requested_at: float = sqlmodel.Field(default=0.0)

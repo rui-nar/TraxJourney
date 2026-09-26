@@ -31,6 +31,21 @@ class IdempotencyConflict(GatewayError):
     caller retries under a new key; never a reason to give up on a refund."""
 
 
+class CustomerGone(PermanentGatewayError):
+    """The Stripe customer was deleted: nothing can be refunded through it
+    any more, and the refund is owed (#441)."""
+
+
+@dataclass(frozen=True)
+class IssuedRefund:
+    """What :meth:`BillingGateway.issue_refund` made (or found)."""
+
+    credit_note_id: str
+    #: The refund the credit note created, to match a later ``refund.failed``
+    #: to it; "" when the provider did not say.
+    refund_id: str = ""
+
+
 @dataclass(frozen=True)
 class RefundPlan:
     """How a refund of ``amount_cents`` would go, read from the provider (#441).
@@ -51,6 +66,7 @@ class RefundPlan:
     #: amount was refunded, and ``owed_cents`` is what is still missing.
     existing_note_id: str = ""
     existing_cents: int = 0
+    existing_refund_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -184,12 +200,12 @@ class BillingGateway(Protocol):
     def issue_refund(
         self, subscription_id: str, send_cents: int, refund_key: str, *,
         invoice_id: str, attempt: int = 0,
-    ) -> str:
+    ) -> IssuedRefund:
         """Refund ``send_cents`` of ``invoice_id`` through a credit note (#441).
 
         A credit note already carrying ``refund_key`` is returned instead of
         making another. The provider idempotency key is ``refund_key:attempt``.
-        Returns the credit note id. Raises :class:`PermanentGatewayError` on a
+        Returns the credit note and its refund. Raises :class:`PermanentGatewayError` on a
         definite refusal, :class:`IdempotencyConflict` when the key was used
         with other parameters, and :class:`GatewayError` on anything that may
         pass.

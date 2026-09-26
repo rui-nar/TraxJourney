@@ -56,6 +56,7 @@ from src.billing.subscriptions import lock_account
 from src.billing.withdrawal import (
     DONE,
     SETTLED,
+    AccountGone,
     NotEligible,
     RefundInProgress,
     finish_pending,
@@ -233,8 +234,13 @@ def refund_inside_window(sess: Session, user_info_id: int, now: float) -> None:
             "account was not deleted yet. Please try again in a few minutes.",
             status_code=409, code="refund_in_progress",
         ) from exc
+    except AccountGone:
+        return  # a concurrent deletion of this account got there first
     except GatewayError as exc:
-        _log.warning("Deletion of account %s: refund failed: %s", user_info_id, exc)
+        # ERROR, not a warning: a refusal Stripe keeps giving blocks the
+        # deletion until someone looks (docs/BILLING.md, "Owed refunds").
+        _log.error("Deletion of account %s refused: the refund failed and is "
+                   "retried on the next attempt: %s", user_info_id, exc)
         raise AccountDeletionRefused(
             "Your paid plan was cancelled, but the refund for the unused part "
             "could not be issued, so the account was not deleted. Please try "

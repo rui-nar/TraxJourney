@@ -115,6 +115,16 @@ past 500 MB before the limits existed is locked out the moment you deploy.
    - `subscription_schedule.released`
    - `subscription_schedule.canceled`
    - `subscription_schedule.completed`
+   - `refund.failed`
+   - `refund.updated`
+   - `charge.refund.updated`
+
+   The three `refund` events report a withdrawal refund that failed *after*
+   Stripe accepted it (a closed card, say). The installed SDK (stripe 15.6.1,
+   API 2026-08-26.dahlia) knows all three; `refund.failed` is the dedicated
+   one, and the other two carry the refund with its new status. Without them,
+   such a refund stays recorded as done
+   (see [Owed refunds](#owed-refunds)).
 
    The `subscription_schedule.*` family is what a downgrade looks like before it
    happens (see [Changing tier](#changing-tier)). Without them the app cannot
@@ -425,18 +435,31 @@ Issue #441. The owner set this policy on 2026-09-23 and refined it on
   - **Proof.** Stripe keeps each session's `consent`. We also store the latest
     one on the `Subscription` row: `terms_accepted_at` (when the completed
     checkout arrived) and `terms_version` (read from the session's metadata).
-- **Asked in time means cancelled in time.** A withdrawal counts as made
-  inside the window only once its **cancellation has landed** at Stripe
-  *inside the window*: the subscription's `ended_at` must be before the
-  deadline. That is what the terms promise, and all they promise.
-  - That is also when its ledger row is created. From then on, a refund that
-    fails can be completed later, by retrying the withdrawal or the deletion,
-    even after the deadline.
-  - A request whose cancellation failed, or landed after midnight, leaves
-    nothing behind. The subscription is still running and renewing, and after
-    the deadline it can no longer be withdrawn from.
+- **The request is the withdrawal.** A withdrawal (or a deletion) is made in
+  time when the user *asks* inside the window. The terms say so.
+  - The server takes `requested_at` when the request arrives, **before** it
+    cancels, and freezes it on the ledger row.
+  - The refund needs `requested_at` inside the window, and Stripe's `ended_at`
+    no later than `requested_at` + 10 minutes (`CANCEL_BOUND_SECONDS`). The
+    cancellation follows the request within one SDK call (at most 45 s), so a
+    request at 23:59:59.9 whose cancellation lands just after midnight is
+    refunded.
+  - **The app never refuses after it has cancelled.** A cancellation Stripe
+    records more than the bound after the request means something went wrong:
+    it is not refunded automatically but recorded as owed, for the owner to
+    check. Stripe not yet showing the subscription ended is a failure to
+    retry (502), not a refusal.
+  - The ledger row is created only after the cancellation succeeded. From then
+    on, a refund that fails can be completed later, by retrying the withdrawal
+    or the deletion, even after the deadline.
+  - A request whose cancellation failed leaves nothing behind. The
+    subscription is still running and renewing, and after the deadline it can
+    no longer be withdrawn from.
   - Only the contract's invoice, frozen in the ledger, is ever refunded, never
     a renewal.
+  - No row is created for an account that no longer exists; this is checked
+    under its lock. A withdrawal that lost a race with the deletion answers 404.
+    The lease is timed from the claim itself.
 - **The amount** is read from Stripe, never from our cached row. It is the
   unused fraction of the period on the contract's invoice, measured at the
   subscription's `ended_at` and rounded **down** to whole cents. It is taken
@@ -499,19 +522,34 @@ Issue #441. The owner set this policy on 2026-09-23 and refined it on
   `attempt` goes up only when Stripe answers `IdempotencyError`; the credit
   note is then retried once, in the same request, under the next key. A
   second conflict is a transient failure, never an owed refund.
-- **How a Stripe error is classified** (by exception class, stripe 15.6.1):
+- **How a Stripe error is classified** (by exception class, stripe 15.6.1),
+  the same way for every call a refund makes (the basis, the pending items,
+  the plan, the credit note):
   - `InvalidRequestError` / `CardError` with a definite refusal code are
     **permanent**, and the refund is owed. The codes are `charge_disputed`,
     `charge_already_refunded`, `charge_not_refundable`,
     `charge_expired_for_capture`, `refund_disputed_payment`,
     `amount_too_large` and `amount_too_small`. These names come from Stripe's
     error-code reference and were not checked against a live account.
+  - A **deleted customer** (`resource_missing` naming the customer): nothing
+    can be refunded through it any more, so the refund is owed, with the
+    reason. If the amount was not known yet, the reason says to read it off
+    the subscription's last invoice. Its pending items count as none, the way
+    `cancel_all_for_customer` treats a deleted customer.
+  - Any other `resource_missing` means our ids name something Stripe does not
+    know: most likely a key for another Stripe account. It is logged at
+    **ERROR** as a probable misconfiguration and is transient.
   - `IdempotencyError`: retried under a new key, as above.
   - `AuthenticationError` / `PermissionError`: a misconfigured key, logged at
     ERROR and **transient**. Nothing is owed; fix the key.
   - Everything else is **transient**, answers 502, and is retried under the
     same key: `RateLimitError`, `APIConnectionError`, `APIError` and other
     5xx, and request errors without such a code.
+  - A deletion refused because a refund failed transiently is logged at
+    **ERROR**: if Stripe keeps refusing in a way the app does not recognise,
+    the deletion stays blocked until someone looks. Search the log for
+    `Deletion of account … refused`, fix the cause (usually the key), and ask
+    the user to retry. Or refund by hand and settle the row, as below.
 - **Timeouts and the lease.** The SDK is configured with a 15 s HTTP timeout
   and 2 network retries (`stripe_gateway.HTTP_TIMEOUT_SECONDS`,
   `MAX_NETWORK_RETRIES`), so one call lasts at most 3 × 15 = 45 s. A refund
@@ -534,6 +572,7 @@ Issue #441. The owner set this policy on 2026-09-23 and refined it on
   recently started subscription that was paid for. It reads our row's columns
   fresh.
 
+
 ### Owed refunds
 
 A refund is **owed** when part or all of it cannot go back to the card
@@ -542,10 +581,20 @@ and the amount in `owed`, logged at **ERROR** (`OWED REFUND: …`), and returned
 to the user as `owed_cents`. The cases are:
 
 - Stripe refused for good (a disputed charge, say);
+- the Stripe customer was deleted;
 - the invoice was paid from the customer's credit balance, or marked paid by
   hand, so there is nothing to refund against;
 - part of it was paid from the balance;
-- the invoice was already credited another way.
+- the invoice was already credited another way;
+- the cancellation landed more than 10 minutes after the request;
+- the refund **failed after Stripe accepted it**, reported by `refund.failed`
+  / `refund.updated` / `charge.refund.updated`.
+  - The ledger stores the refund id the credit note made (`refund_id`), and
+    the event is matched by it.
+  - The row moves from `done` to `owed` by the failed amount, and `refund_id`
+    is cleared, so a redelivery changes nothing.
+  - Rows from before `ca17b22c22d5` have no refund id; a late failure of one
+    is only seen in the Stripe dashboard.
 
 **Owed is final for the app.** Neither a withdrawal nor a deletion sends it to
 Stripe again. The owner may already have paid it by hand, and a retry could
@@ -554,14 +603,23 @@ pay twice. Only the owner resolves it.
 The row survives account deletion: it has no foreign key to `userinfo`, and
 deletion removes only the account's `done` and `settled` rows. It holds:
 
-- the Stripe customer, subscription, invoice and credit-note ids;
+- the Stripe customer, subscription, invoice, credit-note and refund ids;
 - the amounts;
 - the reason;
 - timestamps.
 
-Pending refunds whose lease ran out are listed next to the owed ones, so none
-can sit unseen. The user's next withdrawal or deletion would complete one,
-and the owner can also refund it by hand and settle it.
+**Stuck pending refunds.** A pending refund created longer ago than a lease
+lasts, and not held by a request, is listed too. Before it is listed or
+settled, **Stripe is asked** whether a credit note was made under its refund
+key on its frozen invoice: an answer can be lost after Stripe made the note.
+
+- If one was made, the row becomes `done`, or `owed` for any shortfall.
+- If none was, it stays pending, and it is certain that nothing was refunded
+  under it.
+- If Stripe cannot be asked, the list says "not checked at Stripe", and
+  settling it is refused.
+
+The user's next withdrawal or deletion would also complete it.
 
 To settle one:
 
@@ -570,13 +628,23 @@ To settle one:
    ```sql
    SELECT subscription_id, customer_id, state, owed, currency, reason,
           invoice_id, credit_note_id
-     FROM subscription_refund WHERE state = 'owed';
+     FROM subscription_refund WHERE state IN ('owed', 'pending');
    ```
 
-2. Refund it in the Stripe dashboard (customer `customer_id`, invoice
-   `invoice_id`).
-3. Mark it settled with `POST /api/admin/billing/owed-refunds/<subscription
-   id>/settle`. This is refused while a request holds the refund.
+2. **In the Stripe dashboard, open invoice `invoice_id` and look through its
+   credit notes for one whose metadata has
+   `refund_key = traxjourney-unused-period-refund-<subscription id>`.** If
+   there is one, that refund was made: do not refund by hand. (The admin API
+   does this lookup itself; do it when working from SQL.)
+3. Otherwise refund what is owed in the dashboard (customer `customer_id`,
+   invoice `invoice_id`).
+4. Mark it settled with `POST /api/admin/billing/owed-refunds/<subscription
+   id>/settle`. This is refused while a request holds the refund, when a
+   pending one turns out to have been refunded after all, and when Stripe
+   cannot be checked.
+   - The write is fenced: it happens only if nobody claimed the row since it
+     was read (a conditional update on the state, the lease and the claim
+     token, under the account's lock). Otherwise it answers 409; look again.
    - **While the account exists**, the row becomes a `settled` tombstone.
      Amounts, reason and `settled_at` stay, so neither a withdrawal nor a
      deletion ever refunds that subscription again. It goes when the account
@@ -585,27 +653,37 @@ To settle one:
      is left for a tombstone to protect, and the privacy policy promises the
      record goes once settled.
 
-   By hand:
+   By hand, after step 2:
 
    ```sql
    -- account still there (a subscription row names the customer):
    UPDATE subscription_refund SET state = 'settled', settled_at = <unix now>
-    WHERE subscription_id = '<id>' AND state = 'owed';
+    WHERE subscription_id = '<id>' AND state IN ('owed', 'pending')
+      AND lease_until <= <unix now>;
    -- account gone:
    DELETE FROM subscription_refund
-    WHERE subscription_id = '<id>' AND state = 'owed';
+    WHERE subscription_id = '<id>' AND state IN ('owed', 'pending')
+      AND lease_until <= <unix now>;
    ```
+
+**Downgrading past `ed0f801e164c`** turns `owed` rows back into
+`failed_permanent`, which the older code retries, and `settled` rows into
+`done`, which it never sends to Stripe again. A settled refund can therefore
+never be paid twice by rolling back.
 
 In the app, the plan page shows **Withdraw and get a refund** while
 `/api/billing/me` reports `withdrawal_open`. That is true while the contract's
 window is open, or after it while the contract's ledger row is `pending` (a
 refund to complete). It is never true once the row is `done`, `owed` or
 `settled`, whoever made it. So a deletion refused with `billing_changed` after
-refunding leaves no stale action behind. The confirmation dialog shows the
-estimate from `GET /api/billing/withdraw`. That estimate is not part of `/me`,
-because `/me` runs on every settings visit and must not wait on Stripe. The
-delete-account dialog says the unused part will be refunded while the window
-is open.
+refunding leaves no stale action behind.
+
+The confirmation dialog shows the estimate from `GET /api/billing/withdraw`,
+computed the way the refund is: on the invoice total, split into what goes
+back to the card (`amount_cents`) and what would be owed (`owed_cents`). The
+dialog says both. That estimate is not part of `/me`, because `/me` runs on
+every settings visit and must not wait on Stripe. The delete-account dialog
+says the unused part will be refunded while the window is open.
 
 A pending refund of an *earlier* contract has no button of its own: the
 current contract decides what the plan page offers. It is completed by the
@@ -635,6 +713,10 @@ VAT. €3.99 is what the customer pays, and the VAT is part of it.
 3. Set the **terms-of-service URL** (Stripe setup, step 5). Deploy PR #427
    (`/terms`) first, so the link resolves. Do this before deploying this
    change, or checkout fails.
+   - Add `refund.failed`, `refund.updated` and `charge.refund.updated` to the
+     webhook endpoint's events (Stripe setup, step 2), in the sandbox and in
+     live. Without them, a refund that fails after Stripe accepted it stays
+     recorded as done.
 4. Make the prices tax-inclusive by running the provisioner. Run the dry run
    first and read it: an existing price is reported as `SET tax_behavior
    unspecified → inclusive (in place)`. Stripe allows that one change on an

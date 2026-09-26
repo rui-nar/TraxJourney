@@ -56,11 +56,13 @@ from src.billing.webhook_events import (
 from src.billing.withdrawal import (
     FINAL,
     PENDING,
+    AccountGone,
     NotEligible,
     RefundInProgress,
     finish_pending,
     ledger_state,
     pending_refunds,
+    record_refund_failure,
     refund_quote,
     settle,
 )
@@ -454,7 +456,11 @@ REFUND_IN_PROGRESS = "refund_in_progress"
 
 
 class WithdrawalQuoteOut(BaseModel):
-    amount_cents: int = Field(description="Estimated refund, smallest currency unit")
+    amount_cents: int = Field(description="Estimated refund to the card, "
+                                          "smallest currency unit")
+    owed_cents: int = Field(default=0, description="Estimated part that cannot "
+                            "go back to the card (paid from the Stripe balance, "
+                            "say) and would be refunded by hand")
     currency: str = Field(description="ISO currency code, lower case, e.g. 'eur'")
     closes_at: float = Field(description="When the window closes, unix seconds")
 
@@ -571,7 +577,8 @@ def withdrawal_quote(current_user: Annotated[dict, Depends(get_current_user)]):
     except GatewayError as exc:
         _log.warning("Withdrawal quote failed for %s: %s", target.subscription_id, exc)
         raise HTTPException(status_code=502, detail="Could not reach the billing service")
-    return WithdrawalQuoteOut(amount_cents=quote.amount_cents,
+    return WithdrawalQuoteOut(amount_cents=quote.to_card_cents,
+                              owed_cents=quote.owed_cents,
                               currency=quote.currency, closes_at=target.closes_at)
 
 
@@ -621,6 +628,8 @@ def withdraw(current_user: Annotated[dict, Depends(get_current_user)]):
                 contract_start=target.contract_start, requested_at=now, now=now))
     except RefundInProgress:
         return _in_progress()
+    except AccountGone:
+        raise HTTPException(status_code=404, detail="User not found")
     except NotEligible:
         return _window_closed()
     except GatewayError as exc:
@@ -747,6 +756,30 @@ def _others_in_force(gateway, update) -> bool | None:
     return any(sid != update.subscription_id for sid in running)
 
 
+#: Events that can report a refund failing after it was created (#441). The
+#: installed SDK (stripe 15.6.1, API 2026-08-26.dahlia) knows all three;
+#: ``refund.failed`` is the dedicated one, the others carry the refund with
+#: its new status. Subscribe the webhook endpoint to them (docs/BILLING.md).
+REFUND_FAILURE_TYPES = frozenset({
+    "refund.failed", "refund.updated", "charge.refund.updated",
+})
+
+
+def _record_refund_failure(event: dict) -> bool:
+    """A refund of one of our credit notes failed: the refund is owed again."""
+    refund = ((event.get("data") or {}).get("object")) or {}
+    if str(refund.get("status") or "") != "failed":
+        return False
+    changed = record_refund_failure(str(refund.get("id") or ""),
+                                    int(refund.get("amount") or 0),
+                                    str(refund.get("failure_reason") or ""))
+    if changed:
+        _log.error("Billing: refund %s failed after it was made (%s) — recorded as "
+                   "owed (event %s)", refund.get("id"), refund.get("failure_reason"),
+                   event.get("id"))
+    return changed
+
+
 def _handle_webhook(gateway, payload: bytes, signature: str) -> WebhookAck:
     """The blocking part of :func:`webhook`: verify, then apply."""
     try:
@@ -758,6 +791,9 @@ def _handle_webhook(gateway, payload: bytes, signature: str) -> WebhookAck:
     # A scheduled change is a different statement about the account — "this will
     # be the plan", not "this is" — so it is translated and stored separately
     # (issue #153).
+    if (event.get("type") or "") in REFUND_FAILURE_TYPES:
+        return WebhookAck(received=True, applied=_record_refund_failure(event))
+
     schedule = schedule_update_from_event(event)
     if schedule is not None:
         with get_session() as sess:
