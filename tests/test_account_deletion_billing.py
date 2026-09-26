@@ -948,6 +948,49 @@ class TestCheckoutRacingTheDeletion:
         assert late.customer_calls == ["cus_new"]
         assert _no_subscription_rows(file_engine)
 
+    def test_a_deletion_still_committing_is_waited_for(self, file_engine):
+        """The deletion holds the account lock, not yet committed, while the
+        checkout records its customer. Reading the account without the lock,
+        the checkout would see it still there and write to rows being
+        deleted; with the lock it waits, then sees it gone."""
+        from sqlalchemy import event as sa_event
+
+        from src.auth.account_deletion import delete_user_and_data
+
+        uid = _seed(file_engine, status="none", customer="", sub_id="")
+        locked, go = threading.Event(), threading.Event()
+        deleting = {}
+
+        def delete():
+            with Session(file_engine) as sess:
+                def hold(_session):
+                    locked.set()
+                    go.wait(timeout=30)
+
+                sa_event.listen(sess, "before_commit", hold)
+                delete_user_and_data(sess, uid)
+            deleting["done"] = True
+
+        class _DeletingNow(FakeGateway):
+            def create_checkout_session(self, **kwargs):
+                result = super().create_checkout_session(**kwargs)
+                deleting["thread"] = threading.Thread(target=delete)
+                deleting["thread"].start()
+                assert locked.wait(timeout=30)  # deletion holds the lock now
+                threading.Timer(1.5, go.set).start()
+                return result
+
+        gw = _DeletingNow(file_engine)
+        set_gateway(gw)
+
+        res = _as(uid).post("/api/billing/checkout", json={"plan": "tier_2"})
+        deleting["thread"].join(timeout=60)
+
+        assert deleting.get("done") is True
+        assert res.status_code == 404, res.text
+        assert gw.expired == ["cs_new"]
+        assert _no_subscription_rows(file_engine)
+
     def test_a_live_account_still_gets_its_customer_recorded(self, file_engine):
         uid = _seed(file_engine, status="none", customer="", sub_id="")
         gw = FakeGateway(file_engine)
