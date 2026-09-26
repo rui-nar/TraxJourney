@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import time
+from dataclasses import dataclass
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -53,12 +54,13 @@ from src.billing.webhook_events import (
     subscription_update_from_event,
 )
 from src.billing.withdrawal import (
-    DONE,
-    FAILED_PERMANENT,
+    FINAL,
     PENDING,
     NotEligible,
     RefundInProgress,
+    finish_pending,
     ledger_state,
+    pending_refunds,
     refund_quote,
     settle,
 )
@@ -472,12 +474,13 @@ def _withdrawal_offered(row: Subscription | None, ledger: str, now: float) -> bo
 
     While the contract's window is open, or — after it — while a refund whose
     cancellation already landed is still pending, so a failed refund can be
-    retried. Never once the contract's refund is done or recorded as owed:
-    that includes a refund made by an account deletion that was then refused.
+    retried. Never once the contract's refund is done, owed or settled, whoever
+    made it: that includes a refund made by an account deletion that was then
+    refused.
     """
     if row is None or not billing_enabled() or not row.contract_subscription_id:
         return False
-    if ledger in (DONE, FAILED_PERMANENT):
+    if ledger in FINAL:
         return False
     return ledger == PENDING or withdrawal_window_open(row.contract_started_at, now)
 
@@ -512,13 +515,27 @@ def _in_progress() -> JSONResponse:
     )
 
 
-def _withdrawal_target(user_info_id: int, now: float):
-    """``(customer, subscription, contract start, closes_at)``, or the 409.
+@dataclass(frozen=True)
+class _Target:
+    customer_id: str
+    #: The current contract's subscription, when it may be withdrawn from now:
+    #: its window is open, or its refund is already in the ledger.
+    subscription_id: str
+    contract_start: float
+    closes_at: float
+    #: Its ledger state ("" = none yet).
+    ledger: str
+    #: Pending refunds of earlier contracts, to finish too.
+    others: int
 
-    The subscription is the current contract's: the window belongs to it.
-    After the window, only a refund whose cancellation already landed (a
-    ``pending`` ledger row) may still be completed — never a new withdrawal.
-    Nothing is written here.
+
+def _withdrawal_target(user_info_id: int, now: float):
+    """What a withdrawal would act on, or the 409 refusing it. Writes nothing.
+
+    The current contract's subscription while its window is open (or its
+    refund is in the ledger); and every pending refund of an earlier contract
+    of the customer — a cancellation that landed in time is owed its refund
+    whatever was bought since.
     """
     with get_session() as sess:
         row = subs.get_subscription(sess, user_info_id)
@@ -526,11 +543,16 @@ def _withdrawal_target(user_info_id: int, now: float):
             return _no_subscription()
         subscription_id = row.contract_subscription_id
         ledger = ledger_state(sess, subscription_id)
-        in_time = withdrawal_window_open(row.contract_started_at, now)
-        if not subscription_id or not (in_time or ledger in (PENDING, DONE, FAILED_PERMANENT)):
+        current = bool(subscription_id) and (
+            ledger != "" or withdrawal_window_open(row.contract_started_at, now))
+        others = sum(1 for r in pending_refunds(sess, row.provider_customer_id)
+                     if r.subscription_id != subscription_id)
+        if not current and not others:
             return _window_closed()
-        return (row.provider_customer_id, subscription_id, row.contract_started_at,
-                withdrawal_window_closes_at(row.contract_started_at))
+        return _Target(row.provider_customer_id, subscription_id if current else "",
+                       row.contract_started_at,
+                       withdrawal_window_closes_at(row.contract_started_at),
+                       ledger, others)
 
 
 @router.get("/withdraw", response_model=WithdrawalQuoteOut,
@@ -542,14 +564,15 @@ def withdrawal_quote(current_user: Annotated[dict, Depends(get_current_user)]):
     target = _withdrawal_target(int(current_user["sub"]), now)
     if isinstance(target, JSONResponse):
         return target
-    _customer_id, subscription_id, _start, closes_at = target
+    if not target.subscription_id:
+        return _window_closed()
     try:
-        quote = refund_quote(gateway, subscription_id, now)
+        quote = refund_quote(gateway, target.subscription_id, now)
     except GatewayError as exc:
-        _log.warning("Withdrawal quote failed for %s: %s", subscription_id, exc)
+        _log.warning("Withdrawal quote failed for %s: %s", target.subscription_id, exc)
         raise HTTPException(status_code=502, detail="Could not reach the billing service")
     return WithdrawalQuoteOut(amount_cents=quote.amount_cents,
-                              currency=quote.currency, closes_at=closes_at)
+                              currency=quote.currency, closes_at=target.closes_at)
 
 
 @router.post("/withdraw", response_model=WithdrawalOut,
@@ -557,13 +580,12 @@ def withdrawal_quote(current_user: Annotated[dict, Depends(get_current_user)]):
 def withdraw(current_user: Annotated[dict, Depends(get_current_user)]):
     """Cancel immediately and refund the unused part, inside the window (#441).
 
-    1. Cancel at Stripe. If that fails, nothing is recorded: the request did
-       not happen, and after the deadline it cannot be made any more.
-    2. Refund through the ledger (:func:`src.billing.withdrawal.settle`): the
-       row it creates is what lets a refund that fails now be completed later,
-       also after the deadline; its claim is what stops a concurrent deletion
-       or a second tap from refunding too.
-    3. Record the result under the account's lock.
+    1. Finish every pending refund of an earlier contract of the customer.
+    2. Cancel the current contract's subscription at Stripe — unless its
+       refund is already in the ledger, which means the cancellation landed.
+       If it fails, nothing is recorded: the request did not happen.
+    3. Refund through the ledger (:func:`src.billing.withdrawal.settle`).
+    4. Record the ended subscription on the row, under the account's lock.
 
     Stripe is never called while the lock is held (issue #429's discipline).
     """
@@ -573,30 +595,38 @@ def withdraw(current_user: Annotated[dict, Depends(get_current_user)]):
     target = _withdrawal_target(user_info_id, now)
     if isinstance(target, JSONResponse):
         return target
-    customer_id, subscription_id, contract_start, _closes_at = target
 
+    refunds = []
     try:
-        gateway.cancel_subscription(subscription_id, customer_id)
-    except GatewayError as exc:
-        _log.warning("Withdrawal: cancelling %s failed: %s", subscription_id, exc)
-        raise HTTPException(
-            status_code=502,
-            detail="Your subscription could not be cancelled, so nothing was "
-                   "refunded. Please try again in a few minutes.",
-        )
-    try:
-        refund = settle(gateway, user_info_id=user_info_id, customer_id=customer_id,
-                        subscription_id=subscription_id,
-                        contract_start=contract_start, requested_at=now, now=now)
+        if target.others:
+            refunds += finish_pending(gateway, user_info_id=user_info_id,
+                                      customer_id=target.customer_id, now=now,
+                                      skip=target.subscription_id)
+        if target.subscription_id:
+            if not target.ledger:
+                try:
+                    gateway.cancel_subscription(target.subscription_id, target.customer_id)
+                except GatewayError as exc:
+                    _log.warning("Withdrawal: cancelling %s failed: %s",
+                                 target.subscription_id, exc)
+                    raise HTTPException(
+                        status_code=502,
+                        detail="Your subscription could not be cancelled, so "
+                               "nothing was refunded. Please try again in a few "
+                               "minutes.",
+                    )
+            refunds.append(settle(
+                gateway, user_info_id=user_info_id, customer_id=target.customer_id,
+                subscription_id=target.subscription_id,
+                contract_start=target.contract_start, requested_at=now, now=now))
     except RefundInProgress:
         return _in_progress()
     except NotEligible:
         return _window_closed()
     except GatewayError as exc:
-        _log.error(
-            "Withdrawal: %s was cancelled but the refund failed: %s — the user "
-            "can retry, also after the deadline", subscription_id, exc,
-        )
+        _log.error("Withdrawal: a refund of account %s failed after its "
+                   "cancellation: %s — the user can retry, also after the "
+                   "deadline", user_info_id, exc)
         return JSONResponse(
             status_code=status.HTTP_502_BAD_GATEWAY,
             content={
@@ -608,14 +638,11 @@ def withdraw(current_user: Annotated[dict, Depends(get_current_user)]):
             },
         )
 
-    with get_session() as sess:
-        subs.lock_account(sess, user_info_id)
-        row = subs.get_subscription(sess, user_info_id)
-        if row is not None and row.contract_subscription_id == subscription_id:
-            row.withdrawn_at = now
-            if refund.settled:
-                row.withdrawn_subscription_id = subscription_id
-            if row.provider_subscription_id == subscription_id:
+    if target.subscription_id:
+        with get_session() as sess:
+            subs.lock_account(sess, user_info_id)
+            row = subs.get_subscription(sess, user_info_id)
+            if row is not None and row.provider_subscription_id == target.subscription_id:
                 # What customer.subscription.deleted will say, recorded now:
                 # the cancellation has landed. Waiting for the webhook would
                 # show the paid plan on the page the app reloads straight away.
@@ -624,16 +651,17 @@ def withdraw(current_user: Annotated[dict, Depends(get_current_user)]):
                 row.cancel_at_period_end = False
                 row.pending_plan = ""
                 row.pending_plan_at = 0.0
-            row.updated_at = time.time()
-            sess.add(row)
-            sess.commit()
-        else:
-            sess.rollback()  # deleted meanwhile, or a new contract since
-    _log.info("Withdrawal: account %s withdrew from %s, refunded %s %s, owed %s",
-              user_info_id, subscription_id, refund.amount_cents, refund.currency,
-              refund.owed_cents)
-    return WithdrawalOut(refunded_cents=refund.amount_cents, currency=refund.currency,
-                         owed_cents=refund.owed_cents)
+                row.updated_at = time.time()
+                sess.add(row)
+                sess.commit()
+            else:
+                sess.rollback()  # deleted meanwhile, or a new contract since
+    refunded = sum(r.amount_cents for r in refunds)
+    owed = sum(r.owed_cents for r in refunds)
+    currency = next((r.currency for r in refunds if r.currency), "")
+    _log.info("Withdrawal: account %s refunded %s %s, owed %s",
+              user_info_id, refunded, currency, owed)
+    return WithdrawalOut(refunded_cents=refunded, currency=currency, owed_cents=owed)
 
 
 #: Events announcing a subscription that has just started. One that belongs to
@@ -706,8 +734,10 @@ def _others_in_force(gateway, update) -> bool | None:
         return None
     with get_session() as sess:
         row = subs.resolve_row(sess, update)
-        if row is not None and row.contract_subscription_id == update.subscription_id:
-            return None  # a renewal or a plan change of the contract in force
+        if row is not None and update.subscription_id in (
+            row.contract_subscription_id, row.contract_checked_subscription_id
+        ):
+            return None  # already judged, on its first paid event
     try:
         running = gateway.subscriptions_in_force(update.customer_id)
     except GatewayError as exc:

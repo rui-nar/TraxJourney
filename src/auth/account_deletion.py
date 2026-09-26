@@ -55,10 +55,10 @@ from src.billing.refunds import withdrawal_window_open
 from src.billing.subscriptions import lock_account
 from src.billing.withdrawal import (
     DONE,
-    FAILED_PERMANENT,
-    PENDING,
+    SETTLED,
     NotEligible,
     RefundInProgress,
+    finish_pending,
     ledger_state,
     settle,
 )
@@ -169,12 +169,17 @@ def _window_state(sess: Session, user_info_id: int) -> tuple | None:
 def refund_inside_window(sess: Session, user_info_id: int, now: float) -> None:
     """Refund pro rata what deletion cancelled, inside the withdrawal window (#441).
 
-    Runs after :func:`cancel_live_subscription` — so the cancellation has
-    landed — and before any row is deleted. Outside the window it does nothing,
-    unless a refund whose cancellation landed in time is still pending in the
-    ledger: that one is completed. The refund goes through the ledger
-    (``src.billing.withdrawal.settle``), so it is made once, whether the user
-    also withdrew or a concurrent request is at it.
+    Runs after :func:`cancel_live_subscription` — so every cancellation has
+    landed — and before any row is deleted:
+
+    * every **pending** refund of the customer is completed, of any contract:
+      its cancellation landed in time, so it is owed whatever came after;
+    * the current contract's subscription is refunded if its window is open
+      and its refund is not in the ledger yet. A ``done``, ``owed`` or
+      ``settled`` refund is final and is not sent to Stripe again.
+
+    Everything goes through the ledger (``src.billing.withdrawal.settle``), so
+    a refund is made once, whatever else refunded it or is refunding it now.
 
     When the row has no contract start yet — the payment's webhook has not
     arrived — the start is taken from Stripe: the customer's most recently
@@ -182,9 +187,9 @@ def refund_inside_window(sess: Session, user_info_id: int, now: float) -> None:
 
     Refuses the deletion (:class:`AccountDeletionRefused`) with 502 on a
     transient failure and 409 while another request is refunding; nothing is
-    deleted and the user can retry. A *permanent* refusal does not refuse it:
-    the refund is recorded as owed in the ledger, which outlives the account,
-    and the owner settles it (owner decision 2026-09-26).
+    deleted and the user can retry. A refund recorded as *owed* does not
+    refuse it: that record outlives the account, for the owner to settle
+    (owner decision 2026-09-26).
     """
     state = _window_state(sess, user_info_id)
     if state is None:
@@ -205,30 +210,29 @@ def refund_inside_window(sess: Session, user_info_id: int, now: float) -> None:
                 user_info_id, customer_id,
             )
         return
+    refunds = []
     try:
         if not start:
             latest = gateway.latest_subscription(customer_id)
-            if latest is None:
-                return
-            subscription_id, start = latest
-        if not subscription_id:
-            return
-        ledger = ledger_state(sess, subscription_id)
-        if ledger == DONE:
-            return
-        if not withdrawal_window_open(start, now) and ledger not in (PENDING, FAILED_PERMANENT):
-            return
-        refund = settle(gateway, user_info_id=user_info_id, customer_id=customer_id,
-                        subscription_id=subscription_id, contract_start=start,
-                        requested_at=now, now=now)
+            if latest is not None:
+                subscription_id, start = latest
+        refunds += finish_pending(gateway, user_info_id=user_info_id,
+                                  customer_id=customer_id, now=now)
+        if (subscription_id and ledger_state(sess, subscription_id) == ""
+                and withdrawal_window_open(start, now)):
+            try:
+                refunds.append(settle(
+                    gateway, user_info_id=user_info_id, customer_id=customer_id,
+                    subscription_id=subscription_id, contract_start=start,
+                    requested_at=now, now=now))
+            except NotEligible:
+                pass
     except RefundInProgress as exc:
         raise AccountDeletionRefused(
             "A refund for your plan is being processed right now, so the "
             "account was not deleted yet. Please try again in a few minutes.",
             status_code=409, code="refund_in_progress",
         ) from exc
-    except NotEligible:
-        return
     except GatewayError as exc:
         _log.warning("Deletion of account %s: refund failed: %s", user_info_id, exc)
         raise AccountDeletionRefused(
@@ -238,10 +242,11 @@ def refund_inside_window(sess: Session, user_info_id: int, now: float) -> None:
             "never twice.",
             status_code=502, code="refund_failed",
         ) from exc
-    if refund.amount_cents or refund.owed_cents:
-        _log.info("Deletion of account %s: refunded %s %s for %s, owed %s",
-                  user_info_id, refund.amount_cents, refund.currency,
-                  subscription_id, refund.owed_cents)
+    for refund in refunds:
+        if refund.amount_cents or refund.owed_cents:
+            _log.info("Deletion of account %s: refunded %s %s, owed %s",
+                      user_info_id, refund.amount_cents, refund.currency,
+                      refund.owed_cents)
 
 
 def _billing_state(sess: Session, user_info_id: int) -> tuple | None:
@@ -413,8 +418,8 @@ def delete_user_and_data(sess: Session, user_info_id: int) -> None:
     # Billing rows (issue #121). Any subscription that could still bill was
     # cancelled at the provider by cancel_live_subscription above (issue #429).
     # The refund ledger (#441) is keyed by Stripe customer, not by account:
-    # settled refunds go with the account; one recorded as owed stays until
-    # the owner settles it, as the privacy policy says.
+    # finished refunds (done, settled) go with the account; one recorded as
+    # owed stays until the owner settles it, as the privacy policy says.
     customer_ids = [c for c in sess.exec(
         select(Subscription.provider_customer_id)
         .where(Subscription.user_info_id == user_info_id)
@@ -422,7 +427,7 @@ def delete_user_and_data(sess: Session, user_info_id: int) -> None:
     if customer_ids:
         _delete_all(SubscriptionRefund,
                     SubscriptionRefund.customer_id.in_(customer_ids),
-                    SubscriptionRefund.state == DONE)
+                    SubscriptionRefund.state.in_((DONE, SETTLED)))
     _delete_all(Subscription, Subscription.user_info_id == user_info_id)
     _delete_all(UserUsage, UserUsage.user_info_id == user_info_id)
 

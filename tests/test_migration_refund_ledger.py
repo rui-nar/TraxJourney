@@ -46,9 +46,9 @@ def _subscription_columns(cfg) -> set[str]:
         return {r[1] for r in conn.execute("PRAGMA table_info(subscription)")}
 
 
-def test_it_is_the_single_head():
+def test_it_follows_the_contract_migration():
     script = ScriptDirectory.from_config(Config(str(_PROJECT_ROOT / "alembic.ini")))
-    assert script.get_heads() == [_REVISION]
+    # The single head is ed0f801e164c; see test_migration_refund_states.py.
     assert script.get_revision(_REVISION).down_revision == _BEFORE
 
 

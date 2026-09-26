@@ -713,6 +713,21 @@ class TestContractStart:
                      others_in_force=True)
         assert _committed(sess).contract_subscription_id == "sub_1"
 
+    def test_a_subscription_is_judged_once_on_its_first_paid_event(self, sess):
+        """F-G: sub_2 was bought while sub_1 ran, so it was not made the
+        contract. When sub_1 ends and sub_2 renews, it still is not: a contract
+        cannot start late."""
+        apply_update(sess, _update(paid_since=950.0))
+        apply_update(sess, _update(event_id="evt_2", event_at=2000.0,
+                                   subscription_id="sub_2", paid_since=2000.0),
+                     others_in_force=True)
+        assert _committed(sess).contract_checked_subscription_id == "sub_2"
+        apply_update(sess, _update(event_id="evt_4", event_at=4000.0,
+                                   subscription_id="sub_2", paid_since=2000.0),
+                     others_in_force=False)
+        row = _committed(sess)
+        assert (row.contract_subscription_id, row.contract_started_at) == ("sub_1", 950.0)
+
     def test_the_providers_all_clear_starts_one(self, sess):
         apply_update(sess, _update(paid_since=950.0))
         apply_update(sess, _update(event_id="evt_2", event_at=2000.0,
@@ -747,7 +762,7 @@ class TestContractStart:
 class TestContractWebhook:
     """F5 through the real handler: the provider is asked outside the lock."""
 
-    def _post(self, monkeypatch, event, in_force):
+    def _post(self, monkeypatch, event, in_force, checked=""):
         from fastapi.testclient import TestClient
         import models.db as db_module
         from api.router import app
@@ -764,7 +779,8 @@ class TestContractWebhook:
                                provider_customer_id="cus_1",
                                provider_subscription_id="sub_2",
                                contract_subscription_id="sub_1",
-                               contract_started_at=950.0))
+                               contract_started_at=950.0,
+                               contract_checked_subscription_id=checked))
             s.commit()
         asked = []
 
@@ -802,6 +818,14 @@ class TestContractWebhook:
         res, asked, row = self._post(monkeypatch, event, ["sub_2"])
         assert row.contract_subscription_id == "sub_2"
         assert row.contract_started_at == 2000
+
+    def test_a_subscription_already_judged_does_not_ask(self, monkeypatch):
+        """F-G: sub_2's first paid event was judged; its later ones are not."""
+        event = _with(_subscription_event(
+            "customer.subscription.updated", sub_id="sub_2", created=3000), start_date=2000)
+        res, asked, row = self._post(monkeypatch, event, [], checked="sub_2")
+        assert asked == []
+        assert row.contract_subscription_id == "sub_1"
 
     def test_the_contracts_own_renewal_does_not_ask(self, monkeypatch):
         event = _with(_subscription_event(

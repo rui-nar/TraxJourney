@@ -64,34 +64,39 @@ class Subscription(sqlmodel.SQLModel, table=True):
     # when this shipped were given 1.0 by the migration (window closed).
     contract_started_at: float = sqlmodel.Field(default=0.0)
     contract_subscription_id: str = sqlmodel.Field(default="")
+    # The subscription whose first paid event was last judged for a contract
+    # (#441): each subscription is judged once, on that event, so one bought
+    # while another ran can never become the contract later.
+    contract_checked_subscription_id: str = sqlmodel.Field(default="")
     # Proof of the express consent collected at checkout (issue #441): when
     # the buyer ticked the terms box, and which wording of the withdrawal
     # terms (refunds.WITHDRAWAL_TERMS_VERSION) that box stood for. The latest
     # purchase's; Stripe keeps every session's own record too.
     terms_accepted_at: float = sqlmodel.Field(default=0.0)
     terms_version: str = sqlmodel.Field(default="")
-    # When the user last withdrew through POST /api/billing/withdraw (#441),
-    # and from which subscription: the withdrawal is done for that one only.
-    withdrawn_at: float = sqlmodel.Field(default=0.0)
-    withdrawn_subscription_id: str = sqlmodel.Field(default="")
     updated_at: float = sqlmodel.Field(default_factory=time.time)
 
 
 class SubscriptionRefund(sqlmodel.SQLModel, table=True):
     """The refund of one subscription's unused period (issue #441).
 
-    One row per subscription, claimed under the account's lock before Stripe is
-    asked, so a withdrawal and a deletion — or two taps — cannot both refund:
+    One row per subscription, created only once its cancellation has landed,
+    and claimed under the account's lock before Stripe is asked, so a
+    withdrawal and a deletion — or two taps — cannot both refund:
 
     * ``pending`` — being refunded, or a transient failure left it to retry.
-      ``lease_until`` in the future means a request is working on it now.
+      ``lease_until`` in the future means a request holds it (``claim_token``).
     * ``done`` — refunded (``refunded`` may be 0: nothing was left).
-    * ``failed_permanent`` — Stripe refused definitely, or there was no payment
-      to refund. The refund is **owed** and the owner settles it in Stripe.
+    * ``owed`` — ``owed`` cents could not be refunded automatically: Stripe
+      refused for good, there was no payment, or part was paid from the
+      balance. **Final for the app**: never sent to Stripe again. The owner
+      refunds it by hand and marks it settled.
+    * ``settled`` — the owner settled an owed refund. Kept, so the
+      subscription can never be refunded again.
 
     Deliberately not keyed to ``userinfo``: an owed refund must survive the
-    account's deletion. It holds only the Stripe identifiers, amounts and a
-    reason, and is deleted once settled (docs/BILLING.md, "Owed refunds").
+    account's deletion. It holds only Stripe identifiers, amounts, a reason and
+    timestamps (docs/BILLING.md, "Owed refunds").
     """
 
     __tablename__ = "subscription_refund"
@@ -99,13 +104,19 @@ class SubscriptionRefund(sqlmodel.SQLModel, table=True):
     subscription_id: str = sqlmodel.Field(primary_key=True)
     customer_id: str = sqlmodel.Field(default="", index=True)
     state: str = sqlmodel.Field(default="pending")
-    # Bumped after a definite refusal only, so the next try has a new
-    # provider idempotency key; never after a timeout, whose request may yet
-    # have succeeded under the old one.
+    # The start of the contract the subscription was, for the window check of
+    # a refund completed late.
+    contract_started_at: float = sqlmodel.Field(default=0.0)
+    # Bumped when the provider saw the key with other parameters, so the next
+    # try has a new key; never after a timeout, whose request may yet have
+    # succeeded under the old one.
     attempt: int = sqlmodel.Field(default=0)
-    # What the unused period is owed, frozen at the first computation; -1 =
-    # not computed yet. And what was actually refunded.
+    # Frozen at the first computation (-1 = not yet): what the unused period
+    # is owed, and how it splits — to the card now, and owed by hand.
     amount: int = sqlmodel.Field(default=-1)
+    to_refund: int = sqlmodel.Field(default=-1)
+    owed: int = sqlmodel.Field(default=0)
+    # What the credit note refunded.
     refunded: int = sqlmodel.Field(default=0)
     currency: str = sqlmodel.Field(default="")
     # The invoice refunded — the contract's, frozen with the amount, so a
@@ -115,7 +126,10 @@ class SubscriptionRefund(sqlmodel.SQLModel, table=True):
     reason: str = sqlmodel.Field(default="")
     # When the withdrawal or deletion that cancelled it was asked for.
     requested_at: float = sqlmodel.Field(default=0.0)
+    # Fencing: only the current claim may write the result.
+    claim_token: str = sqlmodel.Field(default="")
     lease_until: float = sqlmodel.Field(default=0.0)
+    settled_at: float = sqlmodel.Field(default=0.0)
     created_at: float = sqlmodel.Field(default_factory=time.time)
     updated_at: float = sqlmodel.Field(default_factory=time.time)
 

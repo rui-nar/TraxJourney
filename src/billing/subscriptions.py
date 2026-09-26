@@ -149,6 +149,11 @@ def _starts_a_contract(row: Subscription, update: SubscriptionUpdate,
         return False
     if update.subscription_id == row.contract_subscription_id:
         return False  # a renewal or a plan change of the contract in force
+    if update.subscription_id == row.contract_checked_subscription_id:
+        # Judged already, on its first paid event, and not made the contract
+        # then: a later event — after the other subscription ended, say —
+        # never makes it one (a contract cannot start late).
+        return False
     if others_in_force is not None:
         return not others_in_force
     other = row.provider_subscription_id
@@ -220,6 +225,8 @@ def apply_update(sess, update: SubscriptionUpdate, *,
     if _starts_a_contract(row, update, others_in_force):
         row.contract_started_at = update.paid_since
         row.contract_subscription_id = update.subscription_id
+    if update.paid_since and update.subscription_id:
+        row.contract_checked_subscription_id = update.subscription_id
 
     # A pending change that has now happened is no longer pending. Clearing it
     # on *any* plan move, not just the one that was scheduled, is deliberate:

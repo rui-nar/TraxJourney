@@ -20,7 +20,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlmodel import select
 
 from api.deps import require_admin
@@ -33,7 +33,7 @@ from src.admin.tiers import user_encryption_tier
 from src.billing.entitlements import plan_display_name, plan_from_subscription
 from src.billing.plans import FREE, PLAN_ORDER
 from src.billing.subscriptions import set_admin_override
-from src.billing.withdrawal import FAILED_PERMANENT
+from src.billing.withdrawal import LEASE_SECONDS, OWED, PENDING, SETTLED
 from src.email.service import EmailMessage, get_email_service
 from src.utils.logging import (
     LEVEL_NAMES,
@@ -422,35 +422,51 @@ def set_plan(
 class OwedRefundOut(BaseModel):
     subscription_id: str
     customer_id: str
+    state: str = Field(description="'owed', or 'pending' when a refund has been "
+                                   "stuck longer than a claim can last")
     owed_cents: int = Field(description="Still to refund by hand")
     refunded_cents: int
     currency: str
     reason: str
     invoice_id: str
+    credit_note_id: str
     updated_at: float
 
 
 @router.get("/billing/owed-refunds", response_model=list[OwedRefundOut],
-            summary="Refunds owed that Stripe would not make automatically")
+            summary="Refunds the app could not make, and stuck ones")
 def owed_refunds(_admin: Annotated[dict, Depends(require_admin)]):
-    """Withdrawal refunds recorded as owed (issue #441).
+    """Withdrawal refunds that need the owner (issue #441).
 
-    Stripe refused them for good, or there was nothing to refund against.
-    Each outlives the account it came from. Refund it in the Stripe dashboard,
-    then mark it settled. Only Stripe identifiers, amounts and the reason are
-    kept.
+    * ``owed`` — Stripe refused for good, there was no payment to refund, or
+      part was paid from the customer's balance. The app never retries these.
+      Refund it in the Stripe dashboard, then mark it settled.
+    * ``pending`` for longer than a claim lease — its cancellation landed but
+      no request has completed the refund since (the user's next withdrawal or
+      deletion would). Shown so nothing can sit unseen.
+
+    Each outlives the account it came from. Only Stripe identifiers, amounts,
+    the reason and timestamps are kept.
     """
+    stale = time.time() - LEASE_SECONDS
     with get_session() as sess:
         rows = sess.exec(
             select(SubscriptionRefund)
-            .where(SubscriptionRefund.state == FAILED_PERMANENT)
+            .where(or_(
+                SubscriptionRefund.state == OWED,
+                (SubscriptionRefund.state == PENDING)
+                & (SubscriptionRefund.lease_until < time.time())
+                & (SubscriptionRefund.updated_at < stale),
+            ))
             .order_by(SubscriptionRefund.updated_at)
         ).all()
         return [
             OwedRefundOut(
                 subscription_id=r.subscription_id, customer_id=r.customer_id,
-                owed_cents=max(0, r.amount - r.refunded), refunded_cents=r.refunded,
-                currency=r.currency, reason=r.reason, invoice_id=r.invoice_id,
+                state=r.state,
+                owed_cents=r.owed if r.state == OWED else max(0, r.amount - r.refunded),
+                refunded_cents=r.refunded, currency=r.currency, reason=r.reason,
+                invoice_id=r.invoice_id, credit_note_id=r.credit_note_id,
                 updated_at=r.updated_at,
             )
             for r in rows
@@ -459,25 +475,48 @@ def owed_refunds(_admin: Annotated[dict, Depends(require_admin)]):
 
 @router.post("/billing/owed-refunds/{subscription_id}/settle",
              response_model=OkResponse,
-             summary="Mark an owed refund settled (deletes its record)")
+             summary="Mark a refund settled by hand")
 def settle_owed_refund(
     subscription_id: str,
     _admin: Annotated[dict, Depends(require_admin)],
 ):
-    """The owner refunded it by hand: the record has served its purpose.
+    """The owner refunded it by hand (issue #441).
 
-    Deleted, not flagged: the privacy policy promises the record is kept only
-    until the refund is settled. Only an owed refund can be settled; a pending
-    one is still the app's to finish.
+    While the account exists, the row becomes a ``settled`` tombstone: amounts,
+    reason and ``settled_at`` stay, and neither a withdrawal nor a deletion
+    will ever refund that subscription again. It goes with the account.
+
+    When the account is already gone — the usual case, an owed refund that
+    outlived a deletion — the record is deleted outright. No account is left
+    whose later request a tombstone could protect, and the privacy policy
+    promises the record goes once settled.
+
+    Refused while a request holds the refund (a live lease).
     """
+    now = time.time()
     with get_session() as sess:
         row = sess.get(SubscriptionRefund, subscription_id)
-        if row is None or row.state != FAILED_PERMANENT:
+        if row is None or row.state not in (OWED, PENDING):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                                 detail="No owed refund for that subscription")
-        sess.delete(row)
+        if row.lease_until > now:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail="A refund of that subscription is in progress")
+        account_left = sess.exec(
+            select(Subscription.id).where(
+                Subscription.provider_customer_id == row.customer_id)
+        ).first() is not None
+        if account_left:
+            row.state = SETTLED
+            row.settled_at = now
+            row.claim_token = ""
+            row.updated_at = now
+            sess.add(row)
+        else:
+            sess.delete(row)
         sess.commit()
-    _log.info("Admin settled the owed refund of subscription %s", subscription_id)
+    _log.info("Admin settled the refund of subscription %s (%s)", subscription_id,
+              "kept as settled" if account_left else "record deleted")
     return {"ok": True}
 
 

@@ -21,22 +21,36 @@ class GatewayError(Exception):
 
 
 class PermanentGatewayError(GatewayError):
-    """The provider refused definitely (a 4xx other than a conflict or a rate
-    limit): the same request will be refused again. A refund refused like this
-    is owed, and settled by hand (#441)."""
+    """The provider refused definitely — a refusal code that says the same
+    request will be refused again (a disputed charge, one already refunded…).
+    A refund refused like this is owed, and settled by hand (#441)."""
+
+
+class IdempotencyConflict(GatewayError):
+    """The provider saw this idempotency key with different parameters. The
+    caller retries under a new key; never a reason to give up on a refund."""
 
 
 @dataclass(frozen=True)
-class RefundResult:
-    """What :meth:`BillingGateway.refund_unused` did."""
+class RefundPlan:
+    """How a refund of ``amount_cents`` would go, read from the provider (#441).
 
-    #: Refunded under the refund key — by this call, or an earlier one.
-    refunded_cents: int
-    credit_note_id: str = ""
-    #: Owed but not refundable automatically (paid without a payment, or the
-    #: invoice already credited another way), and why. The owner settles it.
-    unrefunded_cents: int = 0
+    Read-only. The caller freezes it and sends exactly ``send_cents`` with
+    :meth:`BillingGateway.issue_refund`, so a replay under the same key
+    carries the same parameters.
+    """
+
+    #: To refund to the card now, through a credit note.
+    send_cents: int
+    #: Owed but not refundable automatically — the share paid from the
+    #: customer's balance, what the invoice can no longer be credited, or all
+    #: of it when there is no payment — and why. The owner settles it.
+    owed_cents: int = 0
     reason: str = ""
+    #: A credit note already carrying the refund key (a lost response): its
+    #: amount was refunded, and ``owed_cents`` is what is still missing.
+    existing_note_id: str = ""
+    existing_cents: int = 0
 
 
 @dataclass(frozen=True)
@@ -155,20 +169,30 @@ class BillingGateway(Protocol):
         """Ids of the customer's subscriptions still in force at the provider:
         active, trialing, past due, unpaid or paused (#441)."""
 
-    def refund_unused(
+    def refund_plan(
         self, subscription_id: str, amount_cents: int, refund_key: str, *,
-        invoice_id: str, attempt: int = 0,
-    ) -> RefundResult:
-        """Refund up to ``amount_cents`` of ``invoice_id`` (#441).
+        invoice_id: str,
+    ) -> RefundPlan:
+        """How ``amount_cents`` — the whole unused period — would be refunded.
 
-        ``amount_cents`` is the *total* the subscription's unused period is
-        owed: every refund already made on that payment — by an earlier call,
-        or by hand in the dashboard — counts towards it, so only the rest is
-        refunded. It is also capped at what the invoice can still be credited.
-        ``refund_key`` is stamped on what this creates, and one found carrying
-        it means the work is done; ``attempt`` makes the provider idempotency
-        key. Raises :class:`PermanentGatewayError` on a definite refusal and
-        :class:`GatewayError` on anything that may pass.
+        Every refund already made on the invoice's payment (by hand, say)
+        counts towards it; the card can get back at most what it paid; the
+        invoice can be credited at most what is left of it. What cannot go
+        back to the card is reported as owed, never dropped. Changes nothing.
+        """
+
+    def issue_refund(
+        self, subscription_id: str, send_cents: int, refund_key: str, *,
+        invoice_id: str, attempt: int = 0,
+    ) -> str:
+        """Refund ``send_cents`` of ``invoice_id`` through a credit note (#441).
+
+        A credit note already carrying ``refund_key`` is returned instead of
+        making another. The provider idempotency key is ``refund_key:attempt``.
+        Returns the credit note id. Raises :class:`PermanentGatewayError` on a
+        definite refusal, :class:`IdempotencyConflict` when the key was used
+        with other parameters, and :class:`GatewayError` on anything that may
+        pass.
         """
 
 
