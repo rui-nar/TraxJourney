@@ -83,10 +83,11 @@ def _check_usable(secret: str) -> None:
     try:
         probe = jwt.encode({"probe": True}, secret, algorithm=_JWT_ALGORITHM)
         jwt.decode(probe, secret, algorithms=[_JWT_ALGORITHM])
-    except jwt.InvalidKeyError:
+    except jwt.InvalidKeyError as exc:
+        # PyJWT's reason names the key's shape, never its value.
         raise RuntimeError(
-            "JWT_SECRET looks like a public or private key, which cannot sign "
-            f"sessions: it must be a random shared secret. {fix}") from None
+            f"JWT_SECRET cannot sign sessions ({exc}): it must be a random "
+            f"shared secret, not a public or private key. {fix}") from None
     except Exception as exc:  # noqa: BLE001 — any refusal is a boot failure
         raise RuntimeError(
             f"JWT_SECRET cannot be used as a signing key ({type(exc).__name__}). "
@@ -163,7 +164,7 @@ def decode_token_quietly(token: str) -> Optional[dict]:
     """
     try:
         return _verify(token)
-    except jwt.PyJWTError:  # bad/expired token, and a key PyJWT won't use
+    except jwt.PyJWTError:  # a bad or expired token
         return None
     except RuntimeError:
         # jwt_secret() refusing the key. Boot refuses it first (issue #453);
