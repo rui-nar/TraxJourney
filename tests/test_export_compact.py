@@ -8,12 +8,20 @@ Exports are now compact (no indentation, no spaces after separators). Import
 takes any valid JSON, so a file exported before this, indented, still imports.
 
 The near-cap round trip runs against a scaled-down cap rather than the real
-50 MB: at the real size it would generate, hold and parse about two million
+50 MB: at the real size it would generate, hold and parse one to two million
 points several times over (well past a gigabyte of test memory, and minutes),
 yet exercise nothing the scaled version does not. What ties it to the real cap
-is the per-point guard below: compact exports stay under _BYTES_PER_POINT, so
-the 50 MB cap holds at least MAX_IMPORT_BYTES / _BYTES_PER_POINT points, about
-two million, twice the million-point trip #434 sized the cap for.
+is the per-point guard below, one bound per source of elevation profile:
+
+* Strava-style (distances in 0.1 m, elevations in 0.1 m): measured ~18.5
+  bytes per point, bound 25, so 50 MB holds at least ~2.1 million points;
+* a GPX upload with 0.1 m elevations: its profile stores cumulative distances
+  at full float precision (points_to_elevation_profile); measured ~27.8,
+  bound 32, at least ~1.6 million points;
+* a GPX upload with unrounded or interpolated elevations: measured ~39.6,
+  bound 45, at least ~1.2 million points.
+
+Every source stays over the million-point trip #434 sized the cap for.
 """
 
 from __future__ import annotations
@@ -38,9 +46,10 @@ from api.project_transfer import MAX_IMPORT_BYTES
 from models.user import UserInfo
 from src.project.project_io import ProjectIO
 
-#: Upper bound on a compact export's size per GPS point (encoded polyline
-#: plus the elevation profile's distance/elevation pair). Measured at ~18.
-_BYTES_PER_POINT = 25
+#: Upper bounds on a compact export's size per GPS point (encoded polyline plus
+#: the elevation profile's distance/elevation pair), per source of profile.
+#: See the module docstring for what was measured.
+_BYTES_PER_POINT = {"strava": 25, "gpx": 32, "gpx-unrounded": 45}
 
 
 @pytest.fixture
@@ -92,13 +101,69 @@ def _activity(aid: int, points: int, rng: random.Random) -> dict:
     }
 
 
-def _trip(activities: int, points: int) -> bytes:
+def _gpx_activity(aid: int, points: int, rng: random.Random, *, rounded: bool) -> dict:
+    """An uploaded GPX track, its profile built the way the upload builds it."""
+    from src.models.track_edit import (
+        TrackPoint, points_to_elevation_profile, points_to_polyline)
+    lat, lon, ele = 46.0 + aid * 0.01, 7.0, 1200.0
+    track = []
+    for n in range(points):
+        lat += rng.uniform(-1, 1) * 0.00004 + 0.00003
+        lon += rng.uniform(-1, 1) * 0.00004 + 0.00003
+        ele += rng.uniform(-0.6, 0.6)
+        # Some devices leave <ele> out of a point: interpolated on import.
+        elev = None if not rounded and n % 7 == 3 else (round(ele, 1) if rounded else ele)
+        track.append(TrackPoint(lat=lat, lng=lon, elev=elev))
+    dist, elev = points_to_elevation_profile(track)
+    return {
+        "id": -aid, "name": f"Hike {aid}", "type": "Hike",
+        "start_date": "2024-07-01T08:00:00Z", "start_date_local": "2024-07-01T08:00:00Z",
+        "map": {"summary_polyline": points_to_polyline(track)},
+        "elevation_profile": {"distances_km": dist, "elevations_m": elev},
+        "source": "gpx",
+    }
+
+
+def _trip(activities: int, points: int, source: str = "strava") -> bytes:
+    """A trip of *activities* recorded tracks, and one of everything else a
+    trip file holds: memory, journal entry, group, person, encounter,
+    segment, day notes and sleeping options."""
     rng = random.Random(454)
-    acts = [_activity(aid, points, rng) for aid in range(1, activities + 1)]
+    if source == "strava":
+        acts = [_activity(aid, points, rng) for aid in range(1, activities + 1)]
+    else:
+        acts = [_gpx_activity(aid, points, rng, rounded=source == "gpx")
+                for aid in range(1, activities + 1)]
+    items = [{"item_type": "activity", "activity_id": a["id"]} for a in acts]
+    items += [
+        {"item_type": "memory", "memory": {
+            "name": "Lac Blanc", "date": "2024-06-01", "time": "12:30",
+            "description": "Lunch by the lake", "public_id": "pub-lac-blanc",
+            "photos": ["00000000-0000-4000-8000-000000000454"],
+            "geo_mode": "custom", "lat": 45.98, "lon": 6.89}},
+        {"item_type": "journal", "journal": {
+            "date": "2024-06-01", "time": "21:00", "description": "Tired legs",
+            "photos": [], "geo_mode": "end_of_day", "lat": None, "lon": None}},
+        {"item_type": "encounter", "encounter": {
+            "person_id": 11, "date": "2024-06-01", "description": "Shared the hut",
+            "geo_mode": "custom", "lat": 45.9, "lon": 6.9}},
+        {"item_type": "segment", "segment": {
+            "id": "seg-454", "segment_type": "train", "label": "Chamonix - Geneva",
+            "date": "2024-06-02", "route_mode": "great_circle",
+            "start": {"lat": 45.92, "lon": 6.87, "source": "manual"},
+            "end": {"lat": 46.21, "lon": 6.14, "source": "manual"}}},
+    ]
     return json.dumps({
         "version": 1, "name": "x",
-        "items": [{"item_type": "activity", "activity_id": a["id"]} for a in acts],
+        "items": items,
         "activities": acts,
+        "groups": [{"id": 21, "name": "Hut crew", "nationalities": ["FR"], "socials": []}],
+        "people": [{"id": 11, "name": "Ann", "group_id": 21, "nationalities": ["CH"],
+                    "socials": [], "residence": "Bern, Switzerland"}],
+        "day_meta": {"2024-06-01": {"difficulty": "hard", "sleeping": "Hut",
+                                    "weather": "sun", "journal": "Big day",
+                                    "tags": ["alps"]}},
+        "sleeping_options": ["Hut", "Tent", "Hotel"],
     }, separators=(",", ":")).encode("utf-8")
 
 
@@ -121,9 +186,27 @@ def _compact(content: bytes) -> bytes:
 
 
 def _content(export: bytes) -> dict:
-    """The trip's content, less what names it."""
+    """The trip's content, less what names it or is minted per trip: its
+    name, lock version, the database ids of its memories, journal entries,
+    encounters, people and groups, and memory public ids (a copy of a trip
+    that still exists gets new ones, #463). People and groups are renumbered
+    by position, and the encounters' references with them."""
     data = json.loads(export)
-    data.pop("name")
+    for key in ("name", "lock_version"):
+        data.pop(key, None)
+    groups = {g.pop("id"): n for n, g in enumerate(data.get("groups", []))}
+    people = {p.pop("id"): n for n, p in enumerate(data.get("people", []))}
+    for p in data.get("people", []):
+        p["group_id"] = groups.get(p.get("group_id"))
+    for item in data["items"]:
+        content = item.get(item["item_type"])
+        if not isinstance(content, dict) or item["item_type"] == "segment":
+            continue
+        content.pop("id", None)
+        content.pop("public_id", None)
+        if item["item_type"] == "encounter":
+            content["person_id"] = people.get(content.get("person_id"))
+            content["group_id"] = groups.get(content.get("group_id"))
     return data
 
 
@@ -187,17 +270,33 @@ def test_an_indented_export_from_before_still_imports(client):
 
 # ── Size ────────────────────────────────────────────────────────────────────
 
-def test_an_export_stays_under_the_per_point_bound(client):
+@pytest.mark.parametrize("source", ["strava", "gpx", "gpx-unrounded"])
+def test_an_export_stays_under_the_per_point_bound(client, source):
     activities, points = 4, 5000
-    assert _import(client, "Alps", _trip(activities, points)).status_code == 201
+    assert _import(client, "Alps", _trip(activities, points, source)).status_code == 201
 
     exported = _export(client, "Alps")
 
     per_point = len(exported) / (activities * points)
-    assert per_point <= _BYTES_PER_POINT, per_point
-    # What the bound means for the real cap: comfortably over the million
-    # points #434 sized it for.
-    assert MAX_IMPORT_BYTES / _BYTES_PER_POINT >= 2_000_000
+    assert per_point <= _BYTES_PER_POINT[source], per_point
+    # What the bound means for the real cap: over the million points #434
+    # sized it for, whatever the source.
+    assert MAX_IMPORT_BYTES / _BYTES_PER_POINT[source] >= 1_000_000
+
+
+def test_the_whole_format_survives_a_round_trip(client):
+    """Every kind of content a trip file holds, not only activities."""
+    assert _import(client, "Alps", _trip(2, 100)).status_code == 201
+    exported = _export(client, "Alps")
+    data = json.loads(exported)
+    assert {i["item_type"] for i in data["items"]} == {
+        "activity", "memory", "journal", "encounter", "segment"}
+    assert data["people"] and data["groups"] and data["day_meta"]
+
+    r = _import(client, "Restored", exported)
+
+    assert r.status_code == 201, r.text
+    assert _content(_export(client, "Restored")) == _content(exported)
 
 
 def test_an_export_just_under_the_cap_imports_back(client, monkeypatch):

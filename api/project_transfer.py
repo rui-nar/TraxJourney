@@ -63,14 +63,25 @@ class ImportedOut(BaseModel):
 # ── Import ────────────────────────────────────────────────────────────────────
 
 #: Largest project file the import accepts, whatever the plan or billing
-#: settings (issue #434). An export carries every track at full resolution:
-#: ~18 bytes per GPS point (encoded polyline plus the elevation profile's
-#: distance/elevation pair, written compact since #454; ~40 when it was
-#: indented), so 50 MB is over two million points: 100+ long days recorded
-#: every second, or several hundred at Strava's usual density. The import holds the file and its parsed form at once,
-#: measured at ~3.4x the file size, so 50 MB peaks near 170 MB inside the
-#: API container's 768 MB limit (docker-compose.yml.example); 100 MB would not
-#: leave the geo caches and concurrent requests room.
+#: settings (issue #434). An export carries every track at full resolution,
+#: written compact since #454. Per GPS point (encoded polyline plus the
+#: elevation profile's distance/elevation pair), measured on generated trips:
+#: ~18.5 bytes for a Strava activity, ~28 for a GPX upload with 0.1 m
+#: elevations, ~40 for one with unrounded or interpolated elevations (a GPX
+#: profile keeps cumulative distances at full float precision). So 50 MB holds
+#: roughly 2.8, 1.9 or 1.3 million points. Indented, every point took ~22
+#: bytes more.
+#:
+#: The import holds the file and its parsed form at once. Measured with
+#: tracemalloc around ProjectIO.from_bytes on a 200,000-point trip, file bytes
+#: included, that is ~5.7x the file for compact JSON (it was ~3.7x indented:
+#: less whitespace per value parsed), so a 50 MB file peaks near 285 MB. The
+#: same trip exported compact is half the size, so any given trip now needs
+#: less memory to import than before; only a file at the cap needs more. That
+#: fits the API container's 768 MB limit (docker-compose.yml.example) beside
+#: the running process, its geo caches and ordinary requests, but not twice
+#: over: two maximum-size imports at once would leave little room. 100 MB
+#: would peak near 570 MB, too close to the limit on its own.
 MAX_IMPORT_BYTES = 50 * 1024 * 1024
 
 #: Room for the multipart envelope (boundaries, part headers) around the file.
