@@ -34,7 +34,8 @@ _INF, _NAN = float("inf"), float("nan")
 _DISTANCES = [i * 0.01 for i in range(40)]
 _CLEAN = [500.0 + (i % 10) * 2.0 for i in range(40)]
 _ENVELOPE = "v1.NaNInfinity.Y2lwaGVyTmFO"   # ciphertext may spell anything
-#: SQLite's LIKE ignores ASCII case, so "nan" in base64 matched '%NaN%'.
+#: Ciphertext spelling "nan" and "infinity": an envelope never starts with "{",
+#: so the scan passes it by whatever letters it holds.
 _LOWER_ENVELOPE = "v1.bmFuYW5hbmFu.aW5maW5pdHluYW4"
 
 
