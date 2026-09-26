@@ -101,6 +101,24 @@ void main() {
     });
   });
 
+  test('SettingsService.deleteAccount keeps quotes and non-ASCII text',
+      () async {
+    const message = 'Your "Explorer" plan could not be cancelled — réessayez.';
+    api = ApiClient(httpClient: MockClient((req) async => http.Response(
+          jsonEncode({'detail': message}),
+          502,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        )));
+
+    await expectLater(
+      SettingsService().deleteAccount(),
+      throwsA(isA<Exception>().having(
+          (e) => e.toString().replaceFirst('Exception: ', ''),
+          'message',
+          message)),
+    );
+  });
+
   group('SettingsScreen delete account', () {
     late FutureOr<http.Response> Function() billingMe;
     late int billingCalls;

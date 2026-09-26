@@ -656,6 +656,9 @@ class TestNoGatewayEscape:
         assert res.json()["code"] == "billing_unavailable"
         assert "docs/BILLING.md" in res.json()["detail"]
         assert "Deleting an account" in res.json()["detail"]
+        # Older clients read `detail` with a regex that stops at the first
+        # quote; keep the message readable for them too.
+        assert '"' not in res.json()["detail"]
         assert _everything_present(engine, uid)
 
     def test_the_documented_update_lets_the_deletion_through(self, engine):

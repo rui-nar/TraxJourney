@@ -44,15 +44,8 @@ class AdminService {
     try {
       await api.delete('/api/admin/users/$userInfoId');
     } on ApiException catch (e) {
-      throw Exception(_detail(e.body));
+      throw Exception(apiErrorDetail(e.body));
     }
-  }
-
-  /// The `detail` of an error body, or the body itself when it has none.
-  /// Same reading as `SettingsService`.
-  static String _detail(String body) {
-    final m = RegExp(r'"detail"\s*:\s*"([^"]+)"').firstMatch(body);
-    return m?.group(1) ?? body;
   }
 
   /// Send a plain-text email to the given users, or to every user when

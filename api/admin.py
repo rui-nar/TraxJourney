@@ -505,7 +505,8 @@ def delete_user(
             raise AccountDeletionRefused(
                 "This user has a paid plan that this server cannot cancel, "
                 "because billing is not configured. Nothing was deleted. To "
-                "resolve it, follow \"Deleting an account\" in docs/BILLING.md.",
+                "resolve it, follow the section Deleting an account in "
+                "docs/BILLING.md.",
                 status_code=exc.status_code, code=exc.code,
             ) from exc
     purge_user_files(user_info_id)

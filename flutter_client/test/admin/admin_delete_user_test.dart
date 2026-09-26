@@ -42,6 +42,25 @@ void main() {
     );
   });
 
+  test('a message with quotes and non-ASCII text is shown whole', () async {
+    const message = 'Nothing was deleted. Follow "Deleting an account" — '
+        'naïve café.';
+    api = ApiClient(httpClient: MockClient((req) async => http.Response(
+          jsonEncode({'detail': message, 'code': 'billing_unavailable'}),
+          409,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        )));
+
+    await expectLater(
+      AdminService().deleteUser(7),
+      throwsA(isA<Exception>().having(
+        (e) => e.toString().replaceFirst('Exception: ', ''),
+        'message',
+        message,
+      )),
+    );
+  });
+
   test('a successful deletion does not throw', () async {
     api = ApiClient(httpClient: MockClient(
         (req) async => http.Response(jsonEncode({'ok': true}), 200,
