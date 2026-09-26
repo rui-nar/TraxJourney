@@ -101,9 +101,9 @@ _DEFAULT_LIMITS: dict[str, tuple[int | None, int | None, int | None]] = {
 #: What each plan offers beyond the limits, which are rendered separately.
 #:
 #: Every line here is a promise to someone paying for it, so each one must name
-#: something the code actually provides. tests/test_billing_plans.py fails on any
-#: string that is neither generated from the limits, mapped there to the routes
-#: that implement it, nor listed in :data:`MARKETING_ONLY_FEATURES`.
+#: something the code actually provides. tests/test_plan_features_backed.py
+#: fails on any string that is neither generated from the limits, mapped there to
+#: the routes that implement it, nor listed in :data:`MARKETING_ONLY_FEATURES`.
 #:
 #: The paid tiers used to list "Weekly backups", "Daily backups" and "Priority
 #: support" (issue #432). None of it existed: every plan, Free included, shares

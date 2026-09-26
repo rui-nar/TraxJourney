@@ -8,9 +8,16 @@ A string that ``features_for()`` / ``catalogue()`` returns must be one of:
 
 - a limit line, rendered here *independently* from ``limits_for()`` — so a
   hand-written "10 trips" that the limits do not back is still caught;
-- a key of ``_CODE_BACKED`` below, whose routes must exist on the real app — so
-  deleting the feature's endpoint breaks the claim too, not just the wording;
+- a key of ``_CODE_BACKED`` below;
 - on ``plans.MARKETING_ONLY_FEATURES``, which only the owner edits.
+
+What this proves is narrow. The gate is ``_CODE_BACKED`` itself: a new line
+fails until someone adds it there, in a diff a reviewer reads. The routes each
+entry lists are a review aid saying where the feature lives. The test checks
+that those routes still exist, so removing a feature's endpoint surfaces the
+stale claim, but a route existing does not prove it delivers what the line
+says. Judging that is the reviewer's job. Nothing is gated by plan today, so the
+test does not check which plan may use a route; add that once some feature is.
 
 To advertise something new, build it first, then add it to ``_CODE_BACKED``
 with the routes that implement it.

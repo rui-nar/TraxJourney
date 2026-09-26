@@ -36,8 +36,9 @@ promise to someone paying for it. `tests/test_plan_features_backed.py` fails CI
 on any bullet that is not one of:
 
 - a limit line, generated from the limits above;
-- mapped in that test to the routes that implement it — so removing the
-  feature breaks the claim too;
+- listed in that test with the routes that implement it. The list is the gate,
+  and a reviewer reads each addition. The routes show where the feature lives
+  and must still exist, but they do not prove it does what the line says;
 - on `MARKETING_ONLY_FEATURES` in `plans.py`, which only the owner adds to.
 
 The paid tiers used to list weekly or daily backups and priority support
@@ -167,7 +168,7 @@ reports the tier you bought.
 
 | Route | Auth | Purpose |
 |---|---|---|
-| `GET /api/billing/plans` | none | Plan catalogue for the pricing UI |
+| `GET /api/billing/plans` | none | Plan catalogue for the pricing UI. `purchasable` is true only for a paid plan on a deployment with billing on; the landing page quotes its hosted price from the cheapest purchasable plan and shows none otherwise |
 | `GET /api/billing/me` | user | Plan, limits, usage |
 | `POST /api/billing/checkout` | user | → Stripe Checkout URL; body carries the `plan` to buy |
 | `POST /api/billing/change-plan` | user | → Stripe URL that *moves* a live subscription to another `plan` |

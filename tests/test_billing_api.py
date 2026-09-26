@@ -119,6 +119,20 @@ class TestPlans:
         """The landing page renders pricing before anyone has logged in."""
         assert TestClient(app).get("/api/billing/plans").status_code == 200
 
+    def test_nothing_is_purchasable_without_billing(self, client):
+        """A self-hosted deployment still lists the default catalogue, prices
+        included; ``purchasable`` is what stops the landing page quoting them
+        (#432)."""
+        plans = client.get("/api/billing/plans").json()
+        assert [p["purchasable"] for p in plans] == [False] * len(PLAN_ORDER)
+
+    def test_only_paid_plans_are_purchasable_with_billing(self, client, monkeypatch):
+        monkeypatch.setenv("BILLING_ENABLED", "1")
+        plans = client.get("/api/billing/plans").json()
+        assert {p["id"]: p["purchasable"] for p in plans} == {
+            FREE: False, TIER_1: True, TIER_2: True, TIER_3: True,
+        }
+
 
 # ── /me ───────────────────────────────────────────────────────────────────────
 

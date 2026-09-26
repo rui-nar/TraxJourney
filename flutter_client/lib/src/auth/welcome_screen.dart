@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../billing/billing_service.dart';
 import '../core/app_version.dart';
 import '../core/brand.dart';
 import '../core/design_tokens.dart';
@@ -50,7 +51,11 @@ const _gradLogoText = LinearGradient(
 // ─────────────────────────────────────────────────────────────────────────────
 
 class WelcomeScreen extends StatefulWidget {
-  const WelcomeScreen({super.key});
+  /// Where the hosted card's price comes from. Defaults to the server's public
+  /// plan catalogue; tests pass a fake.
+  final Future<List<PlanInfo>> Function()? loadPlans;
+
+  const WelcomeScreen({super.key, this.loadPlans});
 
   @override
   State<WelcomeScreen> createState() => _WelcomeScreenState();
@@ -83,7 +88,8 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
                 _FeaturesSection(sectionKey: _featKey),
                 _HowItWorksSection(sectionKey: _howKey),
                 const _ShowcaseSection(),
-                _SelfHostSection(sectionKey: _hostKey),
+                _SelfHostSection(
+                    sectionKey: _hostKey, loadPlans: widget.loadPlans),
                 const _Footer(),
               ],
             ),
@@ -1419,12 +1425,43 @@ class _PanelRow extends StatelessWidget {
 
 // ── Self-host / pricing section ───────────────────────────────────────────────
 
-class _SelfHostSection extends StatelessWidget {
+/// The price the hosted card quotes: the cheapest plan this server really sells,
+/// or null when it sells none (self-hosted, or an older server).
+///
+/// The catalogue arrives weakest first, which is also cheapest first. Hard-coding
+/// a price here once showed "€4 / month", which matched no plan (#432).
+String? hostedPriceLabel(List<PlanInfo> plans) {
+  for (final plan in plans) {
+    if (plan.purchasable && plan.priceLabel.isNotEmpty) return plan.priceLabel;
+  }
+  return null;
+}
+
+class _SelfHostSection extends StatefulWidget {
   final GlobalKey sectionKey;
-  const _SelfHostSection({required this.sectionKey});
+  final Future<List<PlanInfo>> Function()? loadPlans;
+  const _SelfHostSection({required this.sectionKey, this.loadPlans});
+
+  @override
+  State<_SelfHostSection> createState() => _SelfHostSectionState();
+}
+
+class _SelfHostSectionState extends State<_SelfHostSection> {
+  late final Future<String?> _price = _loadPrice();
+
+  Future<String?> _loadPrice() async {
+    try {
+      final load = widget.loadPlans ?? BillingService().plans;
+      return hostedPriceLabel(await load());
+    } catch (_) {
+      // No price is better than a made-up one: the card simply omits it.
+      return null;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final sectionKey = widget.sectionKey;
     final theme = Theme.of(context);
     final fg1 = theme.colorScheme.onSurface;
     final fg2 = theme.colorScheme.onSurfaceVariant;
@@ -1455,24 +1492,29 @@ class _SelfHostSection extends StatelessWidget {
                   style: _inter(17, FontWeight.w400, fg2, height: 1.5),
                 ),
                 const SizedBox(height: 48),
-                LayoutBuilder(builder: (_, c) {
-                  final wide = c.maxWidth >= 640;
-                  if (wide) {
-                    return Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(child: _TierCard(false, theme)),
-                        const SizedBox(width: 20),
-                        Expanded(child: _TierCard(true, theme)),
-                      ],
-                    );
-                  }
-                  return Column(children: [
-                    _TierCard(false, theme),
-                    const SizedBox(height: 20),
-                    _TierCard(true, theme),
-                  ]);
-                }),
+                FutureBuilder<String?>(
+                  future: _price,
+                  builder: (_, snap) => LayoutBuilder(builder: (_, c) {
+                    final price = snap.data;
+                    final wide = c.maxWidth >= 640;
+                    if (wide) {
+                      return Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(child: _TierCard(false, theme)),
+                          const SizedBox(width: 20),
+                          Expanded(
+                              child: _TierCard(true, theme, price: price)),
+                        ],
+                      );
+                    }
+                    return Column(children: [
+                      _TierCard(false, theme),
+                      const SizedBox(height: 20),
+                      _TierCard(true, theme, price: price),
+                    ]);
+                  }),
+                ),
               ],
             ),
           ),
@@ -1485,7 +1527,11 @@ class _SelfHostSection extends StatelessWidget {
 class _TierCard extends StatelessWidget {
   final bool featured;
   final ThemeData theme;
-  const _TierCard(this.featured, this.theme);
+
+  /// Hosted card only: the cheapest plan's label, e.g. "€0.99 / month". Null
+  /// hides the price line rather than inventing one.
+  final String? price;
+  const _TierCard(this.featured, this.theme, {this.price});
 
   @override
   Widget build(BuildContext context) {
@@ -1502,9 +1548,10 @@ class _TierCard extends StatelessWidget {
     ];
     // Only what the hosted service really provides (issue #432): there are no
     // per-user backups, custom share domains, background Strava sync or
-    // support tiers, so the card must not promise them.
+    // support tiers, and the hosted plans have limits that self-hosting does
+    // not — so no "Everything in self-hosted" either.
     final cloudFeatures = [
-      'Everything in self-hosted',
+      'Same app, hosted for you',
     ];
 
     return Stack(
@@ -1535,17 +1582,35 @@ class _TierCard extends StatelessWidget {
               Text(featured ? 'Cloud' : 'Self-hosted',
                   style: _inter(20, FontWeight.w700, fg1)),
               const SizedBox(height: 12),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.baseline,
-                textBaseline: TextBaseline.alphabetic,
-                children: [
-                  Text(featured ? '€4' : 'Free',
-                      style: _inter(40, FontWeight.w800, fg1, spacing: -0.03)),
-                  const SizedBox(width: 6),
-                  Text(featured ? '/ month' : '· MIT',
-                      style: _inter(14, FontWeight.w500, fg2)),
-                ],
-              ),
+              if (!featured)
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.baseline,
+                  textBaseline: TextBaseline.alphabetic,
+                  children: [
+                    Text('Free',
+                        style: _inter(40, FontWeight.w800, fg1, spacing: -0.03)),
+                    const SizedBox(width: 6),
+                    Text('· MIT', style: _inter(14, FontWeight.w500, fg2)),
+                  ],
+                )
+              else if (price != null)
+                // "from" sits on its own line so the price gets the card's full
+                // width. The price follows the reader's text size, capped at
+                // 2x: beyond that "€0.99" alone is wider than a phone card and
+                // would break mid-number. Within the cap it wraps only at
+                // spaces (test/auth/welcome_screen_price_layout_test.dart).
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('from', style: _inter(14, FontWeight.w500, fg2)),
+                    MediaQuery.withClampedTextScaling(
+                      maxScaleFactor: 2,
+                      child: Text(price!,
+                          style: _inter(28, FontWeight.w800, fg1,
+                              spacing: -0.03)),
+                    ),
+                  ],
+                ),
               const SizedBox(height: 4),
               Text(
                 featured
