@@ -23,16 +23,78 @@ deployment target, and `deploy.ps1` no longer has a code path that reaches it.
 | Provider | OVH, VPS-1 2027 range |
 | Specs | 2 vCore, 4 GB RAM, 40 GB NVMe SSD, Strasbourg (FR) datacenter |
 | Image | Debian 12 - Docker (Docker preinstalled) |
-| SSH user | `debian` (OVH default account, sudo + docker group) |
+| SSH user | `<deploy-user>`: a personal account created at setup (§1), in the `docker` group; the same one in `deploy.env` and the webhook unit |
 | Prod directory | `/opt/traxjourney/` (`db/`, `config/`, `data/`, `docker-compose.yml`, `.env`) |
 | Val directory | `/opt/traxjourney-val/` (same layout, own `.env`, own data) |
 | Reverse proxy | Caddy (automatic Let's Encrypt TLS) |
 
 ## 1. VPS hardening
 
-- SSH key auth only: generated a dedicated key locally
-  (`~/.ssh/traxjourney_vps`), copied to `~/.ssh/authorized_keys` for the
-  `debian` user, then in `/etc/ssh/sshd_config`:
+### The deploy user
+
+Deploys don't log in as the image's default account. They use a personal
+account, written `<deploy-user>` here. `deploy.ps1` connects as it
+(`DEPLOY_USER` in `deploy.env`), the validation webhook runs as it (`User=` in
+the installed unit, filled in by §8 step 5), and it holds the GHCR login both of them pull
+with. What it needs:
+
+- **`docker` group.** `deploy.ps1` and the webhook only run `docker compose`
+  and `docker inspect` in `/opt/traxjourney` and `/opt/traxjourney-val`. They
+  never use `sudo`. Membership is root-equivalent, since anyone who can talk to
+  the Docker socket can mount `/`, so treat this key like a root key.
+- **An SSH key, and only a key.** Generate a dedicated key on the dev
+  machine and give it a passphrase: `deploy.ps1` asks for it once per deploy.
+- **`sudo`, for setup only.** The one-time steps in this runbook (packages,
+  Caddy, the webhook unit in §8, `chown` of the app directories) need root.
+  Keep sudo password-protected rather than `NOPASSWD`, so a stolen key alone
+  does not also give passwordless root through sudo. (The `docker` group
+  already amounts to root, so this is hygiene, not containment.)
+- **Ownership of the app directories**, so `docker compose` can read the
+  compose files and `.env` and the bind mounts stay writable:
+  `sudo chown -R <deploy-user>:<deploy-user> /opt/traxjourney /opt/traxjourney-val`.
+
+Created from the image's default sudo account, before key-only login is
+enforced:
+
+```bash
+sudo adduser <deploy-user>                  # sets the password sudo asks for
+sudo usermod -aG docker,sudo <deploy-user>
+sudo install -d -m 700 -o <deploy-user> -g <deploy-user> /home/<deploy-user>/.ssh
+sudo install -m 600 -o <deploy-user> -g <deploy-user> /dev/null /home/<deploy-user>/.ssh/authorized_keys
+# then append the public key (traxjourney_vps.pub) to that authorized_keys
+```
+
+On the dev machine (PowerShell; Windows has no `ssh-copy-id`). This logs in
+with the provider's default account, which on the OVH image has `sudo`, to
+write the key into the new user's `authorized_keys`:
+
+```powershell
+ssh-keygen -t ed25519 -C traxjourney-deploy -f $HOME\.ssh\traxjourney_vps
+$key = (Get-Content $HOME\.ssh\traxjourney_vps.pub -Raw).Trim().Replace("'", "'\''")
+ssh <default-user>@<vps-host> "echo '$key' | sudo tee -a /home/<deploy-user>/.ssh/authorized_keys >/dev/null"
+ssh -i $HOME\.ssh\traxjourney_vps <deploy-user>@<vps-host> "id; docker ps"   # groups include docker
+```
+
+The key travels inside the remote command, not through a pipe: PowerShell
+ends every line it pipes to `ssh` with CRLF, and that carriage return would
+land in `authorized_keys`, where it can break the entry. Keep `-C`: it
+replaces ssh-keygen's default comment, your `USERNAME@COMPUTERNAME`, with plain
+ASCII. For an existing key the `Replace` stops a `'` in the comment (an account
+named O'Brien) from ending the remote `echo '...'` early, so the copy survives
+apostrophes and shell characters in the comment. The key itself is never
+altered, but under Windows PowerShell 5.1 the comment can be: a `"` is dropped
+and non-ASCII characters are garbled.
+
+Then log in as `<deploy-user>` and run `docker login ghcr.io` there with the
+read-only token (below). The login lands in that user's `~/.docker/config.json`,
+which is where both `deploy.ps1`'s pull and the webhook's read it from. Once the
+new login works from a fresh terminal, the default account is no longer needed
+for anything.
+
+### SSH, firewall, registry
+
+- SSH key auth only: the key from above in `<deploy-user>`'s
+  `~/.ssh/authorized_keys`, then in `/etc/ssh/sshd_config`:
   - `PermitRootLogin no` (already default on the OVH image)
   - `PasswordAuthentication no`
   - `systemctl restart sshd` — **always verify the key login works from a
@@ -99,7 +161,7 @@ default (`transport http { keepalive }`). `entrypoint.sh` therefore runs uvicorn
 with `--timeout-keep-alive 300`; its 5 s default made uvicorn close first, and a
 request that Caddy sent on a pooled connection at that same instant failed
 with a 502 (`journalctl -u caddy`: `"msg":"EOF"` or `read: connection reset by
-peer`, on POST/PUT/DELETE � Go's HTTP client retries GETs by itself). If you
+peer`, on POST/PUT/DELETE — Go's HTTP client retries GETs by itself). If you
 ever set `keepalive` explicitly in the Caddyfile, keep it below uvicorn's value;
 `tests/test_entrypoint_keepalive.py` pins the entrypoint side, and
 `docs/repro/keepalive_502/` reproduces the race (issue #400).
@@ -182,7 +244,7 @@ image and only the API runs migrations, so a worker left on an older tag would
 run stale job code against a schema it does not know about.
 
 `deploy.ps1` needs no changes for any of this: it builds/pushes the image and
-then runs `docker compose down && pull && up -d`, which is service-agnostic.
+then runs `docker compose pull` and `up -d`, which is service-agnostic.
 Adding the services to each host's compose file and the keys to its `.env` is
 the whole deployment change.
 
@@ -191,7 +253,8 @@ rebuild — jobs simply run in-process again.
 
 If you scrape `/metrics`, also set `PROMETHEUS_MULTIPROC_DIR` to a directory
 both containers mount. Without it the scrape only sees the API process and
-job-side DB metrics silently go missing (see docs/METRICS.md).
+job-side DB metrics silently go missing (see docs/METRICS.md). The app clears
+that directory itself on a stack start; it needs no cron job or manual `rm`.
 
 ## 4. Data migration (NAS -> VPS)
 
@@ -204,7 +267,7 @@ directory is now `/opt/traxjourney` and the database `traxjourney.db`.*
    throwaway container (safe on a live DB — unlike a raw `cp`, correctly
    handles WAL mode, which the app already runs — see `models/db.py`):
    ```bash
-   ssh -p 4488 Rui@narciso.synology.me "DOCKER=\$(command -v docker 2>/dev/null || ls /var/packages/ContainerManager/target/usr/bin/docker /var/packages/Docker/target/usr/bin/docker /usr/local/bin/docker 2>/dev/null | head -1); \$DOCKER run --rm -v /volume2/docker/viewtrip/db:/db python:3.11-slim python3 -c \"import sqlite3; s=sqlite3.connect('/db/viewtripweb.db'); d=sqlite3.connect('/db/migration_backup.db'); s.backup(d); d.close(); s.close(); print('backup done')\""
+   ssh -p <nas-ssh-port> <nas-user>@<nas-host> "DOCKER=\$(command -v docker 2>/dev/null || ls /var/packages/ContainerManager/target/usr/bin/docker /var/packages/Docker/target/usr/bin/docker /usr/local/bin/docker 2>/dev/null | head -1); \$DOCKER run --rm -v /volume2/docker/viewtrip/db:/db python:3.11-slim python3 -c \"import sqlite3; s=sqlite3.connect('/db/viewtripweb.db'); d=sqlite3.connect('/db/migration_backup.db'); s.backup(d); d.close(); s.close(); print('backup done')\""
    ```
    **Gotcha:** `docker` isn't in `PATH` for non-interactive SSH sessions on
    Synology — same issue `deploy.ps1`'s remote script already works around;
@@ -217,9 +280,9 @@ directory is now `/opt/traxjourney` and the database `traxjourney.db`.*
 3. **Copy DB + data + config from NAS straight to the VPS** (no need to hop
    through a local machine — the VPS has direct SSH reach to the NAS):
    ```bash
-   scp -O -P 4488 Rui@narciso.synology.me:/volume2/docker/viewtrip/db/migration_backup.db /opt/viewtrip/db/viewtripweb.db
-   rsync -avz -e "ssh -p 4488" Rui@narciso.synology.me:/volume2/docker/viewtrip/data/ /opt/viewtrip/data/
-   rsync -avz -e "ssh -p 4488" Rui@narciso.synology.me:/volume2/docker/viewtrip/config/ /opt/viewtrip/config/
+   scp -O -P <nas-ssh-port> <nas-user>@<nas-host>:/volume2/docker/viewtrip/db/migration_backup.db /opt/viewtrip/db/viewtripweb.db
+   rsync -avz -e "ssh -p <nas-ssh-port>" <nas-user>@<nas-host>:/volume2/docker/viewtrip/data/ /opt/viewtrip/data/
+   rsync -avz -e "ssh -p <nas-ssh-port>" <nas-user>@<nas-host>:/volume2/docker/viewtrip/config/ /opt/viewtrip/config/
    ```
    **Gotchas encountered:**
    - `scp` alone failed with `subsystem request failed` — modern OpenSSH
@@ -339,16 +402,32 @@ free space first, it is a full copy of prod's media onto a 40 GB disk.
 ## 6. `deploy.ps1`
 
 `-Target Validation|Prod` (default `Validation`). Both targets SSH to the VPS
-(`164.132.195.154`, user `rui`, key `$HOME\.ssh\traxjourney_vps`) and run
-`docker compose down / pull / up -d`; they differ in directory, image tag and
-whether anything is built locally.
+(the host, user and key from `deploy.env`) and run `docker compose pull`, then
+`docker compose up -d`, then check that the deploy took effect. They differ in
+directory, image tag and whether anything is built locally.
+
+There is no `docker compose down` (issue #439). The pull runs while the old
+containers keep serving, so a failed pull (a GHCR outage, an expired login)
+leaves the environment exactly as it was, and `up -d` recreates only the
+containers whose image or configuration changed; `redis` and `alloy` keep
+running. The deploy prints how long the pull took, which is roughly the
+downtime the old down-first order cost on every deploy, and how long after
+`up -d` the new version first answered.
+
+Everything on the host happens over **one** SSH connection, so a key with a
+passphrase and no agent asks for it once. Windows' OpenSSH cannot share a
+connection (`ControlMaster` is not supported there), so
+`scripts/deploy_verify.py` opens one remote shell and sends every command down
+it: the compose-file check, the pull, `up -d` and every read of the containers.
+A local build is pushed from inside that step too, once the host check has
+passed, so nothing leaves the machine for a host that would not pull it.
 
 | | `Validation` | `Prod` |
 |---|---|---|
-| Directory | `/opt/traxjourney-val` | `/opt/traxjourney` |
+| Directory | `DEPLOY_VAL_DIR` (`/opt/traxjourney-val`) | `DEPLOY_PROD_DIR` (`/opt/traxjourney`) |
 | Image tag | `:validation` | `:latest` |
 | Builds locally | yes (unless `-SkipBuild`) | never |
-| URL | val.traxjourney.com | traxjourney.com |
+| URL | `DEPLOY_VAL_URL` (val.traxjourney.com) | `DEPLOY_PROD_URL` (traxjourney.com) |
 
 ```powershell
 .\deploy.ps1                      # build working tree -> :validation -> val
@@ -358,14 +437,91 @@ whether anything is built locally.
 ```
 
 `-FromMain` builds a pristine export of `origin/main` in a throwaway git
-worktree, so the image is exactly what is on main — never contaminated by local
+worktree, so the image is exactly what is on main, never contaminated by local
 edits or untracked files.
+
+**Uncommitted changes.** A validation build of a working tree with changes to
+tracked files is versioned by `git describe --dirty` (`v0.50.0-3-g3186c1b-dirty`),
+warns and lists the files, and is never pushed under the release tag its
+commit carries. `-Target Prod` refuses to start from such a tree at all: prod
+runs CI's image, but this checkout runs the deploy and its checks. Untracked
+files count in neither case, as with `git describe --dirty`.
+
+The banner at the start shows the version the deploy will serve: the build's
+own version, or for `-SkipBuild` and prod the one CI stamped on the image it
+pulls, not the local HEAD.
 
 Every path that skips the build first checks GitHub Actions for an in-progress
 `docker-build.yml` run and refuses to deploy while one is going, since the tag
 it is about to pull may be stale or only half-pushed.
 
-Note `deploy.ps1` itself is **gitignored** and lives only on the dev machine.
+### Configuration: `deploy.env`
+
+The script is tracked in git; the details of the machine it deploys to are not.
+They live in `deploy.env` next to the script, which is gitignored:
+
+```powershell
+Copy-Item deploy.env.example deploy.env   # then fill in the blanks
+```
+
+| Key | What |
+|---|---|
+| `DEPLOY_HOST`, `DEPLOY_SSH_PORT`, `DEPLOY_USER` | the SSH target: `<vps-host>`, `22`, `<ssh-user>` |
+| `DEPLOY_SSH_KEY` | private key for that user; a leading `~` is your home directory |
+| `DEPLOY_IMAGE` | repository without a tag: `ghcr.io/rui-nar/traxjourney` |
+| `DEPLOY_VAL_DIR`, `DEPLOY_VAL_URL` | validation's compose directory on the host, and its public URL |
+| `DEPLOY_PROD_DIR`, `DEPLOY_PROD_URL` | the same for prod |
+| `MAPBOX_TOKEN` | public token baked into a local web build (same name as the CI secret); `-MapboxToken` overrides it |
+
+It is parsed with the same rules as `.env` (`Load-DotEnv.ps1`), but into a table
+rather than `$env:`, so a variable left over in your shell can't stand in for a
+missing value. A missing key stops the script, naming the key, before anything
+is built or deployed. `MAPBOX_TOKEN` is only needed when the script builds the
+web client.
+
+A checkout that still has the old, untracked `deploy.ps1` must move it aside
+before `git pull` can bring in the tracked one; the steps, and which old
+variable goes to which key, are in `docs/RENAME_TRAXJOURNEY_RUNBOOK.md` step B4.
+
+### What "Deployed and verified" checks
+
+`docker compose pull` pulls whatever `image:` the **host's** compose file names,
+not the image the script means to deploy, and a container that starts and then
+crash-loops still counts as up. So `scripts/deploy_verify.py` checks the deploy
+(issue #423). When any check fails the script exits non-zero with a red `ERROR`
+and one `FAIL:` line per problem:
+
+| Check | When | Catches |
+|---|---|---|
+| The host's compose file names `DEPLOY_IMAGE:<tag>` (`docker compose config --images`), and no service is on another tag or another image from the same registry owner | before anything is pushed or changed on the host | a host compose file not updated after an image rename; a val host on `:latest` |
+| Each container created from that image runs the image ID the tag was just pulled as (`docker inspect`) | after `up -d` | a container left on the previous image |
+| Every service has a container that is running, is healthy if it has a healthcheck, and has not restarted since the deploy began (`docker compose ps --format json`; restart counts from `docker inspect`, less the count each kept container had before) | at least 15 s after `up -d`; a healthcheck still `starting` gets 60 s more | crash loops, including a container caught running between two crashes; exited or unhealthy containers; a service with no container |
+| `<url>/api/version` reports the expected version | polled for up to 120 s after `up -d` | the old server still answering; a stale `:validation` or `:latest` |
+| The container checks above, once more | 30 s after everything else passed | a container that crashes a little after start: a first job, a first scheduled run |
+
+The expected version is the one the image was stamped with:
+
+- **Local build:** `git describe --tags --long`. The script passes it to both
+  the web build and `docker build --build-arg APP_VERSION`. Before, a locally
+  built server reported `dev`.
+- **`-SkipBuild`:** `validation-<sha>`, where `<sha>` is the commit the
+  `validation` tag points at after a forced tag fetch. CI's short sha can be
+  shorter than your clone's, so it is compared as a prefix.
+- **`-Target Prod`:** the newest `vX.Y.Z` tag, which CI stamps `:latest` with.
+
+If the version can't be worked out (no tags at all), the script says so before
+deploying and only requires the served version to change from the one served
+before the deploy. The summary then warns that the exact version was not
+checked.
+
+A failed check leaves the containers as they are, for inspection. The red
+`ERROR` line says whether the deploy stopped before the running containers
+were touched (host check, push or pull failed) or after `up -d`. The summary
+lists the expected, previous and served versions, the registry digest and image
+ID that were pulled, and every container's state.
+
+The checks need Python 3 on the dev machine: the repository's `.venv` if it
+exists, otherwise `python` on `PATH`.
 
 ### The other way to cut `:validation`
 
@@ -379,7 +535,8 @@ git push origin validation --force
 
 `docker-build.yml` builds `ghcr.io/rui-nar/traxjourney:validation` on
 `ubuntu-latest`. It is the **same tag** `deploy.ps1` pushes, so the val host
-pulls it either way and needs no reconfiguration. Deploy it with
+pulls it either way and needs no reconfiguration. Once §8's webhook is
+installed, the VPS deploys it by itself. Otherwise deploy it with
 `.\deploy.ps1 -SkipBuild`, or directly on the VPS:
 
 ```bash
@@ -395,9 +552,11 @@ baked a broken `#!/bin/sh\r` shebang into the image and crash-looped the worker
 containers. `.gitattributes` pins shell scripts to LF, but only on a fresh
 checkout of the affected path, not retroactively.
 
-**One consequence of the shared tag:** two producers write `:validation`, and
-the host cannot tell which one it is running. If a local build and a tag push
-race, last writer wins. Prefer the tag route when it matters who built it.
+**One consequence of the shared tag:** two producers write `:validation`. If a
+local build and a tag push race, last writer wins. The version check notices,
+because a local build expects its `git describe` version and CI's image reports
+`validation-<sha>`, and fails the deploy; it cannot undo the overwrite. Prefer
+the tag route when it matters who built it.
 
 ## 7. Observability: Loki/Prometheus/Grafana on the NAS (issue #205)
 
@@ -474,7 +633,7 @@ this 40GB host). This stays even with Loki live: if the NAS or the tunnel
 is down during an incident, `docker compose logs` here must still answer
 "what just happened" on its own.
 
-## 8. Auto-deploy validation on new image (issue #205)
+## 8. Auto-deploy validation on new image (issues #205, #422)
 
 `deploy.ps1` needs a human at a Windows dev machine to redeploy validation.
 `vps/webhook/` closes that loop: `docker-build.yml` finishing successfully
@@ -486,97 +645,222 @@ prod on every release would remove `deploy.ps1 -Target Prod`'s existing
 manual gate, which is a bigger safety call than "keep val fresh" and not
 something to fold in as a side effect of this.
 
-**Not verified against a live `webhook` binary from the session that wrote
-this** — `vps/webhook/` is a documented starting point, same caveat as the
-Alloy/Loki configs above.
+**Status: not live yet.** Until issue #422, GitHub had no webhook configured, so
+this never ran. What is verified: the rules and flags against the
+[webhook 2.8.0 source](https://github.com/adnanh/webhook/tree/2.8.0) and its
+[docs](https://github.com/adnanh/webhook/tree/master/docs), the payload fields
+against [GitHub's `workflow_run` docs](https://docs.github.com/en/webhooks/webhook-events-and-payloads#workflow_run)
+and this repository's real runs, and the script against a fake `docker` and
+`curl` (`tests/test_validation_webhook.py`). The live install stays unverified
+until step 10 below passes. When it does, replace this paragraph with the date.
 
-### Install `webhook`
+**Do it after the rename cut-over** (`docs/RENAME_TRAXJOURNEY_RUNBOOK.md`).
+`hooks.yaml` only accepts runs of `rui-nar/TraxJourney`, and GitHub sends the
+repository's current name, so installed earlier it never fires.
+
+### How a build reaches val
+
+1. The build finishes. GitHub POSTs a `workflow_run` delivery to
+   `https://val.traxjourney.com/gh-webhook/hooks/deploy-validation`. It also
+   does so when a run is `requested` and `in_progress`, and for every build,
+   `v*` releases and failed runs included.
+2. Caddy strips `/gh-webhook` and proxies to `webhook` on `127.0.0.1:9999`.
+3. `webhook` runs `deploy-validation.sh <head_sha>` only if every rule in
+   `hooks.yaml` holds: a valid `X-Hub-Signature-256`, event `workflow_run`,
+   `action` `completed`, conclusion `success`, `head_branch` `validation` (a
+   tag push puts the tag name there), repository `rui-nar/TraxJourney`, and
+   workflow "Build and publish Docker image". It answers GitHub straight away
+   and runs the script in the background: GitHub fails any delivery not
+   answered within 10 seconds.
+4. The script takes a lock (a second delivery waits for the first), runs
+   `docker compose pull` and `up -d`, then polls
+   `http://127.0.0.1:8001/api/version` for up to 5 minutes until it reports
+   `validation-<short sha>` of the commit that was built. It writes a
+   `SUCCESS` or `FAILED` line to `/opt/traxjourney-val/webhook/deploy.log` and
+   exits non-zero on failure.
+
+### Checklist
+
+Run the VPS steps as `<deploy-user>`, the user `deploy.ps1` connects as (§1).
+Replace `<deploy-user>` everywhere below with its name. The tracked
+`webhook.service` says `User=<deploy-user>` too; step 5 writes the name of the
+user running it into the installed copy.
+
+**1. [VPS] Check the deploy user can run the val stack.**
 
 ```bash
-sudo apt install webhook   # Debian's own repo; check `webhook -version` after
+id <deploy-user>                                        # groups must include docker
+sudo -u <deploy-user> -H docker compose -f /opt/traxjourney-val/docker-compose.yml ps
+sudo -u <deploy-user> -H docker pull ghcr.io/rui-nar/traxjourney:validation   # GHCR login works
 ```
 
-If it's missing or too old there, grab a static binary from
-[adnanh/webhook's releases](https://github.com/adnanh/webhook/releases)
-instead and drop it at `/usr/bin/webhook`.
+The service runs as this user, with its groups and its `~/.docker/config.json`
+(the GHCR login), so these must work before anything else.
 
-### Configure the hook
+**2. [VPS] Install `webhook` 2.8.0 or later.**
 
 ```bash
-mkdir -p /opt/traxjourney-val/webhook
-cp vps/webhook/*.sh vps/webhook/hooks.yaml.example /opt/traxjourney-val/webhook/
+sudo apt update && sudo apt install -y webhook
+webhook -version                                        # webhook version 2.8.0
+```
+
+Debian 12 and 13 both ship 2.8.0. Releases before 2.8.0 do not know
+`payload-hmac-sha256` and silently never trigger. The package also installs
+its own `webhook.service`, which does nothing without `/etc/webhook.conf`; the
+unit from step 5, in `/etc/systemd/system`, replaces it.
+
+**3. [VPS] Copy the files.**
+
+```bash
+sudo install -d -o <deploy-user> -g <deploy-user> -m 755 /opt/traxjourney-val/webhook
 cd /opt/traxjourney-val/webhook
-mv hooks.yaml.example hooks.yaml
-openssl rand -hex 32   # generate a secret, paste it into hooks.yaml AND
-                        # into GitHub's webhook config below — same value
+for f in deploy-validation.sh hooks.yaml.example webhook.service; do
+  curl -fsSLo "$f" "https://raw.githubusercontent.com/rui-nar/TraxJourney/main/vps/webhook/$f"
+done
+chmod 755 deploy-validation.sh
 ```
 
-`hooks.yaml` is gitignored (the secret lives inline — `webhook` has no
-env-var interpolation in its config), same pattern as `docker-compose.yml`
-and `config/config.json` elsewhere in this repo.
-
-### systemd unit
+**4. [VPS] Create `hooks.yaml` with a new secret.**
 
 ```bash
-sudo cp /opt/traxjourney-val/webhook/webhook.service /etc/systemd/system/
+cd /opt/traxjourney-val/webhook
+SECRET=$(openssl rand -hex 32)
+(umask 077; sed "s/secret: \"\"/secret: \"$SECRET\"/" hooks.yaml.example > hooks.yaml)
+grep -c "secret: \"$SECRET\"" hooks.yaml                # must print 1
+ls -l hooks.yaml                                        # -rw------- <deploy-user>
+echo "$SECRET"                                          # for step 7
+```
+
+`hooks.yaml` holds the secret, so only `<deploy-user>` can read it, and it is gitignored
+in the repo. The example ships with an empty secret on purpose: `webhook`
+refuses to check a signature against an empty secret, so a copy nobody filled
+in rejects every delivery instead of accepting a key anyone can read on GitHub.
+
+**5. [VPS] Install and start the unit.**
+
+```bash
+sed "s/^User=<deploy-user>$/User=$(id -un)/" /opt/traxjourney-val/webhook/webhook.service | sudo tee /etc/systemd/system/webhook.service >/dev/null
+grep '^User=' /etc/systemd/system/webhook.service       # User=<your deploy user's name>
 sudo systemctl daemon-reload
 sudo systemctl enable --now webhook
-sudo systemctl status webhook   # confirm it's listening on 127.0.0.1:9999
+systemctl status webhook --no-pager
+journalctl -u webhook -n 20 --no-pager    # "loaded: deploy-validation" and
+                                          # "serving hooks on http://127.0.0.1:9999/hooks/{id}"
+ss -ltn | grep 9999                       # 127.0.0.1:9999 only, never 0.0.0.0
+curl -s -X POST http://127.0.0.1:9999/hooks/deploy-validation \
+  -H 'Content-Type: application/json' -d '{}'; echo     # Hook rules were not satisfied.
 ```
 
-### Caddy routing
+`Hook not found.` from that `curl` means `hooks.yaml` did not load; the journal
+says why.
 
-Loopback-bound (`127.0.0.1:9999`), same discipline as everything else in
-§1 — add a `handle_path` block to the existing `traxjourney.com` site
-(order matters: this must come before the catch-all `reverse_proxy
-127.0.0.1:8000`, same as the existing `/metrics` block):
+**6. [VPS] Route the hook through Caddy.**
+
+In `/etc/caddy/Caddyfile`, give the `val.traxjourney.com` site from §2 this
+shape, keeping anything else already in it:
 
 ```
-traxjourney.com {
-    handle /metrics { respond 403 }
+val.traxjourney.com {
     handle_path /gh-webhook/* {
         reverse_proxy 127.0.0.1:9999
     }
-    reverse_proxy 127.0.0.1:8000
+    handle {
+        reverse_proxy 127.0.0.1:8001
+    }
 }
 ```
 
-`handle_path` (not `handle`) strips the `/gh-webhook` prefix before
-forwarding — `webhook`'s own server serves each hook at `/hooks/<id>`
-relative to its own root (its default `-urlprefix`), so the public URL
-ends up `https://traxjourney.com/gh-webhook/hooks/deploy-validation`.
-`caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy`
-after editing, per §2.
+```bash
+caddy validate --config /etc/caddy/Caddyfile && sudo systemctl reload caddy
+curl -s -X POST https://val.traxjourney.com/gh-webhook/hooks/deploy-validation \
+  -H 'Content-Type: application/json' -d '{}'; echo     # Hook rules were not satisfied.
+```
 
-### GitHub-side webhook
+`handle_path` strips `/gh-webhook`, so `webhook` sees its own
+`/hooks/deploy-validation`. `handle` and `handle_path` blocks are mutually
+exclusive and the path-matched one is tried first, so neither the app's
+`/api/*` nor its SPA fallback can take the hook's path. The route is on the
+val site on purpose: the prod site never exposes it.
 
-Repo → Settings → Webhooks → Add webhook:
+**7. [GitHub] Add the webhook.**
+
+`rui-nar/TraxJourney` → Settings → Webhooks → Add webhook:
 
 | Field | Value |
 |---|---|
-| Payload URL | `https://traxjourney.com/gh-webhook/hooks/deploy-validation` |
+| Payload URL | `https://val.traxjourney.com/gh-webhook/hooks/deploy-validation` |
 | Content type | `application/json` |
-| Secret | same value as `hooks.yaml`'s `secret` |
-| Events | "Let me select individual events" → **Workflow runs** only |
-| Active | checked |
+| Secret | the value from step 4 |
+| SSL verification | Enable SSL verification |
+| Which events | "Let me select individual events" → **Workflow runs** only (untick Pushes) |
+| Active | ticked |
 
-No changes needed to `docker-build.yml` itself — repo webhooks subscribe to
-workflow-run completions independently of the workflow's own
-`permissions:` block.
+No change to `docker-build.yml` is needed: repository webhooks receive
+workflow-run events regardless of the workflow's `permissions:` block.
 
-### Verify
+**8. [GitHub] Check the ping.**
 
-Force-push the `validation` tag (see §6's "other way to cut `:validation`")
-and watch:
+Adding the webhook sends a `ping`. Settings → Webhooks → the webhook → Recent
+Deliveries → the `ping` delivery → Response: **200** with body
+`Hook rules were not satisfied.` That proves the route and the secret (the
+signature is checked first) and that a ping does not deploy. **Redeliver** it
+once and expect the same.
+
+**9. [VPS] Watch.**
 
 ```bash
-tail -f /opt/traxjourney-val/deploy.log
+tail -f /opt/traxjourney-val/webhook/deploy.log
+journalctl -u webhook -f
 ```
 
-`deploy-validation.sh` logs each attempt (triggered/succeeded/failed) with
-a UTC timestamp, and is `flock`-guarded so a retried GitHub delivery for
-the same build can't run a second `pull`/`up -d` concurrently against the
-same compose project.
+**10. [Workstation → GitHub → VPS] End-to-end check.**
+
+```bash
+git fetch origin
+git tag -f validation origin/main
+git push origin validation --force
+git rev-parse --short origin/main          # the sha to expect
+```
+
+- Actions: "Build and publish Docker image" for `validation` succeeds.
+- Recent Deliveries: three `workflow_run` deliveries. `requested` and
+  `in_progress` answer `Hook rules were not satisfied.`; `completed` answers
+  `Deploying validation...`.
+- `deploy.log`: `delivery for <sha> received`, the pull and up output, then
+  `SUCCESS <short sha>: http://127.0.0.1:8001/api/version reports validation-<short sha>`.
+- `curl -s https://val.traxjourney.com/api/version` returns the same version.
+- Redeliver the `completed` delivery: it deploys again (nothing to pull) and
+  logs `SUCCESS` again.
+
+Then replace the status paragraph at the top of this section with the date.
+
+### Pausing it
+
+```bash
+sudo systemctl stop webhook       # resume: sudo systemctl start webhook
+```
+
+While it is stopped, deliveries fail with a 502 and nothing deploys. Redeliver
+the last `completed` delivery after starting it again if val should catch up.
+The rename runbook's D1 does this during a cut-over. To stop GitHub sending
+anything, untick **Active** on the webhook instead.
+
+### Troubleshooting
+
+Recent Deliveries shows each response's status and body:
+
+| Response | Meaning |
+|---|---|
+| 502 | Caddy cannot reach `127.0.0.1:9999`: `systemctl status webhook`. |
+| 404 `Hook not found.` | `hooks.yaml` did not load (`journalctl -u webhook`: `couldn't load hooks from file!`), or the URL path is wrong. |
+| 500 `Error occurred while evaluating hook rules.` | Signature mismatch: the GitHub secret and `hooks.yaml`'s differ, or `hooks.yaml` still has the empty secret. `webhook` answers a bad signature with 500, not 403. |
+| 200 `Hook rules were not satisfied.` | The signature is fine and a field did not match. Expected for `ping`, `requested`, `in_progress`, failed builds and `v*` builds. On a successful `completed` validation run, compare the payload with the rules: `repository.full_name` (still the old name?), the workflow name, and the content type (a form-encoded delivery has none of the fields). |
+| 200 `Deploying validation...` | The script started. The outcome is in `deploy.log` and the journal, not in GitHub. |
+
+`FAILED <short sha>: ... reports 'validation-<other sha>'` in `deploy.log`
+usually means a newer `validation` build was pushed while this one deployed;
+that build's own delivery follows and logs `SUCCESS`. `reports 'no version'`
+means val did not answer within 5 minutes: `docker compose logs traxjourney`.
 
 ## 9. Rail data (issue #345)
 

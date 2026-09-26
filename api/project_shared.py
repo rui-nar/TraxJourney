@@ -1,6 +1,6 @@
 """Shared infra for the api.projects.* route modules — no routes of its own.
 
-Holds the single ``ProjectRepo`` instance, the project-file directory, the
+Holds the single ``ProjectRepo`` instance, the data directory, the
 background-task helpers (stats refresh, share-tile refresh) that are reused
 across the Core/Activities/Item-ordering/Segments route modules, and the
 ``/meta`` payload cache shared by the endpoint and its warmers.
@@ -23,12 +23,6 @@ from src.project.project_repo import ProjectRepo
 _repo = ProjectRepo()
 
 _DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
-
-
-def _projects_dir(user_id: str) -> str:
-    path = os.path.join(_DATA_DIR, "users", user_id, "projects")
-    os.makedirs(path, exist_ok=True)
-    return path
 
 
 def _get_project_row(sess, user_info_id: int, name: str) -> DBProject:

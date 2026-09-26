@@ -140,18 +140,47 @@ Check the package page shows it is linked to `rui-nar/TraxJourney` (the
 Do not delete or change `ghcr.io/rui-nar/viewtripweb`. Its last tags are the
 rollback image (section G). It stops receiving new versions.
 
-### B4. [Workstation] Update the gitignored deploy files
+### B4. [Workstation] Move the deploy settings into `deploy.env`
 
-`deploy.ps1` and the local `docker-compose.yml` in the main checkout are not
-in git and still say `viewtripweb` and `/opt/viewtrip`:
+`deploy.ps1` is tracked in git since #423, and the host details it used to
+hard-code now live in the gitignored `deploy.env`. The main checkout still has
+the old, untracked `deploy.ps1` at the same path, and `git pull` refuses to
+overwrite an untracked file. Move it out of the checkout first, then pull:
 
 ```powershell
-Select-String -Path E:\Dev\ViewTripWeb\deploy.ps1, E:\Dev\ViewTripWeb\docker-compose.yml -Pattern 'viewtrip' -CaseSensitive:$false
+Move-Item E:\Dev\ViewTripWeb\deploy.ps1 $HOME\deploy.ps1.pre-423
+git -C E:\Dev\ViewTripWeb pull
+Copy-Item E:\Dev\ViewTripWeb\deploy.env.example E:\Dev\ViewTripWeb\deploy.env
 ```
 
-Change the image path, the `/opt/...` directories, the repository name and the
-compose service name to the new names. Do not run `deploy.ps1` against a host
-until that host has been cut over (section D).
+Fill in `deploy.env` from the old script's configuration block:
+
+| Old script | `deploy.env` |
+|---|---|
+| `$VPS_HOST` | `DEPLOY_HOST` |
+| `$VPS_SSH_PORT` | `DEPLOY_SSH_PORT` |
+| `$VPS_USER` | `DEPLOY_USER` |
+| `$VPS_KEY` | `DEPLOY_SSH_KEY` |
+| the `-MapboxToken` default | `MAPBOX_TOKEN` |
+
+Leave `DEPLOY_IMAGE`, `DEPLOY_*_DIR` and `DEPLOY_*_URL` as the example has them.
+The old script's `$IMAGE`, `$VPS_BASE` and `$VAL_BASE` are the pre-rename
+names, which is what this runbook replaces.
+
+The local `docker-compose.yml` is still gitignored and still says `viewtripweb`
+and `/opt/viewtrip`:
+
+```powershell
+Select-String -Path E:\Dev\ViewTripWeb\docker-compose.yml -Pattern 'viewtrip' -CaseSensitive:$false
+```
+
+Change its image path and compose service name to the new names.
+
+Do not run `deploy.ps1` against a host until that host has been cut over
+(section D). It would stop anyway: before building or taking anything down, it
+refuses a host whose `docker-compose.yml` does not name
+`ghcr.io/rui-nar/traxjourney`. Delete `$HOME\deploy.ps1.pre-423` once a deploy
+has passed its checks.
 
 ---
 
@@ -457,22 +486,23 @@ diff config/alloy-config.river.pre-rename /tmp/alloy-config.river
 sudo cp /tmp/alloy-config.river config/alloy-config.river
 ```
 
-### D11. [VPS] Update the webhook (validation only)
+### D11. [VPS] Retire the old webhook install (validation only)
+
+Skip this step if `$NEW/webhook` does not exist. Files there predate issue
+#422 and cannot be patched into working order: their `hooks.yaml` does not
+pass the built commit that the new `deploy-validation.sh` requires, and their
+unit runs as `debian` on every interface. GitHub had no webhook for them, so
+there is no secret to keep. Set them aside:
 
 ```bash
-cd "$NEW/webhook"
-for f in deploy-validation.sh webhook.service; do
-  sudo curl -fsSLo "$f" "https://raw.githubusercontent.com/rui-nar/TraxJourney/main/vps/webhook/$f"
-done
-sudo chmod +x deploy-validation.sh
-sudo sed -i 's#/opt/viewtrip-val#/opt/traxjourney-val#g' hooks.yaml   # keeps the secret
-grep -n viewtrip hooks.yaml deploy-validation.sh webhook.service     # must print nothing
-sudo cp webhook.service /etc/systemd/system/webhook.service
-sudo systemctl daemon-reload && sudo systemctl restart webhook
-sudo systemctl status webhook --no-pager
+sudo systemctl disable --now webhook 2>/dev/null || true
+sudo rm -f /etc/systemd/system/webhook.service && sudo systemctl daemon-reload
+sudo mv "$NEW/webhook" "$NEW/webhook.pre-rename"
 ```
 
-Skip this step if the webhook was never installed.
+Install the hook fresh once D13 passes, with `docs/DEPLOYMENT_VPS.md` §8. Not
+before: its `hooks.yaml` only accepts runs of `rui-nar/TraxJourney` (A3), and
+its first checks need the stack from D12 running.
 
 ### D12. [VPS] Pull and start
 
@@ -656,10 +686,10 @@ cut-over is lost by step 3, so decide quickly.
    package may be newer than the database copy.
 6. **[VPS]** `docker compose pull && docker compose up -d`, then check
    `/api/version`.
-7. **[VPS]** Validation only: point the webhook back (`sed` `/opt/traxjourney-val`
-   → `/opt/viewtrip-val` in `hooks.yaml`, `deploy-validation.sh` and
-   `/etc/systemd/system/webhook.service`; `daemon-reload` and restart), or
-   leave it stopped.
+7. **[VPS]** Validation only, if §8's webhook was installed: `sudo systemctl
+   disable --now webhook`. It deploys `/opt/traxjourney-val` from the new
+   image, so it must not run against the old layout; val is deployed by hand
+   until the cut-over is retried.
 8. **[NAS]** Only if both stacks roll back: restore the previous
    `nas/grafana/provisioning` and Tailscale hostname, the reverse of section C.
 

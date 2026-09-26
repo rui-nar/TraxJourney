@@ -52,7 +52,47 @@ def jwt_secret() -> str:
             "`openssl rand -hex 32` and set it as an environment variable "
             "(see .env.example). Note that changing it signs everyone out."
         )
+    if secret != _usable_secret:
+        _check_usable(secret)
     return secret
+
+
+#: The last secret :func:`_check_usable` accepted. jwt_secret() runs on every
+#: authenticated request, so the check is done once per value, not per call.
+_usable_secret: Optional[str] = None
+
+
+def _check_usable(secret: str) -> None:
+    """Refuse a secret PyJWT cannot sign with (issue #453).
+
+    Two shapes pass the checks above yet fail every login and authenticated
+    request with a 500: bytes that are not UTF-8 (Linux hands them over as lone
+    surrogates, which PyJWT cannot encode), and a PEM or SSH key, which PyJWT
+    refuses as an HMAC secret. Signing and verifying one token with it follows
+    PyJWT's own rules rather than a copy of them, and fails at boot instead.
+    """
+    global _usable_secret
+    fix = ("Generate one with `openssl rand -hex 32` and set it as an "
+           "environment variable (see .env.example).")
+    try:
+        secret.encode("utf-8")
+    except UnicodeEncodeError:
+        raise RuntimeError(
+            "JWT_SECRET is not valid UTF-8 text: check the encoding of the file "
+            f"it was set from. {fix}") from None
+    try:
+        probe = jwt.encode({"probe": True}, secret, algorithm=_JWT_ALGORITHM)
+        jwt.decode(probe, secret, algorithms=[_JWT_ALGORITHM])
+    except jwt.InvalidKeyError as exc:
+        # PyJWT's reason names the key's shape, never its value.
+        raise RuntimeError(
+            f"JWT_SECRET cannot sign sessions ({exc}): it must be a random "
+            f"shared secret, not a public or private key. {fix}") from None
+    except Exception as exc:  # noqa: BLE001 — any refusal is a boot failure
+        raise RuntimeError(
+            f"JWT_SECRET cannot be used as a signing key ({type(exc).__name__}). "
+            f"{fix}") from None
+    _usable_secret = secret
 
 
 def create_access_token(
@@ -80,10 +120,20 @@ def create_access_token(
     return jwt.encode(payload, jwt_secret(), algorithm=_JWT_ALGORITHM)
 
 
+def _verify(token: str) -> dict:
+    """The one place that knows how a session JWT is verified."""
+    return jwt.decode(token, jwt_secret(), algorithms=[_JWT_ALGORITHM])
+
+
 def decode_token(token: str) -> dict:
-    """Decode and verify a JWT. Raises HTTPException on failure."""
+    """Decode and verify a JWT. Raises HTTPException on failure.
+
+    For the code path that *rejects* the request on a bad token — it owns the
+    ``invalid JWT rejected`` warning. A caller that only observes the token
+    uses :func:`decode_token_quietly` instead.
+    """
     try:
-        return jwt.decode(token, jwt_secret(), algorithms=[_JWT_ALGORITHM])
+        return _verify(token)
     except jwt.ExpiredSignatureError:
         # Not logged: every issued token expires eventually, so on a running app
         # with several concurrent users this is routine and high-volume, not a
@@ -100,6 +150,27 @@ def decode_token(token: str) -> dict:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
         )
+
+
+def decode_token_quietly(token: str) -> Optional[dict]:
+    """Decode and verify a JWT; None instead of raising or logging on failure.
+
+    For best-effort callers that only *observe* a token and never reject the
+    request on it — the access-log middleware binding user_id
+    (api.middleware._resolve_user_id). The warning :func:`decode_token` emits
+    belongs to the path that actually rejects the request, and would otherwise
+    fire twice for one forged token and once per scrape of ``/metrics``, whose
+    bearer token is not a JWT at all (issue #446).
+    """
+    try:
+        return _verify(token)
+    except jwt.PyJWTError:  # a bad or expired token
+        return None
+    except RuntimeError:
+        # jwt_secret() refusing the key. Boot refuses it first (issue #453);
+        # this only matters if the variable changes under a running process,
+        # and an observer still must not turn that into a 500.
+        return None
 
 
 _bearer = HTTPBearer()

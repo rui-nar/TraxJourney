@@ -165,8 +165,8 @@ def _seed_db(path: Path, data_dir: Path, *, link_trip: bool, scrambled_photos, c
     return project_id, memory_id
 
 
-_CONTENT = {"uuid-a": b"AAA-bytes", "uuid-b": b"BBB-bytes", "uuid-c": b"CCC-bytes"}
-_URL_CONTENT = {"http://x/a": _CONTENT["uuid-a"], "http://x/b": _CONTENT["uuid-b"], "http://x/c": _CONTENT["uuid-c"]}
+_CONTENT = {"00000000-0000-4000-8000-000000000041": b"AAA-bytes", "00000000-0000-4000-8000-000000000042": b"BBB-bytes", "00000000-0000-4000-8000-000000000043": b"CCC-bytes"}
+_URL_CONTENT = {"http://x/a": _CONTENT["00000000-0000-4000-8000-000000000041"], "http://x/b": _CONTENT["00000000-0000-4000-8000-000000000042"], "http://x/c": _CONTENT["00000000-0000-4000-8000-000000000043"]}
 
 
 class _FakeResponse:
@@ -186,7 +186,7 @@ class TestBackfillScriptEndToEnd:
         data_dir = tmp_path / "data"
         # Stored order is scrambled: c, a, b. Correct order is a, b, c.
         _, memory_id = _seed_db(db, data_dir, link_trip=True,
-                                 scrambled_photos=["uuid-c", "uuid-a", "uuid-b"], content=_CONTENT)
+                                 scrambled_photos=["00000000-0000-4000-8000-000000000043", "00000000-0000-4000-8000-000000000041", "00000000-0000-4000-8000-000000000042"], content=_CONTENT)
 
         monkeypatch.setattr(backfill, "PolarstepsClient", _FakeClient)
         _patch_requests_get(monkeypatch)
@@ -197,13 +197,13 @@ class TestBackfillScriptEndToEnd:
         con = sqlite3.connect(str(db))
         photos = json.loads(con.execute("SELECT photos_json FROM memory WHERE id=?", (memory_id,)).fetchone()[0])
         con.close()
-        assert photos == ["uuid-c", "uuid-a", "uuid-b"]  # untouched
+        assert photos == ["00000000-0000-4000-8000-000000000043", "00000000-0000-4000-8000-000000000041", "00000000-0000-4000-8000-000000000042"]  # untouched
 
     def test_apply_writes_the_corrected_order(self, tmp_path, monkeypatch):
         db = tmp_path / "r.db"
         data_dir = tmp_path / "data"
         _, memory_id = _seed_db(db, data_dir, link_trip=True,
-                                 scrambled_photos=["uuid-c", "uuid-a", "uuid-b"], content=_CONTENT)
+                                 scrambled_photos=["00000000-0000-4000-8000-000000000043", "00000000-0000-4000-8000-000000000041", "00000000-0000-4000-8000-000000000042"], content=_CONTENT)
 
         monkeypatch.setattr(backfill, "PolarstepsClient", _FakeClient)
         _patch_requests_get(monkeypatch)
@@ -214,13 +214,13 @@ class TestBackfillScriptEndToEnd:
         con = sqlite3.connect(str(db))
         photos = json.loads(con.execute("SELECT photos_json FROM memory WHERE id=?", (memory_id,)).fetchone()[0])
         con.close()
-        assert photos == ["uuid-a", "uuid-b", "uuid-c"]
+        assert photos == ["00000000-0000-4000-8000-000000000041", "00000000-0000-4000-8000-000000000042", "00000000-0000-4000-8000-000000000043"]
 
     def test_project_without_linked_trip_or_override_is_skipped(self, tmp_path, monkeypatch):
         db = tmp_path / "r.db"
         data_dir = tmp_path / "data"
         _, memory_id = _seed_db(db, data_dir, link_trip=False,
-                                 scrambled_photos=["uuid-c", "uuid-a", "uuid-b"], content=_CONTENT)
+                                 scrambled_photos=["00000000-0000-4000-8000-000000000043", "00000000-0000-4000-8000-000000000041", "00000000-0000-4000-8000-000000000042"], content=_CONTENT)
 
         monkeypatch.setattr(backfill, "PolarstepsClient", _FakeClient)
         _patch_requests_get(monkeypatch)
@@ -231,13 +231,13 @@ class TestBackfillScriptEndToEnd:
         con = sqlite3.connect(str(db))
         photos = json.loads(con.execute("SELECT photos_json FROM memory WHERE id=?", (memory_id,)).fetchone()[0])
         con.close()
-        assert photos == ["uuid-c", "uuid-a", "uuid-b"]  # untouched, no trip to check against
+        assert photos == ["00000000-0000-4000-8000-000000000043", "00000000-0000-4000-8000-000000000041", "00000000-0000-4000-8000-000000000042"]  # untouched, no trip to check against
 
     def test_project_trip_override_resolves_an_unlinked_project(self, tmp_path, monkeypatch):
         db = tmp_path / "r.db"
         data_dir = tmp_path / "data"
         project_id, memory_id = _seed_db(db, data_dir, link_trip=False,
-                                          scrambled_photos=["uuid-c", "uuid-a", "uuid-b"], content=_CONTENT)
+                                          scrambled_photos=["00000000-0000-4000-8000-000000000043", "00000000-0000-4000-8000-000000000041", "00000000-0000-4000-8000-000000000042"], content=_CONTENT)
 
         monkeypatch.setattr(backfill, "PolarstepsClient", _FakeClient)
         _patch_requests_get(monkeypatch)
@@ -252,4 +252,4 @@ class TestBackfillScriptEndToEnd:
         con = sqlite3.connect(str(db))
         photos = json.loads(con.execute("SELECT photos_json FROM memory WHERE id=?", (memory_id,)).fetchone()[0])
         con.close()
-        assert photos == ["uuid-a", "uuid-b", "uuid-c"]
+        assert photos == ["00000000-0000-4000-8000-000000000041", "00000000-0000-4000-8000-000000000042", "00000000-0000-4000-8000-000000000043"]

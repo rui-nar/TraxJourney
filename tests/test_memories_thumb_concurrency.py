@@ -56,7 +56,7 @@ def env(monkeypatch, tmp_path):
         sess.refresh(project)
         project_id = project.id
 
-        photo_uuid = "aaa-1"
+        photo_uuid = "00000000-0000-4000-8000-000000000021"
         memory = DBMemory(
             project_id=project_id,
             date="2025-06-01",

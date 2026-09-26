@@ -116,7 +116,7 @@ def _other_users_project(engine, other_user_id) -> int:
 class TestMemoryPhotoReplace:
     def test_happy_path_preserves_index_and_regenerates_files(self, env, tmp_path):
         client, user_id, project_id, engine, _ = env
-        old_a, old_b, old_c = "aaa-1", "bbb-2", "ccc-3"
+        old_a, old_b, old_c = "00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002", "00000000-0000-4000-8000-000000000003"
         memory_id = _insert_memory(engine, project_id, [old_a, old_b, old_c])
 
         photo_dir = tmp_path / "users" / str(user_id) / "memories" / str(memory_id)
@@ -187,7 +187,7 @@ class TestMemoryPhotoReplace:
 class TestJournalPhotoReplace:
     def test_happy_path_preserves_index_and_regenerates_files(self, env, tmp_path):
         client, user_id, project_id, engine, _ = env
-        old_a, old_b = "jjj-1", "kkk-2"
+        old_a, old_b = "00000000-0000-4000-8000-000000000004", "00000000-0000-4000-8000-000000000005"
         journal_id = _insert_journal(engine, project_id, [old_a, old_b])
 
         photo_dir = tmp_path / "users" / str(user_id) / "journal" / str(journal_id)

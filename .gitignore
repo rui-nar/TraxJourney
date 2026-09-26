@@ -61,7 +61,8 @@ scripts/perf_audit/
 web_client/
 
 # Deployment scripts and compose — contain credentials, not for version control
-deploy.ps1
+# (deploy.ps1 itself is tracked; its host details live in deploy.env, issue #423)
+deploy.env
 docker-compose.yml
 dev.bat
 dev_client.bat

@@ -58,7 +58,7 @@ def test_failed_fetch_leaves_entry_unchanged_and_logs(journal_db, monkeypatch, c
     def _raise(*args, **kwargs):
         raise ConnectionError("boom")
 
-    monkeypatch.setattr("requests.get", _raise)
+    monkeypatch.setattr(journal_mod, "fetch_bytes", _raise)
 
     with caplog.at_level(logging.WARNING, logger="api.journal"):
         journal_mod._download_photo_from_url(

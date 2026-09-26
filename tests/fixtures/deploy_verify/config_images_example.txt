@@ -1,0 +1,5 @@
+ghcr.io/rui-nar/traxjourney:latest
+ghcr.io/rui-nar/traxjourney:latest
+ghcr.io/rui-nar/traxjourney:latest
+redis:7-alpine
+grafana/alloy:latest

@@ -22,11 +22,12 @@ through ``normalise_path`` and statements through ``_operation_of`` first.
 """
 from __future__ import annotations
 
+import glob
 import os
 import re
 import time
 from contextlib import contextmanager
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 import sqlalchemy.exc
 from apscheduler.events import (
@@ -35,13 +36,187 @@ from apscheduler.events import (
     EVENT_JOB_MISSED,
     EVENT_JOB_SUBMITTED,
 )
-from prometheus_client import REGISTRY, Counter, Gauge, Histogram
+from prometheus_client import REGISTRY, CollectorRegistry, Counter, Gauge, Histogram, values
+from prometheus_client.core import GaugeMetricFamily
 from prometheus_fastapi_instrumentator import Instrumentator
 from sqlalchemy import event
 
 from src.utils.logging import get_logger
+from src.utils.metrics_multiproc import (
+    claim_multiproc_dir,
+    multiproc_dir,
+    process_identifier,
+)
 
 _log = get_logger(__name__)
+
+# ── Multiprocess mode (issue #437) ────────────────────────────────────────────
+# Must run before the first metric below is built: unlabelled metrics create
+# their value, and so their file, at construction. prometheus_client picked its
+# value class when it was imported, from the variable's mere presence.
+
+_MULTIPROC_DIR = multiproc_dir()
+if _MULTIPROC_DIR:
+    # Held open for the life of the process; see claim_multiproc_dir.
+    _MULTIPROC_LOCK_FD = claim_multiproc_dir(_MULTIPROC_DIR)
+    values.ValueClass = values.MultiProcessValue(process_identifier)
+else:
+    # Set but empty (``.env.example``'s default) must mean off, as it does for
+    # /metrics. Otherwise every process, one per RQ job, writes its files into
+    # the working directory and nothing ever reads or clears them.
+    values.ValueClass = values.MutexValue
+
+
+class ScrapeTimeGauge:
+    """A gauge computed when scraped, by the process serving ``/metrics``.
+
+    For values that exist only as live state of that process (its DB pool, its
+    Strava limiter) or can be read by any process at any time (the DB file
+    size). A plain ``Gauge`` with ``set_function`` works in single-process
+    mode but not with ``PROMETHEUS_MULTIPROC_DIR`` (issue #455): creating the
+    gauge, or a child with ``.labels()``, writes a 0 into a per-process file,
+    ``set_function`` never reaches that file, and ``/metrics`` then exports the
+    0, once per process, with a ``pid`` label. This writes no file: it is a
+    collector, registered on the default registry and added to the
+    multiprocess one by :func:`multiprocess_registry`.
+
+    Mirrors the ``Gauge`` calls the call sites use: ``.set_function(fn)`` and
+    ``.labels(...).set_function(fn)``.
+    """
+
+    def __init__(self, name: str, documentation: str, labelnames=()):
+        self._name = name
+        self._documentation = documentation
+        self._labelnames = tuple(labelnames)
+        self._functions: dict[tuple[str, ...], Callable[[], float]] = {}
+        REGISTRY.register(self)
+
+    def labels(self, *labelvalues) -> "_ScrapeTimeChild":
+        if len(labelvalues) != len(self._labelnames):
+            raise ValueError(f"{self._name} takes labels {self._labelnames}")
+        return _ScrapeTimeChild(self, tuple(str(v) for v in labelvalues))
+
+    def set_function(self, fn: Callable[[], float]) -> None:
+        if self._labelnames:
+            raise ValueError(f"{self._name} is labelled; use .labels() first")
+        self._functions[()] = fn
+
+    def _family(self) -> GaugeMetricFamily:
+        return GaugeMetricFamily(self._name, self._documentation, labels=self._labelnames)
+
+    def describe(self):
+        return [self._family()]
+
+    def collect(self):
+        family = self._family()
+        for labelvalues, fn in list(self._functions.items()):
+            family.add_metric(list(labelvalues), fn())
+        return [family]
+
+
+class _ScrapeTimeChild:
+    __slots__ = ("_parent", "_labelvalues")
+
+    def __init__(self, parent: ScrapeTimeGauge, labelvalues: tuple[str, ...]):
+        self._parent = parent
+        self._labelvalues = labelvalues
+
+    def set_function(self, fn: Callable[[], float]) -> None:
+        self._parent._functions[self._labelvalues] = fn
+
+
+SCRAPE_TIME_GAUGES: list[ScrapeTimeGauge] = []
+
+
+def _scrape_time_gauge(name: str, documentation: str, labelnames=()) -> ScrapeTimeGauge:
+    gauge = ScrapeTimeGauge(name, documentation, labelnames)
+    SCRAPE_TIME_GAUGES.append(gauge)
+    return gauge
+
+
+def _gauge_modes_by_name() -> dict[str, str]:
+    """{gauge name: multiprocess mode} for every gauge this code defines."""
+    return {
+        collector._name: collector._multiprocess_mode
+        for collector in set(REGISTRY._names_to_collectors.values())
+        if isinstance(collector, Gauge)
+    }
+
+
+def _read_current_files(files: list[str]):
+    """Merge the per-process files, reading each gauge only from files in the
+    mode this code defines for it.
+
+    A gauge file in any other mode was written by an older version: an
+    in-place upgrade (``pull && up -d``, no ``down``) keeps the old
+    containers' files while live writers stop the directory from being
+    cleared. prometheus_client takes a gauge's mode from whichever file it
+    reads last, so an old ``gauge_all_*`` read after the new ``gauge_max_*``
+    brings back one frozen series per dead process. No live process of this
+    code writes a gauge in a mode it doesn't define, so skipping those hides
+    nothing current; the files go at the next clear. The check is per gauge,
+    not per mode in use, so another gauge still in ``all`` can't let an old
+    ``all`` file through for this one.
+
+    Gauge files are read one mode at a time for that, then merged with
+    everything else. This uses the two steps of prometheus_client's public
+    ``MultiProcessCollector.merge``, ``_read_metrics`` and
+    ``_accumulate_metrics``; the multiprocess tests fail if they change.
+    """
+    from prometheus_client.multiprocess import MultiProcessCollector as MPC
+
+    expected = _gauge_modes_by_name()
+    gauges_by_mode: dict[str, list[str]] = {}
+    others: list[str] = []
+    for path in files:
+        parts = os.path.basename(path).split("_")
+        if parts[0] == "gauge":
+            gauges_by_mode.setdefault(parts[1], []).append(path)
+        else:
+            others.append(path)
+
+    metrics = MPC._read_metrics(others)
+    for mode, mode_files in gauges_by_mode.items():
+        for name, metric in MPC._read_metrics(mode_files).items():
+            if expected.get(name) == mode:
+                metrics[name] = metric
+            elif (name, mode) not in _SKIPPED_GAUGE_FILES:
+                # Once per process: the files stay until the next clear, and
+                # a line per 30 s scrape would drown everything else.
+                _SKIPPED_GAUGE_FILES.add((name, mode))
+                _log.info(
+                    "metrics: skipped %s from gauge files in mode %r (this code "
+                    "defines %r); left by an older version until the next clear",
+                    name, mode, expected.get(name))
+    return MPC._accumulate_metrics(metrics, True)
+
+
+_SKIPPED_GAUGE_FILES: set[tuple[str, str]] = set()
+
+
+def multiprocess_registry(path: str) -> CollectorRegistry:
+    """The registry ``/metrics`` serves with ``PROMETHEUS_MULTIPROC_DIR`` set:
+    the per-process files (see :func:`_read_current_files`), the scrape-time
+    gauges and the process collector, both computed by this, the serving,
+    process: the API, which is what the scrape job ``traxjourney`` means.
+
+    The process collector (``process_resident_memory_bytes`` and friends) lives
+    on the default registry, which multiprocess mode never serves, so it is
+    added here too. The platform and GC collectors aren't: no dashboard reads
+    ``python_*``.
+    """
+    from prometheus_client import ProcessCollector, multiprocess
+
+    class _CurrentFiles(multiprocess.MultiProcessCollector):
+        def collect(self):
+            return _read_current_files(glob.glob(os.path.join(self._path, "*.db")))
+
+    registry = CollectorRegistry()
+    _CurrentFiles(registry, path=path)
+    ProcessCollector(registry=registry)
+    for gauge in SCRAPE_TIME_GAUGES:
+        registry.register(gauge)
+    return registry
 
 # ── Authentication ────────────────────────────────────────────────────────────
 
@@ -79,7 +254,11 @@ EXTERNAL_DURATION = Histogram(
 
 # Strava's quotas belong to the application, and the limiters enforcing them are
 # process-wide (issue #130), which is what makes these worth exporting.
-STRAVA_RATE_LIMIT_USAGE = Gauge(
+# Scrape-time: the limiter lives in the API process, the only one that calls
+# Strava (request handlers and their BackgroundTasks; no queued job does).
+# tests/test_jobs_never_call_strava.py fails if a queued job's code imports the
+# Strava client: a worker's limiter would be invisible to this gauge.
+STRAVA_RATE_LIMIT_USAGE = _scrape_time_gauge(
     "traxjourney_strava_rate_limit_usage",
     "Strava requests made in the current quota window.",
     ["window"],
@@ -89,6 +268,9 @@ STRAVA_RATE_LIMIT_CAPACITY = Gauge(
     "traxjourney_strava_rate_limit_capacity",
     "Strava requests allowed per quota window.",
     ["window"],
+    # The same constant in every process that imports the Strava client: one
+    # series, not one per process (PROMETHEUS_MULTIPROC_DIR, issue #437).
+    multiprocess_mode="max",
 )
 
 STRAVA_THROTTLED = Counter(
@@ -102,19 +284,24 @@ STRAVA_THROTTLED = Counter(
 JOB_RUNS = Counter(
     "traxjourney_job_runs_total",
     "Scheduled job executions by outcome.",
-    ["job", "result"],
+    ["job_name", "result"],
 )
 
 JOB_DURATION = Histogram(
     "traxjourney_job_duration_seconds",
     "Wall-clock duration of scheduled job executions.",
-    ["job"],
+    ["job_name"],
 )
 
 JOB_LAST_SUCCESS = Gauge(
     "traxjourney_job_last_success_timestamp_seconds",
     "Unix timestamp of the last successful run of each scheduled job.",
-    ["job"],
+    ["job_name"],
+    # With PROMETHEUS_MULTIPROC_DIR, the default mode exports one series per
+    # process, and a replaced container's frozen one would trip the "backup
+    # silently stopped" alert. The timestamp only moves forward, so the
+    # largest across processes, live or dead, is the answer (issue #437).
+    multiprocess_mode="max",
 )
 
 # The backfill sweep for prepared geometry (issue #369). A gauge rather than a
@@ -126,6 +313,9 @@ PREPARED_GEOMETRY_BACKLOG = Gauge(
     "traxjourney_prepared_geometry_backlog",
     "Activities with a polyline and no current prepared row, including any that "
     "can never be prepared. Should fall to a small constant and stay there.",
+    # A measurement: the latest one wins, whichever process took it, not one
+    # series per process (PROMETHEUS_MULTIPROC_DIR, issue #437).
+    multiprocess_mode="mostrecent",
 )
 
 PREPARED_GEOMETRY_OUTCOMES = Counter(
@@ -159,23 +349,25 @@ DB_ERRORS = Counter(
     ["kind"],
 )
 
-DB_POOL_CONNECTIONS = Gauge(
+# Scrape-time (see ScrapeTimeGauge). The pool is the API process' own: the one
+# requests queue behind (issue #35). A work-horse's pool lives for one job.
+DB_POOL_CONNECTIONS = _scrape_time_gauge(
     "traxjourney_db_pool_connections",
     "Connections in the SQLAlchemy pool, by state.",
     ["state"],
 )
 
-DB_POOL_OVERFLOW = Gauge(
+DB_POOL_OVERFLOW = _scrape_time_gauge(
     "traxjourney_db_pool_overflow",
     "Connections currently open beyond pool_size.",
 )
 
-DB_POOL_CAPACITY = Gauge(
+DB_POOL_CAPACITY = _scrape_time_gauge(
     "traxjourney_db_pool_capacity",
     "Maximum connections the pool will hand out (pool_size + max_overflow).",
 )
 
-DB_FILE_SIZE = Gauge(
+DB_FILE_SIZE = _scrape_time_gauge(
     "traxjourney_db_file_size_bytes",
     "Size of the SQLite database file and its write-ahead log.",
     ["file"],
@@ -274,10 +466,10 @@ def track_external(service: str, endpoint: str) -> Iterator[ExternalCall]:
         outcome = call.outcome or "success"
         EXTERNAL_REQUESTS.labels(service, endpoint, outcome).inc()
         if outcome == "success":
-            _log.info("external call succeeded service=%s endpoint=%s duration=%.3fs",
+            _log.info("external call succeeded upstream=%s endpoint=%s duration=%.3fs",
                        service, endpoint, duration)
         else:
-            _log.warning("external call failed service=%s endpoint=%s outcome=%s duration=%.3fs",
+            _log.warning("external call failed upstream=%s endpoint=%s outcome=%s duration=%.3fs",
                           service, endpoint, outcome, duration)
 
 

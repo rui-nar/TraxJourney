@@ -57,6 +57,12 @@ Both may wrap across lines; a blank line ends them, and so does an attribution
 trailer stacked right under them (`Co-Authored-By:`, `Signed-off-by:`,
 `Claude-Session:`).
 
+Write subjects and trailers as plain text. The generator escapes `<`, `>` and `&`
+outside backtick code spans, because GitHub strips anything that looks like an
+HTML tag: an unescaped `User=<deploy-user>` rendered as `User=`. That also
+means markup can't be smuggled in: `<br>` shows as `<br>`. Backticks still make
+code spans, and their contents are shown as typed.
+
 ### Write them in English
 
 **Release notes are published in English**, so `Release-Note:` and

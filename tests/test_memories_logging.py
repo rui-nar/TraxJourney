@@ -58,7 +58,7 @@ def test_failed_fetch_leaves_memory_unchanged_and_logs(memory_db, monkeypatch, c
     def _raise(*args, **kwargs):
         raise ConnectionError("boom")
 
-    monkeypatch.setattr("requests.get", _raise)
+    monkeypatch.setattr(memories_mod, "fetch_bytes", _raise)
 
     with caplog.at_level(logging.WARNING, logger="api.memories"):
         memories_mod._download_photo_from_url(

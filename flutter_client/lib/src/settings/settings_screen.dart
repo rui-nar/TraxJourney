@@ -63,6 +63,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // ── Backup state ──────────────────────────────────────────────────────────
   List<Map<String, dynamic>> _backups = [];
   bool _backupsLoading = false;
+  bool _backupsRequested = false;
   String? _restoringDate;
 
   // ── Account state ─────────────────────────────────────────────────────────
@@ -87,7 +88,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _loadPolarstepsStatus();
       _loadImmichStatus();
       _loadProfile();
-      _loadBackups();
     });
   }
 
@@ -473,6 +473,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final themeNotifier = context.watch<ThemeNotifier>();
+    final isAdmin = context.watch<AuthNotifier>().user?.isAdmin ?? false;
+    // Backup management is admin-only, so only admins fetch the list. Keyed
+    // on build rather than initState: after a session restore the profile
+    // (and with it isAdmin) can arrive after this screen is already up.
+    if (isAdmin && !_backupsRequested) {
+      _backupsRequested = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _loadBackups());
+    }
 
     return Scaffold(
       appBar: AppBar(
@@ -900,8 +908,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
                 const SizedBox(height: 16),
 
-                // ── Backups ────────────────────────────────────────────
-                _SectionCard(
+                // ── Backups (admins only) ──────────────────────────────
+                if (isAdmin) _SectionCard(
                   title: 'Backups',
                   icon: Icons.history_outlined,
                   child: _backupsLoading
@@ -962,7 +970,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             ),
                 ),
 
-                const SizedBox(height: 16),
+                if (isAdmin) const SizedBox(height: 16),
 
                 // ── Encryption ─────────────────────────────────────────
                 _SectionCard(

@@ -252,6 +252,30 @@ def parse_commits(raw: str) -> list[Change]:
 
 # ── Rendering ─────────────────────────────────────────────────────────────────
 
+# A code span: a run of backticks, then anything, then a run of the same length.
+_CODE_SPAN_RE = re.compile(r"(`+)(?:.+?)(?<!`)\1(?!`)")
+_HTML_SIGNIFICANT_RE = re.compile(r"[<>&]")
+
+
+def _escape(match: re.Match) -> str:
+    return "\\" + match.group(0)
+
+
+def _md(text: str) -> str:
+    """Escape what GitHub would read as HTML, outside code spans.
+
+    GitHub strips anything that looks like a tag, so "User=<deploy-user>"
+    rendered as "User=". A backslash escape shows the character itself; inside
+    a code span everything is literal already, and a backslash would show.
+    """
+    out, last = [], 0
+    for span in _CODE_SPAN_RE.finditer(text):
+        out.append(_HTML_SIGNIFICANT_RE.sub(_escape, text[last:span.start()]))
+        out.append(span.group(0))
+        last = span.end()
+    out.append(_HTML_SIGNIFICANT_RE.sub(_escape, text[last:]))
+    return "".join(out)
+
 
 def _bullet(change: Change, repo_url: str) -> str:
     # One parenthesised group, however many refs: a squash commit carries both
@@ -266,7 +290,7 @@ def _bullet(change: Change, repo_url: str) -> str:
         # subjects are lowercase by convention.
         prefix = ""
         text = text[:1].upper() + text[1:]
-    return f"- {prefix}{text}." + (f" ({links})" if links else "")
+    return f"- {prefix}{_md(text)}." + (f" ({links})" if links else "")
 
 
 def _section(changes: list[Change], repo_url: str) -> list[str]:
@@ -321,8 +345,8 @@ def render(
         for c in upgrades:
             note = c.upgrade_note.rstrip(".")
             # Same rule as _bullet: no area, no empty "****" prefix.
-            out.append(f"- **{c.area}** — {note}." if c.area
-                       else f"- {note[:1].upper()}{note[1:]}.")
+            out.append(f"- **{c.area}** — {_md(note)}." if c.area
+                       else f"- {_md(note[:1].upper() + note[1:])}.")
         out.append("")
 
     if internal:
@@ -330,7 +354,7 @@ def render(
             f"<details><summary>Internal changes ({len(internal)})</summary>",
             "",
         ]
-        out += [f"- {c.subject}" for c in internal]
+        out += [f"- {_md(c.subject)}" for c in internal]
         out += ["", "</details>", ""]
 
     if not visible and not internal:
@@ -596,6 +620,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="translate non-English entries and add an "
                              "LLM-written highlights paragraph")
     parser.add_argument("--model", default="claude-opus-5")
+    parser.add_argument("--output", default=None,
+                        help="write the notes to this file (UTF-8) instead "
+                             "of stdout")
     args = parser.parse_args(argv)
 
     # The warnings quote the offending entries, which are exactly the ones full
@@ -621,7 +648,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Written as UTF-8 bytes rather than through sys.stdout: the section
     # headings carry emoji, and a Windows console defaults to cp1252, which
     # raises UnicodeEncodeError on them.
-    sys.stdout.buffer.write(body.encode("utf-8"))
+    if args.output:
+        # The release script hands this file straight to `gh --notes-file`, so
+        # the text never passes through a PowerShell string: Windows PowerShell
+        # 5.1 writes files in cp1252, which turned every emoji into "?" and
+        # every em dash into U+FFFD in the v0.49.0 and v0.51.0 release pages.
+        with open(args.output, "wb") as f:
+            f.write(body.encode("utf-8"))
+    else:
+        sys.stdout.buffer.write(body.encode("utf-8"))
     return 0
 
 

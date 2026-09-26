@@ -158,3 +158,66 @@ class TestWorkHorseKilledHandler:
 
         job = self._FakeJob(args=(job_runner_mod.run_poster_job, 42))
         worker_mod._work_horse_killed_handler(job, 123, 9, None)  # must not raise
+
+
+class TestWorkHorseMetricFiles:
+    """Every RQ job runs in a forked work-horse with its own PID, so its own
+    metric files (issue #437). Once it exits, the parent tells prometheus_client
+    so a live-mode gauge stops counting a process that no longer exists."""
+
+    class _FakeRqWorker:
+        horse_pid = 4242
+
+        def __init__(self, fail=False):
+            self._fail = fail
+
+        def monitor_work_horse(self, job, queue):
+            self.horse_pid = 0  # rq clears it once the horse has exited
+            if self._fail:
+                raise RuntimeError("monitor blew up")
+
+    def _worker(self, **kw):
+        cls = type("W", (worker_mod._ForgetsWorkHorses, self._FakeRqWorker), {})
+        return cls(**kw)
+
+    def test_forgets_the_work_horse_once_it_exits(self, monkeypatch):
+        forgotten = []
+        monkeypatch.setattr(worker_mod, "forget_process", forgotten.append)
+
+        self._worker().monitor_work_horse(None, None)
+
+        assert forgotten == [4242]
+
+    def test_forgets_it_even_when_monitoring_raises(self, monkeypatch):
+        forgotten = []
+        monkeypatch.setattr(worker_mod, "forget_process", forgotten.append)
+
+        with pytest.raises(RuntimeError):
+            self._worker(fail=True).monitor_work_horse(None, None)
+
+        assert forgotten == [4242]
+
+    def test_rq_still_has_the_hooks_it_relies_on(self):
+        """An rq upgrade renaming these would silently skip the cleanup."""
+        from rq import Worker
+
+        assert callable(Worker.monitor_work_horse)
+        assert isinstance(Worker.horse_pid, property)
+
+    def test_main_runs_the_forgetting_worker(self, monkeypatch):
+        monkeypatch.setenv("REDIS_URL", "redis://fake")
+        monkeypatch.setattr(worker_mod, "_connect_with_retry", lambda: object())
+        built = []
+
+        class _FakeWorker:
+            def __init__(self, *args, **kwargs):
+                built.append(type(self))
+
+            def work(self, with_scheduler):
+                pass
+
+        monkeypatch.setattr("rq.Worker", _FakeWorker)
+
+        assert worker_mod.main(["resolve"]) == 0
+        assert issubclass(built[0], worker_mod._ForgetsWorkHorses)
+        assert issubclass(built[0], _FakeWorker)

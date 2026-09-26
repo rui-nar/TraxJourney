@@ -167,17 +167,17 @@ class TestCreateMemoryDedup:
     def test_adopt_clears_existing_photos(self, env):
         client, user_id, project_id, engine, data = env
         old = _insert_memory(engine, project_id, name="Beuron", date="2026-03-04",
-                             polarsteps_step_id=None, photos_json=json.dumps(["old1", "old2"]))
+                             polarsteps_step_id=None, photos_json=json.dumps(["00000000-0000-4000-8000-000000000011", "00000000-0000-4000-8000-000000000012"]))
         pdir = data / "users" / str(user_id) / "memories" / str(old)
         pdir.mkdir(parents=True)
-        for u in ("old1", "old2"):
+        for u in ("00000000-0000-4000-8000-000000000011", "00000000-0000-4000-8000-000000000012"):
             (pdir / f"{u}.jpg").write_bytes(b"x")
             (pdir / f"{u}_thumb.jpg").write_bytes(b"x")
         client.post("/api/memories/", json=self._body())
         with Session(engine) as sess:
             assert json.loads(sess.get(DBMemory, old).photos_json) == []
-        assert not (pdir / "old1.jpg").exists()
-        assert not (pdir / "old2_thumb.jpg").exists()
+        assert not (pdir / "00000000-0000-4000-8000-000000000011.jpg").exists()
+        assert not (pdir / "00000000-0000-4000-8000-000000000012_thumb.jpg").exists()
 
     def test_nameless_step_matches_null_name_memory(self, env):
         # format_step yields "" for a nameless step; client sends null → stored

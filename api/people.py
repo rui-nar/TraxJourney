@@ -50,6 +50,7 @@ from models.project_db import (
 from src.api.polarsteps_client import format_step, format_trip
 from src.billing.entitlements import ensure_storage_quota
 from src.billing.usage import record_written, unlink_and_record
+from src.utils.photo_paths import photo_file, photo_files, photo_folder
 from src.models.person import polarsteps_from_socials
 from src.utils.logging import get_logger
 
@@ -109,10 +110,8 @@ def _person_out(row: DBPerson) -> dict:
 
 
 def _delete_avatar_files(user_id: str, person_id: int, uuid_str: str) -> None:
-    photo_path = _avatar_dir(user_id, person_id)
-    unlink_and_record(user_id, [
-        photo_path / f"{uuid_str}{suffix}.jpg" for suffix in ("", "_thumb")
-    ])
+    unlink_and_record(user_id, photo_files(
+        photo_folder(_DATA_DIR, user_id, "people", person_id), [uuid_str]))
 
 
 def _parse_ps_username(raw: str | None) -> str | None:
@@ -381,8 +380,9 @@ def serve_avatar(
         uuid_str = row.avatar_photo
     if not uuid_str:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No avatar")
-    full_path = _avatar_dir(current_user["sub"], person_id) / f"{uuid_str}.jpg"
-    if not full_path.exists():
+    full_path = photo_file(
+        photo_folder(_DATA_DIR, current_user["sub"], "people", person_id), uuid_str)
+    if full_path is None or not full_path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     return FileResponse(str(full_path), media_type="image/jpeg")
 
@@ -399,11 +399,11 @@ def serve_avatar_thumb(
         uuid_str = row.avatar_photo
     if not uuid_str:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No avatar")
-    photo_dir = _avatar_dir(current_user["sub"], person_id)
-    thumb_path = photo_dir / f"{uuid_str}_thumb.jpg"
-    if not thumb_path.exists():
-        full_path = photo_dir / f"{uuid_str}.jpg"
-        if full_path.exists():
+    photo_dir = photo_folder(_DATA_DIR, current_user["sub"], "people", person_id)
+    thumb_path = photo_file(photo_dir, uuid_str, "_thumb")
+    if thumb_path is None or not thumb_path.exists():
+        full_path = photo_file(photo_dir, uuid_str)
+        if full_path is not None and full_path.exists():
             return FileResponse(str(full_path), media_type="image/jpeg")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     return FileResponse(str(thumb_path), media_type="image/jpeg")

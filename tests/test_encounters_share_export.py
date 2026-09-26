@@ -118,8 +118,7 @@ def test_traxj_roundtrip_preserves_people_and_encounters(monkeypatch):
         ProjectIO.save(project, path)
         # The exported file carries the people array + the encounter item.
         with Session(engine) as sess:
-            repo.ingest_project(sess, uid, path)
-        # ingest renames to *.migrated; reload from DB.
+            repo.ingest_project(sess, uid, "Roundtrip", ProjectIO.load(path))
         with Session(engine) as sess:
             loaded = repo.get_project(sess, uid, "Roundtrip")
 
@@ -157,7 +156,7 @@ def test_traxj_roundtrip_preserves_groups_and_membership(monkeypatch):
         path = os.path.join(d, "Roundtrip" + ProjectIO.EXTENSION)
         ProjectIO.save(project, path)
         with Session(engine) as sess:
-            repo.ingest_project(sess, uid, path)
+            repo.ingest_project(sess, uid, "Roundtrip", ProjectIO.load(path))
         with Session(engine) as sess:
             loaded = repo.get_project(sess, uid, "Roundtrip")
 

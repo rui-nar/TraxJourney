@@ -22,6 +22,7 @@
 # the sidecar pattern below removes the LAN-exposure question entirely
 # rather than mitigating it.
 
+name: observability
 services:
   # ── Tailscale ────────────────────────────────────────────────────────────────
   # Every other service in this file joins this container's network namespace

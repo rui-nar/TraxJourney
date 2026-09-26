@@ -92,28 +92,29 @@ Step "Writing release notes for $oldTag..$newTag"
 # scripts/release_notes.py groups the commits by type and audience, drops merge
 # commits and version bumps, and links issue refs. Preview any range without
 # releasing:  python scripts/release_notes.py --from v0.46.9 --to HEAD
+# Python writes the notes file itself, as UTF-8, and gh reads it back. The text
+# must never pass through a PowerShell string on its way to gh: Windows
+# PowerShell 5.1 writes files in the ANSI code page (cp1252), and that turned
+# every emoji into "?" and every em dash into U+FFFD on the v0.49.0 and v0.51.0
+# release pages. The file is only read here to show it.
+$notesFile = Join-Path ([System.IO.Path]::GetTempPath()) "traxjourney-release-notes-$newTag.md"
 $notesArgs = @(
     (Join-Path $PSScriptRoot "scripts\release_notes.py"),
-    "--to", "HEAD", "--version", $newTag
+    "--to", "HEAD", "--version", $newTag, "--output", $notesFile
 )
 if ($oldTag) { $notesArgs += @("--from", $oldTag) }
 if ($Polish) { $notesArgs += "--polish" }
 
-# Python writes UTF-8 bytes (the headings carry emoji); tell PowerShell to read
-# them as UTF-8 rather than the console's default code page.
-$prevEncoding = [Console]::OutputEncoding
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-try {
-    $releaseBody = (& python @notesArgs) -join "`n"
-} finally {
-    [Console]::OutputEncoding = $prevEncoding
-}
-if ($LASTEXITCODE -ne 0 -or -not $releaseBody) { Die "release_notes.py failed." }
+& python @notesArgs
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $notesFile)) { Die "release_notes.py failed." }
+$releaseBody = Get-Content -Path $notesFile -Raw -Encoding UTF8
+if (-not $releaseBody) { Die "release_notes.py wrote empty notes." }
 
 Write-Host ""
 Write-Host $releaseBody
 
 if ($DryRun) {
+    Remove-Item -Path $notesFile -ErrorAction SilentlyContinue
     Write-Host ""
     Write-Host "[DryRun] Notes above. No changes made." -ForegroundColor Yellow
     exit 0
@@ -159,9 +160,8 @@ Step "Creating GitHub release $newTag"
 # string as a raw CLI argument: on Windows, PowerShell's native-argument
 # marshaling can split it across multiple argv entries at the embedded
 # newlines, and gh then tries to glob-expand a stray trailing line as an
-# asset filename (e.g. a commit subject containing "(...)").
-$notesFile = Join-Path ([System.IO.Path]::GetTempPath()) "traxjourney-release-notes-$newTag.md"
-Set-Content -Path $notesFile -Value $releaseBody -NoNewline
+# asset filename (e.g. a commit subject containing "(...)"). The file is the
+# one release_notes.py wrote in step 2, untouched by PowerShell.
 try {
     gh release create $newTag `
         --title "TraxJourney $newTag" `

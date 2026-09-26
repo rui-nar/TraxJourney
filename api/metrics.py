@@ -37,8 +37,22 @@ async def metrics(request: Request) -> Response:
     header = request.headers.get("authorization", "")
     scheme, _, presented = header.partition(" ")
     # compare_digest over a constant-time comparison of the token itself; the
-    # scheme check is not secret.
-    if scheme.lower() != "bearer" or not hmac.compare_digest(presented.strip(), expected):
+    # scheme check is not secret. Compared as bytes: compare_digest raises on
+    # non-ASCII str, and Starlette hands headers over decoded as latin-1, so
+    # re-encoding latin-1 recovers the bytes the client sent (issue #450).
+    # surrogateescape does the same for the token: on Linux os.environ decodes
+    # bytes that aren't UTF-8 as lone surrogates, which strict UTF-8 refuses.
+    # Only U+DC80..U+DCFF escape; any other lone surrogate can't be encoded
+    # and simply matches nothing.
+    try:
+        expected_bytes = expected.encode("utf-8", "surrogateescape")
+    except UnicodeEncodeError:
+        expected_bytes = None
+    if (
+        scheme.lower() != "bearer"
+        or expected_bytes is None
+        or not hmac.compare_digest(presented.strip().encode("latin-1"), expected_bytes)
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid metrics token"
         )
@@ -59,11 +73,10 @@ def _registry():
     Unset (the default, and correct for a single-container deployment) this is
     the plain default registry and nothing changes.
     """
-    if not os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
+    path = os.environ.get("PROMETHEUS_MULTIPROC_DIR")
+    if not path:
         return REGISTRY
 
-    from prometheus_client import CollectorRegistry, multiprocess
+    from src.utils.metrics import multiprocess_registry
 
-    registry = CollectorRegistry()
-    multiprocess.MultiProcessCollector(registry)
-    return registry
+    return multiprocess_registry(path)

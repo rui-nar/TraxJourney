@@ -15,27 +15,36 @@ import re
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Any, Dict
+from typing import Annotated, Any, Dict, Literal, Optional
 
 import gpxpy
 import gpxpy.gpx
 import polyline as polyline_lib
 from models.db import get_session
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from fastapi.responses import StreamingResponse
+from fastapi import (
+    APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, UploadFile, status,
+)
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
 
 from api.deps import get_current_user
 from api.geo import bust_geo_cache
 from api.project_access import OwnerParam, resolve_project
-from api.project_shared import _DATA_DIR, _projects_dir, _repo
-from src.billing.entitlements import ensure_project_quota, ensure_storage_quota
-from src.billing.usage import reconcile_usage
+import api.project_shared as project_shared
+from api.project_shared import (
+    _DATA_DIR, _repo, queue_share_tiles_refresh, queue_stats_refresh,
+)
+from src.billing.entitlements import ensure_project_quota
+from src.billing.usage import unlink_and_record
 from src.brand import APP_NAME
 from src.models.great_circle import great_circle_points
-from src.project.project_io import ProjectIO
+from src.project.project_io import InvalidProjectFile, ProjectIO
+from src.project.repo_transfer import PhotoRemoval, ProjectNameTaken
+from src.utils.logging import request_id_var
 from src.utils.encryption_check import is_encrypted_envelope
+from src.utils.photo_paths import photo_file, photo_files, photo_folder
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -44,16 +53,118 @@ router = APIRouter(prefix="/api/projects", tags=["projects"])
 
 class ImportedOut(BaseModel):
     name: str = Field(description="Name of the imported project")
+    outcome: Literal["created", "copied", "replaced"] = Field(
+        description="created: a new trip under the file's name; copied: a new "
+                    "trip under a de-duplicated name, the file's name being "
+                    "taken; replaced: the content of the trip of that name "
+                    "was overwritten with the file's")
 
 
-@router.post("/import", status_code=status.HTTP_201_CREATED, response_model=ImportedOut,
-             summary="Import a .traxj file")
+# ── Import ────────────────────────────────────────────────────────────────────
+
+#: Largest project file the import accepts, whatever the plan or billing
+#: settings (issue #434). An export carries every track at full resolution:
+#: ~40-50 bytes per GPS point (encoded polyline plus the elevation profile's
+#: distance/elevation pair, pretty-printed), so 50 MB is roughly a million
+#: points, 50+ long days recorded every second or well over 100 at Strava's
+#: usual density. The import holds the file and its parsed form at once,
+#: measured at ~3.4x the file size, so 50 MB peaks near 170 MB inside the
+#: API container's 768 MB limit (docker-compose.yml.example); 100 MB would not
+#: leave the geo caches and concurrent requests room.
+MAX_IMPORT_BYTES = 50 * 1024 * 1024
+
+#: Room for the multipart envelope (boundaries, part headers) around the file.
+_MULTIPART_ALLOWANCE = 64 * 1024
+
+
+def _too_large() -> HTTPException:
+    return HTTPException(
+        status_code=413,
+        detail=(f"This file is too large to import. The limit is "
+                f"{MAX_IMPORT_BYTES // (1024 * 1024)} MB."),
+    )
+
+
+class _CappedUploadRoute(APIRoute):
+    """Refuses a request body larger than the import can accept, as it arrives.
+
+    FastAPI parses the multipart form before the endpoint runs, and Starlette
+    spools the file to a temp file as it goes, so a check in the endpoint alone
+    would only run once an arbitrarily large upload had been received and
+    written to disk. Here a declared ``Content-Length`` over the limit is
+    refused before any of the body is read, and a body without one (chunked)
+    is counted as it streams in and cut off once past the limit.
+    """
+
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def capped(request: Request):
+            limit = MAX_IMPORT_BYTES + _MULTIPART_ALLOWANCE
+            declared = request.headers.get("content-length", "")
+            if declared.isdigit() and int(declared) > limit:
+                raise _too_large()
+            receive = request.receive
+            seen = 0
+
+            async def bounded_receive():
+                nonlocal seen
+                message = await receive()
+                if message["type"] == "http.request":
+                    seen += len(message.get("body", b""))
+                    if seen > limit:
+                        raise _too_large()
+                return message
+
+            return await handler(Request(request.scope, bounded_receive))
+
+        return capped
+
+
+def _name_conflict(name: str) -> JSONResponse:
+    """409 for a name the user already has a trip under (issue #452).
+
+    The name travels in its own field for the client to show; the detail
+    leaves it out, since a file name may hold a double quote and the client
+    reads the detail with a pattern that stops at one.
+    """
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={
+            "detail": "You already have a trip with this name.",
+            "code": "name_conflict",
+            "name": name,
+            "request_id": request_id_var.get(),
+        },
+    )
+
+
+def _remove_photos(removals: list[PhotoRemoval]) -> None:
+    """Delete the photo files a replace dropped, once it has committed."""
+    for removal in removals:
+        folder = photo_folder(project_shared._DATA_DIR, removal.user_info_id,
+                              removal.kind, removal.content_id)
+        # Only names that stay inside this entry's own folder (photo_paths).
+        unlink_and_record(removal.user_info_id, photo_files(folder, removal.uuids))
+        if removal.remove_dir and folder.exists():
+            try:
+                folder.rmdir()
+            except OSError:
+                pass  # not empty: left for storage reconciliation
+
+
 async def import_project(
     file: Annotated[UploadFile, File()],
     current_user: Annotated[dict, Depends(get_current_user)],
+    background_tasks: BackgroundTasks,
+    on_conflict: Annotated[Optional[Literal["copy", "replace"]], Query(
+        description="What to do when the name is taken. Absent: refuse with "
+                    "409. copy: import under the first free \"<name> (n)\". "
+                    "replace: overwrite that trip's content with the file's, "
+                    "keeping the trip, its share links and companions.",
+    )] = None,
 ):
     user_info_id = int(current_user["sub"])
-    user_id = current_user["sub"]
 
     fname = os.path.basename(file.filename or "imported" + ProjectIO.EXTENSION)
     # Only the current format is accepted (issue #151). An older .viewtrip or
@@ -65,32 +176,80 @@ async def import_project(
             detail=f"Only {ProjectIO.EXTENSION} project files can be imported",
         )
 
-    # Write to a temp location so ingest_project can read it
-    pdir = _projects_dir(user_id)
-    tmp_path = os.path.join(pdir, fname)
+    # Parsed straight from the upload: nothing is written under the user's
+    # directory, so no copy is left behind to count against their storage,
+    # whether the import succeeds or fails (issue #434). Starlette already
+    # spools a large upload to a system temp file it deletes itself, and the
+    # JSON parse needs the whole document in memory regardless.
+    # The route already bounds the whole body; this is the exact file size.
+    if file.size is not None and file.size > MAX_IMPORT_BYTES:
+        raise _too_large()
     contents = await file.read()
 
-    # Plan limits (issue #121): an import creates a trip and lands its bytes on
-    # disk, so both quotas apply — checked before writing anything.
-    with get_session() as sess:
-        ensure_project_quota(sess, user_info_id)
-        ensure_storage_quota(sess, user_info_id, len(contents))
-
-    with open(tmp_path, "wb") as fh:
-        fh.write(contents)
+    # Only the file's own faults are the uploader's (issue #451): anything else
+    # raised while reading it, or during the ingest below, is a server bug and
+    # stays a 500.
+    try:
+        project = ProjectIO.from_bytes(contents)
+    except InvalidProjectFile as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"This file isn't a valid {APP_NAME} trip: {exc}.",
+        ) from None
 
     name = fname[: -len(ProjectIO.EXTENSION)]
+    copy = on_conflict == "copy"
+    removals = None
     with get_session() as sess:
-        _repo.ingest_project(sess, user_info_id, tmp_path)
-    # Re-importing over an existing name replaces its content, so anything
-    # cached under that name is now wrong (issue #178).
-    bust_geo_cache(user_info_id, name)
+        taken = _repo.project_exists(sess, user_info_id, name)
+        # Refused before the plan limit is checked: at the limit the user must
+        # still learn the name is taken and get to choose (issue #452).
+        if taken and on_conflict is None:
+            return _name_conflict(name)
+        if taken and on_conflict == "replace":
+            # The same trip, new content: no new trip, so no plan limit.
+            removals = _repo.replace_project(
+                sess, user_info_id, name, project, data_dir=project_shared._DATA_DIR)
+        if removals is None:
+            # A copy or a new name is a new trip. The storage quota does not
+            # apply: nothing lands on disk. The size is bounded by
+            # MAX_IMPORT_BYTES instead, whatever the plan (issue #434).
+            ensure_project_quota(sess, user_info_id)
+            try:
+                imported = _repo.import_project(
+                    sess, user_info_id, name, project, copy=copy)
+            except ProjectNameTaken:
+                # A concurrent request took the name after the check above.
+                return _name_conflict(name)
+        else:
+            imported = name
+    if removals is not None:
+        _remove_photos(removals)
+        queue_stats_refresh(background_tasks, user_info_id, imported)
+        queue_share_tiles_refresh(background_tasks, user_info_id, imported)
+    # Cached payloads of this name are now wrong: the replaced trip's, or a
+    # deleted trip's of the same name (issue #178).
+    bust_geo_cache(user_info_id, imported)
 
-    # An archive expands into project files and photos; rather than trying to
-    # account for each write inside the ingest, re-measure the tree once.
-    reconcile_usage(user_info_id)
+    if removals is not None:
+        outcome = "replaced"
+    else:
+        outcome = "created" if imported == name else "copied"
+    return {"name": imported, "outcome": outcome}
 
-    return {"name": name, "filename": fname}
+
+router.add_api_route(
+    "/import", import_project, methods=["POST"],
+    status_code=status.HTTP_201_CREATED, response_model=ImportedOut,
+    summary="Import a .traxj file",
+    responses={
+        400: {"description": "Not a .traxj file, or not a readable trip"},
+        409: {"description": "The name is taken and on_conflict was not given; "
+                             "the body's name field holds it"},
+        413: {"description": "The file is larger than MAX_IMPORT_BYTES"},
+    },
+    route_class_override=_CappedUploadRoute,
+)
 
 
 # ── GPX export ─────────────────────────────────────────────────────────────────
@@ -322,18 +481,19 @@ def export_project_zip(
 
     zip_buffer = io.BytesIO()
     safe = _SAFE_NAME.sub("_", project.name)
-    memories_base = Path(_DATA_DIR) / "users" / owner_dir_id / "memories"
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(f"{safe}{ProjectIO.EXTENSION}", project_bytes)
         for item in project.items:
             if item.item_type != "memory" or item.memory is None or item.memory.id is None:
                 continue
             mem = item.memory
-            mem_dir = memories_base / str(mem.id)
+            mem_dir = photo_folder(_DATA_DIR, owner_dir_id, "memories", mem.id)
             for photo_uuid in mem.photos:
-                full_path = mem_dir / f"{photo_uuid}.jpg"
-                if full_path.exists():
-                    zf.write(full_path, f"photos/{mem.id}/{photo_uuid}.jpg")
+                # photo_file only answers for an app-made name inside the
+                # memory's folder, which also keeps the entry name plain.
+                full_path = photo_file(mem_dir, photo_uuid)
+                if full_path is not None and full_path.exists():
+                    zf.write(full_path, f"photos/{int(mem.id)}/{photo_uuid}.jpg")
 
     zip_buffer.seek(0)
     return StreamingResponse(

@@ -50,12 +50,12 @@
     {
       "id": 2,
       "type": "timeseries",
-      "title": "External call failures by service",
-      "description": "sum(rate({service=\"traxjourney\", env=\"$env\"} |= \"external call failed\" | logfmt [5m])) by (service) — matches track_external()'s log format, src/utils/metrics.py.",
+      "title": "External call failures by upstream",
+      "description": "sum(rate({service=\"traxjourney\", env=\"$env\"} |= \"external call failed\" | logfmt [5m])) by (upstream) — matches track_external()'s log format, src/utils/metrics.py.",
       "gridPos": {"h": 7, "w": 12, "x": 12, "y": 0},
       "datasource": {"type": "loki", "uid": "$datasource"},
       "targets": [
-        {"refId": "A", "expr": "sum(rate({service=\"traxjourney\", env=\"$env\"} |= \"external call failed\" | logfmt [5m])) by (service)", "legendFormat": "{{service}}"}
+        {"refId": "A", "expr": "sum(rate({service=\"traxjourney\", env=\"$env\"} |= \"external call failed\" | logfmt [5m])) by (upstream)", "legendFormat": "{{upstream}}"}
       ],
       "fieldConfig": {"defaults": {"unit": "ops", "custom": {"drawStyle": "line", "fillOpacity": 15, "stacking": {"mode": "normal"}}}, "overrides": []},
       "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["sum"]}, "tooltip": {"mode": "multi"}}

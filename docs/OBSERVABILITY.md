@@ -137,7 +137,7 @@ filtering is a substring match, not a logfmt field.
 - **A specific external integration's failures** (matches
   `track_external()`'s log format, `src/utils/metrics.py`):
   ```logql
-  {service="traxjourney"} |= "external call failed" |= "service=polarsteps"
+  {service="traxjourney"} |= "external call failed" |= "upstream=polarsteps"
   ```
 
 ## Alerting (replaces the earlier idea of adding Sentry)

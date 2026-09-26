@@ -48,6 +48,8 @@ from models.project_db import DBJournalEntry, DBProject, DBProjectItem
 from src.project.project_repo import bump_lock_version
 from src.billing.entitlements import ensure_storage_quota, ensure_trip_days_quota
 from src.billing.usage import record_written, unlink_and_record
+from src.utils.photo_paths import photo_file, photo_files, photo_folder
+from src.utils.safe_fetch import fetch_bytes
 from src.exceptions.errors import QuotaExceeded
 from src.utils.logging import get_logger
 
@@ -61,6 +63,8 @@ _THUMB_SIZE = (400, 400)
 # Per-file cap on a photo upload, checked before the (CPU-bound) decode/resize
 # work — see api/memories.py's _MAX_PHOTO_UPLOAD_BYTES for why 25MB.
 _MAX_PHOTO_UPLOAD_BYTES = 25 * 1024 * 1024
+# A photo fetched from a URL is held to the same limit as an upload.
+_MAX_PHOTO_FETCH_BYTES = _MAX_PHOTO_UPLOAD_BYTES
 
 
 # ── Response schemas ──────────────────────────────────────────────────────────
@@ -201,10 +205,10 @@ def _write_journal_photo(journal_id: int, uuid_str: str, order: Optional[int] = 
 def _download_photo_from_url(
     journal_id: int, url: str, user_id: str, project_id: Optional[int] = None, order: Optional[int] = None,
 ) -> None:
-    import requests as _req
     try:
-        resp = _req.get(url, timeout=30)
-        resp.raise_for_status()
+        # The client picks this URL: fetch it only from a public address
+        # (src/utils/safe_fetch), capped like a direct upload.
+        content = fetch_bytes(url, max_bytes=_MAX_PHOTO_FETCH_BYTES, total_timeout=60)
     except Exception:
         _log.exception(
             "Photo download failed for journal entry: journal_id=%s project_id=%s user_id=%s url=%s",
@@ -214,12 +218,12 @@ def _download_photo_from_url(
     # Background task — no request left to answer 402 on, so it declines to store.
     try:
         with get_session() as sess:
-            ensure_storage_quota(sess, int(user_id), len(resp.content))
+            ensure_storage_quota(sess, int(user_id), len(content))
     except QuotaExceeded:
         _log.info("Skipped photo download for user %s: storage quota reached", user_id)
         return
     uuid_str = str(uuid_lib.uuid4())
-    _save_photo_files(user_id, journal_id, uuid_str, resp.content)
+    _save_photo_files(user_id, journal_id, uuid_str, content)
     _write_journal_photo(journal_id, uuid_str, order)
 
 
@@ -403,12 +407,8 @@ def delete_journal(
         row = _get_owned_journal(sess, journal_id, user_info_id)
 
         photos: List[str] = json.loads(row.photos_json or "[]")
-        photo_path = Path(_DATA_DIR) / "users" / current_user["sub"] / "journal" / str(journal_id)
-        unlink_and_record(current_user["sub"], [
-            photo_path / f"{photo_uuid}{suffix}.jpg"
-            for photo_uuid in photos
-            for suffix in ("", "_thumb")
-        ])
+        photo_path = photo_folder(_DATA_DIR, current_user["sub"], "journal", journal_id)
+        unlink_and_record(current_user["sub"], photo_files(photo_path, photos))
         if photo_path.exists():
             try:
                 photo_path.rmdir()
@@ -498,10 +498,8 @@ def delete_photo(
         if photo_uuid not in photos:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
 
-        photo_path = _photo_dir(current_user["sub"], journal_id)
-        unlink_and_record(current_user["sub"], [
-            photo_path / f"{photo_uuid}{suffix}.jpg" for suffix in ("", "_thumb")
-        ])
+        unlink_and_record(current_user["sub"], photo_files(
+            photo_folder(_DATA_DIR, current_user["sub"], "journal", journal_id), [photo_uuid]))
 
         photos.remove(photo_uuid)
         row.photos_json = json.dumps(photos)
@@ -549,10 +547,8 @@ async def replace_photo(
         sess.commit()
         bust_project_payloads(cache_ref)
 
-    photo_path = _photo_dir(current_user["sub"], journal_id)
-    unlink_and_record(current_user["sub"], [
-        photo_path / f"{old_uuid}{suffix}.jpg" for suffix in ("", "_thumb")
-    ])
+    unlink_and_record(current_user["sub"], photo_files(
+        photo_folder(_DATA_DIR, current_user["sub"], "journal", journal_id), [old_uuid]))
 
     return {"uuid": new_uuid}
 
@@ -571,9 +567,9 @@ def serve_photo(
         if photo_uuid not in photos:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
 
-    photo_path = Path(_DATA_DIR) / "users" / current_user["sub"] / "journal" / str(journal_id)
-    full_path = photo_path / f"{photo_uuid}.jpg"
-    if not full_path.exists():
+    full_path = photo_file(
+        photo_folder(_DATA_DIR, current_user["sub"], "journal", journal_id), photo_uuid)
+    if full_path is None or not full_path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     return FileResponse(str(full_path), media_type="image/jpeg")
 
@@ -592,11 +588,11 @@ def serve_photo_thumb(
         if photo_uuid not in photos:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
 
-    photo_path = Path(_DATA_DIR) / "users" / current_user["sub"] / "journal" / str(journal_id)
-    thumb_path = photo_path / f"{photo_uuid}_thumb.jpg"
-    if not thumb_path.exists():
-        full_path = photo_path / f"{photo_uuid}.jpg"
-        if full_path.exists():
+    photo_path = photo_folder(_DATA_DIR, current_user["sub"], "journal", journal_id)
+    thumb_path = photo_file(photo_path, photo_uuid, "_thumb")
+    if thumb_path is None or not thumb_path.exists():
+        full_path = photo_file(photo_path, photo_uuid)
+        if full_path is not None and full_path.exists():
             return FileResponse(str(full_path), media_type="image/jpeg")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     return FileResponse(str(thumb_path), media_type="image/jpeg")

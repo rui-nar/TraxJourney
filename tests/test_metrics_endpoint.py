@@ -5,6 +5,7 @@ instrumentator wiring are precisely what these tests are protecting.
 """
 
 import importlib
+import logging
 
 import pytest
 from fastapi import FastAPI
@@ -41,6 +42,61 @@ class TestMetricsAuth:
         monkeypatch.setenv("METRICS_TOKEN", "right")
         assert client.get("/metrics").status_code == 401
 
+    def test_rejects_a_non_ascii_token_without_an_error(self, monkeypatch, caplog):
+        """Starlette decodes headers as latin-1, and hmac.compare_digest raises
+        TypeError on non-ASCII str. Anyone could turn that into a 500 and an
+        ERROR log line (issue #450); it must be a plain 401."""
+        import logging
+
+        import api.router as router
+
+        monkeypatch.setenv("METRICS_TOKEN", "right")
+        lenient = TestClient(router.app, raise_server_exceptions=False)
+        with caplog.at_level(logging.ERROR):
+            resp = lenient.get("/metrics", headers={"Authorization": b"Bearer \xff"})
+        assert resp.status_code == 401
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+    @pytest.mark.parametrize("presented, expected_status", [
+        (b"Bearer abc\xe9", 200),  # the very bytes the environment held
+        (b"Bearer wrong", 401),
+    ])
+    def test_a_token_that_is_not_utf8_still_works(
+            self, monkeypatch, presented, expected_status):
+        """On Linux os.environ decodes undecodable bytes as lone surrogates
+        (surrogateescape): METRICS_TOKEN=b"abc\\xe9" reads as "abc\\udce9".
+        Encoding that strictly as UTF-8 raises, a 500 on every scrape.
+
+        Driven through httpx's ASGI transport rather than TestClient, which
+        re-encodes header bytes as UTF-8 (``\\xe9`` -> ``\\xc3\\xa9``) where a
+        real server passes them through untouched."""
+        import asyncio
+
+        import httpx
+
+        import api.metrics as metrics_mod
+        import api.router as router
+
+        monkeypatch.setattr(metrics_mod, "_configured_token", lambda: "abc\udce9")
+
+        async def scrape():
+            transport = httpx.ASGITransport(app=router.app, raise_app_exceptions=False)
+            async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+                return await c.get("/metrics", headers={"Authorization": presented})
+
+        assert asyncio.run(scrape()).status_code == expected_status
+
+    def test_a_token_no_encoding_can_represent_is_a_401(self, monkeypatch):
+        """surrogateescape only maps U+DC80..U+DCFF back to bytes; any other
+        lone surrogate still raises. os.environ can't produce one on Linux, but
+        a scrape must never become a 500."""
+        import api.metrics as metrics_mod
+        import api.router as router
+
+        monkeypatch.setattr(metrics_mod, "_configured_token", lambda: "abc\ud800")
+        lenient = TestClient(router.app, raise_server_exceptions=False)
+        assert _scrape(lenient, "abc").status_code == 401
+
     def test_rejects_a_non_bearer_scheme(self, client, monkeypatch):
         monkeypatch.setenv("METRICS_TOKEN", "right")
         assert client.get(
@@ -63,6 +119,21 @@ class TestMetricsAuth:
         assert client.get("/metrics").status_code == 404
         monkeypatch.setenv("METRICS_TOKEN", "later")
         assert _scrape(client, "later").status_code == 200
+
+
+class TestScrapeIsQuiet:
+    def test_a_valid_scrape_logs_no_warning(self, client, caplog, monkeypatch):
+        """METRICS_TOKEN is an opaque bearer token, not a JWT. The access-log
+        middleware's best-effort JWT decode of every Authorization header used
+        to warn ``invalid JWT rejected`` on each scrape (issue #446) — a steady
+        stream of false alarms in Loki, on the interval Alloy scrapes at, that
+        drowned the forged-token signal the warning exists for."""
+        monkeypatch.setenv("METRICS_TOKEN", "right")
+        with caplog.at_level(logging.WARNING):
+            resp = _scrape(client)
+
+        assert resp.status_code == 200
+        assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
 
 
 class TestHttpInstrumentation:

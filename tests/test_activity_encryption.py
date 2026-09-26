@@ -202,6 +202,7 @@ class TestUpdateActivityEnrichmentGuard:
             repo.update_activity_enrichment(
                 sess, 111, "freshpoly",
                 json.dumps({"distances_km": [0, 1], "elevations_m": [1, 2]}),
+                owner_id=uid,
             )
         with Session(engine) as sess:
             row = sess.get(DBActivity, 111)
@@ -220,6 +221,7 @@ class TestUpdateActivityEnrichmentGuard:
             repo.update_activity_enrichment(
                 sess, 222, "freshpoly",
                 json.dumps({"distances_km": [0, 1], "elevations_m": [1, 2]}),
+                owner_id=uid,
             )
         with Session(engine) as sess:
             row = sess.get(DBActivity, 222)
