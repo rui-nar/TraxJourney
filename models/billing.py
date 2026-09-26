@@ -55,6 +55,22 @@ class Subscription(sqlmodel.SQLModel, table=True):
     # Provider timestamp of the last applied event, so a redelivered *older*
     # event cannot move state backwards (webhooks arrive out of order).
     last_event_at: float = sqlmodel.Field(default=0.0)
+    # Start of the account's first paid subscription, unix seconds (issue
+    # #441). The 14-day withdrawal window runs from here. Written once by the
+    # first webhook that reports a paid subscription and never moved after:
+    # renewals and plan changes do not reopen the window. 0 = none on record,
+    # which means no window. Accounts that had already subscribed when this was
+    # added were given 1.0 by the migration: their purchase date is not known
+    # here, so their window is closed.
+    initial_paid_at: float = sqlmodel.Field(default=0.0)
+    # Proof of the express consent collected at checkout (issue #441): when
+    # the buyer ticked the terms box, and which wording of the withdrawal
+    # terms (refunds.WITHDRAWAL_TERMS_VERSION) that box stood for. The latest
+    # purchase's; Stripe keeps every session's own record too.
+    terms_accepted_at: float = sqlmodel.Field(default=0.0)
+    terms_version: str = sqlmodel.Field(default="")
+    # When the user last withdrew through POST /api/billing/withdraw (#441).
+    withdrawn_at: float = sqlmodel.Field(default=0.0)
     updated_at: float = sqlmodel.Field(default_factory=time.time)
 
 

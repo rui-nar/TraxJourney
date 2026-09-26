@@ -58,6 +58,16 @@ class SubscriptionUpdate:
     current_period_end: float
     cancel_at_period_end: bool
     user_info_id: int | None = None
+    #: When the subscription this event describes started being paid for, or 0
+    #: when the event does not show a paid subscription (issue #441). Only the
+    #: *first* one an account ever reports is kept — it opens the withdrawal
+    #: window — so a renewal or a plan change repeating it changes nothing.
+    paid_since: float = 0.0
+    #: When the buyer ticked the terms box at checkout (express consent to
+    #: start at once, and the withdrawal terms), and which wording it was.
+    #: 0 / "" on every event but a completed checkout that collected it.
+    terms_accepted_at: float = 0.0
+    terms_version: str = ""
 
 
 @dataclass(frozen=True)
@@ -207,6 +217,34 @@ def _subscription_id(obj: dict) -> str:
     return str(sub or "")
 
 
+#: Checkout ``payment_status`` values after which the subscription is paid for.
+#: ``no_payment_required`` is a 100%-off promotion code: the contract is made
+#: all the same, and the window runs from it. ``unpaid`` (a delayed method such
+#: as SEPA) is not paid yet; the subscription event that follows payment says so.
+_CHECKOUT_PAID = frozenset({"paid", "no_payment_required"})
+
+
+def _paid_since(obj: dict, event_at: float) -> float:
+    """When an ``active`` subscription object started, for the window (#441).
+
+    ``start_date`` is the subscription's own start and does not move on
+    renewal or on a plan change. Only ``active`` counts: ``trialing`` has not
+    been paid for and ``incomplete`` has not been paid yet.
+    """
+    if str(obj.get("status") or "") != "active":
+        return 0.0
+    return _as_float(obj.get("start_date")) or event_at
+
+
+def _terms_consent(obj: dict, event_at: float) -> tuple[float, str]:
+    """``(accepted_at, version)`` when the checkout collected the consent."""
+    consent = obj.get("consent") or {}
+    if str(consent.get("terms_of_service") or "") != "accepted":
+        return 0.0, ""
+    version = str((obj.get("metadata") or {}).get("terms_version") or "")
+    return event_at, version
+
+
 def _plan_from_metadata(obj: dict) -> str:
     """Tier recorded on the checkout session, defaulting to the entry tier."""
     plan = str(((obj.get("metadata") or {}).get("plan") or "")).strip()
@@ -300,6 +338,7 @@ def subscription_update_from_event(event: dict) -> SubscriptionUpdate | None:
         # than granting a plan that will never renew or cancel.
         if (obj.get("mode") or "subscription") != "subscription":
             return None
+        terms_at, terms_version = _terms_consent(obj, event_at)
         return SubscriptionUpdate(
             event_id=event_id,
             event_at=event_at,
@@ -316,6 +355,10 @@ def subscription_update_from_event(event: dict) -> SubscriptionUpdate | None:
             current_period_end=0.0,
             cancel_at_period_end=False,
             user_info_id=_user_info_id(obj),
+            paid_since=(event_at if str(obj.get("payment_status") or "")
+                        in _CHECKOUT_PAID else 0.0),
+            terms_accepted_at=terms_at,
+            terms_version=terms_version,
         )
 
     if etype == "invoice.payment_failed":
@@ -348,4 +391,5 @@ def subscription_update_from_event(event: dict) -> SubscriptionUpdate | None:
         current_period_end=_period_end(obj),
         cancel_at_period_end=bool(obj.get("cancel_at_period_end")),
         user_info_id=_user_info_id(obj),
+        paid_since=_paid_since(obj, event_at),
     )

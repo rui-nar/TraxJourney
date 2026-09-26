@@ -129,8 +129,15 @@ past 500 MB before the limits existed is locked out the moment you deploy.
    `metadata.managed_by=scripts/stripe_catalog.py`; a configuration it did not
    create is left alone.
 4. **Secret key** → `STRIPE_SECRET_KEY`.
+5. **Terms of service URL** — Dashboard → Settings → Public details →
+   *Terms of service*: `https://<host>/terms`. **Checkout fails without it**:
+   every session requires the buyer to tick the terms box
+   (`consent_collection.terms_of_service=required`, see
+   [Refunds and withdrawal](#refunds-and-withdrawal)), and Stripe refuses that
+   unless the account has this URL. Set it in each sandbox and in live, before
+   deploying #441.
 
-All four are **runtime** environment variables. Never pass them to
+All of these are **runtime** environment variables. Never pass them to
 `docker build` — the published image is public.
 
 ### Local testing
@@ -155,6 +162,8 @@ reports the tier you bought.
 | `POST /api/billing/checkout` | user | → Stripe Checkout URL; body carries the `plan` to buy |
 | `POST /api/billing/change-plan` | user | → Stripe URL that *moves* a live subscription to another `plan` |
 | `POST /api/billing/portal` | user | → Stripe Customer Portal URL |
+| `GET /api/billing/withdraw` | user | What withdrawing now would refund (estimate, from Stripe) |
+| `POST /api/billing/withdraw` | user | Withdraw: cancel now, refund the unused period (inside 14 days) |
 | `POST /api/billing/webhook` | signature | Provider callbacks |
 | `PUT /api/admin/users/{id}/plan` | admin | Comp an account, or clear a comp |
 
@@ -262,9 +271,14 @@ row (issue #429, `cancel_live_subscription` in `src/auth/account_deletion.py`):
   subscription that has not ended is cancelled **immediately**, not at period
   end. The customer itself is kept — its invoices are the accounting record;
 - a row with no customer falls back to its stored subscription id;
-- if that fails the deletion is refused with **502**, and with **409** when a
+- inside the [withdrawal window](#refunds-and-withdrawal) it then refunds the
+  unused part of every subscription of the customer that ended since the first
+  purchase (issue #441, `refund_inside_window`). Outside the window it only
+  cancels;
+- if either fails the deletion is refused with **502**, and with **409** when a
   subscription may still bill but this deployment has no gateway configured.
-  Nothing is deleted either way, and retrying is safe.
+  Nothing is deleted either way, and retrying is safe: a retry after a failed
+  refund finds the cancelled subscription at Stripe and refunds it once.
 - Stripe is called without holding any database lock. The deletion then takes
   the account's write lock and re-reads the billing row. It refuses with
   **409** `billing_changed` (rolling back; the retry cancels it) only when the
@@ -325,6 +339,141 @@ refusal and a server-log warning point here.
 4. Delete the account again. With a customer on record and a status that
    has ended, deletion no longer needs the gateway.
 
+## Refunds and withdrawal
+
+Issue #441. The owner set this policy on 2026-09-23. It is **not legal advice**
+and is due for legal review; `legal/terms.html` (PR #427) states the same thing
+in the customer's words.
+
+| When | What happens | Refund |
+|---|---|---|
+| Withdraw within 14 days of the **first** purchase | cancelled immediately | the unused part of the current period, pro rata |
+| Cancel after those 14 days | stops renewal; the plan runs to the end of the paid period (the portal's `at_period_end`, unchanged) | none |
+| Delete the account within the 14 days | cancelled immediately | the unused part, pro rata |
+| Delete the account after them | cancelled immediately | none |
+
+- **Express consent.** Checkout requires the buyer to tick the terms box
+  (`consent_collection.terms_of_service=required`). The `custom_text` beside
+  it and by the pay button says the subscription starts immediately and states
+  the 14-day pro-rata withdrawal right. The wording is versioned by
+  `WITHDRAWAL_TERMS_VERSION` in `src/billing/refunds.py`: bump it whenever the
+  text in `stripe_gateway._consent_text` changes.
+  - **Why at Stripe, not in the app.** The box is on the page that concludes
+    the contract, so a purchase without consent cannot exist. Every client gets
+    it at once, including mobile builds nobody has updated. An in-app checkbox
+    would need a server-side check that breaks older clients, or be skippable
+    by them.
+  - **Proof.** Stripe keeps each session's `consent`. We also store the latest
+    one on the `Subscription` row: `terms_accepted_at` (when the completed
+    checkout arrived) and `terms_version` (read from the session's metadata).
+- **"First purchase"** is `Subscription.initial_paid_at`. It is the start of
+  the account's first paid subscription: a subscription event with status
+  `active` (its `start_date`), or a completed checkout whose `payment_status`
+  is `paid` or `no_payment_required`. It is written once and never moved.
+  Renewals, plan changes and later subscriptions do not reopen the window. The
+  window is open while `initial_paid_at + 14 days > now`, so at exactly 14 days
+  it is closed.
+  - **Existing subscribers.** Their purchase date cannot be recovered offline,
+    so migration `2d5c660f9f6e` sets `initial_paid_at = 1.0` on every row that
+    names a Stripe subscription. **Their window is closed.** Anyone who bought
+    in the 14 days before this shipped and asks to withdraw is refunded by
+    hand, in the Stripe dashboard.
+  - This was chosen over fetching the date from Stripe lazily because it is
+    one UPDATE instead of a Stripe call on the `/me` path, and it only affects
+    buyers from the 14 days before the deploy.
+- **The amount** is read from Stripe, never from our cached row. It is the
+  latest paid invoice's `amount_paid` (after coupons, including tax), times the
+  unused fraction of the period on that invoice's line items. The fraction is
+  measured at the subscription's `ended_at`, rounded **down** to whole cents
+  and clamped to what was paid. A free period refunds nothing, and Stripe is
+  not asked to: a trial, a coupon, or a 100%-off promotion code.
+- **Order: cancel, then refund.** There is never a refund without a
+  cancellation. The amount is measured at an instant Stripe has recorded
+  (`ended_at`), so a retry computes the same amount as the first attempt. A
+  failure between the two leaves a cancelled subscription with no refund, and
+  repeating the request finishes it.
+- **Never twice.** Each refund is made under the idempotency key
+  `traxjourney-unused-period-refund-<subscription id>`. The key is also stamped
+  on the refund's metadata. Withdrawal and deletion share it, so withdrawing
+  and then deleting refunds once. Before creating a refund, the payment's
+  existing refunds are read:
+  - one carrying the key means it is done, which covers retries after Stripe's
+    24-hour idempotency window;
+  - the others reduce what is left, so a refund made by hand in the dashboard
+    cannot be exceeded.
+- **Paid without a payment.** An invoice paid from the customer's credit
+  balance, or marked paid by hand, has nothing to refund against. It refunds 0
+  and logs a warning asking for a manual refund, rather than trapping an
+  account deletion.
+- **Locking.** `POST /withdraw` calls Stripe without holding any lock. It then
+  takes the account's lock (`lock_account`, as in #429) only to record the
+  withdrawal: `withdrawn_at`, and the ended subscription as
+  `customer.subscription.deleted` will report it (status `canceled`, plan
+  Free). Recording it at once means the reloaded plan page does not show the
+  paid plan until the webhook lands.
+
+In the app, the plan page shows **Withdraw and get a refund** while
+`/api/billing/me` reports `withdrawal_open`. That is true for a live
+subscription inside the window. It is also true for one that ended inside the
+window and has no `withdrawn_at`, so a withdrawal whose refund failed can be
+retried. The confirmation dialog shows the estimate from
+`GET /api/billing/withdraw`. That estimate is not part of `/me`, because `/me`
+runs on every settings visit and must not wait on Stripe. The delete-account
+dialog says the unused part will be refunded while the window is open.
+
+**Known limitation: upgrades inside the window.** Only the latest paid
+invoice is refunded. An upgrade does not invoice its prorated difference at
+once (`create_prorations`); it waits as a pending invoice item for the next
+renewal. So after an upgrade inside the window:
+
+- the refund is measured on what was actually paid, the original plan;
+- the immediate cancellation leaves the pending difference uninvoiced on the
+  Stripe customer. It would be charged on that customer's next invoice, if
+  they ever subscribe again.
+
+Check such a customer's pending invoice items in the dashboard and delete them
+by hand.
+
+### VAT
+
+`STRIPE_AUTOMATIC_TAX=1` turns on Stripe Tax at checkout. It is off by default
+and is a runtime variable. When on, checkout:
+
+- sets `automatic_tax.enabled`;
+- requires the billing address (`billing_address_collection=required`), since
+  the VAT rate depends on where the buyer lives;
+- saves the address and name on a returning customer
+  (`customer_update: {address, name: auto}`).
+
+Prices are **tax-inclusive** (`tax_behavior=inclusive`, set by
+`scripts/stripe_catalog.py`), because EU consumer prices must be shown with
+VAT. €3.99 is what the customer pays, and the VAT is part of it.
+
+### Owner steps
+
+1. Register for VAT under the EU **OSS** scheme.
+2. Enable Stripe Tax in the dashboard (origin address, registrations, default
+   tax code for the products), in the sandbox and in live.
+3. Set the **terms-of-service URL** (Stripe setup, step 5). Deploy PR #427
+   (`/terms`) first, so the link resolves. Do this before deploying this
+   change, or checkout fails.
+4. Make the prices tax-inclusive by running the provisioner. Run the dry run
+   first and read it: an existing price is reported as `SET tax_behavior
+   unspecified → inclusive (in place)`. Stripe allows that one change on an
+   existing price, so current subscribers are covered too. A replacement would
+   leave them on an untagged price that Stripe Tax taxes by the account
+   default. An `exclusive` price, or an amount change, goes through the
+   replace path instead:
+
+   ```bash
+   STRIPE_SECRET_KEY=sk_test_... python scripts/stripe_catalog.py          # sandbox, dry run
+   STRIPE_SECRET_KEY=sk_test_... python scripts/stripe_catalog.py --apply
+   STRIPE_SECRET_KEY=sk_live_... python scripts/stripe_catalog.py --live   # live, dry run
+   STRIPE_SECRET_KEY=sk_live_... python scripts/stripe_catalog.py --apply --live
+   ```
+
+5. Only then set `STRIPE_AUTOMATIC_TAX=1` and recreate the container.
+
 ## Where the plan UI lives
 
 `/settings` shows a summary card — plan, anything worth flagging, and how full
@@ -353,5 +502,3 @@ provider redirects the *browser* back to it by URL, with
   iOS build is submitted.
 - Feature gates beyond trip count, storage and trip length.
 - Dunning and receipt emails (Stripe sends its own for now).
-- VAT: we are the merchant of record. Stripe Tax can be switched on when the
-  thresholds start to matter.

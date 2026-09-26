@@ -6,6 +6,8 @@ Routes:
     POST /api/billing/checkout    — start a subscription purchase → provider URL
     POST /api/billing/change-plan — move a live subscription to another tier → URL
     POST /api/billing/portal      — open the provider's billing portal → URL
+    GET  /api/billing/withdraw    — what withdrawing now would refund (#441)
+    POST /api/billing/withdraw    — cancel now + pro-rata refund, inside 14 days
     POST /api/billing/webhook     — provider callbacks (signature-verified, no auth)
 
 A deployment that has not configured a payment provider does not sell anything:
@@ -17,6 +19,7 @@ the landing page, enforced in code.
 from __future__ import annotations
 
 import os
+import time
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -41,10 +44,12 @@ from src.billing.entitlements import (
 )
 from src.billing.gateway import GatewayError, get_gateway
 from src.billing.plans import FREE, PAID_PLANS, catalogue
+from src.billing.refunds import withdrawal_window_closes_at, withdrawal_window_open
 from src.billing.webhook_events import (
     schedule_update_from_event,
     subscription_update_from_event,
 )
+from src.billing.withdrawal import refund_quote, refund_unused_period
 from src.utils.logging import get_logger
 
 _log = get_logger(__name__)
@@ -98,6 +103,17 @@ class BillingMeOut(BaseModel):
     )
     pending_plan_at: float = Field(
         default=0.0, description="When the pending change applies; unix seconds"
+    )
+    withdrawal_open: bool = Field(
+        default=False,
+        description="True while withdrawing refunds the unused part of the "
+                    "current period (14 days from the first purchase) and "
+                    "there is a subscription to withdraw from",
+    )
+    withdrawal_closes_at: float = Field(
+        default=0.0,
+        description="When the withdrawal window closes, unix seconds; 0 when "
+                    "no purchase is on record",
     )
     limits: dict
     usage: UsageOut
@@ -161,6 +177,10 @@ def billing_me(current_user: Annotated[dict, Depends(get_current_user)]):
         pending_plan=pending,
         pending_plan_name=plan_display_name(pending) if pending else "",
         pending_plan_at=(row.pending_plan_at if row and pending else 0.0),
+        withdrawal_open=_withdrawal_offered(row, time.time()),
+        withdrawal_closes_at=(
+            withdrawal_window_closes_at(row.initial_paid_at) if row else 0.0
+        ),
         limits=limits.as_dict(),
         usage=usage,
     )
@@ -246,6 +266,7 @@ def create_checkout(
             customer_id=customer_id,
             success_url=_return_url(body.return_path, "?checkout=success"),
             cancel_url=_return_url(body.return_path, "?checkout=cancelled"),
+            terms_url=f"{_FRONTEND_ORIGIN}/terms",
         )
     except GatewayError as exc:
         _log.warning("Checkout failed for user %s: %s", user_info_id, exc)
@@ -405,6 +426,158 @@ def create_portal(
         _log.warning("Portal failed for user %s: %s", user_info_id, exc)
         raise HTTPException(status_code=502, detail="Could not open the billing portal")
     return CheckoutOut(url=result.get("url") or "")
+
+
+# ── Withdrawal (issue #441) ───────────────────────────────────────────────────
+
+#: 409 codes, in a flat body like ``not_subscribed`` above.
+WITHDRAWAL_WINDOW_CLOSED = "withdrawal_window_closed"
+REFUND_FAILED = "refund_failed"
+
+
+class WithdrawalQuoteOut(BaseModel):
+    amount_cents: int = Field(description="Estimated refund, smallest currency unit")
+    currency: str = Field(description="ISO currency code, lower case, e.g. 'eur'")
+    closes_at: float = Field(description="When the window closes, unix seconds")
+
+
+class WithdrawalOut(BaseModel):
+    refunded_cents: int = Field(description="Refunded, smallest currency unit")
+    currency: str
+
+
+def _withdrawal_offered(row: Subscription | None, now: float) -> bool:
+    """Whether the app offers "Withdraw and get a refund" right now.
+
+    A live subscription inside the window — or one that ended inside it and
+    has not been withdrawn from: that is what a refund which failed after the
+    cancellation looks like, and the user must be able to try it again.
+    """
+    if row is None or not billing_enabled() or not row.provider_subscription_id:
+        return False
+    if not withdrawal_window_open(row.initial_paid_at, now):
+        return False
+    return subscription_is_live(row.status or "") or not row.withdrawn_at
+
+
+def _withdrawal_target(user_info_id: int, now: float):
+    """``(customer, subscription, closes_at)``, or the 409 refusing it."""
+    with get_session() as sess:
+        row = subs.get_subscription(sess, user_info_id)
+        customer_id = row.provider_customer_id if row else ""
+        subscription_id = row.provider_subscription_id if row else ""
+        initial_paid_at = row.initial_paid_at if row else 0.0
+    if not subscription_id:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"detail": "There is no subscription to withdraw from.",
+                     "code": NOT_SUBSCRIBED},
+        )
+    if not withdrawal_window_open(initial_paid_at, now):
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "detail": "The 14-day withdrawal period after your first "
+                          "purchase has ended, so there is no refund. You can "
+                          "still cancel from the billing portal: your plan "
+                          "then stays until the end of the period you paid "
+                          "for, and is not renewed.",
+                "code": WITHDRAWAL_WINDOW_CLOSED,
+            },
+        )
+    return customer_id, subscription_id, withdrawal_window_closes_at(initial_paid_at)
+
+
+@router.get("/withdraw", response_model=WithdrawalQuoteOut,
+            summary="What withdrawing now would refund")
+def withdrawal_quote(current_user: Annotated[dict, Depends(get_current_user)]):
+    """Estimate for the confirmation dialog, from the invoice at the provider."""
+    gateway = _require_gateway()
+    now = time.time()
+    target = _withdrawal_target(int(current_user["sub"]), now)
+    if isinstance(target, JSONResponse):
+        return target
+    _customer_id, subscription_id, closes_at = target
+    try:
+        quote = refund_quote(gateway, subscription_id, now)
+    except GatewayError as exc:
+        _log.warning("Withdrawal quote failed for %s: %s", subscription_id, exc)
+        raise HTTPException(status_code=502, detail="Could not reach the billing service")
+    return WithdrawalQuoteOut(amount_cents=quote.amount_cents,
+                              currency=quote.currency, closes_at=closes_at)
+
+
+@router.post("/withdraw", response_model=WithdrawalOut,
+             summary="Withdraw: cancel now and refund the unused period")
+def withdraw(current_user: Annotated[dict, Depends(get_current_user)]):
+    """Cancel immediately and refund the unused part, inside the window (#441).
+
+    Cancel first, then refund — see :mod:`src.billing.withdrawal` for why, and
+    for what makes a retry safe: cancelling again is a no-op, and the refund is
+    made under one idempotency key per subscription, shared with account
+    deletion. A call that fails after cancelling can be repeated; so can one
+    that succeeded, which reports the refund already made.
+
+    Stripe is never called while the account's lock is held. The lock is only
+    taken to record the withdrawal once both calls are done, the same
+    discipline as account deletion (issue #429).
+    """
+    gateway = _require_gateway()
+    user_info_id = int(current_user["sub"])
+    now = time.time()
+    target = _withdrawal_target(user_info_id, now)
+    if isinstance(target, JSONResponse):
+        return target
+    customer_id, subscription_id, _closes_at = target
+
+    try:
+        gateway.cancel_subscription(subscription_id, customer_id)
+    except GatewayError as exc:
+        _log.warning("Withdrawal: cancelling %s failed: %s", subscription_id, exc)
+        raise HTTPException(
+            status_code=502,
+            detail="Your subscription could not be cancelled, so nothing was "
+                   "refunded. Please try again in a few minutes.",
+        )
+    try:
+        refund = refund_unused_period(gateway, subscription_id)
+    except GatewayError as exc:
+        _log.error(
+            "Withdrawal: %s was cancelled but the refund failed: %s — the user "
+            "can retry; if they do not, refund it by hand", subscription_id, exc,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            content={
+                "detail": "Your subscription was cancelled, but the refund "
+                          "could not be issued yet. Please try again in a few "
+                          "minutes. You will not be refunded twice.",
+                "code": REFUND_FAILED,
+            },
+        )
+
+    with get_session() as sess:
+        subs.lock_account(sess, user_info_id)
+        row = subs.get_subscription(sess, user_info_id)
+        if row is not None and row.provider_subscription_id == subscription_id:
+            row.withdrawn_at = now
+            # What customer.subscription.deleted will say, recorded now: the
+            # refund was only made because Stripe reports the subscription
+            # ended. Waiting for the webhook would show the paid plan — and
+            # the withdraw action — on the page the app reloads straight away.
+            row.status = "canceled"
+            row.plan = FREE
+            row.cancel_at_period_end = False
+            row.pending_plan = ""
+            row.pending_plan_at = 0.0
+            row.updated_at = time.time()
+            sess.add(row)
+            sess.commit()
+        else:
+            sess.rollback()  # deleted meanwhile, or another subscription now
+    _log.info("Withdrawal: account %s withdrew from %s, refunded %s %s",
+              user_info_id, subscription_id, refund.amount_cents, refund.currency)
+    return WithdrawalOut(refunded_cents=refund.amount_cents, currency=refund.currency)
 
 
 #: Events announcing a subscription that has just started. One that belongs to

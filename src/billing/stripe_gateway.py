@@ -14,8 +14,9 @@ import json
 import os
 import time
 
-from src.billing.gateway import GatewayError
+from src.billing.gateway import GatewayError, RefundBasis
 from src.billing.plans import FREE, PAID_PLANS, price_lookup_key
+from src.billing.refunds import WITHDRAWAL_TERMS_VERSION
 from src.billing.webhook_events import price_id_for_plan
 from src.utils.logging import get_logger
 
@@ -119,12 +120,53 @@ def webhook_secret() -> str:
     return os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
 
 
+def automatic_tax_enabled() -> bool:
+    """True when Stripe Tax computes VAT at checkout (``STRIPE_AUTOMATIC_TAX``).
+
+    Off by default (issue #441): Stripe Tax needs the account registered for
+    VAT (the EU OSS scheme) and switched on in the dashboard first, and a
+    checkout asking for it before then fails. A runtime variable, read per
+    call, so the owner flips it without a release.
+    """
+    flag = os.environ.get("STRIPE_AUTOMATIC_TAX", "").strip().lower()
+    return flag in ("1", "true", "yes", "on")
+
+
+def _consent_text(terms_url: str) -> dict:
+    """What checkout shows beside the required terms box, and by the button.
+
+    The box is the buyer's express consent to start the service at once, and
+    their acknowledgement that withdrawing then refunds only the unused part
+    (#441). The wording is versioned by ``WITHDRAWAL_TERMS_VERSION``: change
+    one, bump the other.
+    """
+    terms = f"[Terms of Service]({terms_url})" if terms_url else "Terms of Service"
+    return {
+        "terms_of_service_acceptance": {
+            "message": (
+                f"I agree to the {terms}. I ask for my subscription to start "
+                "immediately. If I withdraw within 14 days of my first "
+                "purchase, I will be refunded only the unused part of the "
+                "current period. After 14 days, cancelling stops renewal and "
+                "nothing is refunded."
+            ),
+        },
+        "submit": {
+            "message": (
+                "Your subscription starts as soon as you pay. You can withdraw "
+                "within 14 days of your first purchase for a pro-rata refund "
+                "of the unused period."
+            ),
+        },
+    }
+
+
 class StripeGateway:
     """Checkout, Customer Portal and webhook verification via Stripe."""
 
     def create_checkout_session(
         self, *, user_info_id: int, plan: str, email: str, customer_id: str,
-        success_url: str, cancel_url: str,
+        success_url: str, cancel_url: str, terms_url: str = "",
     ) -> dict:
         stripe = _stripe()
         # Raises GatewayError when the catalogue has no price for this plan;
@@ -141,9 +183,18 @@ class StripeGateway:
             # Both, on purpose: metadata rides along to the subscription object,
             # client_reference_id shows up in the dashboard for support.
             "client_reference_id": str(user_info_id),
-            "metadata": metadata,
+            # The session's own metadata also names the wording of the
+            # withdrawal terms the consent box stood for; the webhook stores
+            # it with the consent, as proof (#441).
+            "metadata": {**metadata, "terms_version": WITHDRAWAL_TERMS_VERSION},
             "subscription_data": {"metadata": metadata},
             "allow_promotion_codes": True,
+            # Express consent to start at once, given on the page that
+            # concludes the contract (#441). Stripe refuses the session unless
+            # the account has a terms-of-service URL in its public details:
+            # see "Refunds and withdrawal" in docs/BILLING.md.
+            "consent_collection": {"terms_of_service": "required"},
+            "custom_text": _consent_text(terms_url),
         }
         # Reuse the customer across purchases so one person is one customer in
         # Stripe (and their portal shows their whole history).
@@ -151,6 +202,13 @@ class StripeGateway:
             params["customer"] = customer_id
         elif email:
             params["customer_email"] = email
+        if automatic_tax_enabled():
+            # VAT depends on where the buyer lives, so the address is required;
+            # a returning customer's is saved on them, for renewals to use.
+            params["automatic_tax"] = {"enabled": True}
+            params["billing_address_collection"] = "required"
+            if customer_id:
+                params["customer_update"] = {"address": "auto", "name": "auto"}
         try:
             session = stripe.checkout.Session.create(**params)
         except Exception as exc:  # SDK raises a family of StripeError subclasses
@@ -372,6 +430,111 @@ class StripeGateway:
             _log.info("Stripe customer %s: cancelled %s", customer_id, running)
         return running
 
+    def subscriptions_ended_since(self, customer_id: str, since: float) -> list[str]:
+        """Subscriptions of ``customer_id`` that ended at or after ``since``."""
+        stripe = _stripe()
+        if not customer_id:
+            raise GatewayError("No billing account to look up")
+        try:
+            subscriptions = stripe.Subscription.list(
+                customer=customer_id, status="canceled", limit=100
+            )
+            return [
+                str(_field(sub, "id") or "")
+                for sub in subscriptions.auto_paging_iter()
+                if _ended_at(sub) and _ended_at(sub) >= since
+            ]
+        except Exception as exc:
+            _log.warning("Stripe listing failed for customer %s: %s", customer_id, exc)
+            raise GatewayError(str(exc)) from exc
+
+    def refund_basis(self, subscription_id: str) -> RefundBasis:
+        """The latest paid invoice of ``subscription_id``, and when it ended."""
+        stripe = _stripe()
+        if not subscription_id:
+            raise GatewayError("No subscription to refund")
+        try:
+            sub = stripe.Subscription.retrieve(subscription_id)
+            invoice = _latest_paid_invoice(stripe, subscription_id)
+        except Exception as exc:
+            _log.warning("Stripe refund lookup failed for %s: %s", subscription_id, exc)
+            raise GatewayError(str(exc)) from exc
+        if invoice is None:
+            return RefundBasis(subscription_id, _ended_at(sub), "", 0, "", 0.0, 0.0)
+        start, end = _invoice_period(invoice)
+        return RefundBasis(
+            subscription_id=subscription_id,
+            ended_at=_ended_at(sub),
+            invoice_id=str(_field(invoice, "id") or ""),
+            amount_paid=int(_field(invoice, "amount_paid") or 0),
+            currency=str(_field(invoice, "currency") or ""),
+            period_start=start,
+            period_end=end,
+        )
+
+    def refund_unused(
+        self, subscription_id: str, amount_cents: int, idempotency_key: str
+    ) -> int:
+        """Refund part of the latest paid invoice, at most once per key (#441).
+
+        Against that invoice's payment: a PaymentIntent, or a charge on older
+        API versions. Before creating anything, the refunds already on the
+        payment are read. One stamped with this key means the work is done (a
+        retry after the provider's 24-hour idempotency window, or after a lost
+        response). The others reduce what is left, so a refund made by hand in
+        the dashboard cannot make this one overdraw the payment.
+        """
+        if amount_cents <= 0:
+            return 0
+        if not idempotency_key:
+            raise GatewayError("A refund needs an idempotency key")
+        stripe = _stripe()
+        try:
+            invoice = _latest_paid_invoice(stripe, subscription_id)
+            if invoice is None:
+                raise GatewayError(f"Subscription {subscription_id} has no paid invoice")
+            target = _invoice_payment(stripe, invoice)
+            if target is None:
+                # Paid without a payment to refund: from the customer's credit
+                # balance, or marked paid by hand. A retry cannot change that,
+                # and refusing would trap an account deletion for good.
+                _log.warning(
+                    "Invoice %s of %s was paid without a refundable payment — "
+                    "refund %s cents by hand in the Stripe dashboard",
+                    _field(invoice, "id"), subscription_id, amount_cents,
+                )
+                return 0
+            already = 0
+            for refund in stripe.Refund.list(limit=100, **target).auto_paging_iter():
+                if str(_field(refund, "status") or "") in ("failed", "canceled"):
+                    continue
+                metadata = _field(refund, "metadata") or {}
+                if _field(metadata, "idempotency_key") == idempotency_key:
+                    return int(_field(refund, "amount") or 0)
+                already += int(_field(refund, "amount") or 0)
+            amount = min(amount_cents, int(_field(invoice, "amount_paid") or 0) - already)
+            if amount <= 0:
+                return 0
+            refund = stripe.Refund.create(
+                amount=amount,
+                reason="requested_by_customer",
+                metadata={
+                    "idempotency_key": idempotency_key,
+                    "subscription": subscription_id,
+                    "invoice": str(_field(invoice, "id") or ""),
+                },
+                idempotency_key=idempotency_key,
+                **target,
+            )
+        except GatewayError:
+            raise
+        except Exception as exc:
+            _log.warning("Stripe refund failed for %s: %s", subscription_id, exc)
+            raise GatewayError(str(exc)) from exc
+        _log.info("Stripe refund %s: %s cents of %s (key %s)",
+                  _field(refund, "id"), amount, subscription_id, idempotency_key)
+        return int(_field(refund, "amount") or amount)
+
     @staticmethod
     def _require_customer(stripe, customer_id: str) -> bool:
         """Check the provider knows ``customer_id``. False if it was deleted.
@@ -420,6 +583,75 @@ class StripeGateway:
 
 #: Stripe subscription statuses that will never bill again.
 _ENDED_STATUSES = frozenset({"canceled", "incomplete_expired"})
+
+
+def _ended_at(sub) -> float:
+    """When a subscription ended, unix seconds; 0 while it can still run.
+
+    ``ended_at``, not ``canceled_at``: a cancellation scheduled for the end of
+    the period sets ``canceled_at`` when it is asked for, but the service runs
+    on until ``ended_at``, and the unused part is measured from there.
+    """
+    if str(_field(sub, "status") or "") not in _ENDED_STATUSES:
+        return 0.0
+    return float(_field(sub, "ended_at") or _field(sub, "canceled_at") or 0)
+
+
+def _latest_paid_invoice(stripe, subscription_id: str):
+    """The subscription's most recent paid invoice, or None (newest first)."""
+    found = stripe.Invoice.list(
+        subscription=subscription_id, status="paid", limit=1
+    )["data"] or []
+    return found[0] if found else None
+
+
+def _invoice_period(invoice) -> tuple[float, float]:
+    """The service period an invoice paid for.
+
+    Read off its line items: the invoice's own ``period_start``/``period_end``
+    describe the *previous* period, for usage billing, and on a first invoice
+    are both its creation time. They are only the fallback.
+    """
+    lines = _field(_field(invoice, "lines") or {}, "data") or []
+    periods = [_field(line, "period") for line in lines]
+    starts = [float(_field(p, "start") or 0) for p in periods if p]
+    ends = [float(_field(p, "end") or 0) for p in periods if p]
+    if starts and ends:
+        return min(starts), max(ends)
+    return (float(_field(invoice, "period_start") or 0),
+            float(_field(invoice, "period_end") or 0))
+
+
+def _object_id(value) -> str:
+    """An id, whether the payload carries it bare or as an expanded object."""
+    if not value:
+        return ""
+    if isinstance(value, str):
+        return value
+    return str(_field(value, "id") or "")
+
+
+def _invoice_payment(stripe, invoice) -> dict | None:
+    """``{"payment_intent": id}`` or ``{"charge": id}`` that paid ``invoice``.
+
+    API versions before 2025 carried them on the invoice; later ones list the
+    payments separately (``InvoicePayment``). None when it was paid without
+    one.
+    """
+    for field in ("payment_intent", "charge"):
+        found = _object_id(_field(invoice, field))
+        if found:
+            return {field: found}
+    payments = stripe.InvoicePayment.list(
+        invoice=str(_field(invoice, "id") or ""), status="paid", limit=10
+    )
+    for invoice_payment in payments.auto_paging_iter():
+        payment = _field(invoice_payment, "payment") or {}
+        for field in ("payment_intent", "charge"):
+            found = _object_id(_field(payment, field))
+            if found:
+                return {field: found}
+    return None
 
 
 def _is_missing(exc: Exception) -> bool:

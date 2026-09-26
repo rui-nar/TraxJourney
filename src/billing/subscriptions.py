@@ -130,6 +130,26 @@ def _about_another_subscription(row: Subscription, update: SubscriptionUpdate) -
     )
 
 
+def _record_purchase_facts(row: Subscription, update: SubscriptionUpdate) -> bool:
+    """Record what the event proves about the purchase. True when it changed.
+
+    * The first paid start ever reported opens the withdrawal window (#441) and
+      is never moved afterwards — not by a renewal, a plan change, or a later
+      subscription — so the window cannot be reopened.
+    * The checkout consent is the latest one given; an older one arriving late
+      does not replace it.
+    """
+    changed = False
+    if update.paid_since and not row.initial_paid_at:
+        row.initial_paid_at = update.paid_since
+        changed = True
+    if update.terms_accepted_at and update.terms_accepted_at > (row.terms_accepted_at or 0):
+        row.terms_accepted_at = update.terms_accepted_at
+        row.terms_version = update.terms_version
+        changed = True
+    return changed
+
+
 def apply_update(sess, update: SubscriptionUpdate) -> bool:
     """Apply one event's state. Returns True when the row changed.
 
@@ -137,7 +157,8 @@ def apply_update(sess, update: SubscriptionUpdate) -> bool:
     than what we already applied, cannot be attributed to any account, or is
     about another subscription than the one tracked and would not replace it.
     All are normal and must still be acknowledged with a 2xx, or Stripe will
-    retry them forever.
+    retry them forever. Such an event still records the purchase facts it
+    carries (see :func:`_record_purchase_facts`), and returns True if it did.
     """
     row = resolve_row(sess, update)
     if row is None:
@@ -147,11 +168,18 @@ def apply_update(sess, update: SubscriptionUpdate) -> bool:
         )
         return False
 
+    # Facts about the purchase are recorded before the ordering guards: they
+    # hold whatever order the events arrive in, and the checkout event that
+    # carries the consent routinely lands after the subscription event that
+    # makes it look stale.
+    facts = _record_purchase_facts(row, update)
+
+    stale = False
     if update.event_id and row.last_event_id == update.event_id:
-        return False  # already applied (Stripe redelivery)
-    if update.event_at and row.last_event_at and update.event_at < row.last_event_at:
-        return False  # out-of-order redelivery of an older event
-    if _about_another_subscription(row, update) and not subscription_is_live(update.status):
+        stale = True  # already applied (Stripe redelivery)
+    elif update.event_at and row.last_event_at and update.event_at < row.last_event_at:
+        stale = True  # out-of-order redelivery of an older event
+    elif _about_another_subscription(row, update) and not subscription_is_live(update.status):
         # The row tracks one subscription. Another one ending must not
         # overwrite it: a paying user would lose their plan, and account
         # deletion would read "canceled" while the tracked one still bills
@@ -161,7 +189,13 @@ def apply_update(sess, update: SubscriptionUpdate) -> bool:
             update.event_id, update.subscription_id, update.status,
             row.provider_subscription_id,
         )
-        return False
+        stale = True
+    if stale:
+        if facts:
+            row.updated_at = time.time()
+            sess.add(row)
+            sess.commit()
+        return facts
 
     # A pending change that has now happened is no longer pending. Clearing it
     # on *any* plan move, not just the one that was scheduled, is deliberate:

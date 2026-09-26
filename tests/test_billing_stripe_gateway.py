@@ -684,3 +684,300 @@ class TestExpireCheckoutSession:
                            session_status_after_expire_error="open")
         with pytest.raises(GatewayError):
             _install(monkeypatch, fake).expire_checkout_session("cs_1")
+
+
+# ── Refunds (issue #441) ─────────────────────────────────────────────────────
+
+_START, _END = 1_780_000_000, 1_780_000_000 + 30 * 86400
+
+
+def _invoice(*, amount_paid=399, lines=((_START, _END),), **extra) -> dict:
+    return {
+        "id": "in_1", "amount_paid": amount_paid, "currency": "eur",
+        "lines": {"object": "list",
+                  "data": [{"period": {"start": s, "end": e}} for s, e in lines]},
+        **extra,
+    }
+
+
+class _RefundStripe:
+    """The SDK surface the refund path uses, returning real StripeObjects.
+
+    An invoice without ``payment_intent``/``charge`` is the current API shape,
+    where payments are listed separately; ``invoice_payments`` answers that.
+    """
+
+    def __init__(self, *, subscription=None, invoices=(), invoice_payments=(),
+                 refunds=(), canceled=(), create_error=None):
+        fake = self
+        self.created: list[dict] = []
+        self.log: list[tuple] = []
+        self.refunds = list(refunds)
+        sub = subscription or {"id": "sub_1", "status": "canceled",
+                               "ended_at": _START + 10 * 86400}
+
+        class Subscription:
+            @staticmethod
+            def retrieve(sid):
+                fake.log.append(("subscription.retrieve", sid))
+                return _obj(**sub)
+
+            @staticmethod
+            def list(**params):
+                fake.log.append(("subscription.list", params))
+                return _page(*canceled)
+
+        class Invoice:
+            @staticmethod
+            def list(**params):
+                fake.log.append(("invoice.list", params))
+                return _page(*invoices)
+
+        class InvoicePayment:
+            @staticmethod
+            def list(**params):
+                fake.log.append(("invoice_payment.list", params))
+                return _page(*invoice_payments)
+
+        class Refund:
+            @staticmethod
+            def list(**params):
+                fake.log.append(("refund.list", params))
+                return _page(*fake.refunds)
+
+            @staticmethod
+            def create(**params):
+                fake.log.append(("refund.create", params))
+                if create_error is not None:
+                    raise create_error
+                fake.created.append(params)
+                return _obj(id="re_new", amount=params["amount"], status="succeeded")
+
+        self.Subscription = Subscription
+        self.Invoice = Invoice
+        self.InvoicePayment = InvoicePayment
+        self.Refund = Refund
+
+
+class TestRefundBasis:
+    def test_reads_the_latest_paid_invoice_and_when_it_ended(self, monkeypatch):
+        fake = _RefundStripe(invoices=[_invoice()])
+        basis = _install(monkeypatch, fake).refund_basis("sub_1")
+        assert basis.invoice_id == "in_1"
+        assert basis.amount_paid == 399 and basis.currency == "eur"
+        assert (basis.period_start, basis.period_end) == (_START, _END)
+        assert basis.ended_at == _START + 10 * 86400
+        assert ("invoice.list", {"subscription": "sub_1", "status": "paid",
+                                 "limit": 1}) in fake.log
+
+    def test_a_running_subscription_has_not_ended(self, monkeypatch):
+        fake = _RefundStripe(
+            subscription={"id": "sub_1", "status": "active", "canceled_at": 5,
+                          "ended_at": None},
+            invoices=[_invoice()])
+        assert _install(monkeypatch, fake).refund_basis("sub_1").ended_at == 0
+
+    def test_ended_is_ended_at_not_when_the_cancellation_was_asked(self, monkeypatch):
+        """Cancelled at period end: asked on day 3, ran until the end."""
+        fake = _RefundStripe(
+            subscription={"id": "sub_1", "status": "canceled",
+                          "canceled_at": _START + 3 * 86400, "ended_at": _END},
+            invoices=[_invoice()])
+        assert _install(monkeypatch, fake).refund_basis("sub_1").ended_at == _END
+
+    def test_the_period_spans_every_line(self, monkeypatch):
+        fake = _RefundStripe(invoices=[_invoice(
+            lines=((_START + 5, _END), (_START, _END - 5)))])
+        basis = _install(monkeypatch, fake).refund_basis("sub_1")
+        assert (basis.period_start, basis.period_end) == (_START, _END)
+
+    def test_nothing_ever_paid(self, monkeypatch):
+        fake = _RefundStripe(invoices=[])
+        basis = _install(monkeypatch, fake).refund_basis("sub_1")
+        assert basis.amount_paid == 0 and basis.invoice_id == ""
+
+    def test_a_provider_failure_is_a_gateway_error(self, monkeypatch):
+        import stripe
+        fake = _RefundStripe()
+
+        def boom(**params):
+            raise stripe.APIConnectionError("reset")
+        fake.Invoice.list = staticmethod(boom)
+        with pytest.raises(GatewayError):
+            _install(monkeypatch, fake).refund_basis("sub_1")
+
+
+class TestRefundUnused:
+    KEY = "traxjourney-unused-period-refund-sub_1"
+
+    def test_refunds_the_payment_intent_of_the_latest_invoice_under_the_key(
+        self, monkeypatch
+    ):
+        fake = _RefundStripe(
+            invoices=[_invoice()],
+            invoice_payments=[{"id": "inpay_1", "status": "paid",
+                               "payment": {"type": "payment_intent",
+                                           "payment_intent": "pi_1"}}])
+        out = _install(monkeypatch, fake).refund_unused("sub_1", 266, self.KEY)
+        assert out == 266
+        (params,) = fake.created
+        assert params["payment_intent"] == "pi_1"
+        assert params["amount"] == 266
+        assert params["idempotency_key"] == self.KEY
+        assert params["metadata"]["idempotency_key"] == self.KEY
+        assert params["metadata"]["subscription"] == "sub_1"
+
+    def test_reads_the_older_invoice_shape_too(self, monkeypatch):
+        fake = _RefundStripe(invoices=[_invoice(charge="ch_1")])
+        _install(monkeypatch, fake).refund_unused("sub_1", 100, self.KEY)
+        assert fake.created[0]["charge"] == "ch_1"
+        assert "payment_intent" not in fake.created[0]
+
+    def test_a_refund_already_made_under_the_key_is_not_made_again(self, monkeypatch):
+        """After Stripe's 24-hour idempotency window, or a lost response."""
+        fake = _RefundStripe(
+            invoices=[_invoice(payment_intent="pi_1")],
+            refunds=[{"id": "re_old", "amount": 266, "status": "succeeded",
+                      "metadata": {"idempotency_key": self.KEY}}])
+        out = _install(monkeypatch, fake).refund_unused("sub_1", 266, self.KEY)
+        assert out == 266
+        assert fake.created == []
+
+    def test_other_refunds_reduce_what_is_left(self, monkeypatch):
+        """A refund made by hand in the dashboard cannot be overdrawn."""
+        fake = _RefundStripe(
+            invoices=[_invoice(amount_paid=399, payment_intent="pi_1")],
+            refunds=[{"id": "re_hand", "amount": 300, "status": "succeeded",
+                      "metadata": {}}])
+        out = _install(monkeypatch, fake).refund_unused("sub_1", 266, self.KEY)
+        assert out == 99
+        assert fake.created[0]["amount"] == 99
+
+    def test_a_failed_earlier_refund_does_not_count(self, monkeypatch):
+        fake = _RefundStripe(
+            invoices=[_invoice(amount_paid=399, payment_intent="pi_1")],
+            refunds=[{"id": "re_f", "amount": 266, "status": "failed",
+                      "metadata": {"idempotency_key": self.KEY}}])
+        assert _install(monkeypatch, fake).refund_unused("sub_1", 266, self.KEY) == 266
+        assert len(fake.created) == 1
+
+    def test_nothing_left_refunds_nothing(self, monkeypatch):
+        fake = _RefundStripe(
+            invoices=[_invoice(amount_paid=399, payment_intent="pi_1")],
+            refunds=[{"id": "re_all", "amount": 399, "status": "succeeded",
+                      "metadata": {}}])
+        assert _install(monkeypatch, fake).refund_unused("sub_1", 266, self.KEY) == 0
+        assert fake.created == []
+
+    def test_zero_does_not_call_stripe(self, monkeypatch):
+        fake = _RefundStripe(invoices=[_invoice(amount_paid=0)])
+        assert _install(monkeypatch, fake).refund_unused("sub_1", 0, self.KEY) == 0
+        assert fake.log == []
+
+    def test_paid_without_a_payment_refunds_nothing_rather_than_trap(self, monkeypatch):
+        fake = _RefundStripe(invoices=[_invoice()], invoice_payments=[])
+        assert _install(monkeypatch, fake).refund_unused("sub_1", 266, self.KEY) == 0
+        assert fake.created == []
+
+    def test_a_refusal_is_a_gateway_error(self, monkeypatch):
+        import stripe
+        fake = _RefundStripe(
+            invoices=[_invoice(payment_intent="pi_1")],
+            create_error=stripe.InvalidRequestError("nope", "amount"))
+        with pytest.raises(GatewayError):
+            _install(monkeypatch, fake).refund_unused("sub_1", 266, self.KEY)
+
+    def test_no_paid_invoice_is_a_gateway_error(self, monkeypatch):
+        fake = _RefundStripe(invoices=[])
+        with pytest.raises(GatewayError):
+            _install(monkeypatch, fake).refund_unused("sub_1", 266, self.KEY)
+
+    def test_a_key_is_required(self, monkeypatch):
+        fake = _RefundStripe(invoices=[_invoice(payment_intent="pi_1")])
+        with pytest.raises(GatewayError):
+            _install(monkeypatch, fake).refund_unused("sub_1", 266, "")
+
+
+class TestSubscriptionsEndedSince:
+    def test_only_those_that_ended_at_or_after(self, monkeypatch):
+        fake = _RefundStripe(canceled=[
+            {"id": "sub_old", "status": "canceled", "ended_at": 99},
+            {"id": "sub_edge", "status": "canceled", "ended_at": 100},
+            {"id": "sub_new", "status": "canceled", "ended_at": 500},
+        ])
+        out = _install(monkeypatch, fake).subscriptions_ended_since("cus_1", 100)
+        assert out == ["sub_edge", "sub_new"]
+        assert fake.log[0] == ("subscription.list", {
+            "customer": "cus_1", "status": "canceled", "limit": 100})
+
+    def test_no_customer_is_an_error(self, monkeypatch):
+        with pytest.raises(GatewayError):
+            _install(monkeypatch, _RefundStripe()).subscriptions_ended_since("", 0)
+
+
+# ── Checkout consent and VAT (issue #441) ────────────────────────────────────
+
+class TestCheckoutConsentAndTax:
+    def _params(self, monkeypatch, *, customer_id=""):
+        created: dict = {}
+
+        class _Session:
+            @staticmethod
+            def create(**params):
+                created.update(params)
+                return _obj(id="cs_1", url="https://u", customer="cus_1")
+
+        fake = types.SimpleNamespace(checkout=types.SimpleNamespace(Session=_Session))
+        monkeypatch.setattr("src.billing.stripe_gateway._stripe", lambda: fake)
+        StripeGateway().create_checkout_session(
+            user_info_id=6, plan="tier_2", email="a@b.c", customer_id=customer_id,
+            success_url="https://app/ok", cancel_url="https://app/no",
+            terms_url="https://app/terms",
+        )
+        return created
+
+    def test_consent_to_start_now_is_required(self, monkeypatch):
+        params = self._params(monkeypatch)
+        assert params["consent_collection"] == {"terms_of_service": "required"}
+        box = params["custom_text"]["terms_of_service_acceptance"]["message"]
+        assert "[Terms of Service](https://app/terms)" in box
+        assert "start immediately" in box
+        assert "14 days" in box and "unused part" in box
+        assert "14 days" in params["custom_text"]["submit"]["message"]
+        for text in params["custom_text"].values():
+            assert len(text["message"]) <= 1200  # Stripe's limit
+
+    def test_the_session_names_the_terms_version(self, monkeypatch):
+        from src.billing.refunds import WITHDRAWAL_TERMS_VERSION
+        params = self._params(monkeypatch)
+        assert params["metadata"]["terms_version"] == WITHDRAWAL_TERMS_VERSION
+        assert params["metadata"]["user_info_id"] == "6"
+        # Only the session carries it; the subscription's metadata is unchanged.
+        assert "terms_version" not in params["subscription_data"]["metadata"]
+
+    @pytest.mark.parametrize("flag", ["", "0", "false", "off"])
+    def test_tax_is_off_by_default(self, monkeypatch, flag):
+        monkeypatch.setenv("STRIPE_AUTOMATIC_TAX", flag)
+        params = self._params(monkeypatch, customer_id="cus_1")
+        for key in ("automatic_tax", "billing_address_collection", "customer_update"):
+            assert key not in params
+
+    def test_tax_is_off_when_unset(self, monkeypatch):
+        monkeypatch.delenv("STRIPE_AUTOMATIC_TAX", raising=False)
+        assert "automatic_tax" not in self._params(monkeypatch, customer_id="cus_1")
+
+    @pytest.mark.parametrize("flag", ["1", "true", "YES", "on"])
+    def test_tax_on_collects_the_address(self, monkeypatch, flag):
+        monkeypatch.setenv("STRIPE_AUTOMATIC_TAX", flag)
+        params = self._params(monkeypatch, customer_id="cus_1")
+        assert params["automatic_tax"] == {"enabled": True}
+        assert params["billing_address_collection"] == "required"
+        assert params["customer_update"] == {"address": "auto", "name": "auto"}
+
+    def test_tax_on_for_a_new_customer_sends_no_customer_update(self, monkeypatch):
+        """Stripe refuses customer_update without a customer."""
+        monkeypatch.setenv("STRIPE_AUTOMATIC_TAX", "1")
+        params = self._params(monkeypatch, customer_id="")
+        assert params["automatic_tax"] == {"enabled": True}
+        assert "customer_update" not in params
+        assert params["customer_email"] == "a@b.c"

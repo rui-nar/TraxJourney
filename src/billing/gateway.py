@@ -12,6 +12,7 @@ the API uses to 404 the payment routes.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol
 
 
@@ -19,17 +20,43 @@ class GatewayError(Exception):
     """A call to the payment provider failed."""
 
 
+@dataclass(frozen=True)
+class RefundBasis:
+    """What a pro-rata refund of one subscription is computed from (#441).
+
+    Read from the provider, never from our cached row: the amount actually
+    paid (after coupons, including tax) and the period it paid for are on the
+    invoice, and when the subscription ended is on the subscription.
+    """
+
+    subscription_id: str
+    #: When the subscription ended (unix seconds), 0 while it still runs.
+    ended_at: float
+    #: The latest paid invoice's id; "" when nothing was ever paid.
+    invoice_id: str
+    #: What that invoice took, in the smallest currency unit. 0 for a trial, a
+    #: coupon or a 100%-off promotion code.
+    amount_paid: int
+    currency: str
+    #: The service period that invoice paid for, unix seconds.
+    period_start: float
+    period_end: float
+
+
 class BillingGateway(Protocol):
     """The provider operations the app needs."""
 
     def create_checkout_session(
         self, *, user_info_id: int, plan: str, email: str, customer_id: str,
-        success_url: str, cancel_url: str,
+        success_url: str, cancel_url: str, terms_url: str = "",
     ) -> dict:
         """Start a subscription purchase.
 
-        Returns ``{"url", "customer_id", "session_id"}``; ``session_id`` is
-        what :meth:`expire_checkout_session` takes.
+        The page must collect the buyer's express consent to start at once and
+        their acknowledgement of the withdrawal terms (#441), linking
+        ``terms_url`` when given. Returns ``{"url", "customer_id",
+        "session_id"}``; ``session_id`` is what :meth:`expire_checkout_session`
+        takes.
         """
 
     def expire_checkout_session(self, session_id: str) -> None:
@@ -80,6 +107,30 @@ class BillingGateway(Protocol):
         is kept: its invoices are the accounting record. Raises
         :class:`GatewayError` when anything could not be stopped, or when the
         provider does not know the customer at all.
+        """
+
+    def subscriptions_ended_since(self, customer_id: str, since: float) -> list[str]:
+        """Ids of ``customer_id``'s subscriptions that ended at or after ``since``.
+
+        What account deletion refunds inside the withdrawal window (#441). Asked
+        of the provider rather than taken from :meth:`cancel_all_for_customer`'s
+        answer, so a retry after a failed refund still finds the subscription
+        the first attempt cancelled.
+        """
+
+    def refund_basis(self, subscription_id: str) -> RefundBasis:
+        """The provider's facts a pro-rata refund is computed from (#441)."""
+
+    def refund_unused(
+        self, subscription_id: str, amount_cents: int, idempotency_key: str
+    ) -> int:
+        """Refund ``amount_cents`` of the latest paid invoice's payment (#441).
+
+        Returns the amount refunded under ``idempotency_key``, which may be one
+        made by an earlier call: the key is sent to the provider (so a retry
+        within its expiry is deduplicated there) and stamped on the refund (so
+        one after it is found and not repeated). Never refunds more than is
+        left unrefunded on the payment. Raises :class:`GatewayError` on failure.
         """
 
 
