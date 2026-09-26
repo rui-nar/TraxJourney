@@ -66,6 +66,12 @@ def test_skill_launches_each_agent(agent):
     assert f"`{agent}`" in SKILL.read_text(encoding="utf-8")
 
 
+def test_skill_lets_the_user_choose_the_reviewer_model():
+    """The agent pins Fable; an "Opus adversarial review" must not silently get Fable."""
+    text = SKILL.read_text(encoding="utf-8")
+    assert "launch the same agent with that model as an\noverride" in text
+
+
 def test_decision_rules_are_numbered_without_gaps():
     """§5 is applied in order, so a gap means a rule was lost."""
     numbers = sorted(int(rule[1:]) for rule in _defined_rules() if rule[0] == "D")
