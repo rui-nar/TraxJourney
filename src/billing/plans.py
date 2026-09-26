@@ -99,16 +99,28 @@ _DEFAULT_LIMITS: dict[str, tuple[int | None, int | None, int | None]] = {
 }
 
 #: What each plan offers beyond the limits, which are rendered separately.
+#:
+#: Every line here is a promise to someone paying for it, so each one must name
+#: something the code actually provides. tests/test_plan_features_backed.py
+#: fails on any string that is neither generated from the limits, mapped there to
+#: the routes that implement it, nor listed in :data:`MARKETING_ONLY_FEATURES`.
+#:
+#: The paid tiers used to list "Weekly backups", "Daily backups" and "Priority
+#: support" (issue #432). None of it existed: every plan, Free included, shares
+#: one server-wide database copy, and there is no support tier. They can come
+#: back once per-user backups, restore and a support channel are built.
 _EXTRA_FEATURES = {
     FREE: [
         "Strava & Polarsteps import",
         "Memories, encounters, journal",
         "Share links",
     ],
-    TIER_1: ["Weekly backups"],
-    TIER_2: ["Weekly backups", "Priority support"],
-    TIER_3: ["Daily backups", "Priority support"],
 }
+
+#: Advertised lines with no code behind them, which the owner has approved as
+#: marketing copy. Only the owner adds entries here — not a contributor, and not
+#: a coding agent making a test pass. Anything on this list must still be true.
+MARKETING_ONLY_FEATURES: frozenset[str] = frozenset()
 
 
 def _env_int(name: str, default: int | None) -> int | None:
