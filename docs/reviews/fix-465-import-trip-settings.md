@@ -53,3 +53,9 @@ existed; the findings were put into the §3 schema and triaged afterwards
 - Guard: —
 - Override: —
 - Outcome: open
+
+## Round 2 — 2026-09-27, reviewed at 9d1674ac
+
+Adversarial reviewer (Fable) over the fixes since round 1 (424b60bb..9d1674ac):
+no findings, no envelope questions. The review stops here (§6: a round with no
+Fix now decision).
