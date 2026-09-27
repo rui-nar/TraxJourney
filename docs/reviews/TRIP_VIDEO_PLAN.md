@@ -153,3 +153,17 @@ Reviewer: Fable; triager: Opus (same arrangement as rounds 1–2).
 ## Review closed — 2026-09-28
 
 Round 3 had no Fix now under the rules; the user overrode R3-1 and R3-2 to Fix now and chose no round 4. Open deferred entries: R1-6, R2-3.
+
+## Delivery
+
+Feature branch `feat/trip-video` (from `docs/trip-video-plan`, PR #498 to be closed in favour of the feature PR). Split approved by the user 2026-09-28 without overrides. The implementer and verifier project agents were not registered in the session; their instructions ran on general-purpose agents with the routed model.
+
+| Unit | Goal | Route | Rule | Attempts | Escalated | Verified first time | Findings traced |
+|---|---|---|---|---|---|---|---|
+| U1 | Legs, clips and pacing engine + CLI | Opus | S2 | | | | |
+| U3 | videojob table, migration, video quotas, storage reconcile | Opus | S4 | | | | |
+| U4 | video queue, worker kill dispatch, compose, ffmpeg | Opus | S5 | | | | |
+| U2 | Deterministic follow camera | Opus | S2 | | | | |
+| U6 | Video API, runner, consent, sweeps, emails | Opus | S5 | | | | |
+| U5 | Frame renderer and encoder | Opus | S4 | | | | |
+| U7 | Flutter request/consent/status/download | Opus | S5 | | | | |
