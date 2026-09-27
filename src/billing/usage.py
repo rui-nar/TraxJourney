@@ -117,11 +117,17 @@ def unlink_and_record(user_id: str | int, paths: Iterable[Path | str]) -> None:
 def reconcile_usage(user_id: str | int) -> int:
     """Recompute one user's counter from the filesystem. Returns the new total.
 
+    Rendered videos under ``videos/`` are left out (D6, D13): they expire on
+    their own and are not what the storage limit sells.
+
     The walk happens outside the DB session — see the note in
     :mod:`src.admin.storage` about not holding a pooled connection through it.
     """
     uid = int(user_id)
-    total = _storage.dir_size(_storage._user_dir(str(uid)))
+    user_dir = _storage._user_dir(str(uid))
+    # Clamped: a video written between the two walks must not go negative.
+    total = max(0, _storage.dir_size(user_dir)
+                - _storage.dir_size(user_dir / "videos"))
     now = time.time()
     with get_session() as sess:
         row = sess.exec(

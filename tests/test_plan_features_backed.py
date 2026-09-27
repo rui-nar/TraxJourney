@@ -60,7 +60,8 @@ _CODE_BACKED: dict[str, tuple[tuple[str, str], ...]] = {
 def _default_limits(monkeypatch):
     """Judge the shipped defaults, not whatever the host environment sets."""
     for prefix in ("FREE", "TIER_1", "TIER_2", "TIER_3"):
-        for suffix in ("MAX_PROJECTS", "MAX_STORAGE_MB", "MAX_TRIP_DAYS"):
+        for suffix in ("MAX_PROJECTS", "MAX_STORAGE_MB", "MAX_TRIP_DAYS",
+                       "MAX_VIDEOS_PER_MONTH", "MAX_VIDEO_HEIGHT"):
             monkeypatch.delenv(f"{prefix}_{suffix}", raising=False)
 
 
@@ -84,6 +85,11 @@ def _limit_lines(plan: str) -> set[str]:
 
     d = limits.max_trip_days
     lines.add("Trips of any length" if d is None else f"Up to {d} days per trip")
+
+    v = limits.max_videos_per_month
+    video = "Unlimited videos" if v is None else f"{v} video{'' if v == 1 else 's'} per month"
+    h = limits.max_video_height
+    lines.add(video if h is None else f"{video} · {h}p")
     return lines
 
 
@@ -128,7 +134,7 @@ def test_the_catalogue_the_app_renders_is_backed():
 
 def test_every_plan_states_all_three_limits():
     """The limit oracle above and the real wording agree, and every plan shows
-    its trips, photo and trip-length limits — a pricing card that silently lost
+    its trips, photo, trip-length and video limits — a pricing card that silently lost
     one of them would pass the other tests."""
     for plan in PLAN_ORDER:
         assert _limit_lines(plan) <= set(features_for(plan)), plan

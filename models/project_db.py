@@ -625,6 +625,42 @@ class DBPosterJob(sqlmodel.SQLModel, table=True):
     download_token: Optional[str] = sqlmodel.Field(default=None, index=True)
 
 
+class DBVideoJob(sqlmodel.SQLModel, table=True):
+    """An async server-side trip-video render job (docs/TRIP_VIDEO_PLAN.md).
+
+    Mirrors :class:`DBPosterJob`. ``user_info_id`` is the *requester*, not
+    necessarily the trip's owner: on a shared trip the companion who asked for
+    the render owns the job, its download and its quota charge (D12).
+
+    The rows are also the monthly quota (D3): every job created in the current
+    UTC calendar month counts unless it ``failed``, so the (user, created_at)
+    index is what the quota check reads. ``request_json`` never holds decrypted
+    geometry — that lives only in the job's ``geometry.json`` (D2).
+    """
+
+    __tablename__ = "videojob"
+    __table_args__ = (
+        Index("ix_videojob_user_created", "user_info_id", "created_at"),
+    )
+
+    id: Optional[int] = sqlmodel.Field(default=None, primary_key=True)
+    project_id: int = sqlmodel.Field(foreign_key="project.id", index=True)
+    user_info_id: int = sqlmodel.Field(foreign_key="userinfo.id")
+    status: str = sqlmodel.Field(default="pending")  # pending | running | done | failed | expired
+    stage: Optional[str] = sqlmodel.Field(default=None)  # human-readable progress label
+    progress: float = sqlmodel.Field(default=0.0)  # 0.0 – 1.0
+    request_json: str = sqlmodel.Field(default="{}")  # length/resolution/options, no geometry
+    created_at: float = sqlmodel.Field(default_factory=time.time)
+    started_at: Optional[float] = sqlmodel.Field(default=None)
+    completed_at: Optional[float] = sqlmodel.Field(default=None)
+    result_path: Optional[str] = sqlmodel.Field(default=None)
+    size_bytes: Optional[int] = sqlmodel.Field(default=None)
+    # Unguessable token for the unauthenticated email download link, as on
+    # DBPosterJob.
+    download_token: Optional[str] = sqlmodel.Field(default=None, index=True)
+    expires_at: Optional[float] = sqlmodel.Field(default=None)  # retention end (D8)
+
+
 class DBRouteJob(sqlmodel.SQLModel, table=True):
     """A queued segment route-resolution job (issue #173, phase D).
 
