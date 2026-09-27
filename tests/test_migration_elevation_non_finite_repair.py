@@ -290,9 +290,11 @@ def test_rows_are_read_one_at_a_time(tmp_path, monkeypatch):
 
 
 def test_it_is_the_single_head():
-    """It composes with the rest of the release: one line of history."""
+    """It composes with the rest of the release: one head, and it holds this
+    migration (merged with the #441/#429 line by 7d3e9b1f4a20)."""
     script = ScriptDirectory.from_config(_cfg(Path("unused.db")))
-    assert script.get_heads() == [_REPAIR_REV]
+    (head,) = script.get_heads()
+    assert _REPAIR_REV in {r.revision for r in script.walk_revisions("base", head)}
     assert script.get_revision(_REPAIR_REV).down_revision == _PREV_REV
 
 
