@@ -19,6 +19,7 @@ import '../share/share_strategy.dart';
 import '../share/share_transport_impl.dart';
 import '../share/social_share_controller.dart';
 import 'project_notifier.dart';
+import '../crypto/encrypted_display.dart';
 
 /// Builds the sorted memory list and opens the share modal — a bottom sheet on
 /// narrow/phone widths, a centered dialog on wider screens.
@@ -159,7 +160,7 @@ class _SocialShareModalState extends State<SocialShareModal> {
     _selectedPhotos
       ..clear()
       ..addAll(_photosOf(_memory));
-    _textCtrl.text = (_memory['description'] as String?) ?? '';
+    _textCtrl.text = readableOrNull(_memory['description'] as String?) ?? '';
   }
 
   List<String> _photosOf(Map<String, dynamic> m) =>
@@ -173,7 +174,7 @@ class _SocialShareModalState extends State<SocialShareModal> {
 
   String _memoryLabel(Map<String, dynamic> m) {
     final date = m['date'] as String? ?? '';
-    final name = (m['name'] as String?)?.trim();
+    final name = readableOrNull(m['name'] as String?)?.trim();
     return (name == null || name.isEmpty) ? date : '$date · $name';
   }
 
@@ -279,7 +280,7 @@ class _SocialShareModalState extends State<SocialShareModal> {
         _MemorySelect(
           label: _memoryLabel(_memory),
           date: _memory['date'] as String? ?? '',
-          title: (_memory['name'] as String?)?.trim().isNotEmpty == true
+          title: readableOrNull(_memory['name'] as String?)?.trim().isNotEmpty == true
               ? _memory['name'] as String
               : (_memory['date'] as String? ?? 'Memory'),
           memories: widget.allMemories,

@@ -12,7 +12,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../api/client.dart';
 import '../core/perf_timing.dart';
 import '../core/project_ref.dart';
+import '../crypto/e2ee_crypto.dart' show EncryptedField;
 import '../crypto/encryption.dart';
+import '../crypto/undecrypted_fields.dart';
 import '../map/geo_point.dart';
 import '../map/polyline_decoder.dart';
 import '../share/share_content_generator.dart';
@@ -429,6 +431,8 @@ class ProjectNotifier extends ChangeNotifier
   @override List<Map<String, dynamic>> items = [];   // ordered project items (activities + segments + memories)
   @override List<Map<String, dynamic>> people = [];  // trip people directory (#40)
   @override List<Map<String, dynamic>> groups = [];  // people groups (#50)
+  /// Memory/journal fields [_revealItems] left as ciphertext (#466).
+  @override final UndecryptedFields undecryptedFields = UndecryptedFields();
   @override Map<String, dynamic>? geo;
   bool isLoading = false;
   @override String? error;
@@ -3233,26 +3237,41 @@ class ProjectNotifier extends ChangeNotifier
     }
   }
 
-  /// Decrypt in-scope memory/journal text in [list] in place (issue #26).
-  /// No-op when encryption is locked/off; idempotent (plaintext passes through),
-  /// so it is safe to call after any item load.
+  /// Decrypt in-scope memory/journal text in [list] in place (issue #26), and
+  /// record in [undecryptedFields] each field it leaves as ciphertext: locked,
+  /// or another account's key (#466). It resets that record, so pass the whole
+  /// item list. Idempotent: text already revealed is not a well-formed
+  /// envelope, so it is neither decrypted nor marked again.
   Future<void> _revealItems(List<Map<String, dynamic>> list) async {
-    if (!encryption.isUnlocked) return;
+    undecryptedFields.reset();
     for (final item in list) {
       switch (item['item_type']) {
         case 'memory':
           final m = item['memory'];
           if (m is Map) {
-            m['name'] = await encryption.reveal(m['name'] as String?);
-            m['description'] = await encryption.reveal(m['description'] as String?);
+            m['name'] = await _revealField('memory', m, 'name');
+            m['description'] = await _revealField('memory', m, 'description');
           }
         case 'journal':
           final j = item['journal'];
           if (j is Map) {
-            j['description'] = await encryption.reveal(j['description'] as String?);
+            j['description'] = await _revealField('journal', j, 'description');
           }
       }
     }
+  }
+
+  Future<String?> _revealField(String kind, Map entry, String field) async {
+    final stored = entry[field] as String?;
+    final revealed = await encryption.reveal(stored);
+    final id = entry['id']?.toString();
+    if (id != null &&
+        stored != null &&
+        revealed == stored &&
+        EncryptedField.isWellFormed(stored)) {
+      undecryptedFields.mark(kind, id, field);
+    }
+    return revealed;
   }
 
   /// Decrypt in-scope activity fields in [list] in place (issue #29). `name`

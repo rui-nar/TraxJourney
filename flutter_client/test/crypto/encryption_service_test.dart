@@ -296,5 +296,22 @@ void main() {
       expect(await svc.protect(null), isNull);
       expect(await svc.protect(''), '');
     });
+
+    test('unlocked: protect encrypts every value, even one shaped like an envelope',
+        () async {
+      // Text the user typed ("v1.2.3") and another account's real envelope
+      // alike: protect never sends a value as it is (review R2-1 on #466).
+      final other = EncryptionService(FakeDeviceKeyStore(), FakeEncryptionApi());
+      await other.enable(const RecoveryKeyChoice());
+      final foreign = await other.encryptText('not mine');
+
+      final svc = EncryptionService(FakeDeviceKeyStore(), FakeEncryptionApi());
+      await svc.enable(const RecoveryKeyChoice());
+      for (final value in ['v1.2.3', 'v1.Dinner with Dr. Smith', foreign]) {
+        final protectedVal = await svc.protect(value);
+        expect(protectedVal, isNot(value));
+        expect(await svc.decryptText(protectedVal!), value);
+      }
+    });
   });
 }
