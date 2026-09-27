@@ -65,6 +65,12 @@ class PlanOut(BaseModel):
                     "null = unlimited"
     )
     features: list[str]
+    purchasable: bool = Field(
+        default=False,
+        description="True when this deployment sells this plan right now: a paid "
+                    "plan on a deployment with billing on. The landing page only "
+                    "quotes a price from a plan that is purchasable",
+    )
 
 
 class UsageOut(BaseModel):
@@ -127,8 +133,17 @@ def _require_gateway():
 
 @router.get("/plans", response_model=list[PlanOut], summary="List plans")
 def list_plans():
-    """Public plan catalogue — no authentication, so the landing page can use it."""
-    return catalogue()
+    """Public plan catalogue — no authentication, so the landing page can use it.
+
+    A self-hosted deployment still answers with the default catalogue, so
+    ``purchasable`` is what tells a client whether any of these prices is real
+    here (issue #432: the landing page must not quote a price nobody charges).
+    """
+    selling = billing_enabled()
+    return [
+        {**entry, "purchasable": selling and entry["id"] in PAID_PLANS}
+        for entry in catalogue()
+    ]
 
 
 @router.get("/me", response_model=BillingMeOut, summary="Current plan and usage")

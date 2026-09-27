@@ -136,12 +136,19 @@ class PlanInfo {
   final List<String> features;
   final PlanLimits limits;
 
+  /// This deployment sells this plan right now. A self-hosted server still
+  /// lists the default catalogue, prices included, so a price is only worth
+  /// quoting from a purchasable plan (#432). An older server omits the field,
+  /// which reads as false: better no price than a wrong one.
+  final bool purchasable;
+
   const PlanInfo({
     required this.id,
     required this.name,
     required this.priceLabel,
     required this.features,
     this.limits = const PlanLimits(),
+    this.purchasable = false,
   });
 
   factory PlanInfo.fromJson(Map<String, dynamic> json) => PlanInfo(
@@ -152,6 +159,7 @@ class PlanInfo {
             (json['features'] as List?)?.map((e) => e.toString()).toList() ?? const [],
         limits: PlanLimits.fromJson(
             (json['limits'] as Map?)?.cast<String, dynamic>()),
+        purchasable: json['purchasable'] == true,
       );
 
   bool get isFree => id == 'free';
