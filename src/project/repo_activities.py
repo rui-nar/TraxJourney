@@ -926,6 +926,14 @@ class ActivityMixin:
             })
             if act.elevation_profile else None
         )
+        # An activity the client encrypted (issue #29) carries its endpoints and
+        # elevation as ciphertext envelopes in the *_enc fields, which only an
+        # import supplies (issue #466): stored as the client's encryption
+        # migration stores them, the low-res copy holding the same envelope as
+        # the full profile (encryption_migration.dart). A readable value wins.
+        _low_res_json = _low_res_ep_json(_ep_json)
+        if _ep_json is None and act.elevation_profile_enc:
+            _ep_json = _low_res_json = act.elevation_profile_enc
 
         row = DBActivity(
             id=act.id,
@@ -962,11 +970,13 @@ class ActivityMixin:
             max_heartrate=act.max_heartrate,
             elev_high=act.elev_high,
             elev_low=act.elev_low,
-            start_latlng_json=json.dumps(act.start_latlng) if act.start_latlng else None,
-            end_latlng_json=json.dumps(act.end_latlng) if act.end_latlng else None,
+            start_latlng_json=(json.dumps(act.start_latlng) if act.start_latlng
+                               else act.start_latlng_enc or None),
+            end_latlng_json=(json.dumps(act.end_latlng) if act.end_latlng
+                             else act.end_latlng_enc or None),
             summary_polyline=act.summary_polyline,
             elevation_profile_json=_ep_json,
-            elevation_profile_low_res_json=_low_res_ep_json(_ep_json),
+            elevation_profile_low_res_json=_low_res_json,
             source=act.source,
             source_id=act.source_id,
         )

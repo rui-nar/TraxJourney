@@ -83,6 +83,22 @@ def _date_time(value: str) -> str:
 DateTime = Annotated[str, AfterValidator(_date_time)]
 
 
+#: A client-side E2EE ciphertext envelope, as EncryptedField.encode() writes
+#: one (e2ee_crypto.dart): ``v1.<wrapped key>.<ciphertext>``, both standard
+#: base64. Stricter than is_encrypted_envelope, which only tells an envelope
+#: from plaintext: a file may put nothing else where one belongs (#466).
+_ENVELOPE = re.compile(r"v1\.[A-Za-z0-9+/]+={0,2}\.[A-Za-z0-9+/]+={0,2}")
+
+
+def _envelope(value: str) -> str:
+    if not _ENVELOPE.fullmatch(value):
+        raise _refuse("is not an encrypted envelope")
+    return value
+
+
+Envelope = Annotated[str, AfterValidator(_envelope)]
+
+
 def _photo_name(value: Optional[str]) -> Optional[str]:
     """A photo the app stored itself names it with a uuid (issue #471)."""
     if value is not None and not is_photo_name(value):
@@ -343,9 +359,9 @@ class _Activity(_Model):
     refresh_error: Optional[str] = None
     source: Optional[str] = None
     source_id: Optional[str] = None
-    start_latlng_enc: Optional[str] = None
-    end_latlng_enc: Optional[str] = None
-    elevation_profile_enc: Optional[str] = None
+    start_latlng_enc: Optional[Envelope] = None
+    end_latlng_enc: Optional[Envelope] = None
+    elevation_profile_enc: Optional[Envelope] = None
 
 
 class _FilterState(_Model):
