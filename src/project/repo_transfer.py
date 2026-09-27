@@ -32,7 +32,7 @@ from models.project_db import (
 )
 from src.models.activity import is_activity_id
 from src.models.person import polarsteps_from_socials
-from src.models.project import Project
+from src.models.project import DEFAULT_SLEEPING_GROUPS, Project, day_counters_to_json
 from src.project.local_ids import allocate_local_activity_id
 from src.project.project_io import ProjectIO
 from src.project.repo_core import _compute_low_res_geo, bump_lock_version
@@ -320,7 +320,7 @@ class ImportExportMixin:
             else:
                 sess.delete(group)
 
-        _set_content_columns(row, project)
+        _set_content_columns(row, project, replacing=True)
         row.stats_json = None  # recomputed on the next read
         row.updated_at = time.time()
         sess.add(row)
@@ -620,8 +620,14 @@ def _item_day(item, project: Project) -> Optional[str]:
     return day[:10] if isinstance(day, str) and day else None
 
 
-def _set_content_columns(row: DBProject, project: Project) -> None:
-    """The trip columns a .traxj import writes: the rest it does not read."""
+def _set_content_columns(row: DBProject, project: Project, *, replacing: bool = False) -> None:
+    """The trip columns a .traxj import writes, as save_project writes them.
+
+    Its content always. Its settings (issue #465) too, except that on a
+    Replace (*replacing*) a setting the file does not carry is kept as the
+    trip has it: an older export, or the ZIP export's trip file, carries no
+    style, and has no say over the trip's.
+    """
     row.version = project.version
     row.filter_state_json = json.dumps({
         "start_date": project.filter_state.start_date,
@@ -631,8 +637,32 @@ def _set_content_columns(row: DBProject, project: Project) -> None:
     row.day_meta_json = json.dumps({
         dk: {"difficulty": dm.difficulty, "sleeping": dm.sleeping,
              "weather": dm.weather, "journal": dm.journal,
-             "tags": dm.tags}
+             "tags": dm.tags, "counters": day_counters_to_json(dm.counters)}
         for dk, dm in project.day_meta.items()
     })
-    row.sleeping_options_json = json.dumps(project.sleeping_options)
+    groups = project.sleeping_option_groups
+    row.sleeping_options_json = json.dumps([
+        {"name": n, "group": groups.get(n, DEFAULT_SLEEPING_GROUPS.get(n, "Other"))}
+        for n in project.sleeping_options
+    ])
     row.low_res_geo_json = _compute_low_res_geo(project)
+
+    def takes(key: str) -> bool:
+        return not replacing or key in project.settings_carried
+
+    if takes("trip_start"):
+        row.trip_start = project.trip_start
+    if takes("trip_end"):
+        row.trip_end = project.trip_end
+    if takes("counters"):
+        row.counters_json = json.dumps(
+            [{"name": c.name, "start": c.start} for c in project.counters])
+    for key in ("track_color", "track_secondary_color", "track_width",
+                "alternating_track_colors", "elevation_chart_color",
+                "elevation_chart_show_line", "color_by_type"):
+        if takes(key):
+            setattr(row, key, getattr(project, key))
+    if takes("type_styles"):
+        row.type_styles_json = json.dumps(project.type_styles)
+    if takes("languages"):
+        row.languages_json = json.dumps(project.languages)

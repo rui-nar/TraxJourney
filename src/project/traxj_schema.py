@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from datetime import datetime
 from typing import Annotated, Any, Dict, List, Optional, Tuple
 
@@ -39,6 +40,7 @@ from pydantic_core import PydanticCustomError
 
 from src.models.track_edit import repair_elapsed, repair_elevations
 from src.models.value_bounds import (
+    finite_or_none,
     DISTANCE_MAX_M, ELEVATION_MAX_M, ELEVATION_MIN_M, Count, Distance, Duration,
     Elevation, Gain, HeartRate, Lat, Lon, Speed,
 )
@@ -352,13 +354,36 @@ class _FilterState(_Model):
     activity_types: Optional[List[str]] = None
 
 
+def _day_counts(value: Any) -> Any:
+    """A day's counter entries: ``[{name, value}, ...]``, or the
+    ``{name: value}`` map written before a counter could repeat in a day
+    (until 1f40c355). Read by ``day_counters_from_json``."""
+    def number(v):
+        return type(v) in (int, float)
+    if value is None:
+        return value
+    if isinstance(value, dict):
+        if all(isinstance(k, str) and number(v) for k, v in value.items()):
+            return value
+    elif isinstance(value, list):
+        if all(isinstance(e, dict) and isinstance(e.get("name"), str)
+               and number(e.get("value", 0)) for e in value):
+            return value
+    raise _refuse("is not a list of counts")
+
+
 class _DayMeta(_Model):
     difficulty: Optional[str] = None
     sleeping: Optional[str] = None
     weather: Optional[str] = None
     journal: Optional[str] = None
     tags: Optional[List[str]] = None
-    counters: Any = None
+    counters: Annotated[Any, AfterValidator(_day_counts)] = None
+
+
+class _Counter(_Model):
+    name: str
+    start: float = 0.0
 
 
 class _Trip(_Model):
@@ -373,20 +398,22 @@ class _Trip(_Model):
     groups: List[_Group] = []
     day_meta: Optional[Dict[str, _DayMeta]] = None
     sleeping_options: Optional[List[str]] = None
-    # Written, not read back by the import.
+    # The trip's settings (issue #465). A colour or width the client cannot
+    # draw was normalised to None (its default) by normalise().
+    trip_end: Optional[str] = None
+    sleeping_option_groups: Optional[Dict[str, str]] = None
+    counters: Optional[List[_Counter]] = None
+    track_color: Optional[str] = None
+    track_secondary_color: Optional[str] = None
+    track_width: Optional[float] = None
+    alternating_track_colors: Optional[bool] = None
+    elevation_chart_color: Optional[str] = None
+    elevation_chart_show_line: Optional[bool] = None
+    color_by_type: Optional[bool] = None
+    type_styles: Optional[Dict[str, Dict[str, Any]]] = None
+    languages: Optional[List[str]] = None
+    # Written, never read back: the server's own optimistic-lock counter.
     lock_version: Any = None
-    trip_end: Any = None
-    sleeping_option_groups: Any = None
-    counters: Any = None
-    track_color: Any = None
-    track_secondary_color: Any = None
-    track_width: Any = None
-    alternating_track_colors: Any = None
-    elevation_chart_color: Any = None
-    elevation_chart_show_line: Any = None
-    color_by_type: Any = None
-    type_styles: Any = None
-    languages: Any = None
 
 
 # ── Reporting ───────────────────────────────────────────────────────────────
@@ -595,6 +622,29 @@ def _normalise_days(day_meta: Any) -> None:
             day["tags"] = None
 
 
+#: A colour as the settings screen writes one, and the client draws.
+_COLOUR = re.compile(r"#[0-9A-Fa-f]{6}")
+
+#: Widest track line kept: far past the settings slider's 6, which the
+#: settings API never enforced.
+_TRACK_WIDTH_MAX = 50.0
+
+
+def _normalise_style(document: Dict[str, Any]) -> None:
+    """A colour or track width the client cannot draw becomes None, the
+    default (issue #465). The settings API took any text and any width, so
+    a past trip may hold one; it is not worth refusing the file for, nor
+    worth keeping (the client throws on a colour of other hex digits)."""
+    for key in ("track_color", "track_secondary_color", "elevation_chart_color"):
+        value = document.get(key)
+        if isinstance(value, str) and not _COLOUR.fullmatch(value):
+            document[key] = None
+    width = document.get("track_width")
+    if (type(width) in (int, float) and finite_or_none(width) is not None
+            and not 0 < width <= _TRACK_WIDTH_MAX):
+        document["track_width"] = None
+
+
 def normalise(document: Dict[str, Any]) -> None:
     """Bring what past writers stored into the format, in place.
 
@@ -607,6 +657,7 @@ def normalise(document: Dict[str, Any]) -> None:
     is left for :func:`fault` to judge.
     """
     _normalise_days(document.get("day_meta"))
+    _normalise_style(document)
     activities = document.get("activities")
     if not isinstance(activities, list):
         return
