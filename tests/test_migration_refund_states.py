@@ -83,7 +83,9 @@ def test_it_follows_the_ledger_migration():
     assert script.get_revision("ca17b22c22d5").down_revision == _REVISION
     assert script.get_revision("c69914246e8e").down_revision == "ca17b22c22d5"
     assert script.get_revision("26b1b2cd05bf").down_revision == "c69914246e8e"
-    assert script.get_heads() == ["26b1b2cd05bf"]
+    # One head, holding the ledger line (merged with #462's line by 7d3e9b1f4a20).
+    (head,) = script.get_heads()
+    assert "26b1b2cd05bf" in {r.revision for r in script.walk_revisions("base", head)}
 
 
 def test_upgrade(cfg):
