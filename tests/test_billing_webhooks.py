@@ -582,3 +582,279 @@ class TestAdminOverride:
         assert get_subscription(sess, 1) is None
         set_admin_override(sess, 1, TIER_2)
         assert isinstance(get_subscription(sess, 1), Subscription)
+
+
+# ── The initial purchase and the checkout consent (issue #441) ───────────────
+
+def _committed(sess) -> Subscription:
+    """The row as committed. The webhook handler rolls its session back after
+    ``apply_update``, so a change left uncommitted never happened."""
+    sess.rollback()
+    return get_subscription(sess, 1)
+
+
+def _with(event: dict, **fields) -> dict:
+    event["data"]["object"].update(fields)
+    return event
+
+
+class TestPurchaseFactsMapping:
+    def test_an_active_subscription_reports_its_start_date(self):
+        update = subscription_update_from_event(_with(
+            _subscription_event("customer.subscription.created", created=1000),
+            start_date=950))
+        assert update.paid_since == 950
+
+    def test_the_start_never_comes_from_the_event_time(self):
+        """F6: an event's timestamp depends on which event arrives when; the
+        window's day must not."""
+        update = subscription_update_from_event(
+            _subscription_event("customer.subscription.created", created=1000))
+        assert update.paid_since == 0
+
+    @pytest.mark.parametrize("status", ["trialing", "incomplete", "past_due",
+                                        "canceled", "unpaid"])
+    def test_a_subscription_not_paid_for_reports_nothing(self, status):
+        update = subscription_update_from_event(_with(
+            _subscription_event("customer.subscription.updated", status=status),
+            start_date=950))
+        assert update.paid_since == 0
+
+    def test_a_deleted_subscription_reports_nothing(self):
+        update = subscription_update_from_event(_with(
+            _subscription_event("customer.subscription.deleted"), start_date=950))
+        assert update.paid_since == 0
+
+    @pytest.mark.parametrize("payment_status", ["paid", "no_payment_required", "unpaid"])
+    def test_a_checkout_starts_nothing(self, payment_status):
+        """F6: it carries no start date; its subscription's own event does."""
+        update = subscription_update_from_event(_with(
+            _checkout_event(created=900), payment_status=payment_status))
+        assert update.paid_since == 0
+
+    def test_the_consent_and_its_wording_are_read_off_the_checkout(self):
+        event = _with(_checkout_event(created=900),
+                      consent={"terms_of_service": "accepted", "promotions": None})
+        event["data"]["object"]["metadata"]["terms_version"] = "2026-09-26"
+        update = subscription_update_from_event(event)
+        assert update.terms_accepted_at == 900
+        assert update.terms_version == "2026-09-26"
+
+    @pytest.mark.parametrize("consent", [None, {}, {"terms_of_service": None}])
+    def test_no_consent_recorded_without_one(self, consent):
+        update = subscription_update_from_event(_with(
+            _checkout_event(created=900), consent=consent))
+        assert update.terms_accepted_at == 0 and update.terms_version == ""
+
+
+class TestContractStart:
+    """The window runs from the start of the current contract (owner decision
+    2026-09-26): a subscription that became paid while no other was in force.
+    Renewals and plan changes keep the contract; a new subscription after the
+    previous one ended starts a new one."""
+
+    def test_the_first_paid_event_starts_a_contract(self, sess):
+        apply_update(sess, _update(paid_since=950.0))
+        row = _committed(sess)
+        assert (row.contract_started_at, row.contract_subscription_id) == (950.0, "sub_1")
+
+    def test_a_renewal_does_not_move_it(self, sess):
+        apply_update(sess, _update(paid_since=950.0))
+        apply_update(sess, _update(event_id="evt_2", event_at=3_000_000.0,
+                                   current_period_end=6_000_000.0,
+                                   paid_since=950.0 + 2_592_000))
+        assert _committed(sess).contract_started_at == 950.0
+
+    def test_a_plan_change_does_not_move_it(self, sess):
+        apply_update(sess, _update(paid_since=950.0))
+        apply_update(sess, _update(event_id="evt_2", event_at=2000.0,
+                                   plan=TIER_3, paid_since=1900.0))
+        row = _committed(sess)
+        assert row.plan == TIER_3
+        assert row.contract_started_at == 950.0
+
+    def test_a_new_subscription_after_the_last_ended_starts_a_new_contract(self, sess):
+        apply_update(sess, _update(paid_since=950.0))
+        apply_update(sess, _update(event_id="evt_2", event_at=2000.0,
+                                   status="canceled", plan=FREE))
+        apply_update(sess, _update(event_id="evt_3", event_at=9_000_000.0,
+                                   subscription_id="sub_2",
+                                   paid_since=9_000_000.0))
+        row = _committed(sess)
+        assert (row.contract_started_at, row.contract_subscription_id) == (
+            9_000_000.0, "sub_2")
+
+    def test_a_second_subscription_while_one_is_live_does_not(self, sess):
+        apply_update(sess, _update(paid_since=950.0))
+        apply_update(sess, _update(event_id="evt_2", event_at=2000.0,
+                                   subscription_id="sub_2", paid_since=2000.0))
+        row = _committed(sess)
+        assert (row.contract_started_at, row.contract_subscription_id) == (950.0, "sub_1")
+
+    @pytest.mark.parametrize("status", ["unpaid", "paused"])
+    def test_an_unpaid_or_paused_one_counts_as_in_force(self, sess, status):
+        """F5: aligned with the migration — they may still renew or bill."""
+        apply_update(sess, _update(paid_since=950.0))
+        apply_update(sess, _update(event_id="evt_2", event_at=2000.0, status=status))
+        apply_update(sess, _update(event_id="evt_3", event_at=3000.0,
+                                   subscription_id="sub_2", paid_since=3000.0))
+        assert _committed(sess).contract_subscription_id == "sub_1"
+
+    def test_the_provider_decides_when_it_is_asked(self, sess):
+        """F5: two checkouts at once. sub_2 took the row over, so the row alone
+        would let sub_2's next event start a contract; Stripe says sub_1 is
+        still in force."""
+        apply_update(sess, _update(paid_since=950.0))
+        apply_update(sess, _update(event_id="evt_2", event_at=2000.0,
+                                   subscription_id="sub_2", paid_since=2000.0),
+                     others_in_force=True)
+        apply_update(sess, _update(event_id="evt_3", event_at=3000.0,
+                                   subscription_id="sub_2", paid_since=2000.0),
+                     others_in_force=True)
+        assert _committed(sess).contract_subscription_id == "sub_1"
+
+    def test_a_subscription_is_judged_once_on_its_first_paid_event(self, sess):
+        """F-G: sub_2 was bought while sub_1 ran, so it was not made the
+        contract. When sub_1 ends and sub_2 renews, it still is not: a contract
+        cannot start late."""
+        apply_update(sess, _update(paid_since=950.0))
+        apply_update(sess, _update(event_id="evt_2", event_at=2000.0,
+                                   subscription_id="sub_2", paid_since=2000.0),
+                     others_in_force=True)
+        assert _committed(sess).contract_checked_subscription_id == "sub_2"
+        apply_update(sess, _update(event_id="evt_4", event_at=4000.0,
+                                   subscription_id="sub_2", paid_since=2000.0),
+                     others_in_force=False)
+        row = _committed(sess)
+        assert (row.contract_subscription_id, row.contract_started_at) == ("sub_1", 950.0)
+
+    def test_the_providers_all_clear_starts_one(self, sess):
+        apply_update(sess, _update(paid_since=950.0))
+        apply_update(sess, _update(event_id="evt_2", event_at=2000.0,
+                                   subscription_id="sub_2", paid_since=2000.0),
+                     others_in_force=False)
+        assert _committed(sess).contract_subscription_id == "sub_2"
+
+    def test_an_event_that_is_not_paid_starts_nothing(self, sess):
+        apply_update(sess, _update(status="trialing"))
+        assert _committed(sess).contract_started_at == 0
+
+    def test_a_backfilled_contract_is_never_reopened_by_its_renewals(self, sess):
+        sess.add(Subscription(user_info_id=1, status="active",
+                              provider_subscription_id="sub_1",
+                              contract_subscription_id="sub_1",
+                              contract_started_at=1.0))
+        sess.commit()
+        apply_update(sess, _update(paid_since=1_780_000_000.0))
+        assert _committed(sess).contract_started_at == 1.0
+
+    def test_a_stale_event_does_not_start_a_contract(self, sess):
+        """F5: the contract is recorded after the ordering guards."""
+        apply_update(sess, _update(event_id="evt_2", event_at=2000.0,
+                                   status="past_due"))
+        apply_update(sess, _update(event_id="evt_1", event_at=1000.0,
+                                   paid_since=950.0))
+        row = _committed(sess)
+        assert row.contract_started_at == 0
+        assert row.status == "past_due"
+
+
+class TestContractWebhook:
+    """F5 through the real handler: the provider is asked outside the lock."""
+
+    def _post(self, monkeypatch, event, in_force, checked=""):
+        from fastapi.testclient import TestClient
+        import models.db as db_module
+        from api.router import app
+        from src.billing.gateway import set_gateway
+
+        engine = create_engine("sqlite:///:memory:",
+                               connect_args={"check_same_thread": False},
+                               poolclass=StaticPool)
+        monkeypatch.setattr(db_module, "engine", engine)
+        SQLModel.metadata.create_all(engine)
+        with Session(engine) as s:
+            s.add(UserInfo(id=1, email="a@example.com", display_name="A"))
+            s.add(Subscription(user_info_id=1, status="active",
+                               provider_customer_id="cus_1",
+                               provider_subscription_id="sub_2",
+                               contract_subscription_id="sub_1",
+                               contract_started_at=950.0,
+                               contract_checked_subscription_id=checked))
+            s.commit()
+        asked = []
+
+        class Gateway:
+            def parse_webhook(self, payload, signature):
+                return event
+
+            def subscriptions_in_force(self, customer_id):
+                asked.append(customer_id)
+                return in_force
+
+        set_gateway(Gateway())
+        try:
+            res = TestClient(app).post("/api/billing/webhook", content=b"{}",
+                                       headers={"stripe-signature": "x"})
+        finally:
+            set_gateway(None)
+        with Session(engine) as s:
+            row = s.exec(select(Subscription)).first()
+        return res, asked, row
+
+    def test_another_subscription_in_force_at_stripe_blocks_a_new_contract(
+        self, monkeypatch
+    ):
+        event = _with(_subscription_event(
+            "customer.subscription.updated", sub_id="sub_2", created=3000), start_date=2000)
+        res, asked, row = self._post(monkeypatch, event, ["sub_1", "sub_2"])
+        assert res.status_code == 200
+        assert asked == ["cus_1"]
+        assert row.contract_subscription_id == "sub_1"
+
+    def test_none_other_in_force_starts_one(self, monkeypatch):
+        event = _with(_subscription_event(
+            "customer.subscription.updated", sub_id="sub_2", created=3000), start_date=2000)
+        res, asked, row = self._post(monkeypatch, event, ["sub_2"])
+        assert row.contract_subscription_id == "sub_2"
+        assert row.contract_started_at == 2000
+
+    def test_a_subscription_already_judged_does_not_ask(self, monkeypatch):
+        """F-G: sub_2's first paid event was judged; its later ones are not."""
+        event = _with(_subscription_event(
+            "customer.subscription.updated", sub_id="sub_2", created=3000), start_date=2000)
+        res, asked, row = self._post(monkeypatch, event, [], checked="sub_2")
+        assert asked == []
+        assert row.contract_subscription_id == "sub_1"
+
+    def test_the_contracts_own_renewal_does_not_ask(self, monkeypatch):
+        event = _with(_subscription_event(
+            "customer.subscription.updated", sub_id="sub_1", created=3000), start_date=950)
+        res, asked, row = self._post(monkeypatch, event, [])
+        assert asked == []
+
+
+class TestConsentIsKept:
+    def test_recorded_from_the_checkout(self, sess):
+        apply_update(sess, _update(terms_accepted_at=900.0, terms_version="v1"))
+        row = _committed(sess)
+        assert (row.terms_accepted_at, row.terms_version) == (900.0, "v1")
+
+    def test_a_checkout_arriving_after_the_subscription_event_still_records_it(
+        self, sess
+    ):
+        """The usual order: the checkout event lands after the subscription
+        event it precedes, and the ordering guard drops it."""
+        apply_update(sess, _update(event_id="evt_sub", event_at=1000.0))
+        apply_update(sess, _update(event_id="evt_co", event_at=900.0,
+                                   terms_accepted_at=900.0, terms_version="v1"))
+        row = _committed(sess)
+        assert (row.terms_accepted_at, row.terms_version) == (900.0, "v1")
+
+    def test_an_older_consent_does_not_replace_a_newer_one(self, sess):
+        apply_update(sess, _update(event_id="evt_a", event_at=5000.0,
+                                   terms_accepted_at=5000.0, terms_version="v2"))
+        apply_update(sess, _update(event_id="evt_b", event_at=6000.0,
+                                   terms_accepted_at=900.0, terms_version="v1"))
+        row = _committed(sess)
+        assert (row.terms_accepted_at, row.terms_version) == (5000.0, "v2")

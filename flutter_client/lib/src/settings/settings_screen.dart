@@ -41,11 +41,22 @@ String deleteAccountWarning(BillingStatus? billing) {
       'This cannot be undone.';
   const general = '$base\n\nAny active paid plan will be cancelled '
       'immediately, and you will not be charged again.';
+  // Inside the withdrawal window of the current subscription, deleting also
+  // refunds the unused part (issue #441); outside it, it only cancels.
+  const refund = ' Because you are still within 14 days of starting it, the '
+      'unused part of the period you paid for will be refunded.';
   if (billing == null) return general;
   if (billing.mayStillBill) {
     if (!billing.isPaid) return general;
     return '$base\n\nYour ${billing.planName} plan will be cancelled '
-        'immediately, and you will not be charged again.';
+        'immediately, and you will not be charged again.'
+        '${billing.withdrawalOpen ? refund : ''}';
+  }
+  // Ended inside the window without a refund yet: a withdrawal whose refund
+  // failed. Deleting finishes it.
+  if (billing.withdrawalOpen) {
+    return '$base\n\nThe unused part of the period you paid for will be '
+        'refunded.';
   }
   return base;
 }

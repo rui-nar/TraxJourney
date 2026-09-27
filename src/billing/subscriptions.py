@@ -130,14 +130,61 @@ def _about_another_subscription(row: Subscription, update: SubscriptionUpdate) -
     )
 
 
-def apply_update(sess, update: SubscriptionUpdate) -> bool:
+#: Statuses of a subscription still in force: it may renew or bill. Matches
+#: migration 3828d92db32c and ``stripe_gateway.IN_FORCE_STATUSES``.
+IN_FORCE_STATUSES = frozenset({"active", "trialing", "past_due", "unpaid", "paused"})
+
+
+def _starts_a_contract(row: Subscription, update: SubscriptionUpdate,
+                       others_in_force: bool | None) -> bool:
+    """True when this paid event opens a new contract — a withdrawal window.
+
+    Only a subscription that became paid while no *other* subscription of the
+    account was in force (#441, owner decision 2026-09-26). Its renewals and
+    plan changes keep the same id, so they never move it. ``others_in_force``
+    is the provider's answer (``api.billing._others_in_force``); without it,
+    the one subscription our row tracks is all there is to go on.
+    """
+    if not update.paid_since or not update.subscription_id:
+        return False
+    if update.subscription_id == row.contract_subscription_id:
+        return False  # a renewal or a plan change of the contract in force
+    if update.subscription_id == row.contract_checked_subscription_id:
+        # Judged already, on its first paid event, and not made the contract
+        # then: a later event — after the other subscription ended, say —
+        # never makes it one (a contract cannot start late).
+        return False
+    if others_in_force is not None:
+        return not others_in_force
+    other = row.provider_subscription_id
+    return not (bool(other) and other != update.subscription_id
+                and (row.status or "") in IN_FORCE_STATUSES)
+
+
+def _record_consent(row: Subscription, update: SubscriptionUpdate) -> bool:
+    """Keep the latest checkout consent. True when it changed.
+
+    Recorded whatever order the events arrive in: the checkout event carrying
+    it routinely lands after the subscription event that makes it look stale,
+    and an older consent arriving late never replaces a newer one.
+    """
+    if update.terms_accepted_at and update.terms_accepted_at > (row.terms_accepted_at or 0):
+        row.terms_accepted_at = update.terms_accepted_at
+        row.terms_version = update.terms_version
+        return True
+    return False
+
+
+def apply_update(sess, update: SubscriptionUpdate, *,
+                 others_in_force: bool | None = None) -> bool:
     """Apply one event's state. Returns True when the row changed.
 
     Returns False — without an error — when the event is a duplicate, is older
     than what we already applied, cannot be attributed to any account, or is
     about another subscription than the one tracked and would not replace it.
     All are normal and must still be acknowledged with a 2xx, or Stripe will
-    retry them forever.
+    retry them forever. Such an event still records the consent it carries,
+    and returns True if it did; it never starts a contract.
     """
     row = resolve_row(sess, update)
     if row is None:
@@ -147,11 +194,17 @@ def apply_update(sess, update: SubscriptionUpdate) -> bool:
         )
         return False
 
+
+    # The consent is recorded before the ordering guards (see _record_consent);
+    # the contract only after them, so a stale event can never move it.
+    facts = _record_consent(row, update)
+
+    stale = False
     if update.event_id and row.last_event_id == update.event_id:
-        return False  # already applied (Stripe redelivery)
-    if update.event_at and row.last_event_at and update.event_at < row.last_event_at:
-        return False  # out-of-order redelivery of an older event
-    if _about_another_subscription(row, update) and not subscription_is_live(update.status):
+        stale = True  # already applied (Stripe redelivery)
+    elif update.event_at and row.last_event_at and update.event_at < row.last_event_at:
+        stale = True  # out-of-order redelivery of an older event
+    elif _about_another_subscription(row, update) and not subscription_is_live(update.status):
         # The row tracks one subscription. Another one ending must not
         # overwrite it: a paying user would lose their plan, and account
         # deletion would read "canceled" while the tracked one still bills
@@ -161,7 +214,19 @@ def apply_update(sess, update: SubscriptionUpdate) -> bool:
             update.event_id, update.subscription_id, update.status,
             row.provider_subscription_id,
         )
-        return False
+        stale = True
+    if stale:
+        if facts:
+            row.updated_at = time.time()
+            sess.add(row)
+            sess.commit()
+        return facts
+
+    if _starts_a_contract(row, update, others_in_force):
+        row.contract_started_at = update.paid_since
+        row.contract_subscription_id = update.subscription_id
+    if update.paid_since and update.subscription_id:
+        row.contract_checked_subscription_id = update.subscription_id
 
     # A pending change that has now happened is no longer pending. Clearing it
     # on *any* plan move, not just the one that was scheduled, is deliberate:

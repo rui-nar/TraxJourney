@@ -195,3 +195,126 @@ class TestFieldAccess:
             apply=True)
         assert config.created == [] and config.modified == []
         assert any("SKIP" in line for line in report)
+
+
+# ── Tax-inclusive prices (issue #441) ────────────────────────────────────────
+
+class _FakePrices:
+    """``stripe.Price`` / ``stripe.Product`` for one plan's price, as StripeObjects."""
+
+    def __init__(self, current: StripeObject | None):
+        self.current = current
+        self.created: list[dict] = []
+        self.modified: list[tuple[str, dict]] = []
+        self.product_modified: list[tuple[str, dict]] = []
+        fake = self
+
+        class Price:
+            @staticmethod
+            def list(**params):
+                return _obj(data=[fake.current] if fake.current else [])
+
+            @staticmethod
+            def create(**params):
+                fake.created.append(params)
+                return _obj(id="price_new", **{k: v for k, v in params.items()
+                                               if k in ("unit_amount", "currency")})
+
+            @staticmethod
+            def modify(price_id, **params):
+                fake.modified.append((price_id, params))
+                return _obj(id=price_id)
+
+        class Product:
+            @staticmethod
+            def modify(product_id, **params):
+                fake.product_modified.append((product_id, params))
+
+        self.Price = Price
+        self.Product = Product
+
+
+def _price(*, amount=None, tax_behavior="unspecified", plan=plans.TIER_2,
+           omit_tax=False) -> StripeObject:
+    fields = dict(
+        id="price_old", unit_amount=cat.AMOUNTS_CENTS[plan] if amount is None else amount,
+        currency=cat.CURRENCY, recurring=_obj(interval=cat.INTERVAL),
+    )
+    if not omit_tax:
+        fields["tax_behavior"] = tax_behavior
+    return _obj(**fields)
+
+
+class TestTaxInclusivePrices:
+    PLAN = plans.TIER_2
+
+    def test_prices_are_declared_tax_inclusive(self):
+        assert cat.TAX_BEHAVIOR == "inclusive"
+
+    def test_a_new_price_is_created_tax_inclusive(self):
+        fake = _FakePrices(None)
+        cat._sync_price(fake, self.PLAN, apply=True)
+        assert fake.created[0]["tax_behavior"] == "inclusive"
+
+    def test_the_dry_run_says_so_for_a_new_price(self):
+        fake = _FakePrices(None)
+        _, report = cat._sync_price(fake, self.PLAN, apply=False)
+        assert fake.created == []
+        assert "tax inclusive" in report[0]
+
+    def test_an_inclusive_price_with_the_right_amount_is_left_alone(self):
+        fake = _FakePrices(_price(tax_behavior="inclusive"))
+        pid, report = cat._sync_price(fake, self.PLAN, apply=True)
+        assert pid == "price_old"
+        assert fake.created == [] and fake.modified == []
+        assert ": ok" in report[0]
+
+    @pytest.mark.parametrize("omit", [False, True])
+    def test_an_untagged_price_is_tagged_in_place(self, omit):
+        """The one change Stripe allows on a price. In place, so existing
+        subscribers — who stay on this price — become inclusive too."""
+        fake = _FakePrices(_price(tax_behavior="unspecified", omit_tax=omit))
+        pid, report = cat._sync_price(fake, self.PLAN, apply=True)
+        assert pid == "price_old"
+        assert fake.modified == [("price_old", {"tax_behavior": "inclusive"})]
+        assert fake.created == []
+        assert "SET tax_behavior unspecified → inclusive" in report[0]
+
+    def test_the_dry_run_shows_the_in_place_change_and_writes_nothing(self):
+        fake = _FakePrices(_price(tax_behavior="unspecified"))
+        _, report = cat._sync_price(fake, self.PLAN, apply=False)
+        assert fake.modified == [] and fake.created == []
+        assert "SET tax_behavior unspecified → inclusive" in report[0]
+        assert "price_old" in report[0]
+
+    def test_an_exclusive_price_is_replaced_through_the_reprice_path(self):
+        """Once declared, tax behaviour cannot change: a new price takes the
+        lookup key, and the old one is archived."""
+        fake = _FakePrices(_price(tax_behavior="exclusive"))
+        pid, report = cat._sync_price(fake, self.PLAN, apply=True)
+        assert pid == "price_new"
+        (created,) = fake.created
+        assert created["tax_behavior"] == "inclusive"
+        assert created["transfer_lookup_key"] is True
+        assert created["lookup_key"] == cat.lookup_key(self.PLAN)
+        assert ("price_old", {"active": False}) in fake.modified
+        assert fake.product_modified == [
+            (cat.product_id(self.PLAN), {"default_price": "price_new"})]
+        assert "tax_behavior exclusive → inclusive" in report[0]
+
+    def test_the_dry_run_shows_the_replacement(self):
+        fake = _FakePrices(_price(tax_behavior="exclusive"))
+        pid, report = cat._sync_price(fake, self.PLAN, apply=False)
+        assert pid == "(new)"
+        assert fake.created == [] and fake.modified == []
+        assert report[0].startswith(f"  price   {cat.lookup_key(self.PLAN)}: REPLACE")
+        assert "tax_behavior exclusive → inclusive" in report[0]
+        assert "archives price_old" in report[0]
+
+    def test_a_reprice_creates_the_new_price_tax_inclusive(self):
+        fake = _FakePrices(_price(amount=1, tax_behavior="unspecified"))
+        cat._sync_price(fake, self.PLAN, apply=True)
+        (created,) = fake.created
+        assert created["tax_behavior"] == "inclusive"
+        assert created["unit_amount"] == cat.AMOUNTS_CENTS[self.PLAN]
+        assert ("price_old", {"active": False}) in fake.modified

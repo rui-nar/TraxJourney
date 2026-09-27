@@ -19,6 +19,12 @@ import 'package:traxjourney_client/src/billing/billing_service.dart';
 import 'package:traxjourney_client/src/core/theme.dart';
 
 class _FakeBilling implements BillingService {
+  // Withdrawal (issue #441) is not exercised here.
+  @override
+  Future<Withdrawal> withdrawalQuote() => throw UnimplementedError();
+  @override
+  Future<Withdrawal> withdraw() => throw UnimplementedError();
+
   final Map<String, dynamic> payload;
   int statusCalls = 0;
 
@@ -89,6 +95,12 @@ Future<void> _pump(
 /// Returns each entry of [payloads] in turn, repeating the last one once
 /// exhausted — for simulating a webhook that lands a few calls in.
 class _SequenceBilling implements BillingService {
+  // Withdrawal (issue #441) is not exercised here.
+  @override
+  Future<Withdrawal> withdrawalQuote() => throw UnimplementedError();
+  @override
+  Future<Withdrawal> withdraw() => throw UnimplementedError();
+
   final List<Map<String, dynamic>> payloads;
   int calls = 0;
 
@@ -130,6 +142,12 @@ class _SequenceBilling implements BillingService {
 /// [complete] or [fail] is called — for observing the loading state
 /// (issue #196), which a same-tick fake would resolve too fast to see.
 class _PendingBilling implements BillingService {
+  // Withdrawal (issue #441) is not exercised here.
+  @override
+  Future<Withdrawal> withdrawalQuote() => throw UnimplementedError();
+  @override
+  Future<Withdrawal> withdraw() => throw UnimplementedError();
+
   final _completer = Completer<BillingStatus>();
 
   void complete(Map<String, dynamic> payload) =>
