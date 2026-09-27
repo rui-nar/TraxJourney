@@ -319,6 +319,10 @@ class EncryptionService {
   /// through unchanged (encryption off, or locked → store plaintext as before).
   Future<String?> protect(String? plaintext) async {
     if (plaintext == null || plaintext.isEmpty || !isUnlocked) return plaintext;
+    // Already ciphertext: a field this device could not decrypt (a locked
+    // start, another account's key) is saved back as it is. Encrypting it
+    // again would bury the original inside a new envelope (issue #466).
+    if (EncryptedField.isEnvelope(plaintext)) return plaintext;
     return encryptText(plaintext);
   }
 
