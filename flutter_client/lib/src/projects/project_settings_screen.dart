@@ -364,7 +364,16 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
     final n = _notifier;
     final newName = _nameCtrl.text.trim();
     if (n.canManageTrip && newName.isNotEmpty && newName != n.projectName) {
-      await n.renameProject(newName);
+      if (await n.renameProject(newName) == null) {
+        // The name is taken (issue #467) or the server could not be reached:
+        // say so and stay here with the name as typed, saving nothing else,
+        // so the user can pick another name and save again.
+        if (!mounted) return;
+        setState(() => _saving = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(n.error ?? 'Could not rename the trip.')));
+        return;
+      }
     }
 
     final updatedOpts = <String>[];
