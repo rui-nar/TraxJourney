@@ -84,6 +84,9 @@ release notes are generated from the commits — when a commit changes something
 ## reviews
 adversarial reviews (including "fable review" requests), re-reviews and any review findings to act on go through the `adversarial-review` skill, which applies docs/REVIEW.md. never fix review findings directly: triage them first and get the decision table approved.
 
+## delivery
+multi-step features go plan (`write-plan`) → adversarial review → `deliver-plan`, which applies docs/DELIVERY.md: units routed to Sonnet or Opus implementer agents, verified, integrated and reviewed once. implementing a plan file always goes through `deliver-plan`. small direct requests don't.
+
 ## current stack
 current stack is compoesed of a sever in python FastAPI serving clients written in flutter for  web, android and iOS. any architecutre decision shall keep this structure in mind.
 
