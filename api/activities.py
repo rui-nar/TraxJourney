@@ -766,8 +766,16 @@ async def import_gpx_activity(
     # start_date is documented as ISO-8601 UTC, and a file may carry any
     # offset it likes. Normalising here keeps the column honest and keeps two
     # exports of one ride — 05:33Z and 07:33+02:00 — the same instant.
-    start_dt = start_dt.astimezone(timezone.utc)
-    end_dt = end_dt.astimezone(timezone.utc)
+    try:
+        start_dt = start_dt.astimezone(timezone.utc)
+        end_dt = end_dt.astimezone(timezone.utc)
+    except (OverflowError, ValueError):
+        # An offset can push a stamp near year 1 or 9999 past what a date holds.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"errors": ["This track's clock is outside the calendar the app can "
+                               "store. Set the date and times in review."]},
+        )
     elapsed_time = int((end_dt - start_dt).total_seconds())
     moving_time = candidate.moving_seconds
     if moving_time is None:

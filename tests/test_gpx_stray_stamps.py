@@ -168,3 +168,26 @@ def test_moving_time_takes_linear_time():
     cost(5_000)                                  # warm up
     small, large = min(cost(20_000) for _ in range(3)), min(cost(40_000) for _ in range(3))
     assert large / small < 3.0, (small, large)
+
+
+def _track_with_times(times):
+    parts = [_HEADER, "<trk><name>Ride</name><type>cycling</type><trkseg>"]
+    for i, when in enumerate(times):
+        lat = 46.0 + i * (_STEP_M / 111320.0)
+        parts.append(f'<trkpt lat="{lat}" lon="6.0"><ele>500</ele><time>{when}</time></trkpt>')
+    parts += ["</trkseg></trk></gpx>"]
+    return "".join(parts).encode("utf-8")
+
+
+def test_a_stamp_at_the_edge_of_the_calendar_is_a_clear_refusal_not_a_500(env):
+    """A time zone can push a stamp near year 1 or 9999 past what a date
+    holds once it is turned into UTC. That used to be an unhandled error."""
+    client, engine, *_ = env
+    ride = [(_START + timedelta(seconds=i * _STEP_S)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            for i in range(20)]
+    for times in (["0001-01-01T00:30:00+02:00"] + ride, ride + ["9999-12-31T23:59:59-02:00"]):
+        r = _import(client, _track_with_times(times), activity_type="Ride")
+        assert r.status_code == 422, r.text
+        assert "date and times" in r.text
+    with Session(engine) as sess:
+        assert sess.exec(select(DBActivity)).first() is None

@@ -575,7 +575,7 @@ def _normalise_days(day_meta: Any) -> None:
     field a save leaves as it was, so a stored day may hold ``journal: 5``
     or a bare tag. Such a trip must export to a file its import takes. The
     client never showed either: it reads a note as a String (and throws on a
-    number) and ignores tags that are not a list, so the day inherits the
+    number); where it shows tags it skips a value that is not a list, so the day inherits the
     tags before it. So a number becomes its text, and a bare tag is dropped,
     which leaves the day inheriting exactly as it was shown.
     """
