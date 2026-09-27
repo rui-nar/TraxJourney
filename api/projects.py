@@ -31,6 +31,7 @@ from datetime import datetime
 from typing import Annotated, Any, Dict, List, Optional
 
 from models.db import get_session
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
@@ -75,12 +76,26 @@ from src.models.project import DEFAULT_SLEEPING_GROUPS, tag_options_with_untagge
 from src.project.project_io import ProjectIO
 from src.project.traxj_schema import day_meta_fault
 from src.project.repo_core import _parse_day_meta_json, bump_lock_version
+from src.project.repo_transfer import _is_name_clash
 from src.project.project_repo import _compute_stats
 from src.utils.logging import get_logger
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
 _log = get_logger(__name__)
+
+
+def _name_taken(name: str) -> HTTPException:
+    """409 for a trip name the owner already has.
+
+    One response whether the pre-check saw the other trip or the unique index
+    on (owner, name) caught it after a concurrent request took the name
+    (issue #467): the client cannot tell the two apart, and need not.
+    """
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=f"Project '{name}' already exists",
+    )
 
 
 def _gzip_response(gz_bytes: bytes, cache_status: str) -> Response:
@@ -179,14 +194,19 @@ def create_project(
     name = body.name.strip() or "My Trip"
     with get_session() as sess:
         if _repo.project_exists(sess, user_info_id, name):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Project '{name}' already exists",
-            )
+            raise _name_taken(name)
         # Plan limit (issue #121) — raises QuotaExceeded → 402. No-op unless the
         # deployment sells plans *and* has quota enforcement switched on.
         ensure_project_quota(sess, user_info_id)
-        _repo.create_project(sess, user_info_id, name)
+        try:
+            _repo.create_project(sess, user_info_id, name)
+        except IntegrityError as exc:
+            # A concurrent request took the name after the check above
+            # (issue #467); the unique index refused this insert.
+            sess.rollback()
+            if not _is_name_clash(exc):
+                raise
+            raise _name_taken(name) from None
     return {"name": name, "filename": name + ProjectIO.EXTENSION}
 
 
@@ -537,8 +557,19 @@ def update_project(
             if not new_name:
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Name cannot be empty")
             if new_name != name and _repo.project_exists(sess, owner_id, new_name):
-                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Project '{new_name}' already exists")
+                raise _name_taken(new_name)
             row.name = new_name
+            try:
+                # Flushed here, not at the commit below, so that a name taken
+                # by a concurrent request after the check above (issue #467)
+                # fails on this statement alone, before anything else is
+                # written.
+                sess.flush()
+            except IntegrityError as exc:
+                sess.rollback()
+                if not _is_name_clash(exc):
+                    raise
+                raise _name_taken(new_name) from None
 
         # Plan limit on trip length (issue #121). Checked before the dates are
         # applied: declaring a range wider than the plan allows is refused, and
