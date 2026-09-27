@@ -117,3 +117,16 @@ Reviewer: Opus, adversarial. Triage: `review-triager` (Opus). Findings restated 
 - Guard: —
 - Override: —
 - Outcome: open
+
+## Round 6 — 2026-09-27, reviewed at ef46242b
+
+Reviewer: `adversarial-reviewer` (Fable), fixes since f386de10 only. Triage: `review-triager` (Opus). Last round, as agreed with the owner (the cap is 3).
+
+### R6-1 — A repeat event for one failed refund logs a false "matches no refund of ours" ERROR
+- Trigger: one of our refunds fails at Stripe → Stripe sends refund.failed plus refund.updated / charge.refund.updated → the first event records it as owed and clears refund_id; each later event logs at ERROR "matches no refund of ours … refund it by hand"; the owner could pay it twice
+- Scores: trigger=plausible (corrected from concrete), impact=wrong-visible, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: a refund failure first reaches production (a "recorded as owed" line followed by a "matches no refund of ours" line with the same refund id), or the runbook tells the owner to act on the "no match" log without checking the owed list
+- Guard: —
+- Override: —
+- Outcome: open
