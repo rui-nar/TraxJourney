@@ -128,5 +128,5 @@ Reviewer: `adversarial-reviewer` (Fable), fixes since f386de10 only. Triage: `re
 - Decision: Defer (D10)
 - Revisit when: a refund failure first reaches production (a "recorded as owed" line followed by a "matches no refund of ours" line with the same refund id), or the runbook tells the owner to act on the "no match" log without checking the owed list
 - Guard: —
-- Override: —
-- Outcome: open
+- Override: user: Fix now — a few-line fix that stops the owner paying a failed refund twice
+- Outcome: fixed (38c09a24)
