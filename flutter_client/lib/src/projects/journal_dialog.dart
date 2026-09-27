@@ -73,7 +73,12 @@ class _JournalDialogState extends State<JournalDialog> {
   void initState() {
     super.initState();
     final j = widget.editEntry;
-    if (isUndecrypted(j?['description'])) _descEnvelope = j!['description'] as String;
+    // From the record made when the items were revealed, never from the
+    // value's shape: typed text such as "v1.2.3" looks like an envelope.
+    if (widget.notifier.undecryptedFields
+        .contains('journal', j?['id']?.toString(), 'description')) {
+      _descEnvelope = j!['description'] as String?;
+    }
     _descCtrl = TextEditingController(
         text: _descEnvelope != null
             ? kEncryptedUnavailable

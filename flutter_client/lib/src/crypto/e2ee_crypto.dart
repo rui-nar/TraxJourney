@@ -266,6 +266,21 @@ class EncryptedField {
     final parts = s.split('.');
     return parts.length == 3 && parts[0] == 'v$version';
   }
+
+  /// Strict check: could [s] be an envelope [encode] produced? Both parts are
+  /// base64, the wrapped DEK is exactly nonce + 32-byte key + MAC, and the
+  /// ciphertext holds at least a nonce and a MAC. Text a user typed, such as
+  /// "v1.2.3" or "v1.abcd.efgh", passes [isEnvelope] but fails this.
+  static bool isWellFormed(String s) {
+    if (!isEnvelope(s)) return false;
+    final parts = s.split('.');
+    try {
+      return base64.decode(parts[1]).length == _nonceLen + 32 + _macLen &&
+          base64.decode(parts[2]).length >= _nonceLen + _macLen;
+    } on FormatException {
+      return false;
+    }
+  }
 }
 
 /// Encrypt a text field: random DEK, wrap DEK under CMK, encrypt text under DEK.

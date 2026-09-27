@@ -71,8 +71,16 @@ class _MemoryDialogState extends State<MemoryDialog> {
   void initState() {
     super.initState();
     final mem = widget.editMemory;
-    if (isUndecrypted(mem?['name'])) _nameEnvelope = mem!['name'] as String;
-    if (isUndecrypted(mem?['description'])) _descEnvelope = mem!['description'] as String;
+    // From the record made when the items were revealed, never from the
+    // value's shape: typed text such as "v1.2.3" looks like an envelope.
+    final id = mem?['id']?.toString();
+    final undecrypted = widget.notifier.undecryptedFields;
+    if (undecrypted.contains('memory', id, 'name')) {
+      _nameEnvelope = mem!['name'] as String?;
+    }
+    if (undecrypted.contains('memory', id, 'description')) {
+      _descEnvelope = mem!['description'] as String?;
+    }
     _nameCtrl = TextEditingController(
         text: _nameEnvelope != null ? kEncryptedUnavailable : mem?['name'] as String? ?? '');
     _descCtrl = TextEditingController(

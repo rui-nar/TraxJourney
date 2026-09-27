@@ -43,3 +43,15 @@ Envelope: REVIEW.md defaults
 - Override: —
 - Outcome: fixed
 - Fix note (triager): a base64 check in isEnvelope alone is not enough ("v1.abcd.efgh" passes). Pass an envelope through only when it is the original stored value the user left untouched (the dialog's _nameEnvelope/_descEnvelope), and encrypt every other value.
+
+## Round 3 — 2026-09-27, reviewed at ba96247e (fixes since ba0a048a)
+
+### R3-1 — The keep flag still comes from a shape check on decrypted items, so a "v1.2.3" title is sent unencrypted on the second save (new evidence for R2-1)
+- Trigger: A user with encryption unlocked saves a memory titled "v1.2.3" (sent encrypted) → the optimistic update, or any reload via reveal(), puts the plaintext back into items → the user reopens Edit, the title shows read-only as "Encrypted content unavailable", they change the date and save → isUndecrypted('v1.2.3') is true, keepStoredName is set, and the plaintext is sent without protect(); every later save resends it. Same for a memory description and a journal note.
+- Scores: trigger=plausible, impact=security, detect=user-visible, later=expensive, fix=M/shared, confidence=verified
+- Decision: Fix now (D3, floor F1: breaks E6)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed
+- Fix note (triager): record provenance at reveal time. _revealItems (and reveal's failure path) marks each (item id, field) it could not decrypt; the optimistic update clears the mark for fields the user saved; the dialogs set keepStored* only from that mark. Defence in depth: updateMemory/updateJournal still protect() a keep value that is not a strictly valid envelope (base64 parts, minimum lengths). Rejected: a stricter isEnvelope alone (still a shape guess), and unconditional re-encryption (double-wraps foreign ciphertext). Tests: a second save after the optimistic update and after a reload, for memory name, memory description and journal description.
