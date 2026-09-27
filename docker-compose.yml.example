@@ -43,9 +43,12 @@ x-logging: &default-logging
 # the smallest limit here — the exact way the 512M version broke. `worker`
 # is sized closest to the measured resolve peak; `worker-poster` gets the
 # largest share on top of that because an A0 render is the single most
-# memory-heavy thing this app does.
+# memory-heavy thing this app does. `worker-video` renders one trip video at a
+# time from frames it streams into ffmpeg; its number is NOT yet measured — it
+# is what is left under the 4 GB total tests/test_worker_topology.py enforces.
+# Measure a 1080p render and revise it (and this total) from that.
 #
-# These four limits sum to ~3.25 GB — on the documented 4 GB VPS
+# These five limits sum to ~4.2 GB — on the documented 4 GB VPS
 # (docs/DEPLOYMENT_VPS.md), that leaves too little for the OS plus a second
 # full stack (prod + val share one host there). Halving everything is not a
 # real fix once resolve alone measures >512M; treat "both stacks, generous
@@ -58,6 +61,8 @@ x-mem-worker: &mem-worker
   memory: 1024M
 x-mem-worker-poster: &mem-worker-poster
   memory: 1280M
+x-mem-worker-video: &mem-worker-video
+  memory: 896M
 x-mem-redis: &mem-redis
   memory: 256M
 
@@ -87,15 +92,17 @@ services:
         condition: service_healthy
 
   # ── Background job workers ──────────────────────────────────────────────────
-  # OPTIONAL. Delete both worker services (and REDIS_URL from .env) and every
+  # OPTIONAL. Delete the worker services (and REDIS_URL from .env) and every
   # background job runs inside the API process via FastAPI BackgroundTasks — the
   # original behaviour, and a perfectly reasonable setup for a small instance.
+  # The one exception is trip video export: it never runs in-process, so without
+  # a broker and `worker-video` the feature is simply unavailable.
   #
   # Running them buys durability (a job survives an API restart instead of
   # leaving e.g. a segment stuck on "calculating route") and a real concurrency
   # bound.
   #
-  # WHY TWO SERVICES RATHER THAN ONE WITH `deploy.replicas: 2`
+  # WHY SEPARATE SERVICES RATHER THAN ONE WITH `deploy.replicas: 2`
   # An RQ worker runs ONE job at a time, so the number of processes listening on
   # a queue IS that queue's parallelism. Identical replicas can only ever give
   # every queue the same bound, and the bounds are not the same (issue #188):
@@ -106,6 +113,8 @@ services:
   #   poster   1  An A0 render is memory-heavy. Two at once is the OOM case that
   #               running workers outside the API container exists to contain.
   #   default  2  Share tiles and stats — short and cheap.
+  #   video    1  A trip video render holds a worker for minutes, and its own
+  #               service keeps it from delaying posters, resolves or tiles.
   #
   # These numbers are mirrored in QUEUE_MAX_CONCURRENCY in src/jobs/queue.py,
   # and tests/test_worker_topology.py fails if this file stops matching it.
@@ -118,7 +127,7 @@ services:
   #   2. Otherwise cheapest first, so a 1 s share tile is not stuck behind a
   #      resolve, which can hold a worker for the full 600 s job timeout.
   #
-  # Both services MUST stay on the same image tag as the API. They share one
+  # Every worker service MUST stay on the same image tag as the API. They share one
   # image and only the API runs migrations, so a worker left on an older tag
   # would execute stale job code against a schema it does not know about.
   # `docker compose pull && up -d` keeps them in step; pinning one does not.
@@ -163,6 +172,30 @@ services:
     deploy:
       resources:
         limits: *mem-worker-poster
+    volumes:
+      - ./db:/app/db
+      - ./config:/app/config
+      - ./data:/app/data
+      - ./metrics:/app/metrics
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # The ONLY consumer of `video`, and it consumes nothing else: adding the cheap
+  # queues here would change their bounds above, and adding `video` elsewhere
+  # would run two renders at once. Its image carries ffmpeg for the encode.
+  worker-video:
+    image: ghcr.io/rui-nar/traxjourney:latest
+    container_name: traxjourney-worker-video
+    restart: unless-stopped
+    command: ["/worker-entrypoint.sh", "video"]
+    env_file: .env
+    environment:
+      TRAXJOURNEY_ROLE: worker
+    logging: *default-logging
+    deploy:
+      resources:
+        limits: *mem-worker-video
     volumes:
       - ./db:/app/db
       - ./config:/app/config
