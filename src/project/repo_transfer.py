@@ -640,15 +640,16 @@ def _set_content_columns(row: DBProject, project: Project, *, replacing: bool = 
              "tags": dm.tags, "counters": day_counters_to_json(dm.counters)}
         for dk, dm in project.day_meta.items()
     })
-    groups = project.sleeping_option_groups
+    def takes(key: str) -> bool:
+        return not replacing or key in project.settings_carried
+
+    groups = (project.sleeping_option_groups if takes("sleeping_option_groups")
+              else _stored_sleeping_groups(row.sleeping_options_json))
     row.sleeping_options_json = json.dumps([
         {"name": n, "group": groups.get(n, DEFAULT_SLEEPING_GROUPS.get(n, "Other"))}
         for n in project.sleeping_options
     ])
     row.low_res_geo_json = _compute_low_res_geo(project)
-
-    def takes(key: str) -> bool:
-        return not replacing or key in project.settings_carried
 
     if takes("trip_start"):
         row.trip_start = project.trip_start
@@ -666,3 +667,13 @@ def _set_content_columns(row: DBProject, project: Project, *, replacing: bool = 
         row.type_styles_json = json.dumps(project.type_styles)
     if takes("languages"):
         row.languages_json = json.dumps(project.languages)
+
+
+def _stored_sleeping_groups(raw: Optional[str]) -> Dict[str, str]:
+    """The trip's own sleeping-option groups, from its stored options."""
+    try:
+        options = json.loads(raw or "[]")
+    except ValueError:
+        return {}
+    return {o["name"]: o["group"] for o in options if isinstance(o, dict)
+            and isinstance(o.get("name"), str) and isinstance(o.get("group"), str)}

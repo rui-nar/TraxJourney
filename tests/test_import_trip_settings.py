@@ -139,9 +139,10 @@ def test_replace_keeps_a_setting_the_file_does_not_carry(app):  # noqa: F811
 
     assert r.status_code == 201, r.text
     after = _settings(client, "Trip")
-    for key in ("trip_end", "counters", "track_color", "track_secondary_color",
-                "track_width", "alternating_track_colors", "elevation_chart_color",
-                "elevation_chart_show_line", "color_by_type", "type_styles", "languages"):
+    for key in ("trip_end", "counters", "sleeping_option_groups", "track_color",
+                "track_secondary_color", "track_width", "alternating_track_colors",
+                "elevation_chart_color", "elevation_chart_show_line", "color_by_type",
+                "type_styles", "languages"):
         assert after[key] == before[key], key
 
 
