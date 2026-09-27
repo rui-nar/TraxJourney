@@ -37,12 +37,18 @@ class BillingSection extends StatefulWidget {
   /// Injected in tests to keep them fast; defaults to a real wait.
   final Duration retryDelay;
 
+  /// Told each plan status this section loads, so the rest of the screen can
+  /// use it without asking the server again (the delete-account warning,
+  /// issue #429).
+  final ValueChanged<BillingStatus>? onStatus;
+
   const BillingSection({
     super.key,
     this.service,
     this.onOpen,
     this.currentUri,
     this.retryDelay = const Duration(seconds: 2),
+    this.onStatus,
   });
 
   @override
@@ -51,7 +57,13 @@ class BillingSection extends StatefulWidget {
 
 class _BillingSectionState extends State<BillingSection> {
   late final BillingService _billing = widget.service ?? BillingService();
-  late Future<BillingStatus> _future = _loadStatus();
+  late Future<BillingStatus> _future = _report(_loadStatus());
+
+  Future<BillingStatus> _report(Future<BillingStatus> status) =>
+      status.then((s) {
+        widget.onStatus?.call(s);
+        return s;
+      });
 
   /// Stripe's webhook can lag a beat behind the checkout redirect (issue
   /// #192): landing back on `?checkout=success` right after paying can still
@@ -81,7 +93,7 @@ class _BillingSectionState extends State<BillingSection> {
     // setState rejects a callback that returns one.
     if (mounted) {
       setState(() {
-        _future = _billing.status();
+        _future = _report(_billing.status());
       });
     }
   }
