@@ -76,13 +76,14 @@ def _seed(cfg) -> None:
 
 
 def test_it_follows_the_ledger_migration():
-    """ca17b22c22d5 follows this one, and c69914246e8e — the single head —
-    follows that."""
+    """ca17b22c22d5 follows this one, then c69914246e8e, then 26b1b2cd05bf —
+    the single head."""
     script = ScriptDirectory.from_config(Config(str(_PROJECT_ROOT / "alembic.ini")))
     assert script.get_revision(_REVISION).down_revision == _BEFORE
     assert script.get_revision("ca17b22c22d5").down_revision == _REVISION
     assert script.get_revision("c69914246e8e").down_revision == "ca17b22c22d5"
-    assert script.get_heads() == ["c69914246e8e"]
+    assert script.get_revision("26b1b2cd05bf").down_revision == "c69914246e8e"
+    assert script.get_heads() == ["26b1b2cd05bf"]
 
 
 def test_upgrade(cfg):
@@ -159,3 +160,14 @@ def test_the_cancel_attempt_and_version_migration_up_and_down(cfg):
     command.downgrade(cfg, "ca17b22c22d5")
     assert {"cancel_attempted_at", "version"}.isdisjoint(
         _columns(cfg, "subscription_refund"))
+
+
+def test_the_failed_refund_id_migration_up_and_down(cfg):
+    """R6-1: the id of a refund whose failure was recorded."""
+    command.upgrade(cfg, "26b1b2cd05bf")
+    assert "failed_refund_id" in _columns(cfg, "subscription_refund")
+    with _connect(cfg) as conn:
+        indexes = {r[1] for r in conn.execute("PRAGMA index_list(subscription_refund)")}
+    assert "ix_subscription_refund_failed_refund_id" in indexes
+    command.downgrade(cfg, "c69914246e8e")
+    assert "failed_refund_id" not in _columns(cfg, "subscription_refund")

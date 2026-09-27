@@ -127,6 +127,10 @@ class SubscriptionRefund(sqlmodel.SQLModel, table=True):
     # created (``refund.failed``) is matched to this row. Cleared once such a
     # failure is recorded, so a redelivered event changes nothing.
     refund_id: str = sqlmodel.Field(default="", index=True)
+    # The refund whose failure was recorded (R6-1): Stripe reports one failure
+    # in several events, and the later ones are answered "already recorded"
+    # rather than as a refund that is not ours.
+    failed_refund_id: str = sqlmodel.Field(default="", index=True)
     reason: str = sqlmodel.Field(default="")
     # When the withdrawal or deletion was asked for — frozen on the row
     # before anything is cancelled — and when the cancellation was last

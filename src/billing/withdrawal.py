@@ -493,7 +493,13 @@ def _state(subscription_id: str) -> str:
         return ledger_state(sess, subscription_id)
 
 
-def record_refund_failure(refund_id: str, amount: int, reason: str) -> bool:
+#: What :func:`record_refund_failure` found.
+APPLIED = "applied"      # a refund of ours: recorded as owed now
+RECORDED = "recorded"    # its failure was recorded already (a repeat event)
+UNMATCHED = "unmatched"  # no refund of ours: the caller logs it at ERROR
+
+
+def record_refund_failure(refund_id: str, amount: int, reason: str) -> str:
     """A refund of ours failed (or was canceled) after it was created.
 
     The money did not go back. Matched by the refund id stored when the
@@ -501,18 +507,22 @@ def record_refund_failure(refund_id: str, amount: int, reason: str) -> bool:
     * a ``done`` or ``owed`` row: owed grows by the failed amount;
     * a ``settled`` row: the owner settled the rest by hand, so only the
       failed amount is owed now (the settled one is kept in the reason);
-    and the id is cleared, so a redelivered event changes nothing.
+    and the id moves to ``failed_refund_id``, so a redelivered event — or
+    another event reporting the same failure — changes nothing and is
+    answered :data:`RECORDED`.
 
-    Returns whether a row changed; with none, the caller logs the failure.
+    Returns :data:`APPLIED`, :data:`RECORDED` or :data:`UNMATCHED`.
     """
     if not refund_id:
-        return False
+        return UNMATCHED
     with get_session() as sess:
         row = sess.exec(select(SubscriptionRefund).where(
             SubscriptionRefund.refund_id == refund_id)).first()
         if row is None:
+            recorded = sess.exec(select(SubscriptionRefund.subscription_id).where(
+                SubscriptionRefund.failed_refund_id == refund_id)).first()
             sess.rollback()
-            return False
+            return RECORDED if recorded is not None else UNMATCHED
         user_info_id = owner_account(sess, row.customer_id)
     with get_session() as sess:
         lock_account(sess, user_info_id)
@@ -520,7 +530,7 @@ def record_refund_failure(refund_id: str, amount: int, reason: str) -> bool:
             SubscriptionRefund.refund_id == refund_id)).first()
         if row is None:
             sess.rollback()
-            return False
+            return RECORDED  # recorded meanwhile by a concurrent event
         failed = min(max(0, amount or row.refunded), row.refunded)
         why = f"the refund failed after it was made: {reason or 'no reason given'}"
         if row.state == SETTLED:
@@ -531,6 +541,7 @@ def record_refund_failure(refund_id: str, amount: int, reason: str) -> bool:
         row.refunded -= failed
         row.state = OWED
         row.refund_id = ""
+        row.failed_refund_id = refund_id
         row.reason = why
         row.updated_at = time.time()
         row.version = (row.version or 0) + 1
@@ -538,7 +549,7 @@ def record_refund_failure(refund_id: str, amount: int, reason: str) -> bool:
         sess.commit()
         row = _detached(sess, row)
     _log_owed(row)
-    return True
+    return APPLIED
 
 
 @dataclass(frozen=True)

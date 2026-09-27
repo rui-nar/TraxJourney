@@ -54,8 +54,10 @@ from src.billing.webhook_events import (
     subscription_update_from_event,
 )
 from src.billing.withdrawal import (
+    APPLIED,
     FINAL,
     PENDING,
+    RECORDED,
     AccountGone,
     NotEligible,
     RefundInProgress,
@@ -814,7 +816,12 @@ def _record_refund_failure(event: dict) -> bool:
         return False
     refund_id = str(refund.get("id") or "")
     reason = str(refund.get("failure_reason") or status_)
-    if not record_refund_failure(refund_id, int(refund.get("amount") or 0), reason):
+    outcome = record_refund_failure(refund_id, int(refund.get("amount") or 0), reason)
+    if outcome == RECORDED:
+        _log.info("Billing: refund %s %s — its failure is already recorded as owed "
+                  "(event %s)", refund_id, status_, event.get("id"))
+        return False
+    if outcome != APPLIED:
         _log.error(
             "Billing: refund %s %s (%s) matches no refund of ours: charge %s, "
             "payment intent %s, amount %s %s, event %s. If it was a withdrawal "

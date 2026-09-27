@@ -615,12 +615,20 @@ to the user as `owed_cents`. The cases are:
   - A `done` or `owed` row moves to `owed`, growing by the failed amount. A
     `settled` row becomes `owed` for **the failed amount only**: what was
     settled by hand stays settled, and the reason keeps how much that was.
-    `refund_id` is cleared, so a redelivery changes nothing.
-  - A failure that matches no row is **never dropped silently**: it is
-    logged at **ERROR** with the refund id, its charge and payment intent,
-    the amount and the event id. That is how the failed refund of a
-    withdrawal whose account was then deleted (its `done` row went with the
-    account) surfaces: refund it by hand in Stripe.
+  - The id then moves from `refund_id` to `failed_refund_id` (migration
+    `26b1b2cd05bf`). Stripe reports one failure in several events; a
+    redelivery, or another event for the same failure, matches
+    `failed_refund_id`, changes nothing, and is logged at **INFO** as
+    "already recorded". It is not a refund to make again: it is on the owed
+    list already.
+  - A failure that matches **neither** id is **never dropped silently**: it
+    is logged at **ERROR** ("matches no refund of ours") with the refund id,
+    its charge and payment intent, the amount and the event id. That is how
+    the failed refund of a withdrawal whose account was then deleted (its
+    `done` row went with the account) surfaces: refund it by hand in Stripe.
+    A failure recorded before `26b1b2cd05bf` has lost its id, so a later
+    event for it logs this ERROR too: check the owed list before acting on
+    it.
   - Rows from before `ca17b22c22d5` have no refund id; a late failure of one
     is only seen in the log and the Stripe dashboard.
 

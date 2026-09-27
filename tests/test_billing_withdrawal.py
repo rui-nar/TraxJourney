@@ -1702,10 +1702,42 @@ class TestRefundFailingAfterItWasMade:
             "applied"] is False
         assert _ledger(engine).state == "done"
 
-    def test_someone_elses_refund_changes_nothing(self, engine):
+    def test_someone_elses_refund_changes_nothing(self, engine, caplog):
+        """A refund that is not ours still logs at ERROR (R6-1 keeps that)."""
         self._done(engine)
-        assert self._post(self._event(refund_id="re_other")).json()["applied"] is False
+        with caplog.at_level(logging.INFO):
+            res = self._post(self._event(refund_id="re_other"))
+        assert res.json()["applied"] is False
         assert _ledger(engine).state == "done"
+        assert any(r.levelno == logging.ERROR and "re_other" in r.getMessage()
+                   and "matches no refund of ours" in r.getMessage()
+                   for r in caplog.records)
+
+    @pytest.mark.parametrize("etype", ["refund.updated", "charge.refund.updated",
+                                       "refund.failed"])
+    def test_a_repeat_event_for_a_recorded_failure_is_not_an_error(
+        self, engine, caplog, etype
+    ):
+        """R6-1: Stripe reports one failure in several events. After the first
+        records it, the others are "already recorded" at INFO — never the
+        no-match ERROR that tells the owner to refund it by hand again — and
+        the owed amount does not move."""
+        self._done(engine)
+        assert self._post(self._event("refund.failed")).json()["applied"] is True
+        owed = _ledger(engine).owed
+
+        caplog.clear()
+        with caplog.at_level(logging.INFO):
+            res = self._post(self._event(etype))
+
+        assert res.status_code == 200
+        assert res.json()["applied"] is False
+        entry = _ledger(engine)
+        assert (entry.state, entry.owed, entry.failed_refund_id) == (
+            "owed", owed, "re_1")
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert any(r.levelno == logging.INFO and "already recorded" in r.getMessage()
+                   and "re_1" in r.getMessage() for r in caplog.records)
 
 
 class TestDeletionRefusedLoudly:
