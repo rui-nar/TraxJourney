@@ -257,6 +257,11 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
     setState(() => _saving = true);
 
     final tripEndStr = _tripEnd == null ? null : _toIso(_tripEnd!);
+    // What saveDayMeta sends. The confirmed prune below applies to this, not
+    // to _dayMeta: a save that stops early (a refused rename, issue #467)
+    // keeps the screen open, and a pruned _dayMeta would then be sent by the
+    // next save without asking, even after the end date moved back.
+    var dayMetaToSave = _dayMeta;
     if (tripEndStr != null) {
       final n = _notifier;
       // A day is only actually removable when nothing but day-meta puts it
@@ -353,11 +358,12 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
           setState(() => _saving = false);
           return;
         }
-        // Prune the local copy rather than writing a filtered map here: the
-        // single saveDayMeta below sends _dayMeta, and a separate write would
-        // just be undone by that stale snapshot (issue #358).
+        // Prune what the single saveDayMeta below sends rather than writing a
+        // filtered map here: a separate write would just be undone by that
+        // stale snapshot (issue #358).
         final removable = orphans.removable.toSet();
-        _dayMeta.removeWhere((k, _) => removable.contains(k));
+        dayMetaToSave = Map.of(_dayMeta)
+          ..removeWhere((k, _) => removable.contains(k));
       }
     }
 
@@ -397,7 +403,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
       tripEndStr,
     );
     n.saveDayMeta(
-      newDayMeta: _dayMeta,
+      newDayMeta: dayMetaToSave,
       newSleepingOptions: updatedOpts,
       newSleepingOptionGroups: updatedGroups,
       newCounters: updatedCounters,

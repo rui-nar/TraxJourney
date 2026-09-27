@@ -22,6 +22,9 @@ import 'package:traxjourney_client/src/projects/project_settings_screen.dart';
 /// Every request other than the rename that changes something on the server.
 late List<String> otherWrites;
 
+/// Every day-meta map PUT during a test, in order.
+late List<Map<String, dynamic>> putDayMeta;
+
 /// Names the server refuses as taken.
 const _taken = 'Taken';
 
@@ -37,6 +40,15 @@ ApiClient _api() => ApiClient(
           }
           return http.Response(
               jsonEncode({'name': newName ?? 'Trip', 'trip_start': null}), 200);
+        }
+        if (req.method == 'PUT' && req.url.path.endsWith('/day-meta')) {
+          final body = jsonDecode(req.body) as Map<String, dynamic>;
+          putDayMeta.add(body['day_meta'] as Map<String, dynamic>);
+          otherWrites.add('${req.method} ${req.url.path}');
+          return http.Response('', 204);
+        }
+        if (req.method == 'GET' && req.url.path.endsWith('/content-days')) {
+          return http.Response(jsonEncode({'days': <String>[]}), 200);
         }
         if (req.method == 'GET' && req.url.path.endsWith('/polarsteps/trips')) {
           return http.Response('[]', 200);
@@ -80,13 +92,27 @@ Future<void> _pumpSettings(WidgetTester tester, ProjectNotifier n) async {
   await _frames(tester);
 }
 
+Finder _nameField() => find.byWidgetPredicate((w) =>
+    w is TextField &&
+    w.controller != null &&
+    const {'Trip', _taken, 'Alps'}.contains(w.controller!.text));
+
 Future<void> _renameAndSave(WidgetTester tester, String name) async {
-  await tester.enterText(
-    find.byWidgetPredicate(
-        (w) => w is TextField && w.controller?.text == 'Trip'),
-    name,
-  );
+  await tester.enterText(_nameField(), name);
   await tester.tap(find.byTooltip('Save'));
+  await _frames(tester);
+}
+
+/// Moves the trip-end chip labelled [from] to [day] of the month it opens on.
+Future<void> _moveEndDate(WidgetTester tester, String from, String day) async {
+  await tester.tap(find.text(from));
+  await _frames(tester);
+  await tester.tap(find.descendant(
+    of: find.byType(DatePickerDialog),
+    matching: find.text(day),
+  ));
+  await _frames(tester);
+  await tester.tap(find.text('OK'));
   await _frames(tester);
 }
 
@@ -95,6 +121,7 @@ void main() {
 
   setUp(() {
     otherWrites = [];
+    putDayMeta = [];
     realApi = api;
     api = _api();
   });
@@ -117,6 +144,47 @@ void main() {
         (w) => w is TextField && w.controller?.text == _taken), findsOneWidget);
     expect(n.projectName, 'Trip');
     expect(otherWrites, isEmpty);
+  });
+
+  testWidgets(
+      'a refused rename leaves no confirmed day prune behind for the next save',
+      (tester) async {
+    // Review R1-1: the prune the owner confirmed used to be applied to the
+    // screen's own day-meta before the rename was refused. With the screen
+    // kept open, moving the end date back and saving again raised no dialog
+    // and sent the pruned map: the notes on those days were deleted.
+    final n = notifier()
+      ..tripEnd = '2026-06-14'
+      ..dayMeta = {
+        for (final k in ['2026-06-13', '2026-06-14', '2026-06-15', '2026-06-16'])
+          k: <String, dynamic>{'note': 'note for $k'},
+      };
+    await _pumpSettings(tester, n);
+
+    await tester.enterText(_nameField(), _taken);
+    await tester.tap(find.byTooltip('Save'));
+    await _frames(tester);
+    expect(find.text('Remove days after the end date?'), findsOneWidget);
+    await tester.tap(find.text('Delete'));
+    await _frames(tester);
+
+    expect(find.text("Project '$_taken' already exists"), findsOneWidget);
+    expect(putDayMeta, isEmpty);
+    // Let the message time out: at this size it covers the Save button.
+    await _frames(tester, 60);
+
+    // The owner keeps the trip's name and moves the end date back over the
+    // days they had agreed to drop.
+    await tester.enterText(_nameField(), 'Trip');
+    await _moveEndDate(tester, 'Jun 14, 2026', '16');
+    await tester.tap(find.byTooltip('Save'));
+    await _frames(tester);
+
+    expect(find.text('home'), findsOneWidget);
+    expect(putDayMeta, isNotEmpty);
+    expect(putDayMeta.last.keys.toSet(),
+        {'2026-06-13', '2026-06-14', '2026-06-15', '2026-06-16'});
+    expect(n.dayMeta['2026-06-15']?['note'], 'note for 2026-06-15');
   });
 
   testWidgets('an accepted rename saves the rest and closes', (tester) async {
