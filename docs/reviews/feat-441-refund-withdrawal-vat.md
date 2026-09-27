@@ -17,7 +17,7 @@ Reviewer: Opus, adversarial. Triage: `review-triager` (Opus). Findings restated 
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (e449ab98)
 
 ### R5-2 — A refund that fails after the account is deleted is dropped with no log
 - Trigger: refunded user deletes the account → Stripe later sends refund.failed → webhook matches no row and logs nothing; the owner never learns a refund is owed
@@ -26,7 +26,7 @@ Reviewer: Opus, adversarial. Triage: `review-triager` (Opus). Findings restated 
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (e449ab98)
 
 ### R5-3 — A refund failing after the owner settled re-owes the part already settled
 - Trigger: row owed 200 (balance share) plus re_1 100 to the card → owner pays 200 by hand and settles → re_1 fails → the admin list shows 300 owed
@@ -35,7 +35,7 @@ Reviewer: Opus, adversarial. Triage: `review-triager` (Opus). Findings restated 
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (e449ab98)
 
 ### R5-7 — A refund that ends `canceled` is not treated as failed
 - Trigger: Stripe moves one of our refunds to canceled → webhook ignores it → the row stays done with no money returned
@@ -44,7 +44,7 @@ Reviewer: Opus, adversarial. Triage: `review-triager` (Opus). Findings restated 
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (e449ab98)
 
 ### R5-9a — A pending row with an unknown amount is listed to the admin as 0 owed
 - Trigger: deletion where the customer vanished at Stripe before the amount was frozen → row with to_refund -1 → admin list shows 0 owed; the owner may settle a row that is owed money
@@ -53,7 +53,7 @@ Reviewer: Opus, adversarial. Triage: `review-triager` (Opus). Findings restated 
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (e449ab98)
 
 ### R5-5 — Admin settle fence can pass on claim_token == "" (ABA)
 - Trigger: a claimant runs a whole claim → credit note → release cycle between the admin's resolve and its read → settle passes on a row Stripe just refunded
@@ -62,7 +62,7 @@ Reviewer: Opus, adversarial. Triage: `review-triager` (Opus). Findings restated 
 - Revisit when: —
 - Guard: the settle fence also compares a `version` column bumped on every write, and a test covers it
 - Override: —
-- Outcome: open
+- Outcome: guard added (e449ab98)
 
 ### R5-4 — The 10-minute cancel bound includes finish_pending time
 - Trigger: user with an earlier contract's pending refund withdraws while Stripe is slow → the cancel lands more than 600 s after requested_at → recorded as owed instead of refunded
