@@ -45,6 +45,7 @@ from api.project_access import (
 from api.photo_locks import photo_lock
 from api.project_shared import bust_project_payloads, project_cache_ref
 from models.project_db import DBJournalEntry, DBProject, DBProjectItem
+from src.models.value_bounds import Lat, Lon
 from src.project.project_repo import bump_lock_version
 from src.billing.entitlements import ensure_storage_quota, ensure_trip_days_quota
 from src.billing.usage import record_written, unlink_and_record
@@ -235,8 +236,8 @@ class JournalBody(BaseModel):
     geo_mode: str = Field("start_of_day", description="How to resolve coordinates: 'start_of_day', 'end_of_day', or 'custom'")
     time: Optional[str] = Field(None, description="Optional time of day (HH:MM)")
     description: Optional[str] = Field(None, description="Journal entry text")
-    lat: Optional[float] = Field(None, description="Latitude (required when geo_mode='custom')")
-    lon: Optional[float] = Field(None, description="Longitude (required when geo_mode='custom')")
+    lat: Optional[Lat] = Field(None, description="Latitude (required when geo_mode='custom')")
+    lon: Optional[Lon] = Field(None, description="Longitude (required when geo_mode='custom')")
     insert_after_index: Optional[int] = Field(None, description="Position in the project item list to insert after")
     client_token: Optional[str] = Field(
         None, description="Idempotency token: retrying a save with the same token "
@@ -249,8 +250,8 @@ class JournalUpdateBody(BaseModel):
     geo_mode: str = Field("start_of_day", description="How to resolve coordinates")
     time: Optional[str] = Field(None, description="Optional time of day (HH:MM)")
     description: Optional[str] = Field(None, description="Journal entry text")
-    lat: Optional[float] = Field(None, description="Latitude (required when geo_mode='custom')")
-    lon: Optional[float] = Field(None, description="Longitude (required when geo_mode='custom')")
+    lat: Optional[Lat] = Field(None, description="Latitude (required when geo_mode='custom')")
+    lon: Optional[Lon] = Field(None, description="Longitude (required when geo_mode='custom')")
 
 
 class PhotoFromUrlIn(BaseModel):

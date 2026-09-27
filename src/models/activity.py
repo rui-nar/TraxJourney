@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
 
+from src.models.value_bounds import GAIN_MAX_M, finite_or_none, plausible_elevation
 from src.utils.logging import get_logger
 
 _log = get_logger(__name__)
@@ -174,7 +175,7 @@ class Activity:
             distance=data.get("distance", 0.0),
             moving_time=data.get("moving_time", 0),
             elapsed_time=data.get("elapsed_time", 0),
-            total_elevation_gain=data.get("total_elevation_gain", 0.0),
+            total_elevation_gain=_gain(data.get("total_elevation_gain", 0.0)),
             start_date=datetime.fromisoformat(data.get("start_date", "").replace("Z", "+00:00")) if data.get("start_date") else datetime.now(),
             start_date_local=datetime.fromisoformat(data.get("start_date_local", "").replace("Z", "+00:00")) if data.get("start_date_local") else datetime.now(),
             timezone=data.get("timezone", "UTC"),
@@ -199,8 +200,8 @@ class Activity:
             max_heartrate=data.get("max_heartrate"),
             heartrate_opt_out=data.get("heartrate_opt_out", False),
             display_hide_heartrate_option=data.get("display_hide_heartrate_option", False),
-            elev_high=data.get("elev_high"),
-            elev_low=data.get("elev_low"),
+            elev_high=_elevation(data.get("elev_high")),
+            elev_low=_elevation(data.get("elev_low")),
             start_latlng=data.get("start_latlng"),
             end_latlng=data.get("end_latlng"),
             summary_polyline=data.get("map", {}).get("summary_polyline") or None,
@@ -222,6 +223,23 @@ class Activity:
             end_latlng_enc=data.get("end_latlng_enc"),
             elevation_profile_enc=data.get("elevation_profile_enc"),
         )
+
+
+def _elevation(value: Any) -> Any:
+    """*value*, or None when it is not a plausible elevation: NaN, ±Infinity
+    or past ±20 km is no reading (issue #462), not a value to store and serve
+    to a client, or to export to a file the import refuses."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return plausible_elevation(value)
+    return value
+
+
+def _gain(value: Any) -> Any:
+    """*value*, or 0.0 (no climbing, the column's default) when it is not a
+    plausible gain: NaN, ±Infinity, negative or past 10,000 km."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value if finite_or_none(value) is not None and 0 <= value <= GAIN_MAX_M else 0.0
+    return value
 
 
 #: The range an activity id can take: the database's 64-bit INTEGER. A value

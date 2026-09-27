@@ -1,7 +1,6 @@
 """Tests for project data models and ProjectIO round-trip — no Qt required."""
 
 import json
-import logging
 import os
 import pytest
 
@@ -15,7 +14,7 @@ from src.models.project import (
     ProjectItem,
     SegmentEndpoint,
 )
-from src.project.project_io import ProjectIO
+from src.project.project_io import InvalidProjectFile, ProjectIO
 
 
 # ---------------------------------------------------------------------------
@@ -295,10 +294,12 @@ class TestProjectIORoundTrip:
         assert "items" in data
         assert "activities" in data
 
-    def test_load_drops_malformed_activities_and_logs(self, tmp_path, caplog):
+    def test_load_refuses_a_malformed_activity(self, tmp_path):
         """Issue #205: a corrupt activity entry used to be dropped by
-        ProjectIO.load() with zero trace (`except Exception: pass`).
-        Now routed through the shared parse_activities_or_log helper."""
+        ProjectIO.load() with zero trace (`except Exception: pass`), then
+        dropped with a warning. A value no writer emits now refuses the whole
+        file instead (issue #462): importing the rest of the trip without it
+        loses the activity as silently as before, as far as the user sees."""
         path = str(tmp_path / "corrupt.traxj")
         data = {
             "name": "Test",
@@ -318,14 +319,8 @@ class TestProjectIORoundTrip:
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(data, fh)
 
-        with caplog.at_level(logging.WARNING, logger="src.models.activity"):
-            loaded = ProjectIO.load(path)
-
-        assert [a.id for a in loaded.activities] == [1]
-        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-        assert len(warnings) == 1
-        assert "project_io_load" in warnings[0].message
-        assert "1/2" in warnings[0].message
+        with pytest.raises(InvalidProjectFile, match=r"activities\[1\]\.start_date "):
+            ProjectIO.load(path)
 
     def test_unicode_in_label(self, tmp_path):
         p = Project(name="München → Paris 🚂")

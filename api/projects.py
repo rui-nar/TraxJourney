@@ -73,6 +73,7 @@ from src.billing.entitlements import ensure_project_quota, ensure_trip_days_quot
 from src.models.activity import parse_activities_or_log
 from src.models.project import DEFAULT_SLEEPING_GROUPS, tag_options_with_untagged
 from src.project.project_io import ProjectIO
+from src.project.traxj_schema import day_meta_fault
 from src.project.repo_core import _parse_day_meta_json, bump_lock_version
 from src.project.project_repo import _compute_stats
 from src.utils.logging import get_logger
@@ -683,6 +684,33 @@ def _merge_day_meta_preserve_counters(incoming: dict, existing_json: str | None)
     return merged
 
 
+def _same(a, b) -> bool:
+    """Equal as JSON: in Python 1 == True == 1.0, and each is a different
+    value to store."""
+    return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+
+
+def _check_written_day_notes(incoming: dict, existing_json: str | None) -> None:
+    """Refuse a day note of a type the trip-file import does not read, or the
+    trip could not be exported and imported back (issue #462).
+
+    Only what this save writes is judged: the client sends every day back on
+    each save, and a field it leaves as stored (a day saved before notes were
+    typed may hold anything) must not make every save of the trip a 422.
+    """
+    stored = _stored_day_meta(existing_json)
+    written = {}
+    for day, fields in incoming.items():
+        before = stored.get(day)
+        before = before if isinstance(before, dict) else {}
+        written[day] = {k: v for k, v in fields.items()
+                        if not (k in before and _same(before[k], v))}
+    fault = day_meta_fault(written)
+    if fault is not None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            detail=f"These day notes cannot be stored: {fault}.")
+
+
 @router.put("/{name}/day-meta", status_code=status.HTTP_204_NO_CONTENT,
             summary="Update day metadata")
 def update_day_meta(
@@ -697,6 +725,7 @@ def update_day_meta(
     with get_session() as sess:
         row = resolve_project(sess, user_info_id, name, owner, min_role="editor")
         owner_id = row.user_info_id
+        _check_written_day_notes(body.day_meta, row.day_meta_json)
         row.day_meta_json = json.dumps(
             _merge_day_meta_preserve_counters(
                 _keep_days_the_caller_cannot_see(

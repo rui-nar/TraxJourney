@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "name": "Alps",
+  "trip_start": null,
+  "filter_state": {
+    "start_date": null,
+    "end_date": null,
+    "activity_types": null
+  },
+  "items": [
+    {
+      "item_type": "segment",
+      "segment": {
+        "id": "0b6f2c1e-8a8d-4c49-9d7e-2f0c5e1d9a11",
+        "segment_type": "train",
+        "label": "Chamonix → Geneva",
+        "start": {
+          "lat": 46.2381,
+          "lon": 6.1089,
+          "source": "auto"
+        },
+        "end": {
+          "lat": 38.7742,
+          "lon": -9.1342,
+          "source": "manual"
+        },
+        "date": "2026-03-03",
+        "route_mode": "rail",
+        "train_number": "IR 90",
+        "hafas_provider": "sbb",
+        "route_polyline": "[[6.87, 45.92], [6.5, 46.05], [6.14, 46.21]]"
+      }
+    },
+    {
+      "item_type": "segment",
+      "segment": {
+        "id": "0b6f2c1e-8a8d-4c49-9d7e-2f0c5e1d9a11",
+        "segment_type": "train",
+        "label": "GVA → LIS",
+        "start": {
+          "lat": 46.2381,
+          "lon": 6.1089,
+          "source": "auto"
+        },
+        "end": {
+          "lat": 38.7742,
+          "lon": -9.1342,
+          "source": "manual"
+        },
+        "date": "2026-03-04",
+        "route_mode": "rail",
+        "train_number": null,
+        "hafas_provider": null,
+        "route_polyline": "[]"
+      }
+    }
+  ],
+  "activities": [],
+  "day_meta": {
+    "2026-03-03": {
+      "sleeping": "Hotel",
+      "tags": [
+        "alps",
+        "rail"
+      ]
+    }
+  },
+  "sleeping_options": [
+    "Camping",
+    "Hotel"
+  ]
+}

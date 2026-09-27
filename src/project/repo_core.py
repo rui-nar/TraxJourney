@@ -6,6 +6,8 @@ for the composed class and module docstring.
 from __future__ import annotations
 
 import json
+import math
+import sys
 import time
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
@@ -32,6 +34,7 @@ from src.models.project import (
     tag_options_with_untagged,
     UNTAGGED_LABEL,
 )
+from src.models.value_bounds import DISTANCE_MAX_M, DURATION_MAX_S, GAIN_MAX_M
 from src.project.project_io import ProjectIO
 
 
@@ -881,15 +884,15 @@ def _compute_stats(project: Project, tag_filter: Optional[List[str]] = None) -> 
                     act_date = str(a.start_date_local)[:10]
             if act_date not in allowed_dates:
                 continue
-        total_dist_m   += a.distance or 0.0
-        total_moving_s += a.moving_time or 0
-        total_elev_m   += a.total_elevation_gain or 0.0
+        total_dist_m   += _figure(a.distance, DISTANCE_MAX_M)
+        total_moving_s += int(_figure(a.moving_time, DURATION_MAX_S))
+        total_elev_m   += _figure(a.total_elevation_gain, GAIN_MAX_M)
 
         atype = (a.type or "other").lower()
         activity_counts[atype] += 1
 
         if atype == "ride":
-            ride_total_elev_m += a.total_elevation_gain or 0.0
+            ride_total_elev_m += _figure(a.total_elevation_gain, GAIN_MAX_M)
             date_key: Optional[str] = None
             if a.start_date_local is not None:
                 # start_date_local may be a datetime or an ISO string
@@ -898,9 +901,9 @@ def _compute_stats(project: Project, tag_filter: Optional[List[str]] = None) -> 
                 except AttributeError:
                     date_key = str(a.start_date_local)[:10]           # string fallback
             if date_key:
-                ride_day_dist[date_key] += a.distance or 0.0
-                ride_day_elev[date_key] += a.total_elevation_gain or 0.0
-                ride_day_time_s[date_key] += a.moving_time or 0
+                ride_day_dist[date_key] += _figure(a.distance, DISTANCE_MAX_M)
+                ride_day_elev[date_key] += _figure(a.total_elevation_gain, GAIN_MAX_M)
+                ride_day_time_s[date_key] += int(_figure(a.moving_time, DURATION_MAX_S))
 
     ride_days = len(ride_day_dist)
     ride_dist_m = sum(ride_day_dist.values())
@@ -945,9 +948,9 @@ def _compute_stats(project: Project, tag_filter: Optional[List[str]] = None) -> 
             day_tags = date_tags.get(act_date, [])
             if day_tags:
                 for tag in day_tags:
-                    dist_per_tag[tag] = dist_per_tag.get(tag, 0.0) + (a.distance or 0.0)
+                    dist_per_tag[tag] = dist_per_tag.get(tag, 0.0) + _figure(a.distance, DISTANCE_MAX_M)
             else:
-                dist_per_tag[UNTAGGED_LABEL] = dist_per_tag.get(UNTAGGED_LABEL, 0.0) + (a.distance or 0.0)
+                dist_per_tag[UNTAGGED_LABEL] = dist_per_tag.get(UNTAGGED_LABEL, 0.0) + _figure(a.distance, DISTANCE_MAX_M)
 
     # ── Distance + counts by segment type ───────────────────────────────────
     seg_dist: Dict[str, float] = {"train": 0.0, "flight": 0.0, "boat": 0.0, "bus": 0.0}
@@ -960,7 +963,7 @@ def _compute_stats(project: Project, tag_filter: Optional[List[str]] = None) -> 
                 seg_dist[seg.segment_type] += km * 1000.0
             seg_counts[seg.segment_type] += 1
 
-    return {
+    return _finite({
         "total_distance_m":      total_dist_m,
         "total_moving_s":        total_moving_s,
         "total_elevation_m":     total_elev_m,
@@ -998,4 +1001,33 @@ def _compute_stats(project: Project, tag_filter: Optional[List[str]] = None) -> 
             }
             for d in sorted(ride_day_dist)
         ],
-    }
+    })
+
+
+def _figure(value: Any, bound: float) -> float:
+    """An activity's figure as the totals count it: within [0, *bound*]
+    (src/models/value_bounds.py), and 0 when it is not a finite number. The
+    writers and the import keep stored figures inside the bounds, so this
+    only ever bites on a row stored before they did (issue #462); either way
+    no sum of them can overflow."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    if isinstance(value, float) and not math.isfinite(value):
+        return 0.0
+    return float(min(max(value, 0), bound))
+
+
+def _finite(value: Any) -> Any:
+    """*value* with every float that is not finite clamped to the largest
+    finite one, NaN to 0: the totals are served as JSON, which has neither,
+    and a counter the user logs has no bound of its own to keep its running
+    sum from overflowing."""
+    if isinstance(value, float):
+        if math.isnan(value):
+            return 0.0
+        return max(-sys.float_info.max, min(value, sys.float_info.max))
+    if isinstance(value, dict):
+        return {k: _finite(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_finite(v) for v in value]
+    return value

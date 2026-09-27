@@ -28,6 +28,7 @@ from api.project_access import (
     translate_insert_after,
 )
 from api.project_shared import _refresh_share_tiles, _refresh_stats_background, _repo, queue_share_tiles_refresh, queue_stats_refresh, warm_meta_cache
+from src.models.value_bounds import Lat, Lon
 from src.billing.entitlements import ensure_trip_days_quota
 from src.jobs.queue import QUEUE_RESOLVE, enqueue
 from src.jobs.route_jobs import RESOLVER_VERSION, create_job, mark_done, mark_running
@@ -351,10 +352,10 @@ def _mark_segment_failed(
 class SegmentBody(BaseModel):
     segment_type: str = "flight"
     label: str = ""
-    start_lat: float = 0.0
-    start_lon: float = 0.0
-    end_lat: float = 0.0
-    end_lon: float = 0.0
+    start_lat: Lat = 0.0
+    start_lon: Lon = 0.0
+    end_lat: Lat = 0.0
+    end_lon: Lon = 0.0
     insert_after_index: Optional[int] = None  # POST only
     date: Optional[str] = None  # ISO date "YYYY-MM-DD"
     train_number: Optional[str] = None
@@ -506,8 +507,8 @@ MAX_TRACK_POINTS = 100_000
 
 
 class SegmentTrackPointIn(BaseModel):
-    lat: float = Field(description="Latitude, decimal degrees")
-    lng: float = Field(description="Longitude, decimal degrees")
+    lat: Lat = Field(description="Latitude, decimal degrees")
+    lng: Lon = Field(description="Longitude, decimal degrees")
 
 
 class SegmentTrackEditRequest(BaseModel):

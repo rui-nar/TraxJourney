@@ -32,6 +32,7 @@ from api.project_access import (
 )
 from api.project_shared import bust_project_payloads, project_cache_ref
 from models.project_db import DBActivity, DBEncounter, DBPerson, DBPersonGroup, DBProject, DBProjectItem
+from src.models.value_bounds import Lat, Lon
 from src.project.project_repo import bump_lock_version
 
 router = APIRouter(prefix="/api/encounters", tags=["encounters"])
@@ -112,8 +113,8 @@ class EncounterBody(BaseModel):
     geo_mode: str = Field("start_of_day", description="'start_of_day', 'end_of_day', or 'custom'")
     time: Optional[str] = Field(None, description="Optional time of day (HH:MM)")
     description: Optional[str] = Field(None, description="Free-text note")
-    lat: Optional[float] = Field(None, description="Latitude (required when geo_mode='custom')")
-    lon: Optional[float] = Field(None, description="Longitude (required when geo_mode='custom')")
+    lat: Optional[Lat] = Field(None, description="Latitude (required when geo_mode='custom')")
+    lon: Optional[Lon] = Field(None, description="Longitude (required when geo_mode='custom')")
     insert_after_index: Optional[int] = Field(None, description="Item-list position to insert after")
 
 
@@ -124,8 +125,8 @@ class EncounterUpdateBody(BaseModel):
     geo_mode: str = Field("start_of_day", description="'start_of_day', 'end_of_day', or 'custom'")
     time: Optional[str] = Field(None)
     description: Optional[str] = Field(None)
-    lat: Optional[float] = Field(None)
-    lon: Optional[float] = Field(None)
+    lat: Optional[Lat] = Field(None)
+    lon: Optional[Lon] = Field(None)
 
 
 # ── CRUD ─────────────────────────────────────────────────────────────────────

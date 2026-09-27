@@ -22,6 +22,7 @@ from src.poster.poster_job_runner import sweep_orphaned_poster_jobs
 from src.project.project_repo import StaleWriteError
 
 from api.activities import router as activities_router, activity_fields_router
+from api.json_guard import RefuseUnstorableJson
 from api.admin import router as admin_router
 from api.auth import router as auth_router
 from api.backup import router as backup_router
@@ -180,6 +181,9 @@ app = FastAPI(
 )
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# No JSON body may hold a value no trip may hold (issue #462): see api/json_guard.py.
+app.add_middleware(RefuseUnstorableJson)
 
 # Request rate / latency / error rate (issue #125). The scrape endpoint itself
 # is ours (api/metrics.py) so it can require a token.

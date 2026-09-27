@@ -135,4 +135,19 @@ void main() {
       expect(without.duplicateOf, isNull);
     });
   });
+
+  group('warnings (issue #462)', () {
+    test('are read, and do not make a candidate unimportable', () {
+      final candidate = GpxCandidate.fromJson(_candidate({
+        'warnings': ['This track spans more than 31 years.'],
+      }));
+
+      expect(candidate.warnings, ['This track spans more than 31 years.']);
+      expect(candidate.isImportable, isTrue);
+    });
+
+    test('are empty from a server that sends none', () {
+      expect(GpxCandidate.fromJson(_candidate()).warnings, isEmpty);
+    });
+  });
 }

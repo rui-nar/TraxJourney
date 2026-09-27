@@ -54,7 +54,13 @@ from src.gpx.importer import (
 from src.models.activity import (
     ACTIVITY_ID_MAX, ACTIVITY_ID_MIN, Activity, parse_activities_or_log,
 )
-from src.models.track_edit import points_to_elevation_profile, points_to_polyline, recompute_track_metrics
+from src.models.value_bounds import DURATION_MAX_S
+from src.project.traxj_schema import activity_fault, stored_json_fault
+from src.utils.encryption_check import is_encrypted_envelope
+from src.models.track_edit import (
+    elevation_profile_from_streams, implausible_track, repair_elapsed,
+    points_to_elevation_profile, points_to_polyline, recompute_track_metrics,
+)
 from src.project.local_ids import LocalIdExhausted, allocate_local_activity_id, track_fingerprint
 from src.project.project_repo import bump_lock_version
 from src.project.repo_activities import store_prepared_geometry
@@ -120,6 +126,10 @@ class GPXCandidateOut(BaseModel):
     errors: List[str] = Field(
         default_factory=list,
         description="Why this one cannot be imported; empty means it can")
+    warnings: List[str] = Field(
+        default_factory=list,
+        description="What the user should know before importing, such as "
+                    "a clock that looks wrong; never a reason not to import")
 
 
 class GPXDuplicateOut(BaseModel):
@@ -195,12 +205,9 @@ def _enrich_activities(
                     act.start_latlng = [latlng[0][0], latlng[0][1]]
                 if not act.end_latlng:
                     act.end_latlng = [latlng[-1][0], latlng[-1][1]]
-            n = min(len(altitude), len(distance))
-            if n >= 2:
-                act.elevation_profile = (
-                    [distance[i] / 1000 for i in range(n)],
-                    [altitude[i]        for i in range(n)],
-                )
+            profile = elevation_profile_from_streams(distance, altitude)
+            if profile is not None:
+                act.elevation_profile = profile
         except RateLimitError:
             # The quota window filled between the check above and the call
             # (another request got there first — the limiter is process-wide
@@ -269,11 +276,11 @@ def _enrich_activities_background(
 
             if latlng:
                 polyline_str = polyline_lib.encode([(pt[0], pt[1]) for pt in latlng])
-            n = min(len(altitude), len(distance))
-            if n >= 2:
+            profile = elevation_profile_from_streams(distance, altitude)
+            if profile is not None:
                 ep_json = json.dumps({
-                    "distances_km": [distance[i] / 1000 for i in range(n)],
-                    "elevations_m": [altitude[i]        for i in range(n)],
+                    "distances_km": profile[0],
+                    "elevations_m": profile[1],
                 })
 
             if polyline_str or ep_json:
@@ -356,6 +363,18 @@ def add_activities(
     user_info_id = int(current_user["sub"])
 
     activities: List[Activity] = parse_activities_or_log(body.activities, "activities_add")
+    # An activity the trip-file import would refuse is dropped as a malformed
+    # one is (#205): the trip it joined could not be exported and imported
+    # back (issue #462).
+    kept = []
+    for n, act in enumerate(activities):
+        fault = activity_fault(act.to_strava_dict(), n)
+        if fault is None:
+            kept.append(act)
+        else:
+            _log.warning("activities_add: dropped activity %s, which a trip file "
+                         "could not hold: %s", act.id, fault)
+    activities = kept
 
     # Permission/ownership check runs once, outside the retry loop below: the
     # caller and the project's ownership/membership can't change mid-request,
@@ -612,6 +631,10 @@ def _describe_candidates(found):
         errors = validate_candidate(candidate)
         metrics = (recompute_track_metrics(candidate.points) if not errors
                    else None)
+        implausible = implausible_track(metrics) if metrics else None
+        if implausible is not None:
+            errors = [*errors, implausible]
+            metrics = None
         span = candidate.time_span
         out.append({
             "index": candidate.index,
@@ -631,8 +654,44 @@ def _describe_candidates(found):
             "elevation_gain_estimated": True,
             "polyline": _preview_polyline(candidate.points) if not errors else None,
             "errors": errors,
+            "warnings": [w for w in (_clock_warning(candidate),) if w],
         })
     return out
+
+
+#: A stamp before this is a clock error more likely than a track: a device
+#: stamps a point 1970-01-01, or 1980-01-06 (the GPS epoch), before its clock
+#: syncs (issue #462).
+_CLOCK_FLOOR = datetime(2000, 1, 1, tzinfo=timezone.utc)
+
+
+def _clock_warning(candidate) -> Optional[str]:
+    """What the preview says of a clock that looks wrong (issue #462): stamps
+    before :data:`_CLOCK_FLOOR` or more than a day ahead, or a span past the
+    31-year bound. Only said, never refused, and no stamp is left out of
+    anything: the user can set the date and times in review, and a span past
+    the bound is repaired at import (repair_elapsed)."""
+    ceiling = datetime.now(timezone.utc) + timedelta(days=1)
+
+    def utc(t):
+        return t if t.tzinfo is not None else t.replace(tzinfo=timezone.utc)
+
+    odd = sorted((t for t in candidate.times
+                  if t is not None and not _CLOCK_FLOOR <= utc(t) <= ceiling), key=utc)
+    too_long = (candidate.elapsed_seconds or 0) > DURATION_MAX_S
+    if not odd and not too_long:
+        return None
+    parts = []
+    if odd:
+        first, last = odd[0], odd[-1]
+        dates = (f"{first:%Y-%m-%d}" if first.date() == last.date()
+                 else f"{first:%Y-%m-%d} to {last:%Y-%m-%d}")
+        parts.append(f"1 timestamp is dated {dates}" if len(odd) == 1
+                     else f"{len(odd)} timestamps are dated {dates}")
+    if too_long:
+        parts.append("the track spans more than 31 years")
+    return ("This file's clock looks wrong: " + ", and ".join(parts)
+            + ". Check the date and times before importing.")
 
 
 def _preview_polyline(points) -> Optional[str]:
@@ -707,8 +766,16 @@ async def import_gpx_activity(
     # start_date is documented as ISO-8601 UTC, and a file may carry any
     # offset it likes. Normalising here keeps the column honest and keeps two
     # exports of one ride — 05:33Z and 07:33+02:00 — the same instant.
-    start_dt = start_dt.astimezone(timezone.utc)
-    end_dt = end_dt.astimezone(timezone.utc)
+    try:
+        start_dt = start_dt.astimezone(timezone.utc)
+        end_dt = end_dt.astimezone(timezone.utc)
+    except (OverflowError, ValueError):
+        # An offset can push a stamp near year 1 or 9999 past what a date holds.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"errors": ["This track's clock is outside the calendar the app can "
+                               "store. Set the date and times in review."]},
+        )
     elapsed_time = int((end_dt - start_dt).total_seconds())
     moving_time = candidate.moving_seconds
     if moving_time is None:
@@ -721,8 +788,17 @@ async def import_gpx_activity(
         # is the very thing unit 3 stopped doing.
         moving_time = min(moving_time, elapsed_time)
 
+    if all(v is None for v in (date, start_time, end_time)):
+        # The file's own clock: one wrong stamp can make it decades long.
+        # Repaired as a stored or imported one is; times the user set win.
+        elapsed_time = repair_elapsed(elapsed_time, moving_time)
+
     points = candidate.points
     metrics = recompute_track_metrics(points)
+    implausible = implausible_track(metrics)
+    if implausible is not None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            detail={"errors": [implausible]})
     fingerprint = _import_fingerprint(candidate, start_dt)
 
     resolved_name = (activity_name
@@ -904,12 +980,9 @@ def _refresh_activity_job(
                         act.start_latlng = [latlng[0][0], latlng[0][1]]
                     if not act.end_latlng:
                         act.end_latlng = [latlng[-1][0], latlng[-1][1]]
-                n = min(len(altitude), len(distance))
-                if n >= 2:
-                    act.elevation_profile = (
-                        [distance[i] / 1000 for i in range(n)],
-                        [altitude[i]        for i in range(n)],
-                    )
+                profile = elevation_profile_from_streams(distance, altitude)
+                if profile is not None:
+                    act.elevation_profile = profile
             except Exception:
                 pass  # streams failed — still save the refreshed metadata
 
@@ -1135,6 +1208,12 @@ def edit_activity_track(
             detail="A track needs at least 2 points",
         )
     points = [TrackPoint(lat=p.lat, lng=p.lng, elev=p.elev) for p in body.points]
+    # Checked on the new track alone: an edit only ever apportions the times
+    # down, so the span cannot grow.
+    implausible = implausible_track(recompute_track_metrics(points))
+    if implausible is not None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            detail=implausible)
 
     # Phase-timed (issue #45 follow-up): the align_points O(N*M) fix cut most
     # of the hang, but split/edit-track were still blowing past the client's
@@ -1394,6 +1473,21 @@ class ActivityFieldsUpdate(BaseModel):
     original_polyline: Optional[str] = None
     original_elevation_profile_json: Optional[str] = None
 
+    # A value that is not a ciphertext envelope is plaintext the export parses
+    # and writes as the activity's start, end or profile, so it must be one
+    # the trip-file import takes (issue #462). HTTPException rather than
+    # ValueError, for the reason TrackPointIn gives.
+    @field_validator("start_latlng_json", "end_latlng_json", "elevation_profile_json",
+                     "elevation_profile_low_res_json", "original_elevation_profile_json")
+    @classmethod
+    def _exportable(cls, v: Optional[str], info) -> Optional[str]:
+        if v is not None and not is_encrypted_envelope(v):
+            fault = stored_json_fault(info.field_name, v)
+            if fault is not None:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                                    detail=fault)
+        return v
+
 
 @activity_fields_router.put("/{activity_id}", summary="Update an activity's E2EE-in-scope fields")
 def update_activity_fields(
@@ -1409,8 +1503,8 @@ def update_activity_fields(
     repeatedly (idempotent: re-sending the same ciphertext is a no-op).
 
     The server does not interpret these values — once encrypted they're opaque
-    ciphertext envelopes — so there is intentionally no JSON/polyline
-    validation here, unlike the track-edit endpoints.
+    ciphertext envelopes — so an envelope is taken as it is. A plaintext
+    start, end or profile must be one the trip-file import takes (#462).
     """
     user_info_id = int(current_user["sub"])
     data = body.model_dump(exclude_unset=True)

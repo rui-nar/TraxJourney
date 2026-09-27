@@ -1,0 +1,111 @@
+{
+  "version": 1,
+  "name": "Alps",
+  "trip_start": null,
+  "trip_end": null,
+  "filter_state": {
+    "start_date": null,
+    "end_date": null,
+    "activity_types": null
+  },
+  "items": [
+    {
+      "item_type": "memory",
+      "memory": {
+        "id": 3,
+        "public_id": "5c0ffee0a1b2c3d4e5f60718293a4b5c",
+        "name": "Lac Blanc",
+        "date": "2026-03-01",
+        "time": null,
+        "description": null,
+        "photos": [],
+        "geo_mode": "start_of_day",
+        "lat": null,
+        "lon": null,
+        "comment_count": 0,
+        "like_count": 0
+      }
+    },
+    {
+      "item_type": "segment",
+      "segment": {
+        "id": "0b6f2c1e-8a8d-4c49-9d7e-2f0c5e1d9a11",
+        "segment_type": "train",
+        "label": "GVA → LIS",
+        "start": {
+          "lat": 46.2381,
+          "lon": 6.1089,
+          "source": "auto"
+        },
+        "end": {
+          "lat": 38.7742,
+          "lon": -9.1342,
+          "source": "manual"
+        },
+        "date": "2026-03-03",
+        "route_mode": "rail",
+        "train_number": "TGV 9261",
+        "hafas_provider": "db",
+        "route_polyline": "[[6.87, 45.92], [6.5, 46.05], [6.14, 46.21]]",
+        "route_status": "resolved",
+        "route_error": null,
+        "route_started_at": "2026-06-20T10:00:00Z",
+        "route_degraded": true
+      }
+    },
+    {
+      "item_type": "segment",
+      "segment": {
+        "id": "0b6f2c1e-8a8d-4c49-9d7e-2f0c5e1d9a11",
+        "segment_type": "boat",
+        "label": "GVA → LIS",
+        "start": {
+          "lat": 46.2381,
+          "lon": 6.1089,
+          "source": "auto"
+        },
+        "end": {
+          "lat": 38.7742,
+          "lon": -9.1342,
+          "source": "manual"
+        },
+        "date": "2026-03-05",
+        "route_mode": "ferry",
+        "train_number": null,
+        "hafas_provider": null,
+        "route_polyline": null,
+        "route_status": "failed",
+        "route_error": "No ferry route found",
+        "route_started_at": null,
+        "route_degraded": false
+      }
+    }
+  ],
+  "activities": [],
+  "day_meta": {
+    "2026-03-01": {
+      "counters": [
+        {
+          "name": "Coffee",
+          "value": 2.0
+        },
+        {
+          "name": "Coffee",
+          "value": 1.0
+        }
+      ]
+    }
+  },
+  "sleeping_options": [
+    "Camping"
+  ],
+  "sleeping_option_groups": {},
+  "counters": [],
+  "track_color": "#F97316",
+  "track_secondary_color": "#1D4ED8",
+  "track_width": 3.0,
+  "alternating_track_colors": true,
+  "elevation_chart_color": "#000000",
+  "elevation_chart_show_line": false,
+  "languages": null
+}
