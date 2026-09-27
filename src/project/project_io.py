@@ -13,7 +13,9 @@ from src.models.person import Person
 from src.models.person_group import PersonGroup
 from src.models.project import (
     ConnectingSegment,
+    Counter,
     DayMeta,
+    day_counters_from_json,
     day_counters_to_json,
     DEFAULT_SLEEPING_OPTIONS,
     Project,
@@ -39,6 +41,24 @@ _ITEM_TYPE_DESERIALIZERS = {
     "journal": lambda d: ProjectItem(item_type="journal", journal=JournalEntry.from_dict(d.get("journal", {}))),
     "encounter": lambda d: ProjectItem(item_type="encounter", encounter=Encounter.from_dict(d.get("encounter", {}))),
 }
+
+
+#: The trip settings a .traxj file carries at its top level, all read back by
+#: the import (issue #465). Everything else the writers emit is content (items,
+#: activities, people, groups, day_meta, sleeping_options, filter_state,
+#: version) or the server's own and never taken from a file: lock_version (the
+#: optimistic-lock counter) and name (a trip is named by the uploaded file).
+SETTINGS = (
+    "trip_start", "trip_end", "sleeping_option_groups", "counters",
+    "track_color", "track_secondary_color", "track_width",
+    "alternating_track_colors", "elevation_chart_color",
+    "elevation_chart_show_line", "color_by_type", "type_styles", "languages",
+)
+
+
+def _flag(data: Dict[str, Any], key: str, defaults: Project) -> bool:
+    value = data.get(key)
+    return getattr(defaults, key) if value is None else value
 
 
 class InvalidProjectFile(ValueError):
@@ -302,6 +322,7 @@ class ProjectIO:
                 weather=v.get("weather"),
                 journal=v.get("journal"),
                 tags=v.get("tags"),
+                counters=day_counters_from_json(v.get("counters")),
             )
         raw_opts = data.get("sleeping_options")
         sleeping_options = (
@@ -312,10 +333,14 @@ class ProjectIO:
         people = [_person_from_dict(p) for p in data.get("people", [])]
         groups = [_group_from_dict(g) for g in data.get("groups", [])]
 
+        # The trip's settings (issue #465); a missing or null one is its
+        # default, and only those the file carries are "carried".
+        defaults = Project(name="")
         project = Project(
             name=data.get("name", "Untitled"),
             version=data.get("version", 1),
-            trip_start=data.get("trip_start"),
+            trip_start=data.get("trip_start") or None,
+            trip_end=data.get("trip_end") or None,
             items=items,
             filter_state=filter_state,
             activities=activities,
@@ -323,6 +348,19 @@ class ProjectIO:
             groups=groups,
             day_meta=day_meta,
             sleeping_options=sleeping_options,
+            sleeping_option_groups=dict(data.get("sleeping_option_groups") or {}),
+            counters=[Counter(name=c["name"], start=float(c.get("start", 0)))
+                      for c in data.get("counters") or []],
+            track_color=data.get("track_color") or defaults.track_color,
+            track_secondary_color=data.get("track_secondary_color"),
+            track_width=float(data.get("track_width") or defaults.track_width),
+            alternating_track_colors=_flag(data, "alternating_track_colors", defaults),
+            elevation_chart_color=data.get("elevation_chart_color"),
+            elevation_chart_show_line=_flag(data, "elevation_chart_show_line", defaults),
+            color_by_type=_flag(data, "color_by_type", defaults),
+            type_styles=dict(data.get("type_styles") or {}),
+            languages=list(data.get("languages") or []),
+            settings_carried=frozenset(k for k in SETTINGS if k in data),
         )
         project.rebuild_map()
         return project

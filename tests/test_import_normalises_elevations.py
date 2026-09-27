@@ -336,9 +336,11 @@ def test_finding_a_split_family_s_source_takes_linear_time():
         traxj_schema.normalise(doc)
         return time.perf_counter() - began
 
-    cost(500)
-    small = min(cost(2_000) for _ in range(3))
-    large = min(cost(4_000) for _ in range(3))
+    # Sizes large enough, and the best of several runs, for scheduling noise
+    # on a busy machine not to pass for a quadratic walk.
+    cost(1_000)
+    small = min(cost(4_000) for _ in range(5))
+    large = min(cost(8_000) for _ in range(5))
     assert large / small < 3.0, (small, large)
 
 
