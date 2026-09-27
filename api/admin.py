@@ -433,13 +433,31 @@ class OwedRefundOut(BaseModel):
     customer_id: str
     state: str = Field(description="'owed', or 'pending' when a refund has been "
                                    "stuck longer than a claim can last")
-    owed_cents: int = Field(description="Still to refund by hand")
+    owed_cents: int | None = Field(
+        description="Still to refund by hand; null when the amount is not known "
+                    "yet (check Stripe)")
     refunded_cents: int
     currency: str
     reason: str
     invoice_id: str
     credit_note_id: str
     updated_at: float
+
+
+def _pending_reason(row: SubscriptionRefund, unchecked: dict[str, str]) -> str:
+    """What the owner is told about a listed row."""
+    if row.state == OWED:
+        return row.reason
+    parts = []
+    if row.amount < 0:
+        parts.append("amount unknown — check Stripe: the withdrawal was asked for "
+                     "but the refund was never computed (its cancellation may not "
+                     "have landed)")
+    if row.subscription_id in unchecked:
+        parts.append(f"not checked at Stripe: {unchecked[row.subscription_id]}")
+    elif row.to_refund > 0:
+        parts.append("checked at Stripe: no credit note was made for it")
+    return "; ".join(parts) or "pending"
 
 
 def _stuck(row: SubscriptionRefund, now: float) -> bool:
@@ -505,12 +523,11 @@ def owed_refunds(_admin: Annotated[dict, Depends(require_admin)]):
             OwedRefundOut(
                 subscription_id=r.subscription_id, customer_id=r.customer_id,
                 state=r.state,
-                owed_cents=r.owed if r.state == OWED else max(0, r.amount - r.refunded),
+                owed_cents=(r.owed if r.state == OWED
+                            else None if r.amount < 0
+                            else max(0, r.amount - r.refunded)),
                 refunded_cents=r.refunded, currency=r.currency,
-                reason=(r.reason if r.state == OWED else
-                        f"not checked at Stripe: {unchecked[r.subscription_id]}"
-                        if r.subscription_id in unchecked else
-                        "checked at Stripe: no credit note was made for it"),
+                reason=_pending_reason(r, unchecked),
                 invoice_id=r.invoice_id, credit_note_id=r.credit_note_id,
                 updated_at=r.updated_at,
             )
@@ -569,7 +586,7 @@ def settle_owed_refund(
                 detail=("It was refunded after all (credit note "
                         f"{row.credit_note_id}): nothing to settle." if done
                         else "No owed refund for that subscription"))
-        seen = (row.state, row.claim_token)
+        seen = (row.state, row.claim_token, row.version)
         customer_id = row.customer_id
     with get_session() as sess:
         owner = owner_account(sess, customer_id)
@@ -581,11 +598,15 @@ def settle_owed_refund(
             & (SubscriptionRefund.state == seen[0])
             & (SubscriptionRefund.lease_until <= now)
             & (SubscriptionRefund.claim_token == seen[1])
+            # Every write bumps the version: the token alone is "" before and
+            # after a claim, so it cannot tell that one happened (ABA).
+            & (SubscriptionRefund.version == seen[2])
         )
         if owner:
             result = sess.execute(
                 update(SubscriptionRefund).where(fence).values(
-                    state=SETTLED, settled_at=now, claim_token="", updated_at=now))
+                    state=SETTLED, settled_at=now, claim_token="", updated_at=now,
+                    version=SubscriptionRefund.version + 1))
         else:
             result = sess.execute(delete(SubscriptionRefund).where(fence))
         if result.rowcount != 1:

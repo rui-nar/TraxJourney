@@ -128,8 +128,14 @@ class SubscriptionRefund(sqlmodel.SQLModel, table=True):
     # failure is recorded, so a redelivered event changes nothing.
     refund_id: str = sqlmodel.Field(default="", index=True)
     reason: str = sqlmodel.Field(default="")
-    # When the withdrawal or deletion that cancelled it was asked for.
+    # When the withdrawal or deletion was asked for — frozen on the row
+    # before anything is cancelled — and when the cancellation was last
+    # attempted (the late-landing bound runs from there).
     requested_at: float = sqlmodel.Field(default=0.0)
+    cancel_attempted_at: float = sqlmodel.Field(default=0.0)
+    # Bumped by every write, so an admin settle can fence on "nothing
+    # changed since I read it" — a token alone is "" before and after a claim.
+    version: int = sqlmodel.Field(default=0)
     # Fencing: only the current claim may write the result.
     claim_token: str = sqlmodel.Field(default="")
     lease_until: float = sqlmodel.Field(default=0.0)

@@ -55,12 +55,14 @@ from src.billing.refunds import withdrawal_window_open
 from src.billing.subscriptions import lock_account
 from src.billing.withdrawal import (
     DONE,
+    FINAL,
     SETTLED,
     AccountGone,
     NotEligible,
     RefundInProgress,
     finish_pending,
     ledger_state,
+    request_withdrawal,
     settle,
 )
 from src.exceptions.errors import AccountDeletionRefused
@@ -165,6 +167,50 @@ def _window_state(sess: Session, user_info_id: int) -> tuple | None:
         ).where(Subscription.user_info_id == user_info_id)
     ).first()
     return tuple(row) if row is not None else None
+
+
+def record_deletion_withdrawal(sess: Session, user_info_id: int, now: float) -> None:
+    """A deletion inside the window is a withdrawal: record it first (#441).
+
+    Before anything is cancelled, like ``POST /withdraw``: the current
+    contract's ledger row, with the request time and the contract's invoice
+    frozen. A cancellation that then fails leaves it pending, and the
+    deletion retried — even after the deadline — completes the same
+    withdrawal. A contract whose start is not on record yet is handled after
+    the cancellation, from Stripe (:func:`refund_inside_window`).
+    """
+    state = _window_state(sess, user_info_id)
+    if state is None:
+        return
+    customer_id, start, subscription_id = state
+    if not customer_id or not subscription_id or not start:
+        return
+    ledger = ledger_state(sess, subscription_id)
+    if ledger in FINAL or (not ledger and not withdrawal_window_open(start, now)):
+        return
+    gateway = get_gateway()
+    if gateway is None:
+        return
+    try:
+        request_withdrawal(gateway, user_info_id=user_info_id, customer_id=customer_id,
+                           subscription_id=subscription_id, contract_start=start,
+                           requested_at=now)
+    except AccountGone:
+        return
+    except RefundInProgress as exc:
+        raise AccountDeletionRefused(
+            "A refund for your plan is being processed right now, so the "
+            "account was not deleted yet. Please try again in a few minutes.",
+            status_code=409, code="refund_in_progress",
+        ) from exc
+    except GatewayError as exc:
+        _log.error("Deletion of account %s refused: the withdrawal could not be "
+                   "recorded at Stripe: %s", user_info_id, exc)
+        raise AccountDeletionRefused(
+            "The billing service could not be reached, so nothing was cancelled "
+            "and the account was not deleted. Please try again in a few minutes.",
+            status_code=502, code="refund_failed",
+        ) from exc
 
 
 def refund_inside_window(sess: Session, user_info_id: int, now: float) -> None:
@@ -305,6 +351,7 @@ def delete_user_and_data(sess: Session, user_info_id: int) -> None:
     """
     settled = _billing_state(sess, user_info_id)
     now = time.time()
+    record_deletion_withdrawal(sess, user_info_id, now)
     cancel_live_subscription(sess, user_info_id)
     refund_inside_window(sess, user_info_id, now)
     # Stripe was called without holding any lock (never hold SQLite's write

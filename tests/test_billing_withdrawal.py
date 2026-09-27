@@ -31,6 +31,7 @@ from api.deps import get_current_user
 from api.router import app
 from models.billing import Subscription, SubscriptionRefund
 from models.user import LocalUser, UserInfo
+from src.billing.refunds import prorated_refund_amount
 from src.billing.gateway import (
     GatewayError,
     PermanentGatewayError,
@@ -63,6 +64,11 @@ EXPECTED = 266  # floor(400 * 20/30)
 KEY = "traxjourney-unused-period-refund-sub_1"
 
 
+def _unused_at(at: float) -> int:
+    """The unused part of the fake invoice ``in_1`` at ``at``."""
+    return prorated_refund_amount(PERIOD_START, PERIOD_END, PAID, at)
+
+
 class StripeLikeGateway:
     """Subscriptions that end when cancelled; refunds that dedupe and add up.
 
@@ -78,6 +84,9 @@ class StripeLikeGateway:
     * ``permanent`` — a definite refusal, every time;
     * ``conflict`` — the key was seen with other parameters, once;
     * ``no_payment`` — nothing to refund against (paid from the balance).
+
+    ``renewed``: the subscription renewed — its latest invoice is ``in_2``,
+    for the next period; ``in_1`` is still there when asked for by id.
     """
 
     def __init__(self, *, amount_paid=PAID, total=None, fail_cancel=False,
@@ -98,6 +107,7 @@ class StripeLikeGateway:
         self.pending: dict[str, int] = {sid: 1 for sid in subscriptions}
         self.latest = latest
         self.in_force = in_force
+        self.renewed = False
         self.on_cancel = None
         self.during_refund = None
         self.log: list[tuple] = []
@@ -134,11 +144,14 @@ class StripeLikeGateway:
             raise GatewayError("provider down")
         return self.pending.pop(subscription_id, 0)
 
-    def refund_basis(self, subscription_id):
-        self.log.append(("basis", subscription_id))
-        return RefundBasis(subscription_id, self.ended.get(subscription_id, 0.0),
-                           "in_1", self.amount_paid, "eur", PERIOD_START, PERIOD_END,
-                           total=self.total)
+    def refund_basis(self, subscription_id, *, invoice_id=""):
+        self.log.append(("basis", subscription_id, invoice_id))
+        ended = self.ended.get(subscription_id, 0.0)
+        if invoice_id == "in_2" or (not invoice_id and self.renewed):
+            return RefundBasis(subscription_id, ended, "in_2", self.amount_paid, "eur",
+                               PERIOD_END, PERIOD_END + 30 * DAY, total=self.total)
+        return RefundBasis(subscription_id, ended, "in_1", self.amount_paid, "eur",
+                           PERIOD_START, PERIOD_END, total=self.total)
 
     def refund_plan(self, subscription_id, amount_cents, refund_key, *, invoice_id):
         self.log.append(("plan", subscription_id, amount_cents))
@@ -351,7 +364,15 @@ class TestWithdraw:
         assert res.json()["code"] == "not_subscribed"
         assert gw.log == []
 
-    def test_a_failed_cancel_refunds_nothing_and_records_nothing(self, engine):
+    def test_a_failed_cancel_records_the_request_and_refunds_nothing(
+        self, engine, clock
+    ):
+        """Review round 5 (R5-1) — a policy change, superseding round 2's
+        F1, under which a failed cancel recorded nothing and the request "did
+        not happen". The terms make the request the withdrawal, so it is
+        written down before the cancel is tried: the request time, the
+        contract's invoice (read before any renewal) and when the cancel was
+        tried, all frozen."""
         uid = _seed(engine)
         gw = StripeLikeGateway(fail_cancel=True)
         set_gateway(gw)
@@ -359,83 +380,202 @@ class TestWithdraw:
         res = _as(uid).post("/api/billing/withdraw")
 
         assert res.status_code == 502
+        assert "withdrawal is recorded" in res.json()["detail"]
         assert "nothing was refunded" in res.json()["detail"]
-        assert gw.calls("refund") == [] and gw.calls("basis") == []
-        assert _ledger(engine) is None
+        assert gw.calls("refund") == []
+        kinds = [c[0] for c in gw.log]
+        assert kinds.index("basis") < kinds.index("cancel")
+        entry = _ledger(engine)
+        assert (entry.state, entry.requested_at, entry.cancel_attempted_at,
+                entry.invoice_id, entry.amount) == (
+            "pending", clock.now, clock.now, "in_1", -1)
+        assert (entry.claim_token, entry.lease_until) == ("", 0)
 
-    def test_a_failed_cancel_cannot_be_completed_after_the_deadline(self, engine, clock):
-        """F1: the cancel never landed, so the request did not happen. After
-        the deadline there is nothing to complete — or the running, renewing
-        subscription would be refunded against a later invoice."""
-        clock.now = START + 13 * DAY
+    def test_a_failed_cancel_is_completed_after_the_deadline(self, engine, clock):
+        """R5-1 (supersedes F1's refusal): asked in time, the cancel failed;
+        retried the next day, it is the same withdrawal — cancelled now, and
+        refunded on the frozen invoice for the part unused when it ended. The
+        late-landing bound runs from the retry's attempt, not the request."""
+        requested = LAST_MOMENT - 60
+        clock.now = requested
         uid = _seed(engine)
         gw = StripeLikeGateway(fail_cancel=True)
         set_gateway(gw)
         assert _as(uid).post("/api/billing/withdraw").status_code == 502
 
-        clock.now = START + 200 * DAY
+        clock.now = CLOSES + DAY
+        assert _open(uid) is True  # the retry is offered
         gw.fail_cancel = False
-        assert _open(uid) is False
+        gw.cancel_at = clock.now
         res = _as(uid).post("/api/billing/withdraw")
-        assert res.status_code == 409
-        assert res.json()["code"] == "withdrawal_window_closed"
-        assert gw.total_refunded == 0
 
-    def test_a_refused_deletion_does_not_keep_the_window_open(self, engine, clock):
-        """F1: a deletion refused at the cancel leaves nothing behind that a
-        later withdrawal could complete."""
+        assert res.status_code == 200, res.text
+        assert res.json() == {"refunded_cents": _unused_at(CLOSES + DAY),
+                              "currency": "eur", "owed_cents": 0}
+        assert gw.total_refunded == _unused_at(CLOSES + DAY)
+        entry = _ledger(engine)
+        assert (entry.state, entry.requested_at, entry.cancel_attempted_at) == (
+            "done", requested, CLOSES + DAY)
+        assert _open(uid) is False
+
+    def test_a_cancel_whose_answer_was_lost_is_completed_after_the_deadline(
+        self, engine, clock
+    ):
+        """R5-1: Stripe cancelled, the answer timed out, the user retried
+        after midnight. Cancelled and refunded — never cancelled and not."""
+        clock.now = LAST_MOMENT - 30
+        uid = _seed(engine)
+        gw = StripeLikeGateway(cancel_at=LAST_MOMENT - 29)
+        real = gw.cancel_subscription
+
+        def lost(subscription_id, customer_id=""):
+            real(subscription_id, customer_id)
+            raise GatewayError("read timed out")
+        gw.cancel_subscription = lost
+        set_gateway(gw)
+        assert _as(uid).post("/api/billing/withdraw").status_code == 502
+        assert gw.ended["sub_1"]
+
+        gw.cancel_subscription = real
+        clock.now = CLOSES + 60
+        res = _as(uid).post("/api/billing/withdraw")
+
+        assert res.status_code == 200, res.text
+        assert gw.total_refunded == _unused_at(LAST_MOMENT - 29)
+
+    def test_a_subscription_that_renewed_meanwhile_is_owed_not_refunded(
+        self, engine, clock, caplog
+    ):
+        """R5-1, the renewal case — why round 2 (F1) refused late
+        completions. Asked on day 13; the cancel kept failing; the
+        subscription renewed (invoice in_2); the user retried weeks later.
+        The retry cancels (the request time stays frozen), but nothing is
+        refunded automatically, on either invoice: the renewal was charged
+        after the withdrawal was asked for. The refund is recorded as owed —
+        the unused part of the frozen invoice, measured at the request — for
+        the owner to refund by hand with the renewal. A request never opens a
+        window on a renewal."""
+        requested = START + 13 * DAY
+        clock.now = requested
+        uid = _seed(engine)
+        gw = StripeLikeGateway(fail_cancel=True)
+        set_gateway(gw)
+        assert _as(uid).post("/api/billing/withdraw").status_code == 502
+
+        gw.renewed = True
+        clock.now = PERIOD_END + 10 * DAY
+        gw.fail_cancel = False
+        gw.cancel_at = clock.now
+        with caplog.at_level(logging.ERROR):
+            res = _as(uid).post("/api/billing/withdraw")
+
+        assert res.status_code == 200, res.text
+        assert gw.calls("cancel")[-1] == ("cancel", "sub_1")
+        assert not gw.calls("refund") and gw.total_refunded == 0
+        assert res.json() == {"refunded_cents": 0, "currency": "eur",
+                              "owed_cents": _unused_at(requested)}
+        entry = _ledger(engine)
+        assert (entry.state, entry.invoice_id, entry.owed, entry.requested_at) == (
+            "owed", "in_1", _unused_at(requested), requested)
+        assert "renewed" in entry.reason
+        # The invoice was frozen at the request, before the renewal; the retry
+        # asks for that one by id, not for the latest.
+        assert [c[2] for c in gw.calls("basis")] == ["", "in_1"]
+        assert any("OWED REFUND" in r.getMessage() for r in caplog.records)
+
+    def test_a_renewal_is_caught_when_no_invoice_could_be_frozen(self, engine, clock):
+        """R5-1: Stripe could not be read at the request, so no invoice was
+        frozen and nothing was cancelled. The retry after a renewal finds the
+        renewal as the latest invoice — begun after the request — and does
+        not refund it."""
+        clock.now = START + 13 * DAY
+        uid = _seed(engine)
+        gw = StripeLikeGateway()
+        real = gw.refund_basis
+
+        def down(*args, **kwargs):
+            raise GatewayError("503 from Stripe")
+        gw.refund_basis = down
+        set_gateway(gw)
+        res = _as(uid).post("/api/billing/withdraw")
+        assert res.status_code == 502
+        assert "nothing was cancelled" in res.json()["detail"]
+        assert not gw.calls("cancel")
+        assert _ledger(engine).invoice_id == ""
+
+        gw.refund_basis = real
+        gw.renewed = True
+        clock.now = PERIOD_END + 10 * DAY
+        gw.cancel_at = clock.now
+        res = _as(uid).post("/api/billing/withdraw")
+
+        assert res.status_code == 200, res.text
+        assert gw.total_refunded == 0
+        entry = _ledger(engine)
+        assert entry.state == "owed"
+        assert "renewed (in_2)" in entry.reason
+
+    def test_a_deletion_refused_at_the_cancel_is_completed_later(self, engine, clock):
+        """R5-1 (supersedes F1): a deletion refused at the cancel, at the
+        last moment, recorded the withdrawal; retried after the deadline, the
+        deletion refunds it."""
         clock.now = LAST_MOMENT
         uid = _seed(engine)
         gw = StripeLikeGateway(fail_cancel=True)
         set_gateway(gw)
         assert _as(uid).delete("/api/auth/me").status_code == 502
+        entry = _ledger(engine)
+        assert (entry.state, entry.requested_at) == ("pending", LAST_MOMENT)
 
         clock.now = CLOSES + DAY
         gw.fail_cancel = False
-        assert _open(uid) is False
-        assert _as(uid).post("/api/billing/withdraw").status_code == 409
-        assert gw.total_refunded == 0
+        gw.cancel_at = clock.now
+        assert _as(uid).delete("/api/auth/me").status_code == 200
+        assert gw.total_refunded == _unused_at(CLOSES + DAY)
+        assert not _account_exists(engine, uid)
 
-    def test_a_failed_refund_after_the_cancel_can_be_completed_late(self, engine, clock):
-        """F1: cancelled in time, refund failed, retried the next day — the
-        refund is still owed, and made."""
-        clock.now = LAST_MOMENT
-        uid = _seed(engine)
-        gw = StripeLikeGateway(refund_mode="transient")
-        set_gateway(gw)
-        res = _as(uid).post("/api/billing/withdraw")
-        assert res.status_code == 502
-        assert res.json()["code"] == "refund_failed"
-        assert gw.ended["sub_1"] == CANCEL_AT
-        assert _ledger(engine).state == "pending"
-
-        clock.now = CLOSES + DAY
-        assert _open(uid) is True
-
-        gw.refund_mode = "ok"
-        res = _as(uid).post("/api/billing/withdraw")
-        assert res.status_code == 200, res.text
-        assert res.json()["refunded_cents"] == EXPECTED
-        assert gw.total_refunded == EXPECTED
-        assert _open(uid) is False
-
-    def test_a_late_completion_needs_the_subscription_to_have_ended(self, engine, clock):
-        """A pending row whose subscription somehow still runs is not refunded."""
+    def test_a_pending_withdrawal_whose_subscription_runs_is_cancelled_again(
+        self, engine, clock
+    ):
+        """R5-1: a pending row means the withdrawal was asked for in time —
+        not, as until round 4, that the cancel landed — so every retry cancels
+        again (idempotent) before refunding; while it fails, nothing is
+        refunded and the row stays pending."""
         uid = _seed(engine)
         with Session(engine) as sess:
             sess.add(SubscriptionRefund(subscription_id="sub_1", customer_id="cus_1",
-                                        requested_at=START + DAY))
+                                        contract_started_at=START, invoice_id="in_1",
+                                        requested_at=START + DAY,
+                                        cancel_attempted_at=START + DAY))
             sess.commit()
-        gw = StripeLikeGateway()  # sub_1 still running at Stripe
+        gw = StripeLikeGateway(fail_cancel=True)  # sub_1 still running at Stripe
         set_gateway(gw)
         clock.now = CLOSES + DAY
-        # A ledger row means the cancellation landed, so it is not asked for
-        # again; Stripe not showing it ended yet is a failure to retry — never
-        # a refusal after cancelling (review round 4) — and nothing is refunded.
         res = _as(uid).post("/api/billing/withdraw")
         assert res.status_code == 502
+        assert "withdrawal is recorded" in res.json()["detail"]
+        assert gw.calls("cancel") and gw.total_refunded == 0
+        assert _ledger(engine).state == "pending"
+
+        gw.fail_cancel = False
+        gw.cancel_at = clock.now
+        res = _as(uid).post("/api/billing/withdraw")
+        assert res.status_code == 200, res.text
+        assert gw.total_refunded == _unused_at(CLOSES + DAY)
+
+    def test_an_end_stripe_does_not_show_yet_is_retried_never_refunded(self, engine):
+        """The cancel was accepted but Stripe does not show the end yet: a
+        failure to retry, never a refusal after cancelling — and nothing is
+        refunded against a running subscription."""
+        uid = _seed(engine)
+        gw = StripeLikeGateway()
+        gw.cancel_subscription = lambda subscription_id, customer_id="": None
+        set_gateway(gw)
+
+        res = _as(uid).post("/api/billing/withdraw")
+
+        assert res.status_code == 502
         assert res.json()["code"] == "refund_failed"
-        assert not gw.calls("cancel")
         assert gw.total_refunded == 0
         assert _ledger(engine).state == "pending"
 
@@ -688,7 +828,7 @@ class TestWithdraw:
         assert gw.total_refunded == 0
         entry = _ledger(engine)
         assert entry.state == "owed"
-        assert "after the request" in entry.reason
+        assert "after it was attempted" in entry.reason
 
     def test_the_request_is_taken_before_the_cancel(self, engine, clock):
         """Frozen on the row as when the user asked, not when Stripe answered."""
@@ -800,7 +940,9 @@ class TestWithdraw:
 
         assert res.json()["refunded_cents"] == 333  # floor(400 * 25/30)
         assert {c[2] for c in gw.calls("refund")} == {333}
-        assert len(gw.calls("basis")) == 1
+        # Read at the request (the invoice) and at the first computation (the
+        # amount); the retry reads neither again.
+        assert len(gw.calls("basis")) == 2
 
     def test_the_contracts_subscription_is_the_one_withdrawn(self, engine):
         uid = _seed(engine, sub_id="sub_2", contract="sub_1")
@@ -857,6 +999,24 @@ class TestQuote:
         res = _as(uid).get("/api/billing/withdraw")
         assert res.status_code == 409
         assert gw.log == []
+
+    def test_a_pending_withdrawal_that_renewed_is_quoted_as_owed(self, engine, clock):
+        """Round 5 (R5-1): the retry's dialog must not promise a refund to
+        the card that settle will not make — the subscription renewed since
+        the request, so the refund is owed, measured at the request."""
+        requested = START + 13 * DAY
+        clock.now = requested
+        uid = _seed(engine)
+        gw = StripeLikeGateway(fail_cancel=True)
+        set_gateway(gw)
+        assert _as(uid).post("/api/billing/withdraw").status_code == 502
+        gw.renewed = True
+        clock.now = PERIOD_END + 10 * DAY
+
+        body = _as(uid).get("/api/billing/withdraw").json()
+
+        assert (body["amount_cents"], body["owed_cents"]) == (0, _unused_at(requested))
+        assert gw.calls("basis")[-1][2] == "in_1"
 
 
 # ── /api/billing/me exposes the window ────────────────────────────────────────
@@ -1425,6 +1585,35 @@ class TestSettleIsFenced:
         assert _ledger(engine).state != "settled"
 
 
+class TestSettleIsFencedOnTheVersion:
+    """R5-5 (guard): claimed and released in between, the row reads as it
+    did — same state, token "" before and after (ABA). Only the version,
+    bumped by every write, shows that something happened."""
+
+    def test_a_claim_and_release_in_between_stops_the_settle(
+        self, engine, clock, monkeypatch
+    ):
+        import api.admin as admin_mod
+        from src.billing.withdrawal import _claim, _release
+
+        uid = _seed(engine)
+        _stuck_row(engine, clock)
+        set_gateway(StripeLikeGateway())  # no credit note: it stays pending
+        original = admin_mod.owner_account
+
+        def claim_and_release(sess, customer_id):
+            _row_, token = _claim(uid, "cus_1", "sub_1", START, clock.now)
+            _release("sub_1", uid, token)
+            return original(sess, customer_id)
+        monkeypatch.setattr(admin_mod, "owner_account", claim_and_release)
+
+        res = _as(_admin(engine)).post("/api/admin/billing/owed-refunds/sub_1/settle")
+
+        assert res.status_code == 409
+        entry = _ledger(engine)
+        assert (entry.state, entry.claim_token) == ("pending", "")
+
+
 class TestNoRowForADeletedAccount:
     """Item 6: a withdrawal that lost a race with the deletion leaves no
     refund row behind for an account that no longer exists."""
@@ -1563,3 +1752,220 @@ class TestDeletionRefusedLoudly:
         entry = _ledger(engine)
         assert entry.state == "owed"
         assert "amount unknown" in entry.reason
+
+
+# ── Review round 5 ───────────────────────────────────────────────────────────
+
+def _webhook(event):
+    class Gateway(StripeLikeGateway):
+        def parse_webhook(self, payload, signature):
+            return event
+    set_gateway(Gateway())
+    return TestClient(app).post("/api/billing/webhook", content=b"{}",
+                                headers={"stripe-signature": "x"})
+
+
+def _refund_event(refund_id="re_1", amount=100, status="failed"):
+    return {"id": "evt_f", "type": "refund.failed", "created": 1, "data": {"object": {
+        "id": refund_id, "object": "refund", "amount": amount, "status": status,
+        "currency": "eur", "charge": "ch_1", "payment_intent": "pi_1",
+        "failure_reason": "expired_or_canceled_card"}}}
+
+
+class TestReviewRound5Probes:
+    """The reviewer's probes, ported as they were written."""
+
+    def test_p1_failed_cancel_in_time_retried_after_deadline_is_still_withdrawal(
+        self, engine, clock
+    ):
+        """Terms: 'it counts if you make it within the 14 days, even if your
+        subscription is only cancelled ... after them'."""
+        clock.now = LAST_MOMENT - 60
+        uid = _seed(engine)
+        gw = StripeLikeGateway(fail_cancel=True)
+        set_gateway(gw)
+        first = _as(uid).post("/api/billing/withdraw")
+        assert first.status_code == 502
+        clock.now = CLOSES + 120
+        gw.fail_cancel = False
+        gw.cancel_at = CLOSES + 120
+        second = _as(uid).post("/api/billing/withdraw")
+        assert second.status_code == 200, second.text
+        assert gw.total_refunded > 0 or second.json()["owed_cents"] > 0
+
+    def test_p1b_cancel_landed_but_answer_lost_then_deadline_passes(self, engine, clock):
+        clock.now = LAST_MOMENT - 30
+        uid = _seed(engine)
+        gw = StripeLikeGateway(cancel_at=LAST_MOMENT - 29)
+        real = gw.cancel_subscription
+
+        def lost(subscription_id, customer_id=""):
+            real(subscription_id, customer_id)
+            raise GatewayError("read timed out")
+        gw.cancel_subscription = lost
+        set_gateway(gw)
+        first = _as(uid).post("/api/billing/withdraw")
+        assert first.status_code == 502
+        assert gw.ended["sub_1"]  # it IS cancelled at Stripe
+        gw.cancel_subscription = real
+        clock.now = CLOSES + 60
+        second = _as(uid).post("/api/billing/withdraw")
+        assert second.status_code == 200, second.text
+
+    def test_p2_failure_after_settled_does_not_reowe_what_was_settled(
+        self, engine, clock
+    ):
+        _seed(engine)
+        # 100 went to the card (re_1), 200 owed from the balance share.
+        with Session(engine) as sess:
+            sess.add(SubscriptionRefund(
+                subscription_id="sub_1", customer_id="cus_1", state="owed",
+                amount=300, to_refund=100, refunded=100, owed=200, currency="eur",
+                reason="paid partly from the customer's balance", invoice_id="in_1",
+                credit_note_id="cn_1", refund_id="re_1", created_at=1.0))
+            sess.commit()
+        res = _as(_admin(engine)).post("/api/admin/billing/owed-refunds/sub_1/settle")
+        assert res.status_code == 200
+        assert _ledger(engine).state == "settled"
+        # Later, the card part of the refund fails.
+        assert _webhook(_refund_event(amount=100)).json()["applied"] is True
+        row = _ledger(engine)
+        assert row.state == "owed"
+        # Only the failed 100 is owed now: the 200 was settled by hand already.
+        assert row.owed == 100, (row.owed, row.reason)
+        assert "200 cents were settled by hand" in row.reason
+        assert row.refunded == 0
+
+    def test_p3_failure_after_account_deletion_is_not_silent(self, engine, clock,
+                                                              caplog):
+        uid = _seed(engine)
+        set_gateway(StripeLikeGateway())
+        assert _as(uid).delete("/api/auth/me").status_code == 200
+        assert _ledger(engine) is None  # the done row went with the account
+        with caplog.at_level(logging.WARNING):
+            res = _webhook(_refund_event(amount=EXPECTED))
+        assert res.status_code == 200
+        assert res.json()["applied"] is False
+        errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        assert any("re_1" in m and "ch_1" in m and "pi_1" in m and str(EXPECTED) in m
+                   and "evt_f" in m for m in errors), errors
+
+
+class TestRefundFailureEvents:
+    """R5-2, R5-7: every failed refund is accounted for."""
+
+    def test_a_canceled_refund_is_owed_like_a_failed_one(self, engine):
+        uid = _seed(engine)
+        set_gateway(StripeLikeGateway())
+        assert _as(uid).post("/api/billing/withdraw").status_code == 200
+
+        res = _webhook(_refund_event(amount=EXPECTED, status="canceled"))
+
+        assert res.json()["applied"] is True
+        entry = _ledger(engine)
+        assert (entry.state, entry.owed, entry.refunded) == ("owed", EXPECTED, 0)
+
+
+class TestAdminListRound5:
+    def test_a_pending_row_with_no_amount_says_so(self, engine, clock):
+        """R5-9a: never computed — no owed figure, and a pointer to Stripe."""
+        from src.billing.withdrawal import LEASE_SECONDS
+
+        _seed(engine)
+        with Session(engine) as sess:
+            sess.add(SubscriptionRefund(
+                subscription_id="sub_1", customer_id="cus_1", state="pending",
+                invoice_id="in_1", requested_at=START + DAY,
+                created_at=clock.now - 2 * LEASE_SECONDS))
+            sess.commit()
+        set_gateway(StripeLikeGateway())
+
+        (entry,) = _as(_admin(engine)).get("/api/admin/billing/owed-refunds").json()
+
+        assert entry["owed_cents"] is None
+        assert "amount unknown" in entry["reason"]
+        assert "check Stripe" in entry["reason"]
+
+
+class TestDeletionRecordsTheWithdrawalFirst:
+    def test_a_deletion_that_cannot_record_it_cancels_nothing(self, engine, caplog):
+        """R5-1 for deletion: the withdrawal is recorded before anything is
+        cancelled; if Stripe cannot be read for it, nothing is cancelled and
+        nothing deleted (ERROR logged), and the retry goes through."""
+        uid = _seed(engine)
+        gw = StripeLikeGateway()
+        real = gw.refund_basis
+
+        def down(*args, **kwargs):
+            raise GatewayError("503 from Stripe")
+        gw.refund_basis = down
+        set_gateway(gw)
+
+        with caplog.at_level(logging.ERROR):
+            res = _as(uid).delete("/api/auth/me")
+
+        assert res.status_code == 502
+        assert not gw.calls("cancel_all") and not gw.calls("cancel")
+        assert _account_exists(engine, uid)
+        assert any(r.levelno == logging.ERROR and "could not be recorded" in
+                   r.getMessage() for r in caplog.records)
+
+        gw.refund_basis = real
+        assert _as(uid).delete("/api/auth/me").status_code == 200
+        assert gw.total_refunded == EXPECTED
+
+    def test_the_deletion_records_before_it_cancels(self, engine):
+        uid = _seed(engine)
+        gw = StripeLikeGateway()
+        seen = []
+        gw.on_cancel = lambda: seen.append(_ledger(engine))
+        set_gateway(gw)
+
+        assert _as(uid).delete("/api/auth/me").status_code == 200
+
+        assert seen[0] is not None
+        assert (seen[0].state, seen[0].invoice_id) == ("pending", "in_1")
+
+
+class TestEarlierContractsCancelNeverLanded:
+    def test_its_subscription_is_cancelled_again_before_the_refund(self, engine, clock):
+        """R5-1: an earlier contract's pending withdrawal whose cancel never
+        landed is cancelled again when the next withdrawal finishes it."""
+        uid = _seed(engine)
+        gw = StripeLikeGateway(fail_cancel=True, subscriptions=("sub_1", "sub_2"))
+        set_gateway(gw)
+        assert _as(uid).post("/api/billing/withdraw").status_code == 502
+        with Session(engine) as sess:
+            row = sess.exec(select(Subscription).where(
+                Subscription.user_info_id == uid)).first()
+            row.provider_subscription_id = "sub_2"
+            row.contract_subscription_id = "sub_2"
+            row.contract_started_at = START + 12 * DAY
+            sess.add(row)
+            sess.commit()
+        clock.now = START + 30 * DAY  # sub_2's window closed too
+        gw.fail_cancel = False
+        gw.cancel_at = clock.now
+
+        res = _as(uid).post("/api/billing/withdraw")
+
+        assert res.status_code == 200, res.text
+        assert ("cancel", "sub_1") in gw.calls("cancel")
+        assert gw.total_refunded == _unused_at(clock.now)
+        assert _ledger(engine).state == "done"
+
+
+class TestEveryWriteBumpsTheVersion:
+    def test_settling_bumps_it(self, engine):
+        """R5-5: the settle fence relies on every write bumping the version,
+        the admin's own settle included."""
+        _seed(engine)
+        with Session(engine) as sess:
+            sess.add(SubscriptionRefund(subscription_id="sub_1", customer_id="cus_1",
+                                        state="owed", amount=EXPECTED, owed=EXPECTED,
+                                        version=3))
+            sess.commit()
+        res = _as(_admin(engine)).post("/api/admin/billing/owed-refunds/sub_1/settle")
+        assert res.status_code == 200
+        entry = _ledger(engine)
+        assert (entry.state, entry.version) == ("settled", 4)

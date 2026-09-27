@@ -23,9 +23,13 @@ ever refunded twice:
 4. **Record** ``done``, or ``owed`` (logged at ERROR), under the lock — only
    while this request still holds the claim.
 
-A row is created only once the subscription's cancellation has landed inside
-its window: a refund that then fails can be completed later, even after the
-deadline, and nothing else can.
+The row is created by :func:`request_withdrawal` *before* the subscription is
+cancelled — the request is the withdrawal — with ``requested_at`` and the
+contract's invoice frozen. A cancellation or refund that then fails can be
+completed later, even after the deadline: the retry cancels again and refunds
+the frozen invoice. A subscription that renewed meanwhile is never refunded
+automatically (see :func:`settle`); a request made outside the window leaves
+no row.
 """
 from __future__ import annotations
 
@@ -67,10 +71,12 @@ FINAL = frozenset({DONE, OWED, SETTLED})
 #: died holding a claim delays the retry by at most this.
 LEASE_SECONDS = 15 * 60.0
 
-#: How long after the request its cancellation may land and still be refunded
-#: automatically. The request is the withdrawal; the cancellation follows it
-#: within one SDK call — at most 45 s — and this leaves ample slack. One that
-#: lands later than this is recorded as owed, for the owner to check.
+#: How long after the latest cancel attempt (``cancel_attempted_at``) Stripe
+#: may record the end and the refund still be made automatically. The cancel
+#: is one SDK call — at most 45 s — so this leaves ample slack. An end
+#: recorded later than this is recorded as owed, for the owner to check.
+#: Measured from the latest attempt, not the request, because a retry days
+#: after a failed cancel (R5-1) is still the same, in-time withdrawal.
 CANCEL_BOUND_SECONDS = 10 * 60.0
 
 
@@ -166,7 +172,8 @@ def _claim(user_info_id: int, customer_id: str, subscription_id: str,
             row = SubscriptionRefund(subscription_id=subscription_id,
                                      customer_id=customer_id,
                                      contract_started_at=contract_start,
-                                     requested_at=requested_at, created_at=now)
+                                     requested_at=requested_at,
+                                     cancel_attempted_at=requested_at, created_at=now)
         elif row.state in FINAL:
             sess.expunge(row)  # before the rollback expires it
             sess.rollback()
@@ -178,6 +185,7 @@ def _claim(user_info_id: int, customer_id: str, subscription_id: str,
         row.claim_token = token
         row.lease_until = now + LEASE_SECONDS
         row.updated_at = now
+        row.version = (row.version or 0) + 1
         sess.add(row)
         sess.commit()
         return _detached(sess, row), token
@@ -195,6 +203,7 @@ def _save(subscription_id: str, user_info_id: int, token: str,
         for name, value in fields.items():
             setattr(row, name, value)
         row.updated_at = time.time()
+        row.version = (row.version or 0) + 1
         sess.add(row)
         sess.commit()
         return _detached(sess, row)
@@ -209,7 +218,8 @@ def _release(subscription_id: str, user_info_id: int, token: str) -> None:
 
 
 def _forget(subscription_id: str, user_info_id: int, token: str) -> None:
-    """Drop a row claimed for nothing: nothing was frozen, nothing is owed."""
+    """Drop a row claimed for nothing: asked outside the window, nothing
+    frozen, nothing owed."""
     with get_session() as sess:
         lock_account(sess, user_info_id)
         row = sess.get(SubscriptionRefund, subscription_id)
@@ -255,53 +265,118 @@ def _issue(gateway: BillingGateway, row: SubscriptionRefund, user_info_id: int,
                                     invoice_id=row.invoice_id, attempt=row.attempt)
 
 
+def request_withdrawal(gateway: BillingGateway, *, user_info_id: int,
+                       customer_id: str, subscription_id: str,
+                       contract_start: float, requested_at: float) -> str:
+    """Record the withdrawal *before* anything is cancelled. Returns the state.
+
+    The request is the withdrawal (the terms say so), so it is written down
+    first: the row, tied to the contract's subscription, with ``requested_at``
+    frozen, and the contract's current invoice frozen with it — read from
+    Stripe now, before a renewal could make another invoice the latest. A
+    cancellation that then fails, or whose answer is lost, leaves this row
+    ``pending``, and a retry — even after the deadline — completes the same
+    withdrawal: it cancels again (idempotent) and refunds the frozen invoice.
+
+    Each call also stamps ``cancel_attempted_at`` just before the caller
+    cancels: the late-landing bound runs from the latest attempt.
+
+    A final row (``done``/``owed``/``settled``) is left alone. Raises
+    :class:`RefundInProgress`, :class:`AccountGone` and, before anything
+    is cancelled, :class:`GatewayError`.
+    """
+    row, token = _claim(user_info_id, customer_id, subscription_id,
+                        contract_start, requested_at)
+    if not token:
+        return row.state
+    try:
+        if not row.invoice_id and row.amount < 0:
+            basis = gateway.refund_basis(subscription_id)
+            if basis.invoice_id:
+                row = _save(subscription_id, user_info_id, token,
+                            invoice_id=basis.invoice_id, currency=basis.currency)
+        _save(subscription_id, user_info_id, token,
+              cancel_attempted_at=time.time(), lease_until=0.0, claim_token="")
+    except PermanentGatewayError:
+        # Nothing to read about the invoice (a deleted customer, say): the
+        # request still stands; settle records what is owed.
+        _save(subscription_id, user_info_id, token,
+              cancel_attempted_at=time.time(), lease_until=0.0, claim_token="")
+    except GatewayError:
+        _release(subscription_id, user_info_id, token)
+        raise
+    return PENDING
+
+
 def settle(gateway: BillingGateway, *, user_info_id: int, customer_id: str,
            subscription_id: str, contract_start: float, requested_at: float,
            now: float = 0.0) -> Refund:
     """Refund what is left of the *cancelled* subscription, once.
 
-    Call only after its cancellation succeeded, with ``requested_at`` taken
-    when the user asked — before the cancellation. A withdrawal is the
-    request: it is refunded when it was made inside the window, however late
-    in its last second the cancellation then lands (up to
-    :data:`CANCEL_BOUND_SECONDS`). A cancellation Stripe records later than
-    that is not refunded automatically — something went wrong — but recorded
-    as owed for the owner: this is never a refusal after cancelling.
+    Call after its cancellation, with the row recorded by
+    :func:`request_withdrawal` (a row missing here is created, as for an
+    earlier contract's refund). The withdrawal is refunded when it was asked
+    for inside the window, on the invoice frozen with the request:
 
-    Raises :class:`RefundInProgress`, :class:`AccountGone`,
-    :class:`NotEligible` (asked outside the window), or :class:`GatewayError`
-    for a transient failure (the row stays ``pending`` to retry). A definite
-    refusal does not raise: the refund is recorded as owed and returned with
-    ``owed_cents``.
+    * Stripe's ``ended_at`` must be no later than the latest cancel attempt +
+      :data:`CANCEL_BOUND_SECONDS`. A cancellation recorded later than that is
+      not refunded automatically — something went wrong — but recorded as
+      owed for the owner;
+    * if the subscription ended after the frozen invoice's period — it
+      **renewed** while the cancellation kept failing — nothing is refunded
+      automatically either: the renewal was charged after the withdrawal was
+      asked for, and the owner refunds it and the unused part (measured at the
+      request) by hand. The same when no invoice could be frozen and the
+      latest one began after the request. A request never opens a window on a
+      renewal.
+
+    Neither is a refusal after cancelling. Raises :class:`RefundInProgress`,
+    :class:`AccountGone`, :class:`NotEligible` (asked outside the window), or
+    :class:`GatewayError` for a transient failure (the row stays ``pending``).
+    A definite refusal does not raise: the refund is recorded as owed.
     """
     row, token = _claim(user_info_id, customer_id, subscription_id,
                         contract_start, requested_at)
     if not token:
         return _outcome(row)
     key = refund_key(subscription_id)
-    late = ""
     try:
         gateway.discard_pending_items(customer_id, subscription_id)
         if row.amount < 0:
             start = row.contract_started_at or contract_start
             if not withdrawal_window_open(start, row.requested_at):
                 raise NotEligible(subscription_id)
-            basis = gateway.refund_basis(subscription_id)
+            basis = gateway.refund_basis(subscription_id, invoice_id=row.invoice_id)
             if not basis.ended_at:
-                # Cancelled, but Stripe does not show it ended yet: try again.
+                # Stripe does not show it ended (yet): the caller cancels
+                # again on its retry. Transient, never a refusal.
                 raise GatewayError(f"{subscription_id} has not ended at Stripe yet")
-            if basis.ended_at > row.requested_at + CANCEL_BOUND_SECONDS:
-                late = (f"the cancellation landed {int(basis.ended_at - row.requested_at)} s "
-                        f"after the request; check it before refunding")
             total = basis.total or basis.amount_paid
+            attempted = row.cancel_attempted_at or row.requested_at
+            problem, at = "", basis.ended_at
+            if basis.ended_at > attempted + CANCEL_BOUND_SECONDS:
+                problem = (f"the cancellation landed {int(basis.ended_at - attempted)} s "
+                           f"after it was attempted; check it before refunding")
+            elif basis.period_start > row.requested_at:
+                # No invoice was frozen (Stripe could not be read at the
+                # request) and the latest one began after it: a renewal.
+                problem = (f"the subscription renewed ({basis.invoice_id}) after the "
+                           "withdrawal was asked for: refund the renewal, and the "
+                           "unused part of the invoice before it (measured at the "
+                           "request, not computed here), by hand")
+                at = row.requested_at
+            elif row.invoice_id and basis.period_end and basis.ended_at > basis.period_end:
+                problem = ("the subscription renewed after the withdrawal was asked "
+                           "for: refund the renewal and the unused part (measured at "
+                           "the request) by hand")
+                at = row.requested_at
             row = _save(subscription_id, user_info_id, token,
                         amount=prorated_refund_amount(basis.period_start,
-                                                      basis.period_end, total,
-                                                      basis.ended_at),
+                                                      basis.period_end, total, at),
                         invoice_id=basis.invoice_id, currency=basis.currency)
-            if late:
+            if problem:
                 return _finish(row, user_info_id, token, refunded=0, note_id="",
-                               owed=row.amount, reason=late)
+                               owed=row.amount, reason=problem, owed_anyway=True)
         if row.to_refund < 0:
             plan = (RefundPlan(0) if row.amount == 0 else gateway.refund_plan(
                 subscription_id, row.amount, key, invoice_id=row.invoice_id))
@@ -339,9 +414,11 @@ def finish_pending(gateway: BillingGateway, *, user_info_id: int, customer_id: s
                    now: float, skip: str = "") -> list[Refund]:
     """Complete every pending refund of the customer (but ``skip``).
 
-    A pending row means its cancellation landed in time: it is owed a refund
-    whatever contract has started since. Raises like :func:`settle`, except
-    that a row no longer eligible is left to the owner's list.
+    A pending row means its withdrawal was asked for in time: it is owed a
+    refund whatever contract has started since. Its subscription is cancelled
+    again first — idempotent — in case the cancellation never landed. Raises
+    like :func:`settle`, except that a row no longer eligible is left to the
+    owner's list.
     """
     with get_session() as sess:
         rows = [(r.subscription_id, r.contract_started_at, r.requested_at)
@@ -349,6 +426,10 @@ def finish_pending(gateway: BillingGateway, *, user_info_id: int, customer_id: s
     done = []
     for subscription_id, start, requested_at in rows:
         try:
+            request_withdrawal(gateway, user_info_id=user_info_id,
+                               customer_id=customer_id, subscription_id=subscription_id,
+                               contract_start=start, requested_at=requested_at)
+            gateway.cancel_subscription(subscription_id, customer_id)
             done.append(settle(gateway, user_info_id=user_info_id,
                                customer_id=customer_id, subscription_id=subscription_id,
                                contract_start=start, requested_at=requested_at))
@@ -413,12 +494,16 @@ def _state(subscription_id: str) -> str:
 
 
 def record_refund_failure(refund_id: str, amount: int, reason: str) -> bool:
-    """A refund of ours failed after it was created (``refund.failed``).
+    """A refund of ours failed (or was canceled) after it was created.
 
-    The money did not go back: the row moves from ``done`` to ``owed`` by that
-    amount, loudly. Matched by the refund id stored when the credit note was
-    made, which is cleared here, so a redelivered event changes nothing.
-    Returns whether a row changed.
+    The money did not go back. Matched by the refund id stored when the
+    credit note was made:
+    * a ``done`` or ``owed`` row: owed grows by the failed amount;
+    * a ``settled`` row: the owner settled the rest by hand, so only the
+      failed amount is owed now (the settled one is kept in the reason);
+    and the id is cleared, so a redelivered event changes nothing.
+
+    Returns whether a row changed; with none, the caller logs the failure.
     """
     if not refund_id:
         return False
@@ -437,12 +522,18 @@ def record_refund_failure(refund_id: str, amount: int, reason: str) -> bool:
             sess.rollback()
             return False
         failed = min(max(0, amount or row.refunded), row.refunded)
+        why = f"the refund failed after it was made: {reason or 'no reason given'}"
+        if row.state == SETTLED:
+            why += f" (after {row.owed} cents were settled by hand)"
+            row.owed = failed
+        else:
+            row.owed += failed
         row.refunded -= failed
-        row.owed += failed
         row.state = OWED
         row.refund_id = ""
-        row.reason = f"the refund failed after it was made: {reason or 'no reason given'}"
+        row.reason = why
         row.updated_at = time.time()
+        row.version = (row.version or 0) + 1
         sess.add(row)
         sess.commit()
         row = _detached(sess, row)
@@ -459,16 +550,27 @@ class Quote:
     currency: str
 
 
-def refund_quote(gateway: BillingGateway, subscription_id: str, now: float) -> Quote:
+def refund_quote(gateway: BillingGateway, subscription_id: str, now: float, *,
+                 invoice_id: str = "", requested_at: float = 0.0) -> Quote:
     """What withdrawing at ``now`` would refund. Nothing changes.
 
     Computed exactly as the refund is: the unused part of the invoice *total*,
     split by the same plan into what goes back to the card and what would be
     owed. An estimate: the refund itself is measured when the cancellation
     lands, a few seconds later.
+
+    For a withdrawal already asked for (a pending row), pass its frozen
+    ``invoice_id`` and ``requested_at``: if the subscription renewed since,
+    :func:`settle` will record the refund as owed, measured at the request,
+    and the quote says so rather than promise a refund to the card.
     """
-    basis = gateway.refund_basis(subscription_id)
+    basis = gateway.refund_basis(subscription_id, invoice_id=invoice_id)
     at = basis.ended_at or now
+    if requested_at and (basis.period_start > requested_at or (
+            invoice_id and basis.period_end and at > basis.period_end)):
+        return Quote(0, prorated_refund_amount(
+            basis.period_start, basis.period_end, basis.total or basis.amount_paid,
+            requested_at), basis.currency)
     amount = prorated_refund_amount(basis.period_start, basis.period_end,
                                     basis.total or basis.amount_paid, at)
     if amount <= 0 or not basis.invoice_id:

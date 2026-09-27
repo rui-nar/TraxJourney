@@ -816,6 +816,15 @@ class TestRefundBasis:
             invoices=[_invoice()])
         assert _install(monkeypatch, fake).refund_basis("sub_1").ended_at == 0
 
+    def test_a_named_invoice_is_retrieved_not_the_latest(self, monkeypatch):
+        """R5-1: the contract's invoice, frozen at the request, is measured —
+        not the latest, which after a renewal would be the renewal's."""
+        fake = _RefundStripe(invoices=[_invoice()])
+        basis = _install(monkeypatch, fake).refund_basis("sub_1", invoice_id="in_1")
+        assert basis.invoice_id == "in_1"
+        assert ("invoice.retrieve", "in_1") in fake.log
+        assert not [c for c in fake.log if c[0] == "invoice.list"]
+
     def test_ended_is_ended_at_not_when_the_cancellation_was_asked(self, monkeypatch):
         """Cancelled at period end: asked on day 3, ran until the end."""
         fake = _RefundStripe(

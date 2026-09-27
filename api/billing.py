@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from api.deps import get_current_user
-from models.billing import Subscription
+from models.billing import Subscription, SubscriptionRefund
 from models.db import get_session
 from models.user import UserInfo
 from src.billing import subscriptions as subs
@@ -64,6 +64,7 @@ from src.billing.withdrawal import (
     pending_refunds,
     record_refund_failure,
     refund_quote,
+    request_withdrawal,
     settle,
 )
 from src.utils.logging import get_logger
@@ -572,8 +573,15 @@ def withdrawal_quote(current_user: Annotated[dict, Depends(get_current_user)]):
         return target
     if not target.subscription_id:
         return _window_closed()
+    frozen = {}
+    if target.ledger == PENDING:
+        # Asked for already: quote on what was frozen with the request.
+        with get_session() as sess:
+            row = sess.get(SubscriptionRefund, target.subscription_id)
+            if row is not None:
+                frozen = dict(invoice_id=row.invoice_id, requested_at=row.requested_at)
     try:
-        quote = refund_quote(gateway, target.subscription_id, now)
+        quote = refund_quote(gateway, target.subscription_id, now, **frozen)
     except GatewayError as exc:
         _log.warning("Withdrawal quote failed for %s: %s", target.subscription_id, exc)
         raise HTTPException(status_code=502, detail="Could not reach the billing service")
@@ -588,9 +596,12 @@ def withdraw(current_user: Annotated[dict, Depends(get_current_user)]):
     """Cancel immediately and refund the unused part, inside the window (#441).
 
     1. Finish every pending refund of an earlier contract of the customer.
-    2. Cancel the current contract's subscription at Stripe — unless its
-       refund is already in the ledger, which means the cancellation landed.
-       If it fails, nothing is recorded: the request did not happen.
+    2. Record the request — ``requested_at`` and the contract's invoice,
+       frozen — (:func:`src.billing.withdrawal.request_withdrawal`), then
+       cancel the current contract's subscription at Stripe. Unless its
+       refund is already final, every retry cancels again: a cancel that
+       failed or timed out near the deadline is completed later, as the
+       same withdrawal.
     3. Refund through the ledger (:func:`src.billing.withdrawal.settle`).
     4. Record the ended subscription on the row, under the account's lock.
 
@@ -610,7 +621,27 @@ def withdraw(current_user: Annotated[dict, Depends(get_current_user)]):
                                       customer_id=target.customer_id, now=now,
                                       skip=target.subscription_id)
         if target.subscription_id:
-            if not target.ledger:
+            if target.ledger not in FINAL:
+                # The request is the withdrawal: record it — frozen — before
+                # anything is cancelled, then cancel. Every retry cancels
+                # again (idempotent: an ended subscription counts as done).
+                try:
+                    request_withdrawal(
+                        gateway, user_info_id=user_info_id,
+                        customer_id=target.customer_id,
+                        subscription_id=target.subscription_id,
+                        contract_start=target.contract_start, requested_at=now)
+                except (RefundInProgress, AccountGone):
+                    raise
+                except GatewayError as exc:
+                    _log.warning("Withdrawal: recording %s failed: %s",
+                                 target.subscription_id, exc)
+                    raise HTTPException(
+                        status_code=502,
+                        detail="The billing service could not be reached, so "
+                               "nothing was cancelled or refunded. Please try "
+                               "again in a few minutes.",
+                    )
                 try:
                     gateway.cancel_subscription(target.subscription_id, target.customer_id)
                 except GatewayError as exc:
@@ -618,9 +649,10 @@ def withdraw(current_user: Annotated[dict, Depends(get_current_user)]):
                                  target.subscription_id, exc)
                     raise HTTPException(
                         status_code=502,
-                        detail="Your subscription could not be cancelled, so "
-                               "nothing was refunded. Please try again in a few "
-                               "minutes.",
+                        detail="Your withdrawal is recorded, but your subscription "
+                               "could not be cancelled yet, so nothing was "
+                               "refunded. Please try again in a few minutes — it "
+                               "still counts after the 14 days.",
                     )
             refunds.append(settle(
                 gateway, user_info_id=user_info_id, customer_id=target.customer_id,
@@ -765,19 +797,36 @@ REFUND_FAILURE_TYPES = frozenset({
 })
 
 
+#: Refund statuses that mean the money did not go back.
+REFUND_FAILED_STATUSES = frozenset({"failed", "canceled"})
+
+
 def _record_refund_failure(event: dict) -> bool:
-    """A refund of one of our credit notes failed: the refund is owed again."""
+    """A refund failed (or was canceled) after it was made: owed again.
+
+    One of ours is moved to owed. One matching no row is never dropped
+    silently: it is logged at ERROR with everything needed to find it at
+    Stripe — its account may be gone, taking its ledger row with it.
+    """
     refund = ((event.get("data") or {}).get("object")) or {}
-    if str(refund.get("status") or "") != "failed":
+    status_ = str(refund.get("status") or "")
+    if status_ not in REFUND_FAILED_STATUSES:
         return False
-    changed = record_refund_failure(str(refund.get("id") or ""),
-                                    int(refund.get("amount") or 0),
-                                    str(refund.get("failure_reason") or ""))
-    if changed:
-        _log.error("Billing: refund %s failed after it was made (%s) — recorded as "
-                   "owed (event %s)", refund.get("id"), refund.get("failure_reason"),
-                   event.get("id"))
-    return changed
+    refund_id = str(refund.get("id") or "")
+    reason = str(refund.get("failure_reason") or status_)
+    if not record_refund_failure(refund_id, int(refund.get("amount") or 0), reason):
+        _log.error(
+            "Billing: refund %s %s (%s) matches no refund of ours: charge %s, "
+            "payment intent %s, amount %s %s, event %s. If it was a withdrawal "
+            "refund of a deleted account, refund it by hand in Stripe.",
+            refund_id, status_, reason, refund.get("charge"),
+            refund.get("payment_intent"), refund.get("amount"),
+            refund.get("currency"), event.get("id"),
+        )
+        return False
+    _log.error("Billing: refund %s %s after it was made (%s) — recorded as owed "
+               "(event %s)", refund_id, status_, reason, event.get("id"))
+    return True
 
 
 def _handle_webhook(gateway, payload: bytes, signature: str) -> WebhookAck:

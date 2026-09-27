@@ -178,8 +178,13 @@ class BillingGateway(Protocol):
         many were deleted. Raises :class:`GatewayError` on failure.
         """
 
-    def refund_basis(self, subscription_id: str) -> RefundBasis:
-        """The provider's facts a pro-rata refund is computed from (#441)."""
+    def refund_basis(self, subscription_id: str, *, invoice_id: str = "") -> RefundBasis:
+        """The provider's facts a pro-rata refund is computed from (#441).
+
+        ``invoice_id`` names the invoice to measure — the contract's, frozen
+        when the withdrawal was asked for — instead of the latest paid one,
+        which after a renewal would be the renewal's.
+        """
 
     def subscriptions_in_force(self, customer_id: str) -> list[str]:
         """Ids of the customer's subscriptions still in force at the provider:

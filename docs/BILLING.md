@@ -292,17 +292,20 @@ row (issue #429, `cancel_live_subscription` in `src/auth/account_deletion.py`):
   end. The customer itself is kept — its invoices are the accounting record;
 - a row with no customer falls back to its stored subscription id;
 - inside the current contract's [withdrawal window](#refunds-and-withdrawal),
-  once the cancellation has landed, the contract's subscription gets its
-  pending invoice items removed and its unused part refunded through the
-  refund ledger (issue #441, `refund_inside_window`). Every *pending* refund
-  of the customer is completed too, whichever contract it belongs to: its
-  cancellation landed in time. Outside the window it only cancels;
-- if the cancellation fails, or a refund fails transiently, the deletion is
-  refused with **502**; with **409** `refund_in_progress` while a withdrawal
+  the deletion is a withdrawal: it is recorded on the refund ledger *before*
+  anything is cancelled (`record_deletion_withdrawal`). Once the cancellation
+  has landed, the contract's subscription gets its pending invoice items
+  removed and its unused part refunded through the ledger (issue #441,
+  `refund_inside_window`). Every *pending* refund of the customer is
+  completed too, whichever contract it belongs to: it was asked for in time.
+  Outside the window it only cancels;
+- if the withdrawal cannot be recorded, the cancellation fails, or a refund
+  fails transiently, the deletion is refused with **502**; with **409** `refund_in_progress` while a withdrawal
   is refunding the same subscription; and with **409** when a subscription may
   still bill but this deployment has no gateway configured. Nothing is deleted
   in any of these cases, and retrying is safe: the retry finds the ledger row
-  and refunds once, also after the deadline.
+  and refunds once, also after the deadline — a withdrawal recorded before a
+  failed cancellation included.
 - if a refund is **owed** — Stripe refused it for good, there is nothing to
   refund against, or part was paid from the customer's balance — the deletion
   **goes ahead**. The owed refund is kept and outlives the account (see
@@ -437,32 +440,47 @@ Issue #441. The owner set this policy on 2026-09-23 and refined it on
     checkout arrived) and `terms_version` (read from the session's metadata).
 - **The request is the withdrawal.** A withdrawal (or a deletion) is made in
   time when the user *asks* inside the window. The terms say so.
-  - The server takes `requested_at` when the request arrives, **before** it
-    cancels, and freezes it on the ledger row.
-  - The refund needs `requested_at` inside the window, and Stripe's `ended_at`
-    no later than `requested_at` + 10 minutes (`CANCEL_BOUND_SECONDS`). The
-    cancellation follows the request within one SDK call (at most 45 s), so a
+  - **Recorded before the cancellation** (`request_withdrawal`, review
+    finding R5-1). The ledger row is created — or, on a retry, claimed — before
+    Stripe is asked to cancel, with `requested_at` (when the request arrived)
+    and the contract's invoice frozen. The invoice is read from Stripe then,
+    before a renewal could make another one the latest. If Stripe cannot be
+    read, the request answers 502 and nothing is cancelled.
+  - Every request, and every retry, then **cancels again**. Cancelling is
+    idempotent: an ended subscription counts as done. So a cancellation that
+    failed, or whose answer was lost, near the deadline is completed by the
+    retry — even days after the deadline — as the same withdrawal. The user
+    is told so ("it still counts after the 14 days"), and the plan page keeps
+    offering the withdrawal while the row is `pending`.
+  - Each attempt stamps `cancel_attempted_at` just before the cancel call.
+    The refund needs `requested_at` inside the window, and Stripe's `ended_at`
+    no later than the latest `cancel_attempted_at` + 10 minutes
+    (`CANCEL_BOUND_SECONDS`). A cancel is one SDK call (at most 45 s), so a
     request at 23:59:59.9 whose cancellation lands just after midnight is
-    refunded.
+    refunded, and so is a retry the next day.
   - **The app never refuses after it has cancelled.** A cancellation Stripe
-    records more than the bound after the request means something went wrong:
+    records more than the bound after the attempt means something went wrong:
     it is not refunded automatically but recorded as owed, for the owner to
     check. Stripe not yet showing the subscription ended is a failure to
     retry (502), not a refusal.
-  - The ledger row is created only after the cancellation succeeded. From then
-    on, a refund that fails can be completed later, by retrying the withdrawal
-    or the deletion, even after the deadline.
-  - A request whose cancellation failed leaves nothing behind. The
-    subscription is still running and renewing, and after the deadline it can
-    no longer be withdrawn from.
-  - Only the contract's invoice, frozen in the ledger, is ever refunded, never
-    a renewal.
+  - **A renewal is never refunded automatically** (review finding R5-1). If the cancellation kept failing and the subscription
+    **renewed** — Stripe's `ended_at` is after the frozen invoice's period,
+    or, when no invoice could be frozen, the latest invoice began after the
+    request — nothing is sent to Stripe. The refund is recorded as **owed**:
+    the unused part of the frozen invoice, measured at `requested_at`, and
+    the reason says the renewal was charged after the withdrawal was asked
+    for. The owner refunds both by hand. This is why the request can stay
+    open after the deadline without opening a window on a renewal: only the
+    contract's invoice, frozen with the request, is ever refunded
+    automatically. (Round 2 refused such late completions outright — the
+    user was left cancelled-or-renewing with nothing; R5-1 replaced that.)
   - No row is created for an account that no longer exists; this is checked
     under its lock. A withdrawal that lost a race with the deletion answers 404.
     The lease is timed from the claim itself.
 - **The amount** is read from Stripe, never from our cached row. It is the
   unused fraction of the period on the contract's invoice, measured at the
-  subscription's `ended_at` and rounded **down** to whole cents. It is taken
+  subscription's `ended_at` (at `requested_at` for a renewal, above) and
+  rounded **down** to whole cents. It is taken
   of the invoice's **total** (after coupons, including tax), not only of what
   the card paid.
   - Of that amount, the card gets back at most what it paid; a share paid
@@ -586,15 +604,25 @@ to the user as `owed_cents`. The cases are:
   hand, so there is nothing to refund against;
 - part of it was paid from the balance;
 - the invoice was already credited another way;
-- the cancellation landed more than 10 minutes after the request;
-- the refund **failed after Stripe accepted it**, reported by `refund.failed`
-  / `refund.updated` / `charge.refund.updated`.
+- the cancellation landed more than 10 minutes after it was attempted;
+- the subscription **renewed** while its cancellation kept failing (see
+  [the request is the withdrawal](#refunds-and-withdrawal));
+- the refund **failed after Stripe accepted it** — status `failed` or
+  `canceled` — reported by `refund.failed` / `refund.updated` /
+  `charge.refund.updated`.
   - The ledger stores the refund id the credit note made (`refund_id`), and
     the event is matched by it.
-  - The row moves from `done` to `owed` by the failed amount, and `refund_id`
-    is cleared, so a redelivery changes nothing.
+  - A `done` or `owed` row moves to `owed`, growing by the failed amount. A
+    `settled` row becomes `owed` for **the failed amount only**: what was
+    settled by hand stays settled, and the reason keeps how much that was.
+    `refund_id` is cleared, so a redelivery changes nothing.
+  - A failure that matches no row is **never dropped silently**: it is
+    logged at **ERROR** with the refund id, its charge and payment intent,
+    the amount and the event id. That is how the failed refund of a
+    withdrawal whose account was then deleted (its `done` row went with the
+    account) surfaces: refund it by hand in Stripe.
   - Rows from before `ca17b22c22d5` have no refund id; a late failure of one
-    is only seen in the Stripe dashboard.
+    is only seen in the log and the Stripe dashboard.
 
 **Owed is final for the app.** Neither a withdrawal nor a deletion sends it to
 Stripe again. The owner may already have paid it by hand, and a retry could
@@ -618,6 +646,9 @@ key on its frozen invoice: an answer can be lost after Stripe made the note.
   under it.
 - If Stripe cannot be asked, the list says "not checked at Stripe", and
   settling it is refused.
+- A pending row whose amount was never computed (its cancellation may never
+  have landed) is listed with no owed figure and the reason "amount unknown
+  — check Stripe".
 
 The user's next withdrawal or deletion would also complete it.
 
@@ -642,9 +673,11 @@ To settle one:
    id>/settle`. This is refused while a request holds the refund, when a
    pending one turns out to have been refunded after all, and when Stripe
    cannot be checked.
-   - The write is fenced: it happens only if nobody claimed the row since it
-     was read (a conditional update on the state, the lease and the claim
-     token, under the account's lock). Otherwise it answers 409; look again.
+   - The write is fenced: it happens only if nothing touched the row since it
+     was read (a conditional update on the state, the lease, the claim token
+     and the row's `version`, which every ledger write bumps — the token alone
+     is "" both before and after a claim — under the account's lock).
+     Otherwise it answers 409; look again.
    - **While the account exists**, the row becomes a `settled` tombstone.
      Amounts, reason and `settled_at` stay, so neither a withdrawal nor a
      deletion ever refunds that subscription again. It goes when the account
@@ -657,7 +690,8 @@ To settle one:
 
    ```sql
    -- account still there (a subscription row names the customer):
-   UPDATE subscription_refund SET state = 'settled', settled_at = <unix now>
+   UPDATE subscription_refund SET state = 'settled', settled_at = <unix now>,
+          version = version + 1
     WHERE subscription_id = '<id>' AND state IN ('owed', 'pending')
       AND lease_until <= <unix now>;
    -- account gone:
@@ -674,14 +708,17 @@ never be paid twice by rolling back.
 In the app, the plan page shows **Withdraw and get a refund** while
 `/api/billing/me` reports `withdrawal_open`. That is true while the contract's
 window is open, or after it while the contract's ledger row is `pending` (a
-refund to complete). It is never true once the row is `done`, `owed` or
+withdrawal asked for in time, to complete). It is never true once the row is `done`, `owed` or
 `settled`, whoever made it. So a deletion refused with `billing_changed` after
 refunding leaves no stale action behind.
 
 The confirmation dialog shows the estimate from `GET /api/billing/withdraw`,
 computed the way the refund is: on the invoice total, split into what goes
 back to the card (`amount_cents`) and what would be owed (`owed_cents`). The
-dialog says both. That estimate is not part of `/me`, because `/me` runs on
+dialog says both. For a withdrawal already asked for (a `pending` row), the
+estimate uses the invoice frozen with the request; if the subscription
+renewed since, it is quoted as owed, measured at the request, as it will be
+recorded. That estimate is not part of `/me`, because `/me` runs on
 every settings visit and must not wait on Stripe. The delete-account dialog
 says the unused part will be refunded while the window is open.
 

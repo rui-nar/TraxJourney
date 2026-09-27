@@ -76,11 +76,13 @@ def _seed(cfg) -> None:
 
 
 def test_it_follows_the_ledger_migration():
-    """The single head is ca17b22c22d5, which follows this one."""
+    """ca17b22c22d5 follows this one, and c69914246e8e — the single head —
+    follows that."""
     script = ScriptDirectory.from_config(Config(str(_PROJECT_ROOT / "alembic.ini")))
     assert script.get_revision(_REVISION).down_revision == _BEFORE
-    assert script.get_heads() == ["ca17b22c22d5"]
     assert script.get_revision("ca17b22c22d5").down_revision == _REVISION
+    assert script.get_revision("c69914246e8e").down_revision == "ca17b22c22d5"
+    assert script.get_heads() == ["c69914246e8e"]
 
 
 def test_upgrade(cfg):
@@ -132,3 +134,28 @@ def test_the_refund_id_migration_up_and_down(cfg):
     assert "refund_id" in _columns(cfg, "subscription_refund")
     command.downgrade(cfg, _REVISION)
     assert "refund_id" not in _columns(cfg, "subscription_refund")
+
+
+def test_the_cancel_attempt_and_version_migration_up_and_down(cfg):
+    """Round 5: existing rows' cancel followed their request, so the bound
+    runs from ``requested_at``; every row starts at version 0."""
+    command.upgrade(cfg, "ca17b22c22d5")
+    with _connect(cfg) as conn:
+        conn.execute(
+            "INSERT INTO subscription_refund (subscription_id, customer_id, state, "
+            "attempt, amount, refunded, currency, invoice_id, credit_note_id, "
+            "reason, requested_at, lease_until, created_at, updated_at, "
+            "contract_started_at, to_refund, owed, claim_token, settled_at, "
+            "refund_id) VALUES ('sub_p', 'cus_1', 'pending', 0, -1, 0, 'eur', 'in_1', "
+            "'', '', 1234.5, 0, 0, 0, 1.0, -1, 0, '', 0, '')")
+        conn.commit()
+
+    command.upgrade(cfg, "c69914246e8e")
+
+    with _connect(cfg) as conn:
+        row = conn.execute("SELECT cancel_attempted_at, version FROM "
+                           "subscription_refund").fetchone()
+    assert row == (1234.5, 0)
+    command.downgrade(cfg, "ca17b22c22d5")
+    assert {"cancel_attempted_at", "version"}.isdisjoint(
+        _columns(cfg, "subscription_refund"))

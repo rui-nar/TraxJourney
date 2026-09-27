@@ -460,14 +460,17 @@ class StripeGateway:
             _log.info("Stripe customer %s: cancelled %s", customer_id, running)
         return running
 
-    def refund_basis(self, subscription_id: str) -> RefundBasis:
-        """The latest paid invoice of ``subscription_id``, and when it ended."""
+    def refund_basis(self, subscription_id: str, *,
+                     invoice_id: str = "") -> RefundBasis:
+        """``invoice_id`` (or the latest paid invoice of ``subscription_id``),
+        and when the subscription ended."""
         stripe = _stripe()
         if not subscription_id:
             raise GatewayError("No subscription to refund")
         try:
             sub = stripe.Subscription.retrieve(subscription_id)
-            invoice = _latest_paid_invoice(stripe, subscription_id)
+            invoice = (stripe.Invoice.retrieve(invoice_id) if invoice_id
+                       else _latest_paid_invoice(stripe, subscription_id))
         except Exception as exc:
             _log.warning("Stripe refund lookup failed for %s: %s", subscription_id, exc)
             raise _classified(exc) from exc
