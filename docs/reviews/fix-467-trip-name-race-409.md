@@ -14,3 +14,7 @@ Envelope: REVIEW.md defaults
 - Override: —
 - Outcome: fixed
 - Fix note (triager): prune a copy that goes only to saveDayMeta, or run the rename before the orphan check and the prune.
+
+## Round 2 — 2026-09-28, reviewed at 75f6a783 (fixes since 7a28ec97)
+
+No findings.
