@@ -55,3 +55,23 @@ Envelope: REVIEW.md defaults
 - Override: —
 - Outcome: fixed
 - Fix note (triager): record provenance at reveal time. _revealItems (and reveal's failure path) marks each (item id, field) it could not decrypt; the optimistic update clears the mark for fields the user saved; the dialogs set keepStored* only from that mark. Defence in depth: updateMemory/updateJournal still protect() a keep value that is not a strictly valid envelope (base64 parts, minimum lengths). Rejected: a stricter isEnvelope alone (still a shape guess), and unconditional re-encryption (double-wraps foreign ciphertext). Tests: a second save after the optimistic update and after a reload, for memory name, memory description and journal description.
+
+## Round 4 — 2026-09-27, reviewed at 765a09be (fixes since ba96247e; owner extended the cap by one round)
+
+### R4-1 — A row the old client already double-wrapped reveals to its inner foreign envelope, is not marked, and the editor shows that ciphertext editable
+- Trigger: On a client before this branch, a user with encryption unlocked edited a memory holding another key's ciphertext and saved (row = own-key(foreign envelope)) → reveal() decrypts the outer layer, no mark is made → Edit shows "v1.<b64>.<b64>" editable while the list says "Encrypted content unavailable". Same for a journal note.
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10). Main produces and shows these rows the same way today, and nothing is lost (a save re-wraps at the same depth; a save after a photo poll strips only our own layer, which is a repair). The suggested fix, marking when the decrypted text is well-formed, brings back the shape check R3-1 removed.
+- Revisit when: A user reports an editor showing v1.<b64>.<b64> after unlocking; or a client-side repair pass for pre-#466 double-wrapped rows is planned (record "decrypted to a foreign envelope" as provenance at reveal time, not by trusting typed text's shape).
+- Guard: —
+- Override: —
+- Outcome: open
+
+### R4-2 — The undecrypted record is reset at the start of _revealItems and rebuilt across awaits
+- Trigger: theoretical — every await in the reveal loop is microtask-only today (pure-Dart cryptography_plus, no platform channel or isolate), so no tap can land mid-reveal.
+- Scores: trigger=theoretical, impact=wrong-visible (triager corrected from silent-wrong: the editor shows the ciphertext), detect=user-visible (corrected from silent), later=cheap, fix=S/local, confidence=verified
+- Decision: Reject (D11)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: rejected. If _revealItems is edited for another reason, building the marks in a local set and swapping it in at the end is a free hardening.
