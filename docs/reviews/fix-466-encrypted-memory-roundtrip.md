@@ -31,3 +31,15 @@ Envelope: REVIEW.md defaults
 - Guard: —
 - Override: —
 - Outcome: open
+
+## Round 2 — 2026-09-27, reviewed at ba0a048a (fixes since 41dc2a82)
+
+### R2-1 — A typed title shaped like "v1.<x>.<y>" is saved unencrypted on an encrypted account, then can't be edited (new evidence for R1-2)
+- Trigger: A user with encryption unlocked titles a memory "v1.2.3" (or "v1.Dinner with Dr. Smith") and saves → the passthrough added to protect() (encryption_service.dart:325) sends it unencrypted; the list shows "Encrypted content unavailable"; reopening Edit shows the field read-only and Save resends the same text; the only way out is to delete the memory. Same for a journal note.
+- Scores: trigger=plausible, impact=security (triager corrected from wrong-visible), detect=user-visible, later=expensive (triager corrected from cheap: plaintext rows that look like envelopes can only be repaired client-side), fix=S/shared, confidence=verified
+- Decision: Fix now (D3, floor F1: breaks E6 and the ENCRYPTION.md promise that memory.name is encrypted on every save)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed
+- Fix note (triager): a base64 check in isEnvelope alone is not enough ("v1.abcd.efgh" passes). Pass an envelope through only when it is the original stored value the user left untouched (the dialog's _nameEnvelope/_descEnvelope), and encrypt every other value.

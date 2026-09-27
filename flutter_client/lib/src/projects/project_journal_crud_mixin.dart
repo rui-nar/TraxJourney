@@ -120,6 +120,7 @@ mixin ProjectJournalCrudMixin on ChangeNotifier, ProjectQuotaMixin {
     String? description,
     double? lat,
     double? lon,
+    bool keepStoredDescription = false,
   }) async {
     final ref = projectRef;
     if (ref == null) return;
@@ -144,7 +145,12 @@ mixin ProjectJournalCrudMixin on ChangeNotifier, ProjectQuotaMixin {
     items = newItems;
     notifyListeners();
     try {
-      final encDescription = await encryption.protect(description);
+      // keepStoredDescription: the editor hands back the stored envelope it
+      // could not decrypt, untouched; it is resent as it is, never encrypted
+      // again. Every other value is encrypted (#466).
+      final encDescription = keepStoredDescription
+          ? description
+          : await encryption.protect(description);
       await api.put('/api/journal/$journalId', {
         'date': date,
         'geo_mode': geoMode,

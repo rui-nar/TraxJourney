@@ -198,6 +198,8 @@ class _MemoryDialogState extends State<MemoryDialog> {
           description: desc,
           lat: _geoMode == 'custom' ? _customLat : null,
           lon: _geoMode == 'custom' ? _customLon : null,
+          keepStoredName: _nameEnvelope != null,
+          keepStoredDescription: _descEnvelope != null,
         );
 
         // Upload new photos

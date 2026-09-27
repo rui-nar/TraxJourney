@@ -175,6 +175,7 @@ class _JournalDialogState extends State<JournalDialog> {
           description: desc,
           lat: _geoMode == 'custom' ? _customLat : null,
           lon: _geoMode == 'custom' ? _customLon : null,
+          keepStoredDescription: _descEnvelope != null,
         );
         for (final p in _pendingPhotos) {
           final uuid =

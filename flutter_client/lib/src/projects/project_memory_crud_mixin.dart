@@ -120,6 +120,8 @@ mixin ProjectMemoryCrudMixin on ChangeNotifier, ProjectQuotaMixin {
     String? description,
     double? lat,
     double? lon,
+    bool keepStoredName = false,
+    bool keepStoredDescription = false,
   }) async {
     if (projectRef == null) return;
     // New list + new item map, not an in-place mutation of the existing
@@ -144,8 +146,13 @@ mixin ProjectMemoryCrudMixin on ChangeNotifier, ProjectQuotaMixin {
     items = newItems;
     notifyListeners();
     try {
-      final encName = await encryption.protect(name);
-      final encDescription = await encryption.protect(description);
+      // keepStored*: the editor hands back the stored envelope it could not
+      // decrypt, untouched; it is resent as it is, never encrypted again.
+      // Every other value is encrypted (#466).
+      final encName = keepStoredName ? name : await encryption.protect(name);
+      final encDescription = keepStoredDescription
+          ? description
+          : await encryption.protect(description);
       await api.put('/api/memories/$memoryId', {
         'date': date,
         'geo_mode': geoMode,

@@ -7,11 +7,16 @@
 /// sends the envelope back exactly as it was, while every other field stays
 /// editable. The server's update replaces every field, so leaving it out
 /// would clear it.
+///
+/// Only that untouched envelope skips encryption: text the user types is
+/// always encrypted when encryption is unlocked, even when it looks like an
+/// envelope, such as "v1.2.3" (review R2-1).
 library;
 
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -19,14 +24,13 @@ import 'package:http/testing.dart';
 import 'package:traxjourney_client/src/api/client.dart';
 import 'package:traxjourney_client/src/core/project_ref.dart';
 import 'package:traxjourney_client/src/crypto/encrypted_display.dart';
+import 'package:traxjourney_client/src/crypto/encryption.dart';
 import 'package:traxjourney_client/src/crypto/encryption_service.dart';
 import 'package:traxjourney_client/src/projects/journal_dialog.dart';
 import 'package:traxjourney_client/src/projects/memory_dialog.dart';
 import 'package:traxjourney_client/src/projects/project_data_cache.dart';
 import 'package:traxjourney_client/src/projects/project_notifier.dart';
 import 'package:traxjourney_client/src/projects/project_service.dart';
-
-import '../crypto/encryption_service_test.dart' show FakeDeviceKeyStore, FakeEncryptionApi;
 
 const _ref = ProjectRef(name: 'Trip');
 const _nameEnv = 'v1.bmFtZUtleQ==.bmFtZUNpcGhlcg==';
@@ -156,16 +160,83 @@ void main() {
     expect(put['description'], _descEnv);
   });
 
-  test('an unlocked device never encrypts an envelope again', () async {
-    // The foreign-key case: this device is unlocked, but the envelope was
-    // made under another account's key. Encrypting it again would bury the
-    // original ciphertext inside a new one.
-    final svc = EncryptionService(FakeDeviceKeyStore(), FakeEncryptionApi(),
-        deviceLabel: 'Test');
-    await svc.enable(const RecoveryKeyChoice());
-    expect(svc.isUnlocked, isTrue);
+  group('with encryption unlocked', () {
+    // The foreign-key case: this device is unlocked, but the envelopes above
+    // were made under another account's key, so it cannot decrypt them.
+    setUp(() async {
+      FlutterSecureStorage.setMockInitialValues({});
+      await encryption.enable(const RecoveryKeyChoice());
+      expect(encryption.isUnlocked, isTrue);
+    });
+    tearDown(() => encryption.lock());
 
-    expect(await svc.protect(_nameEnv), _nameEnv);
-    expect(await svc.protect('Lac Blanc'), isNot('Lac Blanc'));
+    testWidgets('a memory it cannot decrypt is saved with its envelopes unchanged',
+        (tester) async {
+      final notifier = ProjectNotifier(ProjectService())
+        ..ref = _ref
+        ..items = [{'item_type': 'memory', 'memory': Map.of(memory)}];
+      await _open(tester, MemoryDialog(notifier: notifier, editMemory: Map.of(memory)));
+
+      await _editAnotherFieldAndSave(tester);
+
+      final put = _puts.single;
+      expect(put['geo_mode'], 'end_of_day');
+      expect((put['name'], put['description']), (_nameEnv, _descEnv));
+    });
+
+    testWidgets('a journal entry it cannot decrypt is saved with its envelope unchanged',
+        (tester) async {
+      final notifier = ProjectNotifier(ProjectService())
+        ..ref = _ref
+        ..items = [{'item_type': 'journal', 'journal': Map.of(journal)}];
+      await _open(tester, JournalDialog(notifier: notifier, editEntry: Map.of(journal)));
+
+      await _editAnotherFieldAndSave(tester);
+
+      final put = _puts.single;
+      expect(put['geo_mode'], 'end_of_day');
+      expect(put['description'], _descEnv);
+    });
+
+    testWidgets('a typed memory title shaped like an envelope is encrypted',
+        (tester) async {
+      final plain = {...memory, 'name': 'Lac Blanc', 'description': 'Lunch'};
+      final notifier = ProjectNotifier(ProjectService())
+        ..ref = _ref
+        ..items = [{'item_type': 'memory', 'memory': Map.of(plain)}];
+      await _open(tester, MemoryDialog(notifier: notifier, editMemory: Map.of(plain)));
+
+      await tester.enterText(find.widgetWithText(TextField, 'Lac Blanc'), 'v1.2.3');
+      await tester.enterText(
+          find.widgetWithText(TextField, 'Lunch'), 'v1.Dinner with Dr. Smith');
+      await tester.tap(find.text('Save'));
+      await tester.pumpAndSettle();
+
+      final put = _puts.single;
+      final name = put['name'] as String;
+      final desc = put['description'] as String;
+      expect(name, isNot('v1.2.3'));
+      expect(desc, isNot('v1.Dinner with Dr. Smith'));
+      expect(await tester.runAsync(() => encryption.decryptText(name)), 'v1.2.3');
+      expect(await tester.runAsync(() => encryption.decryptText(desc)),
+          'v1.Dinner with Dr. Smith');
+    });
+
+    testWidgets('a typed journal note shaped like an envelope is encrypted',
+        (tester) async {
+      final plain = {...journal, 'description': 'Lunch'};
+      final notifier = ProjectNotifier(ProjectService())
+        ..ref = _ref
+        ..items = [{'item_type': 'journal', 'journal': Map.of(plain)}];
+      await _open(tester, JournalDialog(notifier: notifier, editEntry: Map.of(plain)));
+
+      await tester.enterText(find.widgetWithText(TextField, 'Lunch'), 'v1.2.3');
+      await tester.tap(find.text('Save'));
+      await tester.pumpAndSettle();
+
+      final desc = _puts.single['description'] as String;
+      expect(desc, isNot('v1.2.3'));
+      expect(await tester.runAsync(() => encryption.decryptText(desc)), 'v1.2.3');
+    });
   });
 }
