@@ -1,0 +1,155 @@
+# Review ledger — Trip video export P1 + P2
+
+Subject: docs/TRIP_VIDEO_PLAN.md (round 1 reviewed its draft at C:\Users\rui_n\.claude\plans\trip-video-p1-p2.md, before it was reshaped to the write-plan format)
+Envelope: plan section "Review envelope" (REVIEW.md defaults + stated E6 exception for per-job consent)
+
+## Round 1 — 2026-09-27, reviewed at eaaeee78 (plan draft, uncommitted)
+
+Reviewer: Fable (general-purpose agent carrying adversarial-reviewer's instructions; the project agents were not registered in the session). Triager: Opus, same arrangement.
+
+### R1-1 — OOM-killed video work-horse is never failed; consent plaintext kept indefinitely
+- Trigger: user consents on an encrypted trip → worker-video horse SIGKILLed by the memory limit → job stays "running", no email, decrypted geometry.json stays on disk until the next API restart (worker.py's killed-horse handler only handles run_poster_job; the orphan sweep runs only in the API lifespan)
+- Scores: trigger=plausible, impact=security, detect=silent, later=expensive, fix=S/shared, confidence=verified
+- Decision: Fix now (D3)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (plan U4 step 3 dispatch mapping + U6 step 5 mark_video_job_interrupted; Convention 2 delete paths; daily sweep backstop)
+
+### R1-2 — "retries = 0" through enqueue() builds Retry(max=0), which RQ rejects
+- Trigger: any user starts a video → Retry(max=0) raises inside enqueue's try → falls to the in-process branch → API renders for minutes, or a false 503 with Redis healthy
+- Scores: trigger=concrete, impact=wrong-visible (triager: was degraded-ux), detect=logged, later=cheap, fix=S/shared, confidence=verified
+- Decision: Fix now (D6)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (plan U4 step 2: max_retries=0 passes no Retry; test in U4 acceptance)
+
+### R1-3 — MP4s under data/users/<uid>/ are counted by the nightly storage reconcile
+- Trigger: tier_1 user renders a few videos → 03:30 reconcile counts videos/ → next photo upload refused with 402, contradicting "videos don't count"
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (plan D6: reconcile_usage skips videos/, files stay under users/<uid> so account deletion still removes them; U3 step 5)
+
+### R1-4 — Email token link goes to a Flutter route the plan never adds
+- Trigger: render finishes → user opens FRONTEND_ORIGIN/video/{token} with no session → no GoRoute, no auth-redirect exemption → login/unknown route, no download
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=M/local, confidence=verified
+- Decision: Fix now (D6)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (plan U7: video_download_screen, /video/:token route + auth-redirect exemption, router test)
+
+### R1-5 — Per-active-day floor makes long trips unrenderable (>~31 active days at 90 s, >65 under 180 s)
+- Trigger: tier_1/2 user with a 40-active-day trip opens the dialog → min runtime ≈ 4.3 + 2.7 × active_days s → every offered length overflows
+- Scores: trigger=concrete, impact=degraded-ux, detect=user-visible, later=cheap, fix=L/local, confidence=verified
+- Decision: Defer (D8)
+- Revisit when: the U1 allocation CLI on the owner's longest real trips shows no offered length fits, or a user reports an unrenderable trip; also correct §3.2's "120-activity trip" claim then
+- Guard: —
+- Override: user: Fix now — trips can have 365 days
+- Outcome: fixed (plan D5 + "Clips" design: adjacent merge to N_max, date ticker replaces day cards; U1 acceptance has a 365-day, 1,000-leg case)
+
+### R1-6 — Synchronous timeline build decodes every polyline on the API process
+- Trigger: user with a ~200-activity trip opens the dialog → /video/plan decodes all polylines on the request thread → 2–4 s GIL hold, other users' requests stall (documented 502 mechanism)
+- Scores: trigger=concrete, impact=degraded-ux, detect=logged, later=cheap, fix=M/local, confidence=verified
+- Decision: Defer (D8)
+- Revisit when: /video/plan or POST /video exceeds 1 s server-side on a real trip, or a 502/latency spike coincides with a plan request; revisit before U5 if U1's helper can't reuse activity_geo_prepared for free
+- Guard: —
+- Override: —
+- Outcome: open
+
+### R1-7 — No-broker 503 not ordered before the quota insert and geometry write
+- Trigger: Redis recreated during compose up, or self-hoster without Redis → row inserted + geometry.json written → enqueue finds no broker → 503; the pending row burns the free monthly video and the plaintext has no terminal path
+- Scores: trigger=plausible, impact=security (triager: was wrong-visible), detect=user-visible, later=cheap, fix=S/local, confidence=verified (triager: was inferred)
+- Decision: Fix now (D3)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (plan D7 + U6 step 2 ordering: broker check before any write; enqueue(allow_inline=False) failure ⇒ failed row + geometry deleted)
+
+## Round 2 — 2026-09-28, reviewed docs/TRIP_VIDEO_PLAN.md at eaaeee78 (uncommitted; fixes for R1-1..R1-5, R1-7 + owner decisions D10–D13)
+
+Reviewer: Fable; triager: Opus (same arrangement as round 1).
+
+### R2-1 — API-startup orphan sweep fails video jobs the separate worker is still running or has queued; the worker then completes them without their consent geometry
+- Trigger: API container restarts alone, or a deploy recreates containers while `video` has a job running/queued in Redis → API sweep marks it failed, deletes geometry.json, emails "failed" → worker renders it anyway (runner has no terminal-state guard, poster example) → "ready" email, encrypted trip's video missing every consented track
+- Scores: trigger=plausible, impact=wrong-visible (triager: was silent-wrong), detect=user-visible (triager: was silent), later=cheap, fix=M/local, confidence=verified
+- Decision: Defer (D10) — floor removed by the triager's rescoring; flagged to the user
+- Revisit when: a videojob goes failed → running/done, a user gets both failed and ready emails for one job, or a deploy happens with a video job queued or running
+- Guard: —
+- Override: user: Fix now — renders take minutes, so a deploy during one is realistic
+- Outcome: fixed (Convention 6 compare-and-set transitions; U6 step 4 runner guards; U6 step 5 worker-startup sweep of running rows only, no API video sweep)
+
+### R2-2 — POST /video returns 422 "nothing to animate" before checking consent, so an encrypted activity-only trip never reaches the consent dialog
+- Trigger: E2EE user with an activity-only trip taps Video → every activity yields no geometry → zero legs → 422 at step (b) before the 409 at step (c) → the trip can never be rendered
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (U6 step 2: consent checked before the timeline, also in /video/plan; test for an encrypted-only trip)
+
+### R2-3 — queue_available() caches a failed first Redis probe for the API process lifetime
+- Trigger: Redis slow/restarting when the API starts → cached None → video "unavailable"/503 for everyone until the API restarts
+- Scores: trigger=plausible, impact=degraded-ux (triager: was wrong-visible), detect=logged (triager: was user-visible), later=cheap, fix=S/shared, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: the API logs "REDIS_URL is set but Redis is unreachable" while workers are processing jobs, or video shows unavailable/503 while Redis is healthy
+- Guard: —
+- Override: —
+- Outcome: open
+
+### R2-4 — No path fails a running video row when the whole worker-video container dies and the API stays up
+- Trigger: worker-video container killed (cgroup OOM on the parent, compose restart) mid-render → killed-horse handler never runs, API sweep never runs → row stays running forever, status spins, no email, free monthly video consumed
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: a videojob stays pending/running past job_timeout (1800 s), or a user reports a stuck video or a quota used by a video that never finished
+- Guard: —
+- Override: user: Fix now — renders take minutes, so a deploy during one is realistic
+- Outcome: fixed (U6 step 6: hourly sweep fails running rows past timeout + 5 min and pending rows older than 24 h; U3 adds started_at)
+
+### R2-5 — U6 step 2(d) relies on a SQLite write-lock helper that doesn't exist
+- Trigger: U6 implementer reaches the quota+insert transaction → no helper in models/db.py → escalation condition already true, the concurrency acceptance can't be met
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7) — triager: the idiom exists as `lock_account` in src/billing/subscriptions.py:49 (no-op UPDATE, like repo_core.bump_lock_version); point U6 at it
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (U6 step 2(d): lock_account as the first write; escalation reworded)
+
+### R2-6 — New limit env vars use a PLAN_<PLAN>_ prefix the other limits don't use
+- Trigger: operator sets TIER_1_MAX_VIDEOS_PER_MONTH like the other limits in .env.example → ignored, defaults stay, nothing logs it
+- Scores: trigger=concrete, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (U3 step 3: <PREFIX>_MAX_VIDEOS_PER_MONTH / <PREFIX>_MAX_VIDEO_HEIGHT, .env.example, env-reset test)
+
+## Round 3 — 2026-09-28, reviewed docs/TRIP_VIDEO_PLAN.md at eaaeee78 (uncommitted; fixes for R2-1, R2-2, R2-4, R2-5, R2-6)
+
+Reviewer: Fable; triager: Opus (same arrangement as rounds 1–2).
+
+### R3-1 — Hourly sweep deletes geometry.json of a job that is still legitimately pending
+- Trigger: E2EE user consents while the single video worker is busy or restarting → row pending > 30 min (allowed up to 24 h) → hourly sweep deletes geometry.json by age → worker later runs the job without it → "ready" video missing the consented tracks, or a "failed" email for valid input
+- Scores: trigger=plausible, impact=wrong-visible (triager: was silent-wrong), detect=user-visible (triager: was silent), later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10) — floor removed by rescoring, consistent with R2-1; flagged to the user
+- Revisit when: a video job stays pending > 30 min before running, a consented job reaches running without geometry.json, or a user reports an encrypted trip's video or failed email missing consented tracks
+- Guard: —
+- Override: user: Fix now — same failure as R2-1/R2-4, a few words in the plan; no further review round
+- Outcome: fixed (U6 step 6: geometry of pending/running jobs is never deleted by age; acceptance test added) — not re-reviewed, by user decision
+
+### R3-2 — "Encrypted activity" is defined by the polyline only; a trackless activity with encrypted endpoints is dropped and its geometry refused
+- Trigger: E2EE user with a GPX/private activity (no polyline, encrypted start/end) taps Video → not flagged for consent, leg dropped into skipped, a decrypted 2-point line from the client is rejected as plaintext
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: an encrypted trip's /video/plan lists in skipped an activity with start_latlng_enc/end_latlng_enc and no polyline, or a user reports a trackless activity missing from an encrypted trip's video; or before U6 ships if its implementer defines "encrypted activity" in one place anyway
+- Guard: —
+- Override: user: Fix now — one-line definition; no further review round
+- Outcome: fixed (U6 step 2(b): is_encrypted_activity covers envelope polyline or endpoints; 2-point line accepted; acceptance test added) — not re-reviewed, by user decision
+
+## Review closed — 2026-09-28
+
+Round 3 had no Fix now under the rules; the user overrode R3-1 and R3-2 to Fix now and chose no round 4. Open deferred entries: R1-6, R2-3.
