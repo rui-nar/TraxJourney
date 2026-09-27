@@ -21,6 +21,7 @@ import 'people_screen.dart';
 import 'people_search.dart';
 import 'project_notifier.dart';
 import 'segment_dialog.dart';
+import '../crypto/encrypted_display.dart';
 // ── ActivityPanel ─────────────────────────────────────────────────────────────
 
 class ActivityPanel extends StatefulWidget {
@@ -1644,7 +1645,7 @@ class _ActivityPanelState extends State<ActivityPanel> {
                           );
                         }
                         final type = a['type'] as String?;
-                        final name = a['name'] as String? ?? 'Activity';
+                        final name = shownText(a['name'] as String?) ?? 'Activity';
                         final distM = (a['distance'] as num? ?? 0).toDouble();
                         final movingSec = a['moving_time'];
                         final activityId = item['activity_id'];
@@ -1764,10 +1765,10 @@ class _ActivityPanelState extends State<ActivityPanel> {
                         final mem =
                             item['memory'] as Map<String, dynamic>? ?? {};
                         final memId = mem['id']?.toString() ?? '';
-                        final memName = mem['name'] as String?;
+                        final memName = shownText(mem['name'] as String?);
                         final memDate = mem['date'] as String?;
                         final memTime = mem['time'] as String?;
-                        final memDesc = mem['description'] as String?;
+                        final memDesc = shownText(mem['description'] as String?);
                         final label = memName ??
                             (memDate != null
                                 ? _fmtMemDate(memDate, memTime)
@@ -1915,7 +1916,7 @@ class _ActivityPanelState extends State<ActivityPanel> {
                         final jId = jMap['id']?.toString() ?? '';
                         final jDate = jMap['date'] as String?;
                         final jTime = jMap['time'] as String?;
-                        final jDesc = jMap['description'] as String?;
+                        final jDesc = shownText(jMap['description'] as String?);
                         final label = jDate != null ? _fmtMemDate(jDate, jTime) : 'Journal';
                         return _rowDismissible(
                           isWide: isWide,
