@@ -191,7 +191,7 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (U7a)
 
 ### U7R1-2 — Cancel stays enabled while POST /video is in flight; the job is created and charged but the client never learns about it
 - Trigger: user taps Create, then Cancel before the response → dialog disposes → server commits, counts and enqueues the job → no status card; later a ready email and "0 of 1 left"
@@ -200,7 +200,7 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (U7a)
 
 ### U7R1-3 — "Download video" plays the MP4 inline instead of saving it; on phones the email link is the only download path
 - Trigger: user opens the ready email on iOS/Android (or web), taps Download → server sends no Content-Disposition → browser plays inline, no save
@@ -209,7 +209,7 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (U6c, 97baeca3)
 
 ## Delivery
 
@@ -226,6 +226,8 @@ Feature branch `feat/trip-video` (from `docs/trip-video-plan`, PR #498 to be clo
 | U6a | Bound decrypted_geometry size (fix unit for U6R1-1) | Opus | S5 | 1 | — | yes | U6R1-1 |
 | U6b | Exempt video routes from the payload-cache guard (wave 2 integration failure) | Sonnet | — | 1 | — | yes | — |
 | U5 | Frame renderer and encoder | Opus | S4 | 1 (+1 resume after network outage) | X3 → scope widened (CI ffmpeg step) | yes | — |
-| U7 | Flutter request/consent/status/download | Opus | S5 | | | | |
+| U7 | Flutter request/consent/status/download | Opus | S5 | 1 | — | yes | U7R1-1, U7R1-2, U7R1-3 |
+| U7a | Real encrypted tracks for consent; Cancel locked while submitting (fix unit for U7R1-1/-2) | Opus | S5 | 1 | — | yes | U7R1-1, U7R1-2 |
+| U6c | Video download as attachment (fix unit for U7R1-3) | Sonnet | — | 1 | — | yes | U7R1-3 |
 
 Note: every wave-1 worktree was created from `main` (27a2d645), not from `feat/trip-video`; each implementer reset its clean branch to 6459a9ba before starting. Later waves must check the base first.
