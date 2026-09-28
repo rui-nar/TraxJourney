@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
+import random
 import stat
 import threading
 import time
@@ -331,6 +333,94 @@ def test_geometry_is_refused_for_plaintext_foreign_or_invalid_lines(env, trip, g
         r = env.client.post(url, json={"length_s": 30, "decrypted_geometry": geometry})
         assert r.status_code == 422, r.text
         assert SECRET_TRACK not in r.text
+    assert _jobs(env) == []
+    assert not (paths._DATA_DIR / "users").exists()
+
+
+def _spy_decode(monkeypatch):
+    calls = []
+    real = polyline_lib.decode
+
+    def decode(encoded, *a, **kw):
+        calls.append(len(encoded))
+        return real(encoded, *a, **kw)
+    monkeypatch.setattr(polyline_lib, "decode", decode)
+    return calls
+
+
+def _one_hz_line(points):
+    """A 1 Hz recording at 35 m/s (a car) with GPS jitter."""
+    rng = random.Random(1)
+    lat, lon, coords = 45.0, 6.0, []
+    for i in range(points):
+        heading = i / 3000.0
+        lat += 35 * math.cos(heading) / 111_000 + rng.gauss(0, 1e-5)
+        lon += 35 * math.sin(heading) / (111_000 * math.cos(math.radians(lat))) \
+            + rng.gauss(0, 1e-5)
+        coords.append((lat, lon))
+    return polyline_lib.encode(coords)
+
+
+def test_a_line_one_character_too_long_is_422_before_any_decoding(env, monkeypatch):
+    calls = _spy_decode(monkeypatch)
+    line = "?" * (video_api.MAX_LINE_CHARS + 1)
+    for url in ("/api/projects/Secret/video", "/api/projects/Secret/video/plan"):
+        r = env.client.post(url, json={"length_s": 30, "decrypted_geometry": {
+            "201": line, "202": SECRET_ENDPOINTS}})
+        assert r.status_code == 422, r.text[:200]
+        detail = r.json()["detail"]
+        assert "[201]" in detail and str(video_api.MAX_LINE_CHARS) in detail
+        assert line not in r.text and SECRET_ENDPOINTS not in r.text
+    assert calls == []
+    assert _jobs(env) == []
+    assert not (paths._DATA_DIR / "users").exists()
+
+
+def test_a_line_with_too_many_points_is_422(env):
+    line = "??" * (video_api.MAX_LINE_POINTS + 1)       # 0,0 repeated
+    assert len(line) <= video_api.MAX_LINE_CHARS
+    for url in ("/api/projects/Secret/video", "/api/projects/Secret/video/plan"):
+        r = env.client.post(url, json={"length_s": 30, "decrypted_geometry": {
+            "201": line, "202": SECRET_ENDPOINTS}})
+        assert r.status_code == 422, r.text[:200]
+        detail = r.json()["detail"]
+        assert "[201]" in detail and str(video_api.MAX_LINE_POINTS) in detail
+        assert line not in r.text
+    assert _jobs(env) == []
+
+
+def test_a_48_hour_1_hz_activity_passes(env):
+    line = _one_hz_line(170_000)
+    geometry = {"201": line, "202": SECRET_ENDPOINTS}
+    r = env.client.post("/api/projects/Secret/video/plan",
+                        json={"length_s": 30, "decrypted_geometry": geometry})
+    assert r.status_code == 200, r.text[:200]
+    r = env.client.post("/api/projects/Secret/video",
+                        json={"length_s": 30, "decrypted_geometry": geometry})
+    assert r.status_code == 201, r.text[:200]
+    assert paths.read_job_geometry(env.owner, r.json()["job_id"])[201] == line
+
+
+def test_lines_over_the_total_are_422_with_nothing_written(env, monkeypatch):
+    ids = list(range(301, 306))
+    with Session(env.engine) as sess:
+        for aid in ids:
+            _activity(sess, aid, env.owner, summary_polyline=ENVELOPE,
+                      start_latlng_json=ENVELOPE, end_latlng_json=ENVELOPE)
+        sess.commit()
+        _trip(sess, env.owner, "Long", ids)
+    each = video_api.MAX_TOTAL_CHARS // len(ids) + 1
+    assert each <= video_api.MAX_LINE_CHARS
+    line = "?" * each
+    calls = _spy_decode(monkeypatch)
+    for url in ("/api/projects/Long/video", "/api/projects/Long/video/plan"):
+        r = env.client.post(url, json={"length_s": 30, "decrypted_geometry": {
+            str(aid): line for aid in ids}})
+        assert r.status_code == 422, r.text[:200]
+        detail = r.json()["detail"]
+        assert "in total" in detail and str(video_api.MAX_TOTAL_CHARS) in detail
+        assert line not in r.text
+    assert calls == []
     assert _jobs(env) == []
     assert not (paths._DATA_DIR / "users").exists()
 

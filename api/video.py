@@ -75,6 +75,23 @@ WIDTH_FOR_HEIGHT = {720: 1280, 1080: 1920}  # 16:9 (D8)
 VideoLength = Literal[30, 60, 90]
 VideoHeight = Literal[720, 1080]
 
+# Bounds on decrypted_geometry, checked before a line is decoded: the JSON
+# cap alone (50 MB) lets one request hold enough polyline to stall the API
+# thread for most of a minute, on /video/plan without spending any quota.
+# Sized from api/json_guard.py: the largest real activity is a 48-hour
+# recording at 1 Hz, 170,000 points.
+#: Points in one line: that activity with 50% headroom.
+MAX_LINE_POINTS = 250_000
+#: Characters in one line, before decoding. A 1 Hz line takes 2 characters
+#: a point measured for a bike, 3.4 for a car and at most 4 for an airliner;
+#: 6 a point for MAX_LINE_POINTS points leaves room for GPS jitter.
+MAX_LINE_CHARS = 6 * MAX_LINE_POINTS
+#: Characters in all lines of one request. Assumes a long encrypted trip is
+#: at most 60 days of 7 hours a day recorded at 1 Hz (1.5 million points) at
+#: 4 characters a point. Checking and drawing that costs about 5 s of CPU,
+#: against some 40 s for a 50 MB body.
+MAX_TOTAL_CHARS = 6_000_000
+
 
 # ── Request/response schemas ──────────────────────────────────────────────────
 
@@ -181,26 +198,43 @@ def _load(sess, requester: int, name: str, owner: Optional[int]):
     return row, project
 
 
-def _valid_line(encoded: str) -> bool:
-    """A decodable polyline of at least two real coordinates."""
+def _decoded(encoded: str):
+    """The points of *encoded*, or None when it doesn't decode."""
     try:
-        points = polyline_lib.decode(encoded)
+        return polyline_lib.decode(encoded)
     except Exception:  # noqa: BLE001 — any undecodable string is just invalid
-        return False
-    return len(points) >= 2 and all(
+        return None
+
+
+def _valid_line(points) -> bool:
+    """At least two real coordinates."""
+    return points is not None and len(points) >= 2 and all(
         math.isfinite(lat) and math.isfinite(lon)
         and -90 <= lat <= 90 and -180 <= lon <= 180
         for lat, lon in points)
 
 
+def _unprocessable(detail: str) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=detail)
+
+
 def _consent(project: Project, geometry: Optional[Dict[int, str]]) -> Dict[int, str]:
     """The consent geometry to render with, checked before any timeline.
 
-    Accepted only for activities that are in this trip *and* encrypted (422
+    Refused (422) past the size bounds before any line is decoded; accepted
+    only for activities that are in this trip *and* encrypted (422
     otherwise); 409 ``consent_required`` while any encrypted activity has
     none. Error details name activity ids only, never the geometry.
     """
     geometry = geometry or {}
+    too_long = sorted(k for k, v in geometry.items() if len(v) > MAX_LINE_CHARS)
+    if too_long:
+        raise _unprocessable(f"decrypted_geometry is longer than {MAX_LINE_CHARS} "
+                             f"characters for activities: {too_long}")
+    if sum(len(v) for v in geometry.values()) > MAX_TOTAL_CHARS:
+        raise _unprocessable(f"decrypted_geometry is longer than {MAX_TOTAL_CHARS} "
+                             f"characters in total")
+
     encrypted = []
     for item in project.items:
         if item.item_type == "activity" and item.activity_id is not None:
@@ -214,11 +248,20 @@ def _consent(project: Project, geometry: Optional[Dict[int, str]]) -> Dict[int, 
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"decrypted_geometry given for activities that are not encrypted "
                    f"activities of this trip: {refused}")
-    invalid = sorted(k for k, v in geometry.items() if not _valid_line(v))
+    invalid, too_many = [], []
+    for k in sorted(geometry):
+        points = _decoded(geometry[k])
+        if not _valid_line(points):
+            invalid.append(k)
+        elif len(points) > MAX_LINE_POINTS:
+            too_many.append(k)
     if invalid:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"decrypted_geometry is not a valid line for activities: {invalid}")
+    if too_many:
+        raise _unprocessable(f"decrypted_geometry has more than {MAX_LINE_POINTS} "
+                             f"points for activities: {too_many}")
 
     missing = [i for i in encrypted if i not in geometry]
     if missing:
