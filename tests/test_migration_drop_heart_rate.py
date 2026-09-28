@@ -18,8 +18,8 @@ from sqlalchemy import create_engine, insert, inspect, MetaData, Table, text
 from models.project_db import DBActivity
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
-_OLD_REV = "d2b7e4c81f59"       # two revisions before the drop's down_revision
-_PREV_REV = "04a606ace483"      # down_revision of the drop
+_OLD_REV = "d2b7e4c81f59"       # well before the drop's down_revision
+_PREV_REV = "b8c4e2f19a37"      # down_revision of the drop
 _DROP_REV = "a442d0e1f2b3"
 
 _HR_COLUMNS = {

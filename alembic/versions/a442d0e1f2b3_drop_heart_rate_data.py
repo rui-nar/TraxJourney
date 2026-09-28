@@ -21,7 +21,7 @@ design. The booleans get a server default of false, which the original DDL
 did not have, so they can be added to a populated table.
 
 Revision ID: a442d0e1f2b3
-Revises: 04a606ace483
+Revises: b8c4e2f19a37
 Create Date: 2026-09-23
 
 """
@@ -32,7 +32,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = 'a442d0e1f2b3'
-down_revision: Union[str, Sequence[str], None] = '04a606ace483'
+down_revision: Union[str, Sequence[str], None] = 'b8c4e2f19a37'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
