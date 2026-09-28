@@ -8,14 +8,14 @@ Routes:
 """
 from __future__ import annotations
 
-import io
 import json
 import os
 import re
+import tempfile
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Any, Dict, Literal, Optional
+from typing import IO, Annotated, Any, Dict, Iterator, Literal, Optional
 
 import gpxpy
 import gpxpy.gpx
@@ -25,7 +25,7 @@ from models.db import get_session
 from fastapi import (
     APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, UploadFile, status,
 )
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
 
@@ -282,7 +282,7 @@ def export_project_gpx(
     current_user: Annotated[dict, Depends(get_current_user)],
     owner: OwnerParam = None,
 ):
-    """Build and stream the project as a GPX file."""
+    """Build and send the project as a GPX file."""
     user_info_id = int(current_user["sub"])
     with get_session() as sess:
         row = resolve_project(sess, user_info_id, name, owner)
@@ -412,14 +412,23 @@ def export_project_gpx(
     gpx_xml = gpx.to_xml()
     safe = _SAFE_NAME.sub("_", project.name)
 
-    return StreamingResponse(
-        io.BytesIO(gpx_xml.encode("utf-8")),
+    return Response(
+        gpx_xml.encode("utf-8"),
         media_type="application/gpx+xml",
         headers={"Content-Disposition": f'attachment; filename="{safe}.gpx"'},
     )
 
 
 # ── .traxj export ─────────────────────────────────────────────────────────────
+
+def _traxj_document(project) -> Dict[str, Any]:
+    """The trip as a .traxj document: what the .traxj export writes, and the
+    trip file inside the ZIP export (#469)."""
+    data: Dict[str, Any] = ProjectIO.to_dict(project)
+    # Override activities with the raw Strava format (no elevation_profile pairs) for the backup file
+    data["activities"] = [a.to_strava_dict() for a in project.activities]
+    return data
+
 
 @router.get("/{name}/export-traxj", summary="Export project as .traxj file")
 def export_project_traxj(
@@ -438,13 +447,10 @@ def export_project_traxj(
     if project is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
-    data: Dict[str, Any] = ProjectIO.to_dict(project)
-    # Override activities with the raw Strava format (no elevation_profile pairs) for the backup file
-    data["activities"] = [a.to_strava_dict() for a in project.activities]
-    json_bytes = ProjectIO.dumps(data)
+    json_bytes = ProjectIO.dumps(_traxj_document(project))
     safe = _SAFE_NAME.sub("_", project.name)
-    return StreamingResponse(
-        io.BytesIO(json_bytes),
+    return Response(
+        json_bytes,
         media_type="application/json",
         headers={"Content-Disposition": f'attachment; filename="{safe}{ProjectIO.EXTENSION}"'},
     )
@@ -452,13 +458,35 @@ def export_project_traxj(
 
 # ── ZIP export (.traxj + photos) ──────────────────────────────────────────────
 
+#: Size of each piece of a streamed ZIP export (#484). The archive is sent from
+#: a temp file in pieces of this size, so no single write holds more.
+_ZIP_CHUNK_BYTES = 64 * 1024
+
+#: How much of a ZIP export is kept in memory before its temp file moves to
+#: disk. A trip without photos stays in memory; one with photos, which can run
+#: to hundreds of MB, goes to disk instead of the API's memory.
+_ZIP_SPOOL_BYTES = 1024 * 1024
+
+
+def _iter_chunks(spool: IO[bytes]) -> Iterator[bytes]:
+    """*spool* from its start, in pieces of at most ``_ZIP_CHUNK_BYTES``,
+    closing it when done or when the download is abandoned."""
+    try:
+        spool.seek(0)
+        while chunk := spool.read(_ZIP_CHUNK_BYTES):
+            yield chunk
+    finally:
+        spool.close()
+
+
 @router.get("/{name}/export-zip", summary="Export project as ZIP (with photos)")
 def export_project_zip(
     name: str,
     current_user: Annotated[dict, Depends(get_current_user)],
     owner: OwnerParam = None,
 ):
-    """Download a ZIP containing the .traxj file and all memory photos."""
+    """Download a ZIP containing the .traxj file, the memory photos and the
+    caller's own journal photos (#469)."""
     user_info_id = int(current_user["sub"])
     with get_session() as sess:
         row = resolve_project(sess, user_info_id, name, owner)
@@ -472,50 +500,50 @@ def export_project_zip(
     if project is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
-    # Serialise items, adding relative photo_refs for memories.
-    items_serialised = []
-    for item in project.items:
-        d = ProjectIO._serialise_item(item)
-        if item.item_type == "memory" and item.memory and item.memory.id and item.memory.photos:
-            d["memory"]["photo_refs"] = [
-                f"photos/{item.memory.id}/{uuid}.jpg"
-                for uuid in item.memory.photos
-            ]
-        items_serialised.append(d)
-
-    data: Dict[str, Any] = {
-        "version": project.version,
-        "name": project.name,
-        "trip_start": project.trip_start,
-        "filter_state": {
-            "start_date": project.filter_state.start_date,
-            "end_date": project.filter_state.end_date,
-            "activity_types": project.filter_state.activity_types,
-        },
-        "items": items_serialised,
-        "activities": [a.to_strava_dict() for a in project.activities],
-    }
+    # The full .traxj document (#469), with relative photo_refs added to
+    # memories and journal entries. Items serialise in project.items order.
+    data = _traxj_document(project)
+    # (folder, uuid, archive entry name) of every photo to add.
+    photos: list[tuple[Path, str, str]] = []
+    for item, d in zip(project.items, data["items"]):
+        if item.item_type == "memory" and item.memory and item.memory.id:
+            content, prefix = item.memory, "photos"
+            folder = photo_folder(_DATA_DIR, owner_dir_id, "memories", content.id)
+        elif item.item_type == "journal" and item.journal and item.journal.id:
+            # The export holds only the caller's own entries (journal_user_id
+            # above), and a journal photo lives under its author: the caller.
+            content, prefix = item.journal, "journal"
+            folder = photo_folder(_DATA_DIR, user_info_id, "journal", content.id)
+        else:
+            continue
+        if not content.photos:
+            continue
+        refs = [f"{prefix}/{content.id}/{uuid}.jpg" for uuid in content.photos]
+        d[item.item_type]["photo_refs"] = refs
+        photos += [(folder, uuid, f"{prefix}/{int(content.id)}/{uuid}.jpg")
+                   for uuid in content.photos]
     project_bytes = ProjectIO.dumps(data)
 
-    zip_buffer = io.BytesIO()
     safe = _SAFE_NAME.sub("_", project.name)
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr(f"{safe}{ProjectIO.EXTENSION}", project_bytes)
-        for item in project.items:
-            if item.item_type != "memory" or item.memory is None or item.memory.id is None:
-                continue
-            mem = item.memory
-            mem_dir = photo_folder(_DATA_DIR, owner_dir_id, "memories", mem.id)
-            for photo_uuid in mem.photos:
+    spool = tempfile.SpooledTemporaryFile(max_size=_ZIP_SPOOL_BYTES)
+    try:
+        with zipfile.ZipFile(spool, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(f"{safe}{ProjectIO.EXTENSION}", project_bytes)
+            written: set[str] = set()
+            for folder, photo_uuid, entry in photos:
                 # photo_file only answers for an app-made name inside the
-                # memory's folder, which also keeps the entry name plain.
-                full_path = photo_file(mem_dir, photo_uuid)
-                if full_path is not None and full_path.exists():
-                    zf.write(full_path, f"photos/{int(mem.id)}/{photo_uuid}.jpg")
+                # item's folder, which also keeps the entry name plain.
+                full_path = photo_file(folder, photo_uuid)
+                if (full_path is not None and entry not in written
+                        and full_path.exists()):
+                    zf.write(full_path, entry)
+                    written.add(entry)
+    except BaseException:
+        spool.close()
+        raise
 
-    zip_buffer.seek(0)
     return StreamingResponse(
-        zip_buffer,
+        _iter_chunks(spool),
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{safe}.zip"'},
     )
