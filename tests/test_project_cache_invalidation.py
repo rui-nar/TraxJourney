@@ -53,6 +53,8 @@ _EXEMPT = {
     # Renders from the project; never writes to it.
     "create_poster_job": "poster rendering does not mutate the project",
     "preview_poster": "poster rendering does not mutate the project",
+    "create_video_job": "video rendering does not mutate the project",
+    "plan_video": "video rendering does not mutate the project",
     # Delegates its write (and the bust) to a helper in the same module.
     "upload_photo": "busts via _append_photo/_append_photo_to_memory",
     "queue_photo_from_url": "background task busts via _append_photo",
