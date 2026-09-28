@@ -193,6 +193,7 @@ Feature branch `feat/trip-video` (from `docs/trip-video-plan`, PR #498 to be clo
 | U2 | Deterministic follow camera | Opus | S2 | 1 | — | yes | — |
 | U6 | Video API, runner, consent, sweeps, emails | Opus | S5 | 1 | X3 → scope widened (4 email templates) | yes | U6R1-1 |
 | U6a | Bound decrypted_geometry size (fix unit for U6R1-1) | Opus | S5 | 1 | — | yes | U6R1-1 |
+| U6b | Exempt video routes from the payload-cache guard (wave 2 integration failure) | Sonnet | — | 1 | — | yes | — |
 | U5 | Frame renderer and encoder | Opus | S4 | | | | |
 | U7 | Flutter request/consent/status/download | Opus | S5 | | | | |
 
