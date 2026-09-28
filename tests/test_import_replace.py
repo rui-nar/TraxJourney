@@ -194,6 +194,12 @@ def alps(env):
     for suffix in ("", "_thumb"):
         (photo_dir / f"00000000-0000-4000-8000-0000000000a1{suffix}.jpg").write_bytes(b"x" * 1000)
     with Session(engine) as sess:
+        # A .traxj carries no photo files, so the import stored no name for
+        # one (#469). Its file is on disk now: store the name, as an upload
+        # does, so it names a real photo.
+        mem = sess.get(DBMemory, lake.id)
+        mem.photos_json = json.dumps(["00000000-0000-4000-8000-0000000000a1"])
+        sess.add(mem)
         sess.add(UserUsage(user_info_id=ids["owner"], storage_bytes=5000))
         sess.add(DBMemoryComment(memory_id=lake.id, user_info_id=ids["companion"], text="nice"))
         sess.add(DBMemoryLike(memory_id=lake.id, user_info_id=ids["companion"]))
