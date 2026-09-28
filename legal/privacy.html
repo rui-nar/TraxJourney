@@ -92,9 +92,9 @@ this page only covers the service we run.</p>
     where you slept, weather), counters and the order of everything in a
     trip.</li>
   <li><strong>Activities and routes:</strong> GPS tracks, start and end points,
-    times, distances, elevation, speed and, when your source provides them,
-    heart-rate averages and maximums, whether you uploaded them as GPX files
-    or imported them.</li>
+    times, distances, elevation, speed, and whether you uploaded them as GPX
+    files or imported them. We do not keep heart-rate data: heart-rate values
+    a source sends us are discarded on import.</li>
   <li><strong>Transport legs</strong> (train, flight, bus, boat): start and end
     places, dates and, for trains, the train number, together with the route we
     work out for them.</li>
@@ -103,8 +103,11 @@ this page only covers the service we run.</p>
     person sees only their own.</li>
   <li><strong>Photos:</strong> we keep the file you upload exactly as it is,
     including any embedded metadata such as the camera, the time and the GPS
-    position where it was taken, plus a smaller preview we generate from it
-    (the preview carries no such metadata).</li>
+    position where it was taken, so you can use it in the app, plus a smaller
+    preview we generate from it (the preview carries no such metadata). When a
+    photo is seen through a share link, or sent from the app's share button to
+    another app, we send a copy with that embedded metadata removed; your
+    original file is not changed.</li>
   <li><strong>Comments and likes</strong> you leave on memories, with the
     display name you had at the time.</li>
   <li><strong>Posters</strong> you generate, and the settings used to make
@@ -137,7 +140,13 @@ a trip can see each other's display name and profile picture.</p>
     key you enter. Photos you browse from Immich pass through our server to
     reach you but are not stored, unless you add one to a memory.</li>
 </ul>
-<p>Disconnecting a service in Settings deletes its stored token or key.</p>
+<p>Disconnecting a service in Settings deletes its stored token or key.
+Disconnecting Strava also deletes the cached copy of your Strava activity list
+and asks Strava to revoke our access to your account; activities you already
+added to a trip stay in that trip until you remove them. Deleting your account
+revokes Strava access in the same way. Polarsteps and Immich offer no
+revocation we can trigger, so manage the Polarsteps session or the Immich API
+key in that service if you want it invalidated.</p>
 
 <h3>Payments</h3>
 <p>If you buy a paid plan, payment is handled by Stripe. We send Stripe your
@@ -167,18 +176,20 @@ until you delete your account.</p>
 <ul>
   <li>How much storage your account uses, to apply plan limits.</li>
   <li>When someone opens one of your share links: if they are signed in, which
-    account opened it and when (you can see their display name and email
-    address in the trip's visitor list); if not, a random identifier their
-    browser or app generated, so we can count distinct visitors.</li>
+    account opened it and when (you see their display name, profile picture
+    and last visit in the trip's visitor list, never their email address or
+    account ID); if not, a random identifier their browser or app generated,
+    so we can count distinct visitors.</li>
 </ul>
 
 <h3>Technical data</h3>
 <ul>
   <li><strong>Server logs:</strong> each request produces a log line with the
-    time, the address of the page or API route requested (including any
-    parameters in the address), the result, how long it took, your account ID
-    if you were signed in, and the network address the request came
-    from. Errors are logged with the details needed to fix them.</li>
+    time, the kind of request (the API route, without the parameters or
+    identifiers in the address), the result, how long it took, your account ID
+    if you were signed in, and the network the request came from, with the
+    last part of the address removed. Errors are logged with the details needed
+    to fix them.</li>
   <li><strong>Metrics:</strong> aggregate counters such as the number of
     requests, sign-ins, registrations and app launches. They are totals, not
     linked to your account or device.</li>
@@ -226,8 +237,11 @@ the following before sending them, with keys we never receive:</p>
   <li>memory titles and text;</li>
   <li>journal entry text;</li>
   <li>the names, GPS tracks, start and end points and elevation profiles of the
-    activities in your own trips.</li>
+    activities in your own trips at the moment you turn encryption on.</li>
 </ul>
+<p>For now, activities and Polarsteps memories you import after turning
+encryption on, and anything saved from a device that has not been unlocked
+yet, are stored unencrypted. We are working on closing these gaps.</p>
 <p>Everything else is not end-to-end encrypted, and we can technically read it:
 trip names, dates and times, the locations of memories, journal entries and
 encounters, photos, transport legs, people and encounters, comments, the
@@ -240,7 +254,8 @@ link. All traffic between the app and our servers is encrypted in transit
 <p>A share link lets anyone who has it view the trip without signing in. It
 shows the trip's name, your display name, its routes, transport legs, dates and
 statistics and, unless you chose the "without memories" link, its memories with
-their photos (at full resolution, including the metadata embedded in them),
+their photos (at full resolution, with the metadata embedded in them, such as
+the GPS position and the camera, removed),
 comments and likes. Journal entries, people and encounters are never shown.
 Visitors can also ask for a memory to be translated (see section 5). Revoking
 the link in the trip's settings stops it working.</p>
