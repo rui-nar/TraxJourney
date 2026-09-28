@@ -14,7 +14,7 @@ import os
 import sys
 import time
 
-from src.jobs.queue import ALL_QUEUES
+from src.jobs.queue import ALL_QUEUES, QUEUE_VIDEO
 from src.jobs.redis_client import get_redis, redis_url, reset_redis
 from src.utils.logging import configure_logging, env_level, get_logger
 from src.utils.metrics_multiproc import forget_process
@@ -47,6 +47,10 @@ _INTERRUPT_HANDLERS: dict[str, tuple[str, str]] = {
         "The poster generation process was terminated unexpectedly "
         "(likely out of memory) — try a smaller region or fewer "
         "photos, or try again."),
+    "src.video.job_runner.run_video_job": (
+        "src.video.job_runner.mark_video_job_interrupted",
+        "The render was stopped unexpectedly (likely out of memory) — try a "
+        "shorter video or a lower resolution."),
 }
 
 
@@ -133,6 +137,15 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     client = _connect_with_retry()
+
+    if QUEUE_VIDEO in queues:
+        # This worker is the video queue's only consumer, so nothing is
+        # rendering right now: a "running" video row belongs to a work-horse
+        # that died with the previous worker (docs/TRIP_VIDEO_PLAN.md,
+        # Convention 6). Imported here so other workers never load it.
+        from src.video.job_runner import sweep_stale_running_video_jobs
+
+        sweep_stale_running_video_jobs()
 
     from rq import Worker
 

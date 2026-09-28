@@ -156,7 +156,11 @@ def _parse_date(value: Optional[str]) -> Optional[date]:
         return None
 
 
-def _activity_encrypted(activity: Activity) -> bool:
+def is_encrypted_activity(activity: Activity) -> bool:
+    """True when the server can't read *activity*'s line: its polyline or
+    either endpoint is an E2EE envelope. The one definition the video routes
+    and :func:`build_legs` share: such an activity is drawn only from consent
+    geometry (D2), which for one with no track is its decrypted 2-point line."""
     return (is_encrypted_envelope(activity.summary_polyline)
             or activity.start_latlng_enc is not None
             or activity.end_latlng_enc is not None)
@@ -229,7 +233,7 @@ def build_legs(project: Project,
             override = geometry.get(activity.id)
             coords = feature_coords(activity, override)
             if coords is None:
-                reason = ("encrypted" if override is None and _activity_encrypted(activity)
+                reason = ("encrypted" if override is None and is_encrypted_activity(activity)
                           else "no_geometry")
                 skipped.append(Skipped("activity", activity.id, reason))
                 continue
