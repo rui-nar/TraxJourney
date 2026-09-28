@@ -5,9 +5,16 @@ Authorization header ahead of route dependencies, and logs one access-log
 line per request — DEBUG for the chatty/polled routes listed in
 ``DEBUG_ROUTE_TEMPLATES`` (docs/LOGGING_OBSERVABILITY_PLAN.md Section 3),
 INFO for everything else.
+
+That line is the only access log the server keeps (uvicorn's own is off, see
+entrypoint.sh), and it deliberately records the route template rather than
+the URL — query strings carry OAuth codes, share tokens and search terms —
+and the client address truncated to its /24 (IPv6: /48), never in full
+(issue #443, docs/LOGGING.md).
 """
 from __future__ import annotations
 
+import ipaddress
 import time
 import uuid
 from typing import Awaitable, Callable
@@ -34,15 +41,56 @@ DEBUG_ROUTE_TEMPLATES = frozenset(
 )
 
 
-def _route_template(request: Request) -> str:
+def route_template(request: Request) -> str:
     """The path template the request matched, e.g. "/api/projects/{name}".
 
-    Falls back to the raw path for anything that never matched a route (a
-    404) — those aren't in the allowlist either way, so they still log at
-    INFO.
+    What every log line names a request by — api.router's exception handlers
+    included — so a share token or other path parameter never lands in a
+    log. A request no route claimed is named by :func:`_redacted_path`
+    instead, never by its raw path; it isn't in the allowlist either way, so
+    it still logs at INFO.
     """
     route = request.scope.get("route")
-    return route.path if route is not None else request.url.path
+    return route.path if route is not None else _redacted_path(request)
+
+
+def _redacted_path(request: Request) -> str:
+    """A path no route claimed, with anything that could be a secret removed.
+
+    A trailing-slash redirect (``/api/share/<token>/meta/`` -> 307), a CORS
+    preflight (CORSMiddleware answers ``OPTIONS`` before the router runs)
+    and a plain 404 all reach the access log with the concrete path, and a
+    share token may be in it. This app's URLs put a secret no earlier than
+    the second segment of a web deep link (``/share/<token>``,
+    ``/join/<token>``, ``/verify-email/<token>``) and the third under
+    ``/api`` (``/api/share/<token>/...``; the second is the area — share,
+    projects, auth, ...). So the first segment is kept, the second only
+    under ``/api``, and the rest becomes ``...``: enough to tell
+    ``/api/share/...`` from a scanner probing ``/wp-login.php/...``.
+    """
+    segments = [s for s in request.url.path.split("/") if s]
+    keep = 2 if segments[:1] == ["api"] else 1
+    return "/" + "/".join(segments[:keep] + ["..."])
+
+
+def client_ip_for_log(host: str | None) -> str:
+    """*host* reduced to what the access log may keep (issue #443): an IPv4
+    address to its /24, an IPv6 address to its /48 — enough to see which
+    network a burst of abuse came from, not enough to single out a client.
+    "-" when there is no usable address (no peer, or a non-IP literal such
+    as the TestClient's "testclient")."""
+    if not host:
+        return "-"
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return "-"
+    if addr.version == 6 and addr.ipv4_mapped is not None:
+        # "::ffff:203.0.113.77" is how a dual-stack socket presents an IPv4
+        # client; its /48 would be "::/48", i.e. nothing. Truncate the IPv4.
+        addr = addr.ipv4_mapped
+    prefix = 24 if addr.version == 4 else 48
+    return str(ipaddress.ip_network(f"{addr}/{prefix}", strict=False))
 
 
 def _resolve_user_id(request: Request) -> str:
@@ -104,11 +152,17 @@ async def access_log_middleware(
     start = time.monotonic()
     response = await call_next(request)
     duration_ms = (time.monotonic() - start) * 1000
-    template = _route_template(request)
+    template = route_template(request)
     log = _log.debug if template in DEBUG_ROUTE_TEMPLATES else _log.info
+    # request.client is already the real client behind the reverse proxy:
+    # uvicorn's ProxyHeadersMiddleware (--proxy-headers, entrypoint.sh) wraps
+    # the whole app and rewrites scope["client"] from X-Forwarded-For — but
+    # only when the peer is one --forwarded-allow-ips lists, so a stranger
+    # sending that header is logged by its own address.
     log(
-        "%s %s -> %d (%.1fms)",
+        "%s %s -> %d (%.1fms) ip=%s",
         request.method, template, response.status_code, duration_ms,
+        client_ip_for_log(request.client.host if request.client else None),
     )
     response.headers["X-Request-Id"] = req_id
     return response
