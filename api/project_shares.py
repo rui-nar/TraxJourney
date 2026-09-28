@@ -11,6 +11,8 @@ Routes:
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import uuid
 from typing import Annotated, Any, Dict, List, Optional
 
@@ -20,7 +22,7 @@ from sqlmodel import select
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from api.deps import get_current_user
+from api.deps import get_current_user, jwt_secret
 from api.memories import _utc_now
 from api.project_access import OwnerParam, resolve_project
 from models.project_db import DBMemory, DBShareMemoryContent, DBShareVisit
@@ -234,6 +236,20 @@ def revoke_share_link_no_memories(
         sess.commit()
 
 
+def _visitor_key(owner_id: int, visitor_id: int) -> str:
+    """Stable pseudonymous id for a signed-in visitor, scoped to one trip owner
+    (issue #431). The owner can tell two visitors apart across calls, but the
+    key is not the account id and carries no email. The key itself is
+    owner-scoped — the same visitor gets a different one on another owner's
+    trips — though the display name and avatar sent alongside are the same
+    everywhere, so this alone does not stop owners comparing notes. Keyed off
+    the server secret with a domain-separated message so it never doubles as
+    a token; rotating JWT_SECRET therefore relabels every visitor_key (nothing
+    persists them, so that is harmless)."""
+    msg = f"share-visitor:{owner_id}:{visitor_id}".encode()
+    return hmac.new(jwt_secret().encode(), msg, hashlib.sha256).hexdigest()[:16]
+
+
 @router.get("/{name}/share/visitors", summary="Get share link visitor stats")
 def get_share_visitors(
     name: str,
@@ -244,14 +260,19 @@ def get_share_visitors(
 
     Response shape:
       {
-        full: { anonymous_count: N, registered: [{display_name, email, last_seen_at}] },
+        full: { anonymous_count: N,
+                registered: [{visitor_key, display_name, avatar_url, last_seen_at}] },
         no_memories: { anonymous_count: N, registered: [...] }
       }
+
+    Registered entries never carry the visitor's email or account id
+    (issue #431): ``visitor_key`` is a pseudonymous id scoped to the trip owner.
     """
     user_info_id = int(current_user["sub"])
     with get_session() as sess:
         row = resolve_project(sess, user_info_id, name, owner)
         project_id = row.id
+        owner_id = row.user_info_id
 
         visits = sess.exec(
             select(DBShareVisit).where(DBShareVisit.project_id == project_id)
@@ -284,8 +305,9 @@ def get_share_visitors(
             ).all()
             result[bucket]["registered"] = [
                 {
+                    "visitor_key": _visitor_key(owner_id, u.id),
                     "display_name": u.display_name,
-                    "email": u.email,
+                    "avatar_url": u.avatar_url,
                     "last_seen_at": last_seen[bucket].get(u.id, 0.0),
                 }
                 for u in users

@@ -2082,6 +2082,18 @@ class _VisitorStats extends StatelessWidget {
     return '$weeks week${weeks == 1 ? '' : 's'} ago';
   }
 
+  /// What to call a signed-in visitor. The server sends no email (issue
+  /// #431), so a visitor without a display name is labelled by the short
+  /// pseudonymous key the server scopes to this trip's owner — enough to
+  /// tell two nameless visitors apart, and nothing more.
+  static String _visitorLabel(Map<String, dynamic> r) {
+    final name = r['display_name'] as String? ?? '';
+    if (name.isNotEmpty) return name;
+    final key = r['visitor_key'] as String? ?? '';
+    if (key.isEmpty) return 'Signed-in visitor';
+    return 'Visitor ${key.substring(0, key.length < 6 ? key.length : 6)}';
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -2120,6 +2132,9 @@ class _VisitorStats extends StatelessWidget {
                   CircleAvatar(
                     radius: 12,
                     backgroundColor: const Color(0xFF1D4ED8),
+                    foregroundImage: (r['avatar_url'] as String? ?? '').isNotEmpty
+                        ? NetworkImage(r['avatar_url'] as String)
+                        : null,
                     child: Text(
                       (r['display_name'] as String? ?? '').isNotEmpty
                           ? (r['display_name'] as String)[0].toUpperCase()
@@ -2130,9 +2145,7 @@ class _VisitorStats extends StatelessWidget {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      (r['display_name'] as String? ?? '').isNotEmpty
-                          ? r['display_name'] as String
-                          : r['email'] as String? ?? '',
+                      _visitorLabel(r),
                       style: const TextStyle(color: _kText2, fontSize: 12),
                       overflow: TextOverflow.ellipsis,
                     ),
