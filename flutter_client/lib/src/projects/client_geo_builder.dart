@@ -14,6 +14,7 @@ import 'dart:convert';
 
 import '../map/great_circle.dart';
 import '../map/polyline_decoder.dart';
+import '../crypto/encrypted_display.dart';
 
 Map<String, dynamic> _linestring(
   List<List<double>> coords,
@@ -107,7 +108,7 @@ Map<String, dynamic> buildFullGeo(
       features.add(_linestring(coords, {
         'type': 'activity',
         'activity_id': a['id'],
-        'name': a['name'],
+        'name': shownText(a['name'] as String?),
         'sport_type': a['type'],
       }));
     } else if (item['item_type'] == 'segment') {
@@ -148,7 +149,7 @@ Map<String, dynamic> buildLowResGeo(
       ], {
         'type': 'activity',
         'activity_id': a['id'],
-        'name': a['name'],
+        'name': shownText(a['name'] as String?),
         'sport_type': a['type'],
       }));
     } else if (item['item_type'] == 'segment') {

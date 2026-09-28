@@ -27,6 +27,10 @@ from typing import List, Optional, Tuple
 import polyline as polyline_lib
 
 from src.models.great_circle import haversine_km
+from src.models.value_bounds import (
+    DISTANCE_MAX_M, DURATION_MAX_S, ELEVATION_MAX_M, ELEVATION_MIN_M, GAIN_MAX_M,
+    finite_or_none, plausible_elevation,
+)
 
 
 @dataclass
@@ -34,6 +38,13 @@ class TrackPoint:
     lat: float
     lng: float
     elev: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        # Every elevation the app stores or measures passes through here (GPX
+        # upload, track editor, a profile read back): an implausible one is a
+        # missing one (issue #462).
+        if self.elev is not None:
+            self.elev = plausible_elevation(self.elev)
 
 
 def align_points(
@@ -177,6 +188,145 @@ def interpolate_elevation_gaps(
             frac = (distances_km[i] - d0) / span if span else 0.0
             filled[i] = e0 + frac * (e1 - e0)
     return filled
+
+
+def clean_elevation_profile(
+    distances_km: List, elevations: List,
+) -> Optional[Tuple[List[float], List[float]]]:
+    """A stored-form ``(distances_km, elevations_m)`` from raw samples, with
+    no value that is not a finite number (issue #462).
+
+    A sample whose distance is not a finite number has no place on the
+    profile and is left out. An elevation that is not a plausible reading
+    (NaN, ±Infinity, null, past ±20 km: see
+    :func:`~src.models.value_bounds.plausible_elevation`) is a missing one,
+    filled by :func:`interpolate_elevation_gaps`
+    as :func:`points_to_elevation_profile` fills a point without ``<ele>``.
+    Returns ``None`` when fewer than two samples or no elevation remain: no
+    profile, rather than a degenerate one.
+
+    Shared with the repair migration for issue #462, so already-stored rows
+    are repaired to exactly what the writers now store.
+    """
+    dists: List[float] = []
+    elevs: List[Optional[float]] = []
+    for d, e in zip(distances_km, elevations):
+        d = finite_or_none(d)
+        if d is None:
+            continue
+        dists.append(d)
+        elevs.append(plausible_elevation(e))
+    if len(dists) < 2 or all(e is None for e in elevs):
+        return None
+    return dists, interpolate_elevation_gaps(dists, elevs)
+
+
+def elevation_profile_from_streams(
+    distance_m: List, altitude_m: List,
+) -> Optional[Tuple[List[float], List[float]]]:
+    """An activity's elevation profile from its Strava ``distance`` and
+    ``altitude`` streams (metres), cleaned by :func:`clean_elevation_profile`.
+    Samples past the shorter stream are dropped."""
+    n = min(len(distance_m), len(altitude_m))
+    distances_km = [
+        d / 1000 if finite_or_none(d) is not None else None for d in distance_m[:n]]
+    return clean_elevation_profile(distances_km, altitude_m[:n])
+
+
+
+def _reading(value) -> bool:
+    return value is None or (isinstance(value, (int, float)) and not isinstance(value, bool))
+
+
+def _all_within(values, lo: float, hi: float) -> bool:
+    """True if *values* are all finite numbers within [lo, hi]. Checked in C
+    for the common case, a clean list of floats, since a profile can hold
+    millions: a finite sum means no NaN or infinity, and then min and max
+    can be trusted. Anything else is judged value by value."""
+    if set(map(type, values)) <= {int, float}:
+        try:
+            total = sum(values)    # an int when all are: never converted
+        except OverflowError:      # a huge int beside a float
+            total = math.inf
+        if isinstance(total, int) or math.isfinite(total):
+            return not values or (lo <= min(values) and max(values) <= hi)
+    return all(finite_or_none(v) is not None and lo <= v <= hi for v in values)
+
+
+def profile_needs_repair(profile) -> bool:
+    """True if a stored ``(distances_km, elevations_m)`` holds a sample the
+    writers no longer store: a distance that is not a finite number, or an
+    elevation that is not a plausible reading (NaN, ±Infinity, null, past
+    ±20 km). Such profiles were written before issue #462."""
+    dists, elevs = profile
+    return not (_all_within(dists, -math.inf, math.inf)
+                and _all_within(elevs, ELEVATION_MIN_M, ELEVATION_MAX_M))
+
+
+def repair_elevations(profile, gain, high, low, *, app_measured: bool):
+    """An activity's elevation figures as the writers now store them.
+
+    Before issue #462 an activity could store a non-finite or implausible
+    elevation (a GPX ``<ele>NaN</ele>``, ``inf``, or a device's ``65535``) in
+    its profile, its high/low and, measured from them, its gain. This returns
+    ``(profile, gain, high, low)`` repaired to what the writers would store
+    from the same readings; the trip-file import and the repair migration
+    6c1f0e9a2b47 both go through it, so an old export and an old row come out
+    the same. The profile returned is the one given unless it was repaired.
+
+    * A profile needing repair is rebuilt by :func:`clean_elevation_profile`.
+      One holding anything but numbers and nulls is not a profile any writer
+      made, and is returned as it is, for the caller to refuse.
+    * *app_measured* (an uploaded GPX track): the app measured gain, high and
+      low from those readings, so once the profile is repaired they are
+      measured again from it. Anyone else's (Strava's, or its share of them
+      on an edited activity, #386) are kept.
+    * Any figure still not plausible is measured from the profile, or else
+      cleared: gain to 0.0, high and low to None. A None stays None.
+    """
+    repaired = False
+    if (profile is not None and profile_needs_repair(profile)
+            and all(map(_reading, profile[0])) and all(map(_reading, profile[1]))):
+        profile = clean_elevation_profile(*profile)
+        repaired = True
+
+    def measured():
+        if profile is None or profile_needs_repair(profile):
+            return 0.0, None, None
+        dists, elevs = profile
+        return float(elevation_gain(elevs, dists)), max(elevs), min(elevs)
+
+    if repaired and app_measured:
+        new_gain, high, low = measured()
+        gain = new_gain if gain is not None else None
+    bad_gain = gain is not None and not (
+        finite_or_none(gain) is not None and 0 <= gain <= GAIN_MAX_M)
+    bad_high = high is not None and plausible_elevation(high) is None
+    bad_low = low is not None and plausible_elevation(low) is None
+    if bad_gain or bad_high or bad_low:
+        m_gain, m_high, m_low = measured()
+        gain = m_gain if bad_gain else gain
+        high = m_high if bad_high else high
+        low = m_low if bad_low else low
+    return profile, gain, high, low
+
+
+def repair_elapsed(elapsed, moving):
+    """An activity's elapsed time as the writers now store it.
+
+    A GPX upload's span is its file's earliest and latest stamps, so one
+    stray stamp (a clock that read 1970) makes it decades long. Elapsed time
+    past :data:`DURATION_MAX_S` is no measurement: it becomes the moving
+    time, which skips such a gap (consecutive stamps further apart than
+    MAX_SAMPLE_GAP_S never count), or 0. The GPX upload, the trip-file
+    import and the repair migration all go through this (issue #462).
+    """
+    if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool) and (
+            finite_or_none(elapsed) is None or elapsed > DURATION_MAX_S):
+        plausible = (isinstance(moving, (int, float)) and not isinstance(moving, bool)
+                     and finite_or_none(moving) is not None and 0 <= moving <= DURATION_MAX_S)
+        return int(moving) if plausible else 0
+    return elapsed
 
 
 #: Distance, in metres of travel, spanned by the centred moving average applied
@@ -829,6 +979,22 @@ class TrackMetrics:
     average_speed: float          # m/s
     moving_time: int              # seconds (apportioned)
     elapsed_time: int             # seconds (apportioned)
+
+
+def implausible_track(metrics: "TrackMetrics") -> Optional[str]:
+    """Why a track the app is about to store is implausible, or None.
+
+    Its figures must stay inside the bounds the trip-file import enforces
+    (src/models/value_bounds.py), or the trip could not be exported and
+    imported back. Only garbage reaches them: a real track never does. Its
+    span is not judged here: a clock error is a common, harmless fault of
+    real files, repaired with :func:`repair_elapsed` rather than refused.
+    """
+    if metrics.distance > DISTANCE_MAX_M:
+        return "This track is longer than 100,000 km, which no real track is."
+    if metrics.total_elevation_gain > GAIN_MAX_M:
+        return "This track climbs more than 10,000 km, which no real track does."
+    return None
 
 
 def recompute_track_metrics(

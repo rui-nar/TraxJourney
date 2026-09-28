@@ -6,6 +6,7 @@ import '../billing/upgrade_sheet.dart';
 import '../core/picked_file_bytes.dart';
 import 'location_picker_dialog.dart';
 import 'project_notifier.dart';
+import '../crypto/encrypted_display.dart';
 
 /// Dialog to create or edit a memory.
 ///
@@ -32,6 +33,11 @@ class MemoryDialog extends StatefulWidget {
 class _MemoryDialogState extends State<MemoryDialog> {
   late TextEditingController _nameCtrl;
   late TextEditingController _descCtrl;
+  // A field this device cannot decrypt keeps its ciphertext envelope here
+  // (issue #466): shown read-only as kEncryptedUnavailable, and saved back
+  // exactly as it was, never as the label, never cleared.
+  String? _nameEnvelope;
+  String? _descEnvelope;
   DateTime? _date;
   TimeOfDay? _time;
   String _geoMode = 'start_of_day';
@@ -50,6 +56,10 @@ class _MemoryDialogState extends State<MemoryDialog> {
   // Photos to delete on save (edit mode)
   final Set<String> _photosToDelete = {};
 
+  /// What an undecryptable field says under itself (#466): it is shown
+  /// as [kEncryptedUnavailable], read-only, and saved back unchanged.
+  static const _encryptedHelp =
+      'Encrypted, and this device cannot read it, so it cannot be edited here.';
   static const _months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   static String _fmtDate(DateTime d) => '${_months[d.month - 1]} ${d.day}, ${d.year}';
   static String _toIso(DateTime d) =>
@@ -61,8 +71,22 @@ class _MemoryDialogState extends State<MemoryDialog> {
   void initState() {
     super.initState();
     final mem = widget.editMemory;
-    _nameCtrl = TextEditingController(text: mem?['name'] as String? ?? '');
-    _descCtrl = TextEditingController(text: mem?['description'] as String? ?? '');
+    // From the record made when the items were revealed, never from the
+    // value's shape: typed text such as "v1.2.3" looks like an envelope.
+    final id = mem?['id']?.toString();
+    final undecrypted = widget.notifier.undecryptedFields;
+    if (undecrypted.contains('memory', id, 'name')) {
+      _nameEnvelope = mem!['name'] as String?;
+    }
+    if (undecrypted.contains('memory', id, 'description')) {
+      _descEnvelope = mem!['description'] as String?;
+    }
+    _nameCtrl = TextEditingController(
+        text: _nameEnvelope != null ? kEncryptedUnavailable : mem?['name'] as String? ?? '');
+    _descCtrl = TextEditingController(
+        text: _descEnvelope != null
+            ? kEncryptedUnavailable
+            : mem?['description'] as String? ?? '');
 
     // Date: edit → from memory; create → initialDate or null
     if (mem != null) {
@@ -157,8 +181,10 @@ class _MemoryDialogState extends State<MemoryDialog> {
     try {
       final dateStr = _toIso(_date!);
       final timeStr = _time != null ? _fmtTime(_time!) : null;
-      final name = _nameCtrl.text.trim().isEmpty ? null : _nameCtrl.text.trim();
-      final desc = _descCtrl.text.trim().isEmpty ? null : _descCtrl.text.trim();
+      final name = _nameEnvelope ??
+          (_nameCtrl.text.trim().isEmpty ? null : _nameCtrl.text.trim());
+      final desc = _descEnvelope ??
+          (_descCtrl.text.trim().isEmpty ? null : _descCtrl.text.trim());
       var failedPhotos = 0;
 
       final mem = widget.editMemory;
@@ -180,6 +206,8 @@ class _MemoryDialogState extends State<MemoryDialog> {
           description: desc,
           lat: _geoMode == 'custom' ? _customLat : null,
           lon: _geoMode == 'custom' ? _customLon : null,
+          keepStoredName: _nameEnvelope != null,
+          keepStoredDescription: _descEnvelope != null,
         );
 
         // Upload new photos
@@ -272,9 +300,11 @@ class _MemoryDialogState extends State<MemoryDialog> {
               // Name
               TextField(
                 controller: _nameCtrl,
-                decoration: const InputDecoration(
+                readOnly: _nameEnvelope != null,
+                decoration: InputDecoration(
                   labelText: 'Title (optional)',
                   hintText: 'e.g. Sunrise at Col du Tourmalet',
+                  helperText: _nameEnvelope != null ? _encryptedHelp : null,
                 ),
               ),
               const SizedBox(height: 12),
@@ -356,9 +386,11 @@ class _MemoryDialogState extends State<MemoryDialog> {
               // Description
               TextField(
                 controller: _descCtrl,
-                decoration: const InputDecoration(
+                readOnly: _descEnvelope != null,
+                decoration: InputDecoration(
                   labelText: 'Description (optional)',
                   hintText: 'What happened here…',
+                  helperText: _descEnvelope != null ? _encryptedHelp : null,
                 ),
                 minLines: 2,
                 maxLines: 5,

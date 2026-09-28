@@ -61,7 +61,7 @@ python -m venv .venv
 
 pip install -r requirements.txt
 alembic upgrade head
-uvicorn api.router:app --host 0.0.0.0 --port 8000 --reload
+uvicorn api.router:app --host 0.0.0.0 --port 8000 --reload --no-access-log
 ```
 
 Backend API available at `http://localhost:8000/api/...`.

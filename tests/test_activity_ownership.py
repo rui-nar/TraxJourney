@@ -252,7 +252,6 @@ def test_a_strava_sync_listing_another_accounts_activity_leaves_it_alone(
         _activity(9002, name="Alice's own"),
     ])
     monkeypatch.setattr(strava_mod, "_save_cache", lambda *_a: None)
-    monkeypatch.setattr(strava_mod, "_save_refreshed_token", lambda *_a: None)
 
     r = client.post("/api/projects/Mine/strava/sync")
 
@@ -675,14 +674,18 @@ def test_activity_routes_answer_an_out_of_range_id_without_a_server_error(env, a
         assert r.status_code in (404, 422), (method, path, r.status_code, r.text)
 
 
-def test_adding_an_out_of_range_id_is_skipped(env):
+def test_adding_an_out_of_range_id_is_refused(env):
+    """Skipped until #462; now no JSON body may hold an integer past 64 bits,
+    whatever the route (api/json_guard.py), so the request is refused whole.
+    Either way nothing reaches the database's bind."""
     client, engine, ids, act_as = env
     _create_trip(client, "Mine")
 
     r = _add(client, "Mine", [_activity(_TOO_BIG)])
 
-    assert r.status_code == 200, r.text
-    assert r.json()["added"] == 0
+    assert r.status_code == 422, r.text
+    with Session(engine) as sess:
+        assert sess.exec(select(DBActivity)).all() == []
 
 
 @pytest.mark.parametrize("where", ["item", "activity"])

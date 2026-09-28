@@ -82,6 +82,17 @@ void main() {
     });
   });
 
+  group('PlanInfo.fromJson purchasable', () {
+    test('reads the flag the server sends', () {
+      expect(PlanInfo.fromJson({'id': 'tier_1', 'purchasable': true}).purchasable,
+          isTrue);
+    });
+
+    test('an older server without the field reads as not for sale', () {
+      expect(PlanInfo.fromJson({'id': 'tier_1'}).purchasable, isFalse);
+    });
+  });
+
   group('PlanLimits.covers', () {
     const limits = PlanLimits(
         maxProjects: 2, maxStorageBytes: 1000, maxTripDays: 100);

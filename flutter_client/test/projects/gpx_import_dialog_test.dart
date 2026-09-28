@@ -38,6 +38,7 @@ Map<String, dynamic> _candidate({
   int? movingSeconds = 9810,
   double? gain = 610,
   List<String> errors = const [],
+  List<String> warnings = const [],
 }) =>
     {
       'index': index,
@@ -55,6 +56,7 @@ Map<String, dynamic> _candidate({
       'elevation_gain_estimated': true,
       'polyline': errors.isEmpty ? _outline : null,
       'errors': errors,
+      'warnings': warnings,
     };
 
 String _inspectBody({
@@ -427,6 +429,35 @@ void main() {
         find.byKey(const ValueKey('gpx_outside_trip_notice')), findsOneWidget);
     expect(_confirmButton(tester).onPressed, isNotNull,
         reason: 'importing a ride from the day before a trip is legitimate');
+  });
+
+  testWidgets("a warning is shown in review, and the file's times still go",
+      (tester) async {
+    // Issue #462: a clock that looks wrong is said, not hidden. The track's
+    // own times are still the ones used unless the user edits them: echoing
+    // the form's HH:MM would cut a track spanning days down to one.
+    final recorder = _Recorder();
+    await tester.pumpWidget(_harness(
+      recorder,
+      client: recorder.client(
+          inspect: _inspectBody(candidates: [
+        _candidate(warnings: [
+          "This file's clock looks wrong: 1 timestamp is dated 1970-01-01. "
+              'Check the date and times before importing.'
+        ]),
+      ])),
+    ));
+    await _openAndPick(tester);
+
+    expect(find.byKey(const ValueKey('gpx_candidate_warning')), findsOneWidget);
+    expect(find.textContaining('1970-01-01'), findsOneWidget);
+    expect(_confirmButton(tester).onPressed, isNotNull);
+
+    await tester.tap(find.byKey(const ValueKey('gpx_import_confirm')));
+    await tester.pumpAndSettle();
+
+    expect(recorder.sent('date'), isFalse);
+    expect(recorder.sent('start_time'), isFalse);
   });
 
   testWidgets('a date inside the trip is not flagged', (tester) async {

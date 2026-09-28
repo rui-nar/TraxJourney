@@ -29,6 +29,12 @@ ProjectNotifier _notifier() => ProjectNotifier(ProjectService());
 
 /// The picker fetches the catalogue, so the prompt needs a service to talk to.
 class _FakeBilling implements BillingService {
+  // Withdrawal (issue #441) is not exercised here.
+  @override
+  Future<Withdrawal> withdrawalQuote() => throw UnimplementedError();
+  @override
+  Future<Withdrawal> withdraw() => throw UnimplementedError();
+
   @override
   Future<List<PlanInfo>> plans() async => const [
         PlanInfo(id: 'free', name: 'Free', priceLabel: 'Free', features: []),

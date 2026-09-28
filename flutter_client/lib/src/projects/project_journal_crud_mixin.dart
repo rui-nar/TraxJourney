@@ -8,7 +8,9 @@ import 'package:http/http.dart' as http;
 
 import '../api/client.dart';
 import '../core/project_ref.dart';
+import '../crypto/e2ee_crypto.dart' show EncryptedField;
 import '../crypto/encryption.dart';
+import '../crypto/undecrypted_fields.dart';
 import 'project_quota_mixin.dart';
 
 /// Monotonic counter backing createJournal's optimistic placeholder ids — a
@@ -34,6 +36,7 @@ mixin ProjectJournalCrudMixin on ChangeNotifier, ProjectQuotaMixin {
   ProjectRef? get projectRef;
   List<Map<String, dynamic>> get items;
   set items(List<Map<String, dynamic>> v);
+  UndecryptedFields get undecryptedFields;
   String? get error;
   set error(String? v);
 
@@ -120,9 +123,20 @@ mixin ProjectJournalCrudMixin on ChangeNotifier, ProjectQuotaMixin {
     String? description,
     double? lat,
     double? lon,
+    bool keepStoredDescription = false,
   }) async {
     final ref = projectRef;
     if (ref == null) return;
+    // keepStoredDescription: the editor hands back the stored envelope it
+    // could not decrypt, untouched; it is resent as it is, never encrypted
+    // again. A value that is not a well-formed envelope is text the user
+    // typed, and is encrypted like every other value (#466).
+    final descriptionAsStored = keepStoredDescription &&
+        description != null &&
+        EncryptedField.isWellFormed(description);
+    if (!descriptionAsStored) {
+      undecryptedFields.remove('journal', journalId, 'description');
+    }
     // New list + new item map, not an in-place mutation of the existing
     // item — see createJournal's comment above for why identity matters here.
     final newItems = List.of(items);
@@ -144,7 +158,9 @@ mixin ProjectJournalCrudMixin on ChangeNotifier, ProjectQuotaMixin {
     items = newItems;
     notifyListeners();
     try {
-      final encDescription = await encryption.protect(description);
+      final encDescription = descriptionAsStored
+          ? description
+          : await encryption.protect(description);
       await api.put('/api/journal/$journalId', {
         'date': date,
         'geo_mode': geoMode,

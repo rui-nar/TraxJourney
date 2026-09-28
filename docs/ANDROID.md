@@ -45,7 +45,7 @@ Three things it handles that otherwise waste an afternoon:
   [network_security_config.xml](../flutter_client/android/app/src/debug/res/xml/network_security_config.xml),
   scoped to `10.0.2.2` and `localhost`. Release builds have no such exemption.
 
-`-Local` needs the API server running on the host (`uvicorn api.router:app --port 8000`).
+`-Local` needs the API server running on the host (`uvicorn api.router:app --port 8000 --no-access-log`).
 
 ### SDK packages
 

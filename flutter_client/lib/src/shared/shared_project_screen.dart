@@ -26,6 +26,7 @@ import '../projects/project_service.dart';
 import '../projects/project_stats_screen.dart';
 import 'anonymous_id.dart';
 import 'share_fragment_key.dart';
+import '../crypto/encrypted_display.dart';
 
 // ── Shared service — calls /api/share/{token}, appends ?aid= when provided ───
 
@@ -659,7 +660,7 @@ class _ReadOnlyActivityList extends StatelessWidget {
       itemBuilder: (context, i) {
         final act = activities[i];
         final id = act['id'];
-        final name = act['name'] as String? ?? 'Activity';
+        final name = shownText(act['name'] as String?) ?? 'Activity';
         final type = act['type'] as String? ?? '';
         final distM = (act['distance'] as num? ?? 0).toDouble();
         final distKm = (distM / 1000).toStringAsFixed(1);

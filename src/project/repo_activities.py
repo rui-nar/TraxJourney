@@ -562,6 +562,9 @@ class ActivityMixin:
             manual=True,
             private=head.private,
             gear_id=head.gear_id,
+            # Measured by the app exactly as its head is: a tail of a GPX
+            # upload is one too (issue #462), not a Strava activity.
+            source=head.source,
         )
         # Seed the tail with the FULL pre-split geometry + the original scalar
         # times so _write_track_geometry apportions the tail's time to its own
@@ -799,15 +802,10 @@ class ActivityMixin:
         existing.manual = act.manual
         existing.private = act.private
         existing.flagged = act.flagged
-        existing.has_heartrate = act.has_heartrate
         existing.has_kudoed = act.has_kudoed
-        existing.heartrate_opt_out = act.heartrate_opt_out
-        existing.display_hide_heartrate_option = act.display_hide_heartrate_option
         existing.average_speed = act.average_speed
         existing.max_speed = act.max_speed
         existing.gear_id = act.gear_id
-        existing.average_heartrate = act.average_heartrate
-        existing.max_heartrate = act.max_heartrate
         existing.elev_high = act.elev_high
         existing.elev_low = act.elev_low
         if not is_encrypted_envelope(existing.start_latlng_json):
@@ -923,6 +921,14 @@ class ActivityMixin:
             })
             if act.elevation_profile else None
         )
+        # An activity the client encrypted (issue #29) carries its endpoints and
+        # elevation as ciphertext envelopes in the *_enc fields, which only an
+        # import supplies (issue #466): stored as the client's encryption
+        # migration stores them, the low-res copy holding the same envelope as
+        # the full profile (encryption_migration.dart). A readable value wins.
+        _low_res_json = _low_res_ep_json(_ep_json)
+        if _ep_json is None and act.elevation_profile_enc:
+            _ep_json = _low_res_json = act.elevation_profile_enc
 
         row = DBActivity(
             id=act.id,
@@ -948,22 +954,19 @@ class ActivityMixin:
             manual=act.manual,
             private=act.private,
             flagged=act.flagged,
-            has_heartrate=act.has_heartrate,
             has_kudoed=act.has_kudoed,
-            heartrate_opt_out=act.heartrate_opt_out,
-            display_hide_heartrate_option=act.display_hide_heartrate_option,
             average_speed=act.average_speed,
             max_speed=act.max_speed,
             gear_id=act.gear_id,
-            average_heartrate=act.average_heartrate,
-            max_heartrate=act.max_heartrate,
             elev_high=act.elev_high,
             elev_low=act.elev_low,
-            start_latlng_json=json.dumps(act.start_latlng) if act.start_latlng else None,
-            end_latlng_json=json.dumps(act.end_latlng) if act.end_latlng else None,
+            start_latlng_json=(json.dumps(act.start_latlng) if act.start_latlng
+                               else act.start_latlng_enc or None),
+            end_latlng_json=(json.dumps(act.end_latlng) if act.end_latlng
+                             else act.end_latlng_enc or None),
             summary_polyline=act.summary_polyline,
             elevation_profile_json=_ep_json,
-            elevation_profile_low_res_json=_low_res_ep_json(_ep_json),
+            elevation_profile_low_res_json=_low_res_json,
             source=act.source,
             source_id=act.source_id,
         )
@@ -1054,15 +1057,10 @@ class ActivityMixin:
             flagged=row.flagged,
             average_speed=row.average_speed,
             max_speed=row.max_speed,
-            has_heartrate=row.has_heartrate,
             pr_count=row.pr_count,
             total_photo_count=row.total_photo_count,
             has_kudoed=row.has_kudoed,
             gear_id=row.gear_id,
-            average_heartrate=row.average_heartrate,
-            max_heartrate=row.max_heartrate,
-            heartrate_opt_out=row.heartrate_opt_out,
-            display_hide_heartrate_option=row.display_hide_heartrate_option,
             elev_high=row.elev_high,
             elev_low=row.elev_low,
             start_latlng=start_latlng,

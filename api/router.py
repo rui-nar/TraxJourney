@@ -11,7 +11,12 @@ from scalar_fastapi import get_scalar_api_reference
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src.brand import APP_NAME
-from src.exceptions.errors import APIError, AuthenticationError, QuotaExceeded
+from src.exceptions.errors import (
+    AccountDeletionRefused,
+    APIError,
+    AuthenticationError,
+    QuotaExceeded,
+)
 from src.jobs.prepared_geo_jobs import sweep_unprepared_geometry
 from src.jobs.route_jobs import (
     sweep_degraded_segments,
@@ -19,10 +24,11 @@ from src.jobs.route_jobs import (
     sweep_stale_resolver_segments,
 )
 from src.poster.poster_job_runner import sweep_orphaned_poster_jobs
-from src.project.legacy_project_sweep import start_legacy_project_sweep
 from src.project.project_repo import StaleWriteError
+from src.video.job_runner import sweep_video_jobs
 
 from api.activities import router as activities_router, activity_fields_router
+from api.json_guard import RefuseUnstorableJson
 from api.admin import router as admin_router
 from api.auth import router as auth_router
 from api.backup import router as backup_router
@@ -37,7 +43,7 @@ from api.journal import router as journal_router
 from api.members import router as members_router, invites_router
 from api.memories import router as memories_router
 from api.metrics import router as metrics_router
-from api.middleware import install_middleware
+from api.middleware import install_middleware, route_template
 from api.people import router as people_router
 from api.polarsteps import router as polarsteps_router
 from api.poster import poster_public_router, router as poster_router
@@ -48,6 +54,7 @@ from api.projects import router as projects_router
 from api.segments import router as segments_router
 from api.share import router as share_router
 from api.strava import router as strava_router
+from api.video import router as video_router, video_public_router
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
 from models.db import checkpoint_wal, engine
@@ -123,14 +130,6 @@ async def lifespan(_app: FastAPI):
     # the rarer case where the whole worker container went down with it, so
     # nothing was left alive to run that handler (issue #14 follow-up).
     sweep_orphaned_poster_jobs()
-    # TEMPORARY (issue #434) — remove in a later release, with
-    # src/project/legacy_project_sweep.py. Empties and removes the obsolete
-    # data/users/*/projects/ directories (*.migrated copies old imports left,
-    # failed imports' uploads, never-ingested pre-rename files). Here, behind the API-process guard
-    # above, so it runs once per boot and never in a worker. On a background
-    # thread that logs its own failures: cleanup must never delay or stop the
-    # API starting, nor hold up its shutdown.
-    start_legacy_project_sweep()
     _scheduler.add_job(backup_db, "cron", hour=2, minute=0, id="daily_backup", replace_existing=True)
     _scheduler.add_job(checkpoint_wal, "interval", seconds=60, id="wal_checkpoint", replace_existing=True)
     # Correct any drift between the per-user storage counters used for quota
@@ -167,6 +166,13 @@ async def lifespan(_app: FastAPI):
     # the cost on their first open.
     _scheduler.add_job(sweep_unprepared_geometry, "interval", minutes=5,
                        id="prepared_geometry_backfill", replace_existing=True)
+    # Video jobs are failed by age, never at API startup: the video worker may
+    # still be rendering or about to run what a restart would call orphaned
+    # (docs/TRIP_VIDEO_PLAN.md, Convention 6). Hourly: fail jobs past their
+    # time limit, expire 30-day-old MP4s, delete consent geometry left behind
+    # by a terminal job. On its own minute, away from the other hourly jobs.
+    _scheduler.add_job(sweep_video_jobs, "cron", minute=40,
+                       id="video_sweep", replace_existing=True)
     # One listener covers every job — current and future — with run counts,
     # duration and a last-success timestamp (issue #125).
     _scheduler.add_listener(record_job_event, JOB_EVENT_MASK)
@@ -189,6 +195,9 @@ app = FastAPI(
 )
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# No JSON body may hold a value no trip may hold (issue #462): see api/json_guard.py.
+app.add_middleware(RefuseUnstorableJson)
 
 # Request rate / latency / error rate (issue #125). The scrape endpoint itself
 # is ours (api/metrics.py) so it can require a token.
@@ -236,6 +245,8 @@ app.include_router(projects_router)
 app.include_router(segments_router)
 app.include_router(share_router)
 app.include_router(strava_router)
+app.include_router(video_router)
+app.include_router(video_public_router)
 
 
 @app.exception_handler(StaleWriteError)
@@ -266,6 +277,24 @@ async def _quota_handler(_request, exc: QuotaExceeded):
             "limit": exc.limit,
             "used": exc.used,
             "needed": exc.needed,
+            "request_id": request_id_var.get(),
+        },
+    )
+
+
+@app.exception_handler(AccountDeletionRefused)
+async def _deletion_refused_handler(_request, exc: AccountDeletionRefused):
+    """An account deletion stopped before removing anything (issue #429).
+
+    One handler for both deletion routes (self-service and admin), so they
+    cannot disagree on the status or the wording the app shows.
+    """
+    _log.warning("Account deletion refused (%s): %s", exc.code, exc)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "detail": str(exc),
+            "code": exc.code,
             "request_id": request_id_var.get(),
         },
     )
@@ -313,7 +342,7 @@ async def _http_exception_handler(_request, exc: StarletteHTTPException):
     below is for the unexpected kind.
     """
     _log.warning(
-        "%s %s -> %d: %s", _request.method, _request.url.path, exc.status_code, exc.detail
+        "%s %s -> %d: %s", _request.method, route_template(_request), exc.status_code, exc.detail
     )
     return JSONResponse(
         status_code=exc.status_code,
@@ -340,7 +369,7 @@ async def _unhandled_exception_handler(_request, exc: Exception):
     ``response.headers["X-Request-Id"] = ...`` line never runs for this path,
     so the header is set here directly instead.
     """
-    _log.exception("Unhandled exception on %s %s", _request.method, _request.url.path)
+    _log.exception("Unhandled exception on %s %s", _request.method, route_template(_request))
     request_id = request_id_var.get()
     return JSONResponse(
         status_code=500,

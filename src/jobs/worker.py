@@ -9,11 +9,12 @@ admin seed — see ``TRAXJOURNEY_ROLE`` in ``api/router.py`` for why.
 """
 from __future__ import annotations
 
+import importlib
 import os
 import sys
 import time
 
-from src.jobs.queue import ALL_QUEUES
+from src.jobs.queue import ALL_QUEUES, QUEUE_VIDEO
 from src.jobs.redis_client import get_redis, redis_url, reset_redis
 from src.utils.logging import configure_logging, env_level, get_logger
 from src.utils.metrics_multiproc import forget_process
@@ -35,6 +36,29 @@ _log = get_logger(__name__)
 _RECONNECT_INTERVALS_S = [2, 5, 10, 30, 60]
 
 
+# Jobs whose killed work-horse must fail their durable job row, keyed by the
+# dotted path of the function the job ran. Each value is the dotted path of that
+# job type's ``mark_job_interrupted(job_id, reason)`` and the reason shown to the
+# user. Paths rather than objects, so the worker imports a job module only when
+# one of its jobs dies. A new job type adds one line here.
+_INTERRUPT_HANDLERS: dict[str, tuple[str, str]] = {
+    "src.poster.poster_job_runner.run_poster_job": (
+        "src.poster.poster_job_runner.mark_job_interrupted",
+        "The poster generation process was terminated unexpectedly "
+        "(likely out of memory) — try a smaller region or fewer "
+        "photos, or try again."),
+    "src.video.job_runner.run_video_job": (
+        "src.video.job_runner.mark_video_job_interrupted",
+        "The render was stopped unexpectedly (likely out of memory) — try a "
+        "shorter video or a lower resolution."),
+}
+
+
+def _import_dotted(path: str):
+    module_name, _, attr = path.rpartition(".")
+    return getattr(importlib.import_module(module_name), attr)
+
+
 def _work_horse_killed_handler(job, retpid, ret_val, rusage) -> None:
     """RQ callback for a work-horse that died without raising a catchable
     exception — a SIGKILL (almost always the OOM killer) is the common case
@@ -47,25 +71,21 @@ def _work_horse_killed_handler(job, retpid, ret_val, rusage) -> None:
 
     ``job.args`` is ``(func, *args)`` — every queued job goes through
     ``src.jobs.queue._run_with_level_refresh(func, *args)``, so *func* is the
-    real callable regardless of which queue it came from. Only a poster job
-    (``run_poster_job``) is handled here: a route job's own resolve failure
-    is already recoverable losslessly by the next resolve trigger, and the
-    default queue's jobs (share tiles, stats) aren't user-facing durable work.
+    real callable regardless of which queue it came from, and ``job.args[1]``
+    is its job id. Only functions in ``_INTERRUPT_HANDLERS`` are handled: a
+    route job's own resolve failure is already recoverable losslessly by the
+    next resolve trigger, and the default queue's jobs (share tiles, stats)
+    aren't user-facing durable work.
     Never raises — a broken handler must not take the worker process down.
     """
     try:
-        from src.poster.poster_job_runner import mark_job_interrupted, run_poster_job
-
         func = job.args[0] if job.args else None
-        if func is not run_poster_job:
+        path = f"{getattr(func, '__module__', '')}.{getattr(func, '__qualname__', '')}"
+        handler = _INTERRUPT_HANDLERS.get(path)
+        if handler is None:
             return
-        job_id = job.args[1]
-        mark_job_interrupted(
-            job_id,
-            "The poster generation process was terminated unexpectedly "
-            "(likely out of memory) — try a smaller region or fewer "
-            "photos, or try again.",
-        )
+        mark_path, reason = handler
+        _import_dotted(mark_path)(job.args[1], reason)
     except Exception:
         _log.exception("work_horse_killed_handler failed for job %s", getattr(job, "id", "?"))
 
@@ -117,6 +137,15 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     client = _connect_with_retry()
+
+    if QUEUE_VIDEO in queues:
+        # This worker is the video queue's only consumer, so nothing is
+        # rendering right now: a "running" video row belongs to a work-horse
+        # that died with the previous worker (docs/TRIP_VIDEO_PLAN.md,
+        # Convention 6). Imported here so other workers never load it.
+        from src.video.job_runner import sweep_stale_running_video_jobs
+
+        sweep_stale_running_video_jobs()
 
     from rq import Worker
 

@@ -10,6 +10,7 @@ import 'memory_dialog.dart';
 import 'project_memory_crud_mixin.dart' show TranslationUnavailableException;
 import 'project_notifier.dart';
 import 'social_share_dialog.dart';
+import '../crypto/encrypted_display.dart';
 
 /// Shows a detail view for a memory — photo mosaic, date, description,
 /// likes, comments, prev/next navigation and edit/delete controls.
@@ -297,7 +298,7 @@ class _MemoryDetailModalState extends State<_MemoryDetailModal> {
       return _translationCache[_activeLang!]!['name'] as String?;
     }
     if (_decryptedShareName != null) return _decryptedShareName;
-    return _current['name'] as String?;
+    return shownText(_current['name'] as String?);
   }
 
   String get _displayDescription {
@@ -305,7 +306,7 @@ class _MemoryDetailModalState extends State<_MemoryDetailModal> {
       return (_translationCache[_activeLang!]!['description'] as String?) ?? '';
     }
     if (_decryptedShareDescription != null) return _decryptedShareDescription!;
-    return (_current['description'] as String?) ?? '';
+    return shownText(_current['description'] as String?) ?? '';
   }
 
   /// True when the server marked the name as E2EE (issue #26) but this

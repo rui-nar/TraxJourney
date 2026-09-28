@@ -34,7 +34,6 @@ def _activity(aid: int, date_str: str, distance_m: float, atype: str = "ride") -
         flagged=False,
         average_speed=5.0,
         max_speed=10.0,
-        has_heartrate=False,
         pr_count=0,
         total_photo_count=0,
         has_kudoed=False,

@@ -15,7 +15,7 @@ from threading import Lock
 from time import monotonic
 from typing import Annotated, Any, Callable, Dict, List
 
-import polyline as polyline_lib
+import polyline as polyline_lib  # noqa: F401 — tests count decodes through it
 import requests
 from models.db import get_session
 from models.project_db import DBActivity, DBActivityGeoPrepared
@@ -27,7 +27,6 @@ from sqlmodel import select
 from api.deps import get_current_user
 from api.project_access import OwnerParam, resolve_project
 from src.brand import USER_AGENT
-from src.models.great_circle import great_circle_points
 from src.models.prepared_geo import (
     COORD_SCALE,
     prepare_polyline,
@@ -51,6 +50,7 @@ from src.jobs.redis_client import get_redis
 from src.utils.encryption_check import is_encrypted_envelope
 from src.utils.logging import get_logger
 from src.utils.metrics import track_external
+from src.video.legs import feature_coords
 
 router = APIRouter(prefix="/api/geo", tags=["geo"])
 
@@ -767,36 +767,18 @@ def _activity_feature(activity, summary_polyline: str | None,
             "geometry": {"type": "LineString", "coordinates": []},
             "properties": {**_activity_properties(activity), "polyline": summary_polyline},
         }
-    if summary_polyline:
-        # Expanded form — decode server-side so any client renders it.
-        decoded = polyline_lib.decode(summary_polyline)
-        coords = [[lon, lat] for lat, lon in decoded]
-        if len(coords) < 2:
-            return None
-        return _linestring(coords, _activity_properties(activity))
-    if activity.start_latlng and activity.end_latlng:
-        # No polyline (GPX import / private activity) — straight line fallback
-        coords = [
-            [activity.start_latlng[1], activity.start_latlng[0]],
-            [activity.end_latlng[1],   activity.end_latlng[0]],
-        ]
-        return _linestring(coords, _activity_properties(activity))
-    return None  # no coordinates at all
+    # Expanded form — decoded server-side so any client renders it; no
+    # polyline (GPX import / private activity) falls back to a straight line.
+    coords = feature_coords(activity, summary_polyline)
+    if coords is None:
+        return None
+    return _linestring(coords, _activity_properties(activity))
 
 
 def _segment_feature(seg) -> Dict[str, Any] | None:
     """*seg*'s feature: its resolved route, else a great-circle arc."""
-    if seg.route_mode in ("rail", "ferry", "bus") and seg.route_polyline:
-        coords = json.loads(seg.route_polyline)
-    else:
-        # great_circle_points returns [(lat, lon), ...]
-        pts = great_circle_points(
-            seg.start.lat, seg.start.lon,
-            seg.end.lat, seg.end.lon,
-            n_points=50,
-        )
-        coords = [[lon, lat] for lat, lon in pts]
-    if len(coords) < 2:
+    coords = feature_coords(seg)
+    if coords is None:
         return None
     return _linestring(coords, {
         "type": "segment",

@@ -7,6 +7,7 @@ import '../core/picked_file_bytes.dart';
 import 'location_picker_dialog.dart';
 import 'project_journal_crud_mixin.dart' show generateJournalClientToken;
 import 'project_notifier.dart';
+import '../crypto/encrypted_display.dart';
 
 /// Dialog to create or edit a journal entry.
 ///
@@ -32,6 +33,10 @@ class JournalDialog extends StatefulWidget {
 
 class _JournalDialogState extends State<JournalDialog> {
   late TextEditingController _descCtrl;
+  // Text this device cannot decrypt keeps its ciphertext envelope here
+  // (issue #466): shown read-only as kEncryptedUnavailable, and saved back
+  // exactly as it was, never as the label, never cleared.
+  String? _descEnvelope;
   DateTime? _date;
   TimeOfDay? _time;
   String _geoMode = 'start_of_day';
@@ -53,6 +58,10 @@ class _JournalDialogState extends State<JournalDialog> {
   // A new dialog instance (a separate entry) gets its own fresh token.
   String? _createClientToken;
 
+  /// What an undecryptable field says under itself (#466): it is shown
+  /// as [kEncryptedUnavailable], read-only, and saved back unchanged.
+  static const _encryptedHelp =
+      'Encrypted, and this device cannot read it, so it cannot be edited here.';
   static const _months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   static String _fmtDate(DateTime d) => '${_months[d.month - 1]} ${d.day}, ${d.year}';
   static String _toIso(DateTime d) =>
@@ -64,7 +73,16 @@ class _JournalDialogState extends State<JournalDialog> {
   void initState() {
     super.initState();
     final j = widget.editEntry;
-    _descCtrl = TextEditingController(text: j?['description'] as String? ?? '');
+    // From the record made when the items were revealed, never from the
+    // value's shape: typed text such as "v1.2.3" looks like an envelope.
+    if (widget.notifier.undecryptedFields
+        .contains('journal', j?['id']?.toString(), 'description')) {
+      _descEnvelope = j!['description'] as String?;
+    }
+    _descCtrl = TextEditingController(
+        text: _descEnvelope != null
+            ? kEncryptedUnavailable
+            : j?['description'] as String? ?? '');
 
     if (j != null) {
       final ds = j['date'] as String?;
@@ -144,7 +162,8 @@ class _JournalDialogState extends State<JournalDialog> {
     try {
       final dateStr = _toIso(_date!);
       final timeStr = _time != null ? _fmtTime(_time!) : null;
-      final desc = _descCtrl.text.trim().isEmpty ? null : _descCtrl.text.trim();
+      final desc = _descEnvelope ??
+          (_descCtrl.text.trim().isEmpty ? null : _descCtrl.text.trim());
       var failedPhotos = 0;
 
       final j = widget.editEntry;
@@ -161,6 +180,7 @@ class _JournalDialogState extends State<JournalDialog> {
           description: desc,
           lat: _geoMode == 'custom' ? _customLat : null,
           lon: _geoMode == 'custom' ? _customLon : null,
+          keepStoredDescription: _descEnvelope != null,
         );
         for (final p in _pendingPhotos) {
           final uuid =
@@ -313,7 +333,9 @@ class _JournalDialogState extends State<JournalDialog> {
               // Description
               TextField(
                 controller: _descCtrl,
-                decoration: const InputDecoration(
+                readOnly: _descEnvelope != null,
+                decoration: InputDecoration(
+                  helperText: _descEnvelope != null ? _encryptedHelp : null,
                   labelText: 'Notes',
                   hintText: 'Write your thoughts…',
                 ),

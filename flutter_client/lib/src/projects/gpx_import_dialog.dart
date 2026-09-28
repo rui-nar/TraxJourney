@@ -692,6 +692,12 @@ class _GpxImportDialogState extends State<GpxImportDialog> {
             key: const ValueKey('gpx_from_file_note'),
             style: theme.textTheme.bodySmall?.copyWith(color: kSuccess)),
       ],
+      for (final warning in candidate.warnings) ...[
+        const SizedBox(height: 10),
+        _notice(theme, Icons.warning_amber_outlined, kWarning,
+            warning,
+            key: const ValueKey('gpx_candidate_warning')),
+      ],
       if (_outsideTrip) ...[
         const SizedBox(height: 10),
         _notice(theme, Icons.warning_amber_outlined, kWarning,

@@ -170,6 +170,16 @@ class TestAudience:
         change = _one("feat: companions", files="api/members.py\nflutter_client/a.dart")
         assert change.audience == APP
 
+    def test_billing_keeps_its_label_but_takes_the_audience_from_paths(self):
+        """Billing commits land on either side: plan-page changes in the app,
+        webhook and Stripe fixes on the server only. The scope names the area,
+        and the changed paths say who sees it."""
+        app = _one("fix(billing): x", files="flutter_client/lib/src/billing/a.dart")
+        server = _one("fix(billing): x", files="src/billing/webhook_events.py")
+
+        assert (app.area, app.audience) == ("Plans & billing", APP)
+        assert (server.area, server.audience) == ("Plans & billing", SERVER)
+
     def test_tooling_scopes_are_internal(self):
         assert _one("fix(ci): x").audience == INTERNAL
         assert _one("fix(release): x").audience == INTERNAL

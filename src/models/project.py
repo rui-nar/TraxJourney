@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Any, Dict, Iterable, List, Literal, Optional
+from typing import Any, Dict, FrozenSet, Iterable, List, Literal, Optional
 
 from src.models.activity import Activity
 from src.models.encounter import Encounter
@@ -312,6 +312,10 @@ class Project:
     type_styles: Dict[str, Dict[str, str]] = field(default_factory=dict)
     # ISO 639-1 language codes available for memory translation, e.g. ["fr", "de"]
     languages: List[str] = field(default_factory=list)
+    # The settings a .traxj file carried, by its top-level key (issue #465):
+    # a Replace takes those and keeps the trip's own for the rest. Empty for a
+    # project not read from a file. Not part of the file format.
+    settings_carried: FrozenSet[str] = frozenset()
     # Derived lookup — rebuilt after load, not serialised
     _activity_map: Dict[int, Activity] = field(
         default_factory=dict, repr=False, compare=False

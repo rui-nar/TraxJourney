@@ -20,11 +20,11 @@ from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func
+from sqlalchemy import delete, func, update
 from sqlmodel import select
 
 from api.deps import require_admin
-from models.billing import Subscription
+from models.billing import Subscription, SubscriptionRefund
 from models.db import get_session
 from models.project_db import DBActivity, DBMemory, DBProject
 from models.user import LocalUser, UserInfo
@@ -32,7 +32,17 @@ from src.admin.storage import cached_user_storage, refresh_storage_cache
 from src.admin.tiers import user_encryption_tier
 from src.billing.entitlements import plan_display_name, plan_from_subscription
 from src.billing.plans import FREE, PLAN_ORDER
-from src.billing.subscriptions import set_admin_override
+from src.billing.subscriptions import lock_account, set_admin_override
+from src.billing.gateway import GatewayError, get_gateway
+from src.billing.withdrawal import (
+    LEASE_SECONDS,
+    OWED,
+    PENDING,
+    SETTLED,
+    RefundInProgress,
+    owner_account,
+    resolve_pending,
+)
 from src.email.service import EmailMessage, get_email_service
 from src.utils.logging import (
     LEVEL_NAMES,
@@ -418,6 +428,198 @@ def set_plan(
     return {"ok": True}
 
 
+class OwedRefundOut(BaseModel):
+    subscription_id: str
+    customer_id: str
+    state: str = Field(description="'owed', or 'pending' when a refund has been "
+                                   "stuck longer than a claim can last")
+    owed_cents: int | None = Field(
+        description="Still to refund by hand; null when the amount is not known "
+                    "yet (check Stripe)")
+    refunded_cents: int
+    currency: str
+    reason: str
+    invoice_id: str
+    credit_note_id: str
+    updated_at: float
+
+
+def _pending_reason(row: SubscriptionRefund, unchecked: dict[str, str]) -> str:
+    """What the owner is told about a listed row."""
+    if row.state == OWED:
+        return row.reason
+    parts = []
+    if row.amount < 0:
+        parts.append("amount unknown — check Stripe: the withdrawal was asked for "
+                     "but the refund was never computed (its cancellation may not "
+                     "have landed)")
+    if row.subscription_id in unchecked:
+        parts.append(f"not checked at Stripe: {unchecked[row.subscription_id]}")
+    elif row.to_refund > 0:
+        parts.append("checked at Stripe: no credit note was made for it")
+    return "; ".join(parts) or "pending"
+
+
+def _stuck(row: SubscriptionRefund, now: float) -> bool:
+    """A pending refund no request is working on, created longer ago than a
+    claim can last. Judged on ``created_at``, which never moves: checking the
+    row at Stripe touches ``updated_at``, and must not hide it."""
+    return (row.state == PENDING and row.lease_until <= now
+            and row.created_at < now - LEASE_SECONDS)
+
+
+def _resolve_stuck(subscription_ids: list[str]) -> dict[str, str]:
+    """Ask Stripe what became of stuck pending refunds (issue #441).
+
+    A credit note may have been made and its answer lost: looked up by refund
+    key, it turns the row ``done`` (or ``owed``) before anyone refunds by hand.
+    Returns an error per row that could not be checked.
+    """
+    unchecked: dict[str, str] = {}
+    if not subscription_ids:
+        return unchecked
+    gateway = get_gateway()
+    for subscription_id in subscription_ids:
+        if gateway is None:
+            unchecked[subscription_id] = "billing is not configured here"
+            continue
+        try:
+            resolve_pending(gateway, subscription_id)
+        except (GatewayError, RefundInProgress) as exc:
+            unchecked[subscription_id] = str(exc) or type(exc).__name__
+    return unchecked
+
+
+@router.get("/billing/owed-refunds", response_model=list[OwedRefundOut],
+            summary="Refunds the app could not make, and stuck ones")
+def owed_refunds(_admin: Annotated[dict, Depends(require_admin)]):
+    """Withdrawal refunds that need the owner (issue #441).
+
+    * ``owed`` — Stripe refused for good, there was no payment to refund, part
+      was paid from the balance, or the refund failed after it was made. The
+      app never retries these. Refund it in the Stripe dashboard, then mark it
+      settled.
+    * ``pending`` for longer than a claim lease — first checked at Stripe (a
+      credit note made under its refund key resolves it), and listed if still
+      pending. Its reason then says whether it was checked.
+
+    Each outlives the account it came from. Only Stripe identifiers, amounts,
+    the reason and timestamps are kept.
+    """
+    now = time.time()
+    with get_session() as sess:
+        stuck = [r.subscription_id for r in sess.exec(
+            select(SubscriptionRefund).where(SubscriptionRefund.state == PENDING)
+        ).all() if _stuck(r, now)]
+    unchecked = _resolve_stuck(stuck)
+    with get_session() as sess:
+        # Stuck is judged before resolving: resolving touches the row.
+        rows = [r for r in sess.exec(
+            select(SubscriptionRefund)
+            .where(SubscriptionRefund.state.in_((OWED, PENDING)))
+            .order_by(SubscriptionRefund.updated_at)
+        ).all() if r.state == OWED or r.subscription_id in stuck]
+        return [
+            OwedRefundOut(
+                subscription_id=r.subscription_id, customer_id=r.customer_id,
+                state=r.state,
+                owed_cents=(r.owed if r.state == OWED
+                            else None if r.amount < 0
+                            else max(0, r.amount - r.refunded)),
+                refunded_cents=r.refunded, currency=r.currency,
+                reason=_pending_reason(r, unchecked),
+                invoice_id=r.invoice_id, credit_note_id=r.credit_note_id,
+                updated_at=r.updated_at,
+            )
+            for r in rows
+        ]
+
+
+@router.post("/billing/owed-refunds/{subscription_id}/settle",
+             response_model=OkResponse,
+             summary="Mark a refund settled by hand")
+def settle_owed_refund(
+    subscription_id: str,
+    _admin: Annotated[dict, Depends(require_admin)],
+):
+    """The owner refunded it by hand (issue #441).
+
+    A stuck ``pending`` row is first checked at Stripe: a credit note made
+    under its refund key means it was refunded after all (it becomes ``done``,
+    and there is nothing to settle), or that only a shortfall is owed. One that
+    cannot be checked is not settled.
+
+    While the account exists, the row becomes a ``settled`` tombstone: amounts,
+    reason and ``settled_at`` stay, and neither a withdrawal nor a deletion
+    will ever refund that subscription again. It goes with the account. When
+    the account is already gone the record is deleted outright: no account is
+    left whose later request a tombstone could protect, and the privacy policy
+    promises the record goes once settled.
+
+    The write is fenced: it happens only if nobody claimed the row since it
+    was read — under the account's lock, and conditional on the state, the
+    lease and the claim token seen.
+    """
+    with get_session() as sess:
+        row = sess.get(SubscriptionRefund, subscription_id)
+        state = row.state if row is not None else ""
+        lease_until = row.lease_until if row is not None else 0.0
+    if state not in (OWED, PENDING):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="No owed refund for that subscription")
+    if lease_until > time.time():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="A refund of that subscription is in progress")
+    if state == PENDING:
+        unchecked = _resolve_stuck([subscription_id])
+        if unchecked:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Not settled: Stripe could not be checked for a credit note "
+                       f"already made for it ({unchecked[subscription_id]}). Try again.")
+    with get_session() as sess:
+        row = sess.get(SubscriptionRefund, subscription_id)
+        if row is None or row.state not in (OWED, PENDING):
+            done = row is not None and row.state == "done"
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT if done else status.HTTP_404_NOT_FOUND,
+                detail=("It was refunded after all (credit note "
+                        f"{row.credit_note_id}): nothing to settle." if done
+                        else "No owed refund for that subscription"))
+        seen = (row.state, row.claim_token, row.version)
+        customer_id = row.customer_id
+    with get_session() as sess:
+        owner = owner_account(sess, customer_id)
+        if owner:
+            lock_account(sess, owner)
+        now = time.time()
+        fence = (
+            (SubscriptionRefund.subscription_id == subscription_id)
+            & (SubscriptionRefund.state == seen[0])
+            & (SubscriptionRefund.lease_until <= now)
+            & (SubscriptionRefund.claim_token == seen[1])
+            # Every write bumps the version: the token alone is "" before and
+            # after a claim, so it cannot tell that one happened (ABA).
+            & (SubscriptionRefund.version == seen[2])
+        )
+        if owner:
+            result = sess.execute(
+                update(SubscriptionRefund).where(fence).values(
+                    state=SETTLED, settled_at=now, claim_token="", updated_at=now,
+                    version=SubscriptionRefund.version + 1))
+        else:
+            result = sess.execute(delete(SubscriptionRefund).where(fence))
+        if result.rowcount != 1:
+            sess.rollback()
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail="The refund changed meanwhile; not settled. "
+                                       "Look again.")
+        sess.commit()
+    _log.info("Admin settled the refund of subscription %s (%s)", subscription_id,
+              "kept as settled" if owner else "record deleted")
+    return {"ok": True}
+
+
 @router.post("/users/{user_info_id}/reset-password",
              response_model=ResetPasswordResponse,
              summary="Reset a user's password (None/Low tiers only)")
@@ -483,14 +685,32 @@ def delete_user(
             status_code=status.HTTP_409_CONFLICT,
             detail="You cannot delete your own account here.",
         )
-    from src.auth.account_deletion import delete_user_and_data, purge_user_files
+    from src.auth.account_deletion import (
+        BILLING_UNAVAILABLE,
+        delete_user_and_data,
+        purge_user_files,
+    )
+    from src.exceptions.errors import AccountDeletionRefused
 
     with get_session() as sess:
         if sess.get(UserInfo, user_info_id) is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
             )
-        delete_user_and_data(sess, user_info_id)
+        try:
+            delete_user_and_data(sess, user_info_id)
+        except AccountDeletionRefused as exc:
+            if exc.code != BILLING_UNAVAILABLE:
+                raise
+            # The operator is the one who can fix this, so they get the way
+            # out; the user deleting themselves is only told to ask them.
+            raise AccountDeletionRefused(
+                "This user has a paid plan that this server cannot cancel, "
+                "because billing is not configured. Nothing was deleted. To "
+                "resolve it, follow the section Deleting an account in "
+                "docs/BILLING.md.",
+                status_code=exc.status_code, code=exc.code,
+            ) from exc
     purge_user_files(user_info_id)
 
     _log.info("Admin deleted user_info_id=%s", user_info_id)

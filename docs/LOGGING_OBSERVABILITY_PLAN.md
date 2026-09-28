@@ -93,7 +93,9 @@ minor gap noted in Unit C), `api/router.py`'s existing exception handlers,
   have to be parseable out of the message body at query time via
   `| logfmt`. Keep it human-grep-able too; this isn't JSON.
 - **Redaction:** never log JWTs, passwords, Stripe secret keys, E2EE key
-  material, raw request bodies. Email logging: recipient + subject only,
+  material, raw request bodies, a request's URL/query string (route template
+  only), or a full client IP (issue #443: `/24`, IPv6 `/48`, in the access
+  line only — `docs/LOGGING.md` has the retention). Email logging: recipient + subject only,
   never body (the `ConsoleEmailService` dev backend logging full body is
   fine — dev-only path).
 - **`src/utils/metrics.py:track_external()`** is the single choke point for

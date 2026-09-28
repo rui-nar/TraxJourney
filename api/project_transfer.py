@@ -45,6 +45,7 @@ from src.project.repo_transfer import PhotoRemoval, ProjectNameTaken
 from src.utils.logging import request_id_var
 from src.utils.encryption_check import is_encrypted_envelope
 from src.utils.photo_paths import photo_file, photo_files, photo_folder
+from src.utils.photo_privacy import remove_share_copy
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -63,14 +64,25 @@ class ImportedOut(BaseModel):
 # ── Import ────────────────────────────────────────────────────────────────────
 
 #: Largest project file the import accepts, whatever the plan or billing
-#: settings (issue #434). An export carries every track at full resolution:
-#: ~40-50 bytes per GPS point (encoded polyline plus the elevation profile's
-#: distance/elevation pair, pretty-printed), so 50 MB is roughly a million
-#: points, 50+ long days recorded every second or well over 100 at Strava's
-#: usual density. The import holds the file and its parsed form at once,
-#: measured at ~3.4x the file size, so 50 MB peaks near 170 MB inside the
-#: API container's 768 MB limit (docker-compose.yml.example); 100 MB would not
-#: leave the geo caches and concurrent requests room.
+#: settings (issue #434). An export carries every track at full resolution,
+#: written compact since #454. Per GPS point (encoded polyline plus the
+#: elevation profile's distance/elevation pair), measured on generated trips:
+#: ~18.5 bytes for a Strava activity, ~28 for a GPX upload with 0.1 m
+#: elevations, ~40 for one with unrounded or interpolated elevations (a GPX
+#: profile keeps cumulative distances at full float precision). So 50 MB holds
+#: roughly 2.8, 1.9 or 1.3 million points. Indented, every point took ~22
+#: bytes more.
+#:
+#: The import holds the file and its parsed form at once. Measured with
+#: tracemalloc around ProjectIO.from_bytes on a 200,000-point trip, file bytes
+#: included, that is ~5.7x the file for compact JSON (it was ~3.7x indented:
+#: less whitespace per value parsed), so a 50 MB file peaks near 285 MB. The
+#: same trip exported compact is half the size, so any given trip now needs
+#: less memory to import than before; only a file at the cap needs more. That
+#: fits the API container's 768 MB limit (docker-compose.yml.example) beside
+#: the running process, its geo caches and ordinary requests, but not twice
+#: over: two maximum-size imports at once would leave little room. 100 MB
+#: would peak near 570 MB, too close to the limit on its own.
 MAX_IMPORT_BYTES = 50 * 1024 * 1024
 
 #: Room for the multipart envelope (boundaries, part headers) around the file.
@@ -146,6 +158,12 @@ def _remove_photos(removals: list[PhotoRemoval]) -> None:
                               removal.kind, removal.content_id)
         # Only names that stay inside this entry's own folder (photo_paths).
         unlink_and_record(removal.user_info_id, photo_files(folder, removal.uuids))
+        # The share-link copies go with the photos, outside the accounting
+        # (issue #430) — else they keep the folder from being removed below.
+        for name in removal.uuids:
+            full = photo_file(folder, name)
+            if full is not None:
+                remove_share_copy(full)
         if removal.remove_dir and folder.exists():
             try:
                 folder.rmdir()
@@ -423,7 +441,7 @@ def export_project_traxj(
     data: Dict[str, Any] = ProjectIO.to_dict(project)
     # Override activities with the raw Strava format (no elevation_profile pairs) for the backup file
     data["activities"] = [a.to_strava_dict() for a in project.activities]
-    json_bytes = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
+    json_bytes = ProjectIO.dumps(data)
     safe = _SAFE_NAME.sub("_", project.name)
     return StreamingResponse(
         io.BytesIO(json_bytes),
@@ -477,7 +495,7 @@ def export_project_zip(
         "items": items_serialised,
         "activities": [a.to_strava_dict() for a in project.activities],
     }
-    project_bytes = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
+    project_bytes = ProjectIO.dumps(data)
 
     zip_buffer = io.BytesIO()
     safe = _SAFE_NAME.sub("_", project.name)

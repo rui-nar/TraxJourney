@@ -17,6 +17,7 @@ class GpxCandidate {
     required this.isRoute,
     required this.hasTimes,
     required this.errors,
+    this.warnings = const [],
     this.name,
     this.activityType,
     this.startedAt,
@@ -59,6 +60,10 @@ class GpxCandidate {
   /// Why this one cannot be imported. Empty means it can.
   final List<String> errors;
 
+  /// What the user should know before importing, such as a clock that looks
+  /// wrong (issue #462). Never a reason not to import.
+  final List<String> warnings;
+
   bool get isImportable => errors.isEmpty;
 
   static GpxCandidate fromJson(Map<String, dynamic> json) => GpxCandidate(
@@ -76,6 +81,9 @@ class GpxCandidate {
         elevationGainM: (json['elevation_gain_m'] as num?)?.toDouble(),
         outline: _decodeOutline(json['polyline'] as String?),
         errors: ((json['errors'] as List?) ?? const [])
+            .map((e) => e.toString())
+            .toList(growable: false),
+        warnings: ((json['warnings'] as List?) ?? const [])
             .map((e) => e.toString())
             .toList(growable: false),
       );

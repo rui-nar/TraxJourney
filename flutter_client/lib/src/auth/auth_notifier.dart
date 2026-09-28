@@ -270,15 +270,21 @@ class AuthNotifier extends ChangeNotifier {
   }
 
   Future<void> logout() async {
-    await _service.logout();
-    encryption.lock();
-    _user = null;
-    _error = null;
+    try {
+      await _service.logout();
+    } finally {
+      // Signed out whatever fails below or above: the router keeps a user it
+      // still sees out of /login, so a failed wipe used to leave a dead
+      // session on screen — after an account deletion, for one (issue #429).
+      encryption.lock();
+      _user = null;
+      _error = null;
+      notifyListeners();
+    }
     // Full wipe, not just a rescope: a signed-out device must not keep
     // another account's cached trip data sitting on disk.
     await projectDataCache.clearAll();
     await photoThumbCache.clearAll();
-    notifyListeners();
   }
 
   /// After a successful login/restore, try to unlock encryption on this trusted

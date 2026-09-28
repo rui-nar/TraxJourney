@@ -39,7 +39,6 @@ def _make_activity(id: int, offset_days: int = 0) -> Activity:
         flagged=False,
         average_speed=2.78,
         max_speed=5.0,
-        has_heartrate=False,
         pr_count=0,
         total_photo_count=0,
         has_kudoed=False,

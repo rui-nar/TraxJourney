@@ -43,7 +43,6 @@ def _make_activity(
         flagged=False,
         average_speed=2.77,
         max_speed=5.0,
-        has_heartrate=False,
         pr_count=0,
         total_photo_count=0,
         has_kudoed=False,

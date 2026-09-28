@@ -32,15 +32,17 @@ _log = get_logger(__name__)
 QUEUE_RESOLVE = "resolve"   # HAFAS + Overpass; long-running, a few at a time
 QUEUE_POSTER = "poster"     # A0 rendering — memory-heavy, keep it to one
 QUEUE_DEFAULT = "default"   # share tiles, stats: short and cheap
+QUEUE_VIDEO = "video"       # trip video renders — minutes each, never in-process
 
-ALL_QUEUES = (QUEUE_RESOLVE, QUEUE_POSTER, QUEUE_DEFAULT)
+ALL_QUEUES = (QUEUE_RESOLVE, QUEUE_POSTER, QUEUE_DEFAULT, QUEUE_VIDEO)
 
 # How many jobs from each queue may run at once. An RQ worker takes one job at a
 # time, so a queue's bound *is* the number of worker processes listening on it —
 # which makes this a property of the deployment topology, not of any code path
 # here. It lives in this module anyway because the numbers are properties of the
 # jobs, not of a host: 2 on `resolve` bounds how many rail resolves are in
-# flight, and 1 on `poster` is the memory footprint of an A0 render.
+# flight, and 1 on `poster` (and on `video`) is the memory footprint of one
+# render.
 #
 # NOTE this is *not* the Overpass politeness bound, though it was once described
 # as one. A worker count cannot be: a single resolve makes four or five Overpass
@@ -56,6 +58,7 @@ QUEUE_MAX_CONCURRENCY = {
     QUEUE_RESOLVE: 2,
     QUEUE_POSTER: 1,
     QUEUE_DEFAULT: 2,
+    QUEUE_VIDEO: 1,
 }
 
 # Generous: a rail resolve makes several Overpass queries, each with a 45 s HTTP
@@ -95,6 +98,26 @@ def queue_available() -> bool:
     return get_redis() is not None
 
 
+def queue_has_workers(name: str) -> bool:
+    """Whether a broker is reachable and at least one RQ worker listens on *name*.
+
+    For queues with no in-process fallback (``video``): a job queued with no
+    worker would sit pending until a sweep fails it. One Redis call (the
+    queue's worker set, which a worker joins at birth and leaves at death).
+    Any broker error counts as "no worker" — never an exception to the caller.
+    """
+    try:
+        queue = get_queue(name)
+        if queue is None:
+            return False
+        from rq import Worker
+
+        return Worker.count(queue=queue) > 0
+    except Exception as exc:  # noqa: BLE001 — a broker error means "unavailable"
+        _log.warning("could not count workers on %r (%s)", name, exc)
+        return False
+
+
 def get_queue(name: str):
     """The RQ queue *name*, or ``None`` when running without a broker."""
     client = get_redis()
@@ -111,6 +134,8 @@ def enqueue(
     *args: Any,
     background_tasks: Optional[Any] = None,
     max_retries: int = len(_RETRY_INTERVALS),
+    job_timeout: Optional[int] = None,
+    allow_inline: bool = True,
     **kwargs: Any,
 ) -> bool:
     """Run *func* out of process if possible; otherwise in this one.
@@ -122,21 +147,39 @@ def enqueue(
 
     A broker that fails at enqueue time falls back rather than 500s: losing
     durability is better than losing the request.
+
+    *max_retries* of 0 queues the job with no retry at all. *job_timeout*
+    overrides the queue's default (seconds). With *allow_inline* False — and
+    always on the ``video`` queue, whose renders take minutes — there is no
+    fallback: a missing or failing broker returns False and *func* is not run,
+    so the caller can fail the job instead of starving the API process.
     """
+    inline = allow_inline and queue_name != QUEUE_VIDEO
     queue = get_queue(queue_name)
     if queue is not None:
         try:
-            from rq import Retry
+            options: dict[str, Any] = {"result_ttl": _RESULT_TTL_S}
+            if max_retries > 0:
+                # RQ's Retry refuses max=0, so "never retry" is no Retry at all.
+                from rq import Retry
 
-            queue.enqueue(
-                _run_with_level_refresh, func, *args,
-                retry=Retry(max=max_retries, interval=_RETRY_INTERVALS[:max_retries]),
-                result_ttl=_RESULT_TTL_S,
-                **kwargs,
-            )
+                options["retry"] = Retry(
+                    max=max_retries, interval=_RETRY_INTERVALS[:max_retries])
+            if job_timeout is not None:
+                options["job_timeout"] = job_timeout
+            queue.enqueue(_run_with_level_refresh, func, *args, **options, **kwargs)
             return True
         except Exception as exc:  # noqa: BLE001 — degrade to in-process
-            _log.warning("enqueue to %r failed (%s) — running in-process", queue_name, exc)
+            _log.warning("enqueue to %r failed (%s)%s", queue_name, exc,
+                         " — running in-process" if inline else "")
+
+    if not inline:
+        _log.error(
+            "job for queue %r not run: no broker to queue it on and running it "
+            "in-process is not allowed (REDIS_URL unset or Redis unreachable).",
+            queue_name,
+        )
+        return False
 
     if queue_name == QUEUE_POSTER:
         # Every other queue degrading to in-process just delays that one job.

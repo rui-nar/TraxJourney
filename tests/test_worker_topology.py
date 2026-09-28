@@ -101,7 +101,7 @@ class TestMemoryLimits:
     instead of a clean OOM-kill `restart: unless-stopped` could recover from.
     """
 
-    _LIMITED_SERVICES = ("traxjourney", "worker", "worker-poster", "redis")
+    _LIMITED_SERVICES = ("traxjourney", "worker", "worker-poster", "worker-video", "redis")
 
     @staticmethod
     def _memory_limit_bytes(spec: dict) -> int:

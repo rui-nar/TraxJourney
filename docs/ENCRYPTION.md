@@ -99,7 +99,7 @@ backup, whether or not encryption is on.
 | Days (`project.day_meta_json`) | difficulty, sleeping, weather, tags, counter values, and the per-day free-text `journal` note edited in `day_meta_editor.dart` — this legacy note is **not** the encrypted journal entry |
 | Memory | `date`, `time`, `geo_mode`, `lat`/`lon`, photo list, `public_id` (used in share deep links), Polarsteps step id, comment and like counts |
 | Journal entry | `date`, `time`, `geo_mode`, `lat`/`lon`, photo list, author |
-| Activity | `type`, `distance`, `moving_time`, `elapsed_time`, `total_elevation_gain`, `start_date`/`start_date_local`, `timezone`, all Strava counters and flags (kudos, comments, photos, trainer, commute, private, …), `average_speed`/`max_speed`, heart-rate averages, `elev_high`/`elev_low`, `gear_id`, `source`/`source_id`, split/edit bookkeeping (`split_root_id`, `split_parent_id`, `split_base_name`, `is_edited`, `original_total_elevation_gain`) |
+| Activity | `type`, `distance`, `moving_time`, `elapsed_time`, `total_elevation_gain`, `start_date`/`start_date_local`, `timezone`, all Strava counters and flags (kudos, comments, photos, trainer, commute, private, …), `average_speed`/`max_speed`, `elev_high`/`elev_low`, `gear_id`, `source`/`source_id`, split/edit bookkeeping (`split_root_id`, `split_parent_id`, `split_base_name`, `is_edited`, `original_total_elevation_gain`) |
 | Connecting segments (`projectitem.segment_json`) | type, label (e.g. "Basel → Paris"), start/end coordinates, date, train number, and the resolved route polyline — **rail/ferry/bus route geometry is never encrypted** |
 | People, groups, encounters | every field: names, e-mail, phone, socials, nationalities, residence, notes, avatar, encounter date/place/description. Never exposed on share links, but readable by the operator |
 | Photos | full-resolution files and server-generated thumbnails on disk (`api/memories.py`, `api/journal.py`, person avatars). Not encrypted. Immich photos are proxied, never stored |
@@ -122,7 +122,47 @@ encryption time, from the code:
 | `memory_translation` | machine translations of memory `name`/`description` | **purged** when the memory becomes ciphertext; the server refuses to translate an encrypted memory (409) |
 | Full-res geo response cache | GeoJSON built from plaintext tracks | busted for every trip the activity is in |
 | GPX export, poster tracks | built from `summary_polyline` | GPX export refuses (409) any trip with an encrypted activity; the geo builders skip encrypted tracks |
-| `.traxj` / ZIP export (`api/project_transfer.py`) | the project as JSON (ZIP adds the photos) | no check: encrypted fields are written into the file **as their envelopes** (`name`, `map.summary_polyline`, and the endpoints/elevation under `start_latlng_enc`/`end_latlng_enc`/`elevation_profile_enc`), so the export stays unreadable without your key. **Re-importing it is lossy**: `_upsert_activity` (`src/project/repo_activities.py`) rebuilds `start_latlng_json`, `end_latlng_json`, `elevation_profile_json` and the low-res copy from the plaintext attributes only, which are `None` for an encrypted activity — the `name` and `summary_polyline` envelopes survive, the encrypted endpoints and elevation profile become NULL. Bug to be filed separately |
+| `.traxj` / ZIP export (`api/project_transfer.py`) | the project as JSON (ZIP adds the photos) | no check: encrypted fields are written into the file **as their envelopes** (`name`, `map.summary_polyline`, and the endpoints/elevation under `start_latlng_enc`/`end_latlng_enc`/`elevation_profile_enc`), so the export stays unreadable without your key. **Re-importing it keeps them** (issue #466): an activity row the import creates (another account's copy, or your own activity whose row is gone) takes the envelopes into `start_latlng_json`, `end_latlng_json`, `elevation_profile_json` and the low-res copy, exactly as the migration writes them; only a well-formed `v1.<b64>.<b64>` is accepted there. Your own key decrypts the result; another account cannot, and its app shows "Encrypted content unavailable" for such text |
+
+## Trip videos — plaintext by consent, for one render
+
+A trip video is rendered on the server (docs/TRIP_VIDEO_PLAN.md, D1), which
+cannot read an encrypted track. So for an encrypted trip the server asks, and
+the user decides, per video:
+
+1. An activity counts as encrypted when its `summary_polyline` **or** either
+   endpoint (`start_latlng_json`/`end_latlng_json`) is an envelope
+   (`is_encrypted_activity` in `src/video/legs.py`, the one definition the
+   routes and the timeline share).
+2. `POST /api/projects/{name}/video/plan` and `POST …/video` answer **409
+   `consent_required`** with the ids of every encrypted activity the request
+   brought no line for — before building the timeline, so a trip made only of
+   encrypted activities still reaches the question instead of a 422.
+3. After the user agrees, the client decrypts locally and resends with
+   `decrypted_geometry`: activity id → Google-encoded polyline (for an
+   activity with no track, its decrypted 2-point start–end line). The server
+   accepts it only for activities that are in that trip **and** encrypted
+   (422 otherwise) and never asks for keys.
+4. The plaintext is written to one file, `data/users/<uid>/videos/<job_id>/geometry.json`
+   (mode 0600), only after the job row commits. It is never put in
+   `videojob.request_json`, Redis, a log line, an exception message, an
+   `error_message` or an email: errors name activity ids only, the runner
+   logs failures by exception type and traceback without the message, and
+   `error_message` holds fixed reason strings.
+5. It is deleted (`delete_job_geometry`) when the job ends in any way — done,
+   failed, killed work-horse, the video worker's startup sweep, an enqueue
+   failure — and by the API's hourly sweep for any job already terminal. The
+   hourly sweep never deletes the file of a job still pending or running: that
+   job would render without the tracks it was given. A job that stays pending
+   24 h or running past its time limit is failed first, which deletes it.
+6. `/video/plan` receives the same plaintext to count clips, holds it only in
+   memory for that request, and writes nothing.
+
+What stays after the job: the **MP4 itself** is a picture of the decrypted
+route, kept on the server for 30 days under `data/users/<uid>/videos/` and
+downloadable by anyone holding the email link, then deleted by the hourly
+sweep. The job row keeps the trip, the length and the resolution, no geometry.
+Database backups never hold the geometry (it is not in the database).
 
 ## Known plaintext remnants (not yet fixed)
 
