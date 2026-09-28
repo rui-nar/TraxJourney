@@ -58,6 +58,40 @@ def test_ensure_token_refresh(mock_load, mock_save, monkeypatch):
     mock_save.assert_called_once()
 
 
+@patch("src.api.strava_client.TokenStore.save_token")
+def test_on_token_refresh_fires_when_an_expired_token_is_refreshed(mock_save, monkeypatch):
+    """Issue #440: the owner of the client persists a rotation the moment it
+    happens, so the callback must fire from the pre-request refresh."""
+    client = _client_with_token(expires_offset=-10)
+    refreshed = {"access_token": "new", "refresh_token": "r2", "expires_at": time.time() + 1000}
+    monkeypatch.setattr(OAuth2Session, "refresh_token", lambda self, rt: refreshed)
+    seen = []
+    client.on_token_refresh = seen.append
+
+    client._ensure_token()
+
+    assert seen == [refreshed]
+
+
+@patch("src.api.strava_client.TokenStore.save_token")
+@patch("src.api.strava_client.requests.request")
+def test_on_token_refresh_fires_on_the_401_refresh_path(mock_req, mock_save, monkeypatch):
+    client = _client_with_token()
+    refreshed = {"access_token": "new", "refresh_token": "r2", "expires_at": time.time() + 1000}
+    monkeypatch.setattr(OAuth2Session, "refresh_token", lambda self, rt: refreshed)
+    unauthorized = MagicMock(status_code=401, text="expired")
+    ok = MagicMock(status_code=200)
+    ok.json.return_value = {"id": 1}
+    mock_req.side_effect = [unauthorized, ok]
+    seen = []
+    client.on_token_refresh = seen.append
+
+    assert client.request("GET", "/athlete") == {"id": 1}
+
+    assert seen == [refreshed]
+    assert mock_req.call_args.kwargs["headers"] == {"Authorization": "Bearer new"}
+
+
 def test_request_without_token_raises():
     config = DummyConfig()
     client = StravaAPI(config)

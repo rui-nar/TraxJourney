@@ -96,8 +96,8 @@ def _seed_strava_token(engine, user_id=1):
 
 
 class _FakeStravaClient:
-    """Stands in for StravaAPI: no Strava config needed, and its token_data
-    matches the seeded token so _save_refreshed_token is a no-op."""
+    """Stands in for StravaAPI: no Strava config needed, and it never
+    refreshes, so no token is persisted."""
     token_data = {"access_token": "tok", "refresh_token": "ref", "expires_at": 9e9}
 
 

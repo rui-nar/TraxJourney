@@ -146,8 +146,7 @@ def test_gpx_import_does_not_revert_a_day_meta_write_made_while_it_ran(env, monk
 
 
 class _FakeStravaClient:
-    """Stands in for StravaAPI; token_data matches the seeded token so
-    _save_refreshed_token is a no-op."""
+    """Stands in for StravaAPI; never refreshes, so no token is persisted."""
     token_data = {"access_token": "tok", "refresh_token": "ref", "expires_at": 9e9}
 
 

@@ -950,7 +950,7 @@ def sync_check(
         ).first()
 
         if strava_token and strava_token.access_token:
-            from api.strava import _load_cache, _strava_client_for_token, _fetch_all_strava, _save_cache, _save_refreshed_token
+            from api.strava import _load_cache, _strava_client_for_token, _fetch_all_strava, _save_cache
 
             raw_list: Optional[List[Dict[str, Any]]] = None
             cache_data = _load_cache(user_info_id)
@@ -961,7 +961,6 @@ def sync_check(
                     client = _strava_client_for_token(strava_token)
                     raw_list = _fetch_all_strava(client)
                     _save_cache(user_info_id, raw_list)
-                    _save_refreshed_token(sess, strava_token, client)
                 except Exception:
                     raw_list = []
 

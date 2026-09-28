@@ -252,7 +252,6 @@ def test_a_strava_sync_listing_another_accounts_activity_leaves_it_alone(
         _activity(9002, name="Alice's own"),
     ])
     monkeypatch.setattr(strava_mod, "_save_cache", lambda *_a: None)
-    monkeypatch.setattr(strava_mod, "_save_refreshed_token", lambda *_a: None)
 
     r = client.post("/api/projects/Mine/strava/sync")
 
