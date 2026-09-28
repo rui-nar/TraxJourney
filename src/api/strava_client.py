@@ -4,7 +4,7 @@ import threading
 import requests
 import time
 from collections import deque
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from src.config.settings import Config
 from src.auth.oauth import OAuth2Session
@@ -173,6 +173,19 @@ class StravaAPI:
         # Shared, not per-instance: Strava's quota belongs to the application,
         # and this object is built fresh for every request (issue #130).
         self._rate_limiters = _ALL_LIMITERS
+        # Called with the new token data right after every refresh. A rotated
+        # refresh token exists nowhere but in this object until it is stored,
+        # so the caller persists it the moment Strava issues it rather than
+        # after the last page of a fetch (issue #440): a disconnect in between
+        # would revoke the stale token, which Strava accepts with a 200, and
+        # the app would stay authorised.
+        self.on_token_refresh: Optional[Callable[[Dict[str, Any]], None]] = None
+
+    def _token_refreshed(self) -> None:
+        """Store freshly refreshed tokens and tell the owner about them."""
+        TokenStore.save_token(self.user_id, self.token_data)
+        if self.on_token_refresh is not None:
+            self.on_token_refresh(dict(self.token_data))
 
     def _ensure_token(self) -> None:
         """Ensure access token is valid, refresh if needed."""
@@ -183,7 +196,7 @@ class StravaAPI:
         if self.token_data.get("expires_at", 0) < time.time():
             try:
                 self.token_data = self.oauth.refresh_token(self.token_data.get("refresh_token"))
-                TokenStore.save_token(self.user_id, self.token_data)
+                self._token_refreshed()
             except TokenError as e:
                 # Token refresh failed - clear the invalid token
                 self.clear_token()
@@ -258,7 +271,7 @@ class StravaAPI:
                         self.token_data = self.oauth.refresh_token(
                             self.token_data.get("refresh_token")
                         )
-                        TokenStore.save_token(self.user_id, self.token_data)
+                        self._token_refreshed()
                         headers = {"Authorization": f"Bearer {self.token_data['access_token']}"}
                         continue   # retry with new token
                     except Exception:

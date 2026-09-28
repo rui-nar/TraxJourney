@@ -249,3 +249,153 @@ def test_save_cache_still_writes_while_connected(client, engine, post):
 
     with Session(engine) as sess:
         assert sess.get(DBStravaCache, uid).activities_json == '[{"id": 2}]'
+
+
+# ── Interleavings with an in-flight fetch (review R2-1 / R2-2) ─────────────────
+#
+# These need a real file database: the in-memory StaticPool hands every session
+# the same connection and cannot show two transactions contending.
+
+NEW_ACCESS = "rotated-access-secret"
+NEW_REFRESH = "rotated-refresh-secret"
+
+
+@pytest.fixture
+def file_engine(monkeypatch, tmp_path):
+    engine = db_module._make_engine(f"sqlite:///{(tmp_path / 'race.db').as_posix()}")
+    db_module._configure_sqlite(engine)
+    monkeypatch.setattr(db_module, "engine", engine)
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr(strava_module, "_cfg", _StravaConfig())
+    # StravaAPI still mirrors refreshed tokens into ~/.config (review R1-5,
+    # out of scope here); keep the test off the developer's home directory.
+    monkeypatch.setattr("src.api.strava_client.TokenStore.save_token", lambda *_a: None)
+    monkeypatch.setattr("src.api.strava_client.TokenStore.delete_token", lambda *_a: None)
+    try:
+        yield engine
+    finally:
+        app.dependency_overrides.clear()
+        engine.dispose()
+
+
+def _disconnect(uid: int) -> None:
+    """The route function itself, as the concurrent request would run it."""
+    strava_module.strava_disconnect({"sub": str(uid), "email": "a@e.com"})
+
+
+def _revoked_tokens(post: MagicMock) -> list:
+    return [c.kwargs["data"]["token"] for c in post.call_args_list
+            if c.args[0] == OAuth2Session.REVOKE_URL]
+
+
+def _strava_answers(post: MagicMock, *, on_refresh=None) -> None:
+    """Route the mocked requests.post: the token endpoint issues rotated
+    tokens (running ``on_refresh`` first, if given), revoke answers 200."""
+    def _post(url, **_kwargs):
+        resp = MagicMock(status_code=200)
+        if url == OAuth2Session.TOKEN_URL:
+            if on_refresh is not None:
+                on_refresh()
+            resp.json.return_value = {"access_token": NEW_ACCESS,
+                                      "refresh_token": NEW_REFRESH,
+                                      "expires_at": time.time() + 21600}
+        return resp
+    post.side_effect = _post
+
+
+def _seed_expired(engine) -> int:
+    with Session(engine) as sess:
+        u = UserInfo(display_name="A", email="a@e.com")
+        sess.add(u)
+        sess.commit()
+        sess.refresh(u)
+        sess.add(StravaToken(user_info_id=u.id, access_token=ACCESS,
+                             refresh_token=REFRESH, expires_at=time.time() - 60))
+        sess.commit()
+        return u.id
+
+
+def _assert_nothing_left(engine, uid: int) -> None:
+    with Session(engine) as sess:
+        assert sess.exec(select(StravaToken).where(StravaToken.user_info_id == uid)).first() is None
+        assert sess.get(DBStravaCache, uid) is None
+
+
+def test_fetch_refresh_then_disconnect_revokes_the_rotated_token(file_engine, post, monkeypatch):
+    """R2-1, first interleaving: the fetch's first request refreshes the
+    expired token, the user disconnects before the fetch ends. The rotation
+    was persisted at once, so disconnect revokes the NEW refresh token — the
+    only one Strava still knows."""
+    uid = _seed_expired(file_engine)
+    _strava_answers(post)
+
+    def _activities_page(*_args, **_kwargs):
+        # Strava is answering the first page: the refresh has happened and
+        # the disconnect lands now, before the fetch returns.
+        _disconnect(uid)
+        return MagicMock(status_code=200, json=MagicMock(return_value=[]))
+    monkeypatch.setattr("src.api.strava_client.requests.request", _activities_page)
+
+    resp = _client_for(uid).get("/api/strava/activities")
+
+    assert resp.status_code == 200
+    assert _revoked_tokens(post) == [NEW_REFRESH]
+    _assert_nothing_left(file_engine, uid)
+
+
+def test_disconnect_during_refresh_revokes_the_new_token_too(file_engine, post, monkeypatch):
+    """R2-1, second interleaving: the disconnect reads the row while Strava is
+    still answering the refresh. It revokes the old refresh token (Strava
+    says 200 — it no longer knows it); when the rotation then comes back to
+    a row that is gone, the new tokens are revoked as well."""
+    uid = _seed_expired(file_engine)
+    _strava_answers(post, on_refresh=lambda: _disconnect(uid))
+    monkeypatch.setattr("src.api.strava_client.requests.request",
+                        lambda *_a, **_k: MagicMock(status_code=200, json=MagicMock(return_value=[])))
+
+    resp = _client_for(uid).get("/api/strava/activities")
+
+    assert resp.status_code == 200
+    assert _revoked_tokens(post) == [REFRESH, NEW_REFRESH]
+    _assert_nothing_left(file_engine, uid)
+
+
+def test_save_cache_cannot_interleave_with_a_disconnect(file_engine, post, monkeypatch):
+    """R2-2: a disconnect that arrives after _save_cache checked the token but
+    before it wrote must wait for that transaction, not slip in between —
+    otherwise it deletes nothing and the cache row is written afterwards."""
+    import threading
+    import types
+
+    with Session(file_engine) as sess:
+        u = UserInfo(display_name="A", email="a@e.com")
+        sess.add(u)
+        sess.commit()
+        sess.refresh(u)
+        sess.add(StravaToken(user_info_id=u.id, access_token=ACCESS,
+                             refresh_token=REFRESH, expires_at=time.time() + 3600))
+        sess.commit()
+        uid = u.id
+
+    disconnect = threading.Thread(target=_disconnect, args=(uid,))
+    seen = {}
+    real_time = time.time
+
+    def _time_between_check_and_write():
+        # _save_cache calls time.time() after its token check and before its
+        # commit: the disconnect lands here. With the write lock taken by the
+        # check it must still be waiting when we return.
+        if not seen:
+            disconnect.start()
+            disconnect.join(1.0)
+            seen["disconnect_blocked"] = disconnect.is_alive()
+        return real_time()
+    monkeypatch.setattr(strava_module, "time",
+                        types.SimpleNamespace(time=_time_between_check_and_write))
+
+    strava_module._save_cache(uid, [{"id": 1}])
+    disconnect.join(35.0)
+
+    assert not disconnect.is_alive()
+    assert seen["disconnect_blocked"] is True
+    _assert_nothing_left(file_engine, uid)

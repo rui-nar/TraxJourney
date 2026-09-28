@@ -20,6 +20,7 @@ from typing import Annotated, Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import update
 from sqlmodel import select
 
 from models.db import get_session
@@ -100,6 +101,27 @@ def _load_cache(user_info_id: int) -> Dict[str, Any] | None:
         return None
 
 
+def _claim_token_row(sess, user_info_id: int, **values) -> bool:
+    """UPDATE the user's token row and report whether it still exists.
+
+    One statement is both the lock and the check (issue #440): a write is
+    what starts SQLite's transaction and takes its write lock — pysqlite opens
+    none for a SELECT, so a check by SELECT could be overtaken by a disconnect
+    committing before the write that followed — and on Postgres it waits on
+    the row lock a concurrent DELETE holds, then re-evaluates. So a disconnect
+    either committed first (no row matched: the user is gone) or queues
+    behind this transaction. Given no values it is a no-op write, the idiom
+    ``src.billing.subscriptions.lock_account`` uses. Must be the session's
+    first write, before the reads and writes it protects.
+    """
+    if not values:
+        values = {"user_info_id": StravaToken.user_info_id}
+    result = sess.execute(
+        update(StravaToken).where(StravaToken.user_info_id == user_info_id).values(**values)
+    )
+    return result.rowcount == 1
+
+
 def _save_cache(user_info_id: int, raw_activities: List[Dict[str, Any]]) -> None:
     """Persist the raw Strava activity list to the DB cache.
 
@@ -109,12 +131,12 @@ def _save_cache(user_info_id: int, raw_activities: List[Dict[str, Any]]) -> None
 
     No-op once the user has disconnected: a fetch that was in flight when
     ``DELETE /api/strava/disconnect`` ran must not recreate the cache row it
-    just removed (issue #440). Checked in the same session as the write.
+    just removed (issue #440). The token row is claimed first, so the
+    disconnect cannot slip in between the check and the write.
     """
     with get_session() as sess:
-        if sess.exec(
-            select(StravaToken).where(StravaToken.user_info_id == user_info_id)
-        ).first() is None:
+        if not _claim_token_row(sess, user_info_id):
+            sess.rollback()
             return
         row = sess.get(DBStravaCache, user_info_id)
         if row is None:
@@ -161,28 +183,46 @@ def _fetch_all_strava(
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _strava_client_for_token(token_row: StravaToken) -> StravaAPI:
-    """Build a StravaAPI instance pre-loaded with tokens from the DB."""
+    """Build a StravaAPI instance pre-loaded with tokens from the DB.
+
+    Rotated tokens are persisted the moment the client refreshes them, not
+    after the request's last Strava call — see :func:`_persist_rotated_token`.
+    """
     client = StravaAPI(_cfg)
     client.token_data = {
         "access_token": token_row.access_token,
         "refresh_token": token_row.refresh_token,
         "expires_at": token_row.expires_at,
     }
+    user_info_id = token_row.user_info_id
+    client.on_token_refresh = lambda token_data: _persist_rotated_token(user_info_id, token_data)
     return client
 
 
-def _save_refreshed_token(sess, token_row: StravaToken, client: StravaAPI) -> None:
-    """Persist token back to DB if StravaAPI refreshed it during the request."""
-    new = client.token_data
-    if (
-        new.get("access_token") != token_row.access_token
-        or new.get("expires_at", 0) != token_row.expires_at
-    ):
-        token_row.access_token = new.get("access_token", token_row.access_token)
-        token_row.refresh_token = new.get("refresh_token", token_row.refresh_token)
-        token_row.expires_at = new.get("expires_at", token_row.expires_at)
-        sess.add(token_row)
-        sess.commit()
+def _persist_rotated_token(user_info_id: int, token_data: Dict[str, Any]) -> None:
+    """Store the tokens Strava just issued — or revoke them if the user has
+    disconnected meanwhile (issue #440).
+
+    Runs from ``StravaAPI.on_token_refresh`` as soon as a refresh happens, in
+    its own session: the fetch that triggered it may have pages to go, and the
+    rotated refresh token exists nowhere else until it is stored. A disconnect
+    that already removed the row revoked the previous refresh token — one
+    Strava no longer knows and answers 200 for — so the app stays authorised
+    unless these new tokens are revoked too.
+    """
+    fields = {
+        "access_token": token_data.get("access_token", ""),
+        "refresh_token": token_data.get("refresh_token", ""),
+        "expires_at": float(token_data.get("expires_at", 0)),
+    }
+    with get_session() as sess:
+        still_connected = _claim_token_row(sess, user_info_id, **fields)
+        if still_connected:
+            sess.commit()
+        else:
+            sess.rollback()
+    if not still_connected:
+        deauthorize_strava(user_info_id, fields["access_token"], fields["refresh_token"], cfg=_cfg)
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -367,7 +407,6 @@ def strava_activities(
         if use_date_api:
             client = _strava_client_for_token(token_row)
             raw_list = _fetch_all_strava(client, after=after_epoch, before=before_epoch)
-            _save_refreshed_token(sess, token_row, client)
         else:
             if not refresh:
                 cache_data = _load_cache(user_info_id)
@@ -378,7 +417,6 @@ def strava_activities(
                 client = _strava_client_for_token(token_row)
                 raw_list = _fetch_all_strava(client)
                 _save_cache(user_info_id, raw_list)
-                _save_refreshed_token(sess, token_row, client)
 
     activities: List[Activity] = parse_activities_or_log(raw_list, "strava_browse")
 
@@ -483,7 +521,6 @@ def strava_sync(
         activities = _project_repo.own_activities_only(
             sess, user_info_id, parse_activities_or_log(all_raw, "strava_sync"))
         project_row_id = row.id
-        _save_refreshed_token(sess, token_row, client)
 
     added_holder: Dict[str, int] = {}
 
