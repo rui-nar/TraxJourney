@@ -267,7 +267,7 @@ class TestSyncSkip:
             timezone="UTC", achievement_count=0, kudos_count=0, comment_count=0,
             athlete_count=0, photo_count=0, trainer=False, commute=False,
             manual=False, private=False, flagged=False, average_speed=0.0,
-            max_speed=0.0, has_heartrate=False, pr_count=0, total_photo_count=0,
+            max_speed=0.0, pr_count=0, total_photo_count=0,
             has_kudoed=False, is_edited=True,
         )
         pending = _enrich_activities([act], _FakeClient())

@@ -802,15 +802,10 @@ class ActivityMixin:
         existing.manual = act.manual
         existing.private = act.private
         existing.flagged = act.flagged
-        existing.has_heartrate = act.has_heartrate
         existing.has_kudoed = act.has_kudoed
-        existing.heartrate_opt_out = act.heartrate_opt_out
-        existing.display_hide_heartrate_option = act.display_hide_heartrate_option
         existing.average_speed = act.average_speed
         existing.max_speed = act.max_speed
         existing.gear_id = act.gear_id
-        existing.average_heartrate = act.average_heartrate
-        existing.max_heartrate = act.max_heartrate
         existing.elev_high = act.elev_high
         existing.elev_low = act.elev_low
         if not is_encrypted_envelope(existing.start_latlng_json):
@@ -959,15 +954,10 @@ class ActivityMixin:
             manual=act.manual,
             private=act.private,
             flagged=act.flagged,
-            has_heartrate=act.has_heartrate,
             has_kudoed=act.has_kudoed,
-            heartrate_opt_out=act.heartrate_opt_out,
-            display_hide_heartrate_option=act.display_hide_heartrate_option,
             average_speed=act.average_speed,
             max_speed=act.max_speed,
             gear_id=act.gear_id,
-            average_heartrate=act.average_heartrate,
-            max_heartrate=act.max_heartrate,
             elev_high=act.elev_high,
             elev_low=act.elev_low,
             start_latlng_json=(json.dumps(act.start_latlng) if act.start_latlng
@@ -1067,15 +1057,10 @@ class ActivityMixin:
             flagged=row.flagged,
             average_speed=row.average_speed,
             max_speed=row.max_speed,
-            has_heartrate=row.has_heartrate,
             pr_count=row.pr_count,
             total_photo_count=row.total_photo_count,
             has_kudoed=row.has_kudoed,
             gear_id=row.gear_id,
-            average_heartrate=row.average_heartrate,
-            max_heartrate=row.max_heartrate,
-            heartrate_opt_out=row.heartrate_opt_out,
-            display_hide_heartrate_option=row.display_hide_heartrate_option,
             elev_high=row.elev_high,
             elev_low=row.elev_low,
             start_latlng=start_latlng,

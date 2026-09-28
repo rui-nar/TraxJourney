@@ -49,7 +49,7 @@ def _activity(id, *, type="Ride", day=date(2026, 5, 1), distance=20_000.0,
         timezone="UTC", achievement_count=0, kudos_count=0, comment_count=0,
         athlete_count=1, photo_count=0, trainer=False, commute=False,
         manual=False, private=False, flagged=False, average_speed=0.0,
-        max_speed=0.0, has_heartrate=False, pr_count=0, total_photo_count=0,
+        max_speed=0.0, pr_count=0, total_photo_count=0,
         has_kudoed=False, summary_polyline=polyline,
         start_latlng=list(start) if start else None,
         end_latlng=list(end) if end else None, **kw)

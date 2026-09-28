@@ -89,7 +89,6 @@ def make_activity():
             flagged=False,
             average_speed=2.78,   # m/s ≈ 10 km/h
             max_speed=3.5,
-            has_heartrate=False,
             pr_count=0,
             total_photo_count=0,
             has_kudoed=False,

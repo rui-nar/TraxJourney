@@ -58,9 +58,20 @@ def _seed_row(engine, table_name: str, obj) -> None:
     """Insert using only the columns that exist in *table_name* at _PREV_REV."""
     data = {k: v for k, v in obj.__dict__.items() if not k.startswith("_sa_")}
     tbl = Table(table_name, MetaData(), autoload_with=engine)
-    data = {k: v for k, v in data.items() if k in tbl.columns}
+    data = _fill_dropped(tbl, {k: v for k, v in data.items() if k in tbl.columns})
     with engine.begin() as conn:
         conn.execute(insert(tbl), data)
+
+
+def _fill_dropped(tbl, data: dict) -> dict:
+    """Give a NOT NULL column this historical schema still has but the current
+    model has since dropped (#442's heart-rate flags) its type's zero value,
+    since no ORM default exists for it any more."""
+    for col in tbl.columns:
+        if (col.name not in data and not col.nullable and not col.primary_key
+                and col.server_default is None):
+            data[col.name] = col.type.python_type()
+    return data
 
 
 _COLUMNS = ("total_elevation_gain", "elev_high", "elev_low", "elevation_profile_json",
@@ -270,7 +281,7 @@ def test_rows_are_read_one_at_a_time(tmp_path, monkeypatch):
                 id=aid, user_info_id=1, name="x", type="Ride", source="gpx",
                 elevation_profile_json=big, elevation_profile_low_res_json=big,
             ).__dict__.items() if not k.startswith("_sa_") and k in tbl.columns}
-            conn.execute(insert(tbl), data)
+            conn.execute(insert(tbl), _fill_dropped(tbl, data))
     engine.dispose()
     stored = rows * 2 * len(big)
 

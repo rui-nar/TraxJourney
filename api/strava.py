@@ -34,7 +34,7 @@ from src.auth.oauth import OAuth2Session
 from src.billing.entitlements import ensure_trip_days_quota
 from src.config.settings import Config
 from src.filters.filter_engine import FilterCriteria, FilterEngine
-from src.models.activity import Activity, parse_activities_or_log
+from src.models.activity import Activity, parse_activities_or_log, strip_heartrate
 from src.project.project_io import ProjectIO
 from src.project.project_repo import ProjectRepo
 
@@ -100,14 +100,19 @@ def _load_cache(user_info_id: int) -> Dict[str, Any] | None:
 
 
 def _save_cache(user_info_id: int, raw_activities: List[Dict[str, Any]]) -> None:
-    """Persist the raw Strava activity list to the DB cache."""
+    """Persist the raw Strava activity list to the DB cache.
+
+    Stored whole, so it is the one place a Strava payload reaches the disk
+    unparsed — heart rate is scrubbed here (issue #442), the same way the
+    parsed ``Activity`` never carries it.
+    """
     with get_session() as sess:
         row = sess.get(DBStravaCache, user_info_id)
         if row is None:
             row = DBStravaCache(user_info_id=user_info_id)
             sess.add(row)
         row.fetched_at = time.time()
-        row.activities_json = json.dumps(raw_activities)
+        row.activities_json = json.dumps([strip_heartrate(a) for a in raw_activities])
         sess.commit()
 
 

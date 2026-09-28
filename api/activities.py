@@ -829,7 +829,6 @@ async def import_gpx_activity(
         flagged=False,
         average_speed=metrics.distance / moving_time if moving_time > 0 else 0.0,
         max_speed=0.0,
-        has_heartrate=False,
         pr_count=0,
         total_photo_count=0,
         has_kudoed=False,

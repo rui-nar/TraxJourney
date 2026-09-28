@@ -37,17 +37,17 @@ class Activity:
     flagged: bool
     average_speed: float  # m/s
     max_speed: float  # m/s
-    has_heartrate: bool
     pr_count: int
     total_photo_count: int
     has_kudoed: bool
-    
+
     # Optional fields with defaults (must come last)
     gear_id: Optional[str] = None
-    average_heartrate: Optional[float] = None
-    max_heartrate: Optional[int] = None
-    heartrate_opt_out: bool = False
-    display_hide_heartrate_option: bool = False
+    # Heart rate is deliberately absent (issue #442): it is health data under
+    # GDPR and no feature uses it, so Strava's average_heartrate /
+    # max_heartrate / has_heartrate / heartrate_opt_out /
+    # display_hide_heartrate_option are never parsed, stored or served.
+    # strip_heartrate() scrubs them from raw payloads that are kept whole.
     elev_high: Optional[float] = None
     elev_low: Optional[float] = None
     start_latlng: Optional[List[float]] = None  # [lat, lng]
@@ -123,15 +123,10 @@ class Activity:
             "flagged": self.flagged,
             "average_speed": self.average_speed,
             "max_speed": self.max_speed,
-            "has_heartrate": self.has_heartrate,
             "pr_count": self.pr_count,
             "total_photo_count": self.total_photo_count,
             "has_kudoed": self.has_kudoed,
             "gear_id": self.gear_id,
-            "average_heartrate": self.average_heartrate,
-            "max_heartrate": self.max_heartrate,
-            "heartrate_opt_out": self.heartrate_opt_out,
-            "display_hide_heartrate_option": self.display_hide_heartrate_option,
             "elev_high": self.elev_high,
             "elev_low": self.elev_low,
             "start_latlng": self.start_latlng,
@@ -191,15 +186,10 @@ class Activity:
             flagged=data.get("flagged", False),
             average_speed=data.get("average_speed", 0.0),
             max_speed=data.get("max_speed", 0.0),
-            has_heartrate=data.get("has_heartrate", False),
             pr_count=data.get("pr_count", 0),
             total_photo_count=data.get("total_photo_count", 0),
             has_kudoed=data.get("has_kudoed", False),
             gear_id=data.get("gear_id"),
-            average_heartrate=data.get("average_heartrate"),
-            max_heartrate=data.get("max_heartrate"),
-            heartrate_opt_out=data.get("heartrate_opt_out", False),
-            display_hide_heartrate_option=data.get("display_hide_heartrate_option", False),
             elev_high=_elevation(data.get("elev_high")),
             elev_low=_elevation(data.get("elev_low")),
             start_latlng=data.get("start_latlng"),
@@ -264,6 +254,18 @@ def activity_id_or_none(value: Any) -> Optional[int]:
     if value is None or is_activity_id(value):
         return value
     raise ValueError("activity id is not an integer")
+
+
+def strip_heartrate(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Return *raw* without any heart-rate key (issue #442).
+
+    For the places that persist a Strava payload whole rather than through
+    ``Activity`` — the per-user raw cache in ``stravacache``. Matches by
+    substring so every Strava heart-rate field (``has_heartrate``,
+    ``average_heartrate``, ``max_heartrate``, ``heartrate_opt_out``,
+    ``display_hide_heartrate_option``) and any Strava adds later goes too.
+    """
+    return {k: v for k, v in raw.items() if "heartrate" not in k}
 
 
 def parse_activities_or_log(raw_list: List[Dict[str, Any]], source: str) -> List["Activity"]:
