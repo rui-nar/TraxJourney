@@ -12,14 +12,16 @@ Routes:
 Shaped like ``api/poster.py`` (job row, token routes, 404 semantics), with
 three differences that matter:
 
-* **The API never renders (D7).** No broker ⇒ 503 before anything is
-  written; a failed enqueue fails the job and deletes its geometry.
+* **The API never renders (D7).** No broker, or no worker listening on
+  ``video`` ⇒ 503 before anything is written; a failed enqueue fails the job
+  and deletes its geometry.
 * **The requester pays (D12).** Quota and resolution are always the caller's,
   also on a shared trip reached with ``?owner=``; the job, its emails and its
   download belong to the caller.
 * **Encrypted trips need consent (D2).** The server can't read an encrypted
   activity, so the client sends its decrypted line in ``decrypted_geometry``
-  for this one render. That plaintext is checked here, written only to the
+  for this one render — asked for only when a video can be made at all:
+  availability and the requester's quota are settled first. That plaintext is checked here, written only to the
   job's ``geometry.json`` after the row commits, and never logged, stored in
   the row or echoed in an error (Convention 2).
 """
@@ -52,7 +54,7 @@ from src.billing.entitlements import (
 from src.billing.plans import FULL_HD_HEIGHT
 from src.billing.subscriptions import lock_account
 from src.exceptions.errors import QuotaExceeded
-from src.jobs.queue import QUEUE_VIDEO, enqueue, queue_available
+from src.jobs.queue import QUEUE_VIDEO, enqueue, queue_has_workers
 from src.models.project import Project
 from src.project.project_repo import ProjectRepo
 from src.utils.logging import get_logger
@@ -131,7 +133,8 @@ class QuotaOut(BaseModel):
 
 
 class VideoPlanOut(BaseModel):
-    available: bool = Field(description="A broker and ffmpeg are there to render it")
+    available: bool = Field(
+        description="A broker, a worker listening on `video` and ffmpeg are there to render it")
     length_s: int
     legs: int
     clips: List[ClipOut]
@@ -139,7 +142,8 @@ class VideoPlanOut(BaseModel):
     skipped: List[SkippedOut]
     consent_required: List[int] = Field(
         description="Encrypted activities still without decrypted_geometry "
-                    "(always empty here: a missing one is a 409)")
+                    "(always empty here: a missing one is a 409, and none is asked "
+                    "for while unavailable or with no video left)")
     quota: QuotaOut
     resolutions: List[int] = Field(description="Heights the requester's plan allows")
 
@@ -160,6 +164,12 @@ class JobStatusOut(BaseModel):
 
 def ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None
+
+
+def video_available() -> bool:
+    """A broker, at least one worker listening on ``video``, and ffmpeg.
+    Without a worker a queued job would sit pending until the sweep fails it."""
+    return queue_has_workers(QUEUE_VIDEO) and ffmpeg_available()
 
 
 def _max_height(sess, requester: int) -> int:
@@ -218,13 +228,18 @@ def _unprocessable(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=detail)
 
 
-def _consent(project: Project, geometry: Optional[Dict[int, str]]) -> Dict[int, str]:
-    """The consent geometry to render with, checked before any timeline.
+def _consent(project: Project, geometry: Optional[Dict[int, str]], *,
+             quota: QuotaOut, available: bool,
+             require: bool = True) -> tuple[Dict[int, str], List[int]]:
+    """The consent geometry to render with, checked before any timeline, and
+    the encrypted activities still without one.
 
     Refused (422) past the size bounds before any line is decoded; accepted
     only for activities that are in this trip *and* encrypted (422
-    otherwise); 409 ``consent_required`` while any encrypted activity has
-    none. Error details name activity ids only, never the geometry.
+    otherwise); with *require*, 409 ``consent_required`` while any encrypted
+    activity has none — its body carries *quota* and *available* so the
+    client can tell before asking. Error details name activity ids only,
+    never the geometry.
     """
     geometry = geometry or {}
     too_long = sorted(k for k, v in geometry.items() if len(v) > MAX_LINE_CHARS)
@@ -264,14 +279,16 @@ def _consent(project: Project, geometry: Optional[Dict[int, str]]) -> Dict[int, 
                              f"points for activities: {too_many}")
 
     missing = [i for i in encrypted if i not in geometry]
-    if missing:
+    if missing and require:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
             "code": "consent_required",
             "message": "This trip is encrypted. Its tracks can be drawn only if "
                        "you send them decrypted for this one video.",
             "consent_required": missing,
+            "quota": quota.model_dump(),
+            "available": available,
         })
-    return geometry
+    return geometry, missing
 
 
 def _timeline(project: Project, length_s: int, geometry: Dict[int, str]) -> Timeline:
@@ -325,20 +342,32 @@ def plan_video(
 ):
     """What a video of this trip would be, for the dialog. Writes nothing.
 
-    Consent comes before the timeline, as in ``POST /video``: a trip whose
-    only legs are encrypted activities answers 409, not 422.
+    Availability and quota come first: while no video can be made (no
+    worker, or none left this month) consent is not asked for, and an
+    encrypted trip without its geometry answers 200 with an empty plan.
+    Otherwise consent comes before the timeline, as in ``POST /video``: a
+    trip whose only legs are encrypted activities answers 409, not 422.
     """
     requester = int(current_user["sub"])
+    available = video_available()
     with get_session() as sess:
         _row, project = _load(sess, requester, name, owner)
         _ensure_height(sess, requester, body.height)
-        geometry = _consent(project, body.decrypted_geometry)
-        timeline = _timeline(project, body.length_s, geometry)
         quota = _quota(sess, requester)
         allowed = _max_height(sess, requester)
+        makeable = available and quota.remaining != 0
+        geometry, missing = _consent(project, body.decrypted_geometry, quota=quota,
+                                     available=available, require=makeable)
+        timeline = None if missing else _timeline(project, body.length_s, geometry)
 
+    resolutions = [h for h in HEIGHTS if h <= allowed]
+    if timeline is None:
+        return VideoPlanOut(
+            available=available, length_s=body.length_s, legs=0, clips=[],
+            clip_counts={str(n): 0 for n in LENGTHS}, skipped=[], consent_required=[],
+            quota=quota, resolutions=resolutions)
     return VideoPlanOut(
-        available=queue_available() and ffmpeg_available(),
+        available=available,
         length_s=body.length_s,
         legs=len(timeline.legs),
         clips=[ClipOut(index=c.index, mode=c.clip.mode, start_s=c.start_s,
@@ -351,7 +380,7 @@ def plan_video(
                  for s in timeline.skipped],
         consent_required=[],
         quota=quota,
-        resolutions=[h for h in HEIGHTS if h <= allowed],
+        resolutions=resolutions,
     )
 
 
@@ -366,13 +395,15 @@ def create_video_job(
     """Create a video job and queue it on the ``video`` worker.
 
     In this order, so nothing is written unless the job can run:
-    broker (503) → resolution (402) → consent (409) → timeline (422) →
-    one transaction whose first write locks the requester's account, then
-    the monthly quota (402) and the row → consent geometry file → enqueue
-    (a failure fails the row, deletes the geometry, 503).
+    broker and a ``video`` worker (503) → resolution (402) → monthly quota
+    (402, before any consent geometry is looked at) → consent (409) →
+    timeline (422) → one transaction whose first write locks the
+    requester's account, then the authoritative quota check (402) and the
+    row → consent geometry file → enqueue (a failure fails the row, deletes
+    the geometry, 503).
     """
     requester = int(current_user["sub"])
-    if not queue_available():
+    if not video_available():
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                             detail="Video rendering is not available right now")
 
@@ -380,7 +411,9 @@ def create_video_job(
         row, project = _load(sess, requester, name, owner)
         project_id = row.id
         _ensure_height(sess, requester, body.height)
-        geometry = _consent(project, body.decrypted_geometry)
+        ensure_video_quota(sess, requester)
+        geometry, _ = _consent(project, body.decrypted_geometry,
+                               quota=_quota(sess, requester), available=True)
         _timeline(project, body.length_s, geometry)
 
     request = {"length_s": body.length_s, "height": body.height,

@@ -165,8 +165,13 @@ enum VideoRequestPhase {
   /// The user said no. Nothing was sent.
   declined,
 
-  /// No broker or ffmpeg on the server (plan says so, or a 503).
+  /// No broker, `video` worker or ffmpeg on the server (plan or 409 says
+  /// so, or a 503). No consent is asked for and nothing is sent.
   unavailable,
+
+  /// No video left this month (plan or 409 says so): [VideoRequestNotifier.quota]
+  /// says how many were used. No consent is asked for and nothing is sent.
+  noneLeft,
 
   /// A 402: [VideoRequestNotifier.quotaError] says which limit.
   quotaExceeded,
@@ -200,6 +205,13 @@ class VideoRequestNotifier extends ChangeNotifier {
 
   VideoRequestPhase phase = VideoRequestPhase.loading;
   VideoPlan? plan;
+
+  /// The quota a 409 carried, until a plan replaces it.
+  VideoQuota? _consentQuota;
+
+  /// The requester's quota, from the plan or else the 409.
+  VideoQuota? get quota => plan?.quota ?? _consentQuota;
+
   int lengthS = 60;
   int? height;
   QuotaError? quotaError;
@@ -222,7 +234,10 @@ class VideoRequestNotifier extends ChangeNotifier {
   /// How many decrypted tracks this request will send.
   int get consentedCount => _geometry?.length ?? 0;
 
-  bool get canSubmit => phase == VideoRequestPhase.ready && height != null;
+  bool get canSubmit =>
+      phase == VideoRequestPhase.ready &&
+      height != null &&
+      quota?.exhausted != true;
 
   /// Once the dialog is gone nothing new is sent: a job created then would
   /// be charged and never shown.
@@ -275,7 +290,11 @@ class VideoRequestNotifier extends ChangeNotifier {
       if (height == null || !allowed.contains(height)) {
         height = allowed.isEmpty ? null : allowed.last;
       }
-      _set(p.available ? VideoRequestPhase.ready : VideoRequestPhase.unavailable);
+      _set(!p.available
+          ? VideoRequestPhase.unavailable
+          : p.quota.exhausted
+              ? VideoRequestPhase.noneLeft
+              : VideoRequestPhase.ready);
     } catch (e) {
       _fail(e, forSubmit: false);
     }
@@ -283,7 +302,7 @@ class VideoRequestNotifier extends ChangeNotifier {
 
   Future<void> submit() async {
     final h = height;
-    if (h == null || _disposed) return;
+    if (h == null || _disposed || quota?.exhausted == true) return;
     errorMessage = null;
     quotaError = null;
     _set(VideoRequestPhase.submitting);
@@ -343,6 +362,16 @@ class VideoRequestNotifier extends ChangeNotifier {
     if (e is ApiException) {
       final consent = VideoConsentRequired.fromApiException(e);
       if (consent != null) {
+        // Never ask consent for a video that can't be made.
+        if (consent.available == false) {
+          _set(VideoRequestPhase.unavailable);
+          return;
+        }
+        if (consent.quota?.exhausted == true) {
+          _consentQuota = consent.quota;
+          _set(VideoRequestPhase.noneLeft);
+          return;
+        }
         consentIds = consent.activityIds;
         _consentForSubmit = forSubmit;
         _set(VideoRequestPhase.consentNeeded);

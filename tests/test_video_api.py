@@ -110,7 +110,7 @@ def env(tmp_path, monkeypatch):
 
     # A broker is there; the job is queued, not run, unless a test says so.
     e.enqueued = []
-    monkeypatch.setattr(video_api, "queue_available", lambda: True)
+    monkeypatch.setattr(video_api, "queue_has_workers", lambda name: True)
     monkeypatch.setattr(video_api, "ffmpeg_available", lambda: True)
 
     def _enqueue(queue, func, *args, **kw):
@@ -548,7 +548,7 @@ def test_two_concurrent_free_posts_make_exactly_one_job(env, monkeypatch):
 # ── no broker, enqueue failure (D7) ──────────────────────────────────────────
 
 def test_no_broker_is_503_with_no_row_and_no_file(env, monkeypatch):
-    monkeypatch.setattr(video_api, "queue_available", lambda: False)
+    monkeypatch.setattr(video_api, "queue_has_workers", lambda name: False)
     r = env.client.post("/api/projects/Secret/video", json={
         "length_s": 30, "decrypted_geometry": {"201": SECRET_TRACK, "202": SECRET_ENDPOINTS}})
     assert r.status_code == 503
@@ -581,3 +581,120 @@ def test_geometry_file_is_written_0600_after_the_row(env):
     assert json.loads(path.read_text()) == {"201": SECRET_TRACK, "202": SECRET_ENDPOINTS}
     if os.name == "posix":
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+# ── refuse early: no worker, no video left (F-b) ─────────────────────────────
+
+@pytest.fixture
+def fake_broker(env, monkeypatch):
+    """A reachable fake Redis behind the real worker check."""
+    import fakeredis
+
+    import src.jobs.queue as queue_mod
+
+    server = fakeredis.FakeServer()
+    monkeypatch.setattr(video_api, "queue_has_workers", queue_mod.queue_has_workers)
+    monkeypatch.setattr(queue_mod, "get_redis",
+                        lambda: fakeredis.FakeStrictRedis(server=server))
+    return server
+
+
+def test_a_broker_with_no_video_worker_is_unavailable(env, fake_broker):
+    plan = env.client.post("/api/projects/Trip/video/plan", json={"length_s": 30})
+    assert plan.status_code == 200, plan.text
+    assert plan.json()["available"] is False
+
+    r = env.client.post("/api/projects/Secret/video", json={
+        "length_s": 30, "decrypted_geometry": {"201": SECRET_TRACK, "202": SECRET_ENDPOINTS}})
+    assert r.status_code == 503
+    assert _jobs(env) == [] and env.enqueued == []
+    assert not (paths._DATA_DIR / "users").exists()
+
+
+def test_a_listening_video_worker_makes_it_available(env, fake_broker):
+    import fakeredis
+    from rq import Queue, Worker
+
+    connection = fakeredis.FakeStrictRedis(server=fake_broker)
+    Worker([Queue("video", connection=connection)], connection=connection).register_birth()
+
+    assert env.client.post("/api/projects/Trip/video/plan",
+                           json={"length_s": 30}).json()["available"] is True
+    assert env.client.post("/api/projects/Trip/video", json={"length_s": 30}).status_code == 201
+
+
+def test_a_worker_on_another_queue_does_not_count(env, fake_broker):
+    import fakeredis
+    from rq import Queue, Worker
+
+    connection = fakeredis.FakeStrictRedis(server=fake_broker)
+    Worker([Queue("poster", connection=connection)], connection=connection).register_birth()
+
+    assert env.client.post("/api/projects/Trip/video/plan",
+                           json={"length_s": 30}).json()["available"] is False
+
+
+def test_a_redis_error_in_the_worker_check_is_unavailable_not_500(env, monkeypatch):
+    import src.jobs.queue as queue_mod
+
+    class _Exploding:
+        def __getattr__(self, _name):
+            raise RuntimeError("broker went away")
+
+    monkeypatch.setattr(video_api, "queue_has_workers", queue_mod.queue_has_workers)
+    monkeypatch.setattr(queue_mod, "get_redis", lambda: _Exploding())
+
+    plan = env.client.post("/api/projects/Trip/video/plan", json={"length_s": 30})
+    assert plan.status_code == 200 and plan.json()["available"] is False
+    assert env.client.post("/api/projects/Trip/video", json={"length_s": 30}).status_code == 503
+    assert _jobs(env) == []
+
+
+def test_unavailable_does_not_ask_for_consent(env, monkeypatch):
+    monkeypatch.setattr(video_api, "queue_has_workers", lambda name: False)
+    r = env.client.post("/api/projects/Secret/video/plan", json={"length_s": 30})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["available"] is False and body["consent_required"] == []
+
+
+def _spend_the_free_video(env, monkeypatch):
+    _free_plan_enforced(monkeypatch)
+    assert env.client.post("/api/projects/Trip/video", json={"length_s": 30}).status_code == 201
+
+
+def test_no_video_left_on_an_encrypted_trip_is_said_without_asking_consent(env, monkeypatch):
+    _spend_the_free_video(env, monkeypatch)
+
+    r = env.client.post("/api/projects/Secret/video/plan", json={"length_s": 30})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["quota"] == {"limit": 1, "used": 1, "remaining": 0}
+    assert body["consent_required"] == [] and body["available"] is True
+    assert body["legs"] == 0 and body["clips"] == []
+
+
+def test_no_video_left_is_402_before_any_consent_or_geometry(env, monkeypatch):
+    _spend_the_free_video(env, monkeypatch)
+    calls = _spy_decode(monkeypatch)
+
+    # Without geometry: 402, not 409.
+    r = env.client.post("/api/projects/Secret/video", json={"length_s": 30})
+    assert r.status_code == 402 and r.json()["resource"] == "videos"
+    # With geometry: 402, the lines never decoded, nothing written.
+    r = env.client.post("/api/projects/Secret/video", json={
+        "length_s": 30, "decrypted_geometry": {"201": SECRET_TRACK, "202": SECRET_ENDPOINTS}})
+    assert r.status_code == 402
+    assert calls == []
+    assert len(_jobs(env)) == 1
+    assert not (paths._DATA_DIR / "users").exists()
+
+
+def test_the_409_body_carries_quota_and_availability(env, monkeypatch):
+    _free_plan_enforced(monkeypatch)
+    for url in ("/api/projects/Secret/video", "/api/projects/Secret/video/plan"):
+        r = env.client.post(url, json={"length_s": 30})
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert detail["quota"] == {"limit": 1, "used": 0, "remaining": 1}
+        assert detail["available"] is True
