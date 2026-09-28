@@ -154,6 +154,19 @@ Reviewer: Fable; triager: Opus (same arrangement as rounds 1–2).
 
 Round 3 had no Fix now under the rules; the user overrode R3-1 and R3-2 to Fix now and chose no round 4. Open deferred entries: R1-6, R2-3.
 
+## Unit U3 review, round 1 — 2026-09-28, diff 6459a9ba..2a7cc06f (before integration, DELIVERY.md §5 point 3)
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
+
+### U3R1-1 — videojob has no error_message column, but the video status route copies the poster's shape that has one
+- Trigger: a render fails → U6's status route has no column to report why → the client shows "failed" with no reason, or U6 needs a second migration outside its scope
+- Scores: trigger=plausible (triager: was concrete), impact=degraded-ux, detect=user-visible, later=expensive, fix=S/local, confidence=verified
+- Decision: Fix now (D5) — approved by the user 2026-09-28
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
+
 ## Delivery
 
 Feature branch `feat/trip-video` (from `docs/trip-video-plan`, PR #498 to be closed in favour of the feature PR). Split approved by the user 2026-09-28 without overrides. The implementer and verifier project agents were not registered in the session; their instructions ran on general-purpose agents with the routed model.
