@@ -187,7 +187,7 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
 ### U7R1-1 — Consent geometry built from /meta activities, whose polylines are deferred: a tracked encrypted activity is sent as a 2-point line
 - Trigger: E2EE user opens a trip and creates a video before the background details fetch has merged (or it failed / trip loaded offline) → summary_polyline is null because /meta defers it → client sends start/end as a 2-point line → server accepts it → video draws straight lines, ready email, quota used, nothing tells the user
 - Scores: trigger=concrete, impact=silent-wrong, detect=silent, later=cheap, fix=M/local, confidence=verified
-- Decision: Fix now (D3)
+- Decision: Fix now (D3) — approved by the user 2026-09-28
 - Revisit when: —
 - Guard: —
 - Override: —
@@ -196,7 +196,7 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
 ### U7R1-2 — Cancel stays enabled while POST /video is in flight; the job is created and charged but the client never learns about it
 - Trigger: user taps Create, then Cancel before the response → dialog disposes → server commits, counts and enqueues the job → no status card; later a ready email and "0 of 1 left"
 - Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
-- Decision: Fix now (D6)
+- Decision: Fix now (D6) — approved by the user 2026-09-28
 - Revisit when: —
 - Guard: —
 - Override: —
@@ -205,7 +205,7 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
 ### U7R1-3 — "Download video" plays the MP4 inline instead of saving it; on phones the email link is the only download path
 - Trigger: user opens the ready email on iOS/Android (or web), taps Download → server sends no Content-Disposition → browser plays inline, no save
 - Scores: trigger=concrete, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local (triager: was M — fix is `filename=` on FileResponse in api/video.py), confidence=inferred
-- Decision: Fix now (D7)
+- Decision: Fix now (D7) — approved by the user 2026-09-28
 - Revisit when: —
 - Guard: —
 - Override: —
