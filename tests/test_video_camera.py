@@ -23,7 +23,8 @@ from src.video.camera import (
     viewport_bounds,
     world_to_lonlat,
 )
-from src.video.legs import Leg, LegSet, prefix_km
+from src.models.project import ConnectingSegment, Project, ProjectItem, SegmentEndpoint
+from src.video.legs import Leg, LegSet, build_legs, prefix_km
 from src.video.pacing import Clip, clip_budget_s
 from src.video.timeline import Timeline, build_timeline
 
@@ -343,6 +344,31 @@ def test_overview_frames_contain_the_whole_trip(trip, size):
         assert box["south"] <= min(lats) and max(lats) <= box["north"], n
         overview += 1
     assert overview >= (2.5 + 3.0 - TRANSITION_S) * FPS - 1
+
+
+# ── the antimeridian (F1-5) ──────────────────────────────────────────────────
+
+def _pacific_flight() -> LegSet:
+    """Tokyo to Los Angeles: a great-circle arc across the ±180° meridian."""
+    seg = ConnectingSegment(id="f", segment_type="flight", date="2026-05-01",
+                            start=SegmentEndpoint(35.55, 139.78),
+                            end=SegmentEndpoint(33.94, -118.41))
+    return build_legs(Project(name="Pacific", items=[ProjectItem(item_type="segment", segment=seg)]))
+
+
+@pytest.mark.parametrize("size", [HD, SMALL])
+def test_a_pacific_flight_is_framed_the_short_way(size):
+    """Every frame's viewport spans well under the whole world, the overview
+    holds the whole route, and the followed marker stays on screen."""
+    tl = build_timeline(_pacific_flight(), 30)
+    for n, shot in enumerate(camera_path(tl, FPS, size)):
+        box = viewport_bounds(shot.lon, shot.lat, shot.zoom, size)
+        assert box["east"] - box["west"] < 180, n
+        state = tl.sample(n / FPS)
+        if state.kind == "clip" and not shot.flying:
+            assert _marker_offset(shot, state, size) < 0.5, n
+        elif state.kind == "end":
+            assert box["west"] < 139.78 and -118.41 + 360 < box["east"], n
 
 
 # ── Convention 4 ─────────────────────────────────────────────────────────────

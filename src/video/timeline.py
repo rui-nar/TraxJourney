@@ -75,7 +75,7 @@ class FrameState:
     clip_index: Optional[int]         # None on the title and end cards
     sub_index: Optional[int]          # the leg's position inside its clip
     leg_index: Optional[int]          # the leg's position in Timeline.legs
-    lon: float
+    lon: float                        # unwrapped, may lie past ±180 (legs.unwrap_lons)
     lat: float
     heading: float                    # degrees clockwise from north, [0, 360)
     mode: str

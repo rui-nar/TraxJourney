@@ -23,6 +23,14 @@ not by the trip's extent.
 Over budget, the plan is redone with a lower highest band — coarser tiles,
 scaled up onto the frame — until it fits. The camera's framing never changes;
 only the basemap's resolution does.
+
+The map wraps east–west. Trip longitudes are unwrapped (``legs.unwrap_lons``),
+so a frame over the Pacific may lie partly or wholly past ±180°, and a sheet's
+x range may run below 0 or past the world's width. Each sheet is stitched from
+*pieces*, one per world copy it overlaps, each shifted back into the world and
+drawn by ``render_basemap`` like any other box, so only valid tile x indices
+are ever requested. A frame shows at most one copy of the world, centred on
+the frame; wider than that (the whole world at band 0), the rest stays black.
 """
 from __future__ import annotations
 
@@ -64,16 +72,29 @@ class Sheet:
     last: int       # last frame that uses it
 
     @property
-    def bounds(self) -> Dict[str, float]:
+    def pieces(self) -> List[Tuple[int, int, Dict[str, float]]]:
+        """``(offset, width, bounds)`` per world copy the sheet overlaps:
+        where the piece starts on the sheet, its width in sheet pixels, and
+        its lon/lat box shifted back into [-180, 180]."""
         world = _world(self.band)
-        west, north = world_to_lonlat(self.x0 / world, self.y0 / world)
-        east, south = world_to_lonlat(self.x1 / world, self.y1 / world)
-        return {"west": west, "south": south, "east": east, "north": north}
+        out = []
+        for k in range(math.floor(self.x0 / world), math.ceil(self.x1 / world)):
+            a, b = max(self.x0, k * world), min(self.x1, (k + 1) * world)
+            if b <= a:
+                continue
+            west, north = world_to_lonlat((a - k * world) / world, self.y0 / world)
+            east, south = world_to_lonlat((b - k * world) / world, self.y1 / world)
+            out.append((a - self.x0, b - a,
+                        {"west": west, "south": south, "east": east, "north": north}))
+        return out
 
     @property
     def tiles(self) -> int:
-        x_min, x_max, y_min, y_max = tile_range_for_bounds(self.bounds, self.band, TILE_SIZE)
-        return (x_max - x_min + 1) * (y_max - y_min + 1)
+        total = 0
+        for _, _, bounds in self.pieces:
+            x_min, x_max, y_min, y_max = tile_range_for_bounds(bounds, self.band, TILE_SIZE)
+            total += (x_max - x_min + 1) * (y_max - y_min + 1)
+        return total
 
 
 @dataclass
@@ -136,8 +157,13 @@ def _plan(shots: Sequence[Shot], size: Size, max_band: Optional[int]) -> BandPla
         for band, weight in band_weights(shot.zoom, max_band):
             world = _world(band)
             l, t, r, b = view_rect(shot, band, size)
-            rect = (max(0, math.floor(l) - MARGIN_PX), max(0, math.floor(t) - MARGIN_PX),
-                    min(world, math.ceil(r) + MARGIN_PX), min(world, math.ceil(b) + MARGIN_PX))
+            # East–west, one copy of the world centred on the frame (it wraps);
+            # north–south, the world's edge.
+            c = (l + r) / 2.0
+            rect = (max(math.floor(c - world / 2), math.floor(l) - MARGIN_PX),
+                    max(0, math.floor(t) - MARGIN_PX),
+                    min(math.ceil(c + world / 2), math.ceil(r) + MARGIN_PX),
+                    min(world, math.ceil(b) + MARGIN_PX))
             i = open_.get(band)
             if i is not None:
                 s = sheets[i]
@@ -214,8 +240,16 @@ class Basemaps:
             # max_zoom=band pins render_basemap to this band (it would pick
             # band + 1 for a PIXEL_RATIO-sized target), and at that zoom a
             # @2x tile lands on the sheet unscaled.
-            img = self._render(s.bounds, s.x1 - s.x0, s.y1 - s.y0,
-                               tile_fetcher=self._fetcher, max_zoom=s.band)
+            pieces = s.pieces
+            if len(pieces) == 1:
+                img = self._render(pieces[0][2], s.x1 - s.x0, s.y1 - s.y0,
+                                   tile_fetcher=self._fetcher, max_zoom=s.band)
+            else:  # across the world's edge: one render per world copy
+                img = Image.new("RGB", (s.x1 - s.x0, s.y1 - s.y0))
+                for offset, width, bounds in pieces:
+                    img.paste(self._render(bounds, width, s.y1 - s.y0,
+                                           tile_fetcher=self._fetcher, max_zoom=s.band),
+                              (offset, 0))
             self.tiles_fetched += s.tiles
             self._images[i] = img
         return img

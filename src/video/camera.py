@@ -14,6 +14,11 @@ Zoom is Web Mercator zoom on the 512 px logical tile grid of
 ``src/poster/tile_stitcher.py``. That module's projection math is re-derived
 here rather than imported: it loads Pillow and requests at import time, and
 this module must not (Convention 4).
+
+Longitudes may lie outside [-180, 180]: the legs' are unwrapped across the
+trip (``legs.unwrap_lons``), and the projection is linear in longitude, so a
+route over the ±180° meridian is framed and followed along its short way, with
+world x below 0 or above 1. The basemap wraps them back into the world.
 """
 from __future__ import annotations
 
@@ -70,7 +75,8 @@ class Shot(NamedTuple):
 
 def lonlat_to_world(lon: float, lat: float) -> Tuple[float, float]:
     """(lon, lat) degrees → Web Mercator (x, y) in [0, 1], (0, 0) at the NW
-    corner: ``tile_stitcher.lonlat_to_pixel`` divided by the world size."""
+    corner: ``tile_stitcher.lonlat_to_pixel`` divided by the world size.
+    A longitude past ±180 maps past the world's edge (x < 0 or x > 1)."""
     lat = math.radians(min(max(lat, -MAX_LAT), MAX_LAT))
     x = (lon + 180.0) / 360.0
     y = (1.0 - math.log(math.tan(lat) + 1.0 / math.cos(lat)) / math.pi) / 2.0
@@ -78,6 +84,8 @@ def lonlat_to_world(lon: float, lat: float) -> Tuple[float, float]:
 
 
 def world_to_lonlat(x: float, y: float) -> Tuple[float, float]:
+    """The inverse of :func:`lonlat_to_world`, unwrapped: x outside [0, 1]
+    gives a longitude outside [-180, 180]."""
     lon = x * 360.0 - 180.0
     lat = math.degrees(math.atan(math.sinh(math.pi * (1.0 - 2.0 * y))))
     return lon, lat
@@ -90,7 +98,8 @@ def _world_px(zoom: float) -> float:
 
 def viewport_bounds(lon: float, lat: float, zoom: float, size: Size) -> Dict[str, float]:
     """The lon/lat box a *size* = (width, height) frame shows around
-    (lon, lat) at *zoom*, as ``{"west", "south", "east", "north"}``."""
+    (lon, lat) at *zoom*, as ``{"west", "south", "east", "north"}``; west
+    is always below east, either may lie past ±180."""
     x, y = lonlat_to_world(lon, lat)
     hw, hh = size[0] / 2.0 / _world_px(zoom), size[1] / 2.0 / _world_px(zoom)
     west, north = world_to_lonlat(x - hw, y - hh)

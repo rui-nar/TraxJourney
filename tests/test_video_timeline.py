@@ -470,3 +470,51 @@ def test_pure_modules_import_no_framework():
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                          check=True)
     assert out.stdout.strip() == ""
+
+
+# ── the antimeridian (F1-5) ──────────────────────────────────────────────────
+
+TOKYO = (35.55, 139.78)      # (lat, lon)
+LAX = (33.94, -118.41)
+
+
+def _pacific_trip() -> Project:
+    """Tokyo, a flight to Los Angeles across the ±180° meridian, a walk there."""
+    walk = [(LAX[0] + 0.001 * i, LAX[1] + 0.002 * i) for i in range(12)]
+    return _project(
+        _segment("flight", day=date(2026, 5, 1), start=TOKYO, end=LAX),
+        _activity(1, type="Walk", day=date(2026, 5, 2), distance=2_500.0,
+                  moving_time=1800, polyline=polyline_lib.encode(walk),
+                  start=walk[0], end=walk[-1]))
+
+
+def _wrapped(lon):
+    return (lon + 180.0) % 360.0 - 180.0
+
+
+def test_a_pacific_flight_is_animated_the_short_way():
+    """Sampled every frame, the marker moves a little at a time and never
+    over Europe or Africa, heading east the whole way."""
+    tl = timeline_for_project(_pacific_trip(), 30)
+    fps = tl.fps
+    states = [tl.sample(n / fps) for n in range(int(tl.total_s * fps) + 1)]
+    lons = [s.lon for s in states]
+    assert max(abs(b - a) for a, b in zip(lons, lons[1:])) < 2.0
+    assert min(abs(_wrapped(lon)) for lon in lons) > 110
+    flight = [s for s in states if s.kind == "clip" and s.mode == "flight"]
+    assert len(flight) > fps
+    assert all(30 < s.heading < 150 for s in flight)
+
+
+def test_longitudes_stay_continuous_across_legs():
+    """The flight lands past +180 and the walk that follows starts there
+    too, not 360° away; distances are those of the real route."""
+    legs = build_legs(_pacific_trip()).legs
+    flight, walk = legs
+    lons = [lon for leg in legs for lon, _ in leg.coords]
+    assert all(abs(b - a) < 180 for a, b in zip(lons, lons[1:]))
+    assert flight.coords[0][0] == pytest.approx(TOKYO[1])
+    assert flight.coords[-1][0] == pytest.approx(LAX[1] + 360)
+    assert walk.coords[0][0] == pytest.approx(LAX[1] + 360, abs=1e-4)
+    assert 8500 < flight.km < 9000
+    assert walk.cum_km[-1] < 3.0

@@ -4,6 +4,12 @@ A leg carries what pacing and sampling need and nothing else: the geometry
 with its prefix distances, the mode, the real duration it stands for, the
 distance and speed the video shows, and its date.
 
+Longitudes are *unwrapped* across the whole trip (:func:`unwrap_lons`): each
+point sits within 180° of the one before it, from one leg to the next, so a
+route across the ±180° meridian is one continuous line whose longitudes run
+past ±180 rather than jumping 360° back. Interpolation, bearings, bounding
+boxes and the camera then take its short way with no special case.
+
 :func:`feature_coords` also lives here, rather than in ``api/geo.py`` whose
 features it draws: this module must stay importable without FastAPI or a DB
 (Convention 4), and the map and the video have to draw the same line.
@@ -149,6 +155,24 @@ def prefix_km(coords: Sequence[Sequence[float]]) -> Tuple[float, ...]:
     return tuple(out)
 
 
+def unwrap_lons(coords: Sequence[Sequence[float]],
+                ref: Optional[float] = None) -> Tuple[Tuple[float, float], ...]:
+    """*coords* ``(lon, lat)`` with each longitude shifted by a multiple of
+    360° to lie within 180° of the one before it — the first one of *ref*,
+    when given (the previous leg's last longitude). Shifting by whole turns
+    keeps every point where it is on the globe, and haversine distances
+    unchanged."""
+    out: List[Tuple[float, float]] = []
+    prev = ref
+    for lon, lat in coords:
+        lon = float(lon)
+        if prev is not None:
+            lon -= 360.0 * round((lon - prev) / 360.0)
+        out.append((lon, float(lat)))
+        prev = lon
+    return tuple(out)
+
+
 def _parse_date(value: Optional[str]) -> Optional[date]:
     try:
         return date.fromisoformat(value) if value else None
@@ -166,8 +190,8 @@ def is_encrypted_activity(activity: Activity) -> bool:
             or activity.end_latlng_enc is not None)
 
 
-def _activity_leg(index: int, activity: Activity, coords: Coords) -> Leg:
-    pts = tuple((float(lon), float(lat)) for lon, lat in coords)
+def _activity_leg(index: int, activity: Activity,
+                  pts: Tuple[Tuple[float, float], ...]) -> Leg:
     cum = prefix_km(pts)
     mode = activity_mode(activity.type)
     km = activity.distance / 1000.0 if activity.distance and activity.distance > 0 else cum[-1]
@@ -184,8 +208,8 @@ def _activity_leg(index: int, activity: Activity, coords: Coords) -> Leg:
                date=activity.start_date_local.date() if activity.start_date_local else None)
 
 
-def _segment_leg(index: int, seg: ConnectingSegment, coords: Coords) -> Leg:
-    pts = tuple((float(lon), float(lat)) for lon, lat in coords)
+def _segment_leg(index: int, seg: ConnectingSegment,
+                 pts: Tuple[Tuple[float, float], ...]) -> Leg:
     cum = prefix_km(pts)
     mode = seg.segment_type if seg.segment_type in SEGMENT_MODES else "flight"
     speed = real_speed_kmh(mode)
@@ -214,6 +238,10 @@ def _fill_dates(legs: List[Leg]) -> List[Leg]:
     return out
 
 
+def _last_lon(legs: Sequence[Leg]) -> Optional[float]:
+    return legs[-1].coords[-1][0] if legs else None
+
+
 def build_legs(project: Project,
                geometry: Optional[Mapping[int, str]] = None) -> LegSet:
     """*project*'s legs in item order.
@@ -237,11 +265,11 @@ def build_legs(project: Project,
                           else "no_geometry")
                 skipped.append(Skipped("activity", activity.id, reason))
                 continue
-            legs.append(_activity_leg(len(legs), activity, coords))
+            legs.append(_activity_leg(len(legs), activity, unwrap_lons(coords, _last_lon(legs))))
         elif item.item_type == "segment" and item.segment is not None:
             coords = feature_coords(item.segment)
             if coords is None:
                 skipped.append(Skipped("segment", item.segment.id, "no_geometry"))
                 continue
-            legs.append(_segment_leg(len(legs), item.segment, coords))
+            legs.append(_segment_leg(len(legs), item.segment, unwrap_lons(coords, _last_lon(legs))))
     return LegSet(legs=tuple(_fill_dates(legs)), skipped=tuple(skipped))

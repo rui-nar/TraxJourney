@@ -318,6 +318,59 @@ def test_golden_comparison_catches_a_moved_route():
     assert mean > 2.0 or far > 0.01
 
 
+def test_a_frame_across_the_antimeridian_wraps_the_basemap():
+    """A Tokyo to Los Angeles flight: a frame whose viewport crosses ±180°
+    requests only valid tiles, and shows the world's last tile column west
+    of the meridian and its first column east of it."""
+    seg = ConnectingSegment(id="f", segment_type="flight", date="2026-05-01",
+                            start=SegmentEndpoint(35.55, 139.78),
+                            end=SegmentEndpoint(33.94, -118.41))
+    tl = build_timeline(build_legs(Project(name="Pacific", items=[
+        ProjectItem(item_type="segment", segment=seg)])), 30.0)
+    size = (640, 360)
+    requested = []
+
+    def fetcher(z, x, y):
+        requested.append((z, x, y))
+        return fake_tile(z, x, y)
+
+    frames = FrameRenderer(tl, size, "Pacific", tile_fetcher=fetcher)
+
+    def screen(shot, px, py):
+        cx, cy = lonlat_to_world(shot.lon, shot.lat)
+        scale = TILE_SIZE * 2 ** shot.zoom
+        return size[0] / 2 + (px - cx) * scale, size[1] / 2 + (py - cy) * scale
+
+    def on_screen(x, y):
+        return 8 <= x < size[0] - 8 and 8 <= y < size[1] - 8
+
+    checked = 0
+    for n, shot in enumerate(frames.shots):
+        refs = frames.plan.frames[n]
+        if len(refs) != 1 or tl.sample(n / tl.fps).kind != "clip":
+            continue
+        band = frames.plan.sheets[refs[0][0]].band
+        tiles = 2 ** band
+        cy = lonlat_to_world(shot.lon, shot.lat)[1]
+        ty = int(cy * tiles)
+        py = (ty + (0.25 if cy * tiles % 1 < 0.5 else 0.75)) / tiles
+        west, east = (1 - 0.15 / tiles, py), (1 + 0.15 / tiles, py)
+        if not all(on_screen(*screen(shot, *p)) for p in (west, east)):
+            continue
+        base = frames.basemap(n)
+        img = frames.frame(n)
+        for (px, _), tx in ((west, tiles - 1), (east, 0)):
+            got = base.getpixel(tuple(round(v) for v in screen(shot, px, py)))
+            assert max(abs(g - e) for g, e in zip(got, tile_color(band, tx, ty))) <= 3, n
+        assert img.size == size
+        checked += 1
+        if checked == 3:
+            break
+    assert checked == 3
+    assert requested
+    assert all(0 <= x < 2 ** z and 0 <= y < 2 ** z for z, x, y in requested)
+
+
 # ── encoding ─────────────────────────────────────────────────────────────────
 
 @needs_ffmpeg

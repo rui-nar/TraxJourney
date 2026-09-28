@@ -49,6 +49,27 @@ draws.
   one level at a time until the plan fits: coarser tiles, scaled up. The
   camera's framing never changes, and the render never fails for the budget.
 
+## The antimeridian
+
+A route across the ±180° meridian (a Tokyo to Los Angeles flight, a ferry or
+a track in Fiji) is animated, framed and drawn along its short way.
+
+- **Unwrapped longitudes.** `build_legs` (`legs.py`) shifts each point's
+  longitude by a whole number of turns so it lies within 180° of the point
+  before it. This carries on from one leg to the next, so the Los Angeles
+  walk after the flight continues at about 241.6° rather than -118.4°. The
+  interpolation, bearings, bounding boxes, camera and overlay all work on
+  these continuous longitudes, which may lie past ±180 (world x below 0 or
+  above 1). Distances don't change, because haversine is periodic in
+  longitude.
+- **Wrapped basemap.** A sheet whose x range runs past the world's edge is
+  stitched from one `render_basemap` call per world copy that it overlaps.
+  Each piece is shifted back into [-180, 180], so only valid tile indices
+  are requested and `render_basemap` itself is unchanged.
+- **One world copy per frame.** A frame shows at most one copy of the world,
+  centred on the frame. A frame wider than the world (only at band 0) is
+  black beyond that copy, as it was before.
+
 ## Overlay (`src/video/overlay.py`)
 
 - **Route.** The whole route is drawn as a faint white line. The travelled
