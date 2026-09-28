@@ -4,7 +4,8 @@
 /// its consent step (D2) through [showVideoConsentDialog].
 ///
 /// Pops itself when the job has started (handing the id to [onStarted]) or
-/// when the user declines consent.
+/// when the user declines consent. It can't be closed while the job is being
+/// created: the server would make (and charge) a job nobody is shown.
 library;
 
 import 'package:flutter/material.dart';
@@ -25,6 +26,7 @@ class VideoConfigDialog extends StatefulWidget {
   /// Injectable for tests; production uses the shared [api] singleton.
   final ApiClient? client;
   final FieldRevealer? reveal;
+  final TrackFetcher? fetchTrack;
 
   const VideoConfigDialog({
     super.key,
@@ -33,6 +35,7 @@ class VideoConfigDialog extends StatefulWidget {
     required this.onStarted,
     this.client,
     this.reveal,
+    this.fetchTrack,
   });
 
   @override
@@ -45,6 +48,7 @@ class _VideoConfigDialogState extends State<VideoConfigDialog> {
     activities: widget.activities,
     client: widget.client,
     reveal: widget.reveal,
+    fetchTrack: widget.fetchTrack,
   );
 
   @override
@@ -86,29 +90,52 @@ class _VideoConfigDialogState extends State<VideoConfigDialog> {
   Widget build(BuildContext context) {
     return ListenableBuilder(
       listenable: _n,
-      builder: (context, _) => AlertDialog(
-        title: const Text('Create video'),
-        content: SizedBox(
-          width: 380,
-          child: SingleChildScrollView(child: _body(context)),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Cancel'),
+      builder: (context, _) {
+        final submitting = _n.phase == VideoRequestPhase.submitting;
+        return PopScope(
+          canPop: !submitting,
+          child: AlertDialog(
+            title: const Text('Create video'),
+            content: SizedBox(
+              width: 380,
+              child: SingleChildScrollView(child: _body(context)),
+            ),
+            actions: [
+              TextButton(
+                onPressed:
+                    submitting ? null : () => Navigator.of(context).pop(),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: _n.canSubmit ? () => _run(_n.submit) : null,
+                child: const Text('Create video'),
+              ),
+            ],
           ),
-          FilledButton(
-            onPressed: _n.canSubmit ? () => _run(_n.submit) : null,
-            child: const Text('Create video'),
-          ),
-        ],
-      ),
+        );
+      },
     );
   }
 
   Widget _body(BuildContext context) {
     final theme = Theme.of(context);
     switch (_n.phase) {
+      case VideoRequestPhase.loading when _n.consentProgress != null:
+        return Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const CircularProgressIndicator(),
+              const SizedBox(height: 16),
+              Text(
+                  'Decrypting tracks on this device: '
+                  '${_n.consentProgress} of ${_n.consentIds.length}',
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.bodyMedium),
+            ],
+          ),
+        );
       case VideoRequestPhase.loading:
       case VideoRequestPhase.submitting:
       case VideoRequestPhase.consentNeeded:

@@ -1,14 +1,17 @@
 // Widget tests for the trip-video dialog (docs/TRIP_VIDEO_PLAN.md, U7): the
 // consent dialog on an encrypted trip (geometry sent only after "Send and
 // continue", nothing on "Decline"), the upgrade message on a 402 and the
-// unavailable state.
+// unavailable state; tracks /meta deferred fetched with progress; and no way
+// to close the dialog while a job is being created (U7a).
 //
 // The dialog shows a CircularProgressIndicator while busy, so pumpAndSettle
 // would never return then: fixed frames are pumped instead.
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -17,6 +20,7 @@ import 'package:traxjourney_client/src/api/client.dart';
 import 'package:traxjourney_client/src/core/project_ref.dart';
 import 'package:traxjourney_client/src/projects/video_config_dialog.dart';
 import 'package:traxjourney_client/src/projects/video_consent_dialog.dart';
+import 'package:traxjourney_client/src/projects/video_job_notifier.dart';
 
 http.Response _json(int status, Object body) => http.Response(
       jsonEncode(body),
@@ -64,7 +68,9 @@ void main() {
   late int? startedJob;
 
   Future<void> open(WidgetTester tester,
-      Future<http.Response> Function(http.Request) handler) async {
+      Future<http.Response> Function(http.Request) handler,
+      {List<Map<String, dynamic>> Function() activities = _activities,
+      TrackFetcher? fetchTrack}) async {
     sent = [];
     startedJob = null;
     final client = ApiClient(httpClient: MockClient((req) async {
@@ -80,10 +86,11 @@ void main() {
               context: context,
               builder: (_) => VideoConfigDialog(
                 projectRef: const ProjectRef(name: 'Trip'),
-                activities: _activities,
+                activities: activities,
                 onStarted: (id) => startedJob = id,
                 client: client,
                 reveal: (v) async => v,
+                fetchTrack: fetchTrack,
               ),
             ),
             child: const Text('open'),
@@ -186,5 +193,112 @@ void main() {
     final create = tester.widget<FilledButton>(
         find.widgetWithText(FilledButton, 'Create video'));
     expect(create.onPressed, isNull);
+  });
+
+  group('U7a', () {
+    // /meta deferred 7's polyline: the consent step has to fetch it.
+    List<Map<String, dynamic>> deferred() => [
+          {
+            'id': 7,
+            'map': {'summary_polyline': null},
+          },
+        ];
+
+    Future<http.Response> consentOnCreate(http.Request req) async {
+      if (req.url.path.endsWith('/plan')) return _json(200, _plan());
+      return hasGeometry(req)
+          ? _json(201, {'job_id': 12})
+          : _json(409, _consent409);
+    }
+
+    bool isCreate(http.Request r) => r.url.path == '/api/projects/Trip/video';
+
+    testWidgets('Cancel, Escape and back do nothing while the job is being '
+        'created; the job is then reported', (tester) async {
+      final created = Completer<http.Response>();
+      await open(tester, (req) async {
+        if (req.url.path.endsWith('/plan')) return _json(200, _plan());
+        return created.future;
+      });
+      await tester.tap(find.widgetWithText(FilledButton, 'Create video'));
+      await _frames(tester);
+
+      final cancel =
+          tester.widget<TextButton>(find.widgetWithText(TextButton, 'Cancel'));
+      expect(cancel.onPressed, isNull);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await _frames(tester);
+      await tester.binding.handlePopRoute();
+      await _frames(tester);
+      expect(find.byType(VideoConfigDialog), findsOneWidget);
+
+      created.complete(_json(201, {'job_id': 13}));
+      await _frames(tester);
+      expect(startedJob, 13);
+      expect(find.byType(VideoConfigDialog), findsNothing);
+    });
+
+    testWidgets('a deferred track is fetched with progress shown and sent '
+        'decrypted', (tester) async {
+      final gate = Completer<Map<String, dynamic>?>();
+      await open(tester, consentOnCreate,
+          activities: deferred, fetchTrack: (_) => gate.future);
+      await tester.tap(find.widgetWithText(FilledButton, 'Create video'));
+      await _frames(tester);
+      await tester.tap(find.text('Send and continue'));
+      await _frames(tester);
+      expect(find.text('Decrypting tracks on this device: 0 of 1'),
+          findsOneWidget);
+
+      gate.complete({
+        'id': 7,
+        'map': {'summary_polyline': _track},
+      });
+      await _frames(tester);
+      expect((jsonDecode(sent.last.body) as Map)['decrypted_geometry'],
+          {'7': _track});
+      expect(startedJob, 12);
+    });
+
+    testWidgets('Cancel while tracks are being fetched sends no job',
+        (tester) async {
+      final gate = Completer<Map<String, dynamic>?>();
+      await open(tester, consentOnCreate,
+          activities: deferred, fetchTrack: (_) => gate.future);
+      await tester.tap(find.widgetWithText(FilledButton, 'Create video'));
+      await _frames(tester);
+      await tester.tap(find.text('Send and continue'));
+      await _frames(tester);
+      expect(sent.where(isCreate), hasLength(1));
+
+      await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+      await _frames(tester);
+      expect(find.byType(VideoConfigDialog), findsNothing);
+
+      gate.complete({
+        'id': 7,
+        'map': {'summary_polyline': _track},
+      });
+      await _frames(tester);
+      expect(sent.where(isCreate), hasLength(1),
+          reason: 'only the create the 409 answered');
+      expect(startedJob, isNull);
+    });
+
+    testWidgets('a failed track fetch sends nothing and says so',
+        (tester) async {
+      await open(tester, consentOnCreate,
+          activities: deferred,
+          fetchTrack: (_) async => throw Exception('offline'));
+      await tester.tap(find.widgetWithText(FilledButton, 'Create video'));
+      await _frames(tester);
+      await tester.tap(find.text('Send and continue'));
+      await _frames(tester);
+
+      expect(find.textContaining("Couldn't load this trip's encrypted tracks"),
+          findsOneWidget);
+      expect(sent.where(hasGeometry), isEmpty);
+      expect(startedJob, isNull);
+    });
   });
 }

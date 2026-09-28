@@ -3,6 +3,7 @@
 // building that geometry on the device, and VideoRequestNotifier's phases —
 // above all that decrypted geometry leaves the device only after consent.
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -40,7 +41,9 @@ final consent409 = {
   }
 };
 
-// Activity 7 has a decrypted track; 8 has none, only encrypted endpoints.
+// Activity 7's track is already merged and decrypted. 8's polyline is
+// deferred by /meta (null); its stored geometry says it has no track, only
+// encrypted endpoints.
 const track7 = '_p~iF~ps|U_ulLnnqC_mqNvxq`@';
 List<Map<String, dynamic>> activities() => [
       {
@@ -60,7 +63,26 @@ List<Map<String, dynamic>> activities() => [
 Future<String?> fakeReveal(String? v) async => switch (v) {
       'v1.a.b' => '[48.85, 2.35]',
       'v1.c.d' => '[48.86, 2.36]',
+      'v1.track.enc' => track7,
       _ => v,
+    };
+
+/// What `GET …/activities/8/track` returns for the trackless activity 8.
+Map<String, dynamic> stored8() => {
+      'id': 8,
+      'map': {'summary_polyline': null},
+      'start_latlng': null,
+      'end_latlng': null,
+      'start_latlng_enc': 'v1.a.b',
+      'end_latlng_enc': 'v1.c.d',
+    };
+
+/// Records the ids fetched; serves [stored] (activity 8 by default).
+TrackFetcher fakeFetch(List<int> fetched,
+        [Map<int, Map<String, dynamic>>? stored]) =>
+    (id) async {
+      fetched.add(id);
+      return (stored ?? {8: stored8()})[id];
     };
 
 void main() {
@@ -76,18 +98,57 @@ void main() {
   });
 
   group('buildConsentGeometry', () {
-    test('sends the track, or the decrypted endpoints as a 2-point line',
-        () async {
+    test('sends the merged track; a stored geometry with no track sends the '
+        'decrypted endpoints as a 2-point line', () async {
+      final fetched = <int>[];
+      final progress = <int>[];
       final r = await buildConsentGeometry([7, 8], activities(),
-          reveal: fakeReveal);
+          fetchTrack: fakeFetch(fetched),
+          reveal: fakeReveal,
+          onProgress: progress.add);
       expect(r.missing, isEmpty);
+      expect(r.fetchFailed, isFalse);
+      expect(fetched, [8], reason: "7's track is already merged");
       expect(r.geometry[7], track7);
       final line = decodePolyline(r.geometry[8]!);
       expect(line.map((p) => (p.lat, p.lon)).toList(),
           [(48.85, 2.35), (48.86, 2.36)]);
+      expect(progress, [1, 2]);
+    });
+
+    test('a track /meta deferred is fetched and decrypted, not replaced by '
+        'its endpoints', () async {
+      final fetched = <int>[];
+      final r = await buildConsentGeometry([8], activities(),
+          fetchTrack: fakeFetch(fetched, {
+            8: {
+              ...stored8(),
+              'map': {'summary_polyline': 'v1.track.enc'},
+            },
+          }),
+          reveal: fakeReveal);
+      expect(fetched, [8]);
+      expect(r.missing, isEmpty);
+      expect(r.geometry[8], track7);
+      expect(decodePolyline(r.geometry[8]!), hasLength(3));
+    });
+
+    test('a fetched track that stays ciphertext is missing, not 2 points',
+        () async {
+      final r = await buildConsentGeometry([8], activities(),
+          fetchTrack: fakeFetch([], {
+            8: {
+              ...stored8(),
+              'map': {'summary_polyline': 'v1.other.key'},
+            },
+          }),
+          reveal: fakeReveal);
+      expect(r.geometry, isEmpty);
+      expect(r.missing, [8]);
     });
 
     test('an activity still encrypted on this device is missing', () async {
+      final fetched = <int>[];
       final r = await buildConsentGeometry(
         [7, 9],
         [
@@ -96,10 +157,27 @@ void main() {
             'map': {'summary_polyline': 'v1.locked.cipher'},
           },
         ],
+        fetchTrack: fakeFetch(fetched, {}),
         reveal: (v) async => v, // locked: reveal is the identity
       );
+      expect(fetched, [9]);
       expect(r.geometry, isEmpty);
       expect(r.missing, [7, 9]);
+    });
+
+    test('a failed fetch stops there and says so', () async {
+      final fetched = <int>[];
+      final r = await buildConsentGeometry(
+        [8, 10],
+        activities(),
+        fetchTrack: (id) async {
+          fetched.add(id);
+          throw Exception('offline');
+        },
+        reveal: fakeReveal,
+      );
+      expect(r.fetchFailed, isTrue);
+      expect(fetched, [8]);
     });
   });
 
@@ -108,7 +186,7 @@ void main() {
 
     VideoRequestNotifier notifier(
         Future<http.Response> Function(http.Request) handler,
-        {FieldRevealer reveal = fakeReveal}) {
+        {FieldRevealer reveal = fakeReveal, TrackFetcher? fetchTrack}) {
       sent = [];
       final client = ApiClient(httpClient: MockClient((req) async {
         sent.add(req);
@@ -120,6 +198,7 @@ void main() {
         activities: activities,
         client: client,
         reveal: reveal,
+        fetchTrack: fetchTrack ?? fakeFetch([]),
       );
     }
 
@@ -256,6 +335,69 @@ void main() {
       await n.loadPlan();
       await n.submit();
       expect(n.phase, VideoRequestPhase.unavailable);
+    });
+
+    test('without an injected fetcher the track comes from the per-activity '
+        'endpoint, then goes out decrypted', () async {
+      sent = [];
+      final client = ApiClient(httpClient: MockClient((req) async {
+        sent.add(req);
+        if (req.method == 'GET') {
+          return _json(200, {
+            ...stored8(),
+            'map': {'summary_polyline': 'v1.track.enc'},
+          });
+        }
+        return body(req).containsKey('decrypted_geometry')
+            ? _json(200, planJson())
+            : _json(409, consent409);
+      }))
+        ..setToken('jwt');
+      final n = VideoRequestNotifier(
+        ref: const ProjectRef(name: 'Trip'),
+        activities: activities,
+        client: client,
+        reveal: fakeReveal,
+      );
+      await n.loadPlan();
+      await n.acceptConsent();
+      expect(n.phase, VideoRequestPhase.ready);
+      expect(sent[1].method, 'GET');
+      expect(sent[1].url.path, '/api/projects/Trip/activities/8/track');
+      final geometry = body(sent.last)['decrypted_geometry'] as Map;
+      expect(geometry['8'], track7);
+    });
+
+    test('a failed track fetch sends nothing and says so', () async {
+      final n = notifier((_) async => _json(409, consent409),
+          fetchTrack: (_) async => throw Exception('offline'));
+      await n.loadPlan();
+      await n.acceptConsent();
+      expect(n.phase, VideoRequestPhase.error);
+      expect(n.errorMessage, contains("Couldn't load this trip's encrypted"));
+      expect(n.consentProgress, isNull);
+      expect(sent, hasLength(1));
+    });
+
+    test('disposed while fetching tracks: the create is never sent', () async {
+      final gate = Completer<Map<String, dynamic>?>();
+      final n = notifier((req) async {
+        if (req.url.path.endsWith('/plan')) return _json(200, planJson());
+        return body(req).containsKey('decrypted_geometry')
+            ? _json(201, {'job_id': 5})
+            : _json(409, consent409);
+      }, fetchTrack: (_) => gate.future);
+      await n.loadPlan();
+      await n.submit();
+      expect(n.phase, VideoRequestPhase.consentNeeded);
+      final accepting = n.acceptConsent();
+      await Future<void>.delayed(Duration.zero);
+      expect(n.consentProgress, 1, reason: '7 needs no fetch');
+      n.dispose();
+      gate.complete(stored8());
+      await accepting;
+      expect(sent.where((r) => r.url.path == '/api/projects/Trip/video'),
+          hasLength(1), reason: 'only the create the 409 answered');
     });
 
     test('422 shows the server detail', () async {

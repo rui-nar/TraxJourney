@@ -6,8 +6,9 @@
 /// asks for consent when [VideoRequestPhase.consentNeeded] comes up.
 ///
 /// Consent geometry is built here, on the device, from the activities
-/// `ProjectNotifier` already decrypted (see its `_revealActivities`). It is
-/// held only in memory for this one request and sent only after
+/// `ProjectNotifier` already decrypted (see its `_revealActivities`), each
+/// track `/meta` deferred fetched and decrypted here. It is held only in
+/// memory for this one request and sent only after
 /// [VideoRequestNotifier.acceptConsent]; a declined request sends nothing.
 library;
 
@@ -54,40 +55,75 @@ String encodePolyline(List<(double, double)> points) {
 /// Reveals one stored field; `encryption.reveal` in production.
 typedef FieldRevealer = Future<String?> Function(String? value);
 
+/// Fetches one activity's stored geometry (the track editor's
+/// `GET …/activities/{id}/track`, still encrypted); null when the trip has no
+/// such activity. Throws when the request fails.
+typedef TrackFetcher = Future<Map<String, dynamic>?> Function(int activityId);
+
 /// The consent geometry for [ids]: each activity's decrypted track, or for
-/// one without a track its decrypted start and end as a 2-point line.
-/// `missing` lists the ids this device could not decrypt (locked
-/// encryption, a wrong key, or no geometry at all).
-Future<({Map<int, String> geometry, List<int> missing})> buildConsentGeometry(
+/// one that has no track its decrypted start and end as a 2-point line.
+///
+/// A track already merged into [activities] by the details fetch is used as
+/// is. Otherwise — `/meta` defers polylines, so null there does not mean "no
+/// track" — the activity's stored geometry is fetched with [fetchTrack] and
+/// decrypted here; only when that confirms there is no track do the
+/// endpoints stand in for it.
+///
+/// `missing` lists the ids this device could not decrypt (locked encryption,
+/// a wrong key, or no geometry at all). `fetchFailed` is set when a fetch
+/// failed; fetching stops there, since nothing is sent unless every
+/// activity is there. [onProgress] is called with how many of [ids] are done.
+Future<({Map<int, String> geometry, List<int> missing, bool fetchFailed})>
+    buildConsentGeometry(
   List<int> ids,
   List<Map<String, dynamic>> activities, {
+  required TrackFetcher fetchTrack,
   FieldRevealer? reveal,
+  void Function(int done)? onProgress,
 }) async {
   final doReveal = reveal ?? encryption.reveal;
   final byId = {for (final a in activities) a['id']?.toString(): a};
   final geometry = <int, String>{};
   final missing = <int>[];
+  var done = 0;
   for (final id in ids) {
-    final a = byId[id.toString()];
+    var a = byId[id.toString()];
+    if (a == null || _polylineOf(a) == null) {
+      try {
+        a = await fetchTrack(id);
+      } catch (_) {
+        return (geometry: geometry, missing: missing, fetchFailed: true);
+      }
+    }
     final line = a == null ? null : await _activityLine(a, doReveal);
     if (line == null) {
       missing.add(id);
     } else {
       geometry[id] = line;
     }
+    onProgress?.call(++done);
   }
-  return (geometry: geometry, missing: missing);
+  return (geometry: geometry, missing: missing, fetchFailed: false);
 }
 
 bool _plain(String? v) =>
     v != null && v.isNotEmpty && !EncryptedField.isEnvelope(v);
 
+String? _polylineOf(Map<String, dynamic> a) {
+  final map = a['map'];
+  final p = map is Map ? map['summary_polyline'] : null;
+  return p is String && p.isNotEmpty ? p : null;
+}
+
+/// [a]'s track, decrypted; its endpoints when it has no track; null when
+/// either can't be decrypted. A track that stays ciphertext is null, never
+/// the endpoints: a straight line would silently stand in for a real track.
 Future<String?> _activityLine(
     Map<String, dynamic> a, FieldRevealer reveal) async {
-  final map = a['map'];
-  final polyline = await reveal(
-      map is Map ? map['summary_polyline'] as String? : null);
-  if (_plain(polyline)) {
+  final stored = _polylineOf(a);
+  if (stored != null) {
+    final polyline = await reveal(stored);
+    if (!_plain(polyline)) return null;
     try {
       if (decodePolyline(polyline!).length >= 2) return polyline;
     } catch (_) {
@@ -150,11 +186,16 @@ class VideoRequestNotifier extends ChangeNotifier {
   final ApiClient? client;
   final FieldRevealer? reveal;
 
+  /// Fetches an activity's stored track for consent; defaults to
+  /// `GET …/activities/{id}/track` through [client].
+  final TrackFetcher? fetchTrack;
+
   VideoRequestNotifier({
     required this.ref,
     required this.activities,
     this.client,
     this.reveal,
+    this.fetchTrack,
   });
 
   VideoRequestPhase phase = VideoRequestPhase.loading;
@@ -174,14 +215,37 @@ class VideoRequestNotifier extends ChangeNotifier {
   /// Whether the consent step interrupted [submit] rather than [loadPlan].
   bool _consentForSubmit = false;
 
+  /// How many of [consentIds] have been fetched and decrypted, while
+  /// [acceptConsent] runs; null otherwise.
+  int? consentProgress;
+
   /// How many decrypted tracks this request will send.
   int get consentedCount => _geometry?.length ?? 0;
 
   bool get canSubmit => phase == VideoRequestPhase.ready && height != null;
 
+  /// Once the dialog is gone nothing new is sent: a job created then would
+  /// be charged and never shown.
+  bool _disposed = false;
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
   void _set(VideoRequestPhase p) {
+    if (_disposed) return;
     phase = p;
     notifyListeners();
+  }
+
+  Future<Map<String, dynamic>?> _fetchTrack(int id) async {
+    final f = fetchTrack;
+    if (f != null) return f(id);
+    final data =
+        await (client ?? api).get(ref.path('/activities/$id/track'));
+    return data as Map<String, dynamic>;
   }
 
   void setLength(int s) {
@@ -219,7 +283,7 @@ class VideoRequestNotifier extends ChangeNotifier {
 
   Future<void> submit() async {
     final h = height;
-    if (h == null) return;
+    if (h == null || _disposed) return;
     errorMessage = null;
     quotaError = null;
     _set(VideoRequestPhase.submitting);
@@ -237,12 +301,25 @@ class VideoRequestNotifier extends ChangeNotifier {
     }
   }
 
-  /// Decrypts the asked-for activities on this device and resumes what the
-  /// 409 interrupted. Sends nothing when any of them can't be decrypted.
+  /// Fetches and decrypts the asked-for activities on this device and
+  /// resumes what the 409 interrupted. Sends nothing when any of them can't
+  /// be fetched or decrypted.
   Future<void> acceptConsent() async {
+    consentProgress = 0;
     _set(VideoRequestPhase.loading);
     final built = await buildConsentGeometry(consentIds, activities(),
-        reveal: reveal);
+        fetchTrack: _fetchTrack, reveal: reveal, onProgress: (done) {
+      consentProgress = done;
+      if (!_disposed) notifyListeners();
+    });
+    consentProgress = null;
+    if (_disposed) return;
+    if (built.fetchFailed) {
+      errorMessage = "Couldn't load this trip's encrypted tracks. Check your "
+          'connection and try again.';
+      _set(VideoRequestPhase.error);
+      return;
+    }
     if (built.missing.isNotEmpty) {
       errorMessage = "Some of this trip's encrypted activities can't be "
           'decrypted on this device. Unlock encryption and try again.';
