@@ -96,3 +96,60 @@ Envelope question raised: may two ZIP imports run at once within 768 MB, or is a
 - Guard: —
 - Override: —
 - Outcome: fixed (plan revised)
+
+## Round 2 — 2026-09-28, plan reviewed at 523130c4 (round-1 revisions only)
+
+### R2-1 — "Keep both" of the trip's own ZIP subtracts already_present from the quota although every photo is placed
+- Trigger: A user at their storage limit imports their own trip's ZIP with Keep both → every uuid is subtracted, so the quota check passes with ~0 incoming → the copy writes and counts every photo → over quota with no 402, and it can be repeated.
+- Scores: trigger=concrete, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3, floor F3)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (plan revised)
+
+### R2-2 — The guard is taken in the endpoint, after the whole upload has been received
+- Trigger: A user starts a 600 MB ZIP import while another runs → the whole body is spooled before the endpoint runs → only then a 503 → the upload was wasted, and two archives spooled at once.
+- Scores: trigger=concrete, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (plan revised)
+
+### R2-3 — StagedPhotos is defined by U2 and returned by U3 in the same wave with no shared file
+- Trigger: U2 and U3 each define their own type in parallel worktrees → U4 can't join them within its Scope → an X3 stop or a shim.
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (plan revised)
+
+### R2-4 — A crash between commit and placement leaves rows naming photos whose only copies the stale-staging sweep later deletes
+- Trigger: The API is killed after the ingest commit, before placement ends → broken images → a day later the sweep deletes the staging directory silently.
+- Scores: trigger=plausible, impact=wrong-visible, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Guard (D9). Not F2: the files were never placed, the uploader keeps the ZIP, and a Replace re-import restores them.
+- Revisit when: —
+- Guard: The sweep logs at ERROR each directory it removes that still holds files, with its age, its file count and (from a manifest written by the stager) the importer and trip.
+- Override: —
+- Outcome: guard written into the plan (Decision 8.5, U3 manifest, U4 Do 9)
+
+### R2-5 — Between commit and the end of placement, viewers of a replaced shared trip see photo names without files
+- Trigger: The owner replaces a shared trip from a large ZIP → a companion loading it during placement gets 404 thumbnails until reload.
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=inferred
+- Decision: Defer (D10)
+- Revisit when: A user reports broken thumbnails on a shared trip right after a ZIP Replace; placement of a large archive is measured at more than a few seconds; or the implementation calls record_written per photo or renames on the event loop (check both at delivery review).
+- Guard: —
+- Override: —
+- Outcome: open
+
+### R2-6 — The rename-failure follow-up rewrites photos_json without the per-memory photo lock (flagged: floor F3, theoretical)
+- Trigger: theoretical — a same-volume rename fails while a companion uploads to the same kept memory → the follow-up drops the companion's new name.
+- Scores: trigger=theoretical, impact=silent-wrong, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Guard (D4), flagged to the owner: re-reading under photo_lock(kind, row id) and removing only that uuid costs about the same as the guard.
+- Revisit when: —
+- Guard: The follow-up's ERROR log records the kind, the row id, the removed uuid, and the photos_json it read and the one it wrote.
+- Override: Owner upgraded it to the lock-based fix (2026-09-28): "put the lock-based fix in the plan".
+- Outcome: fixed (plan revised: Decision 8.3, U4 Do 8)
+

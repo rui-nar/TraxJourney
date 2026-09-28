@@ -97,8 +97,12 @@ Users moving a trip between accounts, or restoring one, lose every photo.
      - Before ingest, `already_present(sess, owner, name, project)` returns
        the uuids that are already in place. It uses Replace's matching:
        memories by `public_id`, the owner's journal entries by id.
-     - Those uuids' staged bytes are subtracted from the total. The same set
-       is what placement skips (Decision 8).
+     - Those uuids' staged bytes are subtracted from the total, **only when
+       the outcome is Replace** (the name is taken and `on_conflict=replace`)
+       (R2-1).
+     - A copy ("Keep both") or a new name creates fresh rows, so every
+       staged photo is placed and counted in full.
+     - The same set is what placement skips on Replace (Decision 8).
    - (Owner decision, 2026-09-28.)
 4. **The ZIP's trip file is the full `.traxj` document.** It is what
    `export_project_traxj` writes, plus `photo_refs` on memories and journal
@@ -154,14 +158,27 @@ Users moving a trip between accounts, or restoring one, lose every photo.
       - **A photo already in place is skipped.** On Replace, a kept row's uuid
         whose file already exists in its folder is not in the placement list.
         It is not overwritten, not counted again, and never removed.
-      - If a rename fails after commit (a disk error), that uuid is removed
-        from its row's `photos_json` in a follow-up update and logged at
-        ERROR, so no name is left dangling.
+      - **If a rename fails after commit** (a disk error), that uuid is
+        removed from its row's `photos_json` in a follow-up update, so no name
+        is left dangling (R2-6).
+        - The update runs under `photo_lock(kind, row id)` from
+          `api/photo_locks.py` ("memory" or "journal"), like
+          `_write_memory_photo`.
+        - It re-reads the row inside the lock and removes only that uuid, so
+          a photo a companion added in the meantime is kept.
+        - It then busts the trip's cached payloads. The ERROR log records the
+          kind, row id and uuid.
    4. **A failed import writes no file.** An import that fails before commit
       has moved nothing.
    5. **Cleanup.** The staging directory is always removed. Staging
       directories older than a day, left by a crash, are removed at the start
-      of the next import.
+      of the next import (R2-4).
+      - Each staging directory holds a `manifest.json` written by the stager:
+        importer id, trip name, created time.
+      - The sweep logs at ERROR each stale directory it removes that still
+        holds photo files, with its age, file count and manifest. A crash
+        between commit and placement then shows up in the logs instead of
+        vanishing.
    - This keeps #434's rule: a failed import leaves no file behind.
 9. **Stored photo names come from the trip file's list, filtered, never from a
    folder listing.** (R1-3)
@@ -192,9 +209,19 @@ Users moving a trip between accounts, or restoring one, lose every photo.
     - `/import` and `/import-zip` share one process-wide non-blocking
       `threading.BoundedSemaphore(1)`. It is shaped like `_thumb_semaphore`
       in `api/memories.py`, and the API runs as a single uvicorn process.
+    - **It is taken in the capped upload route's wrapper**
+      (`_CappedUploadRoute`), before any of the request body is received
+      (R2-2).
+      - That is where the declared-size 413 is already refused.
+      - FastAPI parses and spools the multipart body before the endpoint
+        runs, so a check in the endpoint would come too late.
+      - It is released in a `finally` around the handler: on success, on
+        every error, and on a 413 raised mid-stream.
     - A request that finds it taken gets 503 "Another trip import is in
-      progress. Try again in a minute." at once, before its trip file or
-      archive is read.
+      progress. Try again in a minute." at once, before its body is read.
+      - The wrapper runs before authentication, so an unauthenticated request
+        may see that 503 instead of 401 while an import runs, which is
+        harmless.
     - The memory budget is then one import (a trip file of at most 50 MB plus
       one photo decode at a time) beside the running process.
     - Rules out: queueing imports, which would hold uploads of up to 1 GB
@@ -275,7 +302,30 @@ What this plan adds to REVIEW.md §2's defaults:
 
 ## Execution units
 
-### Wave 1 — disjoint files
+### Wave 0 — the shared staging type
+
+**U0 — `StagedPhoto` / `StagedPhotos` (R2-3)**
+- **Goal:** one module owns the type that U3 produces and U2 consumes.
+- **Scope:** `src/project/staged_photos.py` (new);
+  `tests/test_staged_photos.py` (new).
+- **Context:** the dataclass style of `PhotoRemoval` in
+  `src/project/repo_transfer.py`.
+- **Do:** define exactly:
+  - `@dataclass(frozen=True) class StagedPhoto: full: Path; thumb: Path;
+    bytes: int`, where `bytes` is full plus thumbnail on disk;
+  - `StagedPhotos = Dict[Tuple[str, int], Dict[str, StagedPhoto]]`, keyed by
+    `(kind, file item id)` with `kind` in `{"memories", "journal"}` (the
+    `photo_folder` kinds), then by photo uuid;
+  - `def staged_total(staged: StagedPhotos, skip: Set[Tuple[str, int, str]] =
+    frozenset()) -> int`: the bytes of every staged photo not in `skip`.
+- **Acceptance:** a unit test of `staged_total` with and without `skip`; the
+  pytest CI command passes.
+- **Out of scope:** anything else.
+- **Latitude:** none.
+- **Escalate if:** X3.
+- **Depends on:** —
+
+### Wave 1 — disjoint files (after U0)
 
 **U1 — Full-format ZIP export with journal photos, streamed (#484)**
 - **Goal:** the ZIP export carries the full `.traxj` document plus memory and
@@ -329,8 +379,8 @@ photos**
   `record_written` in `src/billing/usage.py`. Follow the `PhotoRemoval`
   pattern: the function returns what the caller must do after commit.
 - **Do:**
-  1. Add a `StagedPhotos` input: a mapping
-     `(kind, file item id) → {uuid: StagedPhoto(full, thumb, bytes)}`.
+  1. Take `StagedPhotos` from `src/project/staged_photos.py` (U0) as an
+     optional input. Don't define another type.
   2. In `_write_content`, compute each memory's and journal entry's
      `photos_json` by Decision 9: the file's list, filtered, never a folder
      listing.
@@ -344,9 +394,12 @@ photos**
      - The existing return values (name, removals) are kept, so the list is
        added beside them.
   4. `place_photos(data_dir, importer, placements)`: rename each staged file
-     into `photo_folder(...)` via `photo_file()`, then `record_written`.
-     - On a rename failure, remove that uuid from the row's `photos_json` in
-       a follow-up commit and log at ERROR.
+     into `photo_folder(...)` via `photo_file()`.
+     - Call `record_written` once, with every placed path (one usage commit,
+       not one per photo).
+     - Return the `(kind, row id, uuid)` of each failed rename. The locked
+       follow-up that removes those names is U4's, because `photo_lock`
+       lives in `api/`.
   5. `already_present(sess, owner, name, project)`: the set of `(kind, file
      item id, uuid)` whose file is already in the matching kept row's folder.
      It uses Replace's matching: memories by `public_id`, the owner's journal
@@ -365,8 +418,8 @@ photos**
   - A forced retry (an IntegrityError on the first commit) still returns
     every staged photo in the final placement list, and no file moved during
     the failed attempt.
-  - `place_photos` puts files under the new row id and records usage. A
-    failed rename leaves the row without that name.
+  - `place_photos` puts files under the new row id, records usage in one
+    call, and returns a failed rename (simulated) instead of raising.
   - `already_present` matches Replace's matching.
   - The existing `tests/test_import_*.py` pass with their assertions
     unchanged.
@@ -375,7 +428,7 @@ photos**
 - **Escalate if:** a companion's journal entries on Replace would need
   photos moved; any change to how rows are matched on Replace; changing an
   existing test assertion; X3.
-- **Depends on:** —
+- **Depends on:** U0.
 
 **U3 — Shared photo processing and a safe ZIP stager**
 - **Goal:**
@@ -410,7 +463,9 @@ photos**
        entry names in Decision 6. Read each with a 25 MB counted limit,
        decode, and write the full file and thumbnail into `staging_dir`.
        One photo is decoded at a time.
-     - Return the `Project` and the `StagedPhotos` mapping, with each photo's
+     - Write `manifest.json` (importer id, trip name, created time) into
+       `staging_dir` first; the caller passes the importer and name.
+     - Return the `Project` and the `StagedPhotos` mapping (U0's type), with each photo's
        bytes (full plus thumbnail), so the caller can total them minus
        `already_present`.
      - Every uploader fault raises one `InvalidTripArchive(message)`.
@@ -435,7 +490,7 @@ photos**
 - **Latitude:** local design.
 - **Escalate if:** the pixel limit would change an existing upload test's
   outcome; X3.
-- **Depends on:** —
+- **Depends on:** U0.
 
 ### Wave 2 — endpoint and client (disjoint)
 
@@ -454,10 +509,12 @@ photos**
 - **Do:**
   1. Parameterise the capped route by limit, with 1 GB for ZIPs.
   2. Accept `.zip` only.
-  3. **The guard (Decision 12):** a module-level
-     `threading.BoundedSemaphore(1)`, taken non-blocking at the start of both
-     `/import` and `/import-zip`. When it is taken, answer 503 with a
-     readable `detail`. Release it in `finally`.
+  3. **The guard (Decision 12, R2-2):** a module-level
+     `threading.BoundedSemaphore(1)`, taken non-blocking in the capped route
+     wrapper that both `/import` and `/import-zip` use, before any of the
+     body is received.
+     - When it is taken, answer 503 with a readable `detail`.
+     - Release it in a `finally` around the handler call.
   4. Name from the file name, as `/import` does. **Before reading the
      archive (R1-9):** the name conflict (409) and `ensure_project_quota`
      (not on Replace).
@@ -466,12 +523,21 @@ photos**
      in the system temp dir (R1-10).
   6. Run `read_trip_zip` in a threadpool on the spooled file, never
      `file.read()`.
-  7. `ensure_storage_quota(importer, staged bytes − already_present bytes)`,
-     also on Replace (Decision 3, R1-6).
-  8. Ingest with the staged photos, then `place_photos` after the commit
-     (Decision 8).
-  9. Always remove the staging directory.
-  10. Queue the same refreshes and cache bust as `/import`.
+  7. `ensure_storage_quota(importer, staged_total(staged, skip))`, also on
+     Replace (Decision 3, R1-6).
+     - `skip` is `already_present(...)` **only when the outcome is Replace**,
+       and the empty set for copy or a new name (R2-1).
+  8. Ingest with the staged photos, then run `place_photos` after the commit
+     in the threadpool (Decision 8).
+     - For each failed rename it returns, run the locked follow-up from
+       Decision 8.3: under `photo_lock(kind, row id)`, re-read the row,
+       remove only that uuid, commit, bust the trip's payloads, and log at
+       ERROR (R2-6).
+  9. The stale-staging sweep (step 5) logs at ERROR each directory it
+     removes that still holds photo files, with its age, file count and
+     `manifest.json` (R2-4).
+  10. Always remove the staging directory.
+  11. Queue the same refreshes and cache bust as `/import`.
 - **Acceptance:** tests for:
   - create, copy and replace with photos, where the files exist, thumbnails
     are regenerated and storage usage increases by the placed bytes only;
@@ -484,15 +550,24 @@ photos**
   - a 400 on a bad archive or image;
   - a 413 over the cap, declared and chunked;
   - a failed commit leaves no photo file anywhere and no staging directory;
-  - a second import, `.traxj` or ZIP, while one holds the guard gets 503, and
-    the guard is released after success and after every failure;
+  - "Keep both" of the trip's own ZIP by a user at their storage limit gets
+    402, with no rows and no files (R2-1);
+  - a second import, `.traxj` or ZIP, while one holds the guard gets 503
+    without its body being consumed (assert the receive channel was not
+    read), and the guard is released after success, after every failure,
+    and after a mid-stream 413 (R2-2);
+  - a simulated failed rename after commit: the row loses only that uuid,
+    and a photo name added to the same row between the commit and the
+    follow-up is kept (R2-6);
+  - the stale-staging sweep logs an ERROR with the manifest for a directory
+    that still holds photos (R2-4);
   - the staging directory is under `<data_dir>/tmp/`;
   - a 1 GB-cap test does not allocate 1 GB (use a patched limit).
   The pytest CI command passes.
 - **Out of scope:** the client; changes to `/import` other than the guard.
 - **Latitude:** local design.
 - **Escalate if:** peak memory can't be kept independent of archive size; X3.
-- **Depends on:** U1 (same file, so a later wave), U2, U3.
+- **Depends on:** U0, U1 (same file, so a later wave), U2, U3.
 
 **U5 — Client: import a ZIP**
 - **Goal:** the import picker accepts `.traxj` and `.zip`, and sends a ZIP to
