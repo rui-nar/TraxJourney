@@ -399,3 +399,86 @@ def test_save_cache_cannot_interleave_with_a_disconnect(file_engine, post, monke
     assert not disconnect.is_alive()
     assert seen["disconnect_blocked"] is True
     _assert_nothing_left(file_engine, uid)
+
+
+# ── A rotation committed between the revoke and the delete (review R3-1) ───────
+#
+# Real interleavings: the disconnect / deletion runs on its own thread, and the
+# mocked Strava revoke holds it at the network call while this thread commits
+# the rotated tokens through the callback path, exactly as an in-flight fetch's
+# refresh would. The row then holds tokens the revoke never saw.
+
+def _seed_valid(engine) -> int:
+    with Session(engine) as sess:
+        u = UserInfo(display_name="A", email="a@e.com")
+        sess.add(u)
+        sess.commit()
+        sess.refresh(u)
+        sess.add(StravaToken(user_info_id=u.id, access_token=ACCESS,
+                             refresh_token=REFRESH, expires_at=time.time() + 3600))
+        sess.commit()
+        return u.id
+
+
+def _revoke_that_waits(post: MagicMock, revoking, rotated) -> None:
+    """The first revoke signals ``revoking`` and returns only once ``rotated``
+    is set; every other call answers 200 at once."""
+    import threading
+    first = threading.Event()
+
+    def _post(url, **_kwargs):
+        if url == OAuth2Session.REVOKE_URL and not first.is_set():
+            first.set()
+            revoking.set()
+            rotated.wait(10.0)
+        return MagicMock(status_code=200)
+    post.side_effect = _post
+
+
+def _rotate_through_callback(uid: int) -> None:
+    strava_module._persist_rotated_token(uid, {
+        "access_token": NEW_ACCESS, "refresh_token": NEW_REFRESH,
+        "expires_at": time.time() + 21600,
+    })
+
+
+def _run_with_rotation_during_revoke(post, target, uid: int) -> None:
+    import threading
+    revoking, rotated = threading.Event(), threading.Event()
+    _revoke_that_waits(post, revoking, rotated)
+    worker = threading.Thread(target=target)
+    worker.start()
+    assert revoking.wait(10.0), "the revoke never went out"
+    _rotate_through_callback(uid)      # commits: no lock is held during the call
+    rotated.set()
+    worker.join(35.0)
+    assert not worker.is_alive()
+
+
+def test_disconnect_revokes_tokens_rotated_during_its_revoke(file_engine, post):
+    uid = _seed_valid(file_engine)
+
+    _run_with_rotation_during_revoke(post, lambda: _disconnect(uid), uid)
+
+    assert _revoked_tokens(post) == [REFRESH, NEW_REFRESH]
+    _assert_nothing_left(file_engine, uid)
+
+
+def test_account_deletion_revokes_tokens_rotated_during_its_revoke(file_engine, post, monkeypatch):
+    from src.auth.account_deletion import delete_user_and_data
+
+    monkeypatch.setenv("STRAVA_CLIENT_ID", "id")
+    monkeypatch.setenv("STRAVA_CLIENT_SECRET", "secret")
+    for var in ("BILLING_ENABLED", "BILLING_ENFORCE_QUOTAS", "STRIPE_SECRET_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    uid = _seed_valid(file_engine)
+
+    def _delete():
+        with Session(file_engine) as sess:
+            delete_user_and_data(sess, uid)
+    _run_with_rotation_during_revoke(post, _delete, uid)
+
+    assert _revoked_tokens(post) == [REFRESH, NEW_REFRESH]
+    _assert_nothing_left(file_engine, uid)
+    with Session(file_engine) as sess:
+        assert sess.get(UserInfo, uid) is None

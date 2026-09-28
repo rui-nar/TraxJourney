@@ -363,9 +363,10 @@ def delete_user_and_data(sess: Session, user_info_id: int) -> None:
     strava_token = sess.exec(
         select(StravaToken).where(StravaToken.user_info_id == user_info_id)
     ).first()
+    revoked_refresh = None
     if strava_token is not None:
-        access, refresh = strava_token.access_token, strava_token.refresh_token
-        deauthorize_strava(user_info_id, access, refresh)
+        access, revoked_refresh = strava_token.access_token, strava_token.refresh_token
+        deauthorize_strava(user_info_id, access, revoked_refresh)
     # Stripe was called without holding any lock (never hold SQLite's write
     # lock across the network). A webhook can land in that window and record
     # a first purchase on the row — a customer this deletion never cancelled.
@@ -388,6 +389,20 @@ def delete_user_and_data(sess: Session, user_info_id: int) -> None:
             "nothing was removed. Please try again.",
             status_code=409, code="billing_changed",
         )
+    # A Strava refresh in flight may have rotated the tokens while Strava was
+    # being called above (review R3-1): its callback commits the new ones,
+    # and the row would go below still valid. Re-read under the lock — every
+    # later write queues behind it — and, if the refresh token is not the one
+    # revoked, revoke the row's tokens after the final commit, never here.
+    # Columns, not the entity: the row object loaded above is in the identity
+    # map and a re-select would hand back its stale attributes.
+    rotated = None
+    current_token = sess.execute(
+        select(StravaToken.access_token, StravaToken.refresh_token)
+        .where(StravaToken.user_info_id == user_info_id)
+    ).first()
+    if current_token is not None and current_token.refresh_token != revoked_refresh:
+        rotated = (current_token.access_token, current_token.refresh_token)
 
     project_ids = sess.exec(
         select(DBProject.id).where(DBProject.user_info_id == user_info_id)
@@ -508,6 +523,8 @@ def delete_user_and_data(sess: Session, user_info_id: int) -> None:
             sess.delete(local_user)
 
     sess.commit()
+    if rotated is not None:
+        deauthorize_strava(user_info_id, *rotated)
 
 
 def purge_user_files(user_id: int) -> None:

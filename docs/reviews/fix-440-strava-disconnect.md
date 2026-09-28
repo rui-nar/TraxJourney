@@ -79,3 +79,14 @@ network.
 - Revisit when: A billing_changed 409 is seen in logs or support, a user reports re-authentication prompts after a refused deletion, or delete_user_and_data's step order changes.
 - Override: —
 - Outcome: open
+
+## Round 3 — 2026-09-28, reviewed at d904438e (fixes since 05317ca2)
+
+### R3-1 — Disconnect and account deletion delete a token row a concurrent refresh may have rotated after the revoke
+- Trigger: A user whose access token expired opens the Strava browser (the first call refreshes) and clicks Disconnect during that refresh → the old refresh token is revoked (Strava answers 200), the callback commits the rotated tokens before the delete, and the row holding the new tokens is deleted unrevoked; the app stays authorised, nothing logged. Same gap in delete_user_and_data.
+- Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=L/local (triager corrected from M), confidence=verified
+- Decision: Fix now (D3, F3). New evidence of the R2-1 class; not a duplicate.
+- Override: user: Fix now, with a round-4 review limited to this fix (2026-09-28)
+- Outcome: fixed (disconnect claims the row, reads it under the claim, deletes, and revokes the row's tokens after the commit when its refresh token is not the one revoked; delete_user_and_data re-reads under lock_account and revokes after its final commit)
+
+Envelope question from the reviewer (enrichment builds a StravaAPI without the rotation callback): filed as #512.

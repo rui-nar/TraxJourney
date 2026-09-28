@@ -339,16 +339,28 @@ def strava_disconnect(current_user: Annotated[dict, Depends(get_current_user)]):
         tokens = (row.access_token, row.refresh_token) if row else None
     if tokens is not None:
         deauthorize_strava(user_info_id, *tokens, cfg=_cfg)
+    # A refresh in flight may have rotated the tokens while Strava was being
+    # called (review R3-1): its callback commits the new ones and, revoked as
+    # the old ones were, they would go with the row here, still valid. So the
+    # row is claimed first — a callback queued behind this transaction then
+    # matches no row and revokes its own tokens — and read under that claim;
+    # a rotation that landed earlier shows as a refresh token other than the
+    # one revoked, and is revoked after the commit, never under the lock.
+    rotated = None
     with get_session() as sess:
-        row = sess.exec(
-            select(StravaToken).where(StravaToken.user_info_id == user_info_id)
-        ).first()
-        if row:
+        if _claim_token_row(sess, user_info_id):
+            row = sess.exec(
+                select(StravaToken).where(StravaToken.user_info_id == user_info_id)
+            ).first()
+            if tokens is None or row.refresh_token != tokens[1]:
+                rotated = (row.access_token, row.refresh_token)
             sess.delete(row)
         cache_row = sess.get(DBStravaCache, user_info_id)
         if cache_row is not None:
             sess.delete(cache_row)
         sess.commit()
+    if rotated is not None:
+        deauthorize_strava(user_info_id, *rotated, cfg=_cfg)
 
 
 @router.get("/api/strava/activities", response_model=ActivitiesPageOut,
