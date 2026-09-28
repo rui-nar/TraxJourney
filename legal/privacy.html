@@ -63,9 +63,9 @@ journey you can keep, share and export. This policy explains what the hosted
 service at <strong>traxjourney.com</strong> collects, why, who else receives it,
 how long it is kept and how you can get it back or delete it.</p>
 
-<p>The service is operated by <strong>{{OPERATOR_NAME}}</strong>,
-{{OPERATOR_ADDRESS}} ("we", "us"). For anything about your data, write to
-<a href="mailto:{{CONTACT_EMAIL}}">{{CONTACT_EMAIL}}</a>.</p>
+<p>The service is operated by <strong>Rui NARCISO</strong>,
+Toulouse, France ("we", "us"). For anything about your data, write to
+<a href="mailto:contact@traxjourney.com">contact@traxjourney.com</a>.</p>
 
 <p>TraxJourney is free software. Someone else running their own copy of it
 (a "self-hosted" server) is responsible for that server and its own policy;
@@ -112,6 +112,10 @@ this page only covers the service we run.</p>
     display name you had at the time.</li>
   <li><strong>Posters</strong> you generate, and the settings used to make
     them.</li>
+  <li><strong>Trip videos</strong> you request: the trip, the length and the
+    resolution you chose, and the finished video, which we keep for 30 days.
+    Anyone who has the download link in the email we send can download it
+    during that time.</li>
 </ul>
 
 <h3>People you met</h3>
@@ -204,7 +208,7 @@ until you delete your account.</p>
 <table>
   <tr><th>Purpose</th><th>Data</th><th>Legal basis</th></tr>
   <tr><td>Providing the service you signed up for: your account, trips,
-    imports, sharing, companions, posters, exports</td>
+    imports, sharing, companions, posters, trip videos, exports</td>
     <td>Account, journey, companion and connected-service data</td>
     <td>Performing our contract with you</td></tr>
   <tr><td>Connecting Strava, Polarsteps or Immich</td>
@@ -214,8 +218,8 @@ until you delete your account.</p>
     <td>Payment identifiers, plan, storage usage</td>
     <td>Performing our contract with you; keeping accounting records the law
       requires</td></tr>
-  <tr><td>Sending emails: address confirmation, invitations, poster ready or
-    failed, and messages about the service</td>
+  <tr><td>Sending emails: address confirmation, invitations, poster or video
+    ready or failed, and messages about the service</td>
     <td>Email address, name, trip name</td>
     <td>Performing our contract with you</td></tr>
   <tr><td>Keeping the service secure and working, investigating faults</td>
@@ -242,6 +246,11 @@ the following before sending them, with keys we never receive:</p>
 <p>For now, activities and Polarsteps memories you import after turning
 encryption on, and anything saved from a device that has not been unlocked
 yet, are stored unencrypted. We are working on closing these gaps.</p>
+<p>Trip videos are drawn on our server, which cannot read encrypted tracks. For
+an encrypted trip we ask you first, for each video: if you agree, your device
+decrypts the tracks and sends them for that one video. We use them only to draw
+it and delete them as soon as it is finished or has failed. The video itself is
+a picture of those routes, kept for 30 days as described in section 6.</p>
 <p>Everything else is not end-to-end encrypted, and we can technically read it:
 trip names, dates and times, the locations of memories, journal entries and
 encounters, photos, transport legs, people and encounters, comments, the
@@ -270,13 +279,13 @@ network address and the usual information your browser or phone sends.</p>
   <tr><td>OVH (hosting)</td>
     <td>Everything we store, on servers in Strasbourg, France</td>
     <td>Always</td></tr>
-  <tr><td>{{EMAIL_PROVIDER}} (email delivery)</td>
+  <tr><td>Brevo (Sendinblue SAS, France) (email delivery)</td>
     <td>Recipient address, subject and content of the emails we send</td>
     <td>When we email you, or someone you invite</td></tr>
   <tr><td>Mapbox</td>
     <td>From the app: the map areas and zoom levels you view. From our server:
-      the map area of a poster you generate</td>
-    <td>Whenever a map is shown; when a poster is made</td></tr>
+      the map area of a poster or trip video you generate</td>
+    <td>Whenever a map is shown; when a poster or video is made</td></tr>
   <tr><td>OpenStreetMap Foundation</td>
     <td>From the app: the map area you view in the location picker</td>
     <td>When you pick a location on a map</td></tr>
@@ -323,7 +332,7 @@ where they are, the transfer relies on the safeguards they offer, such as the
 European Commission's standard contractual clauses or an adequacy
 decision.</p>
 <p>Our logs and metrics are stored on monitoring equipment we operate
-ourselves in {{OBSERVABILITY_LOCATION}}, reached over an encrypted private
+ourselves in France, reached over an encrypted private
 network. We may also disclose data where the law requires it.</p>
 
 <h2>6. How long we keep it</h2>
@@ -336,6 +345,8 @@ network. We may also disclose data where the law requires it.</p>
   <li><strong>Server logs:</strong> 30 days in our monitoring system. A limited
     local copy on the server is overwritten as new logs arrive.</li>
   <li><strong>Metrics:</strong> 30 days.</li>
+  <li><strong>Trip videos:</strong> 30 days after the video is ready, then
+    deleted.</li>
   <li><strong>Email confirmation links:</strong> 24 hours.</li>
   <li><strong>Payment records:</strong> Stripe keeps its own records of your
     payments, as the law requires of it.</li>
@@ -364,9 +375,9 @@ network. We may also disclose data where the law requires it.</p>
 </ul>
 <p>Depending on where you live, you may also have the right to access, correct,
 delete or export your data, to restrict or object to how we use it, and to
-complain to a data protection authority, such as {{SUPERVISORY_AUTHORITY}}.
+complain to a data protection authority, such as the Commission Nationale de l'Informatique et des Libertés (CNIL), 3 place de Fontenoy, TSA 80715, 75334 Paris Cedex 07, <a href="https://www.cnil.fr">www.cnil.fr</a>.
 To exercise any of these rights, write to
-<a href="mailto:{{CONTACT_EMAIL}}">{{CONTACT_EMAIL}}</a>.</p>
+<a href="mailto:contact@traxjourney.com">contact@traxjourney.com</a>.</p>
 
 <h2>8. Storage on your device</h2>
 <p>TraxJourney does not use cookies. The app keeps the following on your
@@ -388,7 +399,7 @@ device, in your browser's local storage or your phone's app storage:</p>
 you use them.</p>
 
 <h2>9. Children</h2>
-<p>TraxJourney is not intended for anyone under {{MINIMUM_AGE}}. If you believe
+<p>TraxJourney is not intended for anyone under 18. If you believe
 a child has given us personal data, contact us and we will delete it.</p>
 
 <h2>10. Changes to this policy</h2>
