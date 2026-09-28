@@ -45,6 +45,7 @@ from src.project.repo_transfer import PhotoRemoval, ProjectNameTaken
 from src.utils.logging import request_id_var
 from src.utils.encryption_check import is_encrypted_envelope
 from src.utils.photo_paths import photo_file, photo_files, photo_folder
+from src.utils.photo_privacy import remove_share_copy
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -157,6 +158,12 @@ def _remove_photos(removals: list[PhotoRemoval]) -> None:
                               removal.kind, removal.content_id)
         # Only names that stay inside this entry's own folder (photo_paths).
         unlink_and_record(removal.user_info_id, photo_files(folder, removal.uuids))
+        # The share-link copies go with the photos, outside the accounting
+        # (issue #430) — else they keep the folder from being removed below.
+        for name in removal.uuids:
+            full = photo_file(folder, name)
+            if full is not None:
+                remove_share_copy(full)
         if removal.remove_dir and folder.exists():
             try:
                 folder.rmdir()

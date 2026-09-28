@@ -63,7 +63,7 @@ from src.models.memory import Memory
 from src.project.memory_match import step_key
 from src.project.project_repo import bump_lock_version
 from src.utils.encryption_check import is_encrypted_envelope as _is_encrypted_envelope
-from src.utils.photo_privacy import remove_share_copy
+from src.utils.photo_privacy import UndecodablePhoto, ensure_share_copy, remove_share_copy
 
 router = APIRouter(prefix="/api/memories", tags=["memories"])
 
@@ -766,6 +766,49 @@ def serve_photo(
     if full_path is None or not full_path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     return FileResponse(str(full_path), media_type="image/jpeg")
+
+
+def stripped_photo_response(original: Path, headers: Dict[str, str]) -> FileResponse:
+    """The stripped copy of *original* as a response; 404 if it cannot be made.
+
+    A photo deleted under a first serve, or a file on disk that is not a
+    readable image, is simply not there — never the original in its place
+    (issue #430). Shared by the share-link routes and the app's own route.
+    """
+    try:
+        copy = ensure_share_copy(original)
+    except (FileNotFoundError, UndecodablePhoto):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+    return FileResponse(str(copy), media_type="image/jpeg", headers=headers)
+
+
+@router.get("/{memory_id}/photos/{photo_uuid}/shareable",
+            summary="Serve the metadata-free copy of a photo")
+def serve_photo_shareable(
+    memory_id: int,
+    photo_uuid: str,
+    current_user: Annotated[dict, Depends(get_current_user)],
+):
+    """The copy a share link would get — location and device EXIF removed —
+    for the signed-in owner or member (issue #430).
+
+    What the app hands to the OS share sheet leaves the app for good, so it
+    is this copy and not the original; fetching it here rather than through
+    a share link means sharing a photo never has to create one. Cacheable by
+    the caller's own browser only, never by a shared cache.
+    """
+    user_info_id = int(current_user["sub"])
+    with get_session() as sess:
+        mem_row = _get_owned_memory(sess, memory_id, user_info_id, min_role="viewer")
+        owner_dir = _owner_dir_id(sess, mem_row)
+        photos: List[str] = json.loads(mem_row.photos_json or "[]")
+        if photo_uuid not in photos:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
+
+    full_path = photo_file(photo_folder(_DATA_DIR, owner_dir, "memories", memory_id), photo_uuid)
+    if full_path is None or not full_path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+    return stripped_photo_response(full_path, {"Cache-Control": "private, max-age=86400"})
 
 
 @router.get("/{memory_id}/photos/{photo_uuid}/thumb", summary="Serve photo thumbnail")

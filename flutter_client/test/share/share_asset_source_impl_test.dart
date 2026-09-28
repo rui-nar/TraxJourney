@@ -1,13 +1,11 @@
-// The social share sheet hands photo bytes to third parties, so they must
-// come from the share-link route (the copy with location and device EXIF
-// removed) and never from the authenticated owner route (issue #430).
-import 'dart:convert';
-
+// The social share sheet hands photo bytes to third parties, so they must be
+// the stripped copies (location and device EXIF removed), fetched as the
+// signed-in user through the app's own client — never the owner's originals,
+// and never by creating a share link (issue #430).
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:traxjourney_client/src/api/client.dart';
-import 'package:traxjourney_client/src/core/project_ref.dart';
 import 'package:traxjourney_client/src/projects/project_notifier.dart';
 import 'package:traxjourney_client/src/projects/project_service.dart';
 import 'package:traxjourney_client/src/share/share_asset_source_impl.dart';
@@ -16,77 +14,70 @@ const _base = 'http://trax.example.com';
 
 void main() {
   late ApiClient savedApi;
+  late List<http.Request> seen;
 
   setUp(() {
     savedApi = api;
-    api = ApiClient(baseUrl: _base);
+    seen = [];
+    api = ApiClient(
+      baseUrl: _base,
+      httpClient: MockClient((req) async {
+        seen.add(req);
+        if (req.url.path.endsWith('/u-missing/shareable')) {
+          return http.Response('{"detail":"File not found"}', 404);
+        }
+        return http.Response.bytes([1, 2, 3], 200);
+      }),
+    )..setToken('jwt-for-owner');
   });
 
   tearDown(() => api = savedApi);
 
-  ShareAssetSourceImpl source(ProjectNotifier n, List<http.Request> seen) =>
-      ShareAssetSourceImpl(
-        n,
+  ShareAssetSourceImpl source() => ShareAssetSourceImpl(
+        ProjectNotifier(ProjectService()),
         () => throw StateError('no context needed'),
-        client: MockClient((req) async {
-          seen.add(req);
-          return http.Response.bytes([1, 2, 3], 200);
-        }),
       );
 
-  test('sharePhotoUrl is the share-link photo route', () {
+  test('shareablePhotoPath is the authenticated stripped-copy route', () {
     expect(
-      sharePhotoUrl(base: _base, token: 'tok', memoryId: 7, uuid: 'u1'),
-      '$_base/api/share/tok/photos/7/u1',
+      shareablePhotoPath(memoryId: 7, uuid: 'u1'),
+      '/api/memories/7/photos/u1/shareable',
     );
   });
 
-  test('photos are fetched through the share link, unauthenticated', () async {
-    final n = ProjectNotifier(ProjectService())..shareToken = 'tok';
-    final seen = <http.Request>[];
-
-    final bytes = await source(n, seen).fetchPhotos(7, ['u1', 'u2']);
+  test('photos come from the stripped-copy route, as the signed-in user',
+      () async {
+    final bytes = await source().fetchPhotos(7, ['u1', 'u2']);
 
     expect(bytes, hasLength(2));
     expect(seen.map((r) => r.url.toString()), [
-      '$_base/api/share/tok/photos/7/u1',
-      '$_base/api/share/tok/photos/7/u2',
+      '$_base/api/memories/7/photos/u1/shareable',
+      '$_base/api/memories/7/photos/u2/shareable',
     ]);
     for (final r in seen) {
-      expect(r.url.path, isNot(contains('/api/memories/')));
-      expect(r.headers.keys.map((k) => k.toLowerCase()),
-          isNot(contains('authorization')));
+      expect(r.method, 'GET');
+      expect(r.headers['Authorization'], 'Bearer jwt-for-owner');
     }
   });
 
-  test('a missing share token is created first, as the link resolver does',
-      () async {
-    api = ApiClient(
-      baseUrl: _base,
-      httpClient: MockClient((req) async {
-        expect(req.method, 'POST');
-        expect(req.url.path, endsWith('/share'));
-        return http.Response(jsonEncode({'share_token': 'fresh'}), 200);
-      }),
-    );
-    final n = ProjectNotifier(ProjectService())
-      ..ref = const ProjectRef(name: 'Trip');
-    final seen = <http.Request>[];
+  test('sharing never touches a share link', () async {
+    final notifier = ProjectNotifier(ProjectService());
+    await ShareAssetSourceImpl(notifier, () => throw StateError('unused'))
+        .fetchPhotos(7, ['u1']);
 
-    await source(n, seen).fetchPhotos(7, ['u1']);
-
-    expect(n.shareToken, 'fresh');
-    expect(seen.single.url.toString(), '$_base/api/share/fresh/photos/7/u1');
+    expect(notifier.shareToken, isNull);
+    expect(seen.map((r) => r.url.path), isNot(contains(endsWith('/share'))));
+    expect(seen.map((r) => r.url.path), isNot(contains(contains('/api/share/'))));
   });
 
-  test('with no token and no way to make one, no photo is fetched at all',
+  test('a photo the server refuses is skipped, never fetched as the original',
       () async {
-    final n = ProjectNotifier(ProjectService()); // no project open
-    final seen = <http.Request>[];
+    final bytes = await source().fetchPhotos(7, ['u-missing', 'u2']);
 
-    final bytes = await source(n, seen).fetchPhotos(7, ['u1']);
-
-    expect(bytes, isEmpty);
-    expect(seen, isEmpty, reason: 'never the owner route as a fallback');
+    expect(bytes, hasLength(1));
+    expect(seen.map((r) => r.url.path), [
+      '/api/memories/7/photos/u-missing/shareable',
+      '/api/memories/7/photos/u2/shareable',
+    ]);
   });
 }

@@ -87,9 +87,7 @@ from src.models.project import tag_options_with_untagged
 from src.project.project_repo import ProjectRepo, _compute_stats
 from src.tile_renderer import get_cached_tile, get_or_build_features, get_or_create_tile
 from src.utils.encryption_check import is_encrypted_envelope
-from src.utils.photo_privacy import (
-    UndecodablePhoto, ensure_share_copy, strip_jpeg_metadata_segments,
-)
+from src.utils.photo_privacy import strip_jpeg_metadata_segments
 
 from src.utils.photo_paths import photo_file, photo_folder
 
@@ -628,17 +626,9 @@ _PHOTO_CACHE_HEADERS = {"Cache-Control": "public, max-age=86400"}
 
 
 def _share_copy_response(original: Path) -> FileResponse:
-    """The stripped copy of *original* as a response; 404 if it cannot be made.
-
-    A photo deleted under a first serve, or a file on disk that is not a
-    readable image, is simply not there for a share link — never the
-    original in its place (issue #430).
-    """
-    try:
-        copy = ensure_share_copy(original)
-    except (FileNotFoundError, UndecodablePhoto):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
-    return FileResponse(str(copy), media_type="image/jpeg", headers=_PHOTO_CACHE_HEADERS)
+    """The stripped copy of *original*, publicly cacheable; 404 if it cannot
+    be made (see :func:`api.memories.stripped_photo_response`)."""
+    return _stripped_photo_response(original, _PHOTO_CACHE_HEADERS)
 
 
 @router.get("/{token}/photos/{memory_id}/{photo_uuid}/thumb", summary="Serve memory photo thumbnail")
@@ -681,6 +671,7 @@ def shared_photo_full(token: str, memory_id: int, photo_uuid: str):
 from pydantic import BaseModel as _BaseModel, Field as _Field
 from api.memories import (
     _build_comment_tree, _delete_comment_subtree, _utc_now,
+    stripped_photo_response as _stripped_photo_response,
     IDOut as _IDOut, CommentOut as _CommentOut,
     LikesOut as _LikesOut, TranslationOut as _TranslationOut,
 )

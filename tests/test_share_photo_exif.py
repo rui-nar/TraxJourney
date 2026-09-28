@@ -293,6 +293,62 @@ class TestSharedPhotoIsStripped:
         assert not (env.photo_dir / f"{photo}_share.jpg").exists()
 
 
+# ── the app fetches the same copy, signed in, without a share link (R2-1) ────
+
+class TestShareableCopyForTheApp:
+    def test_owner_gets_the_stripped_copy_privately_cacheable(self, env):
+        photo = _upload(env, _gps_jpeg())
+        resp = env.client.get(env.owner_url(photo) + "/shareable")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "image/jpeg"
+        cache = resp.headers.get("cache-control", "")
+        assert "private" in cache and "public" not in cache
+        _assert_stripped_and_upright(resp.content)
+
+    def test_it_is_the_one_copy_share_links_use(self, env, monkeypatch):
+        from src.utils import photo_privacy
+
+        calls = []
+        real = photo_privacy.strip_private_metadata
+        monkeypatch.setattr(photo_privacy, "strip_private_metadata",
+                            lambda raw: calls.append(1) or real(raw))
+        photo = _upload(env, _gps_jpeg())
+        mine = env.client.get(env.owner_url(photo) + "/shareable").content
+        theirs = env.client.get(env.share_url(photo)).content
+        assert mine == theirs == (env.photo_dir / f"{photo}_share.jpg").read_bytes()
+        assert calls == [1]
+
+    def test_no_share_token_is_needed_or_created(self, env):
+        with Session(env.engine) as sess:
+            proj = sess.exec(select(DBProject)).first()
+            proj.share_token = None
+            sess.add(proj); sess.commit()
+        photo = _upload(env, _gps_jpeg())
+        assert env.client.get(env.owner_url(photo) + "/shareable").status_code == 200
+        with Session(env.engine) as sess:
+            assert sess.exec(select(DBProject)).first().share_token is None
+
+    def test_deleted_and_undecodable_are_404_like_the_share_route(self, env):
+        photo = _upload(env, _gps_jpeg())
+        (env.photo_dir / f"{photo}.jpg").write_bytes(b"not an image at all")
+        assert env.client.get(env.owner_url(photo) + "/shareable").status_code == 404
+        (env.photo_dir / f"{photo}.jpg").unlink()
+        assert env.client.get(env.owner_url(photo) + "/shareable").status_code == 404
+
+    def test_an_outsider_is_refused(self, env):
+        photo = _upload(env, _gps_jpeg())
+        with Session(env.engine) as sess:
+            other = UserInfo(display_name="Other", email="x@example.com")
+            sess.add(other); sess.commit(); sess.refresh(other)
+            other_id = other.id
+        app = FastAPI()
+        app.dependency_overrides[get_current_user] = lambda: {"sub": str(other_id), "email": "x@example.com"}
+        app.include_router(memories_router)
+        resp = TestClient(app).get(env.owner_url(photo) + "/shareable")
+        assert resp.status_code in (403, 404)
+        assert resp.headers.get("content-type", "").startswith("application/json")
+
+
 # ── the copy is cached next to the original, deleted with it, and not charged
 
 class TestShareCopyLifecycle:
@@ -562,6 +618,28 @@ class TestStripJpegMetadataSegments:
         png = _encoded("PNG")
         assert strip_jpeg_metadata_segments(png) == png
         assert strip_jpeg_metadata_segments(b"") == b""
+
+    def test_a_walk_that_never_reaches_the_scan_is_logged(self, caplog):
+        """The guard for R2-3: a non-canonical JPEG is passed through from
+        where the walk stopped, and says so — without any user data."""
+        import logging
+        from src.utils.photo_privacy import strip_jpeg_metadata_segments
+
+        raw = self._jpeg(comment=b"taken at home")
+        app0_end = 2 + 2 + int.from_bytes(raw[4:6], "big")
+        # A stray byte where the next marker's 0xFF should be.
+        malformed = raw[:app0_end] + b"\x00" + raw[app0_end:]
+        with caplog.at_level(logging.WARNING, logger="src.utils.photo_privacy"):
+            out = strip_jpeg_metadata_segments(malformed)
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "start of scan" in warnings[0].getMessage()
+        assert out == malformed[:app0_end] + malformed[app0_end:]
+
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="src.utils.photo_privacy"):
+            strip_jpeg_metadata_segments(raw)
+        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
 class TestStorageWalkIgnoresShareCopies:

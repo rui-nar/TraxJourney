@@ -1,27 +1,24 @@
 /// Production [ShareAssetSource] — renders the trip map via the offscreen
-/// exporter and fetches memory photo bytes over HTTP.
+/// exporter and fetches memory photo bytes over authenticated HTTP.
 library;
 
 import 'dart:typed_data';
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:http/http.dart' as http;
 
+import '../api/client.dart';
 import '../projects/image_export.dart';
 import '../projects/project_notifier.dart';
 import 'share_day_bounds.dart';
 import 'share_interfaces.dart';
 
-/// The share-link route for one memory photo: the copy with location and
-/// device EXIF removed, never the owner's original (issue #430).
-String sharePhotoUrl({
-  required String base,
-  required String token,
-  required int memoryId,
-  required String uuid,
-}) =>
-    '$base/api/share/$token/photos/$memoryId/$uuid';
+/// The authenticated route for the copy of one memory photo with location
+/// and device EXIF removed — what a share link would get, fetched as the
+/// signed-in user so that sharing never has to create a share link
+/// (issue #430).
+String shareablePhotoPath({required int memoryId, required String uuid}) =>
+    '/api/memories/$memoryId/photos/$uuid/shareable';
 
 class ShareAssetSourceImpl implements ShareAssetSource {
   final ProjectNotifier notifier;
@@ -30,11 +27,7 @@ class ShareAssetSourceImpl implements ShareAssetSource {
   /// required by the offscreen exporter for the Overlay + MediaQuery.
   final BuildContext Function() contextProvider;
 
-  /// Injectable for tests; production uses a plain client.
-  final http.Client? client;
-
-  const ShareAssetSourceImpl(this.notifier, this.contextProvider,
-      {this.client});
+  const ShareAssetSourceImpl(this.notifier, this.contextProvider);
 
   @override
   Future<Uint8List?> renderMapImage(
@@ -65,38 +58,17 @@ class ShareAssetSourceImpl implements ShareAssetSource {
   }
 
   /// The bytes handed to the OS share sheet leave the app for good, so they
-  /// are fetched through the share link — the copy with location and device
-  /// EXIF removed — and not through the authenticated owner route, which
-  /// serves the original with its GPS position (issue #430). Sharing a
-  /// memory publishes the memory-bearing link anyway, so the token is
-  /// created here when it does not exist yet, exactly as the link resolver
-  /// does; with no token there are no photos, never the originals instead.
+  /// are the stripped copies, never the originals with their GPS position
+  /// (issue #430). Through the app's own authenticated client: no share
+  /// link is created, and no connection is left behind.
   @override
   Future<List<Uint8List>> fetchPhotos(int memoryId, List<String> uuids) async {
-    if (uuids.isEmpty) return const [];
-    if (notifier.shareToken == null) {
-      try {
-        await notifier.createShareToken();
-      } catch (_) {
-        return const [];
-      }
-    }
-    final token = notifier.shareToken;
-    if (token == null) return const [];
-
-    // Same origin pattern as the link resolver: empty baseUrl → web origin.
-    final base =
-        notifier.apiBaseUrl.isEmpty ? Uri.base.origin : notifier.apiBaseUrl;
-    final http.Client httpClient = client ?? http.Client();
     final out = <Uint8List>[];
     for (final uuid in uuids) {
-      final url = sharePhotoUrl(
-          base: base, token: token, memoryId: memoryId, uuid: uuid);
       try {
-        final res = await httpClient.get(Uri.parse(url));
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-          out.add(res.bodyBytes);
-        }
+        final res =
+            await api.getRaw(shareablePhotoPath(memoryId: memoryId, uuid: uuid));
+        out.add(res.bodyBytes);
       } catch (_) {
         // Skip a photo that fails to download rather than aborting the share.
       }

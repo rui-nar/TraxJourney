@@ -141,16 +141,22 @@ def strip_jpeg_metadata_segments(raw: bytes) -> bytes:
     COM segment is left out. The entropy-coded data from SOS on is copied
     verbatim, so the pixels are bit-for-bit those of the input.
 
-    Anything that is not a JPEG comes back unchanged.
+    Anything that is not a JPEG comes back unchanged. A JPEG whose segments
+    do not walk cleanly to the start of scan (a fill byte, a stray marker,
+    a truncated header) is passed through from the point the walk stopped,
+    with a warning: everything served here is written by Pillow as baseline,
+    so that is not expected to happen.
     """
     if len(raw) < 4 or raw[0] != 0xFF or raw[1] != _SOI:
         return raw
     out = bytearray(raw[:2])
     i = 2
     n = len(raw)
+    reached_sos = False
     while i + 4 <= n and raw[i] == 0xFF:
         marker = raw[i + 1]
         if marker == _SOS:
+            reached_sos = True
             break
         length = int.from_bytes(raw[i + 2:i + 4], "big")
         segment = raw[i:i + 2 + length]
@@ -167,6 +173,11 @@ def strip_jpeg_metadata_segments(raw: bytes) -> bytes:
         if keep:
             out += segment
         i += 2 + length
+    if not reached_sos:
+        _log.warning(
+            "JPEG marker walk stopped before the start of scan at offset %d of %d bytes; "
+            "the rest is served as is", i, n,
+        )
     out += raw[i:]
     return bytes(out)
 

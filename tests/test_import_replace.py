@@ -285,6 +285,23 @@ def test_replace_deletes_a_memory_the_file_no_longer_has_with_all_it_holds(alps)
     assert _usage(engine, ids["owner"]) == before - 2000
 
 
+def test_replace_deletes_a_dropped_memorys_share_copies_too(alps):
+    """A viewed share link leaves {uuid}_share.jpg next to the photo, and a
+    crashed derivation its temp file (issue #430). Neither is the owner's
+    storage, both go with the memory, and the folder goes with them."""
+    (client, engine, ids, act_as, _), project, lake, share, photo_dir = alps
+    (photo_dir / "00000000-0000-4000-8000-0000000000a1_share.jpg").write_bytes(b"s" * 900)
+    (photo_dir / "00000000-0000-4000-8000-0000000000a1.deadbeef.tmp_share.jpg").write_bytes(b"t" * 90)
+    before = _usage(engine, ids["owner"])
+
+    r = _import(client, "Alps", _doc([_memory("Summit", "pub-summit")]),
+                on_conflict="replace")
+
+    assert r.status_code == 201, r.text
+    assert not photo_dir.exists(), sorted(p.name for p in photo_dir.iterdir())
+    assert _usage(engine, ids["owner"]) == before - 2000
+
+
 def test_replace_keeps_a_companions_journal_and_rewrites_the_owners(alps):
     (client, engine, ids, act_as, _), project, lake, share, _dir = alps
 
