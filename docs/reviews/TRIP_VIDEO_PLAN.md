@@ -222,7 +222,7 @@ Reviewer: adversarial-reviewer (Fable; its output numbered F1-2..F1-4, no F1-1);
 - Revisit when: a videojob stays pending > 30 min with nothing running on `video`; a prod/val deploy goes out without worker-video; worker-video crash-loops while the API reports available; a user reports a video that never started
 - Guard: —
 - Override: user: Fix now — the compose file already promises "no worker-video, no feature", and the failure costs the free monthly video
-- Outcome: open
+- Outcome: fixed (F-b) — residual: RQ keeps a SIGKILLed worker registered until its cleanup prunes it, so availability can briefly read true; a heartbeat check would close it
 
 ### F1-4 — Encrypted trip asks for consent and uploads decrypted tracks before the user learns the month's quota is used up
 - Trigger: free user with an encrypted trip and no video left taps Create → /video/plan 409 before quota → consent, decrypt, upload → plan then shows 0 left with Create enabled → upload again → 402
@@ -231,7 +231,7 @@ Reviewer: adversarial-reviewer (Fable; its output numbered F1-2..F1-4, no F1-1);
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (F-b)
 
 ### F1-3 — docs/DEPLOYMENT_VPS.md still describes two worker services; plan requires it updated for worker-video
 - Trigger: operator follows the runbook on prod/val → adds only worker and worker-poster → `video` has no consumer (F1-2)
@@ -240,7 +240,7 @@ Reviewer: adversarial-reviewer (Fable; its output numbered F1-2..F1-4, no F1-1);
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (F-c)
 
 ### F1-5 — A flight crossing ±180° is animated and drawn the long way round the world
 - Trigger: user with a transpacific flight (Tokyo → Los Angeles) creates a video → arc coords jump 172.0 → -175.2 → marker sweeps ~347° across the map, route drawn across the world, camera fits the whole world
@@ -249,7 +249,7 @@ Reviewer: adversarial-reviewer (Fable; its output numbered F1-2..F1-4, no F1-1);
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (F-a)
 
 ## Delivery
 
@@ -269,5 +269,16 @@ Feature branch `feat/trip-video` (from `docs/trip-video-plan`, PR #498 to be clo
 | U7 | Flutter request/consent/status/download | Opus | S5 | 1 | — | yes | U7R1-1, U7R1-2, U7R1-3 |
 | U7a | Real encrypted tracks for consent; Cancel locked while submitting (fix unit for U7R1-1/-2) | Opus | S5 | 1 | — | yes | U7R1-1, U7R1-2 |
 | U6c | Video download as attachment (fix unit for U7R1-3) | Sonnet | — | 1 | — | yes | U7R1-3 |
+| F-a | Antimeridian: continuous longitudes, wrapped basemap (fix unit for F1-5) | Opus | S2 | 1 | — | yes | F1-5 |
+| F-b | Availability needs a video worker; quota before consent (fix unit for F1-2, F1-4) | Opus | S3 | 1 | — | yes | F1-2, F1-4 |
+| F-c | worker-video in the VPS runbook (fix unit for F1-3) | Sonnet | — | 1 | — | yes | F1-3 |
 
 Note: every wave-1 worktree was created from `main` (27a2d645), not from `feat/trip-video`; each implementer reset its clean branch to 6459a9ba before starting. Later waves must check the base first.
+
+### Delivery summary — 2026-09-28
+
+- 7 plan units + 7 fix units (U3a, U6a, U6b, U6c, U7a, F-a, F-b, F-c — U6b from a wave-2 integration failure, the rest from reviews). Opus 11, Sonnet 3. Every unit verified first time; no X1/X2 escalations; three X3 scope widenings (U6 email templates, U5 CI ffmpeg step) resolved by the orchestrator.
+- Reviews at the DELIVERY.md §5 points: plan (3 rounds), U3, U6, U7 before integration, integrated diff (1 round, all Fix now items fixed; no re-review requested).
+- Final checks on feat/trip-video at the last merge: pytest (CI command, minus test_rail_extract_workflow.py which hangs locally without WSL) 5062 passed / 27 skipped / 0 failed; video tests in the Linux image with real ffmpeg 170 passed / 1 skipped (manual benchmark); flutter analyze clean; flutter test 1760 passed.
+- Open (deferred with revisit triggers): R1-6, R2-3. Residuals noted on U6R1-1 (no rate limit on /video/plan) and F1-2 (stale RQ worker registrations).
+- Environment notes: automatic agent worktrees start from main, not the feature branch — create them by hand from the feature branch; an ignored local web_client/ build in the main checkout makes 69 API tests 405 locally (not a code defect).
