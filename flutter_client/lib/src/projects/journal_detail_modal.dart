@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'journal_dialog.dart';
 import 'project_notifier.dart';
+import '../crypto/encrypted_display.dart';
 
 /// Opens a read-only detail view for a journal entry.
 ///
@@ -163,7 +164,7 @@ class _JournalDetailModalState extends State<_JournalDetailModal> {
     final idx      = _currentIndex;
     final hasPrev  = idx > 0;
     final hasNext  = idx < all.length - 1;
-    final desc     = _current['description'] as String? ?? '';
+    final desc     = shownText(_current['description'] as String?) ?? '';
     final dateStr  = _current['date'] as String?;
     final date     = dateStr != null ? DateTime.tryParse(dateStr) : null;
     final tripDay  = _tripDayInfo(dateStr);

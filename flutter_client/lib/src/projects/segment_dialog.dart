@@ -6,6 +6,7 @@ import '../map/great_circle.dart';
 import 'location_picker_dialog.dart';
 import 'project_notifier.dart';
 import 'segment_track_editor_page.dart';
+import '../crypto/encrypted_display.dart';
 
 class SegmentDialog extends StatefulWidget {
   final ProjectNotifier notifier;
@@ -965,7 +966,7 @@ class _EndpointRow extends StatelessWidget {
 
     String? statusText;
     if (selectedActivity != null) {
-      statusText = selectedActivity['name'] as String? ?? 'Activity';
+      statusText = shownText(selectedActivity['name'] as String?) ?? 'Activity';
     } else if (hasCoords) {
       final lat = double.tryParse(latCtrl.text);
       final lon = double.tryParse(lonCtrl.text);
@@ -1011,7 +1012,7 @@ class _EndpointRow extends StatelessWidget {
               ...activities.map((a) => DropdownMenuItem<dynamic>(
                     value: a['id'],
                     child: Text(
-                      a['name'] as String? ?? 'Activity',
+                      shownText(a['name'] as String?) ?? 'Activity',
                       overflow: TextOverflow.ellipsis,
                     ),
                   )),
@@ -1023,7 +1024,7 @@ class _EndpointRow extends StatelessWidget {
               Text(endpointClearOptionLabel(hasCoords: hasCoords),
                   style: const TextStyle(fontStyle: FontStyle.italic)),
               ...activities.map((a) => Text(
-                    a['name'] as String? ?? 'Activity',
+                    shownText(a['name'] as String?) ?? 'Activity',
                     overflow: TextOverflow.ellipsis,
                   )),
             ],

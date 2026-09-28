@@ -21,6 +21,7 @@ import 'project_notifier.dart';
 import 'track_edit_model.dart';
 import 'track_editor_controller.dart';
 import 'track_map_editor.dart';
+import '../crypto/encrypted_display.dart';
 
 /// Build the [TrackEditModel] for [activity] from its stored polyline +
 /// elevation profile pairs (`[[distKm, elevM], …]`).
@@ -464,7 +465,7 @@ class _ActivityEditorPageState extends State<ActivityEditorPage> {
     return Scaffold(
       appBar: AppBar(
         title: LayoutBuilder(builder: (context, constraints) {
-          final name = '${widget.activity['name'] ?? 'Activity'}';
+          final name = shownText(widget.activity['name'] as String?) ?? 'Activity';
           final title = Text(
             // On a phone "Edit — " took 49 of the title's 120 px at 360 px
             // (measured in Roboto) to say what Save, the point handles and the

@@ -42,6 +42,27 @@ void main() {
       expect(() => EncryptedField.decode('just plain text'),
           throwsA(isA<FormatException>()));
     });
+
+    test('isWellFormed accepts a real envelope and rejects typed look-alikes',
+        () async {
+      // The backstop behind the editors' "keep this stored envelope" (#466,
+      // R3-1): text a user typed can pass isEnvelope, never isWellFormed.
+      final cmk = await generateCmk();
+      final real = (await encryptField('x', cmk)).encode();
+      expect(EncryptedField.isWellFormed(real), isTrue);
+      final dek = real.split('.')[1];
+      for (final typed in [
+        'v1.2.3',
+        'v1.Dinner with Dr. Smith',
+        'v1.abcd.efgh',
+        'v1.$dek.QUJD', // ciphertext too short to hold a nonce and a MAC
+        'v1.QUJD.${real.split('.')[2]}', // wrapped key of the wrong size
+        'v1.$dek.not base64!',
+        'v2.${real.substring(3)}',
+      ]) {
+        expect(EncryptedField.isWellFormed(typed), isFalse, reason: typed);
+      }
+    });
   });
 
   group('Option A — recovery key wrap', () {

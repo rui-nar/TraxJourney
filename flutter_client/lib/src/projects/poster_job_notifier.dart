@@ -19,6 +19,7 @@ import 'package:flutter/foundation.dart';
 
 import '../api/client.dart';
 import '../core/project_ref.dart';
+import '../crypto/encrypted_display.dart';
 
 /// Converts a memory item (as found in `ProjectNotifier.items`) to the
 /// `PosterMemoryIn` shape the poster API expects.
@@ -27,8 +28,9 @@ Map<String, dynamic> posterMemoryJson(Map<String, dynamic> memory) => {
       'lat': memory['lat'],
       'lon': memory['lon'],
       'date': memory['date'],
-      'name': memory['name'],
-      'description': memory['description'],
+      // Text this device could not decrypt is left off the poster (#466).
+      'name': readableOrNull(memory['name'] as String?),
+      'description': readableOrNull(memory['description'] as String?),
       'photo_uuids': (memory['photos'] as List?)?.cast<String>() ?? const [],
     };
 
