@@ -190,7 +190,10 @@ is not registered there.
 The API serves fine on its own: with `REDIS_URL` unset, every background job
 (route resolution, poster rendering, share tiles, stats) runs inside the API
 process via FastAPI `BackgroundTasks`. That is the original behaviour and a
-reasonable setup for this instance's load.
+reasonable setup for this instance's load. Trip video export is the one
+exception: it never runs in-process, so without `REDIS_URL` and the
+`worker-video` service, the app shows video export as unavailable rather than
+falling back to it.
 
 **For the poster feature specifically, treat this as strongly recommended,
 not merely optional.** An A0 render is CPU-heavy (Pillow compositing up to
@@ -209,12 +212,14 @@ Adding the `redis` + worker services buys two things:
 - **A real concurrency bound.** An RQ worker runs one job at a time, so the
   number of processes listening on a queue *is* that queue's parallelism.
 
-The bounds are not the same for every queue, which is why there are two worker
-services rather than one scaled to two replicas (issue #188): `resolve` is
-capped at 2 because Overpass rate-limits per IP and it is a free public service,
-while `poster` is capped at **1** because two concurrent A0 renders are what
-takes a small host out on memory. Identical replicas can only give every queue
-the same bound, so they cannot express this.
+The bounds are not the same for every queue, which is why there are three
+worker services rather than one scaled to three replicas (issue #188):
+`resolve` is capped at 2 because Overpass rate-limits per IP and it is a free
+public service, `poster` is capped at **1** because two concurrent A0 renders
+are what takes a small host out on memory, and `video` is capped at **1**
+because a trip video render holds a worker for minutes and its own service
+keeps it from delaying posters, resolves or tiles. Identical replicas can only
+give every queue the same bound, so they cannot express this.
 
 `QUEUE_MAX_CONCURRENCY` in `src/jobs/queue.py` is the source of truth for those
 numbers, and `tests/test_worker_topology.py` fails if the compose example stops
@@ -239,9 +244,9 @@ admin seed, and the scheduled jobs. Only the API container owns those: two
 containers racing `alembic upgrade head` at boot, or each taking its own nightly
 backup and 60 s WAL checkpoint, is the failure that guards against.
 
-Keep both worker services on the **same image tag** as the API. They share one
-image and only the API runs migrations, so a worker left on an older tag would
-run stale job code against a schema it does not know about.
+Keep all three worker services on the **same image tag** as the API. They share
+one image and only the API runs migrations, so a worker left on an older tag
+would run stale job code against a schema it does not know about.
 
 `deploy.ps1` needs no changes for any of this: it builds/pushes the image and
 then runs `docker compose pull` and `up -d`, which is service-agnostic.
@@ -249,7 +254,9 @@ Adding the services to each host's compose file and the keys to its `.env` is
 the whole deployment change.
 
 **Rollback** is unsetting `REDIS_URL` and removing the worker services. No image
-rebuild — jobs simply run in-process again.
+rebuild — resolve, poster and default-queue jobs simply run in-process again.
+Trip video export has no in-process fallback, so this rollback leaves it
+unavailable rather than slower.
 
 If you scrape `/metrics`, also set `PROMETHEUS_MULTIPROC_DIR` to a directory
 both containers mount. Without it the scrape only sees the API process and
@@ -892,7 +899,7 @@ docker compose run --rm --entrypoint python traxjourney \
     scripts/fetch_rail_data.py --dest /app/data/rail
 ```
 
-`./data` is already a bind mount shared by the API and both workers, so
+`./data` is already a bind mount shared by the API and all three workers, so
 `/app/data/rail` is the same directory for all of them and survives
 `up -d`, image pulls and reboots.
 
@@ -1031,7 +1038,9 @@ is harmless.
       theoretical one (issue #209): a route resolution alone measured over
       512M in the API process. Sizing the per-container memory limits in
       `docker-compose.yml.example` generously enough to survive a real
-      resolve/poster peak (~3.25 GB for one full stack) leaves too little
-      headroom for a second full stack plus the OS on this 4 GB host —
-      unresolved; needs either more host RAM or not running both stacks'
-      workers at full concurrency simultaneously.
+      resolve/poster/video peak (~4.2 GB for one full stack, now that
+      `worker-video`'s 896M limit is in the total — sized from docs/VIDEO.md's
+      measured peak RSS of 363 MB for the renderer plus 318 MB for ffmpeg at
+      1080p) leaves too little headroom for a second full stack plus the OS on
+      this 4 GB host — unresolved; needs either more host RAM or not running
+      both stacks' workers at full concurrency simultaneously.
