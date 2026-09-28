@@ -106,3 +106,7 @@ share copy is removed only for names photo_file accepts.
 - Decision: Fix now (D3, F2)
 - Override: —
 - Outcome: fixed (_remove_photos removes each accepted original's share copy and temp copies)
+
+## Round 3 — 2026-09-28, reviewed at 647832b0 (fixes since 351e4a4)
+
+No findings. Review stops (§6).
