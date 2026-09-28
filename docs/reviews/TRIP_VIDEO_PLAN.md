@@ -211,6 +211,46 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
 - Override: —
 - Outcome: fixed (U6c, 97baeca3)
 
+## Integrated review, round 1 — 2026-09-28, feat/trip-video at 449073f6 vs eaaeee78 (DELIVERY.md §5 point 2)
+
+Reviewer: adversarial-reviewer (Fable; its output numbered F1-2..F1-4, no F1-1); triager: review-triager (Opus). F1-5 came from the U2 implementer's report, reproduced by the orchestrator, triaged in the same round.
+
+### F1-2 — A broker with no `video` consumer looks available; the job is accepted, charged and left pending for 24 h
+- Trigger: a deployment runs Redis but no worker-video (or it is dead) → plan says available, POST 201 → nothing consumes `video` → failed only after 24 h, the free monthly video locked meanwhile
+- Scores: trigger=plausible (triager: was concrete — the stale runbook path is fixed by F1-3), impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: a videojob stays pending > 30 min with nothing running on `video`; a prod/val deploy goes out without worker-video; worker-video crash-loops while the API reports available; a user reports a video that never started
+- Guard: —
+- Override: user: Fix now — the compose file already promises "no worker-video, no feature", and the failure costs the free monthly video
+- Outcome: open
+
+### F1-4 — Encrypted trip asks for consent and uploads decrypted tracks before the user learns the month's quota is used up
+- Trigger: free user with an encrypted trip and no video left taps Create → /video/plan 409 before quota → consent, decrypt, upload → plan then shows 0 left with Create enabled → upload again → 402
+- Scores: trigger=concrete, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7) — approved by the user 2026-09-28
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
+
+### F1-3 — docs/DEPLOYMENT_VPS.md still describes two worker services; plan requires it updated for worker-video
+- Trigger: operator follows the runbook on prod/val → adds only worker and worker-poster → `video` has no consumer (F1-2)
+- Scores: trigger=concrete, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7) — approved by the user 2026-09-28
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
+
+### F1-5 — A flight crossing ±180° is animated and drawn the long way round the world
+- Trigger: user with a transpacific flight (Tokyo → Los Angeles) creates a video → arc coords jump 172.0 → -175.2 → marker sweeps ~347° across the map, route drawn across the world, camera fits the whole world
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=L/local (triager: was M — spans legs, camera and renderer), confidence=verified
+- Decision: Fix now (D6) — approved by the user 2026-09-28
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
+
 ## Delivery
 
 Feature branch `feat/trip-video` (from `docs/trip-video-plan`, PR #498 to be closed in favour of the feature PR). Split approved by the user 2026-09-28 without overrides. The implementer and verifier project agents were not registered in the session; their instructions ran on general-purpose agents with the routed model.
