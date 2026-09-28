@@ -95,6 +95,7 @@ AREAS: dict[str, tuple[str, Optional[str]]] = {
     "android": ("Android app", APP),
     "landing": ("Home page", APP),
     "billing": ("Plans & billing", None),
+    "legal": ("Licence, privacy & terms", APP),
     "api": ("API", SERVER),
     "db": ("Database", SERVER),
     "alembic": ("Database", SERVER),

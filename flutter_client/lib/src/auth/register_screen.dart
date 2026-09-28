@@ -10,6 +10,7 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 import '../core/brand.dart';
+import '../core/legal_links.dart';
 import '../core/return_to.dart';
 import 'auth_notifier.dart';
 
@@ -257,6 +258,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
                                 );
                               },
                             ),
+                            const SizedBox(height: 12),
+                            const LegalNotice(action: 'creating an account'),
                           ],
                         ),
                       ),
@@ -267,8 +270,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          Text('Already have an account?',
-                              style: theme.textTheme.bodySmall),
+                          Flexible(
+                            child: Text('Already have an account?',
+                                style: theme.textTheme.bodySmall),
+                          ),
                           TextButton(
                             onPressed: () {
                               final ret = _returnTo;

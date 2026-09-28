@@ -10,12 +10,12 @@ import '../billing/billing_service.dart';
 import '../core/app_version.dart';
 import '../core/brand.dart';
 import '../core/design_tokens.dart';
+import '../core/legal_links.dart';
 
 // ── Layout constants ──────────────────────────────────────────────────────────
 const _kBreak = 900.0;
 const _kNavH  = 64.0;
 const _kShell = 1200.0;
-const _kGH    = 'https://github.com/rui-nar/TraxJourney';
 
 // ── Always-dark showcase palette ─────────────────────────────────────────────
 const _dBg   = Color(0xFF0D1B2A);
@@ -240,7 +240,7 @@ class _NavBar extends StatelessWidget {
               _NavLink('Features', onFeatures, theme),
               _NavLink('How it works', onHow, theme),
               _NavLink('Self-host', onSelfHost, theme),
-              _NavLink('GitHub', () => _openUrl(_kGH), theme),
+              _NavLink('GitHub', () => _openUrl(kRepoUrl), theme),
             ],
             const Spacer(),
             TextButton(
@@ -459,7 +459,7 @@ class _HeroText extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(horizontal: 20),
                 textStyle: _inter(15, FontWeight.w600, Colors.transparent),
               ),
-              onPressed: () => _openUrl(_kGH),
+              onPressed: () => _openUrl(kRepoUrl),
               icon: const Icon(Icons.code, size: 18),
               label: const Text('Self-host on Docker'),
             ),
@@ -479,7 +479,7 @@ class _HeroText extends StatelessWidget {
             children: [
               _MetaStat('847', 'km', 'avg journey length', theme),
               _MetaStat('18', '', 'activities / project', theme),
-              _MetaStat('0', '€', 'MIT · forever', theme),
+              _MetaStat('0', '€', 'AGPL · forever', theme),
             ],
           ),
         ),
@@ -1590,7 +1590,7 @@ class _TierCard extends StatelessWidget {
                     Text('Free',
                         style: _inter(40, FontWeight.w800, fg1, spacing: -0.03)),
                     const SizedBox(width: 6),
-                    Text('· MIT', style: _inter(14, FontWeight.w500, fg2)),
+                    Text('· AGPL', style: _inter(14, FontWeight.w500, fg2)),
                   ],
                 )
               else if (price != null)
@@ -1649,7 +1649,7 @@ class _TierCard extends StatelessWidget {
                           side: BorderSide(color: theme.dividerColor),
                           minimumSize: const Size.fromHeight(44),
                         ),
-                        onPressed: () => _openUrl(_kGH),
+                        onPressed: () => _openUrl(kRepoUrl),
                         icon: const Icon(Icons.download_rounded, size: 16),
                         label: const Text('Clone on GitHub'),
                       ),
@@ -1720,7 +1720,9 @@ class _Footer extends StatelessWidget {
                   const SizedBox(height: 24),
                   _FootLinks('Docs', ['Quick start', 'Architecture', 'API reference', 'Docker'], theme),
                   const SizedBox(height: 24),
-                  _FootLinks('Community', ['GitHub', 'Strava club', 'Discussions', 'License · MIT'], theme),
+                  _FootLinks('Community', ['GitHub', 'Strava club', 'Discussions', 'License · AGPL-3.0'], theme),
+                  const SizedBox(height: 24),
+                  _FootLinks('Legal', ['Privacy', 'Terms'], theme),
                   const SizedBox(height: 32),
                   _FootBottom(theme),
                 ],
@@ -1749,7 +1751,8 @@ class _FootGrid extends StatelessWidget {
         Expanded(child: _FootLinks('Docs',
             ['Quick start', 'Architecture', 'API reference', 'Docker'], theme)),
         Expanded(child: _FootLinks('Community',
-            ['GitHub', 'Strava club', 'Discussions', 'License · MIT'], theme)),
+            ['GitHub', 'Strava club', 'Discussions', 'License · AGPL-3.0'], theme)),
+        Expanded(child: _FootLinks('Legal', ['Privacy', 'Terms'], theme)),
       ],
     );
   }
@@ -1799,7 +1802,7 @@ class _FootLinks extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.only(bottom: 8),
             child: GestureDetector(
-              onTap: l == 'GitHub' ? () => _openUrl(_kGH) : null,
+              onTap: _footLinkAction(l),
               child: MouseRegion(
                 cursor: SystemMouseCursors.click,
                 child: Text(l,
@@ -1812,6 +1815,15 @@ class _FootLinks extends StatelessWidget {
     );
   }
 }
+
+/// What a footer label opens, or null for a label with nowhere to go yet.
+VoidCallback? _footLinkAction(String label) => switch (label) {
+      'GitHub' => () => _openUrl(kRepoUrl),
+      'License · AGPL-3.0' => () => _openUrl(kLicenseUrl),
+      'Privacy' => () => openLegalPage(kPrivacyPolicyPath),
+      'Terms' => () => openLegalPage(kTermsOfServicePath),
+      _ => null,
+    };
 
 class _FootBottom extends StatelessWidget {
   final ThemeData theme;

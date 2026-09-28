@@ -3,6 +3,7 @@ FROM python:3.14-slim
 # The source label is what links a package pushed to ghcr.io back to its
 # repository; docker-build.yml passes the same one to the build.
 LABEL org.opencontainers.image.source="https://github.com/rui-nar/TraxJourney" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
       org.opencontainers.image.title="TraxJourney" \
       org.opencontainers.image.description="TraxJourney server: the API, the web client and the background workers"
 

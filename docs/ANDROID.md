@@ -111,6 +111,26 @@ Add the **debug** keystore's SHA-1 as a second Android client if you want Google
 Sign-In to work in debug builds too (`keytool -list -v -keystore
 ~/.android/debug.keystore -alias androiddebugkey -storepass android`).
 
+### Consent screen and store listing links
+
+Google's OAuth consent-screen verification and a Play Console listing both ask
+for a privacy policy URL, and the consent screen also for terms of service. The
+server serves both as plain HTML (issue #421):
+
+| Field | URL |
+|---|---|
+| Privacy policy | `https://traxjourney.com/privacy` |
+| Terms of service | `https://traxjourney.com/terms` |
+| Application home page | `https://traxjourney.com` |
+
+> Google Cloud console → Google Auth Platform → Branding → App domain
+> Play Console → App content → Privacy policy
+
+Publish the pages before submitting either: the gate test in
+`tests/test_legal_pages.py` blocks them while they still contain `{{...}}`
+placeholders (see [RELEASING.md](RELEASING.md)). Play's Data safety form should
+agree with `legal/privacy.html`, which is written from what the code does.
+
 ## Deep links (Android App Links)
 
 Share, invite and email-verification links open directly in the app:
