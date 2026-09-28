@@ -33,6 +33,9 @@ jobs:
           alembic check
           rm -f ci_alembic_check.db
 
+      - name: Install ffmpeg (trip-video renderer tests)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
       - name: Run tests
         run: pytest tests/ --ignore=tests/test_gui.py --ignore=tests/test_gui_launch.py --ignore=tests/test_map_widget.py --ignore=tests/test_export_options_widget.py --ignore=tests/test_filter_widget.py --ignore=tests/test_stats_bar.py --ignore=tests/test_toast.py -v --tb=short
 

@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import datetime, timezone
 
 from sqlmodel import func, select
 
 from models.billing import Subscription, UserUsage
-from models.project_db import DBProject
+from models.project_db import DBProject, DBVideoJob
 from src.billing.plans import (
     FREE,
     TOP_PLAN,
@@ -181,6 +182,58 @@ def ensure_storage_quota(
             "Upgrade for more space, or delete some photos.",
             plan=plan, limit=limit, used=used, needed=used + incoming_bytes,
             resource="storage",
+        )
+
+
+def _utc_month_bounds(now: float) -> tuple[float, float]:
+    """Epoch seconds of the first instant of ``now``'s UTC month and the next."""
+    t = datetime.fromtimestamp(now, tz=timezone.utc)
+    start = t.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if start.month == 12:
+        end = start.replace(year=start.year + 1, month=1)
+    else:
+        end = start.replace(month=start.month + 1)
+    return start.timestamp(), end.timestamp()
+
+
+def videos_this_month(sess, user_info_id: int, now: float | None = None) -> int:
+    """Video jobs the user started in the current UTC calendar month (D3).
+
+    Every job counts — pending, running, done, expired — except a ``failed``
+    one: the user did not get a video, so it must not cost them one. The month
+    is UTC rather than the user's local one so nobody can buy an extra render
+    by moving their clock across a timezone.
+    """
+    start, end = _utc_month_bounds(time.time() if now is None else now)
+    return int(
+        sess.exec(
+            select(func.count(DBVideoJob.id)).where(
+                DBVideoJob.user_info_id == user_info_id,
+                DBVideoJob.status != "failed",
+                DBVideoJob.created_at >= start,
+                DBVideoJob.created_at < end,
+            )
+        ).one()
+    )
+
+
+def ensure_video_quota(sess, user_info_id: int, now: float | None = None) -> None:
+    """Raise :class:`QuotaExceeded` if starting one more video is not allowed.
+
+    ``user_info_id`` is the *requester*: on a shared trip the companion who asks
+    for the render spends their own allowance, not the owner's (D12).
+    """
+    if not quotas_enforced():
+        return
+    plan = plan_for(sess, user_info_id, now)
+    limit = limits_for(plan).max_videos_per_month
+    used = videos_this_month(sess, user_info_id, now)
+    if over_quota(used, 1, limit):
+        raise QuotaExceeded(
+            f"Your plan includes {limit} video{'s' if limit != 1 else ''} per "
+            "month. Upgrade to make more.",
+            plan=plan, limit=limit, used=used, needed=used + 1,
+            resource="videos",
         )
 
 

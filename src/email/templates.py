@@ -74,3 +74,27 @@ def render_poster_failed_email(*, project_name: str) -> tuple[str, str]:
     text_body = _env.get_template("poster_failed.txt.jinja2").render(ctx)
     html_body = _env.get_template("poster_failed.html.jinja2").render(ctx)
     return text_body, html_body
+
+
+def render_video_ready_email(
+    *, project_name: str, download_url: str, retention_days: int
+) -> tuple[str, str]:
+    """Render the "your trip video is ready" email. Returns (text, html)."""
+    ctx = {"project_name": project_name, "download_url": download_url,
+           "retention_days": retention_days}
+    text_body = _env.get_template("video_ready.txt.jinja2").render(ctx)
+    html_body = _env.get_template("video_ready.html.jinja2").render(ctx)
+    return text_body, html_body
+
+
+def render_video_failed_email(*, project_name: str) -> tuple[str, str]:
+    """Render the "trip video failed" email. Returns (text, html).
+
+    Takes no reason at all: the email says what every failure has in common
+    (it didn't work, it didn't cost a video, try again), so nothing a render
+    produced can reach an inbox.
+    """
+    ctx = {"project_name": project_name}
+    text_body = _env.get_template("video_failed.txt.jinja2").render(ctx)
+    html_body = _env.get_template("video_failed.html.jinja2").render(ctx)
+    return text_body, html_body

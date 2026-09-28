@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+  <body style="font-family: sans-serif; color: #1a1a1a;">
+    <p>
+      Your video of "<strong>{{ project_name }}</strong>" is ready.
+    </p>
+    <p>
+      <a href="{{ download_url }}"
+         style="display: inline-block; padding: 10px 20px; background: #1d4ed8;
+                color: #ffffff; text-decoration: none; border-radius: 6px;">
+        Download my video
+      </a>
+    </p>
+    <p style="color: #666666; font-size: 12px;">
+      The video is kept for {{ retention_days }} days, then deleted. This link
+      works without signing in — keep it private, anyone with it can download
+      your video.
+    </p>
+  </body>
+</html>

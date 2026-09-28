@@ -90,12 +90,19 @@ _DEFAULT_PRICE_LABELS = {
     TIER_3: "€9.99 / month",
 }
 
-#: (max_projects, max_storage_mb, max_trip_days). None = unlimited.
-_DEFAULT_LIMITS: dict[str, tuple[int | None, int | None, int | None]] = {
-    FREE:   (1, 500, 10),
-    TIER_1: (2, 5 * 1024, 100),
-    TIER_2: (10, 20 * 1024, 365),
-    TIER_3: (None, 50 * 1024, None),
+#: Tallest video the renderer produces (1920x1080). What a deployment without
+#: billing renders at, and the paid tiers' default.
+FULL_HD_HEIGHT = 1080
+
+#: (max_projects, max_storage_mb, max_trip_days, max_videos_per_month,
+#: max_video_height). None = unlimited.
+_DEFAULT_LIMITS: dict[
+    str, tuple[int | None, int | None, int | None, int | None, int | None]
+] = {
+    FREE:   (1, 500, 10, 1, 720),
+    TIER_1: (2, 5 * 1024, 100, 10, FULL_HD_HEIGHT),
+    TIER_2: (10, 20 * 1024, 365, 30, FULL_HD_HEIGHT),
+    TIER_3: (None, 50 * 1024, None, None, FULL_HD_HEIGHT),
 }
 
 #: What each plan offers beyond the limits, which are rendered separately.
@@ -145,7 +152,15 @@ class Limits:
     #: Calendar length of one trip, first day to last inclusive — empty days in
     #: the middle count, because they are still days of the trip.
     max_trip_days: int | None
+    #: Video renders started in one UTC calendar month; failed ones don't count.
+    max_videos_per_month: int | None
+    #: Tallest video resolution the plan may render, in pixels (720 = 1280x720).
+    #: ``None`` means no plan cap — the renderer's own maximum applies.
+    max_video_height: int | None
 
+    # The video limits are left out on purpose: this is the shape
+    # /api/billing/me and /api/billing/plans have always served, and the video
+    # routes report the requester's quota and resolutions themselves.
     def as_dict(self) -> dict:
         return {
             "max_projects": self.max_projects,
@@ -155,7 +170,9 @@ class Limits:
 
 
 #: Unlimited everything — what a self-hosted deployment (billing disabled) gets.
-UNLIMITED = Limits(max_projects=None, max_storage_bytes=None, max_trip_days=None)
+#: Videos stay capped at full HD: that is the renderer's maximum, not a tier.
+UNLIMITED = Limits(max_projects=None, max_storage_bytes=None, max_trip_days=None,
+                   max_videos_per_month=None, max_video_height=FULL_HD_HEIGHT)
 
 
 def _mb_to_bytes(mb: int | None) -> int | None:
@@ -171,12 +188,14 @@ def limits_for(plan: str) -> Limits:
     if not known_plan(plan):
         plan = FREE
     prefix = _ENV_PREFIX[plan]
-    projects, storage_mb, trip_days = _DEFAULT_LIMITS[plan]
+    projects, storage_mb, trip_days, videos, video_height = _DEFAULT_LIMITS[plan]
     return Limits(
         max_projects=_env_int(f"{prefix}_MAX_PROJECTS", projects),
         max_storage_bytes=_mb_to_bytes(
             _env_int(f"{prefix}_MAX_STORAGE_MB", storage_mb)),
         max_trip_days=_env_int(f"{prefix}_MAX_TRIP_DAYS", trip_days),
+        max_videos_per_month=_env_int(f"{prefix}_MAX_VIDEOS_PER_MONTH", videos),
+        max_video_height=_env_int(f"{prefix}_MAX_VIDEO_HEIGHT", video_height),
     )
 
 
@@ -265,7 +284,15 @@ def features_for(plan: str) -> list[str]:
     else:
         days = f"Up to {limits.max_trip_days} days per trip"
 
-    return [trips, photos, days] + _EXTRA_FEATURES.get(plan, [])
+    if limits.max_videos_per_month is None:
+        videos = "Unlimited videos"
+    else:
+        n = limits.max_videos_per_month
+        videos = f"{n} video{'' if n == 1 else 's'} per month"
+    if limits.max_video_height is not None:
+        videos += f" · {limits.max_video_height}p"
+
+    return [trips, photos, days, videos] + _EXTRA_FEATURES.get(plan, [])
 
 
 def catalogue() -> list[dict]:

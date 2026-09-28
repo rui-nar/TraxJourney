@@ -25,6 +25,7 @@ import '../projects/projects_screen.dart';
 import '../projects/app_screen.dart';
 import '../projects/join_trip_screen.dart';
 import '../projects/poster_download_screen.dart';
+import '../projects/video_download_screen.dart';
 import '../projects/view_screen.dart';
 import '../projects/strava_import_screen.dart';
 import '../projects/strava_import_notifier.dart';
@@ -87,6 +88,10 @@ Future<String?> authRedirectTarget(
   // Poster-ready/failed notification links (issue #14) — same reasoning as
   // /verify-email/ above: reached from an email, possibly with no session.
   if (loc.startsWith('/poster/')) return null;
+
+  // Video-ready/failed notification links (docs/TRIP_VIDEO_PLAN.md, U7) —
+  // same as /poster/: the token is the credential, a session is optional.
+  if (loc.startsWith('/video/')) return null;
 
   // Invite deep links (issue #106) require login. Send the visitor to
   // the login screen with the invite URL as return_to — the same
@@ -289,6 +294,11 @@ GoRouter buildRouter(BuildContext context) {
         path: '/poster/:token',
         builder: (context, state) =>
             PosterDownloadScreen(token: state.pathParameters['token']!),
+      ),
+      GoRoute(
+        path: '/video/:token',
+        builder: (context, state) =>
+            VideoDownloadScreen(token: state.pathParameters['token']!),
       ),
       GoRoute(
         path: '/share/:token',
