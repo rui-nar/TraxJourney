@@ -29,3 +29,7 @@ Envelope: REVIEW.md defaults. Owner decision: drop heart-rate data completely (n
 - Outcome: open
 
 Envelope questions, owner answers 2026-09-28: (1) the 30 daily backups keep heart-rate values for up to 30 days after deploy — accepted, stated in the privacy policy (#427); (2) native clients' on-device project caches keep the old values until the trip's lock_version advances — the migration advances lock_version on every project holding an activity with a heart-rate value, before the drop.
+
+## Round 2 — 2026-09-28, reviewed at ea543f7d (fixes since 5d428a58)
+
+No findings. Review stops (§6).
