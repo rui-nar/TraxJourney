@@ -153,3 +153,43 @@ Envelope question raised: may two ZIP imports run at once within 768 MB, or is a
 - Override: Owner upgraded it to the lock-based fix (2026-09-28): "put the lock-based fix in the plan".
 - Outcome: fixed (plan revised: Decision 8.3, U4 Do 8)
 
+## Round 3 — 2026-09-28, plan revisions 523130c4..754a8eff reviewed at 754a8eff
+
+Envelope question raised: FastAPI reads the multipart body before dependencies, so an unauthenticated request can spool up to the full cap (1 GB on /import-zip, 50 MB on /import today) before its 401. Is that inside the envelope, or should the capped wrapper check the bearer token before reading any body? Owner answer (2026-09-28): authenticate in the wrapper before any body read (plan Decision 13).
+
+### R3-1 — An unauthenticated upload holds the import guard for its whole spool
+- Trigger: Anyone without an account trickles a body to /import-zip → the wrapper takes the guard, the body spools before the 401 → meanwhile every user's import gets 503; repeatable without credentials.
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: The owner answers the round-3 envelope question with a token check in the wrapper (fold it in then); or logs show 401s on /import-zip for large or slow bodies; or a user reports the 503 with no import running.
+- Guard: —
+- Override: —
+- Outcome: fixed (plan revised: Decision 13, the owner's envelope answer)
+
+### R3-2 — The placement kind "memories" is not photo_lock's "memory" (flagged: floor F3, theoretical)
+- Trigger: theoretical — the follow-up locks ("memories", id) while uploads lock ("memory", id) → the race R2-6 fixes remains, and its test still passes.
+- Scores: trigger=theoretical (triager corrected from plausible: it needs R2-6's disk error first), impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Guard (D4), flagged to the owner. The one-line mapping is about the same cost.
+- Revisit when: —
+- Guard: A U4 test holds photo_lock("memory", id), and another photo_lock("journal", id), while the follow-up runs, and asserts the follow-up blocks until the lock is released; the ERROR log records the lock key.
+- Override: Owner kept the guard (2026-09-28)
+- Outcome: guard written into the plan
+
+### R3-3 — U3 writes the manifest first yet must leave nothing in staging_dir on failure; the signature lacks importer and name
+- Trigger: The U3 implementer follows both lines → every fault test fails on the manifest → a bent assertion, or no manifest; U4 inherits whatever signature U3 picks.
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (plan revised)
+
+### R3-4 — A thumbnail rename that fails after its full file moved leaves a counted orphan (flagged: floor F3, theoretical)
+- Trigger: theoretical — a same-volume rename fails between a pair's two moves → the full file stays, unnamed and counted.
+- Scores: trigger=theoretical, impact=silent-wrong, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Guard (D4), flagged to the owner. The fix (unlink the placed half and count neither) is about the same size.
+- Revisit when: —
+- Guard: place_photos logs at ERROR, for a failed rename, which half was already placed, with its path and bytes; a U2 test simulates the thumbnail failing after the full file moved.
+- Override: Owner kept the guard (2026-09-28)
+- Outcome: guard written into the plan
+

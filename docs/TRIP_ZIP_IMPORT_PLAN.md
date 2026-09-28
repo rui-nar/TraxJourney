@@ -219,9 +219,22 @@ Users moving a trip between accounts, or restoring one, lose every photo.
         every error, and on a 413 raised mid-stream.
     - A request that finds it taken gets 503 "Another trip import is in
       progress. Try again in a minute." at once, before its body is read.
-      - The wrapper runs before authentication, so an unauthenticated request
-        may see that 503 instead of 401 while an import runs, which is
-        harmless.
+13. **Authentication before any body is read.** (Owner decision, 2026-09-28,
+    round-3 envelope question; closes R3-1.)
+    - FastAPI reads a multipart body before running dependencies, so
+      `get_current_user` alone would only answer 401 after the whole upload
+      was spooled: up to 1 GB, or 50 MB on `/import` today.
+    - The capped route wrapper therefore authenticates first, before the
+      declared-size check, the guard and any body read. It uses
+      `request.state.jwt_payload` when the access-log middleware already
+      decoded the token, and otherwise `decode_token` on the bearer
+      credentials: the same checks as `get_current_user` in `api/deps.py`,
+      reused rather than duplicated.
+    - A request without a valid token gets the same 401 as today, without
+      its body being read and without taking the guard.
+    - The endpoint keeps its `get_current_user` dependency.
+    - Order in the wrapper: authenticate → declared size (413) → guard (503)
+      → count the streamed body (413) → handler.
     - The memory budget is then one import (a trip file of at most 50 MB plus
       one photo decode at a time) beside the running process.
     - Rules out: queueing imports, which would hold uploads of up to 1 GB
@@ -232,7 +245,9 @@ Users moving a trip between accounts, or restoring one, lose every photo.
 What this plan adds to REVIEW.md §2's defaults:
 
 - **New trust boundary: an untrusted archive of up to 1 GB.** Any
-  authenticated user can upload one, including a crafted one. In scope:
+  authenticated user can upload one, including a crafted one. An
+  unauthenticated request is refused before any of its body is read
+  (Decision 13). In scope:
   - zip-slip and absolute or odd entry names;
   - duplicate entry names;
   - entry-count and uncompressed-size bombs, and a compression ratio that
@@ -420,6 +435,9 @@ photos**
     the failed attempt.
   - `place_photos` puts files under the new row id, records usage in one
     call, and returns a failed rename (simulated) instead of raising.
+  - A simulated thumbnail rename failing after its full file moved logs at
+    ERROR the kind, row id and uuid, and which half was already placed, with
+    its path and bytes (the R3-4 guard). No handling beyond the log.
   - `already_present` matches Replace's matching.
   - The existing `tests/test_import_*.py` pass with their assertions
     unchanged.
@@ -447,7 +465,7 @@ photos**
   1. Move the helper to `photo_store.py`, with the same behaviour plus an
      explicit pixel limit checked on the header before a full decode.
      Uploads keep their 422 for an invalid image.
-  2. `read_trip_zip(fileobj, staging_dir)`:
+  2. `read_trip_zip(fileobj, staging_dir, *, importer, trip_name)` (R3-3):
      - **Before constructing `ZipFile`**, read the end-of-central-directory
        record, ZIP64 included. Refuse when its entry total is above the
        entry-count limit, or its central-directory size is above a
@@ -464,7 +482,7 @@ photos**
        decode, and write the full file and thumbnail into `staging_dir`.
        One photo is decoded at a time.
      - Write `manifest.json` (importer id, trip name, created time) into
-       `staging_dir` first; the caller passes the importer and name.
+       `staging_dir` first, from the `importer` and `trip_name` arguments.
      - Return the `Project` and the `StagedPhotos` mapping (U0's type), with each photo's
        bytes (full plus thumbnail), so the caller can total them minus
        `already_present`.
@@ -484,8 +502,9 @@ photos**
   - a non-image `.jpg`;
   - an image over the pixel limit;
   - a corrupt archive.
-  Each fault gives `InvalidTripArchive`, with nothing left in `staging_dir`
-  on failure. The existing photo upload tests pass unchanged.
+  Each fault gives `InvalidTripArchive`, with no photo or thumbnail file
+  left in `staging_dir` on failure; `manifest.json` may remain, because the
+  caller (U4) removes the directory (R3-3). The existing photo upload tests pass unchanged.
 - **Out of scope:** DB writes; HTTP; quota.
 - **Latitude:** local design.
 - **Escalate if:** the pixel limit would change an existing upload test's
@@ -515,6 +534,10 @@ photos**
      body is received.
      - When it is taken, answer 503 with a readable `detail`.
      - Release it in a `finally` around the handler call.
+     - Before the size check and the guard, authenticate as Decision 13
+       says: 401 without reading the body. Reuse `decode_token` and the
+       middleware's `request.state.jwt_payload` from `api/deps.py`; don't
+       change `api/deps.py`.
   4. Name from the file name, as `/import` does. **Before reading the
      archive (R1-9):** the name conflict (409) and `ensure_project_quota`
      (not on Replace).
@@ -533,6 +556,9 @@ photos**
        Decision 8.3: under `photo_lock(kind, row id)`, re-read the row,
        remove only that uuid, commit, bust the trip's payloads, and log at
        ERROR (R2-6).
+     - The lock key is the one uploads use: `"memory"` for the placement
+       kind `"memories"`, and `"journal"` for `"journal"` (R3-2). The ERROR
+       log records the lock key taken.
   9. The stale-staging sweep (step 5) logs at ERROR each directory it
      removes that still holds photo files, with its age, file count and
      `manifest.json` (R2-4).
@@ -559,6 +585,11 @@ photos**
   - a simulated failed rename after commit: the row loses only that uuid,
     and a photo name added to the same row between the commit and the
     follow-up is kept (R2-6);
+  - while a test holds `photo_lock("memory", id)`, and in a second test
+    `photo_lock("journal", id)`, the follow-up for that row blocks until the
+    lock is released (the R3-2 guard);
+  - a request without a valid token, to either import route, gets 401
+    without its body being read and without taking the guard (Decision 13);
   - the stale-staging sweep logs an ERROR with the manifest for a directory
     that still holds photos (R2-4);
   - the staging directory is under `<data_dir>/tmp/`;
