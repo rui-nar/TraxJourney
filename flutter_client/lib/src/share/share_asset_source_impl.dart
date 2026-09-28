@@ -6,12 +6,19 @@ import 'dart:typed_data';
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:http/http.dart' as http;
 
+import '../api/client.dart';
 import '../projects/image_export.dart';
 import '../projects/project_notifier.dart';
 import 'share_day_bounds.dart';
 import 'share_interfaces.dart';
+
+/// The authenticated route for the copy of one memory photo with location
+/// and device EXIF removed — what a share link would get, fetched as the
+/// signed-in user so that sharing never has to create a share link
+/// (issue #430).
+String shareablePhotoPath({required int memoryId, required String uuid}) =>
+    '/api/memories/$memoryId/photos/$uuid/shareable';
 
 class ShareAssetSourceImpl implements ShareAssetSource {
   final ProjectNotifier notifier;
@@ -50,17 +57,18 @@ class ShareAssetSourceImpl implements ShareAssetSource {
     );
   }
 
+  /// The bytes handed to the OS share sheet leave the app for good, so they
+  /// are the stripped copies, never the originals with their GPS position
+  /// (issue #430). Through the app's own authenticated client: no share
+  /// link is created, and no connection is left behind.
   @override
   Future<List<Uint8List>> fetchPhotos(int memoryId, List<String> uuids) async {
-    final headers = notifier.photoAuthHeaders;
     final out = <Uint8List>[];
     for (final uuid in uuids) {
-      final url = notifier.photoFullUrl(memoryId.toString(), uuid);
       try {
-        final res = await http.get(Uri.parse(url), headers: headers);
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-          out.add(res.bodyBytes);
-        }
+        final res =
+            await api.getRaw(shareablePhotoPath(memoryId: memoryId, uuid: uuid));
+        out.add(res.bodyBytes);
       } catch (_) {
         // Skip a photo that fails to download rather than aborting the share.
       }

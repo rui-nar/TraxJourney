@@ -23,6 +23,7 @@ import io
 import json
 import logging
 import os
+import shutil
 import threading
 import uuid as uuid_lib
 from datetime import datetime, timezone
@@ -62,6 +63,7 @@ from src.models.memory import Memory
 from src.project.memory_match import step_key
 from src.project.project_repo import bump_lock_version
 from src.utils.encryption_check import is_encrypted_envelope as _is_encrypted_envelope
+from src.utils.photo_privacy import UndecodablePhoto, ensure_share_copy, remove_share_copy
 
 router = APIRouter(prefix="/api/memories", tags=["memories"])
 
@@ -476,12 +478,11 @@ def delete_memory(
         photos: List[str] = json.loads(mem_row.photos_json or "[]")
         owner_dir = _owner_dir_id(sess, mem_row)
         photo_path = photo_folder(_DATA_DIR, owner_dir, "memories", memory_id)
-        unlink_and_record(owner_dir, photo_files(photo_path, photos))
-        if photo_path.exists():
-            try:
-                photo_path.rmdir()
-            except OSError:
-                pass
+        _delete_photo_files(owner_dir, memory_id, photos)
+        # The memory is gone, so its directory goes whatever is left in it: a
+        # share copy a concurrent first serve landed after the unlink above,
+        # or the temp file of one (issue #430).
+        shutil.rmtree(photo_path, ignore_errors=True)
 
         item_rows = sess.exec(
             select(DBProjectItem).where(
@@ -519,6 +520,9 @@ def _save_photo_files(user_id: str, memory_id: int, uuid_str: str, raw: bytes) -
     thumb = photo_path / f"{uuid_str}_thumb.jpg"
     full.write_bytes(raw)
     img.thumbnail(_THUMB_SIZE, Image.LANCZOS)
+    # A re-encode drops EXIF, but Pillow does carry a JPEG comment over from
+    # img.info, and the thumbnail is served to share links (issue #430).
+    img.info.clear()
     img.save(str(thumb), "JPEG", quality=85)
     # Storage accounting for quota checks (issue #121). Done here rather than at
     # each call site so every path that writes a photo — upload, replace,
@@ -528,9 +532,18 @@ def _save_photo_files(user_id: str, memory_id: int, uuid_str: str, raw: bytes) -
 
 
 def _delete_photo_files(user_id: str, memory_id: int, photo_uuids: List[str]) -> None:
-    """Remove the on-disk full-res + thumbnail files for the given photo UUIDs."""
-    unlink_and_record(user_id, photo_files(
-        photo_folder(_DATA_DIR, user_id, "memories", memory_id), photo_uuids))
+    """Remove the on-disk full-res + thumbnail files for the given photo UUIDs.
+
+    The share-link copy (issue #430) goes with them, but outside the
+    accounting: it was never counted, so subtracting it here would hand the
+    owner headroom they do not have. Deleting never creates the directory.
+    """
+    folder = photo_folder(_DATA_DIR, user_id, "memories", memory_id)
+    unlink_and_record(user_id, photo_files(folder, photo_uuids))
+    for photo_uuid in photo_uuids:
+        full = photo_file(folder, photo_uuid)
+        if full is not None:
+            remove_share_copy(full)
 
 
 def _clear_memory_photos(sess, user_id: str, mem_row: DBMemory) -> None:
@@ -753,6 +766,49 @@ def serve_photo(
     if full_path is None or not full_path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     return FileResponse(str(full_path), media_type="image/jpeg")
+
+
+def stripped_photo_response(original: Path, headers: Dict[str, str]) -> FileResponse:
+    """The stripped copy of *original* as a response; 404 if it cannot be made.
+
+    A photo deleted under a first serve, or a file on disk that is not a
+    readable image, is simply not there — never the original in its place
+    (issue #430). Shared by the share-link routes and the app's own route.
+    """
+    try:
+        copy = ensure_share_copy(original)
+    except (FileNotFoundError, UndecodablePhoto):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+    return FileResponse(str(copy), media_type="image/jpeg", headers=headers)
+
+
+@router.get("/{memory_id}/photos/{photo_uuid}/shareable",
+            summary="Serve the metadata-free copy of a photo")
+def serve_photo_shareable(
+    memory_id: int,
+    photo_uuid: str,
+    current_user: Annotated[dict, Depends(get_current_user)],
+):
+    """The copy a share link would get — location and device EXIF removed —
+    for the signed-in owner or member (issue #430).
+
+    What the app hands to the OS share sheet leaves the app for good, so it
+    is this copy and not the original; fetching it here rather than through
+    a share link means sharing a photo never has to create one. Cacheable by
+    the caller's own browser only, never by a shared cache.
+    """
+    user_info_id = int(current_user["sub"])
+    with get_session() as sess:
+        mem_row = _get_owned_memory(sess, memory_id, user_info_id, min_role="viewer")
+        owner_dir = _owner_dir_id(sess, mem_row)
+        photos: List[str] = json.loads(mem_row.photos_json or "[]")
+        if photo_uuid not in photos:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
+
+    full_path = photo_file(photo_folder(_DATA_DIR, owner_dir, "memories", memory_id), photo_uuid)
+    if full_path is None or not full_path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+    return stripped_photo_response(full_path, {"Cache-Control": "private, max-age=86400"})
 
 
 @router.get("/{memory_id}/photos/{photo_uuid}/thumb", summary="Serve photo thumbnail")

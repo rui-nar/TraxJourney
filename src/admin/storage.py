@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 from typing import Union
 
+from src.utils.photo_privacy import is_share_copy
+
 # Root under which per-user assets live: data/users/{user_id}/…
 _DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data")
 
@@ -30,7 +32,9 @@ def dir_size(path: Union[str, Path]) -> int:
     """Sum ``st_size`` of every regular file under ``path`` (recursive).
 
     A missing directory returns 0. Symlinks are not followed (avoids double
-    counting / cycles).
+    counting / cycles). The metadata-free photo copies served to share links
+    are skipped: they are a server-side cache, not the user's storage (issue
+    #430), and the quota counter this walk reconciles never counted them.
     """
     root = Path(path)
     if not root.exists():
@@ -38,6 +42,8 @@ def dir_size(path: Union[str, Path]) -> int:
     total = 0
     for dirpath, _dirnames, filenames in os.walk(root):
         for name in filenames:
+            if is_share_copy(name):
+                continue
             fp = Path(dirpath) / name
             try:
                 if fp.is_symlink():
