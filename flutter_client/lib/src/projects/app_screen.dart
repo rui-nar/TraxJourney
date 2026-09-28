@@ -42,6 +42,8 @@ import 'poster_title_dialog.dart';
 import 'social_share_dialog.dart';
 import 'sync_import_notifier.dart';
 import 'sync_import_dialog.dart';
+import 'video_config_dialog.dart';
+import 'video_status_card.dart';
 import 'viewport_sync.dart';
 
 // ── AppScreen ─────────────────────────────────────────────────────────────────
@@ -112,6 +114,10 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
   // Owned here (not via Provider) so its lifetime matches this screen's, the
   // same reasoning as _mapController/_mapFitted above.
   final PosterStatusNotifier _posterStatusNotifier = PosterStatusNotifier();
+
+  // Trip-video status card (docs/TRIP_VIDEO_PLAN.md, U7) — same lifetime and
+  // rules as the poster card above; see video_status_card.dart.
+  final VideoStatusNotifier _videoStatusNotifier = VideoStatusNotifier();
 
   // Highlighted point set when the user taps an encounter's place icon
   // (issue #72); cleared on the next unrelated map tap/selection.
@@ -283,6 +289,7 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
     // and back within this session (issue #14 rule 5) — a one-shot check,
     // not a poll loop of its own; see PosterStatusNotifier.resume.
     _posterStatusNotifier.resume(widget.projectRef);
+    _videoStatusNotifier.resume(widget.projectRef);
   }
 
   @override
@@ -295,6 +302,7 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
     _activityScrollController.dispose();
     _mobileActivityScrollController.dispose();
     _posterStatusNotifier.dispose();
+    _videoStatusNotifier.dispose();
     _degradedRouteWatchNotifier?.stopDegradedRouteWatch();
     super.dispose();
   }
@@ -394,6 +402,14 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
             ),
           ),
           SimpleDialogOption(
+            onPressed: () => Navigator.of(ctx).pop('video'),
+            child: const ListTile(
+              leading: Icon(Icons.movie_outlined),
+              title: Text('Create video…'),
+              subtitle: Text('Animated trip video (MP4), 30–90 s'),
+            ),
+          ),
+          SimpleDialogOption(
             onPressed: () => Navigator.of(ctx).pop(),
             child: const ListTile(
               leading: Icon(Icons.close),
@@ -416,7 +432,33 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
       await _exportImage();
     } else if (choice == 'poster') {
       setState(() => _framePickerActive = true);
+    } else if (choice == 'video') {
+      await _showVideoDialog();
     }
+  }
+
+  // ── Trip video (docs/TRIP_VIDEO_PLAN.md, U7) ──────────────────────────────
+  // One dialog (plan, consent, create); the status card takes over from there
+  // and the user is emailed a link when the render is done.
+
+  Future<void> _showVideoDialog() async {
+    if (!mounted) return;
+    final notifier = context.read<ProjectNotifier>();
+    final messenger = ScaffoldMessenger.of(context);
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => VideoConfigDialog(
+        projectRef: widget.projectRef,
+        activities: () => notifier.activities,
+        onStarted: (jobId) {
+          _videoStatusNotifier.start(ref: widget.projectRef, jobId: jobId);
+          messenger.showSnackBar(const SnackBar(
+              content: Text("Making your video — we'll email you a link "
+                  "when it's ready.")));
+        },
+      ),
+    );
   }
 
   Future<void> _exportImage() async {
@@ -1156,7 +1198,15 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
                       Positioned(
                         top: 90,
                         right: 12,
-                        child: PosterStatusCard(notifier: _posterStatusNotifier),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            PosterStatusCard(notifier: _posterStatusNotifier),
+                            const SizedBox(height: 8),
+                            VideoStatusCard(notifier: _videoStatusNotifier),
+                          ],
+                        ),
                       ),
                     ],
                   ),
@@ -1267,7 +1317,15 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
                 Positioned(
                   top: 90,
                   right: 12,
-                  child: PosterStatusCard(notifier: _posterStatusNotifier),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      PosterStatusCard(notifier: _posterStatusNotifier),
+                      const SizedBox(height: 8),
+                      VideoStatusCard(notifier: _videoStatusNotifier),
+                    ],
+                  ),
                 ),
 
               ],
