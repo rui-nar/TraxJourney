@@ -34,6 +34,7 @@ def upgrade() -> None:
         sa.Column('status', sa.String(), nullable=False,
                   server_default=sa.text("'pending'")),
         sa.Column('stage', sa.String(), nullable=True),
+        sa.Column('error_message', sa.String(), nullable=True),
         sa.Column('progress', sa.Float(), nullable=False,
                   server_default=sa.text('0')),
         sa.Column('request_json', sa.String(), nullable=False,

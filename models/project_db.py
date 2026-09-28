@@ -648,6 +648,10 @@ class DBVideoJob(sqlmodel.SQLModel, table=True):
     user_info_id: int = sqlmodel.Field(foreign_key="userinfo.id")
     status: str = sqlmodel.Field(default="pending")  # pending | running | done | failed | expired
     stage: Optional[str] = sqlmodel.Field(default=None)  # human-readable progress label
+    # Why a failed job failed, shown to the user. Fixed reason strings only,
+    # never exception text: an exception message could carry consent-filtered
+    # geometry out of the job directory.
+    error_message: Optional[str] = sqlmodel.Field(default=None)
     progress: float = sqlmodel.Field(default=0.0)  # 0.0 – 1.0
     request_json: str = sqlmodel.Field(default="{}")  # length/resolution/options, no geometry
     created_at: float = sqlmodel.Field(default_factory=time.time)

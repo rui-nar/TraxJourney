@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 import models.db as db_module
 import src.admin.storage as storage_mod
@@ -118,6 +118,24 @@ class TestVideosThisMonth:
         _job(engine, created_at=_ts(2027, 1, 1, 0, 0, 0))
         assert _count(engine, now=_ts(2026, 12, 15)) == 1
         assert _count(engine, now=_ts(2027, 1, 15)) == 1
+
+
+# ── Row ───────────────────────────────────────────────────────────────────────
+
+class TestVideoJobErrorMessage:
+    def test_defaults_to_none(self, engine):
+        _job(engine, status="pending")
+        with Session(engine) as sess:
+            assert sess.exec(select(DBVideoJob)).one().error_message is None
+
+    def test_stores_and_reads_back(self, engine):
+        with Session(engine) as sess:
+            sess.add(DBVideoJob(project_id=1, user_info_id=1, status="failed",
+                                error_message="The video could not be rendered."))
+            sess.commit()
+        with Session(engine) as sess:
+            job = sess.exec(select(DBVideoJob)).one()
+        assert job.error_message == "The video could not be rendered."
 
 
 # ── Enforcement ───────────────────────────────────────────────────────────────
