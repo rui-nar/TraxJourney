@@ -211,6 +211,28 @@ def test_token_routes_serve_status_and_file_without_a_session(env, monkeypatch):
     assert r.status_code == 206 and r.content == bytes([2, 3])
 
 
+def test_download_routes_set_content_disposition_attachment(env, monkeypatch):
+    _fake_renderer(monkeypatch)
+    job_id = env.client.post("/api/projects/Trip/video", json={"length_s": 30}).json()["job_id"]
+    with Session(env.engine) as sess:
+        token = sess.get(DBVideoJob, job_id).download_token
+    runner.run_video_job(job_id)
+
+    r = env.client.get(f"/api/projects/Trip/video/{job_id}/download")
+    disposition = r.headers["content-disposition"]
+    assert disposition.startswith("attachment") and ".mp4" in disposition
+    r = env.client.get(f"/api/projects/Trip/video/{job_id}/download",
+                       headers={"Range": "bytes=0-9"})
+    assert r.status_code == 206
+
+    app.dependency_overrides.pop(get_current_user, None)
+    r = env.client.get(f"/api/video/{token}/download")
+    disposition = r.headers["content-disposition"]
+    assert disposition.startswith("attachment") and ".mp4" in disposition
+    r = env.client.get(f"/api/video/{token}/download", headers={"Range": "bytes=0-9"})
+    assert r.status_code == 206
+
+
 def test_ownership_404s(env):
     job_id = env.client.post("/api/projects/Trip/video", json={"length_s": 30}).json()["job_id"]
 

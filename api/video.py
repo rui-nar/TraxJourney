@@ -309,7 +309,8 @@ def _file_response(job: DBVideoJob) -> FileResponse:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not ready")
     if not job.result_path or not Path(job.result_path).exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
-    return FileResponse(job.result_path, media_type="video/mp4")
+    return FileResponse(job.result_path, media_type="video/mp4",
+                         filename=f"traxjourney-video-{job.id}.mp4")
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
