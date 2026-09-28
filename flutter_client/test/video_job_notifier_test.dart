@@ -1,0 +1,269 @@
+// Tests the trip-video request flow (docs/TRIP_VIDEO_PLAN.md, U7) against a
+// fake HTTP client: the polyline encoder the consent geometry is sent in,
+// building that geometry on the device, and VideoRequestNotifier's phases —
+// above all that decrypted geometry leaves the device only after consent.
+
+import 'dart:convert';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+
+import 'package:traxjourney_client/src/api/client.dart';
+import 'package:traxjourney_client/src/core/project_ref.dart';
+import 'package:traxjourney_client/src/map/polyline_decoder.dart';
+import 'package:traxjourney_client/src/projects/video_job_notifier.dart';
+
+http.Response _json(int status, Object body) => http.Response(
+      jsonEncode(body),
+      status,
+      headers: {'content-type': 'application/json'},
+    );
+
+Map<String, dynamic> planJson({bool available = true}) => {
+      'available': available,
+      'length_s': 60,
+      'legs': 3,
+      'clips': [],
+      'clip_counts': {'30': 2, '60': 3, '90': 3},
+      'skipped': [],
+      'consent_required': [],
+      'quota': {'limit': 1, 'used': 0, 'remaining': 1},
+      'resolutions': [720],
+    };
+
+final consent409 = {
+  'detail': {
+    'code': 'consent_required',
+    'message': 'This trip is encrypted.',
+    'consent_required': [7, 8],
+  }
+};
+
+// Activity 7 has a decrypted track; 8 has none, only encrypted endpoints.
+const track7 = '_p~iF~ps|U_ulLnnqC_mqNvxq`@';
+List<Map<String, dynamic>> activities() => [
+      {
+        'id': 7,
+        'map': {'summary_polyline': track7},
+      },
+      {
+        'id': 8,
+        'map': {'summary_polyline': null},
+        'start_latlng': null,
+        'end_latlng': null,
+        'start_latlng_enc': 'v1.a.b',
+        'end_latlng_enc': 'v1.c.d',
+      },
+    ];
+
+Future<String?> fakeReveal(String? v) async => switch (v) {
+      'v1.a.b' => '[48.85, 2.35]',
+      'v1.c.d' => '[48.86, 2.36]',
+      _ => v,
+    };
+
+void main() {
+  group('encodePolyline', () {
+    test('round-trips through decodePolyline, negatives included', () {
+      final pts = [(38.5, -120.2), (40.7, -120.95), (43.252, -126.453)];
+      // The reference example from Google's polyline docs.
+      expect(encodePolyline(pts), '_p~iF~ps|U_ulLnnqC_mqNvxq`@');
+      final back = decodePolyline(encodePolyline([(-33.9, 151.2), (51.5, -0.1)]));
+      expect(back.map((p) => (p.lat, p.lon)).toList(),
+          [(-33.9, 151.2), (51.5, -0.1)]);
+    });
+  });
+
+  group('buildConsentGeometry', () {
+    test('sends the track, or the decrypted endpoints as a 2-point line',
+        () async {
+      final r = await buildConsentGeometry([7, 8], activities(),
+          reveal: fakeReveal);
+      expect(r.missing, isEmpty);
+      expect(r.geometry[7], track7);
+      final line = decodePolyline(r.geometry[8]!);
+      expect(line.map((p) => (p.lat, p.lon)).toList(),
+          [(48.85, 2.35), (48.86, 2.36)]);
+    });
+
+    test('an activity still encrypted on this device is missing', () async {
+      final r = await buildConsentGeometry(
+        [7, 9],
+        [
+          {
+            'id': 7,
+            'map': {'summary_polyline': 'v1.locked.cipher'},
+          },
+        ],
+        reveal: (v) async => v, // locked: reveal is the identity
+      );
+      expect(r.geometry, isEmpty);
+      expect(r.missing, [7, 9]);
+    });
+  });
+
+  group('VideoRequestNotifier', () {
+    late List<http.Request> sent;
+
+    VideoRequestNotifier notifier(
+        Future<http.Response> Function(http.Request) handler,
+        {FieldRevealer reveal = fakeReveal}) {
+      sent = [];
+      final client = ApiClient(httpClient: MockClient((req) async {
+        sent.add(req);
+        return handler(req);
+      }))
+        ..setToken('jwt');
+      return VideoRequestNotifier(
+        ref: const ProjectRef(name: 'Trip'),
+        activities: activities,
+        client: client,
+        reveal: reveal,
+      );
+    }
+
+    Map<String, dynamic> body(http.Request r) =>
+        jsonDecode(r.body) as Map<String, dynamic>;
+
+    test('plan ready: picks the tallest allowed resolution', () async {
+      final n = notifier((_) async => _json(200, planJson()));
+      await n.loadPlan();
+      expect(n.phase, VideoRequestPhase.ready);
+      expect(n.height, 720);
+      expect(n.plan!.clipCounts, {30: 2, 60: 3, 90: 3});
+      expect(n.plan!.quota.remaining, 1);
+      expect(sent.single.url.path, '/api/projects/Trip/video/plan');
+      expect(body(sent.single).containsKey('decrypted_geometry'), isFalse);
+    });
+
+    test('plan says unavailable', () async {
+      final n = notifier((_) async => _json(200, planJson(available: false)));
+      await n.loadPlan();
+      expect(n.phase, VideoRequestPhase.unavailable);
+      expect(n.canSubmit, isFalse);
+    });
+
+    test('409 asks for consent and sends nothing until accepted', () async {
+      final n = notifier((req) async =>
+          body(req).containsKey('decrypted_geometry')
+              ? _json(200, planJson())
+              : _json(409, consent409));
+      await n.loadPlan();
+      expect(n.phase, VideoRequestPhase.consentNeeded);
+      expect(n.consentIds, [7, 8]);
+      expect(sent, hasLength(1));
+      expect(body(sent.single).containsKey('decrypted_geometry'), isFalse);
+
+      await n.acceptConsent();
+      expect(n.phase, VideoRequestPhase.ready);
+      expect(sent, hasLength(2));
+      final geometry = body(sent.last)['decrypted_geometry'] as Map;
+      expect(geometry.keys, unorderedEquals(['7', '8']));
+      expect(geometry['7'], track7);
+      expect(n.consentedCount, 2);
+
+      // The job carries the same geometry.
+      await n.submit();
+      expect((body(sent.last)['decrypted_geometry'] as Map).keys,
+          unorderedEquals(['7', '8']));
+    });
+
+    test('declining sends nothing more', () async {
+      final n = notifier((_) async => _json(409, consent409));
+      await n.loadPlan();
+      n.declineConsent();
+      expect(n.phase, VideoRequestPhase.declined);
+      expect(sent, hasLength(1));
+      expect(body(sent.single).containsKey('decrypted_geometry'), isFalse);
+    });
+
+    test('accept with an undecryptable activity sends nothing', () async {
+      final n = notifier((_) async => _json(409, consent409),
+          reveal: (v) async => v); // locked: reveal is the identity
+      await n.loadPlan();
+      await n.acceptConsent();
+      expect(n.phase, VideoRequestPhase.error);
+      expect(sent, hasLength(1));
+    });
+
+    test('409 on create: consent then the create is resent with geometry',
+        () async {
+      final n = notifier((req) async {
+        if (req.url.path.endsWith('/plan')) return _json(200, planJson());
+        return body(req).containsKey('decrypted_geometry')
+            ? _json(201, {'job_id': 5})
+            : _json(409, consent409);
+      });
+      await n.loadPlan();
+      await n.submit();
+      expect(n.phase, VideoRequestPhase.consentNeeded);
+      await n.acceptConsent();
+      expect(n.phase, VideoRequestPhase.started);
+      expect(n.jobId, 5);
+      expect(sent.last.url.path, '/api/projects/Trip/video');
+      expect(body(sent.last)['length_s'], 60);
+      expect(body(sent.last)['height'], 720);
+    });
+
+    test('402 on create keeps the refusal for the upgrade message', () async {
+      final n = notifier((req) async {
+        if (req.url.path.endsWith('/plan')) return _json(200, planJson());
+        return _json(402, {
+          'detail': 'Your plan includes 1 video per month. Upgrade to make more.',
+          'code': 'quota_exceeded',
+          'resource': 'videos',
+          'plan': 'free',
+          'limit': 1,
+          'used': 1,
+          'needed': 2,
+        });
+      });
+      await n.loadPlan();
+      await n.submit();
+      expect(n.phase, VideoRequestPhase.quotaExceeded);
+      expect(n.quotaError!.resource, 'videos');
+      expect(n.canSubmit, isFalse);
+    });
+
+    test('a refused resolution is cleared by picking another', () async {
+      final n = notifier((req) async {
+        if (req.url.path.endsWith('/plan')) return _json(200, planJson());
+        return _json(402, {
+          'detail': 'Your plan makes videos up to 720p. Upgrade for 1080p.',
+          'code': 'quota_exceeded',
+          'resource': 'video_height',
+          'plan': 'free',
+          'limit': 720,
+          'used': 720,
+          'needed': 1080,
+        });
+      });
+      await n.loadPlan();
+      n.setHeight(1080);
+      await n.submit();
+      expect(n.phase, VideoRequestPhase.quotaExceeded);
+      n.setHeight(720);
+      expect(n.phase, VideoRequestPhase.ready);
+      expect(n.quotaError, isNull);
+    });
+
+    test('503 on create is the unavailable state', () async {
+      final n = notifier((req) async {
+        if (req.url.path.endsWith('/plan')) return _json(200, planJson());
+        return _json(503, {'detail': 'Video rendering is not available right now'});
+      });
+      await n.loadPlan();
+      await n.submit();
+      expect(n.phase, VideoRequestPhase.unavailable);
+    });
+
+    test('422 shows the server detail', () async {
+      final n = notifier((_) async =>
+          _json(422, {'detail': 'Nothing in this trip can be animated'}));
+      await n.loadPlan();
+      expect(n.phase, VideoRequestPhase.error);
+      expect(n.errorMessage, 'Nothing in this trip can be animated');
+    });
+  });
+}
