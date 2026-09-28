@@ -23,6 +23,12 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends libexpat1 \
  && rm -rf /var/lib/apt/lists/*
 
+# ffmpeg encodes trip videos: the `video` worker pipes the frames it draws into
+# a local ffmpeg process (libx264, MP4). The API and other workers never call it.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ffmpeg \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
