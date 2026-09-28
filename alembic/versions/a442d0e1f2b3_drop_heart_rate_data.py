@@ -11,7 +11,14 @@ already stored:
 * ``stravacache.activities_json``: every key containing "heartrate" is removed
   from each cached activity, the rest of the blob is kept as is. A row whose
   blob does not parse is deleted instead — nothing can be scrubbed from it,
-  and the cache is disposable (TTL-bound, refetched on demand).
+  and the cache is disposable (TTL-bound, refetched on demand). The user ids
+  are selected first and each blob is read and rewritten on its own, as
+  6c1f0e9a2b47 does: this runs at API startup, and a blob is a user's whole
+  Strava history.
+* ``project``: every trip holding an activity with a heart-rate value has its
+  lock_version advanced, in SQL, before the columns go. A native client
+  caches a trip's detail JSON until that number moves (issue #173), so this
+  is what makes it refetch a copy that still carries the values.
 * ``activity``: the five columns are dropped. Batch mode, because SQLite
   rebuilds the table for that; it is what every earlier column drop on this
   table already uses (see e7f8a9b0c1d2, a3f7c1e9b204).
@@ -39,6 +46,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     _scrub_strava_cache()
+    _tell_the_trips()
     with op.batch_alter_table('activity') as batch_op:
         batch_op.drop_column('has_heartrate')
         batch_op.drop_column('heartrate_opt_out')
@@ -49,10 +57,14 @@ def upgrade() -> None:
 
 def _scrub_strava_cache() -> None:
     bind = op.get_bind()
-    rows = bind.execute(sa.text(
-        "SELECT user_info_id, activities_json FROM stravacache"
-    )).fetchall()
-    for user_info_id, blob in rows:
+    user_ids = [r[0] for r in bind.execute(sa.text(
+        "SELECT user_info_id FROM stravacache ORDER BY user_info_id"))]
+    # One row at a time: this runs at startup, and a blob is a whole history.
+    for user_info_id in user_ids:
+        blob = bind.execute(
+            sa.text("SELECT activities_json FROM stravacache WHERE user_info_id = :id"),
+            {"id": user_info_id},
+        ).scalar()
         try:
             activities = json.loads(blob)
             cleaned = [
@@ -72,6 +84,21 @@ def _scrub_strava_cache() -> None:
             ),
             {"v": json.dumps(cleaned), "id": user_info_id},
         )
+        del blob, activities, cleaned
+
+
+def _tell_the_trips() -> None:
+    """Advance the lock_version of every trip holding an activity with a
+    heart-rate value, so a client's on-device copy of it is refetched (issue
+    #173) — the same bump 6c1f0e9a2b47 makes, done in SQL."""
+    op.get_bind().execute(sa.text(
+        "UPDATE project SET lock_version = lock_version + 1 "
+        "WHERE id IN (SELECT DISTINCT project_id FROM projectitem "
+        "WHERE activity_id IN (SELECT id FROM activity "
+        "WHERE average_heartrate IS NOT NULL OR max_heartrate IS NOT NULL "
+        "OR has_heartrate IS TRUE OR heartrate_opt_out IS TRUE "
+        "OR display_hide_heartrate_option IS TRUE))"
+    ))
 
 
 def downgrade() -> None:
