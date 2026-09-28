@@ -193,3 +193,15 @@ Envelope question raised: FastAPI reads the multipart body before dependencies, 
 - Override: Owner kept the guard (2026-09-28)
 - Outcome: guard written into the plan
 
+## Round 4 — 2026-09-28, plan revisions 754a8eff..0db85cf6 reviewed at 0db85cf6 (owner extended the cap by one round)
+
+### R4-1 — The wrapper's own token check bypasses dependency_overrides[get_current_user], which every existing /import test uses
+- Trigger: The U4 implementer adds Decision 13's check as written → the 16 test files posting to /import authenticate only through dependency_overrides and get 401 → an X3 stop, or bent tests.
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (plan revised: Decision 13, U4 Do 3 and acceptance). Owner: no further plan review rounds (2026-09-28).
+- Fix note (triager): in the wrapper, solve only get_current_user's Dependant through FastAPI's dependency machinery (never the endpoint's, whose File/Form parameters read the body). That honours overrides, gives HTTPBearer's real 401, and follows any future change to get_current_user. solve_dependencies is not public API, but it fails closed and the existing import tests catch a break on upgrade. Rejected: reading dependency_overrides directly, which is a test seam in auth code and a hand-copy of the check that can drift. Add an acceptance test: an override-authenticated test passes the wrapper, and a request with no header gets the same response get_current_user gives.
+

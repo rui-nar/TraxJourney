@@ -225,11 +225,22 @@ Users moving a trip between accounts, or restoring one, lose every photo.
       `get_current_user` alone would only answer 401 after the whole upload
       was spooled: up to 1 GB, or 50 MB on `/import` today.
     - The capped route wrapper therefore authenticates first, before the
-      declared-size check, the guard and any body read. It uses
-      `request.state.jwt_payload` when the access-log middleware already
-      decoded the token, and otherwise `decode_token` on the bearer
-      credentials: the same checks as `get_current_user` in `api/deps.py`,
-      reused rather than duplicated.
+      declared-size check, the guard and any body read (R4-1).
+      - It solves **only `get_current_user`'s own dependency** through
+        FastAPI's dependency machinery (a `Dependant` for
+        `get_current_user`, solved against the request), never the
+        endpoint's Dependant, whose `File`/`Form` parameters would read the
+        body.
+      - It is exactly the check the endpoint runs: it honours
+        `app.dependency_overrides` (which every import test uses), gives
+        `HTTPBearer`'s real 401, and follows any later change to
+        `get_current_user`.
+      - `solve_dependencies` is not public FastAPI API. It fails closed (an
+        error gives a 500, never a bypass), and the import tests catch a
+        break on a FastAPI upgrade.
+      - Rules out: decoding the token by hand, or reading
+        `dependency_overrides` directly, both of which copy the auth check
+        and put a test seam into it.
     - A request without a valid token gets the same 401 as today, without
       its body being read and without taking the guard.
     - The endpoint keeps its `get_current_user` dependency.
@@ -535,9 +546,8 @@ photos**
      - When it is taken, answer 503 with a readable `detail`.
      - Release it in a `finally` around the handler call.
      - Before the size check and the guard, authenticate as Decision 13
-       says: 401 without reading the body. Reuse `decode_token` and the
-       middleware's `request.state.jwt_payload` from `api/deps.py`; don't
-       change `api/deps.py`.
+       says: solve only `get_current_user`'s Dependant through FastAPI, and
+       answer 401 without reading the body. Don't change `api/deps.py`.
   4. Name from the file name, as `/import` does. **Before reading the
      archive (R1-9):** the name conflict (409) and `ensure_project_quota`
      (not on Replace).
@@ -589,7 +599,12 @@ photos**
     `photo_lock("journal", id)`, the follow-up for that row blocks until the
     lock is released (the R3-2 guard);
   - a request without a valid token, to either import route, gets 401
-    without its body being read and without taking the guard (Decision 13);
+    without its body being read and without taking the guard (Decision 13).
+    The status, headers and body are the same as `get_current_user` gives
+    today;
+  - the existing import tests, which authenticate through
+    `dependency_overrides[get_current_user]`, pass unchanged through the
+    wrapper (R4-1);
   - the stale-staging sweep logs an ERROR with the manifest for a directory
     that still holds photos (R2-4);
   - the staging directory is under `<data_dir>/tmp/`;
