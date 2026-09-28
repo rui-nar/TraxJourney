@@ -90,3 +90,9 @@ network.
 - Outcome: fixed (disconnect claims the row, reads it under the claim, deletes, and revokes the row's tokens after the commit when its refresh token is not the one revoked; delete_user_and_data re-reads under lock_account and revokes after its final commit)
 
 Envelope question from the reviewer (enrichment builds a StravaAPI without the rotation callback): filed as #512.
+
+## Round 4 — 2026-09-28, reviewed at e9e13bba (the R3-1 fix; round authorised by the owner)
+
+No findings. Review stops (§6).
+
+Envelope question from the reviewer, owner answer 2026-09-28: E1 covers SQLite only (no Postgres driver ships). On SQLite, lock_account is a database-wide write lock, so the deletion re-read is authoritative; Postgres-only row-lock gaps are out of scope until Postgres is adopted.
