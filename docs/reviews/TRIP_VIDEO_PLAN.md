@@ -165,7 +165,7 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (U3a, ead73b3d)
 
 ## Delivery
 
@@ -173,10 +173,13 @@ Feature branch `feat/trip-video` (from `docs/trip-video-plan`, PR #498 to be clo
 
 | Unit | Goal | Route | Rule | Attempts | Escalated | Verified first time | Findings traced |
 |---|---|---|---|---|---|---|---|
-| U1 | Legs, clips and pacing engine + CLI | Opus | S2 | | | | |
-| U3 | videojob table, migration, video quotas, storage reconcile | Opus | S4 | | | | |
-| U4 | video queue, worker kill dispatch, compose, ffmpeg | Opus | S5 | | | | |
+| U1 | Legs, clips and pacing engine + CLI | Opus | S2 | 1 | — | yes | — |
+| U3 | videojob table, migration, video quotas, storage reconcile | Opus | S4 | 1 | — | yes | U3R1-1 |
+| U3a | error_message on videojob (fix unit for U3R1-1) | Opus | S4 | 1 | — | yes | U3R1-1 |
+| U4 | video queue, worker kill dispatch, compose, ffmpeg | Opus | S5 | 1 | — | yes | — |
 | U2 | Deterministic follow camera | Opus | S2 | | | | |
 | U6 | Video API, runner, consent, sweeps, emails | Opus | S5 | | | | |
 | U5 | Frame renderer and encoder | Opus | S4 | | | | |
 | U7 | Flutter request/consent/status/download | Opus | S5 | | | | |
+
+Note: every wave-1 worktree was created from `main` (27a2d645), not from `feat/trip-video`; each implementer reset its clean branch to 6459a9ba before starting. Later waves must check the base first.
