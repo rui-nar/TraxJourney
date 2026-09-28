@@ -167,6 +167,19 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
 - Override: —
 - Outcome: fixed (U3a, ead73b3d)
 
+## Unit U6 review, round 1 — 2026-09-28, diff 3bf84285..94367a15 (before integration, DELIVERY.md §5 point 3)
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
+
+### U6R1-1 — decrypted_geometry has no size bound; an oversized body is decoded on the API request thread, on a route with no quota
+- Trigger: a hostile authenticated client posts /video/plan on its own encrypted trip with a tens-of-MB polyline, repeatedly → decoded twice and haversine-summed on the request thread → other users' requests stall (the R1-6 mechanism, but with client-supplied input); /plan has no quota and writes nothing
+- Scores: trigger=plausible, impact=degraded-ux, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10) — not a duplicate of R1-6 (client-supplied input, not stored tracks)
+- Revisit when: a /video/plan or POST /video body over 1 MB or over 1 s server-side appears in logs; a 502/latency spike coincides with a video request; R1-6 is picked up; or before the feature PR merges if the owner wants the request contract bounded before clients ship
+- Guard: —
+- Override: user: Fix now — cheap while the request contract is unshipped
+- Outcome: fixed (U6a, 3ecbc07e) — residual: a request at the 6M-char total still costs ~5 s CPU and /video/plan has no quota; only a rate limit would stop repeats
+
 ## Delivery
 
 Feature branch `feat/trip-video` (from `docs/trip-video-plan`, PR #498 to be closed in favour of the feature PR). Split approved by the user 2026-09-28 without overrides. The implementer and verifier project agents were not registered in the session; their instructions ran on general-purpose agents with the routed model.
@@ -177,8 +190,9 @@ Feature branch `feat/trip-video` (from `docs/trip-video-plan`, PR #498 to be clo
 | U3 | videojob table, migration, video quotas, storage reconcile | Opus | S4 | 1 | — | yes | U3R1-1 |
 | U3a | error_message on videojob (fix unit for U3R1-1) | Opus | S4 | 1 | — | yes | U3R1-1 |
 | U4 | video queue, worker kill dispatch, compose, ffmpeg | Opus | S5 | 1 | — | yes | — |
-| U2 | Deterministic follow camera | Opus | S2 | | | | |
-| U6 | Video API, runner, consent, sweeps, emails | Opus | S5 | | | | |
+| U2 | Deterministic follow camera | Opus | S2 | 1 | — | yes | — |
+| U6 | Video API, runner, consent, sweeps, emails | Opus | S5 | 1 | X3 → scope widened (4 email templates) | yes | U6R1-1 |
+| U6a | Bound decrypted_geometry size (fix unit for U6R1-1) | Opus | S5 | 1 | — | yes | U6R1-1 |
 | U5 | Frame renderer and encoder | Opus | S4 | | | | |
 | U7 | Flutter request/consent/status/download | Opus | S5 | | | | |
 
