@@ -25,6 +25,7 @@ from src.jobs.route_jobs import (
 )
 from src.poster.poster_job_runner import sweep_orphaned_poster_jobs
 from src.project.project_repo import StaleWriteError
+from src.video.job_runner import sweep_video_jobs
 
 from api.activities import router as activities_router, activity_fields_router
 from api.json_guard import RefuseUnstorableJson
@@ -53,6 +54,7 @@ from api.projects import router as projects_router
 from api.segments import router as segments_router
 from api.share import router as share_router
 from api.strava import router as strava_router
+from api.video import router as video_router, video_public_router
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
 from models.db import checkpoint_wal, engine
@@ -164,6 +166,13 @@ async def lifespan(_app: FastAPI):
     # the cost on their first open.
     _scheduler.add_job(sweep_unprepared_geometry, "interval", minutes=5,
                        id="prepared_geometry_backfill", replace_existing=True)
+    # Video jobs are failed by age, never at API startup: the video worker may
+    # still be rendering or about to run what a restart would call orphaned
+    # (docs/TRIP_VIDEO_PLAN.md, Convention 6). Hourly: fail jobs past their
+    # time limit, expire 30-day-old MP4s, delete consent geometry left behind
+    # by a terminal job. On its own minute, away from the other hourly jobs.
+    _scheduler.add_job(sweep_video_jobs, "cron", minute=40,
+                       id="video_sweep", replace_existing=True)
     # One listener covers every job — current and future — with run counts,
     # duration and a last-success timestamp (issue #125).
     _scheduler.add_listener(record_job_event, JOB_EVENT_MASK)
@@ -236,6 +245,8 @@ app.include_router(projects_router)
 app.include_router(segments_router)
 app.include_router(share_router)
 app.include_router(strava_router)
+app.include_router(video_router)
+app.include_router(video_public_router)
 
 
 @app.exception_handler(StaleWriteError)
