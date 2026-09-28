@@ -28,7 +28,15 @@ http.Response _json(int status, Object body) => http.Response(
       headers: {'content-type': 'application/json'},
     );
 
-Map<String, dynamic> _plan({bool available = true, List<int> res = const [720]}) => {
+const _quotaOne = {'limit': 1, 'used': 0, 'remaining': 1};
+const _quotaNone = {'limit': 1, 'used': 1, 'remaining': 0};
+const _quotaUnlimited = {'limit': null, 'used': 0, 'remaining': null};
+
+Map<String, dynamic> _plan(
+        {bool available = true,
+        List<int> res = const [720],
+        Map<String, dynamic> quota = _quotaOne}) =>
+    {
       'available': available,
       'length_s': 60,
       'legs': 4,
@@ -36,7 +44,7 @@ Map<String, dynamic> _plan({bool available = true, List<int> res = const [720]})
       'clip_counts': {'30': 2, '60': 4, '90': 4},
       'skipped': [],
       'consent_required': [],
-      'quota': {'limit': 1, 'used': 0, 'remaining': 1},
+      'quota': quota,
       'resolutions': res,
     };
 
@@ -193,6 +201,95 @@ void main() {
     final create = tester.widget<FilledButton>(
         find.widgetWithText(FilledButton, 'Create video'));
     expect(create.onPressed, isNull);
+  });
+
+  group('refused early (F-b)', () {
+    Map<String, dynamic> consent409({
+      Map<String, dynamic> quota = _quotaOne,
+      bool available = true,
+    }) =>
+        {
+          'detail': {
+            ...(_consent409['detail'] as Map),
+            'quota': quota,
+            'available': available,
+          }
+        };
+
+    Future<http.Response> Function(http.Request) noGeometry(
+            http.Response response) =>
+        (req) async {
+          expect(hasGeometry(req), isFalse,
+              reason: 'no decrypted geometry may leave the device');
+          return response;
+        };
+
+    void expectCreateDisabled(WidgetTester tester) {
+      final create = tester.widget<FilledButton>(
+          find.widgetWithText(FilledButton, 'Create video'));
+      expect(create.onPressed, isNull);
+    }
+
+    testWidgets('no video left on an encrypted trip: says so, no consent, '
+        'cannot create', (tester) async {
+      var fetched = 0;
+      await open(
+          tester,
+          noGeometry(_json(200, {
+            ..._plan(quota: _quotaNone),
+            'legs': 0,
+            'clip_counts': {'30': 0, '60': 0, '90': 0},
+          })),
+          fetchTrack: (_) async {
+        fetched++;
+        return null;
+      });
+      expect(find.byType(VideoConsentDialog), findsNothing);
+      expect(find.text("You've used all 1 video your plan includes this month."),
+          findsOneWidget);
+      expectCreateDisabled(tester);
+      expect(fetched, 0);
+      expect(sent, hasLength(1));
+    });
+
+    testWidgets('a 409 with no video left: says so, no consent',
+        (tester) async {
+      await open(tester, noGeometry(_json(409, consent409(quota: _quotaNone))));
+      expect(find.byType(VideoConsentDialog), findsNothing);
+      expect(find.textContaining("You've used all 1 video"), findsOneWidget);
+      expectCreateDisabled(tester);
+      expect(sent, hasLength(1));
+    });
+
+    testWidgets('a 409 that says unavailable: says so, no consent',
+        (tester) async {
+      await open(tester, noGeometry(_json(409, consent409(available: false))));
+      expect(find.byType(VideoConsentDialog), findsNothing);
+      expect(find.textContaining("Video rendering isn't available"),
+          findsOneWidget);
+      expectCreateDisabled(tester);
+      expect(sent, hasLength(1));
+    });
+
+    testWidgets('unlimited quota on an encrypted trip still asks consent and '
+        'creates', (tester) async {
+      await open(tester, (req) async {
+        if (!hasGeometry(req)) {
+          return _json(409, consent409(quota: _quotaUnlimited));
+        }
+        return req.url.path.endsWith('/plan')
+            ? _json(200, _plan(quota: _quotaUnlimited))
+            : _json(201, {'job_id': 21});
+      });
+      expect(find.byType(VideoConsentDialog), findsOneWidget);
+      await tester.tap(find.text('Send and continue'));
+      await _frames(tester);
+      expect(find.text('Unlimited videos on your plan.'), findsOneWidget);
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Create video'));
+      await _frames(tester);
+      expect(startedJob, 21);
+    });
   });
 
   group('U7a', () {

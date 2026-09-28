@@ -151,6 +151,17 @@ class _VideoConfigDialogState extends State<VideoConfigDialog> {
           Icons.cloud_off_outlined,
           "Video rendering isn't available right now. Please try again later.",
         );
+      case VideoRequestPhase.noneLeft:
+        final q = _n.quota;
+        return _notice(
+          context,
+          Icons.workspace_premium_outlined,
+          q?.limit == null
+              ? 'You have no videos left this month.'
+              : "You've used all ${q!.limit} video${q.limit == 1 ? '' : 's'} "
+                  'your plan includes this month.',
+          color: theme.brightness == Brightness.dark ? kWarningDark : kWarning,
+        );
       case VideoRequestPhase.error:
         return Column(
           mainAxisSize: MainAxisSize.min,

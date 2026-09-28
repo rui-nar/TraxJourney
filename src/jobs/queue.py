@@ -98,6 +98,26 @@ def queue_available() -> bool:
     return get_redis() is not None
 
 
+def queue_has_workers(name: str) -> bool:
+    """Whether a broker is reachable and at least one RQ worker listens on *name*.
+
+    For queues with no in-process fallback (``video``): a job queued with no
+    worker would sit pending until a sweep fails it. One Redis call (the
+    queue's worker set, which a worker joins at birth and leaves at death).
+    Any broker error counts as "no worker" — never an exception to the caller.
+    """
+    try:
+        queue = get_queue(name)
+        if queue is None:
+            return False
+        from rq import Worker
+
+        return Worker.count(queue=queue) > 0
+    except Exception as exc:  # noqa: BLE001 — a broker error means "unavailable"
+        _log.warning("could not count workers on %r (%s)", name, exc)
+        return False
+
+
 def get_queue(name: str):
     """The RQ queue *name*, or ``None`` when running without a broker."""
     client = get_redis()

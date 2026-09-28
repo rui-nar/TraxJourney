@@ -43,6 +43,9 @@ class VideoQuota {
 
   bool get unlimited => limit == null;
 
+  /// No video left this month: nothing can be made, so nothing is asked for.
+  bool get exhausted => remaining == 0;
+
   factory VideoQuota.fromJson(Map<String, dynamic> json) => VideoQuota(
         limit: (json['limit'] as num?)?.toInt(),
         used: (json['used'] as num?)?.toInt() ?? 0,
@@ -52,7 +55,8 @@ class VideoQuota {
 
 /// `VideoPlanOut`: what a video of the trip would be, for the dialog.
 class VideoPlan {
-  /// False when the server has no broker or ffmpeg to render with.
+  /// False when the server has no broker, no `video` worker or no ffmpeg to
+  /// render with.
   final bool available;
   final int legs;
 
@@ -94,12 +98,20 @@ class VideoPlan {
 }
 
 /// A 409 `consent_required`: the trip has encrypted activities the server
-/// can't draw without their decrypted lines (D2).
+/// can't draw without their decrypted lines (D2). It also says whether a
+/// video could be made at all, so consent is never asked for one that can't.
 class VideoConsentRequired {
   final List<int> activityIds;
   final String message;
 
-  const VideoConsentRequired(this.activityIds, this.message);
+  /// The requester's quota; null when the server didn't send it.
+  final VideoQuota? quota;
+
+  /// Whether the server can render; null when it didn't say.
+  final bool? available;
+
+  const VideoConsentRequired(this.activityIds, this.message,
+      {this.quota, this.available});
 
   /// Parse a 409 consent response, or null for any other failure.
   static VideoConsentRequired? fromApiException(ApiException e) {
@@ -114,6 +126,13 @@ class VideoConsentRequired {
             (id as num).toInt(),
         ],
         detail['message'] as String? ?? '',
+        quota: detail['quota'] is Map
+            ? VideoQuota.fromJson(
+                (detail['quota'] as Map).cast<String, dynamic>())
+            : null,
+        available: detail['available'] is bool
+            ? detail['available'] as bool
+            : null,
       );
     } catch (_) {
       return null;

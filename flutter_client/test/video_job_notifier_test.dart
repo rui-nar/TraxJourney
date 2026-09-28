@@ -21,7 +21,13 @@ http.Response _json(int status, Object body) => http.Response(
       headers: {'content-type': 'application/json'},
     );
 
-Map<String, dynamic> planJson({bool available = true}) => {
+const quotaOne = {'limit': 1, 'used': 0, 'remaining': 1};
+const quotaNone = {'limit': 1, 'used': 1, 'remaining': 0};
+const quotaUnlimited = {'limit': null, 'used': 3, 'remaining': null};
+
+Map<String, dynamic> planJson(
+        {bool available = true, Map<String, dynamic> quota = quotaOne}) =>
+    {
       'available': available,
       'length_s': 60,
       'legs': 3,
@@ -29,8 +35,28 @@ Map<String, dynamic> planJson({bool available = true}) => {
       'clip_counts': {'30': 2, '60': 3, '90': 3},
       'skipped': [],
       'consent_required': [],
-      'quota': {'limit': 1, 'used': 0, 'remaining': 1},
+      'quota': quota,
       'resolutions': [720],
+    };
+
+/// What the server answers for an encrypted trip it won't ask consent for
+/// (no video left, or unavailable): 200 with an empty plan.
+Map<String, dynamic> emptyPlanJson(
+        {bool available = true, Map<String, dynamic> quota = quotaNone}) =>
+    {
+      ...planJson(available: available, quota: quota),
+      'legs': 0,
+      'clip_counts': {'30': 0, '60': 0, '90': 0},
+    };
+
+Map<String, dynamic> consent409With(
+        {Map<String, dynamic> quota = quotaOne, bool available = true}) =>
+    {
+      'detail': {
+        ...(consent409['detail'] as Map),
+        'quota': quota,
+        'available': available,
+      }
     };
 
 final consent409 = {
@@ -398,6 +424,85 @@ void main() {
       await accepting;
       expect(sent.where((r) => r.url.path == '/api/projects/Trip/video'),
           hasLength(1), reason: 'only the create the 409 answered');
+    });
+
+    group('refused early (F-b)', () {
+      late List<int> fetched;
+
+      VideoRequestNotifier refusing(
+          Future<http.Response> Function(http.Request) handler) {
+        fetched = [];
+        return notifier((req) async {
+          expect(body(req).containsKey('decrypted_geometry'), isFalse,
+              reason: 'no decrypted geometry may leave the device');
+          return handler(req);
+        }, fetchTrack: fakeFetch(fetched));
+      }
+
+      test('no video left on an encrypted trip: no consent, nothing fetched '
+          'or sent, cannot create', () async {
+        final n = refusing((_) async => _json(200, emptyPlanJson()));
+        await n.loadPlan();
+        expect(n.phase, VideoRequestPhase.noneLeft);
+        expect(n.quota!.remaining, 0);
+        expect(n.consentIds, isEmpty);
+        expect(n.canSubmit, isFalse);
+        await n.submit();
+        expect(sent, hasLength(1), reason: 'submit sends nothing');
+        expect(fetched, isEmpty);
+      });
+
+      test('a 409 whose quota is used up does not ask for consent', () async {
+        final n = refusing(
+            (_) async => _json(409, consent409With(quota: quotaNone)));
+        await n.loadPlan();
+        expect(n.phase, VideoRequestPhase.noneLeft);
+        expect(n.quota!.remaining, 0);
+        expect(n.consentIds, isEmpty);
+        expect(n.canSubmit, isFalse);
+        expect(fetched, isEmpty);
+        expect(sent, hasLength(1));
+      });
+
+      test('a 409 that says unavailable does not ask for consent', () async {
+        final n = refusing(
+            (_) async => _json(409, consent409With(available: false)));
+        await n.loadPlan();
+        expect(n.phase, VideoRequestPhase.unavailable);
+        expect(n.consentIds, isEmpty);
+        expect(n.canSubmit, isFalse);
+        expect(fetched, isEmpty);
+      });
+
+      test('unavailable on an encrypted trip: nothing fetched or sent',
+          () async {
+        final n = refusing((_) async =>
+            _json(200, emptyPlanJson(available: false, quota: quotaOne)));
+        await n.loadPlan();
+        expect(n.phase, VideoRequestPhase.unavailable);
+        expect(n.canSubmit, isFalse);
+        expect(fetched, isEmpty);
+      });
+    });
+
+    test('unlimited quota: consent, plan and create as before', () async {
+      final n = notifier((req) async {
+        if (!body(req).containsKey('decrypted_geometry')) {
+          return _json(409, consent409With(quota: quotaUnlimited));
+        }
+        return req.url.path.endsWith('/plan')
+            ? _json(200, planJson(quota: quotaUnlimited))
+            : _json(201, {'job_id': 9});
+      });
+      await n.loadPlan();
+      expect(n.phase, VideoRequestPhase.consentNeeded);
+      await n.acceptConsent();
+      expect(n.phase, VideoRequestPhase.ready);
+      expect(n.quota!.unlimited, isTrue);
+      expect(n.canSubmit, isTrue);
+      await n.submit();
+      expect(n.phase, VideoRequestPhase.started);
+      expect(n.jobId, 9);
     });
 
     test('422 shows the server detail', () async {

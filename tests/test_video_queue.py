@@ -22,6 +22,7 @@ from src.jobs.queue import (
     QUEUE_RESOLVE,
     QUEUE_VIDEO,
     enqueue,
+    queue_has_workers,
 )
 
 _COMPOSE = pathlib.Path(__file__).resolve().parent.parent / "docker-compose.yml.example"
@@ -164,6 +165,56 @@ class TestNoInlineFallback:
     def test_other_queues_still_fall_back_by_default(self, no_broker):
         assert enqueue(QUEUE_RESOLVE, _record, 1) is False
         assert _calls == [((1,), {})]
+
+
+class TestQueueHasWorkers:
+    """No in-process fallback on `video`, so a broker alone is not enough: a
+    job queued with no worker listening would sit pending for a day (F-b)."""
+
+    @pytest.fixture
+    def fake_redis(self, monkeypatch):
+        import fakeredis
+
+        server = fakeredis.FakeServer()
+        monkeypatch.setattr(queue_mod, "get_redis",
+                            lambda: fakeredis.FakeStrictRedis(server=server))
+        return fakeredis.FakeStrictRedis(server=server)
+
+    @staticmethod
+    def _worker_on(connection, *names):
+        from rq import Queue, Worker
+
+        worker = Worker([Queue(n, connection=connection) for n in names],
+                        connection=connection)
+        worker.register_birth()
+        return worker
+
+    def test_no_broker_has_no_workers(self, no_broker):
+        assert queue_has_workers(QUEUE_VIDEO) is False
+
+    def test_a_broker_without_workers_has_none(self, fake_redis):
+        assert queue_has_workers(QUEUE_VIDEO) is False
+
+    def test_a_worker_listening_on_the_queue_counts(self, fake_redis):
+        self._worker_on(fake_redis, QUEUE_VIDEO)
+        assert queue_has_workers(QUEUE_VIDEO) is True
+
+    def test_only_workers_on_that_queue_count(self, fake_redis):
+        self._worker_on(fake_redis, QUEUE_POSTER, QUEUE_RESOLVE)
+        assert queue_has_workers(QUEUE_VIDEO) is False
+        assert queue_has_workers(QUEUE_POSTER) is True
+
+    def test_a_worker_that_died_cleanly_no_longer_counts(self, fake_redis):
+        self._worker_on(fake_redis, QUEUE_VIDEO).register_death()
+        assert queue_has_workers(QUEUE_VIDEO) is False
+
+    def test_a_broker_error_is_false_not_an_exception(self, monkeypatch):
+        class _Exploding:
+            def __getattr__(self, _name):
+                raise RuntimeError("broker went away")
+
+        monkeypatch.setattr(queue_mod, "get_redis", lambda: _Exploding())
+        assert queue_has_workers(QUEUE_VIDEO) is False
 
 
 class _FakeJob:
