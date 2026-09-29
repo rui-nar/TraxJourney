@@ -121,3 +121,62 @@ ffmpeg 7.1) under Docker Desktop, 10 CPUs, with `--memory 896m` (the
   cores than this one, expect a slower render.
 - **Mapbox cost.** 1479 tiles for one 60 s trip is the real per-render
   Mapbox cost; `MAX_TILES` bounds it.
+
+## Stage timings
+
+Every render logs one INFO summary line when it finishes encoding — frame
+count, wall time, ms per frame for each stage, sheets, tiles and peak RSS of
+the renderer and of ffmpeg:
+
+```
+video render summary: frames=1800 elapsed_s=112.32 ms_per_frame=62.4
+fetch_ms=18.10 stitch_ms=9.40 basemap_ms=21.60 overlay_ms=11.20 write_ms=2.10
+sheets=86 tiles=1479 peak_rss_renderer_mb=363 peak_rss_ffmpeg_mb=318
+```
+
+The five stages are mutually exclusive (they add up to `elapsed_s`, not past
+it): `fetch` is time inside the tile fetcher; `stitch` is a new sheet's own
+decode/paste/resize, net of any `fetch` it did; `basemap` is a frame's crop,
+scale and cross-fade blend, net of any `fetch`/`stitch` a new sheet needed;
+`overlay` is drawing the route, marker and HUD; `write` is time blocked
+writing a frame to ffmpeg's stdin (its own encoding work happens
+concurrently, in the ffmpeg process, and isn't part of any of these).
+
+## Profiling on the server
+
+`python -m src.video.bench` renders one real trip end to end — the real
+tile fetcher, using the server's `MAPBOX_TOKEN` — and prints the same
+summary line, without going through a job row, quota or the queue:
+
+```
+python -m src.video.bench --project "Tour de France" --owner 3 \
+    --length 90 --height 1080 [--camera variable] [--crf 20] \
+    [--tune animation] [--dump-frames 450,1350,2250] [--out DIR]
+```
+
+- `--camera` is passed to the renderer as-is; until the overview/fixed-zoom
+  camera modes are wired in (a later unit), only `variable` is accepted and
+  anything else is refused with a clear message.
+- `--crf`/`--tune` override the encoder for one run, to compare candidates
+  (D7) without touching the shipped defaults.
+- `--dump-frames` (comma-separated frame numbers) writes each of those frames
+  twice into `--out`: `frame_NNNNNN_pre.png`, rendered directly (what was fed
+  to ffmpeg), and `frame_NNNNNN_post.png`, decoded back from the encoded MP4
+  with `ffmpeg -vf select` — the pair the sharpness comparison (D5–D7) is
+  judged from.
+- `--out` is where the MP4 and any dumped frames land; omitted, it's a fresh
+  temp directory (printed at the end).
+
+**Run it in its own container, never inside the live worker** — a
+`docker compose run` gets its own process and memory limit, with no RQ
+worker listening, so a benchmark run can neither starve nor be starved by a
+user's render:
+
+```
+docker compose run --rm worker-video python -m src.video.bench \
+    --project "Tour de France" --owner 3 --length 90 --height 1080
+```
+
+Encoder candidates (D7: `-crf` 18–21, with and without `-tune animation`) are
+compared on a dev box instead of the VPS, because frames are the same on any
+machine — only render *time* needs the real server.
