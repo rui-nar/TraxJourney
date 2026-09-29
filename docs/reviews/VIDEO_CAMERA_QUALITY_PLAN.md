@@ -173,7 +173,7 @@ Feature branch `feat/518-video-camera-quality` (from `plan/518-video-camera-qual
 | U3 | Camera mode through API/job/renderer; basemap reuse; encoder defaults | Opus | S4 | 1 | — | yes | — |
 | U4 | Sharper route, chips and panels | Opus | S2 | 1 | — | yes | — |
 | U5 | Camera choice in the video dialog | Opus | S5 | 1 | — | yes | — |
-| U6 | Golden frames for the new modes, docs | Sonnet | — | | | | |
+| U6 | Golden frames for the new modes, docs | Sonnet | — | 1 | — | yes | — |
 
 U2 escalation (X2, 2026-09-29): D3's `fixed_strict` floor of 2 gave a 337°-wide frame at 1920 px on the Tokyo–Los Angeles test, contradicting the antimeridian test's < 180° check. Owner chose option (a): a width-dependent floor `max(2, ceil(log2(width/256)))`; D3 amended; U2 resumed with the rule.
 
