@@ -172,7 +172,7 @@ Feature branch `feat/518-video-camera-quality` (from `plan/518-video-camera-qual
 | U1a | ffmpeg's own peak memory in the render summary (fix unit: G1 showed identical RSS figures) | Sonnet | — | 1 | — | yes | — |
 | U3 | Camera mode through API/job/renderer; basemap reuse; encoder defaults | Opus | S4 | 1 | — | yes | — |
 | U4 | Sharper route, chips and panels | Opus | S2 | 1 | — | yes | — |
-| U5 | Camera choice in the video dialog | Opus | S5 | | | | |
+| U5 | Camera choice in the video dialog | Opus | S5 | 1 | — | yes | — |
 | U6 | Golden frames for the new modes, docs | Sonnet | — | | | | |
 
 U2 escalation (X2, 2026-09-29): D3's `fixed_strict` floor of 2 gave a 337°-wide frame at 1920 px on the Tokyo–Los Angeles test, contradicting the antimeridian test's < 180° check. Owner chose option (a): a width-dependent floor `max(2, ceil(log2(width/256)))`; D3 amended; U2 resumed with the rule.
@@ -180,3 +180,5 @@ U2 escalation (X2, 2026-09-29): D3's `fixed_strict` floor of 2 gave a 337°-wide
 Wave 2 integration (2026-09-29): full pytest 5348 passed / 0 failed. Paired 1080p variable benchmark on the dev box, before wave 2 vs after: 93.6 vs 98.8 ms/frame (+5.6%); overview after: 52.6 ms/frame (ceiling ≈117). A first unpaired run showed 140.4 ms/frame; the paired runs showed it was machine noise.
 
 Gate G2 (2026-09-29, VPS, owner-run): variable 257.4 ms/frame (changed stages overlay+write 89.4 → 143.2, +17% of G1's total, within D8); overview 110.6 ms/frame, 9 tiles; projected 90 s 1080p ≤ ~920 s < 1,600 s. Recorded in docs/VIDEO.md. Wave 3 may start.
+
+U5: verifier confirmed no consent/decryption/geometry logic changed (only a `camera` argument passed through), so no unit review under DELIVERY.md §5 point 3.
