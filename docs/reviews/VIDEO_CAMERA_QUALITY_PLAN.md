@@ -171,7 +171,7 @@ Feature branch `feat/518-video-camera-quality` (from `plan/518-video-camera-qual
 | U2 | Overview / fixed / fixed_strict camera paths | Opus | S2 | 1 (+resume after X2) | X2 → owner amended D3 (width-dependent fixed_strict floor) | yes | — |
 | U1a | ffmpeg's own peak memory in the render summary (fix unit: G1 showed identical RSS figures) | Sonnet | — | 1 | — | yes | — |
 | U3 | Camera mode through API/job/renderer; basemap reuse; encoder defaults | Opus | S4 | 1 | — | yes | — |
-| U4 | Sharper route, chips and panels | Opus | S2 | | | | |
+| U4 | Sharper route, chips and panels | Opus | S2 | 1 | — | yes | — |
 | U5 | Camera choice in the video dialog | Opus | S5 | | | | |
 | U6 | Golden frames for the new modes, docs | Sonnet | — | | | | |
 
