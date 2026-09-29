@@ -139,3 +139,20 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
 - Guard: —
 - Override: —
 - Outcome: fixed in plan (U6: dedicated Paris–New York fixture with a precondition that the two fixed zooms differ)
+
+## Round 3 — 2026-09-29, reviewed 707cf012..e9601589
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). Round 3 is the cap (REVIEW.md §6).
+
+### R3-1 — The pan bound is in frame widths only; a north–south leg below it still leash-pins the marker vertically
+- Trigger: user picks Fixed zoom on a trip with a mostly north–south leg at ~1.2 frame widths/s → not "fast", followed at Z → vertical lag 2v/ω·16/9 ≈ 0.43 frame heights > LEASH 0.3 → marker pinned off-centre for the whole leg
+- Scores: trigger=concrete, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7) — not a duplicate of R2-1 (new evidence: the vertical axis); approved by the user 2026-09-29
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed in plan (D3: fast = larger of width and height speeds, as _off_frame; U2: north–south leg test)
+
+## Review closed — 2026-09-29
+
+Three rounds; all Fix now items fixed in the plan (overrides: R1-4, R1-6, R2-3). The user approved R3-1 and asked to prepare the plan for execution; no round 4. Nothing deferred remains open.
