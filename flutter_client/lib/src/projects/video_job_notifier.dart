@@ -214,6 +214,18 @@ class VideoRequestNotifier extends ChangeNotifier {
 
   int lengthS = 60;
   int? height;
+
+  /// The dialog's camera choice: 'variable', 'overview' or 'fixed'.
+  String cameraChoice = kVideoCameraDefault;
+
+  /// With Fixed zoom: whether flights and long legs zoom out (`fixed`) or
+  /// the whole video stays at one zoom (`fixed_strict`).
+  bool fixedZoomOut = true;
+
+  /// The `camera` field sent with the plan and the job (D1).
+  String get camera => cameraChoice == 'fixed'
+      ? (fixedZoomOut ? 'fixed' : 'fixed_strict')
+      : cameraChoice;
   QuotaError? quotaError;
   String? errorMessage;
   int? jobId;
@@ -268,6 +280,16 @@ class VideoRequestNotifier extends ChangeNotifier {
     notifyListeners();
   }
 
+  void setCamera(String choice) {
+    cameraChoice = choice;
+    notifyListeners();
+  }
+
+  void setFixedZoomOut(bool on) {
+    fixedZoomOut = on;
+    notifyListeners();
+  }
+
   void setHeight(int h) {
     height = h;
     // A refused resolution is fixed by picking another; a used-up month isn't.
@@ -284,7 +306,11 @@ class VideoRequestNotifier extends ChangeNotifier {
     _set(VideoRequestPhase.loading);
     try {
       final p = await fetchVideoPlan(
-          ref: ref, lengthS: lengthS, geometry: _geometry, client: client);
+          ref: ref,
+          lengthS: lengthS,
+          camera: camera,
+          geometry: _geometry,
+          client: client);
       plan = p;
       final allowed = p.resolutions;
       if (height == null || !allowed.contains(height)) {
@@ -311,6 +337,7 @@ class VideoRequestNotifier extends ChangeNotifier {
           ref: ref,
           lengthS: lengthS,
           height: h,
+          camera: camera,
           geometry: _geometry,
           client: client);
       _geometry = null;

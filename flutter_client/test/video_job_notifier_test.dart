@@ -512,5 +512,90 @@ void main() {
       expect(n.phase, VideoRequestPhase.error);
       expect(n.errorMessage, 'Nothing in this trip can be animated');
     });
+
+    group('camera (#518 D1)', () {
+      Future<http.Response> ok(http.Request req) async =>
+          req.url.path.endsWith('/plan')
+              ? _json(200, planJson())
+              : _json(201, {'job_id': 3});
+
+      test('the default sends "variable" on the plan and the create',
+          () async {
+        final n = notifier(ok);
+        await n.loadPlan();
+        await n.submit();
+        expect(sent, hasLength(2));
+        expect(body(sent.first)['camera'], 'variable');
+        expect(body(sent.last)['camera'], 'variable');
+      });
+
+      for (final (choice, zoomOut, camera) in [
+        ('variable', true, 'variable'),
+        ('overview', true, 'overview'),
+        ('fixed', true, 'fixed'),
+        ('fixed', false, 'fixed_strict'),
+      ]) {
+        test('$choice with zoom-out $zoomOut sends "$camera"', () async {
+          final n = notifier(ok);
+          await n.loadPlan();
+          n.setCamera(choice);
+          n.setFixedZoomOut(zoomOut);
+          expect(n.camera, camera);
+          await n.submit();
+          expect(sent.last.url.path, '/api/projects/Trip/video');
+          expect(body(sent.last)['camera'], camera);
+        });
+      }
+
+      test('the zoom-out switch only matters with Fixed zoom', () {
+        final n = notifier(ok);
+        n.setFixedZoomOut(false);
+        n.setCamera('overview');
+        expect(n.camera, 'overview');
+        n.setCamera('variable');
+        expect(n.camera, 'variable');
+      });
+
+      test('the choice survives the consent round-trip on plan and create',
+          () async {
+        final n = notifier((req) async {
+          if (!body(req).containsKey('decrypted_geometry')) {
+            return _json(409, consent409);
+          }
+          return req.url.path.endsWith('/plan')
+              ? _json(200, planJson())
+              : _json(201, {'job_id': 4});
+        });
+        n.setCamera('fixed');
+        n.setFixedZoomOut(false);
+        await n.loadPlan();
+        expect(n.phase, VideoRequestPhase.consentNeeded);
+        await n.acceptConsent();
+        expect(n.phase, VideoRequestPhase.ready);
+        await n.submit();
+        expect(n.phase, VideoRequestPhase.started);
+        expect(sent, hasLength(3));
+        for (final r in sent) {
+          expect(body(r)['camera'], 'fixed_strict');
+        }
+      });
+
+      test('the choice survives a consent asked on create', () async {
+        final n = notifier((req) async {
+          if (req.url.path.endsWith('/plan')) return _json(200, planJson());
+          return body(req).containsKey('decrypted_geometry')
+              ? _json(201, {'job_id': 6})
+              : _json(409, consent409);
+        });
+        await n.loadPlan();
+        n.setCamera('overview');
+        await n.submit();
+        expect(n.phase, VideoRequestPhase.consentNeeded);
+        await n.acceptConsent();
+        expect(n.phase, VideoRequestPhase.started);
+        expect(body(sent.last)['camera'], 'overview');
+        expect(body(sent.last).containsKey('decrypted_geometry'), isTrue);
+      });
+    });
   });
 }
