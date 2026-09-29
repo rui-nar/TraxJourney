@@ -6,8 +6,16 @@ clip's route, never below its sub-leg's mode floor; every hand-off (card to
 clip, clip to clip, a jump between legs) is a 0.6 s eased fly-to that lands
 on the next view as it starts.
 
+That is the ``"variable"`` camera. Three more modes
+(docs/VIDEO_CAMERA_QUALITY_PLAN.md, D1-D3): ``"overview"`` holds the title
+card's view of the whole trip on every frame; ``"fixed"`` and
+``"fixed_strict"`` follow the marker with the same machinery at one integer
+zoom chosen by :func:`fixed_zoom` — ``"fixed"`` pulls out to the clip's fit
+for a sub-leg too fast to follow at that zoom, ``"fixed_strict"`` picks a zoom
+low enough that none is.
+
 The whole path is computed at once on the frame clock and cached per
-(timeline, fps, size), so frame *n* is a pure function of those and *n*
+(timeline, fps, size, mode), so frame *n* is a pure function of those and *n*
 (Convention 3) however the frames are asked for.
 
 Zoom is Web Mercator zoom on the 512 px logical tile grid of
@@ -23,6 +31,7 @@ world x below 0 or above 1. The basemap wraps them back into the world.
 from __future__ import annotations
 
 import math
+import statistics
 from functools import lru_cache
 from typing import Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
 
@@ -56,6 +65,30 @@ CUT = 0.5                # a jump of the aim of more than this fraction of
                          # is flown to, not followed
 FOLLOW_MIN_S = 1.0       # a sub-leg shorter than this isn't followed
 _RHO = math.sqrt(2.0)    # van Wijk & Nuij's zoom/pan trade-off (d3's default)
+
+CAMERA_MODES = ("variable", "overview", "fixed", "fixed_strict")
+
+# Fixed zoom: a followed sub-leg is *fast* at a zoom where its marker moves
+# more than this many frame widths or heights (whichever is more) per second.
+# The spring lags a steady pan by 2v/ω, so this is LEASH·SPRING_OMEGA/2: the
+# speed at which the lag reaches the leash.
+FIXED_MAX_PAN_PER_S = 1.5
+# The speed is the marker's move over this long — the spring's lag time — so
+# a wiggle in the line doesn't count as speed and a sustained pan does.
+PAN_WINDOW_S = 2.0 / SPRING_OMEGA
+# The search for the fixed zoom runs from FIXED_TOP_ZOOM down to the mode's
+# floor.
+FIXED_TOP_ZOOM = 14
+FIXED_FLOOR: Dict[str, int] = {"fixed": 4, "fixed_strict": 2}
+
+# basemap_bands' sheet planning, duplicated for :func:`estimate_tiles`: that
+# module loads Pillow, this one must not (a test pins the two together).
+PIXEL_RATIO = 2
+FADE = 0.2
+GAP_FRAMES = 15
+SHEET_MAX_FRAMES = 12
+MARGIN_PX = 2
+MAX_TILES = 3000
 
 Size = Tuple[int, int]
 View = Tuple[float, float, float]   # (x, y, zoom), x/y in world units [0, 1]
@@ -196,24 +229,40 @@ def is_followed(sub: TimedLeg) -> bool:
     return not sub.instant and sub.end_s - sub.start_s >= FOLLOW_MIN_S
 
 
-def _clip_aims(clip: TimedClip, size: Size) -> List[Tuple[Optional[Tuple[float, float]], float]]:
+Aim = Tuple[Optional[Tuple[float, float]], float, bool]
+
+
+def _clip_aims(clip: TimedClip, size: Size,
+               fixed: Optional[Tuple[int, Sequence[bool]]] = None) -> List[Aim]:
     """Per sub-leg of *clip*: where the camera aims — None for the marker,
-    else a fixed world point — and its zoom level.
+    else a fixed world point — its zoom level, and whether it is framed as a
+    fast sub-leg.
 
     A followed sub-leg: the marker, at the clip's fit zoom raised to the
     mode's floor. A run of sub-legs not followed shows the whole clip at its
     fit zoom — when it lasts at least a transition; a shorter run holds the
     start of the next followed sub-leg (else the end of the previous one) at
-    that one's level, so it neither pulses the zoom nor forces a fly-to."""
+    that one's level, so it neither pulses the zoom nor forces a fly-to.
+
+    With *fixed* = (Z, fast per sub-leg), every level is Z, and the whole
+    clip is shown at Z too, except a fast sub-leg's (and a short run's
+    holding one), which is the clip's fit zoom without the mode floor."""
     cx, cy, fit = _fit([lonlat_to_world(lon, lat) for sub in clip.subs
                         for lon, lat in sub.leg.coords], size, CLIP_FILL)
     followed = [is_followed(sub) for sub in clip.subs]
-    level = [min(MAX_ZOOM, max(fit, mode_min_zoom(sub.leg.mode))) for sub in clip.subs]
-    aims: List[Tuple[Optional[Tuple[float, float]], float]] = []
+    if fixed is None:
+        level = [min(MAX_ZOOM, max(fit, mode_min_zoom(sub.leg.mode))) for sub in clip.subs]
+        fast: Sequence[bool] = [False] * len(clip.subs)
+        whole = fit
+    else:
+        z, fast = fixed
+        level = [fit if f else float(z) for f in fast]
+        whole = float(z)
+    aims: List[Aim] = []
     i = 0
     while i < len(clip.subs):
         if followed[i]:
-            aims.append((None, level[i]))
+            aims.append((None, level[i], fast[i]))
             i += 1
             continue
         j = i
@@ -223,11 +272,12 @@ def _clip_aims(clip: TimedClip, size: Size) -> List[Tuple[Optional[Tuple[float, 
         before = next((k for k in range(i - 1, -1, -1) if followed[k]), None)
         if clip.subs[j - 1].end_s - clip.subs[i].start_s >= TRANSITION_S or (
                 after is None and before is None):
-            aim = ((cx, cy), fit)
+            aim = ((cx, cy), whole, False)
         elif after is not None:
-            aim = (lonlat_to_world(*clip.subs[after].leg.coords[0]), level[after])
+            aim = (lonlat_to_world(*clip.subs[after].leg.coords[0]), level[after], fast[after])
         else:
-            aim = (lonlat_to_world(*clip.subs[before].leg.coords[-1]), level[before])
+            aim = (lonlat_to_world(*clip.subs[before].leg.coords[-1]), level[before],
+                   fast[before])
         aims.extend([aim] * (j - i))
         i = j
     return aims
@@ -264,35 +314,67 @@ def _segment_of(state: FrameState, n_clips: int) -> int:
     return state.clip_index
 
 
-def camera_path(timeline: Timeline, fps: int, size: Size) -> Tuple[Shot, ...]:
-    """Every frame's :class:`Shot`, frame 0 first."""
-    return _path(timeline, int(fps), (int(size[0]), int(size[1])))
+def camera_path(timeline: Timeline, fps: int, size: Size,
+                mode: str = "variable") -> Tuple[Shot, ...]:
+    """Every frame's :class:`Shot` in camera *mode* (one of
+    :data:`CAMERA_MODES`), frame 0 first."""
+    if mode not in CAMERA_MODES:
+        raise ValueError(f"unknown camera mode {mode!r}")
+    return _path(timeline, int(fps), (int(size[0]), int(size[1])), mode)
 
 
 @lru_cache(maxsize=4)
-def _path(timeline: Timeline, fps: int, size: Size) -> Tuple[Shot, ...]:
+def _path(timeline: Timeline, fps: int, size: Size, mode: str) -> Tuple[Shot, ...]:
+    if mode == "overview":
+        x, y, z = overview(timeline, size)
+        return (Shot(*world_to_lonlat(x, y), z, False),) * frame_count(timeline, fps)
+    if mode == "variable":
+        return _follow(timeline, fps, size, [_clip_aims(clip, size) for clip in timeline.clips])
+    return _fixed_path(timeline, fps, size, mode, fixed_zoom(timeline, size, mode))
+
+
+@lru_cache(maxsize=4)
+def _samples(timeline: Timeline, fps: int) -> Tuple[FrameState, ...]:
+    dt = 1.0 / fps
+    return tuple(timeline.sample(n * dt) for n in range(frame_count(timeline, fps)))
+
+
+def _follow(timeline: Timeline, fps: int, size: Size,
+            aims: Sequence[Sequence[Aim]]) -> Tuple[Shot, ...]:
+    """The path through each clip's per-sub-leg *aims*. A clip is one
+    segment, split where its aims switch between fast and not (fixed mode),
+    so the camera flies to and from a fast sub-leg as it does between clips."""
     n_frames = frame_count(timeline, fps)
     dt = 1.0 / fps
     ramp = max(1, int(round(TRANSITION_S * fps)))
     home = overview(timeline, size)
-    aims = [_clip_aims(clip, size) for clip in timeline.clips]
+    groups = []
+    for clip_aims in aims:
+        g, out = 0, []
+        for k, aim in enumerate(clip_aims):
+            g += k > 0 and aim[2] != clip_aims[k - 1][2]
+            out.append(g)
+        groups.append(out)
 
     # Each frame's aim: the overview on the cards, else its sub-leg's aim.
-    samples = [timeline.sample(n * dt) for n in range(n_frames)]
-    segs = [_segment_of(s, len(timeline.clips)) for s in samples]
+    samples = _samples(timeline, fps)
+    segs: List[object] = []
     target: List[View] = []
-    for s, seg in zip(samples, segs):
+    for s in samples:
+        seg = _segment_of(s, len(timeline.clips))
         if 0 <= seg < len(timeline.clips):
-            point, level = aims[seg][s.sub_index]
+            point, level, _ = aims[seg][s.sub_index]
             x, y = point if point is not None else lonlat_to_world(s.lon, s.lat)
             target.append((x, y, level))
+            segs.append((seg, groups[seg][s.sub_index]))
         else:
             target.append(home)
+            segs.append(seg)
     zoom = [v[2] for v in target]
     start = 0
     for n in range(1, n_frames + 1):
         if n == n_frames or segs[n] != segs[start]:
-            if 0 <= segs[start] < len(timeline.clips):
+            if samples[start].kind == "clip":
                 zoom[start:n] = _zoom_plan(zoom[start:n], ramp)
             start = n
 
@@ -331,13 +413,158 @@ def _path(timeline: Timeline, fps: int, size: Size) -> Tuple[Shot, ...]:
                  for (wx, wy, wz), f in zip(views, flying))
 
 
-def camera(timeline: Timeline, frame_n: int, fps: int, size: Size) -> Tuple[float, float, float]:
+# ── fixed zoom ───────────────────────────────────────────────────────────────
+
+@lru_cache(maxsize=4)
+def _pan_speeds(timeline: Timeline, size: Size) -> Dict[Tuple[int, int], float]:
+    """Per followed sub-leg, keyed (clip index, sub index): the fastest its
+    marker moves over :data:`PAN_WINDOW_S`, in frame widths or heights per
+    second (whichever is more, as :func:`_off_frame`) at zoom 0 — times
+    ``2 ** z`` at zoom z. Measured on the timeline's own frame clock, so it
+    doesn't depend on the fps a path is asked for."""
+    fps = timeline.fps
+    samples = _samples(timeline, fps)
+    m = max(1, int(round(PAN_WINDOW_S * fps)))
+    span = m / fps
+    speeds = {(clip.index, k): 0.0 for clip in timeline.clips
+              for k, sub in enumerate(clip.subs) if is_followed(sub)}
+    points = [lonlat_to_world(s.lon, s.lat) for s in samples]
+    for n in range(len(samples) - m):
+        a, b = samples[n], samples[n + m]
+        key = (a.clip_index, a.sub_index)
+        if key not in speeds or (b.clip_index, b.sub_index) != key:
+            continue
+        (ax, ay), (bx, by) = points[n], points[n + m]
+        v = max(abs(bx - ax) * TILE_SIZE / size[0], abs(by - ay) * TILE_SIZE / size[1]) / span
+        speeds[key] = max(speeds[key], v)
+    return speeds
+
+
+def _is_fast(speed: float, zoom: int) -> bool:
+    return speed * 2.0 ** zoom > FIXED_MAX_PAN_PER_S
+
+
+def _fixed_path(timeline: Timeline, fps: int, size: Size, mode: str, z: int) -> Tuple[Shot, ...]:
+    """The path at fixed zoom *z*: in ``"fixed"`` the sub-legs fast at *z*
+    are framed at their clip's fit, in ``"fixed_strict"`` none are."""
+    speeds = _pan_speeds(timeline, size)
+    aims = [_clip_aims(clip, size, (z, [
+        mode == "fixed" and _is_fast(speeds.get((clip.index, k), 0.0), z)
+        for k in range(len(clip.subs))])) for clip in timeline.clips]
+    return _follow(timeline, fps, size, aims)
+
+
+def fixed_zoom(timeline: Timeline, size: Size, mode: str) -> int:
+    """The integer zoom ``Z`` of a ``"fixed"`` or ``"fixed_strict"`` path
+    (docs/VIDEO_CAMERA_QUALITY_PLAN.md, D3): the highest z from
+    :data:`FIXED_TOP_ZOOM` down to the mode's :data:`FIXED_FLOOR` that
+
+    - ``"fixed"``: is at most the floor of the median ``CLIP_FILL`` fit zoom
+      of the followed sub-legs not fast at z, and whose path — the fast ones
+      at their clip's fit — needs at most :data:`MAX_TILES` tiles;
+    - ``"fixed_strict"``: is at most the floor of the median fit zoom of all
+      followed sub-legs, at which none is fast, and whose path needs at most
+      :data:`MAX_TILES` tiles;
+
+    else the floor. A trip with no followed sub-leg takes the median over
+    its clips' fit zooms instead, the view it shows in variable mode."""
+    if mode not in FIXED_FLOOR:
+        raise ValueError(f"{mode!r} is not a fixed-zoom camera mode")
+    return _fixed_zoom(timeline, (int(size[0]), int(size[1])), mode)
+
+
+@lru_cache(maxsize=8)
+def _fixed_zoom(timeline: Timeline, size: Size, mode: str) -> int:
+    speeds = _pan_speeds(timeline, size)
+    fits = {(ci, k): _fit([lonlat_to_world(lon, lat) for lon, lat
+                           in timeline.clips[ci].subs[k].leg.coords], size, CLIP_FILL)[2]
+            for ci, k in speeds}
+    clip_fits = [_fit([lonlat_to_world(lon, lat) for sub in clip.subs
+                       for lon, lat in sub.leg.coords], size, CLIP_FILL)[2]
+                 for clip in timeline.clips]
+    for z in range(FIXED_TOP_ZOOM, FIXED_FLOOR[mode] - 1, -1):
+        fast = {key for key, v in speeds.items() if _is_fast(v, z)}
+        if mode == "fixed_strict":
+            if fast:
+                continue
+            pool = list(fits.values())
+        else:
+            pool = [f for key, f in fits.items() if key not in fast]
+            if fits and not pool:
+                continue      # every followed sub-leg is fast at z
+        if z > math.floor(statistics.median(pool or clip_fits)):
+            continue
+        if estimate_tiles(_fixed_path(timeline, timeline.fps, size, mode, z), size) > MAX_TILES:
+            continue
+        return z
+    return FIXED_FLOOR[mode]
+
+
+# ── tile estimate ────────────────────────────────────────────────────────────
+
+def estimate_tiles(shots: Sequence[Shot], size: Size) -> int:
+    """The map tiles ``basemap_bands.plan_bands`` fetches for *shots* before
+    any cap: each frame drawn from band ``floor(zoom)`` (and the next band in
+    the last :data:`FADE` of a level), each band's viewports merged into
+    sheets while they stay within :data:`SHEET_MAX_FRAMES` frames' area and
+    no :data:`GAP_FRAMES` apart, each sheet counted in tiles per world copy
+    it overlaps."""
+    max_area = SHEET_MAX_FRAMES * size[0] * size[1]
+    sheets: List[List[int]] = []          # [band, x0, y0, x1, y1, last frame]
+    open_: Dict[int, int] = {}
+    for n, shot in enumerate(shots):
+        x, y = lonlat_to_world(shot.lon, shot.lat)
+        k = math.floor(shot.zoom)
+        bands = {k, k + 1} if shot.zoom - k > 1.0 - FADE else {k}
+        for band in sorted({max(0, b) for b in bands}):
+            world = TILE_SIZE * PIXEL_RATIO * 2 ** band
+            scale = PIXEL_RATIO * 2.0 ** (band - shot.zoom)
+            hw, hh = size[0] / 2.0 * scale, size[1] / 2.0 * scale
+            l, t, r, b = x * world - hw, y * world - hh, x * world + hw, y * world + hh
+            c = (l + r) / 2.0
+            rect = [max(math.floor(c - world / 2), math.floor(l) - MARGIN_PX),
+                    max(0, math.floor(t) - MARGIN_PX),
+                    min(math.ceil(c + world / 2), math.ceil(r) + MARGIN_PX),
+                    min(world, math.ceil(b) + MARGIN_PX)]
+            i = open_.get(band)
+            if i is not None:
+                s = sheets[i]
+                u = [min(s[1], rect[0]), min(s[2], rect[1]), max(s[3], rect[2]), max(s[4], rect[3])]
+                if n - s[5] <= GAP_FRAMES and (u[2] - u[0]) * (u[3] - u[1]) <= max_area:
+                    s[1:6] = [*u, n]
+                    continue
+            open_[band] = len(sheets)
+            sheets.append([band, *rect, n])
+    return sum(_sheet_tiles(*s[:5]) for s in sheets)
+
+
+def _sheet_tiles(band: int, x0: int, y0: int, x1: int, y1: int) -> int:
+    """Tiles covering a sheet (in *band*'s sheet pixels), per world copy."""
+    world = TILE_SIZE * PIXEL_RATIO * 2 ** band
+    last = 2 ** band - 1
+
+    def span(a: float, b: float) -> int:     # tile_stitcher.tile_range_for_bounds
+        lo = max(0, min(math.floor(a / PIXEL_RATIO / TILE_SIZE), last))
+        hi = max(0, min(math.floor((b / PIXEL_RATIO - 1e-9) / TILE_SIZE), last))
+        return hi - lo + 1
+
+    rows = span(y0, y1)
+    total = 0
+    for k in range(math.floor(x0 / world), math.ceil(x1 / world)):
+        a, b = max(x0, k * world), min(x1, (k + 1) * world)
+        if b > a:
+            total += span(a - k * world, b - k * world) * rows
+    return total
+
+
+def camera(timeline: Timeline, frame_n: int, fps: int, size: Size,
+           mode: str = "variable") -> Tuple[float, float, float]:
     """``(lon, lat, zoom)`` of frame *frame_n* of *timeline* rendered at
-    *fps* into a *size* = (width, height) frame.
+    *fps* into a *size* = (width, height) frame, in camera *mode*.
 
     Raises ValueError for a frame outside ``0 … frame_count − 1``.
     """
-    path = camera_path(timeline, fps, size)
+    path = camera_path(timeline, fps, size, mode)
     if not 0 <= frame_n < len(path):
         raise ValueError(f"frame {frame_n} is outside 0..{len(path) - 1}")
     shot = path[frame_n]
