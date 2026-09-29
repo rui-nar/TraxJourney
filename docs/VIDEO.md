@@ -13,9 +13,14 @@ ffmpeg as raw RGB:
 
 ```
 ffmpeg -f rawvideo -pix_fmt rgb24 -s WxH -r 30 -i - -an
-       -c:v libx264 -preset veryfast -crf 23 -threads 4
+       -c:v libx264 -preset veryfast -crf 20 -threads 4
        -pix_fmt yuv420p -movflags +faststart  video.part.mp4
 ```
+
+`-crf 20`, no `-tune`, is D7's choice: sharper than the earlier `-crf 23`
+(files come out about 1.5× larger), with `-tune animation` dropped because it
+softened the map imagery at the same CRF — see [Gate G1
+measurements](#gate-g1-measurements-518-2026-09-29) for the comparison.
 
 The MP4 is written under a `.part` name and moved into place only when
 ffmpeg exits 0. A missing ffmpeg, a broken pipe or a non-zero exit raises
@@ -28,6 +33,40 @@ rendered" reason. Progress is written every 30 frames (stages `loading trip`,
 core, and each one buffers frames. On a 10-core host that took about 560 MB
 at 1080p on its own, and four threads still keep up with the frames Python
 draws.
+
+## Camera (`src/video/camera.py`)
+
+`camera_path(timeline, fps, size, mode)` offers four camera values
+(docs/VIDEO_CAMERA_QUALITY_PLAN.md D1), cached per those four arguments and
+returned frame by frame:
+
+- **`variable`** (default) — today's camera, unchanged by this plan: a clip
+  follows the marker at a zoom fit to its route, raised to its mode's floor,
+  cut and flown between clips and cards.
+- **`overview`** — a still whole-trip view (the title card's `overview()`) on
+  every frame; only the marker and the travelled line move.
+- **`fixed`** and **`fixed_strict`** — the marker followed with `variable`'s
+  own spring, leash and fly-to machinery, at one server-chosen **integer**
+  zoom `Z` for the whole video (`fixed_zoom`, D3). `fixed` pulls a sub-leg out
+  to its own fit zoom when following it at `Z` would be **fast** — faster
+  than the spring can track without the leash pinning the marker,
+  `FIXED_MAX_PAN_PER_S` frame widths/heights per second (the larger axis).
+  `fixed_strict` instead picks a lower `Z` at which no sub-leg is fast, so the
+  whole video stays at one zoom throughout.
+
+  `Z` is chosen by one fixed top-down search: from zoom 14 down to the mode's
+  floor, integer by integer (an integer zoom never sits in a basemap band
+  cross-fade), the highest `z` at which (a) `z` is at most the floor of the
+  median `CLIP_FILL` fit zoom of the relevant followed sub-legs — every one of
+  them for `fixed_strict`, only those not fast at `z` for `fixed` — and (b)
+  the path's estimated tiles stay within `MAX_TILES`, else the floor.
+  `fixed`'s floor is 4; `fixed_strict`'s is 2, raised so a frame never spans
+  more than 180° of longitude: `max(2, ceil(log2(width / 256)))` (3 at
+  1920 px, 2 at 320 px).
+
+  The video dialog shows these two as one "Fixed zoom" choice plus a "Zoom
+  out for flights and long legs" switch: on sends `fixed`, off sends
+  `fixed_strict`.
 
 ## Basemap: bands and sheets (`src/video/basemap_bands.py`)
 
@@ -77,12 +116,22 @@ a track in Fiji) is animated, framed and drawn along its short way.
   marker. Colours come from `design_tokens.dart`: ride #4FC3F7, run #EF5350,
   hike/walk #66BB6A, other #AB47BC, flight #42A5F5, train #8D6E63,
   bus #FFB300, boat #26C6DA, and #FFA726 for anything else.
-- **Anti-aliasing.** The route is drawn as one colour layer plus one
-  coverage mask, over the route's bounding box only. The mask is box-blurred
-  for anti-aliasing and the result pasted once.
+- **Anti-aliasing.** The route is drawn as one colour layer plus one coverage
+  mask, `ROUTE_SS` times larger than the frame, over the route's bounding box
+  (`poster_renderer._draw_route`'s supersampling, docs/VIDEO_CAMERA_QUALITY_PLAN.md
+  D5). Only the grid cells the route actually touches are reduced back down
+  and pasted, since most of that box is empty. `ROUTE_SS = 3`, chosen at gate
+  G1 within its allowed 2–4 range; see [Gate G2
+  measurements](#gate-g2-measurements-518-2026-09-29) for what it costs per
+  frame.
 - **Marker.** The mode icon on a white disc ringed in the mode colour, inside
-  a soft halo. The icons are in `assets/video/icons/`; see that folder's
-  README for where they come from.
+  a soft halo, composed into a 4× sprite and scaled down for smooth edges. The
+  icon itself is downsized once per size from a 512 px source (D6): the same
+  Material Symbols glyphs the app uses for each mode (Apache-2.0), tinted at
+  runtime rather than the old 128 px emoji bitmaps. The icons are in
+  `assets/video/icons/`; see that folder's README for where they come from and
+  `scripts/make_video_icons.py` for how they're regenerated. HUD panels
+  (`_panel`) are rounded rectangles drawn the same way, at 4× and scaled down.
 - **HUD** (clips only). The date ticker is top left, the speed badge bottom
   left, and the per-mode distance counters bottom right, in the order the
   modes first appear in the trip.
@@ -154,9 +203,8 @@ python -m src.video.bench --project "Tour de France" --owner 3 \
     [--tune animation] [--dump-frames 450,1350,2250] [--out DIR]
 ```
 
-- `--camera` is passed to the renderer as-is; until the overview/fixed-zoom
-  camera modes are wired in (a later unit), only `variable` is accepted and
-  anything else is refused with a clear message.
+- `--camera` is passed to the renderer as-is: `variable` (default),
+  `overview`, `fixed` or `fixed_strict`.
 - `--crf`/`--tune` override the encoder for one run, to compare candidates
   (D7) without touching the shipped defaults.
 - `--dump-frames` (comma-separated frame numbers) writes each of those frames

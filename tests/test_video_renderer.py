@@ -45,7 +45,7 @@ from src.video.basemap_bands import (
     plan_bands,
     view_rect,
 )
-from src.video.camera import TILE_SIZE, camera_path, lonlat_to_world
+from src.video.camera import CAMERA_MODES, TILE_SIZE, camera_path, fixed_zoom, lonlat_to_world
 from src.video.legs import build_legs
 from src.video.renderer import (
     FrameRenderer,
@@ -119,6 +119,37 @@ def paris_lyon() -> Project:
 @functools.lru_cache(maxsize=None)
 def timeline30():
     return build_timeline(build_legs(paris_lyon()), 30.0)
+
+
+PARIS_WALK_1 = [(48.8566 + 0.0004 * i, 2.3522 + 0.0003 * i) for i in range(15)]
+PARIS_WALK_2 = [(48.8606 + 0.0004 * i, 2.3602 + 0.0003 * i) for i in range(15)]
+NY_WALK_1 = [(40.7580 + 0.0004 * i, -73.9855 + 0.0003 * i) for i in range(15)]
+NY_WALK_2 = [(40.7620 + 0.0004 * i, -73.9775 + 0.0003 * i) for i in range(15)]
+
+
+def paris_new_york() -> Project:
+    """Short walks in Paris, a flight to New York, short walks there. The
+    flight is fast at ``fixed``'s zoom Z (docs/VIDEO_CAMERA_QUALITY_PLAN.md
+    D3): ``fixed`` flies over it and keeps the walks' Z, ``fixed_strict``
+    drops to a lower Z that follows it too."""
+    w1 = _activity(1, "Walk", date(2026, 5, 1), PARIS_WALK_1, 800.0, 600)
+    w2 = _activity(2, "Walk", date(2026, 5, 1), PARIS_WALK_2, 800.0, 600)
+    flight = ConnectingSegment(id="f1", segment_type="flight",
+                               start=SegmentEndpoint(48.86, 2.35),
+                               end=SegmentEndpoint(40.71, -73.98), date="2026-05-02")
+    w3 = _activity(3, "Walk", date(2026, 5, 3), NY_WALK_1, 800.0, 600)
+    w4 = _activity(4, "Walk", date(2026, 5, 3), NY_WALK_2, 800.0, 600)
+    return Project(name="Paris to New York", activities=[w1, w2, w3, w4], items=[
+        ProjectItem(item_type="activity", activity_id=1),
+        ProjectItem(item_type="activity", activity_id=2),
+        ProjectItem(item_type="segment", segment=flight),
+        ProjectItem(item_type="activity", activity_id=3),
+        ProjectItem(item_type="activity", activity_id=4)])
+
+
+@functools.lru_cache(maxsize=None)
+def timeline30_ny():
+    return build_timeline(build_legs(paris_new_york()), 30.0)
 
 
 def follow_window(timeline, fps=30, frames=60):
@@ -316,6 +347,101 @@ def test_golden_comparison_catches_a_moved_route():
     golden = Image.open(GOLDEN_DIR / "follow.png")
     mean, far = _differs(other, golden)
     assert mean > 2.0 or far > 0.01
+
+
+# ── the new camera modes (docs/VIDEO_CAMERA_QUALITY_PLAN.md #518 U6) ────────
+
+def test_the_new_york_flight_is_fast_at_fixeds_zoom():
+    """Precondition for the goldens below: on this fixture "fixed" flies over
+    the flight and keeps the walks' zoom, while "fixed_strict" drops to a
+    lower one that follows it too (D3)."""
+    tl = timeline30_ny()
+    assert fixed_zoom(tl, SMALL, "fixed") > fixed_zoom(tl, SMALL, "fixed_strict")
+
+
+def _overview_mid_frame(tl):
+    return follow_window(tl)[30]
+
+
+def _overview_end_frame(tl):
+    return len(camera_path(tl, 30, SMALL)) - 10
+
+
+def _ny_walk_frame(tl):
+    """A settled frame in the Paris walks' clip (index 0), after its fly-in —
+    follow_window's margin, generalised to this fixture's first clip."""
+    return int(math.ceil((tl.clips[0].start_s + 1.0) * 30))
+
+
+def _ny_flight_frame(tl):
+    """A settled frame in the flight's clip (index 1), after its fly-in."""
+    return int(math.ceil((tl.clips[1].start_s + 1.0) * 30))
+
+
+# name -> (camera mode, timeline, its title, the frame, the other modes the
+# frame must fail the golden comparison in when rendered instead of the
+# golden's own mode).
+NEW_CAMERA_GOLDENS = {
+    "overview_mid": ("overview", timeline30, "Paris to Lyon",
+                     _overview_mid_frame, ("variable",)),
+    "overview_end": ("overview", timeline30, "Paris to Lyon",
+                     _overview_end_frame, ()),
+    "fixed_walk": ("fixed", timeline30_ny, "Paris to New York",
+                   _ny_walk_frame, ("fixed_strict", "variable")),
+    "fixed_strict_flight": ("fixed_strict", timeline30_ny, "Paris to New York",
+                            _ny_flight_frame, ("fixed", "variable")),
+}
+
+
+@pytest.mark.parametrize("name", sorted(NEW_CAMERA_GOLDENS))
+def test_new_camera_mode_frames_match_golden_images(name):
+    """As test_frames_match_golden_images, for the camera modes added by
+    #518: overview, fixed and fixed_strict."""
+    mode, tl_fn, title, frame_fn, _ = NEW_CAMERA_GOLDENS[name]
+    tl = tl_fn()
+    n = frame_fn(tl)
+    frames = FrameRenderer(tl, SMALL, title, tile_fetcher=fake_tile, camera=mode)
+    img = frames.frame(n)
+    path = GOLDEN_DIR / f"{name}.png"
+    if os.environ.get("VIDEO_UPDATE_GOLDEN"):
+        GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
+        img.save(path)
+    golden = Image.open(path)
+    assert golden.size == img.size
+    mean, far = _differs(img, golden)
+    assert mean <= 2.0, f"{name}: mean difference {mean:.2f}"
+    assert far <= 0.01, f"{name}: {far:.2%} of pixels differ strongly"
+
+
+@pytest.mark.parametrize("name,wrong_mode", [
+    (name, wrong) for name, (*_, wrongs) in NEW_CAMERA_GOLDENS.items() for wrong in wrongs
+])
+def test_new_golden_comparison_catches_the_wrong_camera_mode(name, wrong_mode):
+    """As test_golden_comparison_catches_a_moved_route: the same frame,
+    rendered in a different camera mode, must not pass as the golden's own
+    mode."""
+    mode, tl_fn, title, frame_fn, _ = NEW_CAMERA_GOLDENS[name]
+    tl = tl_fn()
+    n = frame_fn(tl)
+    frames = FrameRenderer(tl, SMALL, title, tile_fetcher=fake_tile, camera=wrong_mode)
+    other = frames.frame(n)
+    golden = Image.open(GOLDEN_DIR / f"{name}.png")
+    mean, far = _differs(other, golden)
+    assert mean > 2.0 or far > 0.01
+
+
+def test_the_overview_end_card_is_identical_in_every_camera_mode():
+    """Unlike the other new goldens, the end card has no negative control:
+    every mode's cards home on the whole-trip overview (D2, D3), so the card
+    itself doesn't depend on the mode. Asserted directly, rather than relying
+    on the golden tolerance to hide a difference that shouldn't exist."""
+    tl = timeline30()
+    n = _overview_end_frame(tl)
+    reference = FrameRenderer(tl, SMALL, "Paris to Lyon", tile_fetcher=fake_tile,
+                              camera="overview").frame(n).tobytes()
+    for mode in CAMERA_MODES:
+        frames = FrameRenderer(tl, SMALL, "Paris to Lyon", tile_fetcher=fake_tile, camera=mode)
+        assert frames.frame(n).tobytes() == reference, mode
 
 
 def test_a_frame_across_the_antimeridian_wraps_the_basemap():
