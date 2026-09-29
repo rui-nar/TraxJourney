@@ -85,12 +85,12 @@ buy (owner decision, 2026-09-29). Making rendering faster in general stays in
 |---|---|---|---|
 | D1 | Four camera values, `camera: "variable" \| "overview" \| "fixed" \| "fixed_strict"`, default `"variable"` (today's camera, unchanged frame for frame). `fixed` and `fixed_strict` are the two fixed-zoom behaviours of D3; the dialog shows them as "Fixed zoom" plus a "Zoom out for flights and long legs" switch (on = `fixed`). | Owner decisions (2026-09-29): both new options, separately selectable; for fixed zoom, both approach A and approach B, selectable (review R1-1). One enum field keeps the contract, storage and tests simple. | Replacing today's camera; one merged "constant" option; a second request field that only matters with one value of the first. |
 | D2 | **Overview:** every frame is the whole-trip `overview()` shot, `flying` always false; the marker, travelled line, HUD and cards animate as today. | That's what "see the whole trip while it plays" means; a still camera needs one basemap sheet. | Slow pans or zooms in overview mode. |
-| D3 | **Fixed zoom**, zoom **chosen by the server** (owner decision). The camera follows the marker with variable mode's machinery (spring, leash, `_fly` across jumps and to or from the cards) at one **integer** zoom `Z` (floored, so no frame sits in a band cross-fade, review R1-5). Per-mode floors don't apply. A followed sub-leg is **fast** at zoom `z` if following it would move the aim more than `FIXED_MAX_PAN = 0.15` frame widths per frame (well under `CUT = 0.5`, so the spring can follow it; review R1-1). **`fixed` (approach A, pull out for fast legs):** `Z` = floor of the median `CLIP_FILL` fit zoom over the non-fast followed sub-legs, clamped to [4, 14]. Legs that are fast at `Z` are framed as in variable mode (clip fit zoom, flown to and from), and every other frame is at `Z`. Then `Z` is lowered one level at a time until the path's estimated tiles ≤ `MAX_TILES`. **`fixed_strict` (approach B, one zoom throughout):** `Z` = the largest integer ≤ that median, clamped to [2, 14], at which no followed sub-leg is fast and the estimated tiles ≤ `MAX_TILES`. Every non-card frame is at `Z`. | Automatic keeps the dialog simple. The median suits the typical leg. Floors and the pan bound keep the map from strobing, and the tile bound gives a sharp map at a lower zoom rather than a blurry capped one. Both approaches are owner-requested. | A user zoom slider or presets (not wanted); keeping mode floors (they would reintroduce zoom changes); following a leg faster than the spring can track (strobing, R1-1). |
-| D4 | **Measure first, and again after.** Wave 1 adds per-stage render timings and a benchmark and frame-dump CLI. It takes `--camera` (review R1-3) and `--crf`/`--tune` (review R1-7), and runs in its own container via `docker compose run --rm worker-video …`, never `exec` in the live worker (review R1-6). **Gate G1** (before wave 2): the owner runs it on the VPS, the agents being unable to reach the VPS. **Gate G2** (after wave 2, before wave 3): the owner runs it again on the new code (review R1-4). Both sets of numbers go into `docs/VIDEO.md` and #517. | Owner decision: sharpening costs time, and the dev-box benchmark was 8× off. G2 is what checks the definition of done's "stays under the job timeout on the VPS". | Choosing a supersample factor blind; certifying VPS render time from dev-box numbers. |
+| D3 | **Fixed zoom**, zoom **chosen by the server** (owner decision). The camera follows the marker with variable mode's machinery (spring, leash, `_fly` across jumps and to or from the cards) at one **integer** zoom `Z` (floored, so no frame sits in a band cross-fade, review R1-5). Per-mode floors don't apply. A followed sub-leg is **fast** at zoom `z` if following it would move the aim faster than `FIXED_MAX_PAN_PER_S = 1.5` frame widths per second (0.05 per frame at 30 fps). That is what the critically damped spring can track without the leash taking over: its lag is 2v/ω, and `LEASH·ω/2 = 1.5` per second with `LEASH = 0.3`, `SPRING_OMEGA = 10` (review R2-1). It is also well inside the follow bound of `test_consecutive_frames_change_little` (0.1 per frame while following, 0.25 for any pair of frames). **`Z` is chosen by one fixed procedure, from the top down** (review R2-2). For each integer `z` from 14 down to the mode's floor, recompute at that `z` which followed sub-legs are fast, and accept the first (highest) `z` that meets every condition of its mode. **`fixed` (approach A, pull out for fast legs):** (1) `z` ≤ the floor of the median `CLIP_FILL` fit zoom over the sub-legs **not** fast at `z`; (2) the path's estimated tiles at `z` ≤ `MAX_TILES`, with the fast legs framed as in variable mode (clip fit zoom, flown to and from). The floor is 4. Every non-card frame that isn't on a fast leg is at `Z`. **`fixed_strict` (approach B, one zoom throughout):** (1) `z` ≤ the floor of the median `CLIP_FILL` fit zoom over **all** followed sub-legs; (2) no followed sub-leg is fast at `z`; (3) estimated tiles at `z` ≤ `MAX_TILES`. The floor is 2. Every non-card frame is at `Z`. If no `z` qualifies, `Z` is the floor. | Automatic keeps the dialog simple. The median suits the typical leg. Floors and the pan bound keep the map from strobing, and the tile bound gives a sharp map at a lower zoom rather than a blurry capped one. Both approaches are owner-requested. | A user zoom slider or presets (not wanted); keeping mode floors (they would reintroduce zoom changes); following a leg faster than the spring can track (strobing, R1-1; leash-pinned marker, R2-1); an unspecified search order (R2-2). |
+| D4 | **Measure first, and again after.** Wave 1 adds per-stage render timings and a benchmark and frame-dump CLI. It takes `--camera` (review R1-3) and `--crf`/`--tune` (review R1-7), and runs in its own container via `docker compose run --rm worker-video …`, never `exec` in the live worker (review R1-6). **Gate G1** (before wave 2): the owner runs it **once** on the VPS, in variable mode with today's encoder settings, for timing only. The agents can't reach the VPS. Encoder candidates are compared on the dev box instead, because frames are the same on any machine (Convention 2; review R2-3). **Gate G2** (after wave 2, before wave 3): the owner runs it on the new code in variable and overview mode, two runs (review R1-4). The numbers go into `docs/VIDEO.md` and #517. | Owner decision: sharpening costs time, and the dev-box benchmark was 8× off. G2 is what checks the definition of done's "stays under the job timeout on the VPS". | Choosing a supersample factor blind; certifying VPS render time from dev-box numbers. |
 | D5 | **Route line:** draw the route layer supersampled (factor `ROUTE_SS`, default 3, allowed 2–4) over the route's bounding box only, then `resize(BOX)`, following the poster's `_draw_route`. Replace the box blur. The factor is set from G1's numbers within the render-time budget (D8). | Proven in the repo (poster), and costs pixels only where the route is. | New native dependencies (aggdraw, Cairo, Skia) at runtime; a full-frame supersampled layer (≈132 MB at 4× 1080p). |
 | D6 | **Chips:** replace the 128 px emoji bitmaps with **vector-sourced icons matching the app's Material icons** (Material Symbols, Apache-2.0), pre-rendered offline to 512 px PNGs by a dev-only script run in Docker, with the PNGs committed. At runtime the icon is rendered once per size (cached) from the 512 px source into the 4× marker sprite before it's scaled down. HUD rounded panels are drawn at 4× the same way. | A bitmap emoji font can't be rendered larger than about 136 px. Vector sources scale cleanly, and matching the app's icons keeps the video and app consistent. Keeping the runtime Pillow-only means no Cairo in the image. | Runtime SVG rasterising (Cairo in the image); keeping the emoji. |
-| D7 | **Encoder:** candidates `-crf` 18–21, with and without `-tune animation`, keeping `yuv420p` (plays on every phone), `veryfast`, `-threads 4`. G1 dumps frame pairs for each candidate (review R1-7), and the orchestrator picks the one whose decoded frames keep both the route line and the map labels sharpest (the tune is dropped if it softens the map imagery). Files may grow about 1.5–2× (owner accepted a moderate increase). | Encoding softens thin coloured lines; animation tuning suits flat colours but can soften photographic map texture, so it's measured, not assumed. | `yuv444p` (poor phone support); `-crf ≤ 16` (files too large). |
-| D8 | **Render-time budget** (owner confirmed 2026-09-29): the overlay and encoder changes together must not add more than **25%** to the per-frame time, measured on the benchmark in **both variable and overview mode**. Overview (and the cards) are the worst case for route drawing, because the route box covers ~85% of the frame (review R1-3). The budget applies on the dev box, and on the VPS at G2 against G1. The 1080p benchmark must also stay within its existing assertions. If D5, D6 and D7 at their defaults exceed it, the unit lowers `ROUTE_SS` before anything else. | Keeps #518 from making #517 worse. | Unbounded quality work; a budget checked only in the mode where it's cheapest. |
+| D7 | **Encoder:** candidates `-crf` 18–21, with and without `-tune animation`, keeping `yuv420p` (plays on every phone), `veryfast`, `-threads 4`. The orchestrator runs the bench **on the dev box** (Linux image, real tiles, the same trip as G1) with `--dump-frames` for each candidate (reviews R1-7, R2-3), and picks the one whose decoded frames keep both the route line and the map labels sharpest (the tune is dropped if it softens the map imagery). Files may grow about 1.5–2× (owner accepted a moderate increase). | Encoding softens thin coloured lines; animation tuning suits flat colours but can soften photographic map texture, so it's measured, not assumed. | `yuv444p` (poor phone support); `-crf ≤ 16` (files too large). |
+| D8 | **Render-time budget** (owner confirmed 2026-09-29): the overlay and encoder changes together must not add more than **25%** to the per-frame time, measured on the benchmark in **both variable and overview mode**. Overview (and the cards) are the worst case for route drawing, because the route box covers ~85% of the frame (review R1-3). The budget applies on the dev box, and on the VPS at G2 against G1. **Overview has no "before" of its own** (it can't render before U3), so its baseline is the **variable-mode per-frame time before the change**: the dev-box benchmark from wave 1 and G1 on the VPS. Overview after the change must stay ≤ 1.25 × that (review R2-4). The 1080p benchmark must also stay within its existing assertions. If D5, D6 and D7 at their defaults exceed it, the unit lowers `ROUTE_SS` before anything else. | Keeps #518 from making #517 worse. | Unbounded quality work; a budget checked only in the mode where it's cheapest. |
 | D9 | **Overview is also cheaper:** a still camera reuses the cropped and scaled basemap image instead of recomputing it every frame, and hands the overlay a **copy** each frame (the overlay draws in place; review R1-2). | Free speed for the new mode; `Basemaps.frame` recomputes today. | Handing the cached image itself to the overlay (frames would accumulate). |
 
 ## Review envelope
@@ -232,14 +232,21 @@ G2 confirms the result on the VPS or lowers `ROUTE_SS`.
   - overview: every frame's viewport contains the whole trip, and all shots are
     identical;
   - fixed and fixed_strict: the chosen `Z` is an integer; the existing
-    `test_consecutive_frames_change_little` bound (≤ 0.25 frame per frame)
-    holds in both; no clip frame is a cut caused by marker speed;
+    `test_consecutive_frames_change_little` bounds (≤ 0.1 frame per frame while
+    following, ≤ 0.25 for any pair) hold in both; no clip frame is a cut caused
+    by marker speed; while a sub-leg is followed, the marker stays within
+    `LEASH` of the centre **without the leash clamping** on more than 5% of its
+    frames;
+  - the search order: on a trip of short walks (fit ≈ 14) plus several slow long
+    legs (fit ≈ 6, fast only above about 9), `fixed` picks the higher `Z` (≥ 10,
+    long legs flown) and `fixed_strict` picks a lower one, and the test asserts
+    that the two differ (review R2-2);
   - fixed: on a trip of walks plus one 1,000 km flight, every walk frame is at
     `Z`, the flight is framed at its fit zoom, and `Z` equals the value for the
     same trip without the flight;
   - fixed_strict: on that same trip, every non-card, non-flying frame is at the
     same `Z`, and the flight is followed at it without exceeding
-    `FIXED_MAX_PAN`;
+    `FIXED_MAX_PAN_PER_S`;
   - both fixed modes on a long synthetic trip (365 days, 1,000 legs) end with
     estimated tiles ≤ `MAX_TILES`;
   - the tile estimate matches `plan_bands` within 10% on sample paths in every
@@ -251,14 +258,17 @@ G2 confirms the result on the VPS or lowers `ROUTE_SS`.
   zoom ≥ 2 on the long synthetic trip.
 - **Depends on:** —
 
-**Gate G1 (owner, between waves 1 and 2):** run U1's bench on the VPS in its
-own container (`docker compose run --rm worker-video python -m src.video.bench
-…`) for one real trip at 90 s and 1080p, in variable mode, with
-`--dump-frames`, once with today's encoder settings and once per candidate of
-D7 (`--crf 18|20|21`, `--tune animation|none`). Paste the summaries and attach
-the frame pairs to #517. The orchestrator records the numbers in
-`docs/VIDEO.md`, then sets `ROUTE_SS` and the encoder settings for wave 2
-within D5 and D7's ranges and D8's budget.
+**Gate G1 (owner, between waves 1 and 2):** run U1's bench **once** on the VPS in
+its own container (`docker compose run --rm worker-video python -m src.video.bench
+…`) for one plaintext real trip at 90 s and 1080p, in variable mode, with
+today's encoder settings, preferably when no user video job is queued or
+running. Paste the summary into #517. That run is about 20 minutes of CPU on
+the shared host (review R2-3). In parallel, the orchestrator runs the D7
+candidate comparison **on the dev box**: Linux image, real tiles, the same trip
+(via the owner's export of it), `--dump-frames` per candidate. It records G1's
+numbers and the chosen encoder settings in `docs/VIDEO.md`, then sets
+`ROUTE_SS` and the encoder settings for wave 2 within D5 and D7's ranges and
+D8's budget.
 
 ### Wave 2 — thread the mode through; sharpen
 
@@ -300,8 +310,8 @@ within D5 and D7's ranges and D8's budget.
     overview mode and on the title and end cards of variable mode (no
     accumulation);
   - the ffmpeg command line carries the chosen flags.
-  The benchmark reports before and after in variable **and** overview mode
-  (Convention 5), within D8.
+  The benchmark reports variable mode before and after, and overview mode after,
+  against D8's overview baseline (variable before × 1.25) (Convention 5).
 - **Out of scope:** the overlay; the client; golden changes (U4, U6).
 - **Latitude:** local design
 - **Escalate if:** X3; D8's budget is exceeded by the encoder change alone.
@@ -341,13 +351,17 @@ within D5 and D7's ranges and D8's budget.
     overlay and record both numbers in the test's docstring);
   - icons are loaded from 512 px sources;
   - no runtime import outside Pillow.
-  The benchmark reports before and after in variable **and** overview mode
-  (Convention 5); U3 and U4 together stay within D8's +25% in both.
+  The benchmark reports variable mode before and after. For overview, which
+  the renderer can't produce until U3 is merged, U4 times `Overlay.draw` on its
+  own at an overview shot built with `camera.overview()` (merged in wave 1),
+  before and after (review R2-4). The full overview render check against D8
+  happens at wave-2 integration (the orchestrator runs the bench in overview
+  mode after merging U3 and U4) and at G2.
 - **Out of scope:** camera; encoder; client.
 - **Latitude:** local design
 - **Escalate if:** X3; D8's budget can't be met at `ROUTE_SS` = 2 in overview
   mode; a mode has no suitable Material Symbol.
-- **Depends on:** U1, G1
+- **Depends on:** U1, U2, G1
 
 **Gate G2 (owner, between waves 2 and 3):** run the bench again on the VPS in
 its own container, on the wave-2 code, for the same trip at 90 s and 1080p, in
@@ -397,9 +411,14 @@ projected 90 s 1080p render time reaches 1,600 s (about 11% under the
   `test_golden_comparison_catches_a_moved_route` (≈291-320) — the example to
   follow; G1's and G2's numbers; U3's and U4's before and after benchmark
   reports.
-- **Do:** add golden cases generated in the Linux image: overview (a mid-video
-  frame and the end card), fixed (a follow frame) and fixed_strict (a follow
-  frame during a long leg). Document the four camera values, D3's zoom choice,
+- **Do:** add a dedicated golden fixture with a leg that is **fast at `fixed`'s
+  `Z`**, e.g. short walks in Paris, a Paris → New York flight and short walks in
+  New York, so `fixed` flies the flight while `fixed_strict` drops its zoom
+  (review R2-5). Its test first asserts `fixed_zoom(…, "fixed") >
+  fixed_zoom(…, "fixed_strict")` as a precondition. Add golden cases generated
+  in the Linux image: overview (a mid-video frame and the end card, on the
+  existing fixture), fixed (a walk frame) and fixed_strict (a frame during the
+  flight), on the new fixture. Document the four camera values, D3's zoom choice,
   D5–D7 with the chosen values, and a benchmark table (dev box and VPS, G1 and
   G2, variable and overview).
 - **Acceptance:** `pytest tests/test_video_renderer.py` passes in the Linux image
@@ -422,7 +441,8 @@ projected 90 s 1080p render time reaches 1,600 s (about 11% under the
   line moving. Fixed zoom follows the marker at one server-chosen integer zoom,
   pulling out for fast legs when the switch is on, and at one zoom throughout
   when it's off. In every mode, the map never moves more than 0.25 frame widths
-  per frame outside flights between views.
+  per frame outside flights between views, and never more than 0.1 while
+  following the marker.
 - Older installed apps and pending jobs without `camera` render in Variable
   mode.
 - On a 45° segment, the route's edge straightness beats today's by the recorded

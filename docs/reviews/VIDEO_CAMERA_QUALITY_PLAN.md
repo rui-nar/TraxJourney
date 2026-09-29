@@ -90,3 +90,52 @@ Owner answer: implement both, selectable — `fixed` (pull out for fast legs) an
 - Guard: —
 - Override: —
 - Outcome: fixed in plan (U6: negative controls limited to frames that differ; end-card identity asserted)
+
+## Round 2 — 2026-09-29, reviewed a526a909..707cf012
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
+
+### R2-1 — FIXED_MAX_PAN = 0.15 exceeds what the spring can follow (≈0.05/frame) and the test's 0.1 follow bound; the marker is leash-pinned off-centre
+- Trigger: user picks Fixed on a trip with a leg panning 0.05–0.15 frame/frame → spring lag > LEASH → marker pinned 0.3 off-centre for the whole leg
+- Scores: trigger=concrete, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed in plan (D3: FIXED_MAX_PAN_PER_S = 1.5 frame widths/s ≈ 0.05/frame from LEASH·ω/2; U2 cites the 0.1 follow bound and adds a leash-clamp check)
+
+### R2-2 — D3's fast set, median and tile-lowered Z depend on each other with no evaluation order; several valid results
+- Trigger: trip with walks and several slow long legs → one reading gives Z=6 (strict-like), another Z=10 with long legs flown; tests pass either way
+- Scores: trigger=concrete, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed in plan (D3: one top-down search order recomputing fastness per z; U2 test separating fixed from fixed_strict)
+
+### R2-3 — G1 asks for seven full 90 s 1080p renders on the shared VPS to pick CRF/tune, a choice that doesn't depend on the VPS
+- Trigger: owner runs G1 → ~2.6 h saturating 2 vCPUs of prod+val → a user's job in that window runs at half speed toward the timeout
+- Scores: trigger=plausible, impact=wrong-visible (triager: was degraded-ux), detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: a user video job is queued/running when G1 is about to start; a video job hits JOB_TIMEOUT_S or is visibly slowed during G1; G1 has to run more than once
+- Guard: —
+- Override: user: Fix now — comparing encoder settings doesn't need the production host
+- Outcome: fixed in plan (G1 = one VPS timing run; encoder candidates compared on the dev box)
+
+### R2-4 — D8's overview budget has no 'before' figure (overview can't render before U3; G1 is variable-only) and U4 can't benchmark overview
+- Trigger: orchestrator reaches U3/U4 acceptance or G2 → nothing to compare overview against; U4 can't render overview
+- Scores: trigger=concrete, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed in plan (D8: overview baseline = variable-before × 1.25; U4 times Overlay.draw at an overview shot, depends on U2; full overview check at wave-2 integration and G2)
+
+### R2-5 — U6's fixed vs fixed_strict negative controls are unsatisfiable on the reference fixture (both give Z=9, identical frames)
+- Trigger: implementer uses the Paris–Lyon fixture → no leg fast at Z → identical frames → control fails on correct code
+- Scores: trigger=concrete, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=inferred
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed in plan (U6: dedicated Paris–New York fixture with a precondition that the two fixed zooms differ)
