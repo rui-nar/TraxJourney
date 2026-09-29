@@ -156,3 +156,16 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). Round 3 
 ## Review closed — 2026-09-29
 
 Three rounds; all Fix now items fixed in the plan (overrides: R1-4, R1-6, R2-3). The user approved R3-1 and asked to prepare the plan for execution; no round 4. Nothing deferred remains open.
+
+## Delivery
+
+Feature branch `feat/518-video-camera-quality` (from `plan/518-video-camera-quality` at 68d874f9). Split approved by the user 2026-09-29 without overrides. Gates G1 (after wave 1) and G2 (after wave 2) are owner-run benchmarks on the VPS.
+
+| Unit | Goal | Route | Rule | Attempts | Escalated | Verified first time | Findings traced |
+|---|---|---|---|---|---|---|---|
+| U1 | Stage timings + VPS bench CLI | Sonnet | — | | | | |
+| U2 | Overview / fixed / fixed_strict camera paths | Opus | S2 | | | | |
+| U3 | Camera mode through API/job/renderer; basemap reuse; encoder defaults | Opus | S4 | | | | |
+| U4 | Sharper route, chips and panels | Opus | S2 | | | | |
+| U5 | Camera choice in the video dialog | Opus | S5 | | | | |
+| U6 | Golden frames for the new modes, docs | Sonnet | — | | | | |
