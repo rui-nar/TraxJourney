@@ -164,7 +164,7 @@ Feature branch `feat/518-video-camera-quality` (from `plan/518-video-camera-qual
 | Unit | Goal | Route | Rule | Attempts | Escalated | Verified first time | Findings traced |
 |---|---|---|---|---|---|---|---|
 | U1 | Stage timings + VPS bench CLI | Sonnet | — | 1 | — | yes | — |
-| U2 | Overview / fixed / fixed_strict camera paths | Opus | S2 | | | | |
+| U2 | Overview / fixed / fixed_strict camera paths | Opus | S2 | 1 (+resume after X2) | X2 → owner amended D3 (width-dependent fixed_strict floor) | yes | — |
 | U3 | Camera mode through API/job/renderer; basemap reuse; encoder defaults | Opus | S4 | | | | |
 | U4 | Sharper route, chips and panels | Opus | S2 | | | | |
 | U5 | Camera choice in the video dialog | Opus | S5 | | | | |
