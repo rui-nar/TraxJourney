@@ -113,6 +113,27 @@ def test_happy_path_renders_emails_and_deletes_the_geometry(env, monkeypatch):
     assert SECRET_LINE not in env.mail.sent[0].text_body
 
 
+def test_the_stored_camera_reaches_the_renderer(env, monkeypatch):
+    """The job's request, camera included, is what the renderer gets
+    (docs/VIDEO_CAMERA_QUALITY_PLAN.md D1); a row written before the field
+    existed reaches it without one, which ``render_video`` reads as
+    ``"variable"`` (tests/test_video_camera_render.py)."""
+    calls = _fake_renderer(monkeypatch)
+    old = env.make_job()
+    new = env.make_job()
+    with Session(env.engine) as sess:
+        job = sess.get(DBVideoJob, new)
+        job.request_json = json.dumps({"length_s": 30, "height": 720, "width": 1280,
+                                       "camera": "overview"})
+        sess.add(job); sess.commit()
+
+    runner.run_video_job(old)
+    runner.run_video_job(new)
+
+    assert "camera" not in calls[0]["request"]
+    assert calls[1]["request"]["camera"] == "overview"
+
+
 @pytest.mark.parametrize("exc, reason", [
     (ValueError(f"bad line {SECRET_LINE}"), runner.REASON_RENDER_FAILED),
     (MemoryError(), runner.REASON_OUT_OF_MEMORY),

@@ -99,10 +99,30 @@ def test_encoder_args_override_reaches_the_command_line():
 
 # ── bench.py ─────────────────────────────────────────────────────────────────
 
-def test_refuses_an_unwired_camera_mode(capsys):
-    rc = bench.main(["--project", "x", "--owner", "1", "--camera", "overview"])
-    assert rc == 1
-    assert "overview" in capsys.readouterr().err
+@pytest.mark.parametrize("camera", ["variable", "overview", "fixed", "fixed_strict"])
+def test_bench_renders_in_the_requested_camera_mode(db, tmp_path, monkeypatch, camera):
+    """Every camera mode is wired into the renderer (U3): ``--camera``
+    reaches the FrameRenderer the bench encodes."""
+    captured = {}
+
+    def fake_encode(frames, out_path, **kwargs):
+        captured["camera"] = frames.camera
+        out_path.write_bytes(b"")
+        return out_path
+
+    monkeypatch.setattr(bench, "encode", fake_encode)
+    rc = bench.main(["--project", "Ride trip", "--owner", str(db["owner"]),
+                     "--length", "10", "--height", "180", "--camera", camera,
+                     "--out", str(tmp_path / "out")])
+    assert rc == 0
+    assert captured == {"camera": camera}
+
+
+def test_refuses_an_unknown_camera_mode(capsys):
+    with pytest.raises(SystemExit) as info:
+        bench.main(["--project", "x", "--owner", "1", "--camera", "zoom"])
+    assert info.value.code == 2
+    assert "zoom" in capsys.readouterr().err
 
 
 def test_refuses_a_trip_the_owner_cant_see(db, tmp_path, capsys):
