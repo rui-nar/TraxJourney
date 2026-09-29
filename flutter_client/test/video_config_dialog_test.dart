@@ -398,4 +398,95 @@ void main() {
       expect(startedJob, isNull);
     });
   });
+
+  group('camera (#518 D1)', () {
+    const zoomOut = 'Zoom out for flights and long legs';
+
+    Future<http.Response> ok(http.Request req) async =>
+        req.url.path.endsWith('/plan')
+            ? _json(200, _plan())
+            : _json(201, {'job_id': 31});
+
+    Object? cameraOf(http.Request r) => (jsonDecode(r.body) as Map)['camera'];
+
+    Future<void> tapText(WidgetTester tester, String text) async {
+      await tester.ensureVisible(find.text(text));
+      await tester.tap(find.text(text));
+      await _frames(tester);
+    }
+
+    Future<void> create(WidgetTester tester) async {
+      await tester.tap(find.widgetWithText(FilledButton, 'Create video'));
+      await _frames(tester);
+    }
+
+    testWidgets('defaults to Variable and sends "variable"', (tester) async {
+      await open(tester, ok);
+      expect(find.text('Variable'), findsOneWidget);
+      expect(find.text('Overview'), findsOneWidget);
+      expect(find.text('Fixed zoom'), findsOneWidget);
+      expect(find.text('Zooms in and out to follow each leg.'), findsOneWidget);
+      expect(cameraOf(sent.single), 'variable');
+
+      await create(tester);
+      expect(sent.last.url.path, '/api/projects/Trip/video');
+      expect(cameraOf(sent.last), 'variable');
+      expect(startedJob, 31);
+    });
+
+    testWidgets('the zoom-out switch shows only with Fixed zoom, on by default',
+        (tester) async {
+      await open(tester, ok);
+      expect(find.text(zoomOut), findsNothing);
+
+      await tapText(tester, 'Overview');
+      expect(find.text(zoomOut), findsNothing);
+      expect(find.text('Shows the whole trip for the whole video.'),
+          findsOneWidget);
+
+      await tapText(tester, 'Fixed zoom');
+      expect(find.text(zoomOut), findsOneWidget);
+      expect(tester.widget<SwitchListTile>(find.byType(SwitchListTile)).value,
+          isTrue);
+
+      await tapText(tester, 'Variable');
+      expect(find.text(zoomOut), findsNothing);
+    });
+
+    for (final (label, off, camera) in [
+      ('Overview', false, 'overview'),
+      ('Fixed zoom', false, 'fixed'),
+      ('Fixed zoom', true, 'fixed_strict'),
+    ]) {
+      testWidgets('$label${off ? ' without zoom-out' : ''} sends "$camera"',
+          (tester) async {
+        await open(tester, ok);
+        await tapText(tester, label);
+        if (off) await tapText(tester, zoomOut);
+        await create(tester);
+        expect(sent.last.url.path, '/api/projects/Trip/video');
+        expect(cameraOf(sent.last), camera);
+        expect(startedJob, 31);
+      });
+    }
+
+    testWidgets('the choice survives the consent step', (tester) async {
+      await open(tester, (req) async {
+        if (req.url.path.endsWith('/plan')) return _json(200, _plan());
+        return hasGeometry(req)
+            ? _json(201, {'job_id': 32})
+            : _json(409, _consent409);
+      });
+      await tapText(tester, 'Fixed zoom');
+      await tapText(tester, zoomOut);
+      await create(tester);
+      expect(find.byType(VideoConsentDialog), findsOneWidget);
+
+      await tester.tap(find.text('Send and continue'));
+      await _frames(tester);
+      expect(hasGeometry(sent.last), isTrue);
+      expect(cameraOf(sent.last), 'fixed_strict');
+      expect(startedJob, 32);
+    });
+  });
 }

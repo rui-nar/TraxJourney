@@ -25,6 +25,10 @@ import 'client.dart';
 /// The lengths every plan may pick (D11).
 const kVideoLengths = [30, 60, 90];
 
+/// The server's camera modes (docs/VIDEO_CAMERA_QUALITY_PLAN.md, D1):
+/// `variable` (default), `overview`, `fixed` and `fixed_strict`.
+const kVideoCameraDefault = 'variable';
+
 /// Planning and creating run the server's timeline over the whole trip, which
 /// for a long trip takes longer than a plain JSON call.
 const _kPlanTimeout = Duration(seconds: 60);
@@ -182,11 +186,12 @@ class VideoJobStatus {
 Map<String, String> _geometryJson(Map<int, String> geometry) =>
     {for (final e in geometry.entries) e.key.toString(): e.value};
 
-/// Plans a video of [lengthS] seconds. [geometry] is the consent geometry,
-/// sent only once the user agreed to it.
+/// Plans a video of [lengthS] seconds with the [camera] mode. [geometry] is
+/// the consent geometry, sent only once the user agreed to it.
 Future<VideoPlan> fetchVideoPlan({
   required ProjectRef ref,
   int lengthS = 60,
+  String camera = kVideoCameraDefault,
   Map<int, String>? geometry,
   ApiClient? client,
 }) async {
@@ -194,6 +199,7 @@ Future<VideoPlan> fetchVideoPlan({
     ref.path('/video/plan'),
     {
       'length_s': lengthS,
+      'camera': camera,
       if (geometry != null) 'decrypted_geometry': _geometryJson(geometry),
     },
     timeout: _kPlanTimeout,
@@ -206,6 +212,7 @@ Future<int> createVideoJob({
   required ProjectRef ref,
   required int lengthS,
   required int height,
+  String camera = kVideoCameraDefault,
   Map<int, String>? geometry,
   ApiClient? client,
 }) async {
@@ -214,6 +221,7 @@ Future<int> createVideoJob({
     {
       'length_s': lengthS,
       'height': height,
+      'camera': camera,
       if (geometry != null) 'decrypted_geometry': _geometryJson(geometry),
     },
     timeout: _kPlanTimeout,

@@ -1,6 +1,7 @@
 /// Dialog for requesting a trip video (docs/TRIP_VIDEO_PLAN.md, U7): pick a
-/// length (30/60/90 s, D11) and a resolution the plan allows (D10), see the
-/// monthly quota (D3), then create. Renders a [VideoRequestNotifier] and runs
+/// length (30/60/90 s, D11), a resolution the plan allows (D10) and a camera
+/// (docs/VIDEO_CAMERA_QUALITY_PLAN.md, D1), see the monthly quota (D3), then
+/// create. Renders a [VideoRequestNotifier] and runs
 /// its consent step (D2) through [showVideoConsentDialog].
 ///
 /// Pops itself when the job has started (handing the id to [onStarted]) or
@@ -249,6 +250,30 @@ class _VideoConfigDialogState extends State<VideoConfigDialog> {
               style: theme.textTheme.bodySmall),
         ],
         const SizedBox(height: 16),
+        Text('Camera', style: theme.textTheme.titleSmall),
+        const SizedBox(height: 8),
+        SegmentedButton<String>(
+          segments: [
+            for (final (value, label, _) in _cameras)
+              ButtonSegment(value: value, label: Text(label)),
+          ],
+          selected: {_n.cameraChoice},
+          showSelectedIcon: false,
+          onSelectionChanged: (s) => _n.setCamera(s.first),
+        ),
+        const SizedBox(height: 4),
+        Text(
+            _cameras.firstWhere((c) => c.$1 == _n.cameraChoice).$3,
+            style: theme.textTheme.bodySmall),
+        if (_n.cameraChoice == 'fixed')
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: Text('Zoom out for flights and long legs',
+                style: theme.textTheme.bodyMedium),
+            value: _n.fixedZoomOut,
+            onChanged: _n.setFixedZoomOut,
+          ),
+        const SizedBox(height: 16),
         Text(_quotaLine(quota), style: theme.textTheme.bodyMedium),
         if (plan.skipped > 0) ...[
           const SizedBox(height: 4),
@@ -281,6 +306,13 @@ class _VideoConfigDialogState extends State<VideoConfigDialog> {
       ],
     );
   }
+
+  /// Camera choices: the notifier's value, the label and the helper line.
+  static const _cameras = [
+    ('variable', 'Variable', 'Zooms in and out to follow each leg.'),
+    ('overview', 'Overview', 'Shows the whole trip for the whole video.'),
+    ('fixed', 'Fixed zoom', 'Follows the route at one zoom level.'),
+  ];
 
   static String _clips(int n) => '$n clip${n == 1 ? '' : 's'}';
 
