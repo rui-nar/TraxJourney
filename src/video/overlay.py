@@ -10,6 +10,7 @@ blue in the app, on the poster and in the video.
 from __future__ import annotations
 
 import bisect
+import colorsys
 import functools
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,6 +49,20 @@ _PANEL = (12, 14, 20, 150)
 _TEXT: RGB = (255, 255, 255)
 _MUTED: RGB = (200, 205, 214)
 _SCRIM_ALPHA = 150
+
+# The route is drawn this many times larger over its bounding box and
+# box-filtered down, so its edges get real coverage instead of a staircase
+# (D5, as poster_renderer._draw_route). Set at gate G1 (docs/VIDEO.md); 2-4
+# is the allowed range, the memory is ROUTE_SS² × the route box (≈70 MB at
+# 3× for an overview at 1080p).
+ROUTE_SS = 3
+# Only the cells of this grid (frame px) that the route crosses are filtered
+# down and pasted: zoomed in, the route box is most of the frame but the route
+# a thin line through it. Must exceed the route's half-width.
+_ROUTE_CELL = 32
+# The marker sprite and the HUD panels' rounded corners are drawn at 4× and
+# scaled down.
+_SPRITE_SS = 4
 
 # A card fades over this long: the title out as it ends, the end card in.
 CARD_FADE_S = 0.5
@@ -125,20 +140,39 @@ def _font(weight: str, px: int) -> ImageFont.ImageFont:
     return load_face(weight, max(6, px))
 
 
-@functools.lru_cache(maxsize=32)
-def _icon(mode: str, px: int) -> Image.Image:
+def _on_light(rgb: RGB) -> RGB:
+    """*rgb* darkened to 65% of its lightness, for a glyph on white — the
+    client's ``iconBoxFg`` (design_tokens.dart) in light mode."""
+    h, l, s = colorsys.rgb_to_hls(*(c / 255 for c in rgb))
+    return tuple(round(c * 255) for c in colorsys.hls_to_rgb(h, l * 0.65, s))
+
+
+@functools.lru_cache(maxsize=8)
+def _icon_source(mode: str) -> Image.Image:
+    """The mode's 512 px glyph mask (the PNG's alpha)."""
     path = ICON_DIR / f"{mode}.png"
     if not path.exists():
         path = ICON_DIR / "other.png"
     with Image.open(path) as img:
-        return img.convert("RGBA").resize((px, px), Image.LANCZOS)
+        return img.getchannel("A")
+
+
+@functools.lru_cache(maxsize=64)
+def _icon(mode: str, px: int, color: RGB) -> Image.Image:
+    """The mode's icon, *px* square, in *color*: downsized from its 512 px
+    source once per size and colour."""
+    mask = _icon_source(mode).resize((px, px), Image.LANCZOS)
+    icon = Image.new("RGBA", (px, px), color + (0,))
+    icon.putalpha(mask)
+    return icon
 
 
 @functools.lru_cache(maxsize=16)
 def _marker(mode: str, d: int) -> Image.Image:
     """The marker sprite: a soft halo, a white disc ringed in the mode colour,
-    the mode icon inside. Drawn 4× and scaled down for smooth edges."""
-    ss = 4
+    the mode icon inside. Drawn 4×, icon included, and scaled down for smooth
+    edges."""
+    ss = _SPRITE_SS
     halo = d * 1.45
     side = int(round(halo)) | 1
     big = Image.new("RGBA", (side * ss, side * ss), (0, 0, 0, 0))
@@ -150,10 +184,19 @@ def _marker(mode: str, d: int) -> Image.Image:
     ring = max(1, round(d / 12)) * ss
     draw.ellipse((c - r, c - r, c + r, c + r), fill=mode_color(mode) + (255,))
     draw.ellipse((c - r + ring, c - r + ring, c + r - ring, c + r - ring), fill=(255, 255, 255, 255))
-    sprite = big.resize((side, side), Image.LANCZOS)
-    icon = _icon(mode, max(4, round(d * 0.62)))
-    sprite.alpha_composite(icon, ((side - icon.width) // 2, (side - icon.height) // 2))
-    return sprite
+    icon = _icon(mode, max(4, round(d * 0.62)) * ss, _on_light(mode_color(mode)))
+    big.alpha_composite(icon, ((big.width - icon.width) // 2, (big.height - icon.height) // 2))
+    return big.resize((side, side), Image.LANCZOS)
+
+
+@functools.lru_cache(maxsize=64)
+def _panel_patch(w: int, h: int, radius: int) -> Image.Image:
+    """A HUD panel's rounded rectangle, drawn 4× and scaled down."""
+    ss = _SPRITE_SS
+    big = Image.new("RGBA", (w * ss, h * ss), (0, 0, 0, 0))
+    ImageDraw.Draw(big).rounded_rectangle((0, 0, w * ss - 1, h * ss - 1),
+                                          radius=radius * ss, fill=_PANEL)
+    return big.resize((w, h), Image.BOX)
 
 
 def _stack(weight: str, px: int) -> FontStack:
@@ -227,6 +270,39 @@ def _modes_in_order(timeline: Timeline) -> List[str]:
     return seen
 
 
+def _route_cells(lines: Sequence[Sequence[Tuple[float, float]]], box: Size,
+                 ss: int) -> List[Tuple[int, int, int, int]]:
+    """The parts of the route box the route may touch, as (left, right, top,
+    bottom) runs of :data:`_ROUTE_CELL` cells in box pixels. *lines* are in
+    the box's ``ss``× coordinates. Each line is drawn 3 cells wide on a grid
+    of cells and grown by one more cell each way, so a cell the route only
+    grazes is kept."""
+    t = _ROUTE_CELL
+    cols, rows = -(-box[0] // t), -(-box[1] // t)
+    grid = Image.new("L", (cols, rows), 0)
+    draw = ImageDraw.Draw(grid)
+    k = 1 / (t * ss)
+    for line in lines:
+        cells = [(x * k, y * k) for x, y in line]
+        draw.line(cells, fill=255, width=3)
+        draw.point(cells, fill=255)
+    grid = grid.filter(ImageFilter.MaxFilter(3))
+    data = grid.tobytes()
+    runs = []
+    for r in range(rows):
+        row = data[r * cols:(r + 1) * cols]
+        c = 0
+        while c < cols:
+            if not row[c]:
+                c += 1
+                continue
+            start = c
+            while c < cols and row[c]:
+                c += 1
+            runs.append((start * t, min(c * t, box[0]), r * t, min((r + 1) * t, box[1])))
+    return runs
+
+
 @dataclass(frozen=True)
 class _Card:
     rgb: Image.Image
@@ -245,7 +321,6 @@ class Overlay:
         self.faint_w = max(1, round(h / 270))
         self.line_w = max(2, round(h / 160))
         self.casing_w = max(1, round(h / 540))
-        self.blur = ImageFilter.BoxBlur(max(0.5, h / 1080))
         self.marker_d = max(10, round(h * 0.075))
         self.margin = max(4, round(h * 0.03))
         self.hud_px = max(8, round(h * 0.032))
@@ -298,10 +373,11 @@ class Overlay:
         return faint, travelled
 
     def _draw_route(self, frame: Image.Image, shot: Shot, state: FrameState) -> None:
-        """One colour layer and one coverage mask for the whole route, the mask
-        box-blurred for anti-aliasing, pasted in one go — all over the
-        route's bounding box only. The colour layer is drawn a pixel wider
-        than the mask so the blurred edge never picks up its background."""
+        """One colour layer and one coverage mask for the whole route, drawn
+        :data:`ROUTE_SS` times larger and box-filtered down for anti-aliasing,
+        pasted in one go — all over the route's bounding box only. The colour
+        layer is drawn a pixel wider than the mask so the partly covered edge
+        never picks up its background."""
         faint, travelled = self._lines(shot, state)
         if not faint:
             return
@@ -315,22 +391,40 @@ class Overlay:
         if x1 <= x0 or y1 <= y0:
             return
 
-        def shift(line):
-            return [(x - x0, y - y0) for x, y in line]
+        ss = ROUTE_SS
+        # Frame pixel (i, j) is the ss × ss block from (i·ss, j·ss): a frame
+        # coordinate maps to the centre of its block.
+        c = (ss - 1) / 2
+
+        def scaled(line):
+            return [((x - x0) * ss + c, (y - y0) * ss + c) for x, y in line]
 
         box = (x1 - x0, y1 - y0)
-        color = Image.new("RGB", box, _FAINT)
-        mask = Image.new("L", box, 0)
+        big = (box[0] * ss, box[1] * ss)
+        # The colour layer is left unfilled (filling an RGB layer this size
+        # costs more than drawing the whole route): every colour is drawn a
+        # pixel wider than its coverage, the faint line's too, so what lies
+        # outside it never shows.
+        color = Image.new("RGB", big, None)
+        mask = Image.new("L", big, 0)
         cd, md = ImageDraw.Draw(color), ImageDraw.Draw(mask)
+        faint = [scaled(line) for line in faint]
         for line in faint:
-            md.line(shift(line), fill=_FAINT_ALPHA, width=self.faint_w + 1)
-        travelled = [(mode, shift(line)) for mode, line in travelled]
+            cd.line(line, fill=_FAINT, width=(self.faint_w + 2) * ss)
+        for line in faint:
+            md.line(line, fill=_FAINT_ALPHA, width=self.faint_w * ss)
+        travelled = [(mode, scaled(line)) for mode, line in travelled]
         for _, line in travelled:
-            cd.line(line, fill=_CASING, width=outer + 2, joint="curve")
-            md.line(line, fill=255, width=outer, joint="curve")
+            cd.line(line, fill=_CASING, width=(outer + 2) * ss, joint="curve")
+            md.line(line, fill=255, width=outer * ss, joint="curve")
         for mode, line in travelled:
-            cd.line(line, fill=mode_color(mode), width=self.line_w, joint="curve")
-        frame.paste(color, (x0, y0), mask.filter(self.blur))
+            cd.line(line, fill=mode_color(mode), width=self.line_w * ss, joint="curve")
+        # reduce() is the box filter at an integer factor, about 3× faster
+        # than resize(BOX) at these sizes.
+        lines = faint + [line for _, line in travelled]
+        for a, b, top, bottom in _route_cells(lines, box, ss):
+            area = (a * ss, top * ss, b * ss, bottom * ss)
+            frame.paste(color.reduce(ss, area), (x0 + a, y0 + top), mask.reduce(ss, area))
 
     # ── marker and HUD ───────────────────────────────────────────────────────
 
@@ -354,13 +448,12 @@ class Overlay:
                   for (icon, text, s), h in zip(rows, heights)]
         pw = round(max(widths)) + 2 * pad
         ph = sum(heights) + gap * (len(rows) - 1) + 2 * pad
-        patch = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
-        ImageDraw.Draw(patch).rounded_rectangle((0, 0, pw - 1, ph - 1), radius=pad, fill=_PANEL)
+        patch = _panel_patch(pw, ph, pad).copy()
         y = pad
         for (icon, text, stack), h in zip(rows, heights):
             x = pad
             if icon:
-                ic = _icon(icon, h)
+                ic = _icon(icon, h, mode_color(icon))
                 patch.alpha_composite(ic, (x, y))
                 x += h + gap
             _draw_text(patch, (x, y + (h - stack.size_px * 1.15) / 2), text, stack, _TEXT)
@@ -421,7 +514,7 @@ class Overlay:
         for mode, text in rows:
             tw = row_px + row_px * 0.4 + _text_width(text, row)
             x = (w - tw) / 2
-            ic = _icon(mode, row_px)
+            ic = _icon(mode, row_px, mode_color(mode))
             card.alpha_composite(ic, (round(x), round(y)))
             _draw_text(card, (x + row_px * 1.4, y - row_px * 0.1), text, row, _TEXT)
             y += line
