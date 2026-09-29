@@ -77,7 +77,7 @@ FIXED_MAX_PAN_PER_S = 1.5
 # a wiggle in the line doesn't count as speed and a sustained pan does.
 PAN_WINDOW_S = 2.0 / SPRING_OMEGA
 # The search for the fixed zoom runs from FIXED_TOP_ZOOM down to the mode's
-# floor.
+# floor (see :func:`fixed_floor`).
 FIXED_TOP_ZOOM = 14
 FIXED_FLOOR: Dict[str, int] = {"fixed": 4, "fixed_strict": 2}
 
@@ -457,7 +457,7 @@ def _fixed_path(timeline: Timeline, fps: int, size: Size, mode: str, z: int) -> 
 def fixed_zoom(timeline: Timeline, size: Size, mode: str) -> int:
     """The integer zoom ``Z`` of a ``"fixed"`` or ``"fixed_strict"`` path
     (docs/VIDEO_CAMERA_QUALITY_PLAN.md, D3): the highest z from
-    :data:`FIXED_TOP_ZOOM` down to the mode's :data:`FIXED_FLOOR` that
+    :data:`FIXED_TOP_ZOOM` down to the mode's :func:`fixed_floor` that
 
     - ``"fixed"``: is at most the floor of the median ``CLIP_FILL`` fit zoom
       of the followed sub-legs not fast at z, and whose path — the fast ones
@@ -473,6 +473,16 @@ def fixed_zoom(timeline: Timeline, size: Size, mode: str) -> int:
     return _fixed_zoom(timeline, (int(size[0]), int(size[1])), mode)
 
 
+def fixed_floor(mode: str, size: Size) -> int:
+    """The lowest fixed zoom of *mode* for a *size* frame: 4 for ``"fixed"``;
+    for ``"fixed_strict"`` 2, raised so that no frame is wider than 180° of
+    longitude (a *size*[0]-pixel frame at zoom z spans
+    ``size[0] / (TILE_SIZE · 2**z)`` of the world): 3 at 1920 px."""
+    if mode == "fixed_strict":
+        return max(FIXED_FLOOR[mode], math.ceil(math.log2(size[0] / (TILE_SIZE / 2))))
+    return FIXED_FLOOR[mode]
+
+
 @lru_cache(maxsize=8)
 def _fixed_zoom(timeline: Timeline, size: Size, mode: str) -> int:
     speeds = _pan_speeds(timeline, size)
@@ -482,7 +492,8 @@ def _fixed_zoom(timeline: Timeline, size: Size, mode: str) -> int:
     clip_fits = [_fit([lonlat_to_world(lon, lat) for sub in clip.subs
                        for lon, lat in sub.leg.coords], size, CLIP_FILL)[2]
                  for clip in timeline.clips]
-    for z in range(FIXED_TOP_ZOOM, FIXED_FLOOR[mode] - 1, -1):
+    floor = fixed_floor(mode, size)
+    for z in range(FIXED_TOP_ZOOM, floor - 1, -1):
         fast = {key for key, v in speeds.items() if _is_fast(v, z)}
         if mode == "fixed_strict":
             if fast:
@@ -497,7 +508,7 @@ def _fixed_zoom(timeline: Timeline, size: Size, mode: str) -> int:
         if estimate_tiles(_fixed_path(timeline, timeline.fps, size, mode, z), size) > MAX_TILES:
             continue
         return z
-    return FIXED_FLOOR[mode]
+    return floor
 
 
 # ── tile estimate ────────────────────────────────────────────────────────────

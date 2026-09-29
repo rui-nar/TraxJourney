@@ -645,7 +645,7 @@ def test_fixed_modes_follow_at_one_integer_zoom(trip, total, size, mode):
     and is held there by the leash on at most 5% of its sub-leg's frames."""
     tl = build_timeline(TRIPS[trip](), total)
     z = fixed_zoom(tl, size, mode)
-    assert isinstance(z, int) and cam.FIXED_FLOOR[mode] <= z <= cam.FIXED_TOP_ZOOM
+    assert isinstance(z, int) and cam.fixed_floor(mode, size) <= z <= cam.FIXED_TOP_ZOOM
     path = camera_path(tl, FPS, size, mode)
     speeds = cam._pan_speeds(tl, size)
     for n, shot in enumerate(path):
@@ -665,6 +665,23 @@ def test_fixed_modes_follow_at_one_integer_zoom(trip, total, size, mode):
                 assert move <= cam.CUT, n
     for key, (frames, clamped) in _leash_clamps(path, tl, size).items():
         assert clamped <= 0.05 * frames, (key, clamped, frames)
+
+
+def test_the_strict_floor_keeps_frames_within_half_the_world():
+    """D3 (amended): fixed_strict's floor is max(2, ceil(log2(width / 256))),
+    so its zoom never shows more than 180° of longitude across the frame."""
+    assert cam.fixed_floor("fixed_strict", HD) == 3
+    assert cam.fixed_floor("fixed_strict", SMALL) == 2
+    assert cam.fixed_floor("fixed", HD) == cam.fixed_floor("fixed", SMALL) == 4
+    trips = {**TRIPS, "pacific": _pacific_flight}
+    for size in (HD, SMALL):
+        for trip in sorted(trips):
+            for total in (30, 90):
+                tl = build_timeline(trips[trip](), total)
+                z = fixed_zoom(tl, size, "fixed_strict")
+                assert size[0] / (512 * 2 ** z) * 360 <= 180, (trip, total, size, z)
+    # The Pacific flight's fit (2.99 at HD) would pick 2 without the raise.
+    assert fixed_zoom(build_timeline(_pacific_flight(), 30), HD, "fixed_strict") == 3
 
 
 def test_the_pan_bound_is_what_the_spring_can_track():
