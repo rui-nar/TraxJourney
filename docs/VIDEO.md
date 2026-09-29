@@ -209,3 +209,24 @@ The peak memory figures of that run are not valid: the renderer's own memory was
 The animation tune added size and lowered SSIM (structure) on the route and the map at the same CRF, so it isn't used (D7). crf 18 wasn't run: at crf 20 the file is already 1.55× the baseline, and 18 would likely pass the ~2× the owner accepted.
 
 **Settings chosen for wave 2:** `-crf 20`, no `-tune`, `ROUTE_SS = 3`.
+
+## Gate G2 measurements (#518, 2026-09-29)
+
+Same VPS, same trip and settings as G1, on the wave-2 code (sharper overlay, CRF 20, camera modes):
+
+| Stage (ms per frame) | G1 variable (before) | G2 variable | G2 overview |
+|---|---|---|---|
+| Tile fetch | 128.3 | 44.6 | 0.1 |
+| Sheet stitch | 10.0 | 9.9 | 0.0 |
+| Basemap | 79.6 | 48.6 | 4.7 |
+| Overlay | 75.3 | 129.4 | 83.5 |
+| Write to ffmpeg | 14.1 | 13.8 | 14.2 |
+| **Total** | **317.4** (857 s) | **257.4** (695 s) | **110.6** (299 s) |
+| Tiles / sheets | 2,414 / 152 | 2,414 / 152 | 9 / 1 |
+| Peak RSS renderer / ffmpeg | invalid | 725 / 299 MB | 725 / 321 MB |
+
+- **Render-time budget (D8):** the stages #518 changed (overlay and write) went from 89.4 to 143.2 ms per frame. That is +53.8 ms, or +17% of G1's total, within D8's +25%. Tile fetch and basemap vary with the network and host load, and #518 didn't touch them.
+- **Supersampling is much dearer on the VPS:** the overlay alone costs +72% there, against about +10% on the dev box, because of the 2 slow vCPUs.
+- **Projected 90 s 1080p render:** 695 s as measured, about 920 s if tile fetching is as slow as at G1. Both are well under the 1,600 s threshold (D4, G2).
+- **Overview is 2.9× faster than variable** and fetches 9 tiles instead of 2,414.
+- **Memory is dominated by loading the trip:** the renderer peaks at 725 MB in both modes, because loading the trip dominates. The peaks add up to more than `worker-video`'s 896 MB limit, but they didn't coincide and the runs completed. This concerns worker sizing (#520), not this change.
