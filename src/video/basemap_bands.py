@@ -220,7 +220,12 @@ def _crop_scaled(sheet_img: Image.Image, sheet: Sheet, rect: Tuple[float, float,
 class Basemaps:
     """Each frame's basemap, stitching sheets as they are first needed and
     dropping them after their last frame. Frames are meant to be asked for in
-    order; an earlier one still works, re-stitching a dropped sheet."""
+    order; an earlier one still works, re-stitching a dropped sheet.
+
+    While the shot doesn't change (the overview camera, a card), the cropped
+    and scaled image of the previous frame is reused rather than recomputed
+    (docs/VIDEO_CAMERA_QUALITY_PLAN.md D9). Every frame gets its own copy:
+    the overlay draws on it in place, and must never draw on the kept one."""
 
     def __init__(self, shots: Sequence[Shot], size: Size, plan: BandPlan, *,
                  tile_fetcher: Optional[TileFetcher] = None,
@@ -232,6 +237,13 @@ class Basemaps:
         self._render = render
         self._images: Dict[int, Image.Image] = {}
         self.tiles_fetched = 0
+        # A basemap kept for the frames after it, and the (shot, sheet refs)
+        # it was made for. Never handed out itself.
+        self._kept_key: Optional[Tuple[Shot, Tuple[Tuple[int, float], ...]]] = None
+        self._kept: Optional[Image.Image] = None
+
+    def _key(self, n: int) -> Tuple[Shot, Tuple[Tuple[int, float], ...]]:
+        return self.shots[n], tuple(self.plan.frames[n])
 
     def _sheet(self, i: int) -> Image.Image:
         img = self._images.get(i)
@@ -255,14 +267,25 @@ class Basemaps:
         return img
 
     def frame(self, n: int) -> Image.Image:
-        shot = self.shots[n]
-        out: Optional[Image.Image] = None
-        acc = 0.0
-        for i, weight in self.plan.frames[n]:
-            s = self.plan.sheets[i]
-            img = _crop_scaled(self._sheet(i), s, view_rect(shot, s.band, self.size), self.size)
-            acc += weight
-            out = img if out is None else Image.blend(out, img, weight / acc)
+        key = self._key(n)
+        if key == self._kept_key:
+            out = self._kept.copy()
+        else:
+            shot = self.shots[n]
+            out = None
+            acc = 0.0
+            for i, weight in self.plan.frames[n]:
+                s = self.plan.sheets[i]
+                img = _crop_scaled(self._sheet(i), s, view_rect(shot, s.band, self.size), self.size)
+                acc += weight
+                out = img if out is None else Image.blend(out, img, weight / acc)
+            # Kept only when the next frame reuses it, so a moving camera
+            # pays for no copy and holds no extra frame.
+            if n + 1 < len(self.shots) and self._key(n + 1) == key:
+                self._kept_key, self._kept = key, out
+                out = out.copy()
+            else:
+                self._kept_key = self._kept = None
         for i in [i for i, s in self._images.items() if self.plan.sheets[i].last <= n]:
             del self._images[i]
         return out

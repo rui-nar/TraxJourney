@@ -42,7 +42,10 @@ ProgressFn = Callable[[float, str], None]
 
 # The job's progress is written to its row this often.
 PROGRESS_EVERY = 30
-_DEFAULT_CRF = 23
+# docs/VIDEO_CAMERA_QUALITY_PLAN.md D7, chosen at gate G1 (docs/VIDEO.md):
+# sharper route lines and map labels than crf 23, for files ~1.5x larger;
+# ``-tune animation`` softened the map imagery, so no tune.
+_DEFAULT_CRF = 20
 _DEFAULT_TUNE: Optional[str] = None
 # x264 picks ~1.5 frame threads per core by default, each buffering frames:
 # on a many-core host that alone took ~560 MB at 1080p. Four bound it and
@@ -55,7 +58,7 @@ _FFMPEG_ARGS = ("-c:v", "libx264", "-preset", "veryfast", "-crf", str(_DEFAULT_C
 
 def _encoder_args(crf: int = _DEFAULT_CRF, tune: Optional[str] = _DEFAULT_TUNE) -> Tuple[str, ...]:
     """The libx264 flags for one encode (D4/U1): *crf* and *tune* are
-    overridable (the bench CLI's ``--crf``/``--tune``). At today's defaults
+    overridable (the bench CLI's ``--crf``/``--tune``). At the defaults
     this returns :data:`_FFMPEG_ARGS` itself (unchanged, and still the name a
     test overrides to break the encoder). ``tune`` of ``None`` or ``"none"``
     omits ``-tune`` entirely."""
@@ -176,15 +179,15 @@ def _ffmpeg_peak_rss_mb(peak_kb: Optional[int]) -> float:
     return resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / 1024
 
 
-def _log_render_summary(*, frames: int, elapsed: float, stages: StageTimes,
+def _log_render_summary(*, camera: str, frames: int, elapsed: float, stages: StageTimes,
                         sheets: int, tiles: int, renderer_mb: float, ffmpeg_mb: float) -> None:
     """One INFO line per job: where the time went (Do 1)."""
     per_frame = (lambda s: s / frames * 1000) if frames else (lambda s: 0.0)
     _log.info(
-        "video render summary: frames=%d elapsed_s=%.2f ms_per_frame=%.1f "
+        "video render summary: camera=%s frames=%d elapsed_s=%.2f ms_per_frame=%.1f "
         "fetch_ms=%.2f stitch_ms=%.2f basemap_ms=%.2f overlay_ms=%.2f write_ms=%.2f "
         "sheets=%d tiles=%d peak_rss_renderer_mb=%.0f peak_rss_ffmpeg_mb=%.0f",
-        frames, elapsed, per_frame(elapsed),
+        camera, frames, elapsed, per_frame(elapsed),
         per_frame(stages.fetch), per_frame(stages.stitch), per_frame(stages.basemap),
         per_frame(stages.overlay), per_frame(stages.write),
         sheets, tiles, renderer_mb, ffmpeg_mb,
@@ -192,16 +195,17 @@ def _log_render_summary(*, frames: int, elapsed: float, stages: StageTimes,
 
 
 class FrameRenderer:
-    """Frame *n* of *timeline* at *size*: a pure function of both and *n*
-    (Convention 3). Frames are cheapest asked for in order."""
+    """Frame *n* of *timeline* at *size* in *camera* mode: a pure function
+    of those and *n* (Convention 3). Frames are cheapest asked for in order."""
 
     def __init__(self, timeline: Timeline, size: Size, title: str, *,
                  tile_fetcher: Optional[TileFetcher] = None,
-                 max_tiles: int = MAX_TILES) -> None:
+                 max_tiles: int = MAX_TILES, camera: str = "variable") -> None:
         self.timeline = timeline
         self.size = (int(size[0]), int(size[1]))
         self.fps = timeline.fps
-        self.shots: Sequence[Shot] = camera_path(timeline, self.fps, self.size)
+        self.camera = camera
+        self.shots: Sequence[Shot] = camera_path(timeline, self.fps, self.size, camera)
         self.plan = plan_bands(self.shots, self.size, max_tiles)
         if self.plan.max_band is not None:
             _log.info("Video basemap capped at zoom %d to stay within %d tiles (%d planned)",
@@ -246,7 +250,7 @@ def encode(frames: FrameRenderer, out_path: Path, *, progress: Optional[Progress
     """Pipe *frame_range* (default: all) of *frames* through ffmpeg into
     *out_path*, written under a temporary name and moved into place only
     when ffmpeg exits 0. *crf*/*tune* override the encoder (D4/U1); their
-    defaults reproduce today's command line exactly."""
+    defaults are G1's choice (D7), :data:`_FFMPEG_ARGS`."""
     w, h = frames.size
     todo = frame_range if frame_range is not None else range(len(frames))
     part = out_path.with_name(out_path.stem + ".part" + out_path.suffix)
@@ -302,7 +306,7 @@ def encode(frames: FrameRenderer, out_path: Path, *, progress: Optional[Progress
         elapsed = time.perf_counter() - start
         renderer_mb = _renderer_peak_rss_mb()
         ffmpeg_mb = _ffmpeg_peak_rss_mb(ffmpeg_peak_kb)
-        _log_render_summary(frames=len(todo), elapsed=elapsed, stages=frames.timings,
+        _log_render_summary(camera=frames.camera, frames=len(todo), elapsed=elapsed, stages=frames.timings,
                             sheets=len(frames.plan.sheets), tiles=frames.plan.tiles,
                             renderer_mb=renderer_mb, ffmpeg_mb=ffmpeg_mb)
     os.replace(part, out_path)
@@ -314,12 +318,14 @@ def render_timeline(timeline: Timeline, size: Size, out_path: Path, *, title: st
                     tile_fetcher: Optional[TileFetcher] = None,
                     max_tiles: int = MAX_TILES,
                     frame_range: Optional[range] = None,
-                    crf: int = _DEFAULT_CRF, tune: Optional[str] = _DEFAULT_TUNE) -> Path:
-    """Render *timeline* (or *frame_range* of it) at *size* into *out_path*."""
+                    crf: int = _DEFAULT_CRF, tune: Optional[str] = _DEFAULT_TUNE,
+                    camera: str = "variable") -> Path:
+    """Render *timeline* (or *frame_range* of it) at *size* into *out_path*,
+    in *camera* mode."""
     if progress is not None:
         progress(0.0, "planning")
     frames = FrameRenderer(timeline, size, title, tile_fetcher=tile_fetcher,
-                           max_tiles=max_tiles)
+                           max_tiles=max_tiles, camera=camera)
     return encode(frames, out_path, progress=progress, frame_range=frame_range, crf=crf, tune=tune)
 
 
@@ -348,15 +354,18 @@ def render_video(job_id: int, user_info_id: int, project_id: int, request: dict,
                  tile_fetcher: Optional[TileFetcher] = None) -> Path:
     """Render job *job_id*'s video into *out_path* and return it (Convention 5).
 
-    *request* is the job's ``{"length_s", "width", "height"}``; *geometry*
-    the consent geometry of an encrypted trip (D2), used for this render
-    only. ``NothingToAnimate`` propagates for the runner to report.
+    *request* is the job's ``{"length_s", "width", "height", "camera"}``;
+    a row written before ``camera`` existed has no such key and renders in
+    ``"variable"`` mode. *geometry* the consent geometry of an encrypted trip
+    (D2), used for this render only. ``NothingToAnimate`` propagates for the runner to report.
     """
     progress(0.0, "loading trip")
     project = _load_project(project_id, user_info_id)
     timeline = timeline_for_project(project, float(request["length_s"]), geometry=geometry)
     size = (int(request["width"]), int(request["height"]))
-    _log.info("Video job %s: %d frames at %dx%d, %d clips", job_id,
-              frame_count(timeline, timeline.fps), size[0], size[1], len(timeline.clips))
+    camera = request.get("camera", "variable")
+    _log.info("Video job %s: %d frames at %dx%d, %d clips, %s camera", job_id,
+              frame_count(timeline, timeline.fps), size[0], size[1], len(timeline.clips),
+              camera)
     return render_timeline(timeline, size, out_path, title=project.name,
-                           progress=progress, tile_fetcher=tile_fetcher)
+                           progress=progress, tile_fetcher=tile_fetcher, camera=camera)

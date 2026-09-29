@@ -30,13 +30,9 @@ from tempfile import mkdtemp
 from typing import List, Optional, Tuple
 
 from src.utils.logging import configure_logging, env_level
+from src.video.camera import CAMERA_MODES
 from src.video.renderer import FrameRenderer, _ffmpeg, encode
 from src.video.timeline import NothingToAnimate, timeline_for_project
-
-# D1's four camera values. Only "variable" is wired into the renderer until
-# U2 (camera_path modes) and U3 (renderer plumbing) land.
-CAMERA_MODES = ("variable", "overview", "fixed", "fixed_strict")
-_WIRED_CAMERA_MODES = ("variable",)
 
 
 def _frame_size(height: int) -> Tuple[int, int]:
@@ -68,19 +64,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--height", type=int, default=720, help="video height in pixels (width: 16:9)")
     ap.add_argument("--camera", choices=CAMERA_MODES, default="variable")
     ap.add_argument("--crf", type=int, default=None,
-                    help="override the encoder's -crf (default: today's, 23)")
+                    help="override the encoder's -crf (default: the renderer's, 20)")
     ap.add_argument("--tune", choices=("animation", "none"), default=None,
-                    help="override libx264's -tune (default: today's, none)")
+                    help="override libx264's -tune (default: the renderer's, none)")
     ap.add_argument("--dump-frames", default=None,
                     help="comma-separated frame numbers to dump before and after encoding")
     ap.add_argument("--out", default=None,
                     help="directory for the video and dumped frames (default: a fresh temp dir)")
     args = ap.parse_args(argv)
-
-    if args.camera not in _WIRED_CAMERA_MODES:
-        print(f"--camera {args.camera!r} isn't wired into the renderer yet "
-              f"(only {', '.join(_WIRED_CAMERA_MODES)}, for now)", file=sys.stderr)
-        return 1
 
     configure_logging(level=env_level())
 
@@ -106,7 +97,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     video_path = out_dir / "bench.mp4"
 
     # Only override the encoder when asked: this is what keeps a bare
-    # ``--crf``/``--tune``-less run at today's exact settings (Scope).
+    # ``--crf``/``--tune``-less run at the renderer's own settings (Scope).
     encode_kwargs = {}
     if args.crf is not None:
         encode_kwargs["crf"] = args.crf
@@ -115,7 +106,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # tile_fetcher left at its default (None): the renderer builds the real
     # MAPBOX_TOKEN client itself, lazily, on the first tile it needs.
-    frames = FrameRenderer(timeline, _frame_size(args.height), project.name)
+    frames = FrameRenderer(timeline, _frame_size(args.height), project.name,
+                           camera=args.camera)
     encode(frames, video_path, **encode_kwargs)
 
     frame_numbers = _parse_frame_numbers(args.dump_frames) if args.dump_frames else []

@@ -76,6 +76,8 @@ WIDTH_FOR_HEIGHT = {720: 1280, 1080: 1920}  # 16:9 (D8)
 
 VideoLength = Literal[30, 60, 90]
 VideoHeight = Literal[720, 1080]
+# docs/VIDEO_CAMERA_QUALITY_PLAN.md D1: src.video.camera.CAMERA_MODES.
+CameraMode = Literal["variable", "overview", "fixed", "fixed_strict"]
 
 # Bounds on decrypted_geometry, checked before a line is decoded: the JSON
 # cap alone (50 MB) lets one request hold enough polyline to stall the API
@@ -100,6 +102,7 @@ MAX_TOTAL_CHARS = 6_000_000
 class VideoPlanRequest(BaseModel):
     length_s: VideoLength = 60
     height: Optional[VideoHeight] = None
+    camera: CameraMode = "variable"
     # Activity id → Google-encoded polyline, decrypted on the client, for
     # encrypted activities only (D2). A trackless one sends its 2-point line.
     decrypted_geometry: Optional[Dict[int, str]] = None
@@ -108,6 +111,7 @@ class VideoPlanRequest(BaseModel):
 class VideoRequest(BaseModel):
     length_s: VideoLength
     height: VideoHeight = 720
+    camera: CameraMode = "variable"
     decrypted_geometry: Optional[Dict[int, str]] = None
 
 
@@ -417,7 +421,7 @@ def create_video_job(
         _timeline(project, body.length_s, geometry)
 
     request = {"length_s": body.length_s, "height": body.height,
-               "width": WIDTH_FOR_HEIGHT[body.height]}
+               "width": WIDTH_FOR_HEIGHT[body.height], "camera": body.camera}
     with get_session() as sess:
         # The lock serialises this requester's concurrent POSTs: the quota
         # count below sees every job a racing request committed.

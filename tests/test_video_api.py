@@ -177,7 +177,8 @@ def test_happy_path_renders_and_downloads(env, monkeypatch):
     queue, func, args, kw = env.enqueued[0]
     assert (queue, func, args) == ("video", runner.run_video_job, (job_id,))
     assert kw == {"max_retries": 0, "allow_inline": False, "job_timeout": 1800}
-    assert seen[0]["request"] == {"length_s": 30, "height": 720, "width": 1280}
+    assert seen[0]["request"] == {"length_s": 30, "height": 720, "width": 1280,
+                                  "camera": "variable"}
     assert seen[0]["geometry"] is None
 
     status = env.client.get(f"/api/projects/Trip/video/{job_id}").json()
@@ -271,6 +272,35 @@ def test_nothing_to_animate_is_422(env):
 def test_length_other_than_30_60_90_is_422(env, length):
     for url in ("/api/projects/Trip/video", "/api/projects/Trip/video/plan"):
         assert env.client.post(url, json={"length_s": length}).status_code == 422
+    assert _jobs(env) == []
+
+
+def test_camera_mode_list_matches_the_renderers():
+    """The API's accepted values are exactly camera_path's modes (D1)."""
+    from typing import get_args
+
+    from src.video.camera import CAMERA_MODES
+    assert get_args(video_api.CameraMode) == CAMERA_MODES
+
+
+@pytest.mark.parametrize("camera", ["variable", "overview", "fixed", "fixed_strict"])
+def test_camera_is_stored_and_handed_to_the_renderer(env, monkeypatch, camera):
+    seen = _fake_renderer(monkeypatch)
+    _run_inline(env, monkeypatch)
+    r = env.client.post("/api/projects/Trip/video/plan", json={"length_s": 30, "camera": camera})
+    assert r.status_code == 200, r.text
+    r = env.client.post("/api/projects/Trip/video", json={"length_s": 30, "camera": camera})
+    assert r.status_code == 201, r.text
+    [job] = _jobs(env)
+    assert json.loads(job.request_json)["camera"] == camera
+    assert seen[0]["request"]["camera"] == camera
+
+
+@pytest.mark.parametrize("camera", ["", "Overview", "zoom", 1, None])
+def test_an_unknown_camera_is_422(env, camera):
+    for url in ("/api/projects/Trip/video", "/api/projects/Trip/video/plan"):
+        r = env.client.post(url, json={"length_s": 30, "camera": camera})
+        assert r.status_code == 422, r.text
     assert _jobs(env) == []
 
 
