@@ -157,6 +157,10 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). Round 3 
 
 Three rounds; all Fix now items fixed in the plan (overrides: R1-4, R1-6, R2-3). The user approved R3-1 and asked to prepare the plan for execution; no round 4. Nothing deferred remains open.
 
+## Unit U3 review, round 1 — 2026-09-29, diff e949d83a..a7e14706 (before integration, DELIVERY.md §5 point 3)
+
+Reviewer: adversarial-reviewer (Fable). No findings, no envelope questions.
+
 ## Delivery
 
 Feature branch `feat/518-video-camera-quality` (from `plan/518-video-camera-quality` at 68d874f9). Split approved by the user 2026-09-29 without overrides. Gates G1 (after wave 1) and G2 (after wave 2) are owner-run benchmarks on the VPS.
@@ -166,7 +170,7 @@ Feature branch `feat/518-video-camera-quality` (from `plan/518-video-camera-qual
 | U1 | Stage timings + VPS bench CLI | Sonnet | — | 1 | — | yes | — |
 | U2 | Overview / fixed / fixed_strict camera paths | Opus | S2 | 1 (+resume after X2) | X2 → owner amended D3 (width-dependent fixed_strict floor) | yes | — |
 | U1a | ffmpeg's own peak memory in the render summary (fix unit: G1 showed identical RSS figures) | Sonnet | — | 1 | — | yes | — |
-| U3 | Camera mode through API/job/renderer; basemap reuse; encoder defaults | Opus | S4 | | | | |
+| U3 | Camera mode through API/job/renderer; basemap reuse; encoder defaults | Opus | S4 | 1 | — | yes | — |
 | U4 | Sharper route, chips and panels | Opus | S2 | | | | |
 | U5 | Camera choice in the video dialog | Opus | S5 | | | | |
 | U6 | Golden frames for the new modes, docs | Sonnet | — | | | | |
