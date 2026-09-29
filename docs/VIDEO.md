@@ -180,3 +180,32 @@ docker compose run --rm worker-video python -m src.video.bench \
 Encoder candidates (D7: `-crf` 18–21, with and without `-tune animation`) are
 compared on a dev box instead of the VPS, because frames are the same on any
 machine — only render *time* needs the real server.
+
+## Gate G1 measurements (#518, 2026-09-29)
+
+Measured before any #518 drawing or encoder change: variable camera, 90 s at 1080p (2,700 frames), one plaintext trip, 2,414 Mapbox tiles.
+
+**VPS** (OVH VPS-1, 2 vCPU, shared by the prod and val stacks), run with `docker compose run --rm worker-video python -m src.video.bench`:
+
+| Stage | ms per frame |
+|---|---|
+| Tile fetch | 128.3 |
+| Sheet stitch | 10.0 |
+| Basemap crop, scale and blend | 79.6 |
+| Overlay | 75.3 |
+| Write to ffmpeg | 14.1 |
+| **Total** | **317.4** (857 s) |
+
+The peak memory figures of that run are not valid: the renderer's own memory was counted as ffmpeg's. Fix unit U1a corrects the measurement.
+
+**Encoder comparison** (dev box, Linux image, same trip and tiles; three sampled frames; decoded frame against the raw frame):
+
+| Candidate | MP4 size | Full frame PSNR / SSIM | Route PSNR / SSIM | Map PSNR / SSIM |
+|---|---|---|---|---|
+| crf 23, no tune (before) | 113.7 MB (1.00×) | 35.30 / 0.9559 | 31.85 / 0.9506 | 33.58 / 0.9640 |
+| **crf 20, no tune (chosen)** | 175.7 MB (1.55×) | 36.89 / **0.9732** | 32.96 / **0.9692** | 35.38 / **0.9787** |
+| crf 20, animation | 193.7 MB (1.70×) | 37.03 / 0.9708 | 33.16 / 0.9656 | 35.79 / 0.9780 |
+
+The animation tune added size and lowered SSIM (structure) on the route and the map at the same CRF, so it isn't used (D7). crf 18 wasn't run: at crf 20 the file is already 1.55× the baseline, and 18 would likely pass the ~2× the owner accepted.
+
+**Settings chosen for wave 2:** `-crf 20`, no `-tune`, `ROUTE_SS = 3`.
