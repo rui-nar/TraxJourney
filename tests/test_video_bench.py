@@ -17,7 +17,7 @@ from PIL import Image
 import src.poster.tile_stitcher as tile_stitcher
 import src.video.bench as bench
 import src.video.renderer as renderer
-from src.video.renderer import render_timeline
+from src.video.renderer import FrameRenderer, encode, render_timeline
 from tests.test_video_renderer import SMALL, db, fake_tile, needs_ffmpeg, timeline30  # noqa: F401
 
 
@@ -46,6 +46,41 @@ def test_stage_totals_sum_to_the_measured_wall_time(tmp_path, caplog):
     }
     stage_total_s = sum(stage_ms.values()) / 1000 * frames
     assert stage_total_s == pytest.approx(measured, rel=0.10, abs=0.05)
+
+
+@needs_ffmpeg
+def test_ffmpeg_peak_is_its_own_not_the_renderers(tmp_path, caplog):
+    """The summary's ``peak_rss_ffmpeg_mb`` is ffmpeg's own peak (read from
+    its ``/proc/<pid>/status`` VmHWM), not the renderer's ``RUSAGE_CHILDREN``
+    figure (which, on Linux, is at least the renderer's own RSS at fork
+    time). For this small 320x180 render ffmpeg needs far less memory than
+    the Python renderer, so the two figures must differ, and ffmpeg's must
+    be the smaller one."""
+    tl = timeline30()
+    frames = FrameRenderer(tl, SMALL, "Trip", tile_fetcher=fake_tile)
+    # Two warm-up passes first, so the renderer's own RSS is already at (or
+    # very near) its peak before the measured pass's ffmpeg is even forked.
+    # RUSAGE_CHILDREN, the pre-fix reading, is *at least* the renderer's own
+    # RSS at fork time: with a renderer that still had most of its growing
+    # ahead of it, that reading would come out comfortably below the
+    # renderer's later, bigger, own peak, passing this test even unfixed.
+    # Flattening the renderer's growth first — so its RSS is essentially the
+    # same at fork time as at its own final peak — is what actually exposes
+    # the bug: RUSAGE_CHILDREN then reports (almost) exactly the renderer's
+    # own peak, not ffmpeg's.
+    encode(frames, tmp_path / "warmup1.mp4", frame_range=range(0, 90))
+    encode(frames, tmp_path / "warmup2.mp4", frame_range=range(0, 90))
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="src.video.renderer"):
+        encode(frames, tmp_path / "video.mp4", frame_range=range(0, 90))
+    lines = [r.getMessage() for r in caplog.records if "video render summary" in r.getMessage()]
+    assert len(lines) == 1
+    line = lines[0]
+    renderer_mb = float(re.search(r"peak_rss_renderer_mb=([\d.]+)", line).group(1))
+    ffmpeg_mb = float(re.search(r"peak_rss_ffmpeg_mb=([\d.]+)", line).group(1))
+    assert ffmpeg_mb > 0
+    assert ffmpeg_mb != renderer_mb
+    assert ffmpeg_mb < renderer_mb
 
 
 def test_encoder_args_default_matches_ffmpeg_args():

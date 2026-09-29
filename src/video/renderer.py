@@ -132,15 +132,48 @@ class _TimedRender:
         return img
 
 
-def _peak_rss_mb() -> Tuple[float, float]:
-    """Peak RSS of this process and of its children (ffmpeg), in MB — 0, 0 on
-    a platform without the ``resource`` module (Windows dev machines; the
-    video worker runs on Linux)."""
+def _renderer_peak_rss_mb() -> float:
+    """Peak RSS of this process, in MB — 0 on a platform without the
+    ``resource`` module (Windows dev machines; the video worker runs on
+    Linux)."""
     if resource is None:
-        return 0.0, 0.0
-    own = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-    child = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / 1024
-    return own, child
+        return 0.0
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+
+
+def _read_ffmpeg_vmhwm_kb(pid: int) -> Optional[int]:
+    """ffmpeg's own peak resident set size (kB), read from its live
+    ``/proc/<pid>/status`` (Linux only). ``VmHWM`` is a high-water mark
+    tracked by the kernel and reset by ``exec``, unlike
+    ``RUSAGE_CHILDREN.ru_maxrss`` which, on Linux, is at least as large as
+    whatever this process (the parent) was resident at *its* peak before
+    ``fork`` — a forked child's accounting starts from the parent's own
+    figure. Must be called while ffmpeg is still alive: its ``mm`` — and so
+    ``VmHWM`` — goes away once it exits, so this has to run before it is
+    reaped by ``wait()``. Returns ``None`` if unreadable (no ``/proc``, or
+    the process is already gone)."""
+    try:
+        with open(f"/proc/{pid}/status") as f:
+            for line in f:
+                if line.startswith("VmHWM:"):
+                    return int(line.split()[1])
+    except OSError:
+        return None
+    return None
+
+
+def _ffmpeg_peak_rss_mb(peak_kb: Optional[int]) -> float:
+    """ffmpeg's own peak RSS in MB, from the highest ``VmHWM`` sample seen
+    while it was alive. Falls back to ``RUSAGE_CHILDREN`` (which, as noted on
+    :func:`_read_ffmpeg_vmhwm_kb`, is the *renderer's* pre-fork RSS at a
+    minimum, not ffmpeg's own peak) only when ``/proc`` wasn't available,
+    e.g. on Windows or macOS dev machines — the video worker itself runs on
+    Linux, where *peak_kb* is always set."""
+    if peak_kb is not None:
+        return peak_kb / 1024
+    if resource is None:
+        return 0.0
+    return resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / 1024
 
 
 def _log_render_summary(*, frames: int, elapsed: float, stages: StageTimes,
@@ -222,6 +255,7 @@ def encode(frames: FrameRenderer, out_path: Path, *, progress: Optional[Progress
            "-i", "-", "-an", *_encoder_args(crf, tune), "-f", "mp4", str(part)]
     with tempfile.TemporaryFile() as err:
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=err)
+        ffmpeg_peak_kb: Optional[int] = None
         start = time.perf_counter()
         try:
             for i, n in enumerate(todo):
@@ -238,6 +272,18 @@ def encode(frames: FrameRenderer, out_path: Path, *, progress: Optional[Progress
                 proc.stdin.close()
             except (BrokenPipeError, OSError):
                 raise VideoEncodeError("ffmpeg stopped reading frames") from None
+            # ffmpeg keeps encoding buffered frames and (with +faststart)
+            # rewrites the file for its moov atom after stdin closes, so its
+            # peak can still grow here. Sample VmHWM (a high-water mark, so
+            # every read before exit is enough) until it exits; proc.wait()
+            # would reap it first and its /proc entry would be gone.
+            while True:
+                kb = _read_ffmpeg_vmhwm_kb(proc.pid)
+                if kb is not None:
+                    ffmpeg_peak_kb = kb if ffmpeg_peak_kb is None else max(ffmpeg_peak_kb, kb)
+                if proc.poll() is not None:
+                    break
+                time.sleep(0.01)
             code = proc.wait()
         finally:
             if proc.poll() is None:
@@ -254,7 +300,8 @@ def encode(frames: FrameRenderer, out_path: Path, *, progress: Optional[Progress
             part.unlink(missing_ok=True)
             raise VideoEncodeError(f"ffmpeg exited with code {code}")
         elapsed = time.perf_counter() - start
-        renderer_mb, ffmpeg_mb = _peak_rss_mb()
+        renderer_mb = _renderer_peak_rss_mb()
+        ffmpeg_mb = _ffmpeg_peak_rss_mb(ffmpeg_peak_kb)
         _log_render_summary(frames=len(todo), elapsed=elapsed, stages=frames.timings,
                             sheets=len(frames.plan.sheets), tiles=frames.plan.tiles,
                             renderer_mb=renderer_mb, ffmpeg_mb=ffmpeg_mb)
