@@ -23,7 +23,10 @@ import models.db as db_module
 from models.project_db import DBVideoJob
 from models.user import UserInfo
 from src.billing.entitlements import (
+    PREVIEW_IN_FLIGHT_S,
+    PREVIEW_WINDOW_S,
     ensure_video_quota,
+    preview_slot_frees_at,
     previews_in_last_hour,
     videos_this_month,
 )
@@ -61,12 +64,23 @@ def engine(monkeypatch):
 
 
 def _job(engine, *, kind="preview", user=1, status="done", age=0.0,
-         started=None):
-    """A job created ``age`` seconds before ``_NOW``."""
+         started=None, completed=None):
+    """A job created ``age`` seconds before ``_NOW``; returns its id."""
     with Session(engine) as sess:
-        sess.add(DBVideoJob(project_id=1, user_info_id=user, kind=kind,
-                            status=status, created_at=_NOW - age,
-                            started_at=started))
+        job = DBVideoJob(project_id=1, user_info_id=user, kind=kind,
+                         status=status, created_at=_NOW - age,
+                         started_at=started, completed_at=completed)
+        sess.add(job)
+        sess.commit()
+        return job.id
+
+
+def _set(engine, job_id, **fields):
+    with Session(engine) as sess:
+        job = sess.get(DBVideoJob, job_id)
+        for name, value in fields.items():
+            setattr(job, name, value)
+        sess.add(job)
         sess.commit()
 
 
@@ -78,6 +92,11 @@ def _videos(engine, user=1) -> int:
 def _previews(engine, user=1, now=_NOW) -> int:
     with Session(engine) as sess:
         return previews_in_last_hour(sess, user, now)
+
+
+def _frees_at(engine, user=1, now=_NOW, limit=10):
+    with Session(engine) as sess:
+        return preview_slot_frees_at(sess, user, now, limit)
 
 
 # ── Monthly video quota ───────────────────────────────────────────────────────
@@ -144,15 +163,53 @@ class TestPreviewsInLastHour:
         assert _previews(engine, now=_NOW + 3600) == 0
 
     def test_failed_after_starting_counts(self, engine):
-        _job(engine, status="failed", age=100, started=_NOW - 90)
+        _job(engine, status="failed", age=100, started=_NOW - 90,
+             completed=_NOW - 10)
         assert _previews(engine) == 1
+
+    def test_timed_out_five_minutes_after_start_counts(self, engine):
+        # The 300 s render timeout fires well inside the in-flight window.
+        _job(engine, status="failed", age=400, started=_NOW - 390,
+             completed=_NOW - 90)
+        assert _previews(engine) == 1
+
+    def test_failed_at_the_in_flight_bound_still_counts(self, engine):
+        _job(engine, status="failed", age=1000, started=_NOW - 990,
+             completed=_NOW - 1000 + PREVIEW_IN_FLIGHT_S)
+        assert _previews(engine) == 1
+
+    def test_failed_by_the_sweep_does_not_count(self, engine):
+        # Orphaned in running, failed by the hourly sweep 40 minutes in.
+        _job(engine, status="failed", age=2700, started=_NOW - 2690,
+             completed=_NOW - 2700 + 2400)
+        assert _previews(engine) == 0
+
+    def test_failed_without_completed_at_does_not_count(self, engine):
+        _job(engine, status="failed", age=100, started=_NOW - 90)
+        assert _previews(engine) == 0
+
+    def test_an_orphan_never_re_enters_the_count(self, engine):
+        job = _job(engine, status="pending", age=0)
+        seen = []
+        for t in range(0, 3700, 60):
+            if t == 30 * 60:
+                _set(engine, job, status="running", started_at=_NOW + 10)
+            if t == 40 * 60:  # the sweep fails the orphan
+                _set(engine, job, status="failed",
+                     completed_at=_NOW + 40 * 60)
+            seen.append(_previews(engine, now=_NOW + t))
+        # Counts, drops out at 15 minutes, and never comes back.
+        assert seen[0] == 1
+        assert all(later <= earlier for earlier, later in zip(seen, seen[1:]))
+        assert seen[-1] == 0
 
     def test_failed_before_starting_does_not_count(self, engine):
         _job(engine, status="failed", age=100, started=None)
         assert _previews(engine) == 0
 
     def test_failed_after_starting_leaves_with_the_hour(self, engine):
-        _job(engine, status="failed", age=3600, started=_NOW - 3500)
+        _job(engine, status="failed", age=3600, started=_NOW - 3500,
+             completed=_NOW - 3400)
         assert _previews(engine) == 0
 
     def test_expired_does_not_count(self, engine):
@@ -173,6 +230,68 @@ class TestPreviewsInLastHour:
         _job(engine, status="running", age=1800, started=_NOW - 1790)
         _job(engine, status="done", age=1800)
         assert _previews(engine) == 1
+
+
+# ── When a slot frees up (Retry-After) ────────────────────────────────────────
+
+class TestPreviewSlotFreesAt:
+    def _assert_frees_exactly_at(self, engine, frees_at, limit):
+        assert _previews(engine, now=frees_at) < limit
+        assert _previews(engine, now=frees_at - 1) >= limit
+
+    def test_none_under_the_limit(self, engine):
+        for _ in range(9):
+            _job(engine, status="done")
+        assert _frees_at(engine) is None
+
+    def test_none_with_no_rows(self, engine):
+        assert _frees_at(engine) is None
+
+    def test_at_the_limit_the_oldest_row_frees_it(self, engine):
+        for age in range(100, 1100, 100):  # ten done previews
+            _job(engine, status="done", age=age)
+        frees_at = _frees_at(engine)
+        assert frees_at == _NOW - 1000 + PREVIEW_WINDOW_S
+        self._assert_frees_exactly_at(engine, frees_at, 10)
+
+    def test_in_flight_rows_leave_at_900_seconds(self, engine):
+        # An old done row would leave in 50 minutes; the pending one in 5.
+        for _ in range(9):
+            _job(engine, status="done", age=600)
+        _job(engine, status="pending", age=600)
+        frees_at = _frees_at(engine)
+        assert frees_at == _NOW - 600 + PREVIEW_IN_FLIGHT_S
+        self._assert_frees_exactly_at(engine, frees_at, 10)
+
+    def test_mixed_rows(self, engine):
+        _job(engine, status="done", age=3000)                  # leaves +600
+        _job(engine, status="running", age=100,
+             started=_NOW - 90)                                # leaves +800
+        _job(engine, status="failed", age=2500, started=_NOW - 2490,
+             completed=_NOW - 2300)                            # leaves +1100
+        _job(engine, status="failed", age=10, started=None)    # never counts
+        _job(engine, status="expired", age=10)                 # never counts
+        frees_at = _frees_at(engine, limit=3)
+        assert frees_at == _NOW + 600
+        self._assert_frees_exactly_at(engine, frees_at, 3)
+        frees_at = _frees_at(engine, limit=2)
+        assert frees_at == _NOW + 800
+        self._assert_frees_exactly_at(engine, frees_at, 2)
+
+    def test_over_the_limit_waits_for_enough_rows_to_leave(self, engine):
+        # Twelve rows against a limit of ten: three must leave, not one.
+        for age in range(100, 1300, 100):
+            _job(engine, status="done", age=age)
+        frees_at = _frees_at(engine)
+        assert frees_at == _NOW - 1000 + PREVIEW_WINDOW_S
+        assert frees_at != _NOW - 1200 + PREVIEW_WINDOW_S
+        self._assert_frees_exactly_at(engine, frees_at, 10)
+
+    def test_ignores_other_users(self, engine):
+        for _ in range(10):
+            _job(engine, user=2, status="done")
+        assert _frees_at(engine, user=1) is None
+        assert _frees_at(engine, user=2) is not None
 
 
 # ── Migration ─────────────────────────────────────────────────────────────────
