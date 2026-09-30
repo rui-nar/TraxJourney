@@ -67,11 +67,11 @@ sharpness or map detail: the zoom level differs, so labels differ.
 | D3 | **The quota counts full videos only**: `videos_this_month` filters `kind = 'video'`. **Previews are free on every plan**, bounded by D6. | A preview must not cost the video it helps choose. | Charging previews. |
 | D4 | **Output is animated WebP** written by Pillow (lossy, quality ≈ 50, looping), not MP4. There's no ffmpeg in the preview path. | The app shows it as an ordinary image on web, Android and iOS without a video-player package; Pillow is already in the image. | MP4 plus a player package; GIF (larger, 256 colours). |
 | D5 | **Queue: the existing `default` queue for now** (owner, 2026-09-30), `max_retries=0`, `allow_inline=False` (the API never renders), `job_timeout = 300 s`. **#520's light lane** will move previews to their own queue later. Previews are **not** failed by the video worker's startup sweep, which is restricted to `kind='video'` because `default` has two consumers. They're failed only by age, in the hourly sweep: running longer than the timeout plus 5 min, or pending longer than 1 h. | No infrastructure change now; `default` jobs are short, so previews start quickly. | Waiting for #520; putting previews behind 20-minute renders on `worker-video`. |
-| D6 | **Rate limit, durable:** at most **10 previews per user per rolling hour**, counted from videojob rows of kind `preview` created in the last hour (any status except `failed`), checked inside the same `lock_account` transaction as the insert. Over the limit ⇒ **429** with `Retry-After`. | Previews cost server CPU and Mapbox tiles; an in-process limiter isn't durable across workers and restarts. | The in-memory `KeyedRateLimiter`; no limit. |
+| D6 | **Rate limit, durable** (owner confirmed 2026-09-30): at most **10 previews per user per rolling hour**, counted from videojob rows of kind `preview` created in the last hour (any status except `failed`), checked inside the same `lock_account` transaction as the insert. Over the limit ⇒ **429** with `Retry-After`. | Previews cost server CPU and Mapbox tiles; an in-process limiter isn't durable across workers and restarts. | The in-memory `KeyedRateLimiter`; no limit. |
 | D7 | **No email, no token routes and short retention:** a preview is shown only in the dialog that asked for it. Its file is deleted **1 h** after completion by the hourly sweep, so it is gone within 2 h. Status and bytes come from authenticated routes only. | It's disposable. | Emails and token links for previews. |
 | D8 | **Encrypted trips reuse the dialog's consent.** The client re-sends the consented geometry it already holds with the preview request. The server handles it exactly as for a full video: the same size bounds, a per-job `geometry.json`, deleted on every terminal path and never logged. | One consent per dialog session, as today. | Asking for consent twice; storing geometry for reuse server-side. |
 | D9 | **Explicit trigger** (owner): a "Preview" button in the dialog. The preview shows inline when ready, with a "low-resolution preview" caption. Changing the length or camera marks it out of date ("Preview is for the previous settings") until the user taps Preview again. | Predictable cost. | Regenerating automatically on every change. |
-| D10 | **Time budget (measured at gate G1):** a 60 s preview renders in **≤ 45 s** on the VPS, and a 90 s one in ≤ 60 s. If G1 exceeds that, lower the fps to 6 before the size. The tile cache stays in #517 (owner). | It has to be fast enough to be worth waiting for; the first real numbers decide. | A shared tile cache in this plan. |
+| D10 | **Time budget (measured at gate G1; owner confirmed 2026-09-30):** a 60 s preview renders in **≤ 45 s** on the VPS, and a 90 s one in ≤ 60 s. If G1 exceeds that, lower the fps to 6 before the size. The tile cache stays in #517 (owner). | It has to be fast enough to be worth waiting for; the first real numbers decide. | A shared tile cache in this plan. |
 
 ## Review envelope
 
@@ -120,8 +120,8 @@ apply. New points:
 
 ## Open decisions
 
-None. The rate-limit number (10 an hour) and the time budget (D10) are defaults
-the review may challenge and the owner may change.
+None. The owner confirmed the rate limit (10 an hour) and the time budget (D10)
+on 2026-09-30.
 
 ## Execution units
 
