@@ -10,6 +10,8 @@
 /// track `/meta` deferred fetched and decrypted here. It is held only in
 /// memory for this one request and sent only after
 /// [VideoRequestNotifier.acceptConsent]; a declined request sends nothing.
+/// A preview (docs/VIDEO_PREVIEW_PLAN.md, D8) re-sends the same geometry, so
+/// one consent covers the previews and the video of a dialog session.
 library;
 
 import 'dart:convert';
@@ -153,6 +155,60 @@ Future<(double, double)?> _latLng(
   return ((v[0] as num).toDouble(), (v[1] as num).toDouble());
 }
 
+/// Where a preview is (docs/VIDEO_PREVIEW_PLAN.md, U4). Independent of
+/// [VideoRequestPhase]: the video can be created while a preview renders.
+enum VideoPreviewPhase {
+  /// None asked for, or the last one expired.
+  idle,
+
+  /// The preview is being requested.
+  requesting,
+
+  /// Queued, waiting for a worker.
+  pending,
+
+  /// A worker is rendering it.
+  running,
+
+  /// [VideoRequestNotifier.previewBytes] holds it.
+  done,
+
+  /// The server failed it.
+  failed,
+
+  /// Still waiting for a worker after [kPreviewPendingDeadline].
+  busy,
+
+  /// Still rendering after [kPreviewRunningDeadline].
+  tooLong,
+
+  /// A 429: [VideoRequestNotifier.previewRetryAfterS] says for how long.
+  rateLimited,
+
+  /// A 503: no broker or no worker to render it.
+  unavailable,
+
+  /// Anything else: [VideoRequestNotifier.previewError] says what.
+  error,
+}
+
+/// How often a preview's status is polled.
+const kPreviewPollInterval = Duration(seconds: 2);
+
+/// Previews share a queue with other jobs (D5), so the wait for a worker can
+/// be minutes; past this the dialog stops waiting.
+const kPreviewPendingDeadline = Duration(minutes: 10);
+
+/// Past the server's 300 s job timeout, so a slow render that succeeds is
+/// never abandoned.
+const kPreviewRunningDeadline = Duration(minutes: 6);
+
+/// The settings a preview was made for; any change makes it out of date.
+typedef VideoPreviewSettings = ({int lengthS, String camera, int height});
+
+/// What the consent step interrupted, to resume once accepted.
+enum _ConsentFor { plan, submit, preview }
+
 enum VideoRequestPhase {
   loading,
 
@@ -195,13 +251,20 @@ class VideoRequestNotifier extends ChangeNotifier {
   /// `GET …/activities/{id}/track` through [client].
   final TrackFetcher? fetchTrack;
 
+  /// The preview deadlines' clock and poll wait; injectable for tests.
+  final DateTime Function() _now;
+  final Future<void> Function(Duration) _wait;
+
   VideoRequestNotifier({
     required this.ref,
     required this.activities,
     this.client,
     this.reveal,
     this.fetchTrack,
-  });
+    DateTime Function()? now,
+    Future<void> Function(Duration)? wait,
+  })  : _now = now ?? DateTime.now,
+        _wait = wait ?? ((d) => Future<void>.delayed(d));
 
   VideoRequestPhase phase = VideoRequestPhase.loading;
   VideoPlan? plan;
@@ -236,8 +299,8 @@ class VideoRequestNotifier extends ChangeNotifier {
   /// The consent geometry, once accepted. Memory only, this request only.
   Map<int, String>? _geometry;
 
-  /// Whether the consent step interrupted [submit] rather than [loadPlan].
-  bool _consentForSubmit = false;
+  /// What the consent step interrupted.
+  _ConsentFor _consentFor = _ConsentFor.plan;
 
   /// How many of [consentIds] have been fetched and decrypted, while
   /// [acceptConsent] runs; null otherwise.
@@ -245,6 +308,44 @@ class VideoRequestNotifier extends ChangeNotifier {
 
   /// How many decrypted tracks this request will send.
   int get consentedCount => _geometry?.length ?? 0;
+
+  VideoPreviewPhase previewPhase = VideoPreviewPhase.idle;
+
+  /// The last preview made, animated WebP; kept while another is made.
+  Uint8List? previewBytes;
+
+  /// The settings [previewBytes] was made for.
+  VideoPreviewSettings? previewSettings;
+
+  /// With [VideoPreviewPhase.rateLimited]: seconds until the next preview.
+  int? previewRetryAfterS;
+
+  /// With [VideoPreviewPhase.error].
+  String? previewError;
+
+  /// Bumped by each preview: an older poll loop sees it and stops.
+  int _previewGen = 0;
+
+  VideoPreviewSettings? get _settings {
+    final h = height;
+    return h == null ? null : (lengthS: lengthS, camera: camera, height: h);
+  }
+
+  /// A preview is shown but the length, camera or resolution changed since.
+  bool get previewOutOfDate =>
+      previewBytes != null && previewSettings != _settings;
+
+  bool get previewInFlight =>
+      previewPhase == VideoPreviewPhase.requesting ||
+      previewPhase == VideoPreviewPhase.pending ||
+      previewPhase == VideoPreviewPhase.running;
+
+  /// Previews are free (D3), so the monthly quota doesn't gate them.
+  bool get canPreview =>
+      (phase == VideoRequestPhase.ready ||
+          phase == VideoRequestPhase.quotaExceeded) &&
+      height != null &&
+      !previewInFlight;
 
   bool get canSubmit =>
       phase == VideoRequestPhase.ready &&
@@ -373,16 +474,145 @@ class VideoRequestNotifier extends ChangeNotifier {
       return;
     }
     _geometry = {...?_geometry, ...built.geometry};
-    if (_consentForSubmit) {
-      await submit();
-    } else {
-      await loadPlan();
+    switch (_consentFor) {
+      case _ConsentFor.submit:
+        await submit();
+      case _ConsentFor.plan:
+        await loadPlan();
+      case _ConsentFor.preview:
+        _set(VideoRequestPhase.ready);
+        await preview();
     }
   }
 
+  /// Declining ends the request, except for a preview: the dialog goes back
+  /// to its options and no preview is made.
   void declineConsent() {
+    if (_consentFor == _ConsentFor.preview) {
+      _setPreview(VideoPreviewPhase.idle);
+      _set(VideoRequestPhase.ready);
+      return;
+    }
     _geometry = null;
     _set(VideoRequestPhase.declined);
+  }
+
+  void _setPreview(VideoPreviewPhase p) {
+    if (_disposed) return;
+    previewPhase = p;
+    notifyListeners();
+  }
+
+  /// Requests a preview of the current settings with any consented geometry,
+  /// polls it until it is done or a deadline passes, then fetches it. A 409
+  /// asks for consent ([VideoRequestPhase.consentNeeded]); [acceptConsent]
+  /// then asks again.
+  Future<void> preview() async {
+    final settings = _settings;
+    if (settings == null || _disposed || !canPreview) return;
+    final gen = ++_previewGen;
+    bool stale() => _disposed || gen != _previewGen;
+    previewError = null;
+    previewRetryAfterS = null;
+    _setPreview(VideoPreviewPhase.requesting);
+    final int id;
+    try {
+      id = await createVideoPreview(
+          ref: ref,
+          lengthS: settings.lengthS,
+          height: settings.height,
+          camera: settings.camera,
+          geometry: _geometry,
+          client: client);
+    } catch (e) {
+      if (!stale()) _previewFailed(e);
+      return;
+    }
+    if (stale()) return;
+    _setPreview(VideoPreviewPhase.pending);
+    final queuedAt = _now();
+    DateTime? runningSince;
+    while (true) {
+      await _wait(kPreviewPollInterval);
+      if (stale()) return;
+      VideoJobStatus? s;
+      try {
+        s = await fetchVideoPreviewStatus(ref: ref, jobId: id, client: client);
+      } on ApiException catch (e) {
+        // A 4xx won't change by asking again; anything else may be a blip.
+        if (e.statusCode >= 400 && e.statusCode < 500) {
+          if (!stale()) _previewFailed(e);
+          return;
+        }
+      } catch (_) {
+        // Transient network hiccup — keep polling until a deadline.
+      }
+      if (stale()) return;
+      if (s != null) {
+        if (s.isFailed) return _setPreview(VideoPreviewPhase.failed);
+        if (s.isExpired) return _setPreview(VideoPreviewPhase.idle);
+        if (s.isDone) return _fetchPreview(id, settings, gen);
+        if (s.status == 'running') runningSince ??= _now();
+      }
+      final t = _now();
+      final since = runningSince;
+      if (since != null) {
+        if (t.difference(since) > kPreviewRunningDeadline) {
+          return _setPreview(VideoPreviewPhase.tooLong);
+        }
+        if (previewPhase != VideoPreviewPhase.running) {
+          _setPreview(VideoPreviewPhase.running);
+        }
+      } else if (t.difference(queuedAt) > kPreviewPendingDeadline) {
+        return _setPreview(VideoPreviewPhase.busy);
+      }
+    }
+  }
+
+  Future<void> _fetchPreview(
+      int id, VideoPreviewSettings settings, int gen) async {
+    final Uint8List bytes;
+    try {
+      bytes = await fetchVideoPreviewBytes(ref: ref, jobId: id, client: client);
+    } catch (_) {
+      if (_disposed || gen != _previewGen) return;
+      previewError = "Couldn't load the preview. Please try again.";
+      return _setPreview(VideoPreviewPhase.error);
+    }
+    if (_disposed || gen != _previewGen) return;
+    previewBytes = bytes;
+    previewSettings = settings;
+    _setPreview(VideoPreviewPhase.done);
+  }
+
+  /// A refused preview request. Its 409 carries the monthly video quota and
+  /// `available: true` whatever they are (previews are free and render on
+  /// another worker), so neither is read here.
+  void _previewFailed(Object e) {
+    if (e is ApiException) {
+      final consent = VideoConsentRequired.fromApiException(e);
+      if (consent != null) {
+        consentIds = consent.activityIds;
+        _consentFor = _ConsentFor.preview;
+        previewPhase = VideoPreviewPhase.idle;
+        _set(VideoRequestPhase.consentNeeded);
+        return;
+      }
+      final limited = VideoPreviewRateLimited.fromApiException(e);
+      if (limited != null) {
+        previewRetryAfterS = limited.retryAfterS;
+        return _setPreview(VideoPreviewPhase.rateLimited);
+      }
+      if (e.statusCode == 503) {
+        return _setPreview(VideoPreviewPhase.unavailable);
+      }
+      previewError = e.statusCode == 422
+          ? apiErrorDetail(e.body)
+          : 'Could not make the preview. Please try again.';
+    } else {
+      previewError = 'Could not make the preview. Please try again.';
+    }
+    _setPreview(VideoPreviewPhase.error);
   }
 
   void _fail(Object e, {required bool forSubmit}) {
@@ -400,7 +630,7 @@ class VideoRequestNotifier extends ChangeNotifier {
           return;
         }
         consentIds = consent.activityIds;
-        _consentForSubmit = forSubmit;
+        _consentFor = forSubmit ? _ConsentFor.submit : _ConsentFor.plan;
         _set(VideoRequestPhase.consentNeeded);
         return;
       }
