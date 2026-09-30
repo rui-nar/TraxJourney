@@ -161,6 +161,40 @@ Three rounds; all Fix now items fixed in the plan (overrides: R1-4, R1-6, R2-3).
 
 Reviewer: adversarial-reviewer (Fable). No findings, no envelope questions.
 
+## Integrated review, round 1 — 2026-09-30, feat/518-video-camera-quality at 0288f214 vs ca5355f3 (DELIVERY.md §5 point 2)
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
+
+Envelope question (to the user, not triaged): during `docker compose up -d` the API and worker-video are recreated separately; an old worker could briefly render a job stored with a new camera value as variable (silently). Is deploy ordering in scope (an ordering note would need an Upgrade-Note, which the DoD says isn't needed)?
+Owner answer (2026-09-30): accept it — the window is seconds long, around a deploy only, and yields a normal variable video; no Upgrade-Note.
+
+### F1-1 — In both fixed modes a clip with no followed sub-leg is parked at the clip centre at Z, so its legs and the marker can play off-screen
+- Trigger: Fixed zoom on a 30–60 s video of a multi-day trip; a day of legs each < 1 s (not followed) is aimed at the clip centre at Z → drives/marker outside the frame for the whole clip
+- Scores: trigger=concrete, impact=wrong-visible (triager: was degraded-ux), detect=user-visible, later=cheap, fix=M/local, confidence=verified
+- Decision: Fix now (D6) — approved by the user 2026-09-30
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
+
+### F1-2 — The Camera SegmentedButton's three segments don't fit the dialog on phones; 'Fixed zoom' wraps
+- Trigger: Android/iOS user on a 360–412 dp phone opens Create video → content ~232–284 dp → 'Fixed zoom' squeezed
+- Scores: trigger=concrete, impact=cosmetic (triager: was degraded-ux), detect=user-visible, later=cheap, fix=S/local, confidence=inferred
+- Decision: Fix now (D7) — approved by the user 2026-09-30
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
+
+### F1-3 — Overview mode puts route corners and the finale marker under the translucent HUD panels
+- Trigger: Overview render of a one-way diagonal trip → its end corner lies under the bottom-right counters panel
+- Scores: trigger=concrete (triager: was plausible), impact=cosmetic, detect=user-visible, later=cheap, fix=S/local, confidence=inferred
+- Decision: Fix now (D7) — approved by the user 2026-09-30
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
+
 ## Delivery
 
 Feature branch `feat/518-video-camera-quality` (from `plan/518-video-camera-quality` at 68d874f9). Split approved by the user 2026-09-29 without overrides. Gates G1 (after wave 1) and G2 (after wave 2) are owner-run benchmarks on the VPS.
