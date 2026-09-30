@@ -383,3 +383,184 @@ def test_geometry_round_trips_and_delete_is_idempotent(env):
     paths.delete_job_geometry(5)
     paths.delete_job_geometry(5)
     assert paths.read_job_geometry(env.uid, 5) is None
+
+
+# ── previews (docs/VIDEO_PREVIEW_PLAN.md D2, D5, D7) ─────────────────────────
+
+def _fake_preview_renderer(monkeypatch, *, raises=None, during=None):
+    """The preview renderer, faked; the video renderer must not be called."""
+    calls = []
+
+    def render_preview(*, job_id, user_info_id, project_id, request, out_path,
+                       geometry, progress):
+        calls.append(dict(job_id=job_id, geometry=geometry, request=request,
+                          out_path=Path(out_path)))
+        progress(0.5, "rendering")
+        Path(out_path).write_bytes(b"RIFF" + b"\x00" * 60)
+        if during is not None:
+            during(job_id)
+        if raises is not None:
+            raise raises
+        return Path(out_path)
+
+    def render_video(**_):
+        raise AssertionError("a preview must not run the video renderer")
+
+    monkeypatch.setattr(runner, "_preview_renderer", lambda: render_preview)
+    monkeypatch.setattr(runner, "_renderer", lambda: render_video)
+    return calls
+
+
+def _preview(env, status="pending", geometry=True, **kw) -> int:
+    return env.make_job(status=status, geometry=geometry, kind="preview", **kw)
+
+
+def test_a_preview_renders_a_webp_kept_an_hour_with_no_email(env, monkeypatch):
+    calls = _fake_preview_renderer(monkeypatch)
+    job_id = _preview(env)
+
+    runner.run_video_preview_job(job_id)
+
+    job = env.job(job_id)
+    assert job.status == "done" and job.progress == 1.0
+    assert Path(job.result_path) == runner.preview_result_path(env.uid, job_id)
+    assert Path(job.result_path).parent == paths.video_dir(env.uid, job_id)
+    assert Path(job.result_path).suffix == ".webp" and Path(job.result_path).exists()
+    assert job.expires_at == pytest.approx(job.completed_at + 3600)
+    assert calls[0]["geometry"] == {7: SECRET_LINE}
+    assert not _geometry_exists(env, job_id)
+    assert env.mail.sent == []
+
+
+@pytest.mark.parametrize("exc, reason", [
+    (ValueError(f"bad line {SECRET_LINE}"), runner.REASON_RENDER_FAILED),
+    (MemoryError(), runner.REASON_OUT_OF_MEMORY),
+])
+def test_a_failed_preview_stores_a_fixed_reason_and_sends_no_email(
+        env, monkeypatch, caplog, exc, reason):
+    _fake_preview_renderer(monkeypatch, raises=exc)
+    job_id = _preview(env)
+
+    with caplog.at_level(logging.DEBUG):
+        runner.run_video_preview_job(job_id)
+
+    job = env.job(job_id)
+    assert job.status == "failed" and job.error_message == reason
+    assert job.started_at is not None and job.completed_at is not None
+    assert SECRET_LINE not in caplog.text and "bad line" not in caplog.text
+    assert not _geometry_exists(env, job_id)
+    assert not paths.video_dir(env.uid, job_id).exists()
+    assert env.mail.sent == []
+
+
+def test_a_preview_failed_while_rendering_discards_it_and_sends_nothing(env, monkeypatch):
+    def sweep_meanwhile(job_id):
+        runner.mark_video_job_interrupted(job_id, runner.REASON_TIMED_OUT)
+
+    _fake_preview_renderer(monkeypatch, during=sweep_meanwhile)
+    job_id = _preview(env)
+
+    runner.run_video_preview_job(job_id)
+
+    job = env.job(job_id)
+    assert job.status == "failed" and job.result_path is None
+    assert not paths.video_dir(env.uid, job_id).exists()
+    assert env.mail.sent == []
+
+
+def test_an_interrupted_preview_is_failed_with_no_email(env):
+    job_id = _preview(env, status="running", started_at=time.time())
+
+    runner.mark_video_job_interrupted(job_id, "killed")
+
+    job = env.job(job_id)
+    assert job.status == "failed" and job.error_message == "killed"
+    assert not _geometry_exists(env, job_id)
+    assert env.mail.sent == []
+
+
+def test_a_killed_preview_work_horse_fails_its_job_with_no_email(env):
+    job_id = _preview(env, status="running", started_at=time.time())
+
+    worker_mod._work_horse_killed_handler(
+        _FakeRQJob((runner.run_video_preview_job, job_id)), 123, 9, None)
+
+    job = env.job(job_id)
+    assert job.status == "failed"
+    assert "preview" in job.error_message and "likely out of memory" in job.error_message
+    assert not _geometry_exists(env, job_id)
+    assert env.mail.sent == []
+
+
+def test_worker_startup_sweep_leaves_a_running_preview_alone(env):
+    video = env.make_job(status="running", started_at=time.time())
+    preview = _preview(env, status="running", started_at=time.time())
+
+    assert runner.sweep_stale_running_video_jobs() == 1
+
+    assert env.job(video).status == "failed"
+    assert env.job(preview).status == "running"
+    assert _geometry_exists(env, preview)
+    assert len(env.mail.sent) == 1  # the video's
+
+
+def test_hourly_sweep_fails_previews_by_their_own_age_with_no_email(env):
+    now = time.time()
+    old_running = _preview(env, status="running", started_at=now - 300 - 5 * 60 - 1)
+    young_running = _preview(env, status="running", started_at=now - 300 - 5 * 60 + 60)
+    old_pending = _preview(env, status="pending", created_at=now - 3600 - 1)
+    young_pending = _preview(env, status="pending", created_at=now - 3600 + 60)
+    # Full videos of the same ages keep the video limits.
+    video_running = env.make_job(status="running", started_at=now - 300 - 5 * 60 - 1)
+    video_pending = env.make_job(status="pending", created_at=now - 3600 - 1)
+
+    result = runner.sweep_video_jobs(now=now)
+
+    assert result["failed"] == 2
+    assert env.job(old_running).status == "failed"
+    assert env.job(old_running).error_message == runner.REASON_TIMED_OUT
+    assert env.job(old_pending).status == "failed"
+    assert env.job(old_pending).error_message == runner.REASON_NEVER_STARTED
+    assert not _geometry_exists(env, old_running)
+    assert not _geometry_exists(env, old_pending)
+    for job_id in (young_running, young_pending):
+        assert env.job(job_id).status in ("running", "pending")
+        assert _geometry_exists(env, job_id)
+    assert env.job(video_running).status == "running"
+    assert env.job(video_pending).status == "pending"
+    assert env.mail.sent == []
+
+
+def test_hourly_sweep_expires_a_preview_an_hour_after_it_was_done(env, monkeypatch):
+    _fake_preview_renderer(monkeypatch)
+    job_id = _preview(env)
+    runner.run_video_preview_job(job_id)
+    job = env.job(job_id)
+    assert Path(job.result_path).exists()
+
+    assert runner.sweep_video_jobs(now=job.completed_at + 3599)["expired"] == 0
+    assert runner.sweep_video_jobs(now=job.completed_at + 3601)["expired"] == 1
+
+    assert env.job(job_id).status == "expired"
+    assert not paths.video_dir(env.uid, job_id).exists()
+    assert env.mail.sent == []
+
+
+def test_the_video_runner_still_emails_for_a_video(env, monkeypatch):
+    """The preview branches key on the row's kind: a video keeps its emails
+    on success, failure, interruption and the hourly sweep."""
+    _fake_renderer(monkeypatch)
+    ok = env.make_job()
+    runner.run_video_job(ok)
+    _fake_renderer(monkeypatch, raises=ValueError("boom"))
+    bad = env.make_job()
+    runner.run_video_job(bad)
+    killed = env.make_job(status="running", started_at=time.time())
+    runner.mark_video_job_interrupted(killed, "killed")
+    stale = env.make_job(status="running", started_at=time.time() - runner.STALE_RUNNING_S - 1)
+    runner.sweep_video_jobs()
+
+    subjects = [m.subject for m in env.mail.sent]
+    assert subjects.count("Your video of My Trip is ready") == 1
+    assert subjects.count("Your video of My Trip could not be made") == 3
+    assert env.job(stale).status == "failed"

@@ -6,6 +6,10 @@ Routes:
     GET  /api/projects/{name}/video/{job_id}           — poll job status
     GET  /api/projects/{name}/video/{job_id}/download  — the MP4 (range requests)
 
+    POST /api/projects/{name}/video/preview                  — start a preview job
+    GET  /api/projects/{name}/video/preview/{job_id}         — poll preview status
+    GET  /api/projects/{name}/video/preview/{job_id}/bytes   — the animated WebP
+
     GET  /api/video/{token}                            — poll job status (unauthenticated)
     GET  /api/video/{token}/download                   — the MP4 (unauthenticated)
 
@@ -24,12 +28,20 @@ three differences that matter:
   availability and the requester's quota are settled first. That plaintext is checked here, written only to the
   job's ``geometry.json`` after the row commits, and never logged, stored in
   the row or echoed in an error (Convention 2).
+
+Previews (docs/VIDEO_PREVIEW_PLAN.md) are video jobs of ``kind='preview'``,
+reached only through the ``/video/preview`` routes: the full-video routes,
+the token routes and the monthly quota never see them. They are free, and
+limited instead to ``PREVIEWS_PER_HOUR`` per requester (D6, 429 with
+``Retry-After``); they run on the ``default`` queue (D5) and have no token
+and no email (D7).
 """
 from __future__ import annotations
 
 import json
 import math
 import shutil
+import time
 import uuid
 from pathlib import Path
 from typing import Annotated, Dict, List, Literal, Optional
@@ -48,18 +60,26 @@ from src.billing.entitlements import (
     ensure_video_quota,
     limits_for,
     plan_for,
+    preview_slot_frees_at,
+    previews_in_last_hour,
     quotas_enforced,
     videos_this_month,
 )
 from src.billing.plans import FULL_HD_HEIGHT
 from src.billing.subscriptions import lock_account
 from src.exceptions.errors import QuotaExceeded
-from src.jobs.queue import QUEUE_VIDEO, enqueue, queue_has_workers
+from src.jobs.queue import QUEUE_DEFAULT, QUEUE_VIDEO, enqueue, queue_has_workers
 from src.models.project import Project
 from src.project.project_repo import ProjectRepo
 from src.utils.logging import get_logger
 from src.video import paths
-from src.video.job_runner import JOB_TIMEOUT_S, fail_unqueued_video_job, run_video_job
+from src.video.job_runner import (
+    JOB_TIMEOUT_S,
+    PREVIEW_JOB_TIMEOUT_S,
+    fail_unqueued_video_job,
+    run_video_job,
+    run_video_preview_job,
+)
 from src.video.legs import is_encrypted_activity
 from src.video.pacing import group_clips, max_clips
 from src.video.timeline import NothingToAnimate, Timeline, timeline_for_project
@@ -73,6 +93,8 @@ _repo = ProjectRepo()
 LENGTHS = (30, 60, 90)                      # D11
 HEIGHTS = (720, 1080)                       # D10
 WIDTH_FOR_HEIGHT = {720: 1280, 1080: 1920}  # 16:9 (D8)
+#: Previews one requester may start in a rolling hour (VIDEO_PREVIEW_PLAN D6).
+PREVIEWS_PER_HOUR = 10
 
 VideoLength = Literal[30, 60, 90]
 VideoHeight = Literal[720, 1080]
@@ -166,6 +188,11 @@ class JobStatusOut(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _now() -> float:
+    """The clock the preview rate limit reads. Tests replace it."""
+    return time.time()
+
+
 def ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None
 
@@ -233,8 +260,8 @@ def _unprocessable(detail: str) -> HTTPException:
 
 
 def _consent(project: Project, geometry: Optional[Dict[int, str]], *,
-             quota: QuotaOut, available: bool,
-             require: bool = True) -> tuple[Dict[int, str], List[int]]:
+             quota: QuotaOut, available: bool, require: bool = True,
+             extra: Optional[dict] = None) -> tuple[Dict[int, str], List[int]]:
     """The consent geometry to render with, checked before any timeline, and
     the encrypted activities still without one.
 
@@ -242,8 +269,8 @@ def _consent(project: Project, geometry: Optional[Dict[int, str]], *,
     only for activities that are in this trip *and* encrypted (422
     otherwise); with *require*, 409 ``consent_required`` while any encrypted
     activity has none — its body carries *quota* and *available* so the
-    client can tell before asking. Error details name activity ids only,
-    never the geometry.
+    client can tell before asking, plus any *extra* fields. Error details
+    name activity ids only, never the geometry.
     """
     geometry = geometry or {}
     too_long = sorted(k for k, v in geometry.items() if len(v) > MAX_LINE_CHARS)
@@ -291,6 +318,7 @@ def _consent(project: Project, geometry: Optional[Dict[int, str]], *,
             "consent_required": missing,
             "quota": quota.model_dump(),
             "available": available,
+            **(extra or {}),
         })
     return geometry, missing
 
@@ -303,16 +331,22 @@ def _timeline(project: Project, length_s: int, geometry: Dict[int, str]) -> Time
                             detail="Nothing in this trip can be animated")
 
 
-def _get_owned_job(sess, job_id: int, requester: int, project_id: int) -> DBVideoJob:
+def _get_owned_job(sess, job_id: int, requester: int, project_id: int,
+                   kind: str = "video") -> DBVideoJob:
+    """The requester's job of *kind* under this trip; 404 for anything else,
+    so a preview id is unknown to the video routes and the other way round."""
     job = sess.get(DBVideoJob, job_id)
-    if job is None or job.user_info_id != requester or job.project_id != project_id:
+    if (job is None or job.user_info_id != requester or job.project_id != project_id
+            or job.kind != kind):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video job not found")
     return job
 
 
 def _get_job_by_token(sess, token: str) -> DBVideoJob:
-    """Same 404 as an unknown job id, whether the token is wrong or missing."""
-    job = sess.exec(select(DBVideoJob).where(DBVideoJob.download_token == token)).first()
+    """Same 404 as an unknown job id, whether the token is wrong or missing.
+    Full videos only: a preview has no token, and never matches one."""
+    job = sess.exec(select(DBVideoJob).where(DBVideoJob.download_token == token,
+                                             DBVideoJob.kind == "video")).first()
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video job not found")
     return job
@@ -326,12 +360,42 @@ def _status(job: DBVideoJob) -> dict:
 def _file_response(job: DBVideoJob) -> FileResponse:
     """The MP4 of a done job; Starlette's FileResponse answers Range requests,
     so a player can seek and a download can resume."""
+    return FileResponse(_ready_file(job), media_type="video/mp4",
+                        filename=f"traxjourney-video-{job.id}.mp4")
+
+
+def _ready_file(job: DBVideoJob) -> str:
+    """The result file of a done job; 404 when not done (or expired) or gone."""
     if job.status != "done":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not ready")
     if not job.result_path or not Path(job.result_path).exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
-    return FileResponse(job.result_path, media_type="video/mp4",
-                         filename=f"traxjourney-video-{job.id}.mp4")
+    return job.result_path
+
+
+def _ensure_preview_slot(sess, requester: int) -> None:
+    """429 while the requester has ``PREVIEWS_PER_HOUR`` counting previews
+    (D6). ``Retry-After`` is when the first slot frees, from the one counting
+    rule in ``src.billing.entitlements`` read at a single instant; it is also
+    in the body, since a browser app on another origin can't read the header.
+    """
+    now = _now()
+    frees_at = preview_slot_frees_at(sess, requester, now, limit=PREVIEWS_PER_HOUR)
+    if frees_at is None:
+        return
+    retry_after = max(1, math.ceil(frees_at - now))
+    raise HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail={"code": "preview_rate_limited",
+                "message": f"You can make {PREVIEWS_PER_HOUR} previews an hour. "
+                           f"Please try again later.",
+                "limit": PREVIEWS_PER_HOUR,
+                "retry_after_s": retry_after},
+        headers={"Retry-After": str(retry_after)})
+
+
+def _previews_left(sess, requester: int) -> int:
+    return max(0, PREVIEWS_PER_HOUR - previews_in_last_hour(sess, requester, _now()))
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -477,6 +541,100 @@ def download_video(
         row = resolve_project(sess, requester, name, owner)
         job = _get_owned_job(sess, job_id, requester, row.id)
     return _file_response(job)
+
+
+# ── Previews (docs/VIDEO_PREVIEW_PLAN.md) ────────────────────────────────────
+
+@router.post("/{name}/video/preview", status_code=status.HTTP_201_CREATED,
+             response_model=JobIdOut, summary="Start a low-resolution trip video preview")
+def create_video_preview_job(
+    name: str,
+    body: VideoRequest,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    owner: OwnerParam = None,
+):
+    """Create a preview job and queue it on the ``default`` worker (D5).
+
+    The body is ``POST /video``'s; ``height`` is the resolution of the video
+    the preview frames like, not checked against the plan, and no quota is
+    spent (D3). In this order, so nothing is written unless the job can run
+    and an over-limit request costs no consent or timeline work:
+    broker and a ``default`` worker (503) → the hourly rate limit (429) →
+    consent (409, carrying ``previews_left``) → timeline (422) → one
+    transaction whose first write locks the requester's account, then the
+    authoritative rate limit (429) and the row → consent geometry file →
+    enqueue (a failure fails the row, deletes the geometry, 503).
+    """
+    requester = int(current_user["sub"])
+    if not queue_has_workers(QUEUE_DEFAULT):
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail="Previews are not available right now")
+
+    with get_session() as sess:
+        row, project = _load(sess, requester, name, owner)
+        project_id = row.id
+        _ensure_preview_slot(sess, requester)
+        geometry, _ = _consent(project, body.decrypted_geometry,
+                               quota=_quota(sess, requester), available=True,
+                               extra={"previews_left": _previews_left(sess, requester)})
+        _timeline(project, body.length_s, geometry)
+
+    request = {"length_s": body.length_s, "camera": body.camera,
+               "width": WIDTH_FOR_HEIGHT[body.height], "height": body.height}
+    with get_session() as sess:
+        # As for a video: the lock serialises this requester's concurrent
+        # POSTs, so the count below sees every preview a racing one committed.
+        lock_account(sess, requester)
+        _ensure_preview_slot(sess, requester)
+        job = DBVideoJob(project_id=project_id, user_info_id=requester, kind="preview",
+                         status="pending", request_json=json.dumps(request))
+        sess.add(job)
+        sess.commit()
+        job_id = job.id
+
+    try:
+        if geometry:
+            paths.write_job_geometry(requester, job_id, geometry)
+        queued = enqueue(QUEUE_DEFAULT, run_video_preview_job, job_id, max_retries=0,
+                         allow_inline=False, job_timeout=PREVIEW_JOB_TIMEOUT_S)
+    except BaseException:
+        fail_unqueued_video_job(job_id)
+        raise
+    if not queued:
+        fail_unqueued_video_job(job_id)
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail="Previews are not available right now")
+    return {"job_id": job_id}
+
+
+@router.get("/{name}/video/preview/{job_id}", response_model=JobStatusOut,
+            summary="Get video preview job status")
+def get_video_preview_status(
+    name: str,
+    job_id: int,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    owner: OwnerParam = None,
+):
+    requester = int(current_user["sub"])
+    with get_session() as sess:
+        row = resolve_project(sess, requester, name, owner)
+        return _status(_get_owned_job(sess, job_id, requester, row.id, kind="preview"))
+
+
+@router.get("/{name}/video/preview/{job_id}/bytes", summary="The video preview (animated WebP)")
+def get_video_preview_bytes(
+    name: str,
+    job_id: int,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    owner: OwnerParam = None,
+):
+    """The WebP once done. 404 when the preview is unknown, someone else's,
+    not done (or expired), or its file is gone."""
+    requester = int(current_user["sub"])
+    with get_session() as sess:
+        row = resolve_project(sess, requester, name, owner)
+        job = _get_owned_job(sess, job_id, requester, row.id, kind="preview")
+    return FileResponse(_ready_file(job), media_type="image/webp")
 
 
 # ── Public (token-based) routes ──────────────────────────────────────────────
