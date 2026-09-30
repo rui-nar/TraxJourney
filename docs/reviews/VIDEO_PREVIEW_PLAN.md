@@ -72,3 +72,43 @@ Owner answer (2026-09-30): 8 fps with nearest-frame sampling.
 - Guard: —
 - Override: user: Fix now — small, cheap fixes worth making before the preview ships
 - Outcome: fixed in plan (D5 reason corrected; U4 shows waiting vs rendering)
+
+## Round 2 — 2026-09-30, reviewed 88295660..feaaf959
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
+
+### R2-1 — U1 still specifies the round-1 rate-limit count, so D6's 15-minute rule has no unit implementing it
+- Trigger: U1 implements the old count → a lost preview counts for the hour; U3 expects the new rule but entitlements.py is outside its scope
+- Scores: trigger=concrete, impact=maintainability (triager: was wrong-visible), detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed in plan (U1 Do 4 and acceptance implement the 15-minute rule)
+
+### R2-2 — 'A FrameRenderer fed with those shots' leaves the frame state sampled at n/30 s, not at the sampled video frame
+- Trigger: U2 feeds shots to a FrameRenderer → marker, route progress, HUD and card fade at video time n/30 s under the camera of frame round(n×30/8)
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed in plan (U2: state sampled at round(n×30/8)/30 with the shot; FrameRenderer renders explicit (shot, state) pairs; state test)
+
+### R2-3 — U2's 'frame matches the video's frame downscaled' test can't pass (different tile bands, overlay size clamps), so it would be loosened
+- Trigger: U2 writes the test with fake_tile → every frame fails the golden tolerance
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed in plan (U2: pixel test against a direct 320×180 render of the same (shot, state), not a downscaled video frame)
+
+### R2-4 — The dialog gives up on a running preview at 3 min while the server allows 5 min
+- Trigger: slow render under load passes 3 min → dialog says 'took too long', the job finishes unseen and still counts; the retry repeats it
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: G1 or val logs show a preview running > 120 s; the budget is raised or fps falls back; a 'took too long' then duplicate render is reported; #520 changes the job timeout
+- Guard: —
+- Override: user: Fix now — client and server must agree on when a preview has failed
+- Outcome: fixed in plan (U4: running deadline 6 min, past the 300 s job timeout)
