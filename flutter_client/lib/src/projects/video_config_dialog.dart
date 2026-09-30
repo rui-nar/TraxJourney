@@ -1,6 +1,7 @@
 /// Dialog for requesting a trip video (docs/TRIP_VIDEO_PLAN.md, U7): pick a
-/// length (30/60/90 s, D11) and a resolution the plan allows (D10), see the
-/// monthly quota (D3), then create. Renders a [VideoRequestNotifier] and runs
+/// length (30/60/90 s, D11), a resolution the plan allows (D10) and a camera
+/// (docs/VIDEO_CAMERA_QUALITY_PLAN.md, D1), see the monthly quota (D3), then
+/// create. Renders a [VideoRequestNotifier] and runs
 /// its consent step (D2) through [showVideoConsentDialog].
 ///
 /// Pops itself when the job has started (handing the id to [onStarted]) or
@@ -249,6 +250,35 @@ class _VideoConfigDialogState extends State<VideoConfigDialog> {
               style: theme.textTheme.bodySmall),
         ],
         const SizedBox(height: 16),
+        Text('Camera', style: theme.textTheme.titleSmall),
+        const SizedBox(height: 8),
+        RadioGroup<String>(
+          groupValue: _n.cameraChoice,
+          onChanged: (v) {
+            if (v != null) _n.setCamera(v);
+          },
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final (value, label, desc) in _cameras)
+                RadioListTile<String>(
+                  value: value,
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(label),
+                  subtitle: Text(desc, style: theme.textTheme.bodySmall),
+                ),
+            ],
+          ),
+        ),
+        if (_n.cameraChoice == 'fixed')
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: Text('Zoom out for flights and long legs',
+                style: theme.textTheme.bodyMedium),
+            value: _n.fixedZoomOut,
+            onChanged: _n.setFixedZoomOut,
+          ),
+        const SizedBox(height: 16),
         Text(_quotaLine(quota), style: theme.textTheme.bodyMedium),
         if (plan.skipped > 0) ...[
           const SizedBox(height: 4),
@@ -281,6 +311,14 @@ class _VideoConfigDialogState extends State<VideoConfigDialog> {
       ],
     );
   }
+
+  /// Camera choices: the notifier's value, the title and the one-line
+  /// description shown under it.
+  static const _cameras = [
+    ('variable', 'Follow', 'Zooms in and out to follow each leg.'),
+    ('overview', 'Overview', 'Shows the whole trip; only the marker moves.'),
+    ('fixed', 'Fixed zoom', 'Follows the route at one zoom level.'),
+  ];
 
   static String _clips(int n) => '$n clip${n == 1 ? '' : 's'}';
 
