@@ -805,6 +805,40 @@ def test_fixed_strict_follows_the_flight_at_the_one_zoom():
     assert frames and max(m for m, _, _ in steps) * FPS <= FIXED_MAX_PAN_PER_S + 1e-9
 
 
+def _walks_then_a_day_of_short_rides():
+    """Four walks (Z = 14), then a day of ten joined rides, each under
+    FOLLOW_MIN_S at 30 s, spanning 0.6° — seven frame widths at Z."""
+    d = date(2026, 5, 1)
+    specs = [(*_walk(6.0 + 0.1 * i, 45.0), d + timedelta(days=i)) for i in range(4)]
+    specs += [("ride", (6.0 + 0.06 * k, 45.0 + 0.018 * k),
+               (6.06 + 0.06 * k, 45.0 + 0.018 * (k + 1)), 1800, d + timedelta(days=4), 23)
+              for k in range(10)]           # 23 points: sin(22) ≈ 0, so the rides join up
+    return build_timeline(_legset(specs), 30)
+
+
+@pytest.mark.parametrize("mode", FIXED_MODES)
+def test_fixed_modes_follow_the_marker_on_legs_too_short_to_follow(mode):
+    """F1-1: a clip of sub-legs not followed is not parked at its centre at
+    Z (where its legs play off-screen): the marker stays in the frame, and
+    the frames are at Z."""
+    tl = _walks_then_a_day_of_short_rides()
+    z = fixed_zoom(tl, HD, mode)
+    clip = tl.clips[4]
+    assert not any(is_followed(sub) for sub in clip.subs)
+    wide = cam._fit([lonlat_to_world(*p) for sub in clip.subs for p in sub.leg.coords], HD, 1.0)
+    assert wide[2] < z - 1                             # the clip is wider than the frame
+    path = camera_path(tl, FPS, HD, mode)
+    checked = 0
+    for n, shot in enumerate(path):
+        state = tl.sample(n / FPS)
+        if state.kind != "clip" or state.clip_index != 4 or shot.flying:
+            continue
+        assert _marker_offset(shot, state, HD) < 0.5, n
+        assert shot.zoom == z, n
+        checked += 1
+    assert checked > 0.8 * clip.duration_s * FPS
+
+
 @pytest.mark.parametrize("mode", FIXED_MODES)
 @pytest.mark.parametrize("total", [30, 90])
 def test_a_year_long_trip_stays_within_the_tile_budget(mode, total):

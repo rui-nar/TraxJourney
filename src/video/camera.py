@@ -79,6 +79,12 @@ PAN_WINDOW_S = 2.0 / SPRING_OMEGA
 # The search for the fixed zoom runs from FIXED_TOP_ZOOM down to the mode's
 # floor (see :func:`fixed_floor`).
 FIXED_TOP_ZOOM = 14
+# Fixed zoom: a run of sub-legs too short to follow is still chased when its
+# clip is wider than the frame, if the marker moves at most this many frame
+# widths or heights per second (a tenth of the frame per frame at 30 fps,
+# what the camera may move while following) and jumps a gap no more often
+# than once a transition.
+CHASE_MAX_PAN_PER_S = 3.0
 FIXED_FLOOR: Dict[str, int] = {"fixed": 4, "fixed_strict": 2}
 
 # basemap_bands' sheet planning, duplicated for :func:`estimate_tiles`: that
@@ -232,8 +238,35 @@ def is_followed(sub: TimedLeg) -> bool:
 Aim = Tuple[Optional[Tuple[float, float]], float, bool]
 
 
-def _clip_aims(clip: TimedClip, size: Size,
-               fixed: Optional[Tuple[int, Sequence[bool]]] = None) -> List[Aim]:
+def _can_chase(steps: Sequence[float], zoom: float, fps: int) -> bool:
+    """Whether the camera can follow a marker making these per-frame *steps*
+    (in frame widths or heights at zoom 0, as :func:`_off_frame`) at *zoom*
+    without jumping: every step within :data:`CHASE_MAX_PAN_PER_S`, or a gap
+    over :data:`CUT`, flown across, at least a transition after the last."""
+    ramp = max(1, int(round(TRANSITION_S * fps)))
+    last = -ramp
+    for n, step in enumerate(steps):
+        step *= 2.0 ** zoom
+        if step > CUT:
+            if n - last < ramp:
+                return False
+            last = n
+        elif step > CHASE_MAX_PAN_PER_S / fps:
+            return False
+    return True
+
+
+class _Fixed(NamedTuple):
+    """A clip's framing at fixed zoom *z*: which of its sub-legs are fast,
+    and each sub-leg's marker steps into its frames (see :func:`_marker_steps`)
+    on a *fps* clock."""
+    z: int
+    fast: Sequence[bool]
+    steps: Sequence[Sequence[float]]
+    fps: int
+
+
+def _clip_aims(clip: TimedClip, size: Size, fixed: Optional[_Fixed] = None) -> List[Aim]:
     """Per sub-leg of *clip*: where the camera aims — None for the marker,
     else a fixed world point — its zoom level, and whether it is framed as a
     fast sub-leg.
@@ -244,20 +277,25 @@ def _clip_aims(clip: TimedClip, size: Size,
     start of the next followed sub-leg (else the end of the previous one) at
     that one's level, so it neither pulses the zoom nor forces a fly-to.
 
-    With *fixed* = (Z, fast per sub-leg), every level is Z, and the whole
-    clip is shown at Z too, except a fast sub-leg's (and a short run's
-    holding one), which is the clip's fit zoom without the mode floor."""
-    cx, cy, fit = _fit([lonlat_to_world(lon, lat) for sub in clip.subs
-                        for lon, lat in sub.leg.coords], size, CLIP_FILL)
+    With *fixed*, every level is Z except a fast sub-leg's (and a short
+    run's holding one), which is the clip's fit zoom without the mode floor.
+    When the clip doesn't fit in :data:`OVERVIEW_FILL` of the frame at Z, a
+    run not followed chases the marker at its level instead, rather than
+    leave it off-screen — unless it moves too fast or jumps too often to
+    chase (:func:`_can_chase`)."""
+    points = [lonlat_to_world(lon, lat) for sub in clip.subs for lon, lat in sub.leg.coords]
+    cx, cy, fit = _fit(points, size, CLIP_FILL)
     followed = [is_followed(sub) for sub in clip.subs]
     if fixed is None:
         level = [min(MAX_ZOOM, max(fit, mode_min_zoom(sub.leg.mode))) for sub in clip.subs]
         fast: Sequence[bool] = [False] * len(clip.subs)
         whole = fit
+        chase = False
     else:
-        z, fast = fixed
-        level = [fit if f else float(z) for f in fast]
-        whole = float(z)
+        fast = fixed.fast
+        level = [fit if f else float(fixed.z) for f in fast]
+        whole = float(fixed.z)
+        chase = _fit(points, size, OVERVIEW_FILL)[2] < fixed.z
     aims: List[Aim] = []
     i = 0
     while i < len(clip.subs):
@@ -278,6 +316,9 @@ def _clip_aims(clip: TimedClip, size: Size,
         else:
             aim = (lonlat_to_world(*clip.subs[before].leg.coords[-1]), level[before],
                    fast[before])
+        if chase and _can_chase([step for k in range(i, j) for step in fixed.steps[k]],
+                                aim[1], fixed.fps):
+            aim = (None, aim[1], aim[2])
         aims.extend([aim] * (j - i))
         i = j
     return aims
@@ -448,10 +489,32 @@ def _fixed_path(timeline: Timeline, fps: int, size: Size, mode: str, z: int) -> 
     """The path at fixed zoom *z*: in ``"fixed"`` the sub-legs fast at *z*
     are framed at their clip's fit, in ``"fixed_strict"`` none are."""
     speeds = _pan_speeds(timeline, size)
-    aims = [_clip_aims(clip, size, (z, [
+    steps = _marker_steps(timeline, fps, size)
+    aims = [_clip_aims(clip, size, _Fixed(z, [
         mode == "fixed" and _is_fast(speeds.get((clip.index, k), 0.0), z)
-        for k in range(len(clip.subs))])) for clip in timeline.clips]
+        for k in range(len(clip.subs))], [steps.get((clip.index, k), ())
+                                          for k in range(len(clip.subs))], fps))
+            for clip in timeline.clips]
     return _follow(timeline, fps, size, aims)
+
+
+@lru_cache(maxsize=4)
+def _marker_steps(timeline: Timeline, fps: int, size: Size) -> Dict[Tuple[int, int], Tuple[float, ...]]:
+    """Per sub-leg, keyed (clip index, sub index): how far the marker moves
+    into each of its frames from the frame before, in frame widths or heights
+    (whichever is more) at zoom 0 — times ``2 ** z`` at zoom z. A clip's
+    first frame has none: the camera flies to it."""
+    samples = _samples(timeline, fps)
+    points = [lonlat_to_world(s.lon, s.lat) for s in samples]
+    out: Dict[Tuple[int, int], List[float]] = {}
+    for n in range(1, len(samples)):
+        a, b = samples[n - 1], samples[n]
+        if b.kind != "clip" or a.kind != "clip" or a.clip_index != b.clip_index:
+            continue
+        (ax, ay), (bx, by) = points[n - 1], points[n]
+        step = max(abs(bx - ax) * TILE_SIZE / size[0], abs(by - ay) * TILE_SIZE / size[1])
+        out.setdefault((b.clip_index, b.sub_index), []).append(step)
+    return {key: tuple(v) for key, v in out.items()}
 
 
 def fixed_zoom(timeline: Timeline, size: Size, mode: str) -> int:
