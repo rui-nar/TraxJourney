@@ -12,6 +12,7 @@ from __future__ import annotations
 import bisect
 import colorsys
 import functools
+import itertools
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -19,7 +20,14 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from src.poster.typography import FontStack, load_emoji_face, load_face, split_runs
-from src.video.camera import TILE_SIZE, Shot, lonlat_to_world
+from src.video.camera import (
+    TILE_SIZE,
+    Shot,
+    frame_count,
+    lonlat_to_world,
+    overview,
+    world_to_lonlat,
+)
 from src.video.timeline import FrameState, Timeline
 
 Size = Tuple[int, int]
@@ -66,6 +74,14 @@ _SPRITE_SS = 4
 
 # A card fades over this long: the title out as it ends, the end card in.
 CARD_FADE_S = 0.5
+
+# The HUD panels, and the corners they sit in outside overview mode. In
+# overview mode the whole trip is on screen for the whole video, so the panels
+# go, once for the whole video, to the corners the route leaves clearest
+# (docs/reviews/VIDEO_CAMERA_QUALITY_PLAN.md F1-3).
+_HUD_ROLES = ("date", "speed", "counters")
+_DEFAULT_HUD = ("tl", "bl", "br")
+_CORNERS = ("tl", "bl", "br", "tr")
 
 _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
@@ -312,7 +328,8 @@ class _Card:
 class Overlay:
     """Draws one frame's overlay onto its basemap. Built once per render."""
 
-    def __init__(self, timeline: Timeline, size: Size, title: str) -> None:
+    def __init__(self, timeline: Timeline, size: Size, title: str,
+                 camera: str = "variable") -> None:
         self.timeline = timeline
         self.size = size
         w, h = size
@@ -326,6 +343,12 @@ class Overlay:
         self.hud_px = max(8, round(h * 0.032))
         self.hud = _stack("bold", self.hud_px)
         self.hud_small = _stack("regular", max(7, round(h * 0.027)))
+        # Each panel's corner, and whether the route and marker are drawn over
+        # the panels (overview mode, when no layout keeps clear of them).
+        self.hud_corners: Dict[str, str] = dict(zip(_HUD_ROLES, _DEFAULT_HUD))
+        self.route_over_hud = False
+        if camera == "overview":
+            self.hud_corners, self.route_over_hud = self._overview_hud()
         self.title_card = self._title_card(title)
         self.end_card = self._end_card(title)
 
@@ -437,10 +460,8 @@ class Overlay:
         sprite = _marker(state.mode, self.marker_d)
         frame.paste(sprite, (round(x - sprite.width / 2), round(y - sprite.height / 2)), sprite)
 
-    def _panel(self, frame: Image.Image, rows: Sequence[Tuple[Optional[str], str, FontStack]],
-               anchor: str) -> None:
-        """A translucent rounded panel of rows (optional icon, text), at the
-        frame corner *anchor* ("tl", "bl", "br")."""
+    def _panel_size(self, rows: Sequence[Tuple[Optional[str], str, FontStack]]):
+        """(width, height, padding, gap, row heights) of a panel of *rows*."""
         pad = max(3, round(self.hud_px * 0.45))
         gap = max(2, round(self.hud_px * 0.3))
         heights = [round(s.size_px * 1.25) for _, _, s in rows]
@@ -448,6 +469,21 @@ class Overlay:
                   for (icon, text, s), h in zip(rows, heights)]
         pw = round(max(widths)) + 2 * pad
         ph = sum(heights) + gap * (len(rows) - 1) + 2 * pad
+        return pw, ph, pad, gap, heights
+
+    def _panel_rect(self, corner: str, pw: int, ph: int) -> Tuple[int, int, int, int]:
+        """(left, top, right, bottom) of a *pw* × *ph* panel in *corner*."""
+        w, h = self.size
+        m = self.margin
+        px = m if corner[1] == "l" else w - m - pw
+        py = m if corner[0] == "t" else h - m - ph
+        return px, py, px + pw, py + ph
+
+    def _panel(self, frame: Image.Image, rows: Sequence[Tuple[Optional[str], str, FontStack]],
+               anchor: str) -> None:
+        """A translucent rounded panel of rows (optional icon, text), at the
+        frame corner *anchor* ("tl", "tr", "bl", "br")."""
+        pw, ph, pad, gap, heights = self._panel_size(rows)
         patch = _panel_patch(pw, ph, pad).copy()
         y = pad
         for (icon, text, stack), h in zip(rows, heights):
@@ -458,20 +494,100 @@ class Overlay:
                 x += h + gap
             _draw_text(patch, (x, y + (h - stack.size_px * 1.15) / 2), text, stack, _TEXT)
             y += h + gap
-        w, h = self.size
-        m = self.margin
-        px = m if anchor[1] == "l" else w - m - pw
-        py = m if anchor[0] == "t" else h - m - ph
-        frame.paste(patch, (px, py), patch)
+        frame.paste(patch, self._panel_rect(anchor, pw, ph)[:2], patch)
+
+    def _hud_rows(self, state: FrameState) -> Dict[str, list]:
+        """Each HUD panel's rows in *state*; a panel without rows isn't drawn."""
+        return {
+            "date": [(None, state.date_label, self.hud)] if state.date_label else [],
+            "speed": [(state.mode, format_speed(state.speed_kmh), self.hud)],
+            "counters": [(m, format_km(state.km_by_mode[m]), self.hud_small)
+                         for m in self.modes if state.km_by_mode.get(m, 0.0) >= 0.05],
+        }
 
     def _draw_hud(self, frame: Image.Image, state: FrameState) -> None:
-        if state.date_label:
-            self._panel(frame, [(None, state.date_label, self.hud)], "tl")
-        self._panel(frame, [(state.mode, format_speed(state.speed_kmh), self.hud)], "bl")
-        rows = [(m, format_km(state.km_by_mode[m]), self.hud_small)
-                for m in self.modes if state.km_by_mode.get(m, 0.0) >= 0.05]
-        if rows:
-            self._panel(frame, rows, "br")
+        for role, rows in self._hud_rows(state).items():
+            if rows:
+                self._panel(frame, rows, self.hud_corners[role])
+
+    # ── overview HUD layout ──────────────────────────────────────────────────
+
+    def _clip_states(self) -> List[FrameState]:
+        """Every clip frame's state, sampled as ``renderer.FrameRenderer``
+        samples them."""
+        fps = self.timeline.fps
+        states = (self.timeline.sample(n / fps) for n in range(frame_count(self.timeline, fps)))
+        return [s for s in states if s.kind == "clip"]
+
+    def _panel_extents(self, states: Sequence[FrameState]) -> Dict[str, Tuple[int, int]]:
+        """Each panel's largest width and height over *states*: anchored in
+        one corner, every frame's panel lies inside it. (0, 0) if never drawn."""
+        out: Dict[str, Tuple[int, int]] = {role: (0, 0) for role in _HUD_ROLES}
+        seen = set()
+        for state in states:
+            for role, rows in self._hud_rows(state).items():
+                key = (role, tuple((icon, text) for icon, text, _ in rows))
+                if not rows or key in seen:
+                    continue
+                seen.add(key)
+                pw, ph = self._panel_size(rows)[:2]
+                out[role] = (max(out[role][0], pw), max(out[role][1], ph))
+        return out
+
+    def hud_rects(self) -> Dict[str, Tuple[int, int, int, int]]:
+        """Each panel's (left, top, right, bottom) extent over the whole video,
+        in its corner: every clip frame's panel lies inside it."""
+        extents = self._panel_extents(self._clip_states())
+        return {role: self._panel_rect(self.hud_corners[role], *extents[role])
+                for role in _HUD_ROLES}
+
+    def overview_shot(self) -> Shot:
+        """The overview camera's one shot, as ``camera.camera_path`` makes it."""
+        x, y, z = overview(self.timeline, self.size)
+        return Shot(*world_to_lonlat(x, y), z, False)
+
+    def _overview_hud(self) -> Tuple[Dict[str, str], bool]:
+        """The panels' corners in overview mode, chosen once for the whole
+        video so they never jump: the three corners whose panels cover least
+        of the whole route and of every clip frame's marker at the overview
+        shot, in pixels. Ties go to the layout moving fewest panels from their
+        usual corners, so today's layout wins whenever it is as clear as any.
+        When every layout covers some, the route and the marker are drawn over
+        the panels (the second value)."""
+        shot = self.overview_shot()
+        scale = TILE_SIZE * 2 ** shot.zoom
+        cx, cy = lonlat_to_world(shot.lon, shot.lat)
+        ox, oy = self.size[0] / 2 - cx * scale, self.size[1] / 2 - cy * scale
+        footprint = Image.new("L", self.size, 0)
+        draw = ImageDraw.Draw(footprint)
+        outer = self.line_w + 2 * self.casing_w
+        for pts in self.route.world:
+            line = [(x * scale + ox, y * scale + oy) for x, y in pts]
+            draw.line(line, fill=255, width=outer, joint="curve")
+            for x, y in (line[0], line[-1]):
+                draw.ellipse((x - outer / 2, y - outer / 2, x + outer / 2, y + outer / 2), fill=255)
+        states = self._clip_states()
+        r = self.marker_d / 2
+        for x, y in {(round(mx * scale + ox), round(my * scale + oy))
+                     for mx, my in (lonlat_to_world(s.lon, s.lat) for s in states)}:
+            draw.ellipse((x - r, y - r, x + r, y + r), fill=255)
+
+        extents = self._panel_extents(states)
+
+        def covered(role: str, corner: str) -> int:
+            if not all(extents[role]):
+                return 0
+            rect = self._panel_rect(corner, *extents[role])
+            return sum(footprint.crop(rect).histogram()[1:])
+
+        cost = {(role, c): covered(role, c) for role in _HUD_ROLES for c in _CORNERS}
+
+        def rank(layout):
+            return (sum(cost[pair] for pair in zip(_HUD_ROLES, layout)),
+                    sum(c != d for c, d in zip(layout, _DEFAULT_HUD)))
+
+        best = min(itertools.permutations(_CORNERS, len(_HUD_ROLES)), key=rank)
+        return dict(zip(_HUD_ROLES, best)), rank(best)[0] > 0
 
     # ── cards ────────────────────────────────────────────────────────────────
 
@@ -540,10 +656,16 @@ class Overlay:
 
     def draw(self, frame: Image.Image, shot: Shot, state: FrameState) -> Image.Image:
         """Draw everything over *frame* (the basemap, RGB, modified in place)."""
-        self._draw_route(frame, shot, state)
-        if state.kind == "clip":
+        if state.kind == "clip" and self.route_over_hud:
+            self._draw_hud(frame, state)
+            self._draw_route(frame, shot, state)
+            self._draw_marker(frame, shot, state)
+        elif state.kind == "clip":
+            self._draw_route(frame, shot, state)
             self._draw_marker(frame, shot, state)
             self._draw_hud(frame, state)
+        else:
+            self._draw_route(frame, shot, state)
         card, a = self._card_alpha(state)
         if card is not None:
             self._paste_card(frame, card, a)

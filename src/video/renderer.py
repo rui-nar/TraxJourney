@@ -214,7 +214,7 @@ class FrameRenderer:
         self.basemaps = Basemaps(self.shots, self.size, self.plan,
                                  tile_fetcher=_TimedFetcher(tile_fetcher, self.timings),
                                  render=_TimedRender(render_basemap, self.timings))
-        self.overlay = Overlay(timeline, self.size, title)
+        self.overlay = Overlay(timeline, self.size, title, camera)
 
     def __len__(self) -> int:
         return len(self.shots)
