@@ -211,6 +211,7 @@ Feature branch `feat/518-video-camera-quality` (from `plan/518-video-camera-qual
 | F-a | Fixed modes follow the marker on short-leg runs (fix unit for F1-1) | Opus | S2 | 1 | X2 on the F1-3 part → owner moved F1-3 to F-d | yes | F1-1 |
 | F-c | Camera choice as a vertical list (fix unit for F1-2) | Sonnet | — | 2 | escalated: labels couldn't fit → owner chose a vertical list | no | F1-2 |
 | F-d | Overview HUD panels keep clear of the route (fix unit for F1-3) | Opus | S2 | 1 | — | yes | F1-3 |
+| U1b | Stage timing coverage test on a longer render (fix unit: PR #521 CI failed on a timing test that only 90 frames made fragile) | Sonnet | — | 1 (+resume after session restart) | — | yes | — |
 
 U2 escalation (X2, 2026-09-29): D3's `fixed_strict` floor of 2 gave a 337°-wide frame at 1920 px on the Tokyo–Los Angeles test, contradicting the antimeridian test's < 180° check. Owner chose option (a): a width-dependent floor `max(2, ceil(log2(width/256)))`; D3 amended; U2 resumed with the rule.
 
@@ -239,3 +240,5 @@ Reviewer: adversarial-reviewer (Fable). No findings, no envelope questions. Revi
 - **Final checks:** pytest 5,191 passed with 0 failures from this change (rail tests blocked locally by Smart App Control; they run in CI); Linux-image video tests 352 passed; flutter analyze clean; flutter test 1,819 passed.
 - **Open:** none in this ledger. Related issues: #517 (render time, numbers posted), #519 (preview), #520 (two-lane workers, memory note posted).
 - **Environment lessons:** automatic worktrees start from main, so create them by hand from the feature branch. Another session switched the main checkout, so the delivery ran from its own worktree. Benchmarks on the dev box must be paired: a lone run read 140 ms against 93. Docker Desktop crashed or auto-updated twice. Smart App Control now blocks osmium locally.
+
+PR #521 CI (2026-09-30): the `test` job failed on one test only, test_video_bench.py::test_stage_totals_sum_to_the_measured_wall_time (0.605 s against 0.673 s, 10.1% off on a 90-frame render). Fix unit U1b renders the full 900-frame timeline and asserts that the stages cover 85–101% of the wall time (measured 0.969–0.976). It still fails when the stage figures are zeroed.
