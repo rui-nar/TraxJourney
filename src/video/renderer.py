@@ -394,6 +394,15 @@ PREVIEW_SIZE: Size = (320, 180)
 # Pillow's ``duration`` is milliseconds per frame; 1000 / PREVIEW_FPS exactly.
 PREVIEW_FRAME_MS = round(1000 / PREVIEW_FPS)
 PREVIEW_QUALITY = 50   # D4: lossy, small enough to show inline without a CDN
+# Every frame a key frame (libwebp's kmin=0, kmax=1). Between key frames,
+# libwebp's lossy animation encoder keeps the previous frame wherever the new
+# one differs by less than a quality-derived margin (about 10 levels per
+# channel at quality 50), so a slow pan could decode nearer the frame before
+# it than its own. Key frames only depend on their own frame; measured on the
+# test trip at 720p framing, 30 s grows from about 400 to 575 KB and the
+# encode time barely moves. Bit-identical frames (the title and end cards)
+# are still merged into one longer frame.
+PREVIEW_KEY_FRAMES = {"kmin": 0, "kmax": 1}
 
 
 def preview_zoom_offset(target_width: int) -> float:
@@ -450,21 +459,29 @@ def _write_preview_webp(frames: FrameRenderer, out_path: Path, *,
     (``save_all``/``append_images``): there is no streaming API to pipe frames
     into as they are drawn, unlike ``encode()``'s ffmpeg pipe. Frames are
     buffered here instead, bounded to at most one preview's worth — about
-    124 MB for a 90 s preview at 8 fps, 320×180 RGB (720 frames)."""
+    124 MB for a 90 s preview at 8 fps, 320×180 RGB (720 frames).
+
+    libwebp merges consecutive bit-identical frames (the title and end
+    cards' plateaus) into one longer frame, so the file may hold fewer
+    frames than were drawn; each lasts a multiple of
+    :data:`PREVIEW_FRAME_MS` and together they last exactly as long.
+    The summary's ``write_ms`` is the WebP encode."""
     n = len(frames)
     part = out_path.with_name(out_path.stem + ".part" + out_path.suffix)
     start = time.perf_counter()
     images: List[Image.Image] = []
     for i in range(n):
-        img = frames.frame(i)
-        write_start = time.perf_counter()
-        images.append(img)
-        frames.timings.add("write", time.perf_counter() - write_start)
+        images.append(frames.frame(i))
         if progress is not None and i % PROGRESS_EVERY == 0:
             progress(0.97 * i / n, "rendering")
     write_start = time.perf_counter()
-    images[0].save(part, format="WEBP", save_all=True, append_images=images[1:],
-                   duration=PREVIEW_FRAME_MS, loop=0, quality=PREVIEW_QUALITY)
+    try:
+        images[0].save(part, format="WEBP", save_all=True, append_images=images[1:],
+                       duration=PREVIEW_FRAME_MS, loop=0, quality=PREVIEW_QUALITY,
+                       **PREVIEW_KEY_FRAMES)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
     frames.timings.add("write", time.perf_counter() - write_start)
     os.replace(part, out_path)
     elapsed = time.perf_counter() - start
@@ -495,5 +512,8 @@ def render_preview(job_id: int, user_info_id: int, project_id: int, request: dic
     timeline = timeline_for_project(project, float(request["length_s"]), geometry=geometry)
     target_size = (int(request["width"]), int(request["height"]))
     camera = request.get("camera", "variable")
+    _log.info("Video preview job %s: %d frames at %dx%d framed as %dx%d, %d clips, %s camera",
+              job_id, frame_count(timeline, PREVIEW_FPS), PREVIEW_SIZE[0], PREVIEW_SIZE[1],
+              target_size[0], target_size[1], len(timeline.clips), camera)
     frames = _preview_frame_renderer(timeline, target_size, camera, project.name, tile_fetcher)
     return _write_preview_webp(frames, out_path, progress=progress)
