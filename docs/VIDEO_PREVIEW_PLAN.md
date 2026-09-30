@@ -77,6 +77,7 @@ sharpness or map detail: the zoom level differs, so labels differ.
 | D8 | **Encrypted trips reuse the dialog's consent.** The client re-sends the consented geometry it already holds with the preview request. The server handles it exactly as for a full video: the same size bounds, a per-job `geometry.json`, deleted on every terminal path and never logged. | One consent per dialog session, as today. | Asking for consent twice; storing geometry for reuse server-side. |
 | D9 | **Explicit trigger** (owner): a "Preview" button in the dialog. The preview shows inline when ready, with a "low-resolution preview" caption. Changing the length, camera or resolution marks it out of date ("Preview is for the previous settings") until the user taps Preview again. | Predictable cost. | Regenerating automatically on every change. |
 | D10 | **Time budget (measured at gate G1; owner confirmed 2026-09-30):** a 60 s preview renders in **≤ 45 s** on the VPS, and a 90 s one in ≤ 60 s. If G1 exceeds that, lower the fps to 6 before the size. The tile cache stays in #517 (owner). | It has to be fast enough to be worth waiting for; the first real numbers decide. | A shared tile cache in this plan. |
+| D11 | **Compact trip geometry (added at gate G1, owner 2026-09-30):** the video pipeline stores route points as flat numeric arrays, not tuples of tuples, and `camera.overview()` fits the trip without copying its points. G1 measured 936 MB peak for a 60 s overview preview on val, against the `worker` container's 1024 MB limit (975 MB inside a real RQ worker, 1.59 M points); the dev-box investigation traced it to ~490 bytes per GPS point across the legs (233 MB), `overview()`'s copies (+291 MB transient, run twice in overview mode) and the overlay's route (183 MB). Compact arrays bring it to ~50 bytes per point (measured 350 / 334 MB for 60 s variable / overview). The full MP4 render shares these paths and benefits too. | Memory must not depend on the render path's data layout at ~0.5 KB per point; the same code serves full videos in the 896 MB `worker-video`. | Only fixing `overview()` (746 MB overview, still trip-size bound); routing previews to `worker-poster` (hides it); raising the `worker` limit (host capacity out of scope); streaming frames through Pillow's private WebP encoder (owner: dropped). |
 
 ## Review envelope
 
@@ -169,7 +170,18 @@ run `docker compose run --rm worker python -m src.video.bench --preview --projec
 Paste the summary lines. The orchestrator checks D10's budget and, if needed,
 lowers the fps to 6 before wave 2.
 
-### Wave 2 — job lifecycle and API
+### Wave 2 — job lifecycle and API, compact geometry (disjoint)
+
+**U2b — Compact trip geometry in the video pipeline (D11)**
+- **Goal:** A trip's route points cost about 50 bytes each in the video pipeline instead of about 490, with every rendered pixel unchanged.
+- **Scope:** `src/video/legs.py`, `src/video/timeline.py`, `src/video/camera.py`, `src/video/overlay.py`; `tests/test_video_camera.py`, `tests/test_video_timeline.py`, `tests/test_video_overlay.py`, and a new `tests/test_video_memory.py`. Other video test files only where a test builds a `Leg` or reads its coordinates directly, never `tests/test_video_runner.py` or `tests/test_video_api.py` (U3's, same wave; W1).
+- **Context:** the G1 memory investigation (D11): `Leg.coords` and its cumulative-km list are tuples of tuples (233 MB for 1.59 M points); `camera.overview()` turns every point into a world-coordinate tuple and `_fit`'s `zip(*points)` copies them again (+291 MB transient), and in overview mode the overlay's `_overview_hud()` calls it a second time while `_Route.world` (a second full copy, 183 MB) is alive. Python's `array('d')` is the storage to use (flat interleaved lon/lat or separate arrays); no NumPy dependency is added.
+- **Do:** 1. `_fit` / `overview()` compute the bounding box in one pass without building a point list (fix A). 2. `_Route.world` stores flat `array('d')` per leg (fix B). 3. `Leg` stores its coordinates and cumulative km as `array('d')`, and every reader (about 11 call sites across the four files) is updated (fix C). Behaviour, the camera path, the timeline samples and every frame stay identical.
+- **Acceptance:** in the Linux image (CI=1), `pytest tests/test_video_*.py` passes with the existing goldens **byte-for-byte unchanged** (`git diff --stat -- tests/golden` empty) and no tolerance changed. New `tests/test_video_memory.py`: on a synthetic trip of ≥ 200 k points, the peak traced Python heap (tracemalloc) from building the legs through `camera_path` and `FrameRenderer` setup, in `overview` and `variable` modes, stays under 120 bytes per point; shown to fail on the tuple-based code (measure it before the change and record the figure in the test). The orchestrator re-runs the G1 investigation's script on the real test trip: 60 s overview and variable previews peak under 450 MB RSS.
+- **Out of scope:** the WebP encoder and frame buffer (streaming encode dropped by the owner); thinning points; `renderer.py`, the jobs, the API.
+- **Latitude:** local design
+- **Escalate if:** X3; any golden or pixel test changes; a reader needs the tuple form in a file outside Scope.
+- **Depends on:** U2 (integrated)
 
 **U3 — Preview jobs: API, runner, sweeps, rate limit**
 - **Goal:** Users can request a preview and fetch it, within the rate limit, with the full-video lifecycle untouched.
@@ -243,6 +255,7 @@ If any browser shows a still image, R1-4 returns as concrete.
 - Encrypted trips need one consent per dialog session. Preview geometry follows the
   #501 plaintext rules (tests for each deletion path).
 - Full-video behaviour (quota, emails, sweeps, routes) is unchanged (tests).
+- A 60 s preview of a 1.6 M-point trip peaks well under the `worker` container's 1024 MB (D11); goldens unchanged.
 - `alembic heads` shows one head. The server and Flutter suites pass, video tests
   pass in the Linux image, and CI is green.
 - The PR carries a `Release-Note:` trailer. No Upgrade-Note.
