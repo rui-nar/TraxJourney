@@ -254,29 +254,32 @@ class TestPreviewSlotFreesAt:
         assert frees_at == _NOW - 1000 + PREVIEW_WINDOW_S
         self._assert_frees_exactly_at(engine, frees_at, 10)
 
-    def test_in_flight_rows_leave_at_900_seconds(self, engine):
-        # An old done row would leave in 50 minutes; the pending one in 5.
-        for _ in range(9):
-            _job(engine, status="done", age=600)
-        _job(engine, status="pending", age=600)
+    def test_a_running_preview_is_forecast_to_count_for_the_hour(self, engine):
+        # Ten previews, the tenth still running. It finishes in a minute and
+        # then counts for the hour, so the slot frees when the oldest leaves.
+        for age in range(1000, 100, -100):  # nine done previews
+            _job(engine, status="done", age=age)
+        running = _job(engine, status="running", age=30, started=_NOW - 20)
         frees_at = _frees_at(engine)
-        assert frees_at == _NOW - 600 + PREVIEW_IN_FLIGHT_S
+        assert frees_at == _NOW - 1000 + PREVIEW_WINDOW_S
+        _set(engine, running, status="done", completed_at=_NOW + 40)
         self._assert_frees_exactly_at(engine, frees_at, 10)
 
     def test_mixed_rows(self, engine):
         _job(engine, status="done", age=3000)                  # leaves +600
-        _job(engine, status="running", age=100,
-             started=_NOW - 90)                                # leaves +800
+        running = _job(engine, status="running", age=100,
+                       started=_NOW - 90)                      # leaves +3500
         _job(engine, status="failed", age=2500, started=_NOW - 2490,
              completed=_NOW - 2300)                            # leaves +1100
         _job(engine, status="failed", age=10, started=None)    # never counts
         _job(engine, status="expired", age=10)                 # never counts
-        frees_at = _frees_at(engine, limit=3)
-        assert frees_at == _NOW + 600
-        self._assert_frees_exactly_at(engine, frees_at, 3)
-        frees_at = _frees_at(engine, limit=2)
-        assert frees_at == _NOW + 800
-        self._assert_frees_exactly_at(engine, frees_at, 2)
+        assert _frees_at(engine, limit=3) == _NOW + 600
+        assert _frees_at(engine, limit=2) == _NOW + 1100
+        assert _frees_at(engine, limit=1) == _NOW + 3500
+        _set(engine, running, status="done", completed_at=_NOW + 30)
+        for limit, frees_at in ((3, _NOW + 600), (2, _NOW + 1100),
+                                (1, _NOW + 3500)):
+            self._assert_frees_exactly_at(engine, frees_at, limit)
 
     def test_over_the_limit_waits_for_enough_rows_to_leave(self, engine):
         # Twelve rows against a limit of ten: three must leave, not one.
@@ -286,6 +289,21 @@ class TestPreviewSlotFreesAt:
         assert frees_at == _NOW - 1000 + PREVIEW_WINDOW_S
         assert frees_at != _NOW - 1200 + PREVIEW_WINDOW_S
         self._assert_frees_exactly_at(engine, frees_at, 10)
+
+    def test_a_lost_preview_makes_the_forecast_late_never_early(self, engine):
+        # Nine done previews and one pending that is never picked up: it drops
+        # out at 15 minutes, well before the forecast. Retry-After is only
+        # "not before", so arriving late is allowed; early would be refused.
+        for age in range(1000, 100, -100):
+            _job(engine, status="done", age=age)
+        _job(engine, status="pending", age=50)
+        drops_at = _NOW - 50 + PREVIEW_IN_FLIGHT_S
+        assert _previews(engine, now=drops_at - 1) == 10
+        assert _previews(engine, now=drops_at) == 9
+        frees_at = _frees_at(engine)
+        assert frees_at == _NOW - 1000 + PREVIEW_WINDOW_S
+        assert frees_at >= drops_at
+        assert _previews(engine, now=frees_at) < 10
 
     def test_ignores_other_users(self, engine):
         for _ in range(10):

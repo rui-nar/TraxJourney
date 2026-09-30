@@ -278,27 +278,26 @@ def preview_slot_frees_at(sess, user_info_id: int, now: float | None = None,
                           limit: int = 10) -> float | None:
     """The earliest instant the preview count drops below ``limit``, or None.
 
-    None when the user is already under ``limit``. Otherwise each counting row
-    leaves the count at its own instant — ``created_at +``
-    :data:`PREVIEW_IN_FLIGHT_S` while ``pending``/``running``, ``created_at +``
-    :data:`PREVIEW_WINDOW_S` once ``done`` or failed — and the count first goes
-    below ``limit`` when ``count - limit + 1`` of them have left. The answer is
-    a forecast from the rows as they are now: an in-flight preview that
-    finishes meanwhile counts for the full hour and pushes the instant later.
+    None when the user is already under ``limit``. Otherwise every counting
+    row — ``done``, counted ``failed``, ``pending`` or ``running`` — is taken to
+    leave the count at ``created_at +`` :data:`PREVIEW_WINDOW_S`, and the count
+    first goes below ``limit`` when ``count - limit + 1`` of them have left.
+
+    The forecast assumes in-flight previews complete, which is the normal path:
+    a preview finishes in about a minute and then counts for the full hour. A
+    lost preview drops out earlier, at ``created_at +``
+    :data:`PREVIEW_IN_FLIGHT_S`, so it makes the answer an over-estimate — the
+    safe direction, since a Retry-After means "not before".
     """
     now = time.time() if now is None else now
-    rows = sess.exec(
-        select(DBVideoJob.status, DBVideoJob.created_at).where(
+    created = sess.exec(
+        select(DBVideoJob.created_at).where(
             _counting_preview(user_info_id, now))
     ).all()
-    excess = len(rows) - limit
+    excess = len(created) - limit
     if excess < 0:
         return None
-    leaves = sorted(
-        created + (PREVIEW_IN_FLIGHT_S if status in ("pending", "running")
-                   else PREVIEW_WINDOW_S)
-        for status, created in rows
-    )
+    leaves = sorted(c + PREVIEW_WINDOW_S for c in created)
     return leaves[excess]
 
 
