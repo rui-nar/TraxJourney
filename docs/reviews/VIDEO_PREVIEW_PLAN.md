@@ -242,3 +242,16 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
 - Guard: —
 - Override: user: Fix now — one sentence of plan text; memory is the point of U2b
 - Outcome: fixed in plan
+
+## U2b plan review, round 2 — 2026-09-30, reviewed edb72206..e9c17136 (fixes only)
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). U2bR1-1..4 found fixed.
+
+### U2bR2-1 — The 120 B/pt bound covers kept()'s cached per-level index lists (List[int], ~37 B/pt per level), so it passes or fails on the synthetic trip's spacing
+- Trigger: implementer draws a frame at each integer zoom on a metre-spaced 200 k-point trip → kept(12..16) caches push the peak past 120 B/pt with A+B+C done right → trip densified until it passes, or bound changed unasked
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified (triager: was inferred)
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed in plan
