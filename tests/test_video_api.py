@@ -362,7 +362,7 @@ def test_consent_geometry_is_accepted_and_drawn(env, monkeypatch):
         project = ProjectRepo().get_project(sess, env.owner, "Secret")
     legs = timeline_for_project(project, 30.0, geometry=seen[0]["geometry"]).legs
     trackless = next(leg for leg in legs if leg.ref == 202)
-    assert trackless.coords == ((7.22222, 46.11111), (7.4, 46.3))
+    assert tuple(trackless.points()) == ((7.22222, 46.11111), (7.4, 46.3))
 
 
 def test_partial_consent_is_still_409(env):

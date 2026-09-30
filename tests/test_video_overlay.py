@@ -202,7 +202,7 @@ def _hidden(ov: Overlay):
     """Route points and clip-frame marker positions inside a panel rectangle
     of *ov*'s layout, at the overview shot."""
     project = _to_frame(ov)
-    points = [project(lon, lat) for leg in ov.timeline.legs for lon, lat in leg.coords]
+    points = [project(lon, lat) for leg in ov.timeline.legs for lon, lat in leg.points()]
     points += [project(s.lon, s.lat) for s in ov._clip_states()]
     rects = ov.hud_rects().values()
     return [(x, y) for x, y in points
@@ -260,7 +260,7 @@ def test_a_route_in_all_four_corners_is_drawn_over_the_panels():
     project = _to_frame(ov)
     end = project(state.lon, state.lat)
     # Points along the route (not its uncapped ends) away from the marker.
-    under = [(round(x), round(y)) for lon, lat in tl.legs[0].coords[1:-1]
+    under = [(round(x), round(y)) for lon, lat in list(tl.legs[0].points())[1:-1]
              for x, y in [project(lon, lat)]
              if math.dist((x, y), end) > ov.marker_d * 2
              and any(r[0] + 2 <= x < r[2] - 2 and r[1] + 2 <= y < r[3] - 2

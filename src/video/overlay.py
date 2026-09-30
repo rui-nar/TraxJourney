@@ -13,11 +13,13 @@ import bisect
 import colorsys
 import functools
 import itertools
+import math
+from array import array
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImagePath
 
 from src.poster.typography import FontStack, load_emoji_face, load_face, split_runs
 from src.video.camera import (
@@ -99,34 +101,60 @@ def format_speed(kmh: float) -> str:
     return f"{kmh:.1f} km/h" if kmh < 10 else f"{kmh:,.0f} km/h"
 
 
-def _decimate(points: Sequence[Tuple[float, float]], threshold: float) -> List[int]:
-    """Indices of the points kept when a point that hasn't moved *threshold*
-    from the last kept one is dropped (``poster_renderer._decimate_pixels``,
-    returning indices so a leg can be cut part-way)."""
-    if len(points) < 3:
-        return list(range(len(points)))
-    keep = [0]
-    lx, ly = points[0]
-    for i in range(1, len(points) - 1):
-        x, y = points[i]
+def _decimate(world: array, scale: float, threshold: float) -> array:
+    """Indices (``array('i')``) of the points of flat *world* ``x0, y0, x1,
+    y1, …``, scaled by *scale*, kept when a point that hasn't moved
+    *threshold* from the last kept one is dropped
+    (``poster_renderer._decimate_pixels``, returning indices so a leg can be
+    cut part-way)."""
+    n = len(world) // 2
+    if n < 3:
+        return array("i", range(n))
+    keep = array("i", [0])
+    lx, ly = world[0] * scale, world[1] * scale
+    for i in range(1, n - 1):
+        x, y = world[2 * i] * scale, world[2 * i + 1] * scale
         if abs(x - lx) >= threshold or abs(y - ly) >= threshold:
             keep.append(i)
             lx, ly = x, y
-    keep.append(len(points) - 1)
+    keep.append(n - 1)
     return keep
+
+
+def _world(leg) -> array:
+    """*leg*'s points in world units, flat ``x0, y0, x1, y1, …``."""
+    return array("d", itertools.chain.from_iterable(
+        lonlat_to_world(lon, lat) for lon, lat in leg.points()))
+
+
+class _Scaled:
+    """Flat world points *world* scaled into frame pixels, computed as they
+    are read: an :class:`ImagePath.Path` built from it holds them as doubles
+    with no per-point tuples in between (from a buffer, Pillow would read
+    float32)."""
+    __slots__ = ("_world", "_scale", "_ox", "_oy")
+
+    def __init__(self, world: array, scale: float, ox: float, oy: float) -> None:
+        self._world, self._scale, self._ox, self._oy = world, scale, ox, oy
+
+    def __len__(self) -> int:
+        return len(self._world)
+
+    def __getitem__(self, i: int) -> float:
+        return self._world[i] * self._scale + (self._oy if i & 1 else self._ox)
 
 
 class _Route:
     """The legs in world units, decimated once per integer zoom they are
-    drawn at."""
+    drawn at. Each leg's points are a flat ``array('d')``, each level's kept
+    indices an ``array('i')`` (docs/VIDEO_PREVIEW_PLAN.md, D11)."""
 
     def __init__(self, timeline: Timeline) -> None:
         self.legs = timeline.legs
-        self.world = [[lonlat_to_world(lon, lat) for lon, lat in leg.coords]
-                      for leg in self.legs]
-        self.bbox = [(min(p[0] for p in pts), min(p[1] for p in pts),
-                      max(p[0] for p in pts), max(p[1] for p in pts)) for pts in self.world]
-        self._levels: Dict[int, List[List[int]]] = {}
+        self.world = [_world(leg) for leg in self.legs]
+        self.bbox = [(min(pts[0::2]), min(pts[1::2]), max(pts[0::2]), max(pts[1::2]))
+                     for pts in self.world]
+        self._levels: Dict[int, List[array]] = {}
         # km each leg's mode had covered before it: the marker's fraction of
         # its leg is read back from the per-mode counters.
         before: Dict[str, float] = {}
@@ -135,12 +163,11 @@ class _Route:
             self.km_before.append(before.get(leg.mode, 0.0))
             before[leg.mode] = before.get(leg.mode, 0.0) + leg.km
 
-    def kept(self, level: int) -> List[List[int]]:
+    def kept(self, level: int) -> List[array]:
         out = self._levels.get(level)
         if out is None:
             scale = TILE_SIZE * 2 ** level
-            out = [_decimate([(x * scale, y * scale) for x, y in pts], 1.5)
-                   for pts in self.world]
+            out = [_decimate(pts, scale, 1.5) for pts in self.world]
             self._levels[level] = out
         return out
 
@@ -361,7 +388,15 @@ class Overlay:
         return x1 >= cx - hw and x0 <= cx + hw and y1 >= cy - hh and y0 <= cy + hh
 
     def _lines(self, shot: Shot, state: FrameState):
-        """(faint lines, travelled lines by mode) in frame pixels."""
+        """The visible legs and what of them is travelled, in world units
+        with the frame-pixel transform ``(scale, ox, oy)``: a point (x, y)
+        is at ``(x · scale + ox, y · scale + oy)`` in the frame.
+
+        Returns ``(transform, faint, travelled)``: *faint* one (flat world
+        points, kept indices) per visible leg; *travelled* one (mode, its
+        position in *faint*, how many of its kept points are travelled, the
+        marker's frame position or None) per travelled line. A leg's line is
+        only ever held in pixels once, scaled for drawing (D11)."""
         scale = TILE_SIZE * 2 ** shot.zoom
         cx, cy = lonlat_to_world(shot.lon, shot.lat)
         ox, oy = self.size[0] / 2 - cx * scale, self.size[1] / 2 - cy * scale
@@ -380,20 +415,19 @@ class Overlay:
             if not self._visible(i, shot, scale, pad):
                 continue
             idx = kept[i]
-            line = [(pts[k][0] * scale + ox, pts[k][1] * scale + oy) for k in idx]
-            faint.append(line)
+            faint.append((pts, idx))
             if i < current:
-                travelled.append((self.route.legs[i].mode, line))
+                travelled.append((self.route.legs[i].mode, len(faint) - 1, len(idx), None))
             elif i == current and state.kind == "clip":
                 leg = self.route.legs[i]
                 target = self.route.fraction(i, state) * leg.cum_km[-1]
                 cut = bisect.bisect_left(leg.cum_km, target)
-                part = [p for k, p in zip(idx, line) if k < cut]
+                m = bisect.bisect_left(idx, cut)     # the kept points before *cut*
                 mx, my = lonlat_to_world(state.lon, state.lat)
-                part.append((mx * scale + ox, my * scale + oy))
-                if len(part) >= 2:
-                    travelled.append((leg.mode, part))
-        return faint, travelled
+                if m + 1 >= 2:
+                    travelled.append((leg.mode, len(faint) - 1, m,
+                                      (mx * scale + ox, my * scale + oy)))
+        return (scale, ox, oy), faint, travelled
 
     def _draw_route(self, frame: Image.Image, shot: Shot, state: FrameState) -> None:
         """One colour layer and one coverage mask for the whole route, drawn
@@ -401,16 +435,27 @@ class Overlay:
         pasted in one go — all over the route's bounding box only. The colour
         layer is drawn a pixel wider than the mask so the partly covered edge
         never picks up its background."""
-        faint, travelled = self._lines(shot, state)
+        (scale, ox, oy), faint, travelled = self._lines(shot, state)
         if not faint:
             return
         outer = self.line_w + 2 * self.casing_w
         pad = outer + 4
-        xs = [x for line in faint for x, _ in line]
-        ys = [y for line in faint for _, y in line]
-        x0, y0 = max(0, int(min(xs)) - pad), max(0, int(min(ys)) - pad)
-        x1 = min(self.size[0], int(max(xs)) + pad + 1)
-        y1 = min(self.size[1], int(max(ys)) + pad + 1)
+        lx = ly = math.inf
+        hx = hy = -math.inf
+        for pts, idx in faint:
+            for k in idx:
+                x, y = pts[2 * k] * scale + ox, pts[2 * k + 1] * scale + oy
+                if x < lx:
+                    lx = x
+                if x > hx:
+                    hx = x
+                if y < ly:
+                    ly = y
+                if y > hy:
+                    hy = y
+        x0, y0 = max(0, int(lx) - pad), max(0, int(ly) - pad)
+        x1 = min(self.size[0], int(hx) + pad + 1)
+        y1 = min(self.size[1], int(hy) + pad + 1)
         if x1 <= x0 or y1 <= y0:
             return
 
@@ -418,9 +463,6 @@ class Overlay:
         # Frame pixel (i, j) is the ss × ss block from (i·ss, j·ss): a frame
         # coordinate maps to the centre of its block.
         c = (ss - 1) / 2
-
-        def scaled(line):
-            return [((x - x0) * ss + c, (y - y0) * ss + c) for x, y in line]
 
         box = (x1 - x0, y1 - y0)
         big = (box[0] * ss, box[1] * ss)
@@ -431,12 +473,18 @@ class Overlay:
         color = Image.new("RGB", big, None)
         mask = Image.new("L", big, 0)
         cd, md = ImageDraw.Draw(color), ImageDraw.Draw(mask)
-        faint = [scaled(line) for line in faint]
+        # Each line straight from world units to the layers' pixels, through
+        # the frame's pixels exactly as the bbox above.
+        faint = [[((pts[2 * k] * scale + ox - x0) * ss + c,
+                   (pts[2 * k + 1] * scale + oy - y0) * ss + c) for k in idx]
+                 for pts, idx in faint]
         for line in faint:
             cd.line(line, fill=_FAINT, width=(self.faint_w + 2) * ss)
         for line in faint:
             md.line(line, fill=_FAINT_ALPHA, width=self.faint_w * ss)
-        travelled = [(mode, scaled(line)) for mode, line in travelled]
+        travelled = [(mode, faint[j] if marker is None else
+                      faint[j][:m] + [((marker[0] - x0) * ss + c, (marker[1] - y0) * ss + c)])
+                     for mode, j, m, marker in travelled]
         for _, line in travelled:
             cd.line(line, fill=_CASING, width=(outer + 2) * ss, joint="curve")
             md.line(line, fill=255, width=outer * ss, joint="curve")
@@ -562,9 +610,9 @@ class Overlay:
         draw = ImageDraw.Draw(footprint)
         outer = self.line_w + 2 * self.casing_w
         for pts in self.route.world:
-            line = [(x * scale + ox, y * scale + oy) for x, y in pts]
+            line = ImagePath.Path(_Scaled(pts, scale, ox, oy))
             draw.line(line, fill=255, width=outer, joint="curve")
-            for x, y in (line[0], line[-1]):
+            for x, y in (line[0], line[len(line) - 1]):
                 draw.ellipse((x - outer / 2, y - outer / 2, x + outer / 2, y + outer / 2), fill=255)
         states = self._clip_states()
         r = self.marker_d / 2

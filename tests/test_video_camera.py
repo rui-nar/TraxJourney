@@ -32,7 +32,7 @@ from src.video.camera import (
     world_to_lonlat,
 )
 from src.models.project import ConnectingSegment, Project, ProjectItem, SegmentEndpoint
-from src.video.legs import Leg, LegSet, build_legs, prefix_km
+from src.video.legs import Leg, LegSet, build_legs, flat_coords, prefix_km
 from src.video.pacing import Clip, clip_budget_s
 from src.video.timeline import Timeline, build_timeline
 
@@ -48,9 +48,9 @@ FIXED_MODES = ("fixed", "fixed_strict")
 def _leg(i, mode, start, end, real_s, day, n=40) -> Leg:
     """A gently wavy line from *start* to *end* ((lon, lat) each)."""
     (lon0, lat0), (lon1, lat1) = start, end
-    pts = tuple((lon0 + (lon1 - lon0) * k / (n - 1),
-                 lat0 + (lat1 - lat0) * k / (n - 1) + 0.002 * math.sin(k))
-                for k in range(n))
+    pts = flat_coords((lon0 + (lon1 - lon0) * k / (n - 1),
+                       lat0 + (lat1 - lat0) * k / (n - 1) + 0.002 * math.sin(k))
+                      for k in range(n))
     cum = prefix_km(pts)
     return Leg(index=i, kind="activity", ref=i, label=f"leg {i}", mode=mode,
                coords=pts, cum_km=cum, km=cum[-1], real_s=real_s,
@@ -362,8 +362,8 @@ def test_overview_frames_contain_the_whole_trip(trip, size):
     """Title frames until the fly-in, and every end frame, show every point
     of the trip."""
     tl = build_timeline(TRIPS[trip](), 30)
-    lons = [lon for leg in tl.legs for lon, _ in leg.coords]
-    lats = [lat for leg in tl.legs for _, lat in leg.coords]
+    lons = [lon for leg in tl.legs for lon, _ in leg.points()]
+    lats = [lat for leg in tl.legs for _, lat in leg.points()]
     overview = 0
     for n, shot in enumerate(camera_path(tl, FPS, size)):
         kind = tl.sample(n / FPS).kind
@@ -473,7 +473,7 @@ def _ref_followed(sub):
 
 def _ref_clip_aims(clip, size):
     cx, cy, fit = _ref_fit([lonlat_to_world(lon, lat) for sub in clip.subs
-                            for lon, lat in sub.leg.coords], size, 0.6)
+                            for lon, lat in sub.leg.points()], size, 0.6)
     followed = [_ref_followed(sub) for sub in clip.subs]
     level = [min(16.0, max(fit, _REF_MODE_MIN_ZOOM.get(sub.leg.mode, 10.0))) for sub in clip.subs]
     aims, i = [], 0
@@ -490,9 +490,9 @@ def _ref_clip_aims(clip, size):
         if clip.subs[j - 1].end_s - clip.subs[i].start_s >= 0.6 or (after is None and before is None):
             aim = ((cx, cy), fit)
         elif after is not None:
-            aim = (lonlat_to_world(*clip.subs[after].leg.coords[0]), level[after])
+            aim = (lonlat_to_world(*clip.subs[after].leg.point(0)), level[after])
         else:
-            aim = (lonlat_to_world(*clip.subs[before].leg.coords[-1]), level[before])
+            aim = (lonlat_to_world(*clip.subs[before].leg.point(-1)), level[before])
         aims.extend([aim] * (j - i))
         i = j
     return aims
@@ -502,7 +502,7 @@ def _ref_path(timeline, fps, size):
     n_frames = int(round(timeline.total_s * fps))
     dt = 1.0 / fps
     ramp = max(1, int(round(0.6 * fps)))
-    home = _ref_fit([lonlat_to_world(lon, lat) for leg in timeline.legs for lon, lat in leg.coords],
+    home = _ref_fit([lonlat_to_world(lon, lat) for leg in timeline.legs for lon, lat in leg.points()],
                     size, 0.85)
     aims = [_ref_clip_aims(clip, size) for clip in timeline.clips]
     n_clips = len(timeline.clips)
@@ -584,8 +584,8 @@ def test_overview_mode_holds_the_whole_trip_on_every_frame(trip, size):
     path = camera_path(tl, FPS, size, "overview")
     assert len(path) == frame_count(tl, FPS)
     assert set(path) == {path[0]} and not path[0].flying
-    lons = [lon for leg in tl.legs for lon, _ in leg.coords]
-    lats = [lat for leg in tl.legs for _, lat in leg.coords]
+    lons = [lon for leg in tl.legs for lon, _ in leg.points()]
+    lats = [lat for leg in tl.legs for _, lat in leg.points()]
     box = viewport_bounds(path[0].lon, path[0].lat, path[0].zoom, size)
     assert box["west"] <= min(lons) and max(lons) <= box["east"]
     assert box["south"] <= min(lats) and max(lats) <= box["north"]
@@ -608,7 +608,7 @@ def _walk(lon, lat):
 
 
 def _sub_fit(sub, size):
-    return cam._fit([lonlat_to_world(*p) for p in sub.leg.coords], size, CLIP_FILL)[2]
+    return cam._fit([lonlat_to_world(*p) for p in sub.leg.points()], size, CLIP_FILL)[2]
 
 
 def _followed_frames(path, tl, key):
@@ -728,7 +728,7 @@ def test_a_north_south_leg_is_measured_on_the_frame_height():
     tl, z_over = _tuned_north_south(1.05)
     assert z_over == z
     path = camera_path(tl, FPS, HD, "fixed")
-    fit = cam._fit([lonlat_to_world(*p) for p in tl.clips[3].subs[0].leg.coords], HD, CLIP_FILL)[2]
+    fit = cam._fit([lonlat_to_world(*p) for p in tl.clips[3].subs[0].leg.points()], HD, CLIP_FILL)[2]
     frames = _followed_frames(path, tl, (3, 0))
     assert frames and all(path[n].zoom == pytest.approx(fit) for n in frames)
     assert fit < z
@@ -764,7 +764,7 @@ def test_the_zoom_is_searched_from_the_top_down():
     path = camera_path(tl, FPS, HD, "fixed")
     for key in trains:
         fit = cam._fit([lonlat_to_world(*p) for s in tl.clips[key[0]].subs
-                        for p in s.leg.coords], HD, CLIP_FILL)[2]
+                        for p in s.leg.points()], HD, CLIP_FILL)[2]
         assert all(path[n].zoom == pytest.approx(fit) for n in _followed_frames(path, tl, key))
 
 
@@ -825,7 +825,7 @@ def test_fixed_modes_follow_the_marker_on_legs_too_short_to_follow(mode):
     z = fixed_zoom(tl, HD, mode)
     clip = tl.clips[4]
     assert not any(is_followed(sub) for sub in clip.subs)
-    wide = cam._fit([lonlat_to_world(*p) for sub in clip.subs for p in sub.leg.coords], HD, 1.0)
+    wide = cam._fit([lonlat_to_world(*p) for sub in clip.subs for p in sub.leg.points()], HD, 1.0)
     assert wide[2] < z - 1                             # the clip is wider than the frame
     path = camera_path(tl, FPS, HD, mode)
     checked = 0

@@ -33,8 +33,9 @@ from __future__ import annotations
 import math
 import statistics
 from functools import lru_cache
-from typing import Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Dict, Iterable, Iterator, List, NamedTuple, Optional, Sequence, Tuple
 
+from src.video.legs import Leg
 from src.video.timeline import FrameState, TimedClip, TimedLeg, Timeline
 
 TILE_SIZE = 512          # tile_stitcher.DEFAULT_TILE_SIZE
@@ -146,18 +147,50 @@ def viewport_bounds(lon: float, lat: float, zoom: float, size: Size) -> Dict[str
     return {"west": west, "south": south, "east": east, "north": north}
 
 
-def _fit(points: Iterable[Tuple[float, float]], size: Size, fill: float) -> View:
-    """Centre and zoom that fit the world-unit bbox of *points* into *fill*
-    of the frame, within [MIN_ZOOM, MAX_ZOOM]."""
-    xs, ys = zip(*points)
-    w, h = max(xs) - min(xs), max(ys) - min(ys)
+Box = Tuple[float, float, float, float]   # (x0, y0, x1, y1) in world units
+
+
+def _world_points(legs: Iterable[Leg]) -> Iterator[Tuple[float, float]]:
+    """Every point of *legs* in world units, one at a time: a trip's points
+    are never all held as tuples (docs/VIDEO_PREVIEW_PLAN.md, D11)."""
+    for leg in legs:
+        for lon, lat in leg.points():
+            yield lonlat_to_world(lon, lat)
+
+
+def _bbox(points: Iterable[Tuple[float, float]]) -> Box:
+    """The bbox of *points*, in one pass."""
+    x0 = y0 = math.inf
+    x1 = y1 = -math.inf
+    for x, y in points:
+        if x < x0:
+            x0 = x
+        if x > x1:
+            x1 = x
+        if y < y0:
+            y0 = y
+        if y > y1:
+            y1 = y
+    return x0, y0, x1, y1
+
+
+def _fit_box(box: Box, size: Size, fill: float) -> View:
+    """Centre and zoom that fit the world-unit *box* into *fill* of the
+    frame, within [MIN_ZOOM, MAX_ZOOM]."""
+    x0, y0, x1, y1 = box
+    w, h = x1 - x0, y1 - y0
     zoom = MAX_ZOOM
     if w > 0:
         zoom = min(zoom, math.log2(fill * size[0] / (TILE_SIZE * w)))
     if h > 0:
         zoom = min(zoom, math.log2(fill * size[1] / (TILE_SIZE * h)))
-    return ((min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0,
-            max(MIN_ZOOM, zoom))
+    return (x0 + x1) / 2.0, (y0 + y1) / 2.0, max(MIN_ZOOM, zoom)
+
+
+def _fit(points: Iterable[Tuple[float, float]], size: Size, fill: float) -> View:
+    """Centre and zoom that fit the world-unit bbox of *points* into *fill*
+    of the frame, within [MIN_ZOOM, MAX_ZOOM]."""
+    return _fit_box(_bbox(points), size, fill)
 
 
 # ── motion primitives ────────────────────────────────────────────────────────
@@ -283,8 +316,8 @@ def _clip_aims(clip: TimedClip, size: Size, fixed: Optional[_Fixed] = None) -> L
     run not followed chases the marker at its level instead, rather than
     leave it off-screen — unless it moves too fast or jumps too often to
     chase (:func:`_can_chase`)."""
-    points = [lonlat_to_world(lon, lat) for sub in clip.subs for lon, lat in sub.leg.coords]
-    cx, cy, fit = _fit(points, size, CLIP_FILL)
+    box = _bbox(_world_points(sub.leg for sub in clip.subs))
+    cx, cy, fit = _fit_box(box, size, CLIP_FILL)
     followed = [is_followed(sub) for sub in clip.subs]
     if fixed is None:
         level = [min(MAX_ZOOM, max(fit, mode_min_zoom(sub.leg.mode))) for sub in clip.subs]
@@ -295,7 +328,7 @@ def _clip_aims(clip: TimedClip, size: Size, fixed: Optional[_Fixed] = None) -> L
         fast = fixed.fast
         level = [fit if f else float(fixed.z) for f in fast]
         whole = float(fixed.z)
-        chase = _fit(points, size, OVERVIEW_FILL)[2] < fixed.z
+        chase = _fit_box(box, size, OVERVIEW_FILL)[2] < fixed.z
     aims: List[Aim] = []
     i = 0
     while i < len(clip.subs):
@@ -312,9 +345,9 @@ def _clip_aims(clip: TimedClip, size: Size, fixed: Optional[_Fixed] = None) -> L
                 after is None and before is None):
             aim = ((cx, cy), whole, False)
         elif after is not None:
-            aim = (lonlat_to_world(*clip.subs[after].leg.coords[0]), level[after], fast[after])
+            aim = (lonlat_to_world(*clip.subs[after].leg.point(0)), level[after], fast[after])
         else:
-            aim = (lonlat_to_world(*clip.subs[before].leg.coords[-1]), level[before],
+            aim = (lonlat_to_world(*clip.subs[before].leg.point(-1)), level[before],
                    fast[before])
         if chase and _can_chase([step for k in range(i, j) for step in fixed.steps[k]],
                                 aim[1], fixed.fps):
@@ -327,8 +360,7 @@ def _clip_aims(clip: TimedClip, size: Size, fixed: Optional[_Fixed] = None) -> L
 def overview(timeline: Timeline, size: Size) -> View:
     """The title and end cards' view: the whole trip in
     :data:`OVERVIEW_FILL` of the frame."""
-    return _fit((lonlat_to_world(lon, lat) for leg in timeline.legs for lon, lat in leg.coords),
-                size, OVERVIEW_FILL)
+    return _fit(_world_points(timeline.legs), size, OVERVIEW_FILL)
 
 
 def _off_frame(point: Tuple[float, float], view: View, size: Size) -> float:
@@ -549,11 +581,9 @@ def fixed_floor(mode: str, size: Size) -> int:
 @lru_cache(maxsize=8)
 def _fixed_zoom(timeline: Timeline, size: Size, mode: str) -> int:
     speeds = _pan_speeds(timeline, size)
-    fits = {(ci, k): _fit([lonlat_to_world(lon, lat) for lon, lat
-                           in timeline.clips[ci].subs[k].leg.coords], size, CLIP_FILL)[2]
+    fits = {(ci, k): _fit(_world_points([timeline.clips[ci].subs[k].leg]), size, CLIP_FILL)[2]
             for ci, k in speeds}
-    clip_fits = [_fit([lonlat_to_world(lon, lat) for sub in clip.subs
-                       for lon, lat in sub.leg.coords], size, CLIP_FILL)[2]
+    clip_fits = [_fit(_world_points(sub.leg for sub in clip.subs), size, CLIP_FILL)[2]
                  for clip in timeline.clips]
     floor = fixed_floor(mode, size)
     for z in range(FIXED_TOP_ZOOM, floor - 1, -1):
