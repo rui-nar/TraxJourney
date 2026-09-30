@@ -202,3 +202,43 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). U1R2-1 a
 - Guard: —
 - Override: user: Fix now — one sentence in U3's brief prevents a flaky CI run
 - Outcome: fixed in plan (U3 acceptance: fixed now or within 1 s)
+
+## U2b plan review, round 1 — 2026-09-30, reviewed 93307c56..edb72206 (D11 and unit U2b added after gate G1)
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
+
+### U2bR1-1 — tests/test_video_api.py:365 compares Leg.coords to a tuple of tuples; neither U2b nor U3 may edit it
+- Trigger: U2b makes Leg.coords array('d') → that test fails → nobody's Scope covers it
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed in plan
+
+### U2bR1-2 — The memory test's window ends before the first drawn frame, where _Route.kept() still builds per-point tuples
+- Trigger: kept() left building a full list per leg at first draw → test passes → largest leg's list on top of the base peak
+- Scores: trigger=plausible, impact=degraded-ux, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: real-trip preview peaks ≥ 450 MB; OOM after the first frame; kept() left building tuples
+- Guard: —
+- Override: user: Fix now — one sentence of plan text; memory is the point of U2b
+- Outcome: fixed in plan
+
+### U2bR1-3 — Fixed-zoom cameras are outside the memory test; _fixed_zoom builds per-clip point lists Do 1 doesn't name
+- Trigger: fixed/fixed_strict on a trip with one very large clip → trip-size-bound peak while the test stays green
+- Scores: trigger=plausible, impact=degraded-ux, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: a fixed-mode render logs peak RSS well above variable for the same trip, or is OOM-killed
+- Guard: —
+- Override: user: Fix now — one sentence of plan text; memory is the point of U2b
+- Outcome: fixed in plan
+
+### U2bR1-4 — The real-trip memory check names "the G1 investigation's script", which is not in the repository
+- Trigger: orchestrator reaches acceptance → script not in repo → check improvised or skipped
+- Scores: trigger=plausible, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified (triager: was inferred)
+- Decision: Defer (D10)
+- Revisit when: the orchestrator cannot reproduce the G1 script at U2b acceptance
+- Guard: —
+- Override: user: Fix now — one sentence of plan text; memory is the point of U2b
+- Outcome: fixed in plan
