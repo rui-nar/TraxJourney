@@ -629,10 +629,13 @@ class DBVideoJob(sqlmodel.SQLModel, table=True):
     necessarily the trip's owner: on a shared trip the companion who asked for
     the render owns the job, its download and its quota charge (D12).
 
-    The rows are also the monthly quota (D3): every job created in the current
-    UTC calendar month counts unless it ``failed``, so the (user, created_at)
-    index is what the quota check reads. ``request_json`` never holds decrypted
-    geometry — that lives only in the job's ``geometry.json`` (D2).
+    The rows are also the monthly quota (D3): every ``kind='video'`` job created
+    in the current UTC calendar month counts unless it ``failed``, so the
+    (user, created_at) index is what the quota check reads. ``kind='preview'``
+    rows are short free previews (docs/VIDEO_PREVIEW_PLAN.md D2): they never
+    count toward that quota, only toward the hourly preview rate limit (D6).
+    ``request_json`` never holds decrypted geometry — that lives only in the
+    job's ``geometry.json`` (D2).
     """
 
     __tablename__ = "videojob"
@@ -643,6 +646,7 @@ class DBVideoJob(sqlmodel.SQLModel, table=True):
     id: Optional[int] = sqlmodel.Field(default=None, primary_key=True)
     project_id: int = sqlmodel.Field(foreign_key="project.id", index=True)
     user_info_id: int = sqlmodel.Field(foreign_key="userinfo.id")
+    kind: str = sqlmodel.Field(default="video")  # video | preview
     status: str = sqlmodel.Field(default="pending")  # pending | running | done | failed | expired
     stage: Optional[str] = sqlmodel.Field(default=None)  # human-readable progress label
     # Why a failed job failed, shown to the user. Fixed reason strings only,
