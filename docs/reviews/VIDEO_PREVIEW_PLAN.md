@@ -200,5 +200,5 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). U1R2-1 a
 - Decision: Defer (D10)
 - Revisit when: a U3 test compares Retry-After exactly against real time or early check vs locked check without a fixed now; any CI run fails on it. U3's brief should say: inject a fixed now, or check within 1 s
 - Guard: —
-- Override: —
-- Outcome: pending owner
+- Override: user: Fix now — one sentence in U3's brief prevents a flaky CI run
+- Outcome: fixed in plan (U3 acceptance: fixed now or within 1 s)

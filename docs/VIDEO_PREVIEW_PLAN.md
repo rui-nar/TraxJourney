@@ -191,7 +191,7 @@ lowers the fps to 6 before wave 2.
 - **Acceptance:** `pytest tests/test_video_preview_api.py tests/test_video_api.py tests/test_video_runner.py` passes, with the concurrency tests on a file SQLite database. New tests:
   - the happy path with a fake renderer;
   - 409 consent, and the consent geometry is deleted after done, failed and the sweeps;
-  - the 11th preview in an hour ⇒ 429 with `Retry-After` equal to the time until `preview_slot_frees_at` (the non-authoritative early check gives the same value), and two concurrent requests at 9 ⇒ exactly one succeeds;
+  - the 11th preview in an hour ⇒ 429 with `Retry-After` equal to the time until `preview_slot_frees_at` (the non-authoritative early check gives the same value). These tests inject a fixed `now` into both checks, as the U1 tests do with `_NOW`, or compare within 1 s; they never compare exactly against a clock read outside the handler (review U1R3-1), and two concurrent requests at 9 ⇒ exactly one succeeds;
   - a preview never counts toward the monthly quota and sends no email — on success, on failure, when failed by the hourly sweep, and when interrupted through the killed-horse handler;
   - a companion (`?owner=`) can create, poll and fetch a preview of a shared trip;
   - over the limit on an encrypted trip ⇒ 429 **before** any 409 consent, and the 409 body carries `previews_left`;
