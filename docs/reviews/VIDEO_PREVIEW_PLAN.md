@@ -145,3 +145,60 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). Round 3 
 - Outcome: fixed in plan (U2 pixel test on pre-encode frames; separate WebP check with a measured codec tolerance)
 
 Review closed after round 3 (policy cap); round-3 fixes applied without a further round, as the owner approved.
+
+## Unit U1 review, round 1 — 2026-09-30, reviewed 27b3eb3d..a999bc26 (DELIVERY.md §5.3, migration)
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
+
+### U1R1-1 — U1 exposes only a count, so U3 cannot compute D6's Retry-After without copying the counting predicate
+- Trigger: U3 needs 429 + Retry-After → previews_in_last_hour returns an int and entitlements.py is outside U3's scope → predicate copied into api/video.py → copies drift; U4's "try again in N min" is wrong
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (a2df39fe)
+
+### U1R1-2 — A preview orphaned in `running` stops counting at 15 min, then counts again once the hourly sweep fails it
+- Trigger: default worker stopped hard mid-preview → row stays running → drops out at 900 s → user makes more → hourly sweep fails it keeping started_at → it re-counts until created_at + 3600 → unexpected 429
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: U3 gives previews a stale-running threshold shorter than STALE_RUNNING_S; logs show a preview failed by the hourly sweep; a user reports a 429 with fewer than 10 recent previews
+- Guard: —
+- Override: user: Fix now — the plan already fails previews after ~10 min (D5), so the re-count window is ~45 min
+- Outcome: fixed (a2df39fe)
+
+## Unit U1 review, round 2 — 2026-09-30, reviewed a999bc26..a2df39fe (fixes only)
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
+
+### U1R2-1 — preview_slot_frees_at forecasts an in-flight preview as lost, so Retry-After is too short in the normal case
+- Trigger: 10th preview still rendering when the user taps again → 429 says ~15 min (created+900) → the 10th finishes and counts to created+3600 → refused again at 15 min
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (f367b892)
+
+### U1R2-2 — The plan still describes the round-1 counting rule and never names preview_slot_frees_at
+- Trigger: U3 implementer reads the plan for 429 + Retry-After → copies the predicate or tests the old failed-row rule
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed in plan (634d37f8)
+
+## Unit U1 review, round 3 — 2026-09-30, reviewed a2df39fe..f367b892 and plan 7cc83cb9..634d37f8 (fixes only)
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). U1R2-1 and U1R2-2 found fixed; the U1 code came back clean.
+
+### U1R3-1 — U3 acceptance demands two Retry-After values be "the same" although each is ceil()'d from its own now
+- Trigger: U3 test on real time asserts exact equality → the two nows straddle a second boundary → CI flakes on a green change
+- Scores: trigger=plausible, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=inferred
+- Decision: Defer (D10)
+- Revisit when: a U3 test compares Retry-After exactly against real time or early check vs locked check without a fixed now; any CI run fails on it. U3's brief should say: inject a fixed now, or check within 1 s
+- Guard: —
+- Override: —
+- Outcome: pending owner
