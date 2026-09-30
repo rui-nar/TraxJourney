@@ -175,7 +175,7 @@ Owner answer (2026-09-30): accept it — the window is seconds long, around a de
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (F-a, 57861420)
 
 ### F1-2 — The Camera SegmentedButton's three segments don't fit the dialog on phones; 'Fixed zoom' wraps
 - Trigger: Android/iOS user on a 360–412 dp phone opens Create video → content ~232–284 dp → 'Fixed zoom' squeezed
@@ -184,7 +184,7 @@ Owner answer (2026-09-30): accept it — the window is seconds long, around a de
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (F-c)
 
 ### F1-3 — Overview mode puts route corners and the finale marker under the translucent HUD panels
 - Trigger: Overview render of a one-way diagonal trip → its end corner lies under the bottom-right counters panel
@@ -193,7 +193,7 @@ Owner answer (2026-09-30): accept it — the window is seconds long, around a de
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (F-d, 48213b65) — at shipped 16:9 sizes Paris–Lyon never reached a panel; guard uses a SE-ending trip at 1280×720; diagonal trips reaching opposite corners take the draw-over path
 
 ## Delivery
 
@@ -208,6 +208,9 @@ Feature branch `feat/518-video-camera-quality` (from `plan/518-video-camera-qual
 | U4 | Sharper route, chips and panels | Opus | S2 | 1 | — | yes | — |
 | U5 | Camera choice in the video dialog | Opus | S5 | 1 | — | yes | — |
 | U6 | Golden frames for the new modes, docs | Sonnet | — | 1 | — | yes | — |
+| F-a | Fixed modes follow the marker on short-leg runs (fix unit for F1-1) | Opus | S2 | 1 | X2 on the F1-3 part → owner moved F1-3 to F-d | yes | F1-1 |
+| F-c | Camera choice as a vertical list (fix unit for F1-2) | Sonnet | — | 2 | escalated: labels couldn't fit → owner chose a vertical list | no | F1-2 |
+| F-d | Overview HUD panels keep clear of the route (fix unit for F1-3) | Opus | S2 | 1 | — | yes | F1-3 |
 
 U2 escalation (X2, 2026-09-29): D3's `fixed_strict` floor of 2 gave a 337°-wide frame at 1920 px on the Tokyo–Los Angeles test, contradicting the antimeridian test's < 180° check. Owner chose option (a): a width-dependent floor `max(2, ceil(log2(width/256)))`; D3 amended; U2 resumed with the rule.
 
