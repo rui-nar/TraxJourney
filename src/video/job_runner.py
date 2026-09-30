@@ -15,6 +15,12 @@ else while it waits or renders —
 A runner that finds its row no longer where it left it stops, deletes what it
 wrote and sends nothing, so a job failed by a sweep never later reports done.
 
+A preview (``kind='preview'``, docs/VIDEO_PREVIEW_PLAN.md D2) goes through the
+same lifecycle, started by ``run_video_preview_job`` on the ``default`` queue
+(D5). It is disposable (D7): no email on any path, a WebP kept for an hour,
+and it is failed only by age in the hourly sweep — never by the ``video``
+worker's startup sweep, since ``default`` has more than one consumer.
+
 Consent geometry (D2) is plaintext for an encrypted trip. It exists only as
 the job's ``geometry.json`` and is deleted on every terminal path. It never
 goes into the job row, a log line, an exception message or an email — which
@@ -30,7 +36,7 @@ import time
 import traceback
 from typing import Iterable, Optional
 
-from sqlalchemy import update
+from sqlalchemy import and_, or_, update
 from sqlmodel import select
 
 from models.db import get_session
@@ -59,6 +65,17 @@ RETENTION_DAYS = 30
 RETENTION_S = RETENTION_DAYS * 24 * 3600
 
 NON_TERMINAL = ("pending", "running")
+
+#: RQ's limit for one preview render (POST /video/preview enqueues with it; D5).
+PREVIEW_JOB_TIMEOUT_S = 300
+#: A running preview older than this was killed by RQ's timeout.
+PREVIEW_STALE_RUNNING_S = PREVIEW_JOB_TIMEOUT_S + 5 * 60
+#: A pending preview older than this lost its queue entry.
+PREVIEW_STALE_PENDING_S = 3600
+#: How long a finished preview is kept (D7).
+PREVIEW_RETENTION_S = 3600
+#: The preview's file, in the job's directory beside where a video's MP4 goes.
+PREVIEW_FILE = "preview.webp"
 
 # The only strings ever stored in ``error_message``: user-facing, and free of
 # anything a render or a request produced (Convention 2).
@@ -116,6 +133,20 @@ def _renderer():
     from src.video.renderer import render_video
 
     return render_video
+
+
+def _preview_renderer():
+    """``render_preview``, imported only when a preview runs, like
+    :func:`_renderer`. Tests replace this function."""
+    from src.video.renderer import render_preview
+
+    return render_preview
+
+
+def preview_result_path(user_info_id: int, job_id: int):
+    """Where a preview's WebP is written: in the job's own directory, so
+    every path that deletes the job's files deletes it too."""
+    return paths.video_dir(user_info_id, job_id) / PREVIEW_FILE
 
 
 # ── Emails ────────────────────────────────────────────────────────────────────
@@ -178,6 +209,17 @@ def run_video_job(job_id: int) -> None:
         paths.delete_job_geometry(job_id)
 
 
+def run_video_preview_job(job_id: int) -> None:
+    """Render preview *job_id*, the same way as :func:`run_video_job`. A
+    separate entry point so the killed-horse handler can name it
+    (``src.jobs.worker``); what is rendered, kept and emailed follows the
+    row's ``kind``, as in every other path that touches a job."""
+    try:
+        _run(job_id)
+    finally:
+        paths.delete_job_geometry(job_id)
+
+
 def _run(job_id: int) -> None:
     now = time.time()
     if not _cas(job_id, ("pending",), status="running", started_at=now,
@@ -197,17 +239,18 @@ def _run(job_id: int) -> None:
         uid, project_id = job.user_info_id, job.project_id
         download_token = job.download_token
         request = json.loads(job.request_json or "{}")
+        preview = job.kind == "preview"
 
     def _progress(fraction: float, stage: str) -> None:
         """Persist progress for polling clients, only while still running."""
         _cas(job_id, ("running",), progress=max(0.0, min(1.0, float(fraction))),
              stage=stage)
 
-    out_path = paths.result_path(uid, job_id)
+    out_path = (preview_result_path if preview else paths.result_path)(uid, job_id)
     try:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         geometry = paths.read_job_geometry(uid, job_id)
-        written = _renderer()(
+        written = (_preview_renderer if preview else _renderer)()(
             job_id=job_id, user_info_id=uid, project_id=project_id,
             request=request, out_path=out_path, geometry=geometry,
             progress=_progress,
@@ -216,7 +259,7 @@ def _run(job_id: int) -> None:
         _log.error("Video job %s failed: %s", job_id, _describe(exc))
         paths.delete_job_files(uid, job_id)
         if _cas(job_id, ("running",), status="failed", error_message=_reason_for(exc),
-                completed_at=time.time()):
+                completed_at=time.time()) and not preview:
             _notify_failed(job_id, uid, project_id)
         if not isinstance(exc, Exception):
             raise  # KeyboardInterrupt / SystemExit: let the process go
@@ -226,31 +269,34 @@ def _run(job_id: int) -> None:
     size = written.stat().st_size if written.exists() else None
     if not _cas(job_id, ("running",), status="done", stage="complete", progress=1.0,
                 completed_at=completed, result_path=str(written), size_bytes=size,
-                expires_at=completed + RETENTION_S):
+                expires_at=completed + (PREVIEW_RETENTION_S if preview else RETENTION_S)):
         # Failed by a sweep while rendering: that outcome stands, and the
-        # user already has its email.
+        # user already has its email (a video's; a preview has none).
         _log.warning("Video job %s finished after its row was failed; "
                      "discarding the render", job_id)
         paths.delete_job_files(uid, job_id)
         return
-    _notify_ready(job_id, uid, project_id, download_token)
+    if not preview:
+        _notify_ready(job_id, uid, project_id, download_token)
 
 
 def mark_video_job_interrupted(job_id: int, reason: str) -> None:
     """Fail a pending or running job whose render died where ``run_video_job``
     could not see it (killed work-horse, dead worker, lost queue entry):
-    delete its files and send the failed email. No-op on any other state, so
-    a race with the job's own ending never sends a second email."""
+    delete its files and send the failed email — for a video only, never for
+    a preview (D7). No-op on any other state, so a race with the job's own
+    ending never sends a second email."""
     with get_session() as sess:
         job = sess.get(DBVideoJob, job_id)
         if job is None:
             return
-        uid, project_id = job.user_info_id, job.project_id
+        uid, project_id, kind = job.user_info_id, job.project_id, job.kind
     if not _cas(job_id, NON_TERMINAL, status="failed", error_message=reason,
                 completed_at=time.time()):
         return
     paths.delete_job_files(uid, job_id)
-    _notify_failed(job_id, uid, project_id)
+    if kind != "preview":
+        _notify_failed(job_id, uid, project_id)
 
 
 def fail_unqueued_video_job(job_id: int) -> None:
@@ -273,19 +319,22 @@ def _fail_each(ids: Iterable[int], reason: str) -> int:
 
 
 def sweep_stale_running_video_jobs() -> int:
-    """Fail every ``running`` job. Called by the ``video`` worker as it starts,
-    before it takes a job.
+    """Fail every ``running`` full-video job. Called by the ``video`` worker as
+    it starts, before it takes a job.
 
     That worker is the queue's only consumer (QUEUE_MAX_CONCURRENCY), so at
-    that moment nothing is rendering: a ``running`` row belongs to a work-horse
-    that died with the previous worker. ``pending`` rows are left alone — they
-    may still be waiting in Redis, and this worker is about to run them.
-    Never raises.
+    that moment nothing is rendering: a ``running`` video row belongs to a
+    work-horse that died with the previous worker. ``pending`` rows are left
+    alone — they may still be waiting in Redis, and this worker is about to
+    run them. Previews are left alone too: they run on ``default``, whose
+    other consumer may be rendering one right now (D5); the hourly sweep
+    fails them by age. Never raises.
     """
     try:
         with get_session() as sess:
             ids = list(sess.exec(
-                select(DBVideoJob.id).where(DBVideoJob.status == "running")).all())
+                select(DBVideoJob.id).where(DBVideoJob.status == "running",
+                                            DBVideoJob.kind == "video")).all())
     except Exception:  # noqa: BLE001 — a broken sweep must not stop the worker
         _log.exception("Video startup sweep could not read running jobs")
         return 0
@@ -300,9 +349,11 @@ def sweep_video_jobs(now: Optional[float] = None) -> dict:
 
     1. Fails a ``running`` job started more than ``STALE_RUNNING_S`` ago (RQ
        has killed it by then) and a ``pending`` job created more than
-       ``STALE_PENDING_S`` ago (its queue entry is gone).
-    2. Expires finished videos past ``expires_at``: row → ``expired``, file
-       deleted.
+       ``STALE_PENDING_S`` ago (its queue entry is gone). A preview's limits
+       are ``PREVIEW_STALE_RUNNING_S`` and ``PREVIEW_STALE_PENDING_S`` (D5),
+       and failing one sends no email (D7).
+    2. Expires finished videos and previews past ``expires_at``: row →
+       ``expired``, file deleted.
     3. Deletes a ``geometry.json`` whose job is terminal or gone — never one
        whose job is ``pending`` or ``running``, however old: a waiting job
        still needs it, and a stale one was failed in step 1, which deleted it.
@@ -313,10 +364,16 @@ def sweep_video_jobs(now: Optional[float] = None) -> dict:
         with get_session() as sess:
             stale_running = list(sess.exec(select(DBVideoJob.id).where(
                 DBVideoJob.status == "running",
-                DBVideoJob.started_at < now - STALE_RUNNING_S)).all())
+                or_(and_(DBVideoJob.kind == "video",
+                         DBVideoJob.started_at < now - STALE_RUNNING_S),
+                    and_(DBVideoJob.kind == "preview",
+                         DBVideoJob.started_at < now - PREVIEW_STALE_RUNNING_S)))).all())
             stale_pending = list(sess.exec(select(DBVideoJob.id).where(
                 DBVideoJob.status == "pending",
-                DBVideoJob.created_at < now - STALE_PENDING_S)).all())
+                or_(and_(DBVideoJob.kind == "video",
+                         DBVideoJob.created_at < now - STALE_PENDING_S),
+                    and_(DBVideoJob.kind == "preview",
+                         DBVideoJob.created_at < now - PREVIEW_STALE_PENDING_S)))).all())
             expiring = [(j.id, j.user_info_id) for j in sess.exec(select(DBVideoJob).where(
                 DBVideoJob.status == "done",
                 DBVideoJob.expires_at < now)).all()]
