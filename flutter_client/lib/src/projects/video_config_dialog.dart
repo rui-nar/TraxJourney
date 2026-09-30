@@ -252,19 +252,24 @@ class _VideoConfigDialogState extends State<VideoConfigDialog> {
         const SizedBox(height: 16),
         Text('Camera', style: theme.textTheme.titleSmall),
         const SizedBox(height: 8),
-        SegmentedButton<String>(
-          segments: [
-            for (final (value, label, _) in _cameras)
-              ButtonSegment(value: value, label: Text(label)),
-          ],
-          selected: {_n.cameraChoice},
-          showSelectedIcon: false,
-          onSelectionChanged: (s) => _n.setCamera(s.first),
+        RadioGroup<String>(
+          groupValue: _n.cameraChoice,
+          onChanged: (v) {
+            if (v != null) _n.setCamera(v);
+          },
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final (value, label, desc) in _cameras)
+                RadioListTile<String>(
+                  value: value,
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(label),
+                  subtitle: Text(desc, style: theme.textTheme.bodySmall),
+                ),
+            ],
+          ),
         ),
-        const SizedBox(height: 4),
-        Text(
-            _cameras.firstWhere((c) => c.$1 == _n.cameraChoice).$3,
-            style: theme.textTheme.bodySmall),
         if (_n.cameraChoice == 'fixed')
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
@@ -307,10 +312,11 @@ class _VideoConfigDialogState extends State<VideoConfigDialog> {
     );
   }
 
-  /// Camera choices: the notifier's value, the label and the helper line.
+  /// Camera choices: the notifier's value, the title and the one-line
+  /// description shown under it.
   static const _cameras = [
-    ('variable', 'Variable', 'Zooms in and out to follow each leg.'),
-    ('overview', 'Overview', 'Shows the whole trip for the whole video.'),
+    ('variable', 'Follow', 'Zooms in and out to follow each leg.'),
+    ('overview', 'Overview', 'Shows the whole trip; only the marker moves.'),
     ('fixed', 'Fixed zoom', 'Follows the route at one zoom level.'),
   ];
 

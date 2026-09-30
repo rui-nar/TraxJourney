@@ -9,10 +9,13 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
@@ -78,7 +81,8 @@ void main() {
   Future<void> open(WidgetTester tester,
       Future<http.Response> Function(http.Request) handler,
       {List<Map<String, dynamic>> Function() activities = _activities,
-      TrackFetcher? fetchTrack}) async {
+      TrackFetcher? fetchTrack,
+      ThemeData? theme}) async {
     sent = [];
     startedJob = null;
     final client = ApiClient(httpClient: MockClient((req) async {
@@ -87,6 +91,7 @@ void main() {
     }))
       ..setToken('jwt');
     await tester.pumpWidget(MaterialApp(
+      theme: theme,
       home: Builder(
         builder: (context) => Scaffold(
           body: TextButton(
@@ -422,7 +427,7 @@ void main() {
 
     testWidgets('defaults to Variable and sends "variable"', (tester) async {
       await open(tester, ok);
-      expect(find.text('Variable'), findsOneWidget);
+      expect(find.text('Follow'), findsOneWidget);
       expect(find.text('Overview'), findsOneWidget);
       expect(find.text('Fixed zoom'), findsOneWidget);
       expect(find.text('Zooms in and out to follow each leg.'), findsOneWidget);
@@ -441,7 +446,7 @@ void main() {
 
       await tapText(tester, 'Overview');
       expect(find.text(zoomOut), findsNothing);
-      expect(find.text('Shows the whole trip for the whole video.'),
+      expect(find.text('Shows the whole trip; only the marker moves.'),
           findsOneWidget);
 
       await tapText(tester, 'Fixed zoom');
@@ -449,7 +454,7 @@ void main() {
       expect(tester.widget<SwitchListTile>(find.byType(SwitchListTile)).value,
           isTrue);
 
-      await tapText(tester, 'Variable');
+      await tapText(tester, 'Follow');
       expect(find.text(zoomOut), findsNothing);
     });
 
@@ -487,6 +492,50 @@ void main() {
       expect(hasGeometry(sent.last), isTrue);
       expect(cameraOf(sent.last), 'fixed_strict');
       expect(startedJob, 32);
+    });
+
+    group('each option fits on one line on a phone (F-c)', () {
+      // Widget tests otherwise draw every glyph a full em wide, which would
+      // report wrapping even for text that fits in the real Inter font the
+      // app renders with (see welcome_screen_price_layout_test.dart).
+      setUpAll(() async {
+        GoogleFonts.config.allowRuntimeFetching = false;
+        final bytes = File('test/fonts/Inter-ExtraBold.ttf').readAsBytesSync();
+        final loader = FontLoader(
+            GoogleFonts.inter(fontWeight: FontWeight.w800).fontFamily!)
+          ..addFont(Future.value(ByteData.sublistView(bytes)));
+        await loader.load();
+      });
+
+      for (final size in [const Size(360, 640), const Size(800, 600)]) {
+        testWidgets(
+            'titles render on one line at '
+            '${size.width.toInt()}x${size.height.toInt()}', (tester) async {
+          tester.view.physicalSize = size;
+          tester.view.devicePixelRatio = 1.0;
+          addTearDown(tester.view.resetPhysicalSize);
+          addTearDown(tester.view.resetDevicePixelRatio);
+
+          await open(tester, ok,
+              theme: ThemeData(
+                  fontFamily: GoogleFonts.inter(fontWeight: FontWeight.w800)
+                      .fontFamily));
+          expect(tester.takeException(), isNull);
+
+          for (final label in ['Follow', 'Overview', 'Fixed zoom']) {
+            final paragraph =
+                tester.renderObject<RenderParagraph>(find.text(label));
+            final singleLine = TextPainter(
+              text: TextSpan(text: label, style: paragraph.text.style),
+              textDirection: TextDirection.ltr,
+              textScaler: paragraph.textScaler,
+            )..layout();
+            expect(paragraph.size.height,
+                moreOrLessEquals(singleLine.height, epsilon: 0.5),
+                reason: '"$label" wrapped onto more than one line');
+          }
+        });
+      }
     });
   });
 }
