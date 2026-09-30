@@ -26,26 +26,35 @@ from tests.test_video_renderer import SMALL, db, fake_tile, needs_ffmpeg, timeli
 @needs_ffmpeg
 def test_stage_totals_sum_to_the_measured_wall_time(tmp_path, caplog):
     """The render summary's five per-stage ms/frame figures, multiplied back
-    up by the frame count, add up to within 10% of the wall time actually
-    measured around the render."""
+    up by the frame count, cover nearly all of the wall time actually
+    measured around the render: at least 85%, and (bar rounding) never more
+    than the 100% they're part of.
+
+    The whole 30s/900-frame timeline is rendered, not a short clip of it:
+    fixed per-job costs that no stage times — building the timeline and
+    camera path, planning basemap bands, starting and closing ffmpeg — are
+    paid once per render, so a short render lets them dominate the wall time
+    and starve this check regardless of how complete the stage accounting
+    actually is."""
     tl = timeline30()
     start = time.perf_counter()
     with caplog.at_level(logging.INFO, logger="src.video.renderer"):
         render_timeline(tl, SMALL, tmp_path / "video.mp4", title="Trip",
-                        tile_fetcher=fake_tile, frame_range=range(0, 90))
+                        tile_fetcher=fake_tile, frame_range=range(0, 900))
     measured = time.perf_counter() - start
 
     lines = [r.getMessage() for r in caplog.records if "video render summary" in r.getMessage()]
     assert len(lines) == 1
     line = lines[0]
     frames = int(re.search(r"frames=(\d+)", line).group(1))
-    assert frames == 90
+    assert frames == 900
     stage_ms = {
         name: float(re.search(rf"{name}_ms=([\d.]+)", line).group(1))
         for name in ("fetch", "stitch", "basemap", "overlay", "write")
     }
     stage_total_s = sum(stage_ms.values()) / 1000 * frames
-    assert stage_total_s == pytest.approx(measured, rel=0.10, abs=0.05)
+    assert stage_total_s >= 0.85 * measured
+    assert stage_total_s <= 1.01 * measured
 
 
 @needs_ffmpeg
