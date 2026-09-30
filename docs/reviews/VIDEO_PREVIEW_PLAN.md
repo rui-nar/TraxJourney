@@ -255,3 +255,7 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). U2bR1-1.
 - Guard: —
 - Override: —
 - Outcome: fixed in plan
+
+## Unit U3 review, round 1 — 2026-09-30, reviewed e9c17136..b3bb6850 (DELIVERY.md §5.3, jobs and consent geometry)
+
+Reviewer: adversarial-reviewer (Fable). No findings; no envelope questions. Review clean.
