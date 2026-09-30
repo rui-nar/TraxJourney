@@ -42,7 +42,7 @@ PREVIEW_FRAMES = LENGTH_S * 8   # 8 fps, full length (D1)
 RUN = [(48.845 - 0.0006 * i, 2.49 + 0.0004 * i) for i in range(15)]
 
 
-def preview_trip() -> Project:
+def four_leg_trip() -> Project:
     """A ride and a run in Paris, a train to Lyon, a hike there."""
     ride = _activity(1, "Ride", date(2026, 5, 1), RIDE, 20_000.0, 4000)
     run = _activity(2, "Run", date(2026, 5, 1), RUN, 3_000.0, 900)
@@ -50,7 +50,7 @@ def preview_trip() -> Project:
                               start=SegmentEndpoint(48.85, 2.49),
                               end=SegmentEndpoint(45.76, 4.84), date="2026-05-02")
     hike = _activity(3, "Hike", date(2026, 5, 2), HIKE, 8_000.0, 7200)
-    return Project(name="Preview trip", activities=[ride, run, hike], items=[
+    return Project(name="Four-leg trip", activities=[ride, run, hike], items=[
         ProjectItem(item_type="activity", activity_id=1),
         ProjectItem(item_type="activity", activity_id=2),
         ProjectItem(item_type="segment", segment=train),
@@ -59,18 +59,18 @@ def preview_trip() -> Project:
 
 @functools.lru_cache(maxsize=None)
 def preview_timeline():
-    return build_timeline(build_legs(preview_trip()), float(LENGTH_S))
+    return build_timeline(build_legs(four_leg_trip()), float(LENGTH_S))
 
 
-def test_the_preview_trip_covers_a_hike_a_run_a_ride_and_a_train():
+def test_the_four_leg_trip_covers_a_hike_a_run_a_ride_and_a_train():
     modes = {leg.mode for leg in preview_timeline().legs}
     assert {"hike", "run", "ride", "train"} <= modes, modes
 
 
 def _preview_renderer(mode: str) -> FrameRenderer:
-    """What ``render_preview`` draws for the preview trip at 720p in *mode*."""
+    """What ``render_preview`` draws for the four-leg trip at 720p in *mode*."""
     return renderer._preview_frame_renderer(preview_timeline(), TARGET_720, mode,
-                                            "Preview trip", fake_tile)
+                                            "Four-leg trip", fake_tile)
 
 
 def _video_index(k: int) -> int:
@@ -169,7 +169,7 @@ def _spy_on_webp_encoder(monkeypatch):
 
 
 def _write(mode, tmp_path, monkeypatch):
-    """Write the preview trip's WebP in *mode*: (its renderer, its pre-encode
+    """Write the four-leg trip's WebP in *mode*: (its renderer, its pre-encode
     frames, its path)."""
     calls = _spy_on_webp_encoder(monkeypatch)
     frames = _preview_renderer(mode)
@@ -191,7 +191,7 @@ def test_every_pre_encode_frame_is_a_direct_render_of_its_shot_and_state(mode, t
     assert len(pre) == PREVIEW_FRAMES
     for k, image in enumerate(pre):
         assert image.size == renderer.PREVIEW_SIZE
-        direct = FrameRenderer(preview_timeline(), renderer.PREVIEW_SIZE, "Preview trip",
+        direct = FrameRenderer(preview_timeline(), renderer.PREVIEW_SIZE, "Four-leg trip",
                                tile_fetcher=fake_tile, camera=mode,
                                shots=(frames.shots[k],), states=(frames.states[k],))
         mean, far = _differs(image, direct.frame(0))
@@ -204,7 +204,7 @@ def test_every_pre_encode_frame_is_a_direct_render_of_its_shot_and_state(mode, t
 # The codec tolerance between a decoded frame and its own pre-encode frame
 # (libwebp 1.6.0 through Pillow 12.3, quality 50, every frame a key frame, in
 # the CI Linux image). Measured over every frame of every camera mode on the
-# preview trip: worst mean difference 2.97 (variable), worst share of pixels
+# four-leg trip: worst mean difference 2.97 (variable), worst share of pixels
 # off by > 48 0.02%. Set with headroom above that. The nearest-frame margin
 # measured at the same time was >= 0 in every mode, tightest (0.0001) between
 # two pre-encode frames only a few pixels apart. The golden tolerance
