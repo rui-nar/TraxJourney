@@ -112,3 +112,36 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
 - Guard: —
 - Override: user: Fix now — client and server must agree on when a preview has failed
 - Outcome: fixed in plan (U4: running deadline 6 min, past the 300 s job timeout)
+
+## Round 3 — 2026-09-30, reviewed feaaf959..630cd90c
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). Round 3 is the policy cap.
+
+### R3-1 — The counting rule makes failed previews free, so a preview that times out or OOMs can be retried without limit on the shared default queue
+- Trigger: a preview killed at the 300 s job timeout or OOM-killed → user retries repeatedly → each attempt ends failed, which the limit ignores → one default consumer held up to 5 min per tap
+- Scores: trigger=plausible, impact=degraded-ux, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: G1 or val logs show a preview hitting the 300 s timeout or being OOM-killed; one user has 3+ failed previews in an hour; default jobs reported waiting behind previews; #520 slips and previews stay on default in production
+- Guard: —
+- Override: user: Fix now — a failed attempt still used a worker
+- Outcome: fixed in plan (D6 and U1 count failed previews that started)
+
+### R3-2 — The camera test's negative controls cannot fail for overview (either control) or fixed/fixed_strict (the 320×180 control) on the synthetic trip
+- Trigger: U2 writes the required negative controls for every mode → overview and fixed modes are size/fps-invariant by construction → the controls pass → dropped, or acceptance unmet
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed in plan (U2 negative controls required for variable only, invariance stated)
+
+### R3-3 — The pixel test does not say whether frame k is decoded from the lossy WebP or taken before encoding
+- Trigger: U2 compares decoded q50 WebP frames under the golden tolerance → 4:2:0 smears 2-px lines past it → tolerance loosened; or it compares pre-encode frames and never checks the WebP
+- Scores: trigger=plausible, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=inferred
+- Decision: Defer (D10)
+- Revisit when: U2's pixel test fails on decoded WebP frames; an implementer proposes loosening _differs or a preview tolerance; U2 lands a pixel test that never checks the WebP content
+- Guard: —
+- Override: user: Fix now — remove the ambiguity before delivery
+- Outcome: fixed in plan (U2 pixel test on pre-encode frames; separate WebP check with a measured codec tolerance)
+
+Review closed after round 3 (policy cap); round-3 fixes applied without a further round, as the owner approved.
