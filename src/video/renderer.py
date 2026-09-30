@@ -12,6 +12,7 @@ ffmpeg's own output (which goes to the server log only).
 """
 from __future__ import annotations
 
+import math
 import os
 import shutil
 import subprocess
@@ -19,7 +20,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from PIL import Image
 
@@ -28,7 +29,7 @@ from src.utils.logging import get_logger
 from src.video.basemap_bands import MAX_TILES, Basemaps, plan_bands
 from src.video.camera import Shot, camera_path, frame_count
 from src.video.overlay import Overlay
-from src.video.timeline import Timeline, timeline_for_project
+from src.video.timeline import FrameState, Timeline, timeline_for_project
 
 try:
     import resource  # Linux/macOS only; not on Windows dev machines.
@@ -179,15 +180,18 @@ def _ffmpeg_peak_rss_mb(peak_kb: Optional[int]) -> float:
     return resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / 1024
 
 
-def _log_render_summary(*, camera: str, frames: int, elapsed: float, stages: StageTimes,
-                        sheets: int, tiles: int, renderer_mb: float, ffmpeg_mb: float) -> None:
-    """One INFO line per job: where the time went (Do 1)."""
+def _log_render_summary(*, kind: str = "video", camera: str, frames: int, elapsed: float,
+                        stages: StageTimes, sheets: int, tiles: int, renderer_mb: float,
+                        ffmpeg_mb: float) -> None:
+    """One INFO line per job: where the time went (Do 1). *kind* is
+    ``"video"`` for a full render, ``"preview"`` for U2's animated WebP
+    (#519 D1), which has no ffmpeg step (*ffmpeg_mb* is 0)."""
     per_frame = (lambda s: s / frames * 1000) if frames else (lambda s: 0.0)
     _log.info(
-        "video render summary: camera=%s frames=%d elapsed_s=%.2f ms_per_frame=%.1f "
+        "video render summary: kind=%s camera=%s frames=%d elapsed_s=%.2f ms_per_frame=%.1f "
         "fetch_ms=%.2f stitch_ms=%.2f basemap_ms=%.2f overlay_ms=%.2f write_ms=%.2f "
         "sheets=%d tiles=%d peak_rss_renderer_mb=%.0f peak_rss_ffmpeg_mb=%.0f",
-        camera, frames, elapsed, per_frame(elapsed),
+        kind, camera, frames, elapsed, per_frame(elapsed),
         per_frame(stages.fetch), per_frame(stages.stitch), per_frame(stages.basemap),
         per_frame(stages.overlay), per_frame(stages.write),
         sheets, tiles, renderer_mb, ffmpeg_mb,
@@ -196,16 +200,28 @@ def _log_render_summary(*, camera: str, frames: int, elapsed: float, stages: Sta
 
 class FrameRenderer:
     """Frame *n* of *timeline* at *size* in *camera* mode: a pure function
-    of those and *n* (Convention 3). Frames are cheapest asked for in order."""
+    of those and *n* (Convention 3). Frames are cheapest asked for in order.
+
+    *shots*/*states*, given together, override the camera path this would
+    otherwise build itself and the state ``timeline.sample(n / fps)`` would
+    otherwise sample: frame *n* then simply draws ``shots[n]``/``states[n]``
+    (U2's preview render, whose frame *n* is a different video frame's shot
+    and state, not the *n*-th of its own path — review R2-2). *camera* still
+    names the mode they were built in, for the render summary and the
+    overlay's overview HUD layout."""
 
     def __init__(self, timeline: Timeline, size: Size, title: str, *,
                  tile_fetcher: Optional[TileFetcher] = None,
-                 max_tiles: int = MAX_TILES, camera: str = "variable") -> None:
+                 max_tiles: int = MAX_TILES, camera: str = "variable",
+                 shots: Optional[Sequence[Shot]] = None,
+                 states: Optional[Sequence[FrameState]] = None) -> None:
         self.timeline = timeline
         self.size = (int(size[0]), int(size[1]))
         self.fps = timeline.fps
         self.camera = camera
-        self.shots: Sequence[Shot] = camera_path(timeline, self.fps, self.size, camera)
+        self.shots: Sequence[Shot] = (tuple(shots) if shots is not None
+                                      else camera_path(timeline, self.fps, self.size, camera))
+        self.states: Optional[Sequence[FrameState]] = tuple(states) if states is not None else None
         self.plan = plan_bands(self.shots, self.size, max_tiles)
         if self.plan.max_band is not None:
             _log.info("Video basemap capped at zoom %d to stay within %d tiles (%d planned)",
@@ -223,7 +239,7 @@ class FrameRenderer:
         return self.basemaps.frame(n)
 
     def frame(self, n: int) -> Image.Image:
-        state = self.timeline.sample(n / self.fps)
+        state = self.states[n] if self.states is not None else self.timeline.sample(n / self.fps)
         fetch_before, stitch_before = self.timings.fetch, self.timings.stitch
         start = time.perf_counter()
         base = self.basemaps.frame(n)
@@ -369,3 +385,115 @@ def render_video(job_id: int, user_info_id: int, project_id: int, request: dict,
               camera)
     return render_timeline(timeline, size, out_path, title=project.name,
                            progress=progress, tile_fetcher=tile_fetcher, camera=camera)
+
+
+# ── preview render (docs/VIDEO_PREVIEW_PLAN.md D1, D4, Convention 3; U2) ────
+
+PREVIEW_FPS = 8
+PREVIEW_SIZE: Size = (320, 180)
+# Pillow's ``duration`` is milliseconds per frame; 1000 / PREVIEW_FPS exactly.
+PREVIEW_FRAME_MS = round(1000 / PREVIEW_FPS)
+PREVIEW_QUALITY = 50   # D4: lossy, small enough to show inline without a CDN
+
+
+def preview_zoom_offset(target_width: int) -> float:
+    """How much lower a preview shot's zoom is than the video's own frame at
+    *target_width* (Convention 3): ``log2(target_width / 320)``, so a 320 px
+    preview frame shows the same geographic area as the video's."""
+    return math.log2(target_width / PREVIEW_SIZE[0])
+
+
+def preview_frames(timeline: Timeline, shots: Sequence[Shot],
+                   target_size: Size) -> Tuple[Tuple[Shot, ...], Tuple[FrameState, ...]]:
+    """The preview's own (shot, state) pair per frame (D1): preview frame *n*
+    takes *shots* — the video's own camera path, built at *target_size* and
+    the timeline's own fps — index ``round(n * fps / PREVIEW_FPS)``, its zoom
+    lowered by :func:`preview_zoom_offset`, and the trip state at that same
+    shot's video time, ``timeline.sample(index / fps)``.
+
+    *shots* must be built at *target_size* and the timeline's own fps: built
+    at the preview's own size or frame rate, the camera would frame clips
+    differently, because its mode floors and per-frame thresholds are counted
+    on the video's own clock (D1; review R1-1)."""
+    fps = timeline.fps
+    ratio = fps / PREVIEW_FPS
+    n_preview = frame_count(timeline, PREVIEW_FPS)
+    offset = preview_zoom_offset(target_size[0])
+    out_shots: List[Shot] = []
+    out_states: List[FrameState] = []
+    for n in range(n_preview):
+        idx = min(round(n * ratio), len(shots) - 1)
+        shot = shots[idx]
+        out_shots.append(Shot(shot.lon, shot.lat, shot.zoom - offset, shot.flying))
+        out_states.append(timeline.sample(idx / fps))
+    return tuple(out_shots), tuple(out_states)
+
+
+def _preview_frame_renderer(timeline: Timeline, target_size: Size, camera: str, title: str,
+                            tile_fetcher: Optional[TileFetcher] = None) -> FrameRenderer:
+    """The :class:`FrameRenderer` that draws every preview frame, at
+    :data:`PREVIEW_SIZE`, through the video's own camera path and states
+    (:func:`preview_frames`) — the same basemap and overlay machinery a full
+    video uses. Shared by :func:`render_preview` and the bench's
+    ``--preview``."""
+    shots = camera_path(timeline, timeline.fps, target_size, camera)
+    p_shots, p_states = preview_frames(timeline, shots, target_size)
+    return FrameRenderer(timeline, PREVIEW_SIZE, title, tile_fetcher=tile_fetcher,
+                         camera=camera, shots=p_shots, states=p_states)
+
+
+def _write_preview_webp(frames: FrameRenderer, out_path: Path, *,
+                        progress: Optional[ProgressFn] = None) -> Path:
+    """Write every frame of *frames* into an animated WebP at *out_path*
+    (D4), under a temporary name, moved into place only once Pillow has saved
+    it. Pillow's animated WebP writer takes every frame as an in-memory list
+    (``save_all``/``append_images``): there is no streaming API to pipe frames
+    into as they are drawn, unlike ``encode()``'s ffmpeg pipe. Frames are
+    buffered here instead, bounded to at most one preview's worth — about
+    124 MB for a 90 s preview at 8 fps, 320×180 RGB (720 frames)."""
+    n = len(frames)
+    part = out_path.with_name(out_path.stem + ".part" + out_path.suffix)
+    start = time.perf_counter()
+    images: List[Image.Image] = []
+    for i in range(n):
+        img = frames.frame(i)
+        write_start = time.perf_counter()
+        images.append(img)
+        frames.timings.add("write", time.perf_counter() - write_start)
+        if progress is not None and i % PROGRESS_EVERY == 0:
+            progress(0.97 * i / n, "rendering")
+    write_start = time.perf_counter()
+    images[0].save(part, format="WEBP", save_all=True, append_images=images[1:],
+                   duration=PREVIEW_FRAME_MS, loop=0, quality=PREVIEW_QUALITY)
+    frames.timings.add("write", time.perf_counter() - write_start)
+    os.replace(part, out_path)
+    elapsed = time.perf_counter() - start
+    renderer_mb = _renderer_peak_rss_mb()
+    _log_render_summary(kind="preview", camera=frames.camera, frames=n, elapsed=elapsed,
+                        stages=frames.timings, sheets=len(frames.plan.sheets),
+                        tiles=frames.plan.tiles, renderer_mb=renderer_mb, ffmpeg_mb=0.0)
+    return out_path
+
+
+def render_preview(job_id: int, user_info_id: int, project_id: int, request: dict,
+                   out_path: Path, geometry: Optional[Dict[int, str]],
+                   progress: ProgressFn, *,
+                   tile_fetcher: Optional[TileFetcher] = None) -> Path:
+    """Render job *job_id*'s preview into *out_path* and return it, an
+    animated WebP of the video's own camera path sampled at
+    :data:`PREVIEW_FPS` and drawn at :data:`PREVIEW_SIZE` (Convention 5; D1).
+
+    *request* is the job's ``{"length_s", "width", "height", "camera"}`` —
+    ``width``/``height`` are the *video's* target resolution (720p or 1080p),
+    whose camera path this samples; the preview itself is always drawn at
+    :data:`PREVIEW_SIZE`. *geometry* is the consent geometry of an encrypted
+    trip (D2), used for this render only. ``NothingToAnimate`` propagates for
+    the runner to report.
+    """
+    progress(0.0, "loading trip")
+    project = _load_project(project_id, user_info_id)
+    timeline = timeline_for_project(project, float(request["length_s"]), geometry=geometry)
+    target_size = (int(request["width"]), int(request["height"]))
+    camera = request.get("camera", "variable")
+    frames = _preview_frame_renderer(timeline, target_size, camera, project.name, tile_fetcher)
+    return _write_preview_webp(frames, out_path, progress=progress)

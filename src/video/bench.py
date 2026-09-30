@@ -31,7 +31,13 @@ from typing import List, Optional, Tuple
 
 from src.utils.logging import configure_logging, env_level
 from src.video.camera import CAMERA_MODES
-from src.video.renderer import FrameRenderer, _ffmpeg, encode
+from src.video.renderer import (
+    FrameRenderer,
+    _ffmpeg,
+    _preview_frame_renderer,
+    _write_preview_webp,
+    encode,
+)
 from src.video.timeline import NothingToAnimate, timeline_for_project
 
 
@@ -63,6 +69,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--length", type=float, default=60.0, help="video length in seconds")
     ap.add_argument("--height", type=int, default=720, help="video height in pixels (width: 16:9)")
     ap.add_argument("--camera", choices=CAMERA_MODES, default="variable")
+    ap.add_argument("--preview", action="store_true",
+                    help="render the low-resolution animated WebP preview (docs/VIDEO_PREVIEW_PLAN.md "
+                         "D1) instead of the MP4; --crf/--tune/--dump-frames don't apply")
     ap.add_argument("--crf", type=int, default=None,
                     help="override the encoder's -crf (default: the renderer's, 20)")
     ap.add_argument("--tune", choices=("animation", "none"), default=None,
@@ -94,6 +103,19 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     out_dir = Path(args.out) if args.out else Path(mkdtemp(prefix="video_bench_"))
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # tile_fetcher left at its default (None) in every branch below: the
+    # renderer builds the real MAPBOX_TOKEN client itself, lazily, on the
+    # first tile it needs.
+    if args.preview:
+        # The video's own camera path is built at --height's target
+        # resolution (D1); the preview itself is always 320x180 at 8 fps.
+        frames = _preview_frame_renderer(timeline, _frame_size(args.height), args.camera,
+                                         project.name)
+        _write_preview_webp(frames, out_dir / "bench.webp")
+        print(f"output: {out_dir}")
+        return 0
+
     video_path = out_dir / "bench.mp4"
 
     # Only override the encoder when asked: this is what keeps a bare
@@ -104,8 +126,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.tune is not None:
         encode_kwargs["tune"] = args.tune
 
-    # tile_fetcher left at its default (None): the renderer builds the real
-    # MAPBOX_TOKEN client itself, lazily, on the first tile it needs.
     frames = FrameRenderer(timeline, _frame_size(args.height), project.name,
                            camera=args.camera)
     encode(frames, video_path, **encode_kwargs)
