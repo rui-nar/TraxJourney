@@ -17,7 +17,7 @@ import os
 import time
 from datetime import datetime, timezone
 
-from sqlmodel import func, select
+from sqlmodel import and_, func, or_, select
 
 from models.billing import Subscription, UserUsage
 from models.project_db import DBProject, DBVideoJob
@@ -202,16 +202,54 @@ def videos_this_month(sess, user_info_id: int, now: float | None = None) -> int:
     Every job counts — pending, running, done, expired — except a ``failed``
     one: the user did not get a video, so it must not cost them one. The month
     is UTC rather than the user's local one so nobody can buy an extra render
-    by moving their clock across a timezone.
+    by moving their clock across a timezone. Previews (``kind='preview'``) are
+    free and never count (docs/VIDEO_PREVIEW_PLAN.md D3).
     """
     start, end = _utc_month_bounds(time.time() if now is None else now)
     return int(
         sess.exec(
             select(func.count(DBVideoJob.id)).where(
                 DBVideoJob.user_info_id == user_info_id,
+                DBVideoJob.kind == "video",
                 DBVideoJob.status != "failed",
                 DBVideoJob.created_at >= start,
                 DBVideoJob.created_at < end,
+            )
+        ).one()
+    )
+
+
+#: The rolling window of the preview rate limit (docs/VIDEO_PREVIEW_PLAN.md D6).
+PREVIEW_WINDOW_S = 3600.0
+#: How long a pending or running preview keeps counting. Past this it is taken
+#: as lost (its worker died, its enqueue vanished) and stops costing the user.
+PREVIEW_IN_FLIGHT_S = 900.0
+
+
+def previews_in_last_hour(sess, user_info_id: int, now: float | None = None) -> int:
+    """Preview jobs that count toward the user's hourly rate limit (D6).
+
+    Counted: previews created in the last hour that are ``done``, ``failed``
+    after starting (``started_at`` set — a timed-out or OOM-killed attempt
+    still used a worker), or ``pending``/``running`` and younger than
+    :data:`PREVIEW_IN_FLIGHT_S`. A preview that failed before it started, or
+    has ``expired``, does not count. The window is open at its old end: a row
+    exactly one hour old has left it.
+    """
+    now = time.time() if now is None else now
+    return int(
+        sess.exec(
+            select(func.count(DBVideoJob.id)).where(
+                DBVideoJob.user_info_id == user_info_id,
+                DBVideoJob.kind == "preview",
+                DBVideoJob.created_at > now - PREVIEW_WINDOW_S,
+                or_(
+                    DBVideoJob.status == "done",
+                    and_(DBVideoJob.status == "failed",
+                         DBVideoJob.started_at.is_not(None)),
+                    and_(DBVideoJob.status.in_(("pending", "running")),
+                         DBVideoJob.created_at > now - PREVIEW_IN_FLIGHT_S),
+                ),
             )
         ).one()
     )
