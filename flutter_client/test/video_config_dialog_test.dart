@@ -422,9 +422,9 @@ void main() {
 
     testWidgets('defaults to Variable and sends "variable"', (tester) async {
       await open(tester, ok);
-      expect(find.text('Variable'), findsOneWidget);
+      expect(find.text('Follow'), findsOneWidget);
       expect(find.text('Overview'), findsOneWidget);
-      expect(find.text('Fixed zoom'), findsOneWidget);
+      expect(find.text('Fixed'), findsOneWidget);
       expect(find.text('Zooms in and out to follow each leg.'), findsOneWidget);
       expect(cameraOf(sent.single), 'variable');
 
@@ -444,19 +444,19 @@ void main() {
       expect(find.text('Shows the whole trip for the whole video.'),
           findsOneWidget);
 
-      await tapText(tester, 'Fixed zoom');
+      await tapText(tester, 'Fixed');
       expect(find.text(zoomOut), findsOneWidget);
       expect(tester.widget<SwitchListTile>(find.byType(SwitchListTile)).value,
           isTrue);
 
-      await tapText(tester, 'Variable');
+      await tapText(tester, 'Follow');
       expect(find.text(zoomOut), findsNothing);
     });
 
     for (final (label, off, camera) in [
       ('Overview', false, 'overview'),
-      ('Fixed zoom', false, 'fixed'),
-      ('Fixed zoom', true, 'fixed_strict'),
+      ('Fixed', false, 'fixed'),
+      ('Fixed', true, 'fixed_strict'),
     ]) {
       testWidgets('$label${off ? ' without zoom-out' : ''} sends "$camera"',
           (tester) async {
@@ -477,7 +477,7 @@ void main() {
             ? _json(201, {'job_id': 32})
             : _json(409, _consent409);
       });
-      await tapText(tester, 'Fixed zoom');
+      await tapText(tester, 'Fixed');
       await tapText(tester, zoomOut);
       await create(tester);
       expect(find.byType(VideoConsentDialog), findsOneWidget);

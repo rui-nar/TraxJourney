@@ -309,9 +309,9 @@ class _VideoConfigDialogState extends State<VideoConfigDialog> {
 
   /// Camera choices: the notifier's value, the label and the helper line.
   static const _cameras = [
-    ('variable', 'Variable', 'Zooms in and out to follow each leg.'),
+    ('variable', 'Follow', 'Zooms in and out to follow each leg.'),
     ('overview', 'Overview', 'Shows the whole trip for the whole video.'),
-    ('fixed', 'Fixed zoom', 'Follows the route at one zoom level.'),
+    ('fixed', 'Fixed', 'Follows the route at one zoom level.'),
   ];
 
   static String _clips(int n) => '$n clip${n == 1 ? '' : 's'}';
