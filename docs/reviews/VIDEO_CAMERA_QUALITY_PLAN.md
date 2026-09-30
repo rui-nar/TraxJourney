@@ -216,3 +216,8 @@ Wave 2 integration (2026-09-29): full pytest 5348 passed / 0 failed. Paired 1080
 Gate G2 (2026-09-29, VPS, owner-run): variable 257.4 ms/frame (changed stages overlay+write 89.4 → 143.2, +17% of G1's total, within D8); overview 110.6 ms/frame, 9 tiles; projected 90 s 1080p ≤ ~920 s < 1,600 s. Recorded in docs/VIDEO.md. Wave 3 may start.
 
 U5: verifier confirmed no consent/decryption/geometry logic changed (only a `camera` argument passed through), so no unit review under DELIVERY.md §5 point 3.
+
+Integrated-review fix wave (2026-09-30):
+- F-a (Opus) fixed F1-1 (57861420): a non-followed run in a clip wider than the frame at Z follows the marker, within a chase bound; runs the camera can't follow smoothly keep today's framing. Owner: keep as is (no pull-out for them).
+- F-a escalated F1-3 (camera-side fix breaks the single-view overview test, D2's wording and raises tiles 12 → 33). Owner chose option (c): fix it in the overlay. New unit F-d (Opus): in overview mode, put the HUD panels in the corners the route doesn't reach; if it reaches all four, draw route and marker over the panels.
+- F-c (Sonnet) escalated F1-2: "Overview" (67 px) can't fit a 53 px segment at 360 dp even with "Follow"/"Fixed". Owner chose a vertical list of the three camera choices, each with a one-line description, and the fixed-zoom switch under Fixed.
