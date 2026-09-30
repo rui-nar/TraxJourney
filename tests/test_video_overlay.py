@@ -31,8 +31,9 @@ from src.video.camera import (
 )
 from src.video.legs import build_legs
 from src.video.overlay import ICON_DIR, MODE_COLORS, Overlay
+from src.video.renderer import FrameRenderer
 from src.video.timeline import build_timeline
-from tests.test_video_renderer import _activity, _benchmark_trip
+from tests.test_video_renderer import _activity, _benchmark_trip, fake_tile, timeline30
 
 SMALL = (320, 180)
 
@@ -165,6 +166,131 @@ def test_the_overlay_imports_nothing_at_runtime_but_pillow():
             roots.add(node.module.split(".")[0])
     third_party = roots - set(sys.stdlib_module_names) - {"__future__", "src"}
     assert third_party == {"PIL"}
+
+
+# ── overview HUD layout (docs/reviews/VIDEO_CAMERA_QUALITY_PLAN.md F1-3) ─────
+
+USUAL_CORNERS = {"date": "tl", "speed": "bl", "counters": "br"}
+
+
+def _ride_trip(corners, name="Ride"):
+    """One ride through *corners* (lon, lat) near the equator, 40 points per
+    side, as a timeline."""
+    points = []
+    for (lon0, lat0), (lon1, lat1) in zip(corners, corners[1:]):
+        points += [(lat0 + (lat1 - lat0) * k / 40, lon0 + (lon1 - lon0) * k / 40)
+                   for k in range(40)]
+    points.append((corners[-1][1], corners[-1][0]))
+    project = Project(name=name, activities=[
+        _activity(1, "Ride", date(2026, 5, 1), points, 200_000.0, 20_000)],
+        items=[ProjectItem(item_type="activity", activity_id=1)])
+    return build_timeline(build_legs(project), 30.0)
+
+
+def _to_frame(ov: Overlay):
+    shot = ov.overview_shot()
+    scale = TILE_SIZE * 2 ** shot.zoom
+    cx, cy = lonlat_to_world(shot.lon, shot.lat)
+
+    def project(lon, lat):
+        x, y = lonlat_to_world(lon, lat)
+        return ov.size[0] / 2 + (x - cx) * scale, ov.size[1] / 2 + (y - cy) * scale
+    return project
+
+
+def _hidden(ov: Overlay):
+    """Route points and clip-frame marker positions inside a panel rectangle
+    of *ov*'s layout, at the overview shot."""
+    project = _to_frame(ov)
+    points = [project(lon, lat) for leg in ov.timeline.legs for lon, lat in leg.coords]
+    points += [project(s.lon, s.lat) for s in ov._clip_states()]
+    rects = ov.hud_rects().values()
+    return [(x, y) for x, y in points
+            if any(r[0] <= x < r[2] and r[1] <= y < r[3] for r in rects)]
+
+
+# Paris to Lyon at 250×180: the Paris ride starts under the date panel. At
+# 16:9 this trip reaches no corner, so it's framed narrower here. The second
+# trip ends in the south-east corner at a real video size: west, north, then
+# south-east, so the other three corners are clear.
+_CLEAR_CASES = {
+    "paris_lyon": (timeline30, (250, 180)),
+    "ends_south_east": (lambda: _ride_trip([(-0.8, 0.0), (0.0, 0.45), (0.8, -0.45)]),
+                        (1280, 720)),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_CLEAR_CASES))
+def test_overview_keeps_the_route_and_marker_clear_of_the_panels(case):
+    tl_fn, size = _CLEAR_CASES[case]
+    tl = tl_fn()
+    usual = Overlay(tl, size, "Trip")
+    # The trip does reach a panel in its usual corner: without the overview
+    # layout this test fails.
+    assert usual.hud_corners == USUAL_CORNERS
+    assert _hidden(usual)
+
+    ov = Overlay(tl, size, "Trip", camera="overview")
+    assert ov.hud_corners != USUAL_CORNERS
+    assert not ov.route_over_hud
+    assert _hidden(ov) == []
+
+
+@pytest.mark.parametrize("camera", ["variable", "fixed", "fixed_strict"])
+def test_the_other_modes_keep_the_usual_corners(camera):
+    """Where overview moves the panels, the other modes don't."""
+    tl, size = timeline30(), (250, 180)
+    assert FrameRenderer(tl, size, "Trip", tile_fetcher=fake_tile,
+                         camera="overview").overlay.hud_corners != USUAL_CORNERS
+    ov = FrameRenderer(tl, size, "Trip", tile_fetcher=fake_tile, camera=camera).overlay
+    assert ov.hud_corners == USUAL_CORNERS
+    assert not ov.route_over_hud
+
+
+def test_a_route_in_all_four_corners_is_drawn_over_the_panels():
+    """A Z through all four corners: no layout is clear, so the travelled
+    route is drawn over the panels, in its own colour, not under their
+    translucent fill."""
+    size = (1280, 720)
+    tl = _ride_trip([(-0.8, 0.45), (0.8, 0.45), (-0.8, -0.45), (0.8, -0.45)])
+    ov = Overlay(tl, size, "Z", camera="overview")
+    assert ov.route_over_hud
+    shot = ov.overview_shot()
+    state = ov._clip_states()[-1]                  # the whole route travelled
+    project = _to_frame(ov)
+    end = project(state.lon, state.lat)
+    # Points along the route (not its uncapped ends) away from the marker.
+    under = [(round(x), round(y)) for lon, lat in tl.legs[0].coords[1:-1]
+             for x, y in [project(lon, lat)]
+             if math.dist((x, y), end) > ov.marker_d * 2
+             and any(r[0] + 2 <= x < r[2] - 2 and r[1] + 2 <= y < r[3] - 2
+                     for r in ov.hud_rects().values())]
+    assert under
+
+    base = Image.new("RGB", size, (90, 110, 90))
+    over = ov.draw(base.copy(), shot, state)
+    assert all(over.getpixel(p) == MODE_COLORS["ride"] for p in under)
+    ov.route_over_hud = False                      # the usual order: panels on top
+    below = ov.draw(base.copy(), shot, state)
+    assert all(below.getpixel(p) != MODE_COLORS["ride"] for p in under)
+
+
+def test_the_overview_layout_is_deterministic_and_fixed_for_the_video():
+    tl, size = timeline30(), (250, 180)
+    a = Overlay(tl, size, "Trip", camera="overview")
+    b = Overlay(tl, size, "Trip", camera="overview")
+    assert a.hud_corners == b.hud_corners
+    assert a.hud_rects() == b.hud_rects()
+    # Every clip frame's panels lie inside the video's panel rectangles.
+    black = Image.new("RGB", size, (0, 0, 0))
+    states = a._clip_states()
+    for state in states[::max(1, len(states) // 25)]:
+        hud = black.copy()
+        a._draw_hud(hud, state)
+        assert hud.getbbox() is not None
+        for r in a.hud_rects().values():
+            hud.paste((0, 0, 0), r)
+        assert hud.getbbox() is None
 
 
 # ── overview timing ──────────────────────────────────────────────────────────
