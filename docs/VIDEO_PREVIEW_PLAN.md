@@ -38,8 +38,11 @@ sharpness or map detail: the zoom level differs, so labels differ.
     (`timeline.py`: `DEFAULT_FPS = 30`, and an `fps` parameter already exists).
   - `FrameRenderer` takes its fps from the timeline and its size from the request.
   - `encode()` pipes frames into libx264 MP4.
-  - The camera zoom is fitted to the frame size, so a small frame shows the same
-    area with fewer tiles.
+  - The camera's fit zoom is proportional to the frame size, but its mode floors
+    and caps (`MODE_MIN_ZOOM`, `MAX_ZOOM`, `FIXED_TOP_ZOOM`, `FIXED_FLOOR`) are
+    absolute zoom levels, and its cut, chase, pan and "instant sub-leg" thresholds
+    are counted per frame (camera.py, timeline.py). So a camera path computed at
+    320×180 and 8 fps is **not** the video's camera (review R1-1).
 - **Queues** (`src/jobs/queue.py`, `docker-compose.yml.example`):
   - `default` is consumed by `worker` (1024M, `default`, `resolve`) and
     `worker-poster` (1280M, `poster`, `default`, `resolve`); bound 2.
@@ -54,7 +57,9 @@ sharpness or map detail: the zoom level differs, so labels differ.
     dialog session and re-sends it on plan and create.
   - Precedent for fetching and showing server-rendered image bytes: the poster
     preview (`poster_job_notifier.dart` `fetchPosterPreview` → `Image.memory`).
-  - `Image.memory` decodes animated WebP natively.
+  - `Image.memory` animates WebP on Android and iOS. On the web, animation depends on
+    the browser's image-decoding support, unverified for Safari and Firefox (review R1-4),
+    so the web shows the WebP through a browser `<img>` element, which animates it natively.
 - **Measured** (docs/VIDEO.md, G2, 1080p): the renderer peaks at about 725 MB, mostly
   from loading the trip. That cost doesn't shrink for a small frame.
 
@@ -62,15 +67,15 @@ sharpness or map detail: the zoom level differs, so labels differ.
 
 | # | Decision | Reason | Rules out |
 |---|---|---|---|
-| D1 | **Tiny render through the real pipeline**: same timeline, camera mode and overlay as the final video, at **320×180, 8 fps, over the full requested length at real pacing** (owner, 2026-09-30). | The owner wants to judge the camera and the pacing exactly as they'll be; the same code path means the preview can't drift from the result. | A client-side animation (P3), a still storyboard, a sped-up or sampled preview. |
+| D1 | **Tiny render of the video's own camera**: the timeline and `camera_path` are built exactly as for the final video, at the **target resolution** (720p or 1080p, sent with the preview request) and **30 fps**. Preview frame *n* shows video frame `round(n × 30 / 8)`, drawn at **320×180** with the same shot centre and the zoom lowered by `log2(target width / 320)`, so it shows the same geographic area. 8 fps over the full requested length at real pacing (owner, 2026-09-30). Nearest-frame sampling (at most 1/60 s off) is accepted (owner, review round 1). | The owner wants to judge the camera and the pacing exactly as they'll be. Computing the camera at 320×180 and 8 fps would frame clips differently, because of the absolute zoom floors and per-frame thresholds (review R1-1). | Computing the camera at preview size or rate; a client-side animation; a still storyboard; a sped-up or sampled preview; 6 or 10 fps. |
 | D2 | **A preview is a videojob of `kind = 'preview'`**: a `kind` column with default `'video'`, added by an Alembic migration that backfills existing rows as `'video'`. | It reuses the CAS lifecycle, geometry handling, paths and sweeps. | A separate table (duplicates the runner and sweeps). |
 | D3 | **The quota counts full videos only**: `videos_this_month` filters `kind = 'video'`. **Previews are free on every plan**, bounded by D6. | A preview must not cost the video it helps choose. | Charging previews. |
 | D4 | **Output is animated WebP** written by Pillow (lossy, quality ≈ 50, looping), not MP4. There's no ffmpeg in the preview path. | The app shows it as an ordinary image on web, Android and iOS without a video-player package; Pillow is already in the image. | MP4 plus a player package; GIF (larger, 256 colours). |
-| D5 | **Queue: the existing `default` queue for now** (owner, 2026-09-30), `max_retries=0`, `allow_inline=False` (the API never renders), `job_timeout = 300 s`. **#520's light lane** will move previews to their own queue later. Previews are **not** failed by the video worker's startup sweep, which is restricted to `kind='video'` because `default` has two consumers. They're failed only by age, in the hourly sweep: running longer than the timeout plus 5 min, or pending longer than 1 h. | No infrastructure change now; `default` jobs are short, so previews start quickly. | Waiting for #520; putting previews behind 20-minute renders on `worker-video`. |
-| D6 | **Rate limit, durable** (owner confirmed 2026-09-30): at most **10 previews per user per rolling hour**, counted from videojob rows of kind `preview` created in the last hour (any status except `failed`), checked inside the same `lock_account` transaction as the insert. Over the limit ⇒ **429** with `Retry-After`. | Previews cost server CPU and Mapbox tiles; an in-process limiter isn't durable across workers and restarts. | The in-memory `KeyedRateLimiter`; no limit. |
-| D7 | **No email, no token routes and short retention:** a preview is shown only in the dialog that asked for it. Its file is deleted **1 h** after completion by the hourly sweep, so it is gone within 2 h. Status and bytes come from authenticated routes only. | It's disposable. | Emails and token links for previews. |
+| D5 | **Queue: the existing `default` queue for now** (owner, 2026-09-30), `max_retries=0`, `allow_inline=False` (the API never renders), `job_timeout = 300 s`. **#520's light lane** will move previews to their own queue later. Previews are **not** failed by the video worker's startup sweep, which is restricted to `kind='video'` because `default` has two consumers. They're failed only by age, in the hourly sweep: running longer than the timeout plus 5 min, or pending longer than 1 h. | No infrastructure change now. A preview can still wait minutes for a free worker, because both `default` consumers also take rail resolves (up to 600 s) and `worker-poster` takes posters; the dialog shows that wait honestly (U4; review R1-7). | Waiting for #520; putting previews behind 20-minute renders on `worker-video`. |
+| D6 | **Rate limit, durable** (owner confirmed 2026-09-30): at most **10 previews per user per rolling hour**, counted from videojob rows of kind `preview` created in the last hour that are `done`, or `pending`/`running` and younger than 15 minutes, so a lost preview stops counting (review R1-3). A non-authoritative check runs **before consent and the timeline build**, the same pattern as the video quota, and the 409 consent body carries `previews_left` (review R1-6). The authoritative check runs inside the same `lock_account` transaction as the insert. Over the limit ⇒ **429** with `Retry-After`. | Previews cost server CPU and Mapbox tiles; an in-process limiter isn't durable across workers and restarts. | The in-memory `KeyedRateLimiter`; no limit. |
+| D7 | **No email on any path, no token routes and short retention:** a preview is shown only in the dialog that asked for it. No email is sent from the runner, the sweeps or the killed-horse handler (`mark_video_job_interrupted` skips emails for `kind='preview'`; review R1-2). Its file is deleted **1 h** after completion by the hourly sweep, so it is gone within 2 h. Status and bytes come from authenticated routes only. | It's disposable. | Emails and token links for previews. |
 | D8 | **Encrypted trips reuse the dialog's consent.** The client re-sends the consented geometry it already holds with the preview request. The server handles it exactly as for a full video: the same size bounds, a per-job `geometry.json`, deleted on every terminal path and never logged. | One consent per dialog session, as today. | Asking for consent twice; storing geometry for reuse server-side. |
-| D9 | **Explicit trigger** (owner): a "Preview" button in the dialog. The preview shows inline when ready, with a "low-resolution preview" caption. Changing the length or camera marks it out of date ("Preview is for the previous settings") until the user taps Preview again. | Predictable cost. | Regenerating automatically on every change. |
+| D9 | **Explicit trigger** (owner): a "Preview" button in the dialog. The preview shows inline when ready, with a "low-resolution preview" caption. Changing the length, camera or resolution marks it out of date ("Preview is for the previous settings") until the user taps Preview again. | Predictable cost. | Regenerating automatically on every change. |
 | D10 | **Time budget (measured at gate G1; owner confirmed 2026-09-30):** a 60 s preview renders in **≤ 45 s** on the VPS, and a 90 s one in ≤ 60 s. If G1 exceeds that, lower the fps to 6 before the size. The tile cache stays in #517 (owner). | It has to be fast enough to be worth waiting for; the first real numbers decide. | A shared tile cache in this plan. |
 
 ## Review envelope
@@ -87,8 +92,9 @@ apply. New points:
 - **The rate limit is a product control**, not a security boundary. A determined
   user can still spend their 10 an hour.
 - **Deploy-order window (accepted, as in #518):** an old worker may briefly pick up a
-  `default` job it can't run during `docker compose up -d`. The job fails with a fixed
-  reason, and the user can retry.
+  `default` job it can't run during `docker compose up -d`. An old image can't even load
+  `run_video_preview_job`, so RQ fails the job without touching the row. The dialog's
+  deadlines (U4) and the 15-minute rate-limit rule (D6) cover it, and the user can retry.
 
 ## Boundaries crossed
 
@@ -115,8 +121,10 @@ apply. New points:
 2. **The plaintext rules of #501 hold for previews:** the geometry file is written
    after the row, deleted in `finally` and on every sweep path; it is never logged
    and never in `request_json`; `error_message` holds fixed strings only.
-3. **Determinism:** a preview's frame *n* is the full video's frame at time *n/8 s*,
-   downscaled. Same timeline and camera mode, only the frame size and rate differ.
+3. **Same camera as the video:** a preview's frame *n* is video frame
+   `round(n × 30 / 8)` of the same timeline, camera mode and target resolution, drawn
+   at 320×180 with the zoom lowered by `log2(target width / 320)`. Only the frame size,
+   the zoom offset and the sampled frames differ.
 
 ## Open decisions
 
@@ -139,11 +147,11 @@ on 2026-09-30.
 - **Depends on:** —
 
 **U2 — Preview render (animated WebP) and the bench**
-- **Goal:** `render_preview` renders a job's timeline at 320×180 and 8 fps into an animated WebP, and the bench can measure it.
+- **Goal:** `render_preview` renders the video's own camera path (built at the target resolution and 30 fps), sampled at 8 fps and drawn at 320×180, into an animated WebP, and the bench can measure it.
 - **Scope:** `src/video/renderer.py` (a new `render_preview` beside `render_video`, sharing trip loading and timeline building); `src/video/bench.py` (a `--preview` flag); new `tests/test_video_preview_render.py`.
 - **Context:** `render_video`, `FrameRenderer`, `encode` and `_log_render_summary` in renderer.py (the example to follow); `timeline_for_project(..., fps=...)`; Pillow's `Image.save(..., save_all=True, append_images=..., duration=125, loop=0, format='WEBP', quality=50)`.
-- **Do:** `render_preview(job_id, user_info_id, project_id, request, out_path, geometry, progress)`, with the same signature as `render_video` (Convention 5 of #501). It builds the timeline at fps 8 and renders frames at 320×180 with the request's camera, then writes an animated WebP of all frames (frame duration 125 ms, looping). It logs the same render summary line with `kind=preview`. Streaming frames into the WebP writer is preferred; if Pillow needs the frames in memory, bound them (320×180 RGB × 720 frames at 90 s is about 124 MB) and say so. `bench --preview` renders a real trip that way and prints the summary.
-- **Acceptance:** in the Linux image (CI=1), `pytest tests/test_video_preview_render.py tests/test_video_renderer.py tests/test_video_bench.py` passes. New tests: a 30 s preview of the test trip produces a WebP with `n_frames == 240` at 320×180, looping; its frame *k* matches the full renderer's frame at *t = k/8* downscaled, within a tolerance (Convention 3); every camera mode renders; the summary line carries `kind=preview`. The existing goldens are unchanged.
+- **Do:** `render_preview(job_id, user_info_id, project_id, request, out_path, geometry, progress)`, with the same signature as `render_video` (Convention 5 of #501). It builds the timeline at 30 fps and `camera_path` at the request's target size (`width`/`height`, 1280×720 or 1920×1080) and camera, exactly as `render_video` does. For preview frame *n* it takes shot `round(n × 30 / 8)`, lowers its zoom by `log2(target width / 320)`, and draws it at 320×180 through the same basemap and overlay (a `FrameRenderer` fed with those shots). It then writes an animated WebP of all frames (frame duration 125 ms, looping). It logs the same render summary line with `kind=preview`. Streaming frames into the WebP writer is preferred; if Pillow needs the frames in memory, bound them (320×180 RGB × 720 frames at 90 s is about 124 MB) and say so. `bench --preview` renders a real trip that way and prints the summary.
+- **Acceptance:** in the Linux image (CI=1), `pytest tests/test_video_preview_render.py tests/test_video_renderer.py tests/test_video_bench.py` passes. New tests: a 30 s preview of the test trip produces a WebP with `n_frames == 240` at 320×180, looping; for every camera mode on the renderer's synthetic trip (hike, run, ride and a train), each preview shot has the same centre as video shot `round(k × 30 / 8)` at the target size, and a zoom exactly `log2(W/320)` lower (Convention 3), shown to fail if the camera path is built at 320×180 or at 8 fps; frame *k* matches the full renderer's frame `round(k × 30 / 8)` at 1280×720, downscaled to 320×180, within the golden tolerance; the summary line carries `kind=preview`. The existing goldens are unchanged.
 - **Out of scope:** jobs, API, client.
 - **Latitude:** local design
 - **Escalate if:** X3; Pillow in the image can't write animated WebP.
@@ -162,22 +170,26 @@ lowers the fps to 6 before wave 2.
 - **Scope:** `api/video.py`; `src/video/job_runner.py`; `src/jobs/worker.py` (the killed-horse mapping entry for the preview runner, and restricting the startup sweep call to video rows); `tests/test_video_preview_api.py`, `tests/test_video_runner.py`.
 - **Context:** `POST /video` and its ordering (503 → 402 → consent → timeline → lock_account → insert → geometry → enqueue), `_consent`, `_file_response`; `run_video_job` / `_cas` / `mark_video_job_interrupted` / `sweep_video_jobs` / `sweep_stale_running_video_jobs`; `lock_account`; `enqueue` / `queue_has_workers` in src/jobs/queue.py.
 - **Do:**
-  1. `POST /video/preview` takes the same body as `POST /video` (length, camera, `decrypted_geometry`; height is ignored). Order:
+  1. `POST /video/preview` takes the same body as `POST /video`: length, camera, `height` (720 or 1080, the target resolution the preview frames like; not checked against the plan, since only the preview's framing depends on it) and `decrypted_geometry`. **All three preview routes take `owner: OwnerParam`**, like every other video route, so companions on a shared trip can preview (review R1-5). Order:
      - 503 unless `queue_has_workers(QUEUE_DEFAULT)`;
-     - consent 409;
+     - the non-authoritative rate-limit check ⇒ 429 (D6), before any consent or timeline work (review R1-6);
+     - consent 409, whose body carries `previews_left`;
      - timeline 422;
-     - in one `lock_account` transaction, the rate limit (≥ 10 in the last hour ⇒ 429 with `Retry-After`) and inserting a row of `kind='preview'` with `request_json` `{length_s, camera, width: 320, height: 180, fps: 8}`;
+     - in one `lock_account` transaction, the rate limit (≥ 10 in the last hour ⇒ 429 with `Retry-After`) and inserting a row of `kind='preview'` with `request_json` `{length_s, camera, width, height}` (the target resolution; the preview size and rate are fixed in `render_preview`);
      - the geometry file;
      - `enqueue(QUEUE_DEFAULT, run_video_preview_job, job_id, max_retries=0, allow_inline=False, job_timeout=300)`. If that fails, the row is failed and the geometry deleted, with a 503.
   2. `GET /video/preview/{job_id}` (status, owner only, 404 otherwise) and `GET /video/preview/{job_id}/bytes` (`image/webp`, done only).
-  3. `run_video_preview_job`: the same CAS lifecycle as `run_video_job`, calling `render_preview`. No emails. `expires_at = completed + 3600`. Geometry is deleted in `finally`. Fixed failure reasons.
+  3. `run_video_preview_job`: the same CAS lifecycle as `run_video_job`, calling `render_preview`. No emails, on any path: `mark_video_job_interrupted` and the sweeps skip `_notify_failed` for `kind='preview'` (review R1-2). `expires_at = completed + 3600`. Geometry is deleted in `finally`. Fixed failure reasons.
   4. `sweep_stale_running_video_jobs` acts on `kind='video'` only. `sweep_video_jobs` also fails previews running longer than 300 s + 5 min or pending longer than 1 h, and expires them after `expires_at`.
   5. Full-video routes ignore previews: the plan's quota figure, status and download of a preview id through the video routes ⇒ 404, and token routes never match a preview.
 - **Acceptance:** `pytest tests/test_video_preview_api.py tests/test_video_api.py tests/test_video_runner.py` passes, with the concurrency tests on a file SQLite database. New tests:
   - the happy path with a fake renderer;
   - 409 consent, and the consent geometry is deleted after done, failed and the sweeps;
   - the 11th preview in an hour ⇒ 429 with `Retry-After`, and two concurrent requests at 9 ⇒ exactly one succeeds;
-  - a preview never counts toward the monthly quota and sends no email;
+  - a preview never counts toward the monthly quota and sends no email — on success, on failure, when failed by the hourly sweep, and when interrupted through the killed-horse handler;
+  - a companion (`?owner=`) can create, poll and fetch a preview of a shared trip;
+  - over the limit on an encrypted trip ⇒ 429 **before** any 409 consent, and the 409 body carries `previews_left`;
+  - a preview left `pending` or `running` for over 15 minutes no longer counts toward the limit;
   - the video startup sweep leaves a running preview alone;
   - the hourly sweep expires and fails previews by age;
   - no broker or no `default` worker ⇒ 503 with nothing written;
@@ -191,20 +203,34 @@ lowers the fps to 6 before wave 2.
 
 **U4 — Preview in the video dialog**
 - **Goal:** A Preview button renders the current settings and shows the animated result inline, marked out of date when the settings change.
-- **Scope:** `flutter_client/lib/src/api/video_api.dart`, `flutter_client/lib/src/projects/video_job_notifier.dart`, `flutter_client/lib/src/projects/video_config_dialog.dart`; `flutter_client/test/video_job_notifier_test.dart`, `flutter_client/test/video_config_dialog_test.dart`.
+- **Scope:** `flutter_client/lib/src/api/video_api.dart`, `flutter_client/lib/src/projects/video_job_notifier.dart`, `flutter_client/lib/src/projects/video_config_dialog.dart`; new `flutter_client/lib/src/projects/video_preview_image.dart` with web and non-web implementations chosen by conditional import (`video_preview_image_web.dart`, `video_preview_image_io.dart`); `flutter_client/test/video_job_notifier_test.dart`, `flutter_client/test/video_config_dialog_test.dart`, new `flutter_client/test/video_preview_image_test.dart`.
 - **Context:** the poster preview fetch-and-show (`poster_job_notifier.dart` `fetchPosterPreview`, `app_screen.dart` `Image.memory`); the notifier's consent geometry (kept for the session and re-sent); the create/poll flow in the notifier; the widget-test traps (pump fixed frames while a spinner shows; swap the global `api`; a 360 dp phone test as in #518 F-c).
-- **Do:** Add a "Preview" button under the camera list. On tap it posts to `/video/preview` with the current length, camera and any consented geometry. On a 409 it runs the same consent flow, then retries. It polls the status (a spinner with "Rendering preview…"), then fetches the bytes and shows them with `Image.memory` in a 16:9 box, with the caption "Low-resolution preview". Changing the length or camera greys it and shows "Preview is for the previous settings". On 429 it shows "Too many previews — try again in N min". On 503 it shows "Preview unavailable".
-- **Acceptance:** `flutter analyze` is clean; in the container, the video tests and then the full suite pass. New tests: the preview request carries the length, camera and consented geometry; the out-of-date state after a change; the 429 and 503 messages; the preview box fits at 360 dp; consent is asked once for the preview and then the final video.
+- **Do:** Add a "Preview" button under the camera list.
+  - **Request:** on tap it posts to `/video/preview` (with `?owner=` for shared trips, as the other calls do) with the current length, camera, resolution and any consented geometry. On a 409 it runs the same consent flow, then retries.
+  - **Waiting (review R1-3, R1-7):** it polls the status and shows "Waiting for a worker…" while `pending` and "Rendering preview…" while `running`. It gives up after 10 min pending ("Workers are busy — try again later") or 3 min running ("The preview took too long — try again"). A `failed` status shows "The preview couldn't be made — try again", and `expired` behaves like no preview.
+  - **Showing it (review R1-4):** it fetches the bytes and shows them in a 16:9 box, captioned "Low-resolution preview", through `VideoPreviewImage`. That is `Image.memory` on Android and iOS, and on the web an `HtmlElementView` wrapping an `<img>` whose `src` is a Blob URL of the WebP (revoked on dispose), so every browser animates it natively.
+  - **Out of date:** changing the length, camera or resolution greys it and shows "Preview is for the previous settings".
+  - **Errors:** on 429, "Too many previews — try again in N min"; on 503, "Preview unavailable".
+- **Acceptance:** `flutter analyze` is clean; in the container, the video tests and then the full suite pass; `flutter build web` succeeds. New tests: the preview request carries the length, camera, resolution, `owner` and consented geometry; the pending and running messages; both deadlines and the failed branch (with a fake clock); the out-of-date state after a length, camera or resolution change; the 429 and 503 messages; the preview box fits at 360 dp; consent is asked once for the preview and then the final video; the non-web `VideoPreviewImage` uses `Image.memory`.
 - **Out of scope:** server.
 - **Latitude:** local design
-- **Escalate if:** X3; `Image.memory` can't animate WebP on one of the platforms in tests.
+- **Escalate if:** X3; the web `<img>` approach can't be built with the app's web setup.
 - **Depends on:** U3
+
+**Gate G2 (owner, after wave 3):** on val, open the video dialog on a trip in Chrome,
+Safari and Firefox (desktop), and in the Android app. Tap Preview and confirm it
+**animates** in each, and that the Follow framing looks like the final video's.
+If any browser shows a still image, R1-4 returns as concrete.
 
 ## Definition of done
 
 - In the video dialog, "Preview" shows an animated low-resolution preview of the
-  chosen length and camera, using the same timeline and camera as the final video,
-  within D10's time budget measured on the VPS at G1.
+  chosen length, camera and resolution. It uses the video's own camera path, sampled
+  at 8 fps, and renders within D10's time budget measured on the VPS at G1. It
+  animates in Chrome, Safari, Firefox and on Android (G2).
+- The dialog tells waiting from rendering, gives up with a message after its
+  deadlines, and handles failed previews.
+- Companions can preview shared trips. No preview ever sends an email, on any path.
 - Previews don't count toward the monthly quota, send no email, have no token link,
   and are deleted about 1 h after completion. At most 10 per user per hour; the 11th
   is a 429.
