@@ -226,3 +226,16 @@ Integrated-review fix wave (2026-09-30):
 - F-c (Sonnet) escalated F1-2: "Overview" (67 px) can't fit a 53 px segment at 360 dp even with "Follow"/"Fixed". Owner chose a vertical list of the three camera choices, each with a one-line description, and the fixed-zoom switch under Fixed.
 
 Fix-wave checks at 5be15b77 (2026-09-30): Linux-image video tests 352 passed; flutter analyze clean, flutter test 1819 passed; pytest 5191 passed with 0 failures from this change. The only failures (24 failed + 54 errors) were the rail-data tests (test_rail_data_fetch/source/store, plus test_rail_extract and test_rail_store_schema2 at collection): Windows Smart App Control blocked osmium's native module on the dev box. Those files are untouched by this delivery and CI runs them on Linux. Docker Desktop crashed once (WSL bootstrap 0xc00000fd); the owner restarted it.
+
+## Integrated review, round 2 — 2026-09-30, fixes 0288f214..5be15b77
+
+Reviewer: adversarial-reviewer (Fable). No findings, no envelope questions. Review closed.
+
+### Delivery summary — 2026-09-30
+
+- **Units:** 6 plan units and 4 fix units (U1a after G1 found invalid memory figures; F-a, F-c and F-d for the integrated review). By model: Opus 7 (U2, U3, U4, U5, F-a, F-d, and the resumed U2), Sonnet 3 (U1, U1a, U6, F-c — F-c on two attempts). Escalations: U2 (X2, owner amended D3 with the width-dependent fixed_strict floor), F-a on its F1-3 part (owner moved F1-3 to the overlay, F-d), F-c (owner chose a vertical list). No X1 re-routes.
+- **Gates:** G1 on the VPS (variable 317.4 ms/frame, tile fetch 40%) plus the dev-box encoder comparison, which chose crf 20 with no tune. G2 on the VPS: variable changed stages +17% of G1's total (within D8), overview 110.6 ms/frame, 9 tiles.
+- **Reviews:** plan (3 rounds), U3 unit review (clean), integrated round 1 (3 Fix now, all fixed), integrated round 2 (clean).
+- **Final checks:** pytest 5,191 passed with 0 failures from this change (rail tests blocked locally by Smart App Control; they run in CI); Linux-image video tests 352 passed; flutter analyze clean; flutter test 1,819 passed.
+- **Open:** none in this ledger. Related issues: #517 (render time, numbers posted), #519 (preview), #520 (two-lane workers, memory note posted).
+- **Environment lessons:** automatic worktrees start from main, so create them by hand from the feature branch. Another session switched the main checkout, so the delivery ran from its own worktree. Benchmarks on the dev box must be paired: a lone run read 140 ms against 93. Docker Desktop crashed or auto-updated twice. Smart App Control now blocks osmium locally.
