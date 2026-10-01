@@ -101,3 +101,9 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). No envel
 - Guard: —
 - Override: user: Fix now — one line, with the R2-1 deadline work; keeps the client raising only APIError
 - Outcome: fixed in plan (D8 and U1 Do 3: MIN_REQUEST_S = 0.5; U1 acceptance)
+
+## Integrated round 1 — 2026-10-01, reviewed at 4885c3b8 (feat/517-video-render-time against origin/main 8888d3d4)
+
+Reviewer: adversarial-reviewer (Fable). No findings and no envelope questions, so nothing was triaged. The round is clean.
+
+The reviewer checked the verifier's note that TilePrefetcher assumes a single consumer thread. No production path breaks it: only encode, _write_preview_webp and the bench's --dump-frames loop call frame()/basemap(), each on the renderer's own thread, and the dump loop runs after close() and so fetches directly. The only call from another thread is close(), which takes the pool's lock. Considered but not raised: up to 4 in-flight tiles are still billed after a failed render (D7 accepts this), and requests applies its timeout to connect and read separately, a behaviour that predates this change.
