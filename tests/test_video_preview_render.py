@@ -16,6 +16,7 @@ from __future__ import annotations
 import functools
 import logging
 import math
+import re
 from datetime import date
 
 import pytest
@@ -25,6 +26,7 @@ import src.poster.tile_stitcher as tile_stitcher
 import src.video.bench as bench
 import src.video.renderer as renderer
 from src.models.project import ConnectingSegment, Project, ProjectItem, SegmentEndpoint
+from src.video import tile_prefetch
 from src.video.camera import CAMERA_MODES, Shot, camera_path, frame_count
 from src.video.legs import build_legs
 from src.video.renderer import FrameRenderer, render_preview
@@ -272,6 +274,26 @@ def test_the_webp_decodes_to_its_pre_encode_frames(mode, tmp_path, monkeypatch):
         assert far <= WEBP_CODEC_FAR_TOLERANCE, f"{mode} frame {k}: codec far {far:.2%}"
 
 
+# ── tile prefetching (docs/VIDEO_RENDER_TIME_PLAN.md U2b) ───────────────────
+
+@pytest.mark.parametrize("mode", CAMERA_MODES)
+def test_preview_frames_are_bit_identical_with_and_without_prefetching(mode, tmp_path,
+                                                                      monkeypatch):
+    """The frames handed to the WebP encoder, with ``PREFETCH_THREADS`` at 4
+    and at 0 (Conventions). ``fake_tile`` is thread-safe: it counts nothing
+    and its cache takes a lock."""
+    drawn = {}
+    for threads in (4, 0):
+        monkeypatch.setattr(tile_prefetch, "PREFETCH_THREADS", threads)
+        (tmp_path / str(threads)).mkdir()
+        frames, pre, _ = _write(mode, tmp_path / str(threads), monkeypatch)
+        assert len(frames._prefetcher.threads) == threads
+        assert frames.prefetch_misses == 0
+        drawn[threads] = [image.tobytes() for image in pre]
+    assert len(drawn[4]) == PREVIEW_FRAMES
+    assert drawn[4] == drawn[0]
+
+
 # ── render_preview: the job runner's contract (Convention 5) ────────────────
 
 def test_render_preview_renders_the_job(db, tmp_path, monkeypatch):
@@ -330,6 +352,19 @@ def test_preview_summary_line_carries_kind_preview(db, tmp_path, caplog):
     lines = [r.getMessage() for r in caplog.records if "video render summary" in r.getMessage()]
     assert len(lines) == 1
     assert "kind=preview" in lines[0] and "frames=80 " in lines[0]
+
+
+def test_preview_summary_line_carries_tile_ms_and_prefetch_misses(db, tmp_path, caplog):
+    with caplog.at_level(logging.INFO, logger="src.video.renderer"):
+        render_preview(
+            job_id=1, user_info_id=db["owner"], project_id=db["trip"],
+            request={"length_s": 10, "height": 720, "width": 1280, "camera": "variable"},
+            out_path=tmp_path / "preview.webp", geometry=None, progress=lambda f, s: None,
+            tile_fetcher=fake_tile)
+    lines = [r.getMessage() for r in caplog.records if "video render summary" in r.getMessage()]
+    assert len(lines) == 1
+    assert re.search(r" tile_ms=[\d.]+ ", lines[0])
+    assert " prefetch_misses=0 " in lines[0]
 
 
 def test_a_failed_encode_leaves_no_partial_file(tmp_path, monkeypatch):
