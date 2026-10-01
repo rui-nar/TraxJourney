@@ -107,3 +107,26 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). No envel
 Reviewer: adversarial-reviewer (Fable). No findings and no envelope questions, so nothing was triaged. The round is clean.
 
 The reviewer checked the verifier's note that TilePrefetcher assumes a single consumer thread. No production path breaks it: only encode, _write_preview_webp and the bench's --dump-frames loop call frame()/basemap(), each on the renderer's own thread, and the dump loop runs after close() and so fetches directly. The only call from another thread is close(), which takes the pool's lock. Considered but not raised: up to 4 in-flight tiles are still billed after a failed render (D7 accepts this), and requests applies its timeout to connect and read separately, a behaviour that predates this change.
+
+## Delivery
+
+Branch `feat/517-video-render-time`, from the plan branch at 1bfd2ca8 (based on `origin/main` 8888d3d4). The orchestrator worked in worktree `E:\Dev\TraxJourney-517-plan`; unit worktrees `.claude/worktrees/v517-*` were made by hand from the branch.
+
+| Unit | Goal | Route | Rule | Attempts | Escalated | Verified first time | Findings traced |
+|---|---|---|---|---|---|---|---|
+| U1 | Tile client: one session per thread, 429 waits, deadline | Opus | S5 | 1 | — | yes | R1-2, R2-1, R2-3, R3-2 |
+| U2a | Tile prefetcher and `Sheet.requests` / `plan_requests` | Opus | S5 | 1 | — | yes | R1-1, R1-3, R2-4, R3-1 |
+| U3 | Bench `--profile` | Sonnet | — | 1 | — | yes | — |
+| U2b | Prefetch in every render; `tile_ms` and `prefetch_misses` in the summary | Opus | S5 | 1 | — | yes | R1-1, R2-2, R3-1 |
+
+Owner decisions during delivery: none beyond the plan.
+
+Reviews: plan (3 rounds, 9 findings, all fixed in the plan); integrated (round 1 clean).
+
+Checks at the final merge (4885c3b8):
+- server suite: 5533 passed, 38 skipped (the rail extract workflow test was left to CI on this machine; it fails locally on the base commit too);
+- video and tile tests in the Linux image: 562 passed, 3 skipped;
+- memory tests: unchanged with prefetching on and off (81–112 B per point, bound 120);
+- frames: bit-identical with prefetching on and off in every camera mode; goldens unchanged.
+
+Gate G1 passed (owner, 2026-10-01, VPS val, 90 s 1080p variable, same trip as #518's G2): `fetch_ms` 0.63, against 44.6 before and a target of ≤ 10; `prefetch_misses` 0. Total 200.8 ms per frame (542 s), against 257.4 (695 s) at #518's G2. Recorded in docs/VIDEO.md. The profile went into follow-up #525: the route's round joints (`joint="curve"`) and the basemap resize.

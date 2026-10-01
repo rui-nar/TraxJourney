@@ -312,3 +312,25 @@ Same VPS, same trip and settings as G1, on the wave-2 code (sharper overlay, CRF
 - **Projected 90 s 1080p render:** 695 s as measured, about 920 s if tile fetching is as slow as at G1. Both are well under the 1,600 s threshold (D4, G2).
 - **Overview is 2.9× faster than variable** and fetches 9 tiles instead of 2,414.
 - **Memory is dominated by loading the trip:** the renderer peaks at 725 MB in both modes, because loading the trip dominates. The peaks add up to more than `worker-video`'s 896 MB limit, but they didn't coincide and the runs completed. This concerns worker sizing (#520), not this change.
+
+## Gate G1 measurements (#517, 2026-10-01)
+
+Tile prefetching (docs/VIDEO_RENDER_TIME_PLAN.md) on the same VPS and the same trip as #518's G2, variable camera, 90 s at 1080p (2,700 frames):
+
+| Stage (ms per frame) | #518 G2 (before) | #517 G1 |
+|---|---|---|
+| Tile fetch (time the frame loop waits) | 44.6 | **0.6** |
+| Sheet stitch | 9.9 | 9.6 |
+| Basemap | 48.6 | 47.2 |
+| Overlay | 129.4 | 122.3 |
+| Write to ffmpeg | 13.8 | 14.0 |
+| **Total** | **257.4** (695 s) | **200.8** (542 s) |
+| Tiles / sheets | 2,414 / 152 | 2,414 / 152 |
+| Network time per tile (`tile_ms`) | — | 104.9 |
+| Prefetch misses | — | 0 |
+| Peak RSS renderer / ffmpeg | 725 / 299 MB | 501 / 309 MB |
+
+- **The tile fetch is now hidden.** Each tile still took 105 ms on the network, against about 50 ms at #518's G2 and 143 ms at its G1: the network varies, but the frame loop no longer waits on it (0.6 ms per frame). The tiles are the same, so the Mapbox cost is the same.
+- **Peak renderer memory** dropped from 725 to 501 MB, thanks to #519's compact geometry, not this change.
+
+**Profile** (`--profile`, same render; profiled timings are inflated, 268.5 ms per frame): of 748 s, the route line takes about 490 s (`overlay._draw_route`, cumulative). Most of it is Pillow's `ImageDraw.line(..., joint="curve")`, which draws a pie slice per vertex in Python (8.4 M line calls, 7.9 M pie slices, about 378 s). Basemap `resize` takes 115 s (1,848 calls, 62 ms each). Writing to ffmpeg takes 35 s, and `_decimate` 25 s. The CPU follow-up is #525.
