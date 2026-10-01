@@ -259,3 +259,19 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). U2bR1-1.
 ## Unit U3 review, round 1 — 2026-09-30, reviewed e9c17136..b3bb6850 (DELIVERY.md §5.3, jobs and consent geometry)
 
 Reviewer: adversarial-reviewer (Fable). No findings; no envelope questions. Review clean.
+
+## Integrated review, round 1 — 2026-10-01, reviewed origin/main (0bf5ce89)..02672b14 (DELIVERY.md §5.2)
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
+
+Envelope question (to owner): the dialog shows a notice instead of the options in the `noneLeft` and `unavailable` phases, so there is no Preview button once the month's videos are used up (every Free user after their one video) or while worker-video is down, although D3 makes previews free and the server allows them. Is hiding Preview there intended?
+Owner answer (2026-10-01): no — option (a): Preview stays reachable in `noneLeft` and `unavailable`, with Create video disabled and the notice shown beside the options. Delivered by fix unit F-a.
+
+### F1-1 — A preview's consent accept/decline forces the request phase back to `ready`, discarding `quotaExceeded`
+- Trigger: quota spent elsewhere → 402 → quotaExceeded → Preview on an encrypted trip needing consent → 409 → accept/decline → phase reset to ready → notice vanishes, Create video re-enabled → same 402
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: the owner lets Preview run in noneLeft/unavailable (then Preview → 409 → consent → reset becomes the normal path); the plan request stops requiring consent; a report of the quota notice vanishing after consent
+- Guard: —
+- Override: user: Fix now — with Preview reachable in noneLeft/unavailable, consent → reset becomes the normal path
+- Outcome: fix unit F-a
