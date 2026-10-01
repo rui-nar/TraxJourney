@@ -5,7 +5,8 @@
 // to close the dialog while a job is being created (U7a); and the preview
 // (docs/VIDEO_PREVIEW_PLAN.md, U4): its messages, deadlines on a fake clock,
 // the out-of-date state, a 360 dp phone, and one consent for preview and video;
-// and the preview when no video can be made, whose consent keeps that (F-a).
+// and the preview when no video can be made, whose consent keeps that (F-a)
+// and brings the real clip counts of an encrypted trip (F2-1).
 //
 // The dialog shows a CircularProgressIndicator while busy, so pumpAndSettle
 // would never return then: fixed frames are pumped instead.
@@ -862,6 +863,43 @@ void main() {
               accept ? findsOneWidget : findsNothing);
         });
       }
+    });
+
+    testWidgets(
+        'no video left on an encrypted trip: no clip counts before consent, '
+        "the real ones once a preview's consent is accepted (F2-1)",
+        (tester) async {
+      final none = _plan(quota: _quotaNone);
+      await openPreview(tester, (req) async {
+        if (req.url.path.endsWith('/plan')) {
+          return _json(
+              200,
+              hasGeometry(req)
+                  ? none
+                  : {
+                      ...none,
+                      'legs': 0,
+                      'clip_counts': {'30': 0, '60': 0, '90': 0},
+                    });
+        }
+        return server(consentOn: '/video/preview')(req);
+      });
+      expect(find.textContaining("You've used all 1 video"), findsOneWidget);
+      expect(find.text('60 s'), findsOneWidget);
+      expect(find.textContaining('clip'), findsNothing,
+          reason: 'not "0 clips": the counts are unknown without geometry');
+
+      await tapPreview(tester);
+      expect(find.byType(VideoConsentDialog), findsOneWidget);
+      await tester.tap(find.text('Send and continue'));
+      await _frames(tester);
+
+      expect(find.text('2 clips'), findsOneWidget);
+      expect(find.text('4 clips'), findsNWidgets(2));
+      expect(find.textContaining("You've used all 1 video"), findsOneWidget);
+      expect(find.text('Low-resolution preview'), findsOneWidget);
+      expect(body(sent.lastWhere(isPreviewCreate))['decrypted_geometry'],
+          {'7': _track});
     });
 
     testWidgets("declining a preview's consent keeps the dialog open",

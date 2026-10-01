@@ -250,6 +250,10 @@ class _VideoConfigDialogState extends State<VideoConfigDialog> {
     final quota = plan.quota;
     final dark = theme.brightness == Brightness.dark;
     final quotaError = _n.quotaError;
+    // A 200 plan with no leg is an encrypted trip planned without its
+    // geometry (no video can be made, so no consent was asked); a trip with
+    // nothing to animate is a 422. Its clip counts are 0, not real.
+    final clipsKnown = plan.legs > 0;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -266,7 +270,7 @@ class _VideoConfigDialogState extends State<VideoConfigDialog> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text('$s s'),
-                    if (plan.clipCounts[s] != null)
+                    if (clipsKnown && plan.clipCounts[s] != null)
                       Text(_clips(plan.clipCounts[s]!),
                           style: theme.textTheme.labelSmall),
                   ],

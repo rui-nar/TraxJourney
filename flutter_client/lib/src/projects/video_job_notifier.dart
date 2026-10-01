@@ -410,21 +410,28 @@ class VideoRequestNotifier extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Fetches the plan for the current settings and any consented geometry,
+  /// keeps it and a resolution it allows. Throws what the request throws.
+  Future<VideoPlan> _fetchPlan() async {
+    final p = await fetchVideoPlan(
+        ref: ref,
+        lengthS: lengthS,
+        camera: camera,
+        geometry: _geometry,
+        client: client);
+    plan = p;
+    final allowed = p.resolutions;
+    if (height == null || !allowed.contains(height)) {
+      height = allowed.isEmpty ? null : allowed.last;
+    }
+    return p;
+  }
+
   Future<void> loadPlan() async {
     errorMessage = null;
     _set(VideoRequestPhase.loading);
     try {
-      final p = await fetchVideoPlan(
-          ref: ref,
-          lengthS: lengthS,
-          camera: camera,
-          geometry: _geometry,
-          client: client);
-      plan = p;
-      final allowed = p.resolutions;
-      if (height == null || !allowed.contains(height)) {
-        height = allowed.isEmpty ? null : allowed.last;
-      }
+      final p = await _fetchPlan();
       _set(!p.available
           ? VideoRequestPhase.unavailable
           : p.quota.exhausted
@@ -488,6 +495,16 @@ class VideoRequestNotifier extends ChangeNotifier {
       case _ConsentFor.plan:
         await loadPlan();
       case _ConsentFor.preview:
+        // An encrypted trip's plan is empty without its geometry while no
+        // video can be made; with it the clip counts are real. The phase
+        // stays what the preview's 409 found, and a failed reload keeps the
+        // previous plan: the preview goes ahead either way.
+        try {
+          await _fetchPlan();
+        } catch (_) {
+          // Keep the plan there was.
+        }
+        if (_disposed) return;
         _set(_phaseBeforeConsent);
         await preview();
     }
