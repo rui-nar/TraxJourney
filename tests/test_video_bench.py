@@ -8,6 +8,7 @@ duplicating them (``fake_tile``, ``timeline30``, ``SMALL``, ``needs_ffmpeg``,
 from __future__ import annotations
 
 import logging
+import pstats
 import re
 import time
 
@@ -188,3 +189,34 @@ def test_dump_frames_writes_two_pngs_per_frame_of_the_right_size(db, tmp_path, m
         post = Image.open(out_dir / f"frame_{n:06d}_post.png")
         assert pre.size == (320, 180)
         assert post.size == (320, 180)
+
+
+def test_profile_writes_stats_naming_an_overlay_function(db, tmp_path, monkeypatch):
+    """``--profile FILE`` (U3/D10) dumps stats ``pstats.Stats`` can load, that
+    cover the overlay drawing (``src/video/overlay.py``), run here through
+    ``--preview`` so the test needs no ffmpeg."""
+    monkeypatch.setattr(tile_stitcher, "_default_tile_fetcher", lambda: fake_tile)
+    profile_path = tmp_path / "bench.prof"
+    rc = bench.main(["--project", "Ride trip", "--owner", str(db["owner"]),
+                     "--length", "10", "--height", "180", "--preview",
+                     "--profile", str(profile_path), "--out", str(tmp_path / "out")])
+    assert rc == 0
+    stats = pstats.Stats(str(profile_path))
+    assert any("overlay.py" in filename for filename, _lineno, _func in stats.stats)
+
+
+def test_without_profile_flag_no_profiler_is_created(db, tmp_path, monkeypatch):
+    monkeypatch.setattr(tile_stitcher, "_default_tile_fetcher", lambda: fake_tile)
+    created = []
+    real_profile = bench.cProfile.Profile
+
+    def spy(*args, **kwargs):
+        created.append(True)
+        return real_profile(*args, **kwargs)
+
+    monkeypatch.setattr(bench.cProfile, "Profile", spy)
+    rc = bench.main(["--project", "Ride trip", "--owner", str(db["owner"]),
+                     "--length", "10", "--height", "180", "--preview",
+                     "--out", str(tmp_path / "out")])
+    assert rc == 0
+    assert created == []

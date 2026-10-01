@@ -200,7 +200,8 @@ summary line, without going through a job row, quota or the queue:
 ```
 python -m src.video.bench --project "Tour de France" --owner 3 \
     --length 90 --height 1080 [--camera variable] [--crf 20] \
-    [--tune animation] [--dump-frames 450,1350,2250] [--out DIR]
+    [--tune animation] [--dump-frames 450,1350,2250] [--out DIR] \
+    [--profile FILE]
 ```
 
 - `--camera` is passed to the renderer as-is: `variable` (default),
@@ -214,6 +215,13 @@ python -m src.video.bench --project "Tour de France" --owner 3 \
   judged from.
 - `--out` is where the MP4 and any dumped frames land; omitted, it's a fresh
   temp directory (printed at the end).
+- `--profile FILE` (D10, #517) runs the render under `cProfile`, dumps its
+  stats to *FILE* (loadable with `pstats.Stats(FILE)`) and prints the top 30
+  functions by own time (`tottime`) after the render summary line. It is how
+  the CPU stages (basemap, overlay) get profiled below the per-stage level
+  the summary line already gives. **A profiled run's own timings are
+  inflated** by `cProfile`'s per-call overhead: gate G1's ms-per-frame
+  figures always come from a run without `--profile`.
 
 **Run it in its own container, never inside the live worker** — a
 `docker compose run` gets its own process and memory limit, with no RQ

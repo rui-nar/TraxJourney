@@ -4,12 +4,16 @@ candidate encoder settings — and dump frames for the sharpness comparison
 
     python -m src.video.bench --project "Tour de France" --owner 3 \\
         --length 90 --height 1080 [--camera variable] [--crf 20] \\
-        [--tune animation] [--dump-frames 450,1350,2250] [--out DIR]
+        [--tune animation] [--dump-frames 450,1350,2250] [--out DIR] \\
+        [--profile FILE]
 
 Reads the database named by ``DATABASE_URL`` and fetches basemap tiles with
 the server's ``MAPBOX_TOKEN``, exactly like a real render does — nothing here
 is faked. Prints the same one-line render summary the renderer logs (frames,
-ms per frame per stage, sheets, tiles, peak RSS).
+ms per frame per stage, sheets, tiles, peak RSS). ``--profile FILE`` runs the
+render under ``cProfile``, dumps its stats to *FILE* and prints the top 30
+functions by own time (D10, #517) — a profiled run's own timings are
+inflated, so the gate's figures come from a run without it.
 
 Run this on the server in its **own** container, never inside the live
 worker, so a benchmark run can neither starve nor be starved by a user's
@@ -23,6 +27,8 @@ See docs/VIDEO.md, "Profiling on the server".
 from __future__ import annotations
 
 import argparse
+import cProfile
+import pstats
 import subprocess
 import sys
 from pathlib import Path
@@ -48,6 +54,15 @@ def _frame_size(height: int) -> Tuple[int, int]:
 
 def _parse_frame_numbers(value: str) -> List[int]:
     return [int(v) for v in value.split(",") if v.strip()]
+
+
+def _print_profile(profiler: cProfile.Profile, path: str) -> None:
+    """Dump *profiler*'s stats to *path* and print the top 30 functions by
+    own time (``tottime``), after the render summary line (D10). Profiling
+    inflates every timing: the gate's ms-per-frame figures come from a run
+    without ``--profile`` (docs/VIDEO.md)."""
+    profiler.dump_stats(path)
+    pstats.Stats(profiler).sort_stats("tottime").print_stats(30)
 
 
 def _dump_decoded_frame(video_path: Path, n: int, out_dir: Path) -> Path:
@@ -80,6 +95,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                     help="comma-separated frame numbers to dump before and after encoding")
     ap.add_argument("--out", default=None,
                     help="directory for the video and dumped frames (default: a fresh temp dir)")
+    ap.add_argument("--profile", default=None, metavar="FILE",
+                    help="profile the render under cProfile, dump stats to FILE and print the "
+                         "top 30 functions by own time; profiled timings are inflated, so the "
+                         "gate's ms-per-frame figures come from a run without this flag")
     args = ap.parse_args(argv)
 
     configure_logging(level=env_level())
@@ -107,12 +126,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     # tile_fetcher left at its default (None) in every branch below: the
     # renderer builds the real MAPBOX_TOKEN client itself, lazily, on the
     # first tile it needs.
+    profiler = cProfile.Profile() if args.profile else None
+    if profiler:
+        profiler.enable()
+
     if args.preview:
         # The video's own camera path is built at --height's target
         # resolution (D1); the preview itself is always 320x180 at 8 fps.
         frames = _preview_frame_renderer(timeline, _frame_size(args.height), args.camera,
                                          project.name)
         _write_preview_webp(frames, out_dir / "bench.webp")
+        if profiler:
+            profiler.disable()
+            _print_profile(profiler, args.profile)
         print(f"output: {out_dir}")
         return 0
 
@@ -129,6 +155,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     frames = FrameRenderer(timeline, _frame_size(args.height), project.name,
                            camera=args.camera)
     encode(frames, video_path, **encode_kwargs)
+    if profiler:
+        profiler.disable()
+        _print_profile(profiler, args.profile)
 
     frame_numbers = _parse_frame_numbers(args.dump_frames) if args.dump_frames else []
     for n in frame_numbers:
