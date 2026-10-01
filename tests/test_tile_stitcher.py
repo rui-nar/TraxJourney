@@ -10,6 +10,7 @@ from __future__ import annotations
 import functools
 import io
 import math
+import threading
 
 import pytest
 from PIL import Image
@@ -193,6 +194,7 @@ def test_render_basemap_does_not_touch_network_when_fetcher_injected(monkeypatch
         raise AssertionError("should not hit the network when tile_fetcher is injected")
 
     monkeypatch.setattr("src.poster.tile_stitcher.requests.get", _boom)
+    monkeypatch.setattr("src.poster.tile_stitcher.requests.Session", _boom)
 
     img = render_basemap(
         _PARIS_BOUNDS, target_width=400, target_height=300,
@@ -352,28 +354,84 @@ def test_mapbox_tile_client_requires_token():
         MapboxTileClient("")
 
 
-def test_mapbox_tile_client_fetch_tile_success(monkeypatch):
-    class _Resp:
-        status_code = 200
-        content = b"fake-png-bytes"
+class _Resp:
+    """A minimal stand-in for ``requests.Response``."""
 
-    monkeypatch.setattr("src.poster.tile_stitcher.requests.get", lambda *a, **k: _Resp())
+    def __init__(self, status_code=200, content=b"", text="", headers=None):
+        self.status_code = status_code
+        self.content = content
+        self.text = text
+        self.headers = headers or {}
+
+
+def _install_sessions(monkeypatch, get):
+    """Make every ``requests.Session`` the client creates route ``get`` to
+    *get*. Returns the list of sessions created, in creation order."""
+    sessions = []
+
+    class _FakeSession:
+        def __init__(self):
+            self.threads = []
+            sessions.append(self)
+
+        def get(self, url, **kwargs):
+            self.threads.append(threading.get_ident())
+            return get(url, **kwargs)
+
+    monkeypatch.setattr("src.poster.tile_stitcher.requests.Session", _FakeSession)
+    return sessions
+
+
+class _Clock:
+    """Fake wall clock, monotonic clock and sleep: sleeping advances both."""
+
+    def __init__(self, wall=1_700_000_000.0):
+        self.wall = wall
+        self.mono = 1000.0
+        self.sleeps = []
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.wall += seconds
+        self.mono += seconds
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    c = _Clock()
+    monkeypatch.setattr("src.poster.tile_stitcher.time.time", lambda: c.wall)
+    monkeypatch.setattr("src.poster.tile_stitcher.time.monotonic", lambda: c.mono)
+    monkeypatch.setattr("src.poster.tile_stitcher.time.sleep", c.sleep)
+    return c
+
+
+def _responses(*resps):
+    """A fake ``get`` serving *resps* in order, recording each call's kwargs."""
+    queue = list(resps)
+    calls = []
+
+    def get(url, **kwargs):
+        calls.append(kwargs)
+        return queue.pop(0)
+
+    get.calls = calls
+    return get
+
+
+def test_mapbox_tile_client_fetch_tile_success(monkeypatch):
+    _install_sessions(monkeypatch, lambda *a, **k: _Resp(content=b"fake-png-bytes"))
     client = MapboxTileClient("tok", tile_size=256)
     assert client.fetch_tile(5, 10, 12) == b"fake-png-bytes"
 
 
 def test_mapbox_tile_client_retries_then_raises_on_persistent_5xx(monkeypatch):
-    class _Resp:
-        status_code = 503
-        text = "unavailable"
-
     calls = {"n": 0}
 
     def fake_get(*a, **k):
         calls["n"] += 1
-        return _Resp()
+        return _Resp(503, text="unavailable")
 
-    monkeypatch.setattr("src.poster.tile_stitcher.requests.get", fake_get)
+    _install_sessions(monkeypatch, fake_get)
     monkeypatch.setattr("src.poster.tile_stitcher.time.sleep", lambda s: None)
     client = MapboxTileClient("tok")
     with pytest.raises(APIError, match="after 3 attempts"):
@@ -382,21 +440,205 @@ def test_mapbox_tile_client_retries_then_raises_on_persistent_5xx(monkeypatch):
 
 
 def test_mapbox_tile_client_raises_immediately_on_4xx(monkeypatch):
-    class _Resp:
-        status_code = 401
-        text = "invalid token"
-
     calls = {"n": 0}
 
     def fake_get(*a, **k):
         calls["n"] += 1
-        return _Resp()
+        return _Resp(401, text="invalid token")
 
-    monkeypatch.setattr("src.poster.tile_stitcher.requests.get", fake_get)
+    _install_sessions(monkeypatch, fake_get)
     client = MapboxTileClient("tok")
     with pytest.raises(APIError, match="401"):
         client.fetch_tile(1, 0, 0)
     assert calls["n"] == 1
+
+
+def test_mapbox_tile_client_404_raises_at_once_without_sleeping(monkeypatch, clock):
+    get = _responses(_Resp(404, text="not found"))
+    _install_sessions(monkeypatch, get)
+    with pytest.raises(APIError, match="404"):
+        MapboxTileClient("tok").fetch_tile(1, 0, 0)
+    assert len(get.calls) == 1
+    assert clock.sleeps == []
+
+
+# ---------------------------------------------------------------------------
+# MapboxTileClient: connection reuse (#517)
+# ---------------------------------------------------------------------------
+
+def test_mapbox_tile_client_reuses_one_session_per_thread(monkeypatch):
+    """Tiles reuse keep-alive connections through one Session per thread;
+    a second thread gets its own, since Session isn't documented as
+    thread-safe."""
+    sessions = _install_sessions(monkeypatch, lambda *a, **k: _Resp(content=b"t"))
+    client = MapboxTileClient("tok")
+
+    client.fetch_tile(1, 0, 0)
+    client.fetch_tile(1, 1, 0)
+    assert len(sessions) == 1
+
+    worker = threading.Thread(target=lambda: client.fetch_tile(1, 0, 1))
+    worker.start()
+    worker.join()
+    assert len(sessions) == 2
+    assert sessions[0] is not sessions[1]
+    assert sessions[0].threads == [threading.get_ident()] * 2
+    assert len(sessions[1].threads) == 1
+    assert sessions[1].threads[0] != threading.get_ident()
+
+    client.fetch_tile(1, 1, 1)  # back on the first thread: its session again
+    assert len(sessions) == 2
+    assert len(sessions[0].threads) == 3
+
+
+# ---------------------------------------------------------------------------
+# MapboxTileClient: 429 retry and deadline (#517)
+# ---------------------------------------------------------------------------
+
+def test_429_waits_until_rate_limit_reset_plus_one_second(monkeypatch, clock):
+    get = _responses(
+        _Resp(429, headers={"X-Rate-Limit-Reset": str(int(clock.wall) + 10)}),
+        _Resp(content=b"tile"),
+    )
+    _install_sessions(monkeypatch, get)
+    assert MapboxTileClient("tok").fetch_tile(1, 0, 0) == b"tile"
+    assert clock.sleeps == [11]
+
+
+def test_429_wait_is_clamped_to_30_seconds(monkeypatch, clock):
+    get = _responses(
+        _Resp(429, headers={"X-Rate-Limit-Reset": str(clock.wall + 120)}),
+        _Resp(content=b"tile"),
+    )
+    _install_sessions(monkeypatch, get)
+    assert MapboxTileClient("tok").fetch_tile(1, 0, 0) == b"tile"
+    assert clock.sleeps == [30]
+
+
+def test_429_survives_a_window_used_up_at_its_start(monkeypatch, clock):
+    """The account's per-minute budget used up by others: every request
+    429s with the reset 60 s ahead until it passes. The tile must still
+    arrive, after a total sleep within the 65 s budget (review R2-3)."""
+    reset = clock.wall + 60
+
+    def get(url, **kwargs):
+        if clock.wall < reset:
+            return _Resp(429, headers={"X-Rate-Limit-Reset": str(reset)})
+        return _Resp(content=b"tile")
+
+    _install_sessions(monkeypatch, get)
+    assert MapboxTileClient("tok").fetch_tile(1, 0, 0) == b"tile"
+    assert sum(clock.sleeps) <= MapboxTileClient.MAX_RATE_LIMIT_WAIT_S
+
+
+def test_429_retry_after_is_used_without_a_reset_header(monkeypatch, clock):
+    get = _responses(_Resp(429, headers={"Retry-After": "5"}), _Resp(content=b"tile"))
+    _install_sessions(monkeypatch, get)
+    assert MapboxTileClient("tok").fetch_tile(1, 0, 0) == b"tile"
+    assert clock.sleeps == [5]
+
+
+@pytest.mark.parametrize("make_headers", [
+    lambda wall: {"X-Rate-Limit-Reset": "soon"},
+    lambda wall: {"X-Rate-Limit-Reset": "nan"},
+    lambda wall: {"X-Rate-Limit-Reset": "inf"},
+    lambda wall: {"X-Rate-Limit-Reset": ""},
+    lambda wall: {"X-Rate-Limit-Reset": str(wall - 5)},  # already past
+    lambda wall: {"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"},
+    lambda wall: {"Retry-After": "-3"},
+], ids=["word", "nan", "inf", "empty", "past-reset", "http-date", "negative"])
+def test_429_malformed_or_past_headers_fall_back_to_backoff(monkeypatch, clock, make_headers):
+    get = _responses(_Resp(429, headers=make_headers(clock.wall)), _Resp(content=b"tile"))
+    _install_sessions(monkeypatch, get)
+    assert MapboxTileClient("tok").fetch_tile(1, 0, 0) == b"tile"
+    assert clock.sleeps == [1]  # 2 ** 0
+
+
+@pytest.mark.parametrize("headers", [
+    {},
+    {"X-Rate-Limit-Reset": "soon", "Retry-After": "later"},
+])
+def test_persistent_429_raises_api_error_once_the_budget_is_spent(monkeypatch, clock, headers):
+    _install_sessions(monkeypatch, lambda *a, **k: _Resp(429, headers=headers))
+    with pytest.raises(APIError, match="429"):
+        MapboxTileClient("tok").fetch_tile(1, 0, 0)
+    assert clock.sleeps == [1, 2, 4, 8, 16, 30]
+    assert sum(clock.sleeps) <= MapboxTileClient.MAX_RATE_LIMIT_WAIT_S
+
+
+def test_persistent_429_does_not_use_up_the_5xx_retries(monkeypatch, clock):
+    """429s have their own budget: a 5xx after them still gets MAX_RETRIES."""
+    get = _responses(
+        *[_Resp(429) for _ in range(4)],
+        _Resp(503), _Resp(503), _Resp(content=b"tile"),
+    )
+    _install_sessions(monkeypatch, get)
+    assert MapboxTileClient("tok").fetch_tile(1, 0, 0) == b"tile"
+    assert clock.sleeps == [1, 2, 4, 8, 1, 2]
+
+
+def test_429_wait_past_the_deadline_raises_without_sleeping(monkeypatch, clock):
+    get = _responses(_Resp(429, headers={"X-Rate-Limit-Reset": str(clock.wall + 60)}))
+    _install_sessions(monkeypatch, get)
+    client = MapboxTileClient("tok", deadline=clock.mono + 10)
+    with pytest.raises(APIError, match="deadline"):
+        client.fetch_tile(1, 0, 0)
+    assert clock.sleeps == []
+    assert len(get.calls) == 1
+
+
+def test_5xx_backoff_past_the_deadline_raises_without_sleeping(monkeypatch, clock):
+    get = _responses(_Resp(503))
+    _install_sessions(monkeypatch, get)
+    client = MapboxTileClient("tok", deadline=clock.mono + 1.2)
+    with pytest.raises(APIError, match="deadline"):
+        client.fetch_tile(1, 0, 0)
+    assert clock.sleeps == []
+
+
+@pytest.mark.parametrize("left", [0.2, 0.0, -5.0])
+def test_no_request_is_sent_when_the_deadline_leaves_too_little(monkeypatch, clock, left):
+    """Under MIN_REQUEST_S left (or already past), the client raises without
+    sending, so requests never gets a timeout <= 0 (review R3-2)."""
+    get = _responses()
+    sessions = _install_sessions(monkeypatch, get)
+    client = MapboxTileClient("tok", deadline=clock.mono + left)
+    with pytest.raises(APIError, match="deadline"):
+        client.fetch_tile(1, 0, 0)
+    assert get.calls == []
+    assert all(s.threads == [] for s in sessions)
+
+
+def test_request_timeout_is_cut_to_the_time_left(monkeypatch, clock):
+    get = _responses(_Resp(content=b"a"), _Resp(content=b"b"))
+    _install_sessions(monkeypatch, get)
+    MapboxTileClient("tok", timeout=15.0, deadline=clock.mono + 5).fetch_tile(1, 0, 0)
+    MapboxTileClient("tok", timeout=15.0).fetch_tile(1, 0, 0)
+    assert get.calls[0]["timeout"] == pytest.approx(5.0)
+    assert get.calls[1]["timeout"] == 15.0
+
+
+def test_render_basemap_hands_its_deadline_to_the_default_client(monkeypatch):
+    """With no injected fetcher, render_basemap's deadline reaches the client,
+    so a 429 wait can't run the poster preview past its budget (review R2-1)."""
+    import src.poster.tile_stitcher as tile_stitcher
+
+    built = []
+    real_client = tile_stitcher.MapboxTileClient
+
+    def spy_client(*args, **kwargs):
+        client = real_client(*args, **kwargs)
+        built.append(client)
+        return client
+
+    monkeypatch.setattr(tile_stitcher, "_mapbox_token", lambda: "tok")
+    monkeypatch.setattr(tile_stitcher, "MapboxTileClient", spy_client)
+    _install_sessions(monkeypatch, lambda *a, **k: _Resp(content=_solid_png(size=(256, 256))))
+
+    deadline = tile_stitcher.time.monotonic() + 600
+    render_basemap(_PARIS_BOUNDS, target_width=400, target_height=300,
+                   tile_size=256, deadline=deadline)
+    assert [c.deadline for c in built] == [deadline]
 
 
 # ---------------------------------------------------------------------------
@@ -524,15 +766,11 @@ def test_render_basemap_output_identical_for_1x_and_2x_tiles():
 def test_fetch_tile_requests_retina_suffix_only_for_pixel_ratio_2(monkeypatch):
     urls = []
 
-    class _Resp:
-        status_code = 200
-        content = b"x"
-
     def fake_get(url, **k):
         urls.append(url)
-        return _Resp()
+        return _Resp(content=b"x")
 
-    monkeypatch.setattr("src.poster.tile_stitcher.requests.get", fake_get)
+    _install_sessions(monkeypatch, fake_get)
 
     MapboxTileClient("tok", tile_size=512, pixel_ratio=2).fetch_tile(3, 4, 5)
     MapboxTileClient("tok", tile_size=512, pixel_ratio=1).fetch_tile(3, 4, 5)
