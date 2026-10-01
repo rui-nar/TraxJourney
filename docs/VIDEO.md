@@ -87,6 +87,19 @@ returned frame by frame:
   `MAX_TILES` (3000). If the plan is over budget, the highest band is lowered
   one level at a time until the plan fits: coarser tiles, scaled up. The
   camera's framing never changes, and the render never fails for the budget.
+- **Prefetching.** Because every sheet is planned before frame 1, the order
+  of every tile request is known too (`plan_requests`). A `TilePrefetcher`
+  (`src/video/tile_prefetch.py`) fetches them in that order on
+  `PREFETCH_THREADS` (4) background threads, at most `PREFETCH_WINDOW` (32)
+  tiles ahead, while the frames are drawn. The frame loop then waits only for
+  a tile that isn't fetched yet. Each request is matched by its tile, not by
+  its position: a request with nothing pending for it is a *miss*, fetched
+  on the spot as before, so a wrong order costs time, never a wrong frame.
+  The same tiles are requested as without prefetching (no cache, no
+  deduplication), and frames are bit-identical either way. The prefetcher
+  starts on the first frame and stops when the frame loop ends, whatever
+  ended it; a fetch error is raised when the render reaches that tile. A
+  render that needs no tile still needs no `MAPBOX_TOKEN`.
 
 ## The antimeridian
 
@@ -174,22 +187,35 @@ ffmpeg 7.1) under Docker Desktop, 10 CPUs, with `--memory 896m` (the
 ## Stage timings
 
 Every render logs one INFO summary line when it finishes encoding — frame
-count, wall time, ms per frame for each stage, sheets, tiles and peak RSS of
-the renderer and of ffmpeg:
+count, wall time, ms per frame for each stage, sheets, tiles, the tile fetch
+figures, and peak RSS of the renderer and of ffmpeg:
 
 ```
 video render summary: frames=1800 elapsed_s=112.32 ms_per_frame=62.4
 fetch_ms=18.10 stitch_ms=9.40 basemap_ms=21.60 overlay_ms=11.20 write_ms=2.10
-sheets=86 tiles=1479 peak_rss_renderer_mb=363 peak_rss_ffmpeg_mb=318
+sheets=86 tiles=1479 tile_ms=52.3 prefetch_misses=0
+peak_rss_renderer_mb=363 peak_rss_ffmpeg_mb=318
 ```
 
 The five stages are mutually exclusive (they add up to `elapsed_s`, not past
-it): `fetch` is time inside the tile fetcher; `stitch` is a new sheet's own
-decode/paste/resize, net of any `fetch` it did; `basemap` is a frame's crop,
-scale and cross-fade blend, net of any `fetch`/`stitch` a new sheet needed;
-`overlay` is drawing the route, marker and HUD; `write` is time blocked
-writing a frame to ffmpeg's stdin (its own encoding work happens
+it): `fetch` is time the frame loop spends waiting for tiles; `stitch` is a
+new sheet's own decode/paste/resize, net of any `fetch` it did; `basemap` is
+a frame's crop, scale and cross-fade blend, net of any `fetch`/`stitch` a new
+sheet needed; `overlay` is drawing the route, marker and HUD; `write` is time
+blocked writing a frame to ffmpeg's stdin (its own encoding work happens
 concurrently, in the ffmpeg process, and isn't part of any of these).
+
+Tiles are prefetched (see [Basemap](#basemap-bands-and-sheets-srcvideobasemap_bandspy)),
+so `fetch` is blocked time, not network time: with the pool keeping ahead of
+the frames, it is near 0. Two fields show the network itself:
+
+- `tile_ms` is the mean network time per tile, measured on the prefetch
+  threads (and on the frame loop's own thread for a miss). A slow or
+  rate-limited Mapbox shows here even when `fetch_ms` stays low. It is a
+  diagnostic only.
+- `prefetch_misses` counts the tiles the frame loop had to fetch itself
+  because none was pending for it. It is 0 for a render drawn from frame 0
+  in order; anything else means the prefetch order and the render disagree.
 
 ## Profiling on the server
 
