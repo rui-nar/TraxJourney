@@ -79,3 +79,25 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). No envel
 - Guard: —
 - Override: user: Fix now — count on the consumer's thread, which removes the race
 - Outcome: fixed in plan (D9, U2a Do 3: counters updated on the consumer's thread; the R1-3 close() warning dropped)
+
+## Round 3 — 2026-10-01, reviewed at 60535c20 (fixes since a64b734b)
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). No envelope questions. This is the last round REVIEW.md §6 allows.
+
+### R3-1 — The thread-name checks are process-wide, but the "abandoned" test leaves idle tile-prefetch- threads, so the U2b checks fail or flake depending on test order
+- Trigger: a developer runs U2a's acceptance command after wave 2 → the "abandoned" test leaves idle daemon tile-prefetch- threads → U2b "failure cleanup" and "dropped renderer" find them in threading.enumerate() → they fail although the renderer cleaned up
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=inferred
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
+
+### R3-2 — Cutting the request timeout to the time left can pass a timeout ≤ 0: urllib3 raises ValueError (not APIError), and the preview shows a garbled warning
+- Trigger: a 429 wait ends milliseconds before the poster preview's deadline → remaining ≤ 0 → session.get raises ValueError, which escapes fetch_tile → the grey map shows "Map imagery unavailable: Attempted to set connect timeout to -0.003…"
+- Scores: trigger=plausible, impact=cosmetic, detect=user-visible, later=cheap, fix=S/local, confidence=inferred
+- Decision: Defer (D10)
+- Revisit when: a preview warning or API log contains "timeout cannot be set" or a ValueError from MapboxTileClient.fetch_tile, or a caller that passes a deadline relies on the client raising only APIError
+- Guard: —
+- Override: —
+- Outcome: open
