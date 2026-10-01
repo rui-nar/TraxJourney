@@ -110,31 +110,53 @@ them to make faster.
   dropped without `close()` (many tests and the bench's `--dump-frames`)
   leaves at most `window` fetches to finish, then idle threads. A
   `weakref.finalize` on `FrameRenderer` closes the prefetcher when the
-  renderer is collected. A closed prefetcher is never restarted, and calls
-  after `close()` fetch synchronously.
+  renderer is collected, which ends its threads. It is registered when the
+  prefetcher is created, with the prefetcher's own bound `close` as its
+  callback, so it holds no reference to the renderer (review R2-2). A closed
+  prefetcher is never restarted, and calls after `close()` fetch
+  synchronously.
 - **D8 — 429 is retried.** `MapboxTileClient` treats 429 like a transient
-  error, within the same `MAX_RETRIES`. Mapbox documents
+  error, with its own budget rather than `MAX_RETRIES` (review R2-3). Mapbox
+  documents
   `X-Rate-Limit-Reset` (a Unix timestamp) on rate-limited responses, not
   `Retry-After` (review R1-2), so the wait is, in order of preference:
   1. `X-Rate-Limit-Reset` minus now;
   2. `Retry-After` in seconds;
   3. the existing `2 ** attempt` backoff.
 
-  The wait is capped at 30 s and never below 1 s. A missing, malformed or
-  past header counts as absent, so parsing never raises anything but
-  `APIError` out of the client. Today a single 429 fails the render, and
-  parallel fetching makes one more likely.
+  A reset-based wait adds 1 s of margin past the reset. Each wait is
+  clamped to [1, 30] s. A missing, malformed or past header counts as absent,
+  so parsing never raises anything but `APIError` out of the client.
+
+  A tile keeps retrying 429s until its total wait would pass
+  `MAX_RATE_LIMIT_WAIT_S = 65`, so a window used up at its start (reset
+  ~60 s ahead) still ends with an attempt after the reset (review R2-3).
+  5xx and network errors keep `MAX_RETRIES`.
+
+  **A deadline bounds every wait** (review R2-1). The client takes an
+  optional `deadline` (a `time.monotonic()` instant). A wait that would end
+  past it is not taken: the client raises `APIError` at once. A request's
+  own timeout is also cut to what is left before the deadline.
+  `render_basemap` passes its `deadline` to the default client it builds.
+  The synchronous poster preview (10 s budget, `poster_renderer.py`)
+  therefore still falls back to its grey map within budget instead of
+  sleeping past the app's ~20 s timeout. Video renders and full posters pass
+  no deadline and get the full 65 s.
+
+  Today a single 429 fails the render, and parallel fetching makes one more
+  likely.
 - **D9 — What "fetch" means in the summary.** The `fetch` stage stays "time
   the frame loop spends waiting for tiles". With prefetching that is
   blocked time, not network time. The summary line gains two fields:
   `tile_ms`, the mean network time per tile measured inside the pool (so a
   slow network is still visible), and `prefetch_misses`. `tile_ms` is a
-  diagnostic only: gate G1 decides on `fetch_ms` and `prefetch_misses`. Its
-  counters are updated from the pool threads and guarded, not locked
-  (review R1-3, Guard). The U2a tests assert that, after an in-order run with
-  4 threads, `fetched` equals the fake fetcher's thread-safe call count.
-  `close()` logs a warning if `fetched` plus `misses` differs from the number
-  of fetches completed.
+  diagnostic only: gate G1 decides on `fetch_ms` and `prefetch_misses`. The
+  pool thread stores each fetch's network time with its result. The
+  counters (`fetched`, `net_seconds`, `misses`) are updated only on the
+  consumer's thread, when it takes a result or makes a miss, so they need no
+  lock and can't race (review R2-4, which supersedes the warning added for
+  R1-3). The R1-3 guard keeps its test: after an in-order run with 4
+  threads, `fetched` equals the fake fetcher's thread-safe call count.
 - **D10 — CPU stages: profile now, change later** (owner decision). The bench
   gains `--profile FILE`, which runs the frame loop under `cProfile`, writes
   the stats and prints the top 30 functions by own time. The owner runs it
@@ -191,30 +213,41 @@ humans read it, and docs/VIDEO.md documents it.
 
 **U1 — Tile client: connection reuse and 429 retry**
 - **Goal:** `MapboxTileClient` reuses connections per thread and retries 429.
-- **Scope:** `src/poster/tile_stitcher.py` (`MapboxTileClient` only);
-  `tests/test_tile_stitcher.py`.
+- **Scope:** `src/poster/tile_stitcher.py` (`MapboxTileClient`,
+  `_default_tile_fetcher`, and passing `deadline` to the default client in
+  `render_basemap`); `tests/test_tile_stitcher.py`.
 - **Context:** D1, D8. The existing client tests
   (`test_mapbox_tile_client_*`) are the example. They monkeypatch
   `requests.get` and must move to patching the session.
 - **Do:**
   1. Give the client a thread-local `requests.Session`, created on first
      use in each thread, and fetch through it.
-  2. Treat 429 as retryable within `MAX_RETRIES`. Choose the wait as D8
-     says: `X-Rate-Limit-Reset` minus now, then `Retry-After`, then
-     `2 ** attempt`. Clamp it to [1, 30] s. A missing, malformed or past
-     header counts as absent (review R1-2).
-  3. Leave every other behaviour unchanged: 5xx and network retries, other
+  2. Treat 429 as retryable, as D8 says: choose each wait as
+     `X-Rate-Limit-Reset` minus now plus 1 s, then `Retry-After`, then
+     `2 ** attempt`, and clamp it to [1, 30] s. Keep retrying 429s while the
+     total wait stays within `MAX_RATE_LIMIT_WAIT_S = 65`. A missing,
+     malformed or past header counts as absent (reviews R1-2, R2-3).
+  3. Add an optional `deadline` to the client and to `_default_tile_fetcher`.
+     A wait that would end past it raises `APIError` at once, and a
+     request's timeout is cut to the time left. `render_basemap` passes its
+     own `deadline` when it builds the default client (review R2-1).
+  4. Leave every other behaviour unchanged: 5xx and network retries, other
      4xx raising at once, error messages and the URL.
 - **Acceptance:** `pytest tests/test_tile_stitcher.py tests/test_poster*.py`
   passes. New tests:
   - two fetches on one thread use one session object; two threads use two;
   - a 429 with `X-Rate-Limit-Reset` 10 s ahead, then a 200, returns the
-    tile after sleeping about 10 s (with the clock faked);
+    tile after sleeping 11 s (with the clock faked);
   - a reset 120 s ahead sleeps 30;
+  - a 429 with the reset 60 s ahead every time until the reset passes, then
+    a 200: the tile is returned, and the total sleep is ≤ 65 s (R2-3);
+  - with a `deadline` 10 s ahead, a 429 whose reset is 60 s ahead raises
+    `APIError` without sleeping. `render_basemap` with a deadline and no
+    injected fetcher hands that deadline to the client (R2-1);
   - a 429 with `Retry-After: 5` only sleeps 5;
   - a 429 with a malformed or past reset falls back to the backoff and
     raises only `APIError`;
-  - persistent 429 raises `APIError` after `MAX_RETRIES`;
+  - persistent 429 raises `APIError` once the 65 s budget is spent;
   - a 404 still raises at once without sleeping.
 - **Out of scope:** prefetching, caching, the poster renderer.
 - **Latitude:** local design
@@ -259,9 +292,11 @@ humans read it, and docs/VIDEO.md documents it.
      - Results that are never consumed (out-of-order renders) must not keep
        the window full forever. When a miss shows the render has moved past
        them, discard them (local design: say how).
-     - The counters `fetched` and `net_seconds` are updated from the pool
-       threads without a lock (D9, review R1-3 Guard). `close()` logs a
-       warning if `fetched` plus `misses` differs from the fetches completed.
+     - Each pool fetch returns its network time with its bytes. `fetched`,
+       `net_seconds` and `misses` are updated only on the consumer's thread
+       (D9, review R2-4).
+     - Name the pool threads with a common prefix (e.g. `tile-prefetch-`)
+       so tests can find them in `threading.enumerate()`.
 - **Acceptance:** `pytest tests/test_video_tile_prefetch.py
   tests/test_video_renderer.py tests/test_video_camera.py` passes. New tests:
   - **plan order:** for the renderer's synthetic trip in every camera mode,
@@ -332,9 +367,10 @@ humans read it, and docs/VIDEO.md documents it.
      `fetch` is the frame loop's wait (D9).
   3. Start the prefetcher on the first `frame()` call. Add
      `FrameRenderer.close()`, which is idempotent and called in a `finally`
-     by `encode` and `_write_preview_webp`. Also register a
-     `weakref.finalize` that closes the prefetcher when the renderer is
-     collected (review R1-1). A closed prefetcher is never restarted.
+     by `encode` and `_write_preview_webp`. When the prefetcher is created,
+     register `weakref.finalize(self, prefetcher.close)`. The callback is
+     the prefetcher's own bound method, never one that refers to `self`
+     (reviews R1-1, R2-2). A closed prefetcher is never restarted.
   4. Add `tile_ms` and `prefetch_misses` to the summary line for both kinds.
   5. Update docs/VIDEO.md.
 - **Acceptance:** in the Linux image (CI=1), `pytest tests/test_video_*.py`
@@ -350,9 +386,10 @@ humans read it, and docs/VIDEO.md documents it.
   - **failure cleanup:** after a failing fetch, the render raises the
     fetcher's exception and no prefetch thread is still alive afterwards
     (`threading.enumerate()`, bounded wait);
-  - **dropped renderer:** a `FrameRenderer` that drew a few frames
-    directly, with no `encode`, and was then dropped and collected leaves no
-    prefetch thread fetching (bounded wait);
+  - **dropped renderer:** a `FrameRenderer` draws a few frames directly,
+    with no `encode`. After `del` and `gc.collect()`, a weak reference to it
+    is dead and no `tile-prefetch-` thread is alive (bounded wait). Shown to
+    fail with a finalizer that closes over the renderer (R2-2);
   - **summary:** the line carries `tile_ms=` and `prefetch_misses=`.
 - **Out of scope:** CPU stages, the poster renderer, caching, timeouts.
 - **Latitude:** local design
@@ -381,6 +418,8 @@ from the profile.
   and without prefetching; existing goldens pass unchanged.
 - A Mapbox 429, including one that lasts until the end of the current minute,
   no longer fails a render on its own.
+- The poster preview still falls back to its grey map within its 10 s
+  budget when Mapbox answers 429.
 - A failed or timed-out render leaves no prefetch thread fetching.
 - The render summary reports `tile_ms` and `prefetch_misses`;
   docs/VIDEO.md documents them and records the gate run.

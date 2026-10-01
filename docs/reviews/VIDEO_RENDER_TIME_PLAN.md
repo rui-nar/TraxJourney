@@ -38,7 +38,7 @@ Owner answer (2026-10-01): asked for faster alternatives (daemon fetch threads w
 - Revisit when: —
 - Guard: (proposed) the U2a tests assert, after an in-order run with threads=4, that `prefetcher.fetched` equals the fake fetcher's thread-safe call count; close() logs a warning if fetched + misses differs from the completed fetches
 - Override: —
-- Outcome: guard added in plan (D9, U2a Do 3 and acceptance "counters")
+- Outcome: guard added in plan (D9, U2a acceptance "counters"); its close() warning was replaced in round 2 by consumer-side counting (R2-4)
 
 ## Round 2 — 2026-10-01, reviewed at a64b734b (fixes since 2dc0cb22)
 
@@ -50,8 +50,8 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). No envel
 - Decision: Defer (D10)
 - Revisit when: a POST /poster/preview takes longer than the client's ~20 s timeout, a Mapbox 429 is logged on the poster preview path, or the owner overrides because this undoes the #14 preview budget
 - Guard: —
-- Override: —
-- Outcome: open
+- Override: user: Fix now — a regression this plan's own R1-2 fix introduces
+- Outcome: fixed in plan (D8 deadline, U1 Scope, Do 3 and acceptance, DoD)
 
 ### R2-2 — The R1-1 "dropped renderer" test passes whether or not the weakref.finalize fires
 - Trigger: CI runs the test against `weakref.finalize(self, self.close)` → the callback holds a strong reference, so the renderer is never collected → the pool threads sit idle, so "no prefetch thread fetching" holds → the test passes while the R1-1 fix does nothing
@@ -60,7 +60,7 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). No envel
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed in plan (D7, U2a thread names, U2b Do 3 and acceptance "dropped renderer")
 
 ### R2-3 — D8's two 30 s waits add up to exactly 60 s, so the last attempt lands on the reset boundary with no margin
 - Trigger: the budget is used up at the start of a window → 429 with the reset ~60 s ahead → sleep 30, another 429, sleep ~30 → the third and last attempt is sent at the reset instant → clock skew or limiter lag returns 429 again → APIError → the render fails
@@ -68,8 +68,8 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). No envel
 - Decision: Defer (D10)
 - Revisit when: a render fails with a Mapbox 429 APIError after the full D8 waits, or R2-1 is reopened (settle the cap and the margin together)
 - Guard: —
-- Override: —
-- Outcome: open
+- Override: user: Fix now — settled together with R2-1
+- Outcome: fixed in plan (D8: +1 s margin, 65 s per-tile 429 budget, U1 Do 2 and acceptance)
 
 ### R2-4 — The R1-3 guard compares counters while in-flight fetches are still completing, so it can warn spuriously on a failed render
 - Trigger: a render fails mid-way → close() runs while pool threads are still fetching → the counters change between the reads → a spurious "counters disagree" warning
@@ -77,5 +77,5 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). No envel
 - Decision: Defer (D10)
 - Revisit when: the warning appears in a worker or bench log; first check whether that render failed with fetches in flight
 - Guard: —
-- Override: —
-- Outcome: open
+- Override: user: Fix now — count on the consumer's thread, which removes the race
+- Outcome: fixed in plan (D9, U2a Do 3: counters updated on the consumer's thread; the R1-3 close() warning dropped)
