@@ -175,21 +175,28 @@ class _VideoConfigDialogState extends State<VideoConfigDialog> {
           child: Center(child: CircularProgressIndicator()),
         );
       case VideoRequestPhase.unavailable:
-        return _notice(
+        return _optionsUnder(
           context,
-          Icons.cloud_off_outlined,
-          "Video rendering isn't available right now. Please try again later.",
+          _notice(
+            context,
+            Icons.cloud_off_outlined,
+            "Video rendering isn't available right now. Please try again later.",
+          ),
         );
       case VideoRequestPhase.noneLeft:
         final q = _n.quota;
-        return _notice(
+        return _optionsUnder(
           context,
-          Icons.workspace_premium_outlined,
-          q?.limit == null
-              ? 'You have no videos left this month.'
-              : "You've used all ${q!.limit} video${q.limit == 1 ? '' : 's'} "
-                  'your plan includes this month.',
-          color: theme.brightness == Brightness.dark ? kWarningDark : kWarning,
+          _notice(
+            context,
+            Icons.workspace_premium_outlined,
+            q?.limit == null
+                ? 'You have no videos left this month.'
+                : "You've used all ${q!.limit} video${q.limit == 1 ? '' : 's'} "
+                    'your plan includes this month.',
+            color:
+                theme.brightness == Brightness.dark ? kWarningDark : kWarning,
+          ),
         );
       case VideoRequestPhase.error:
         return Column(
@@ -212,6 +219,17 @@ class _VideoConfigDialogState extends State<VideoConfigDialog> {
     }
   }
 
+  /// [notice] with the options under it, so a preview can still be made when
+  /// no video can (previews are free, D3); [notice] alone without a plan.
+  Widget _optionsUnder(BuildContext context, Widget notice) {
+    if (_n.plan == null) return notice;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [notice, const SizedBox(height: 16), _options(context)],
+    );
+  }
+
   Widget _notice(BuildContext context, IconData icon, String text,
       {Color? color}) {
     final theme = Theme.of(context);
@@ -232,6 +250,10 @@ class _VideoConfigDialogState extends State<VideoConfigDialog> {
     final quota = plan.quota;
     final dark = theme.brightness == Brightness.dark;
     final quotaError = _n.quotaError;
+    // A 200 plan with no leg is an encrypted trip planned without its
+    // geometry (no video can be made, so no consent was asked); a trip with
+    // nothing to animate is a 422. Its clip counts are 0, not real.
+    final clipsKnown = plan.legs > 0;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -248,7 +270,7 @@ class _VideoConfigDialogState extends State<VideoConfigDialog> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text('$s s'),
-                    if (plan.clipCounts[s] != null)
+                    if (clipsKnown && plan.clipCounts[s] != null)
                       Text(_clips(plan.clipCounts[s]!),
                           style: theme.textTheme.labelSmall),
                   ],
