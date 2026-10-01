@@ -842,26 +842,38 @@ void main() {
         });
       }
 
-      for (final accept in [true, false]) {
-        testWidgets(
-            'no video left: still so after '
-            "${accept ? 'accepting' : 'declining'} a preview's consent "
-            '(F1-1)', (tester) async {
-          await openPreview(
-              tester,
-              server(
-                  plan: _plan(quota: _quotaNone), consentOn: '/video/preview'));
-          await tapPreview(tester);
-          expect(find.byType(VideoConsentDialog), findsOneWidget);
-          await tester.tap(find.text(accept ? 'Send and continue' : 'Decline'));
-          await _frames(tester);
+      for (final (name, plan, notice) in [
+        (
+          'no video left',
+          _plan(quota: _quotaNone),
+          "You've used all 1 video your plan includes this month."
+        ),
+        (
+          'video rendering unavailable',
+          _plan(available: false),
+          "Video rendering isn't available right now. Please try again later."
+        ),
+      ]) {
+        for (final accept in [true, false]) {
+          testWidgets(
+              '$name: still so after '
+              "${accept ? 'accepting' : 'declining'} a preview's consent "
+              '(F1-1)', (tester) async {
+            await openPreview(
+                tester, server(plan: plan, consentOn: '/video/preview'));
+            await tapPreview(tester);
+            expect(find.byType(VideoConsentDialog), findsOneWidget);
+            await tester
+                .tap(find.text(accept ? 'Send and continue' : 'Decline'));
+            await _frames(tester);
 
-          expect(find.byType(VideoConfigDialog), findsOneWidget);
-          expect(find.textContaining("You've used all 1 video"), findsOneWidget);
-          expect(button(tester, 'Create video').onPressed, isNull);
-          expect(find.text('Low-resolution preview'),
-              accept ? findsOneWidget : findsNothing);
-        });
+            expect(find.byType(VideoConfigDialog), findsOneWidget);
+            expect(find.text(notice), findsOneWidget);
+            expect(button(tester, 'Create video').onPressed, isNull);
+            expect(find.text('Low-resolution preview'),
+                accept ? findsOneWidget : findsNothing);
+          });
+        }
       }
     });
 

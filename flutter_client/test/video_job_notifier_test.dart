@@ -982,15 +982,36 @@ void main() {
         return n;
       }
 
-      for (final (name, make, phase) in [
-        ('quotaExceeded', quotaExceeded, VideoRequestPhase.quotaExceeded),
-        ('noneLeft', noneLeft, VideoRequestPhase.noneLeft),
+      /// Rendering unavailable on an encrypted trip: the server plans it
+      /// without asking consent, so the plan is empty.
+      Future<VideoRequestNotifier> unavailable(
+          {http.Response? consentedPlan}) async {
+        final n = notifier(previewServer(
+            emptyPlanJson(available: false, quota: quotaOne),
+            encrypted: true,
+            consentedPlan: consentedPlan));
+        await n.loadPlan();
+        expect(n.phase, VideoRequestPhase.unavailable);
+        return n;
+      }
+
+      for (final (name, make, phase, consented) in [
+        (
+          'quotaExceeded',
+          quotaExceeded,
+          VideoRequestPhase.quotaExceeded,
+          planJson(quota: quotaNone)
+        ),
+        ('noneLeft', noneLeft, VideoRequestPhase.noneLeft,
+            planJson(quota: quotaNone)),
+        ('unavailable', unavailable, VideoRequestPhase.unavailable,
+            planJson(available: false)),
       ]) {
         test("$name: accepting a preview's consent reloads the plan with the "
             'geometry, keeps the phase, then previews (F2-1)', () async {
           final n = await make(
               consentedPlan: _json(200, {
-            ...planJson(quota: quotaNone),
+            ...consented,
             'legs': 5,
             'clip_counts': {'30': 4, '60': 5, '90': 5},
           }));
