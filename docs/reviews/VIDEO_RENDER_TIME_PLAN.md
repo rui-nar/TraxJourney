@@ -1,0 +1,41 @@
+# Review ledger — Trip video render time: tile fetching (#517)
+
+Subject: docs/VIDEO_RENDER_TIME_PLAN.md
+Envelope: plan section "Review envelope" (REVIEW.md defaults + fetch threads inside one render, Mapbox's per-account rate limit, RQ timeout)
+
+## Round 1 — 2026-10-01, reviewed at 2dc0cb22
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
+
+Envelope question 1 (to the user, not triaged): the Flutter clients' interactive satellite map draws the same Mapbox style on the same account. Is end-user map browsing part of the 6,000/min budget the render must share?
+Owner answer: pending
+
+Envelope question 2 (to the user, not triaged): in the bench, a plain process, concurrent.futures' atexit joins in-flight fetch threads, so after a failed render the bench may take up to about 2 minutes to exit. The RQ work horse is not affected (os._exit). Is that acceptable, or should the bench's shutdown be bounded too?
+Owner answer: pending
+
+### R1-1 — A prefetcher started by frame() is only closed by encode/_write_preview_webp; other frame-loop drivers leak a parked prefetcher
+- Trigger: CI runs the video tests that call FrameRenderer.frame() directly (test_video_renderer, test_video_camera_render, test_video_memory, test_video_preview_render) → each starts a prefetcher whose producer fills the window and waits for a consumer that never comes; nothing closes it → idle pools and blocked threads pile up; the atexit join can hang the run
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified (triager checked call sites)
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
+
+### R1-2 — D8 keys the 429 backoff on Retry-After, which Mapbox doesn't document; a 429 that lasts the rest of the minute still fails the render after 1 s + 2 s
+- Trigger: the account's per-minute budget is used up by other consumers → Mapbox answers 429 with X-Rate-Limit-Reset and no Retry-After → the client retries at 1 s and 2 s, then raises APIError → the render fails and the user sees "could not be rendered"
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible (triager corrected from logged), later=cheap, fix=S/local, confidence=inferred
+- Decision: Defer (D10)
+- Revisit when: a render fails with a Mapbox 429 APIError in the worker logs, or posters plus prod and val renders on one Mapbox account come near the 6,000/min limit
+- Guard: —
+- Override: —
+- Outcome: open
+
+### R1-3 — tile_ms / fetched / net_seconds are accumulated from four pool threads, but the plan's shared-state list omits them
+- Trigger: a render with 4 threads → unlocked `+=` from several threads → lost updates → the summary under-reports tile_ms
+- Scores: trigger=plausible (triager corrected from concrete: under the GIL a plain += rarely switches mid-update), impact=cosmetic, detect=silent, later=cheap, fix=S/local, confidence=inferred
+- Decision: Guard (D9)
+- Revisit when: —
+- Guard: (proposed) the U2a tests assert, after an in-order run with threads=4, that `prefetcher.fetched` equals the fake fetcher's thread-safe call count; close() logs a warning if fetched + misses differs from the completed fetches
+- Override: —
+- Outcome: open
