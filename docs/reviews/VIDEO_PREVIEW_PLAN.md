@@ -316,4 +316,4 @@ Reviews: unit U1 (3 rounds), unit U3 (clean), U2b plan (2 rounds), integrated (3
 
 Checks at the final merge: server suite 5464 passed (rail extract workflow left to CI on this machine); video tests in the Linux image 469 passed, 3 skipped (manual benchmarks); Flutter analyze clean, 1863 tests, build web OK; real-trip preview peak RSS 329–338 MB in all four camera modes (was 764 / 930); `alembic heads` single head.
 
-Owed: gate G2 (owner: preview animates in Chrome, Safari, Firefox and on Android; Follow framing looks like the final video's).
+Gate G2 passed (owner, 2026-10-01): the preview animates in Chrome, Safari, Firefox and on Android, and its framing matches the final video's.
