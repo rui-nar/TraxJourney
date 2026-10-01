@@ -2,7 +2,9 @@
 /// length (30/60/90 s, D11), a resolution the plan allows (D10) and a camera
 /// (docs/VIDEO_CAMERA_QUALITY_PLAN.md, D1), see the monthly quota (D3), then
 /// create. Renders a [VideoRequestNotifier] and runs
-/// its consent step (D2) through [showVideoConsentDialog].
+/// its consent step (D2) through [showVideoConsentDialog]. A Preview button
+/// shows a low-resolution animation of the chosen settings first
+/// (docs/VIDEO_PREVIEW_PLAN.md, U4).
 ///
 /// Pops itself when the job has started (handing the id to [onStarted]) or
 /// when the user declines consent. It can't be closed while the job is being
@@ -18,6 +20,7 @@ import '../core/design_tokens.dart' show kWarning, kWarningDark;
 import '../core/project_ref.dart';
 import 'video_consent_dialog.dart';
 import 'video_job_notifier.dart';
+import 'video_preview_image.dart';
 
 class VideoConfigDialog extends StatefulWidget {
   final ProjectRef projectRef;
@@ -29,6 +32,10 @@ class VideoConfigDialog extends StatefulWidget {
   final FieldRevealer? reveal;
   final TrackFetcher? fetchTrack;
 
+  /// The preview's clock and poll wait; injectable for tests.
+  final DateTime Function()? now;
+  final Future<void> Function(Duration)? wait;
+
   const VideoConfigDialog({
     super.key,
     required this.projectRef,
@@ -37,6 +44,8 @@ class VideoConfigDialog extends StatefulWidget {
     this.client,
     this.reveal,
     this.fetchTrack,
+    this.now,
+    this.wait,
   });
 
   @override
@@ -50,7 +59,17 @@ class _VideoConfigDialogState extends State<VideoConfigDialog> {
     client: widget.client,
     reveal: widget.reveal,
     fetchTrack: widget.fetchTrack,
+    now: widget.now,
+    wait: widget.wait,
   );
+
+  /// Set once this dialog pops itself. A preview still polling then must not
+  /// act on the phase: the dialog stays mounted through its exit animation,
+  /// and a second pop would close the screen under it.
+  bool _closed = false;
+
+  /// Whether the consent dialog is up.
+  bool _asking = false;
 
   @override
   void initState() {
@@ -67,19 +86,28 @@ class _VideoConfigDialogState extends State<VideoConfigDialog> {
   /// Runs [step], then whatever the phase it ends in asks of the UI.
   Future<void> _run(Future<void> Function() step) async {
     await step();
-    if (!mounted) return;
+    if (!mounted || _closed) return;
     switch (_n.phase) {
       case VideoRequestPhase.consentNeeded:
+        // A preview can end while another step's consent is being asked.
+        if (_asking) return;
+        _asking = true;
         final ok = await showVideoConsentDialog(context,
             activityCount: _n.consentIds.length);
-        if (!mounted) return;
+        _asking = false;
+        if (!mounted || _closed) return;
         if (ok) {
           await _run(_n.acceptConsent);
         } else {
           _n.declineConsent();
-          Navigator.of(context).pop();
+          // Declining a preview's consent leaves the options open.
+          if (_n.phase == VideoRequestPhase.declined) {
+            _closed = true;
+            Navigator.of(context).pop();
+          }
         }
       case VideoRequestPhase.started:
+        _closed = true;
         Navigator.of(context).pop();
         widget.onStarted(_n.jobId!);
       default:
@@ -147,21 +175,28 @@ class _VideoConfigDialogState extends State<VideoConfigDialog> {
           child: Center(child: CircularProgressIndicator()),
         );
       case VideoRequestPhase.unavailable:
-        return _notice(
+        return _optionsUnder(
           context,
-          Icons.cloud_off_outlined,
-          "Video rendering isn't available right now. Please try again later.",
+          _notice(
+            context,
+            Icons.cloud_off_outlined,
+            "Video rendering isn't available right now. Please try again later.",
+          ),
         );
       case VideoRequestPhase.noneLeft:
         final q = _n.quota;
-        return _notice(
+        return _optionsUnder(
           context,
-          Icons.workspace_premium_outlined,
-          q?.limit == null
-              ? 'You have no videos left this month.'
-              : "You've used all ${q!.limit} video${q.limit == 1 ? '' : 's'} "
-                  'your plan includes this month.',
-          color: theme.brightness == Brightness.dark ? kWarningDark : kWarning,
+          _notice(
+            context,
+            Icons.workspace_premium_outlined,
+            q?.limit == null
+                ? 'You have no videos left this month.'
+                : "You've used all ${q!.limit} video${q.limit == 1 ? '' : 's'} "
+                    'your plan includes this month.',
+            color:
+                theme.brightness == Brightness.dark ? kWarningDark : kWarning,
+          ),
         );
       case VideoRequestPhase.error:
         return Column(
@@ -184,6 +219,17 @@ class _VideoConfigDialogState extends State<VideoConfigDialog> {
     }
   }
 
+  /// [notice] with the options under it, so a preview can still be made when
+  /// no video can (previews are free, D3); [notice] alone without a plan.
+  Widget _optionsUnder(BuildContext context, Widget notice) {
+    if (_n.plan == null) return notice;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [notice, const SizedBox(height: 16), _options(context)],
+    );
+  }
+
   Widget _notice(BuildContext context, IconData icon, String text,
       {Color? color}) {
     final theme = Theme.of(context);
@@ -204,6 +250,10 @@ class _VideoConfigDialogState extends State<VideoConfigDialog> {
     final quota = plan.quota;
     final dark = theme.brightness == Brightness.dark;
     final quotaError = _n.quotaError;
+    // A 200 plan with no leg is an encrypted trip planned without its
+    // geometry (no video can be made, so no consent was asked); a trip with
+    // nothing to animate is a 422. Its clip counts are 0, not real.
+    final clipsKnown = plan.legs > 0;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -220,7 +270,7 @@ class _VideoConfigDialogState extends State<VideoConfigDialog> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text('$s s'),
-                    if (plan.clipCounts[s] != null)
+                    if (clipsKnown && plan.clipCounts[s] != null)
                       Text(_clips(plan.clipCounts[s]!),
                           style: theme.textTheme.labelSmall),
                   ],
@@ -278,6 +328,8 @@ class _VideoConfigDialogState extends State<VideoConfigDialog> {
             value: _n.fixedZoomOut,
             onChanged: _n.setFixedZoomOut,
           ),
+        const SizedBox(height: 8),
+        _preview(context),
         const SizedBox(height: 16),
         Text(_quotaLine(quota), style: theme.textTheme.bodyMedium),
         if (plan.skipped > 0) ...[
@@ -310,6 +362,105 @@ class _VideoConfigDialogState extends State<VideoConfigDialog> {
         ],
       ],
     );
+  }
+
+  /// The Preview button, where the preview is, and the preview itself once
+  /// made (D9): greyed with a note when the settings changed since.
+  Widget _preview(BuildContext context) {
+    final theme = Theme.of(context);
+    final bytes = _n.previewBytes;
+    final outOfDate = _n.previewOutOfDate;
+    final status = _previewStatus();
+    final failed = switch (_n.previewPhase) {
+      VideoPreviewPhase.failed ||
+      VideoPreviewPhase.busy ||
+      VideoPreviewPhase.tooLong ||
+      VideoPreviewPhase.rateLimited ||
+      VideoPreviewPhase.unavailable ||
+      VideoPreviewPhase.error =>
+        true,
+      _ => false,
+    };
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        OutlinedButton.icon(
+          onPressed: _n.canPreview ? () => _run(_n.preview) : null,
+          icon: const Icon(Icons.play_circle_outline),
+          label: const Text('Preview'),
+        ),
+        if (status != null) ...[
+          const SizedBox(height: 8),
+          if (_n.previewInFlight)
+            Row(
+              children: [
+                const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                    child: Text(status, style: theme.textTheme.bodySmall)),
+              ],
+            )
+          else
+            _notice(context, failed ? Icons.error_outline : Icons.info_outline,
+                status,
+                color: failed ? theme.colorScheme.error : null),
+        ],
+        if (bytes != null) ...[
+          const SizedBox(height: 8),
+          AspectRatio(
+            aspectRatio: 16 / 9,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: ColoredBox(
+                color: theme.colorScheme.surfaceContainerHighest,
+                child: VideoPreviewImage(bytes: bytes, dimmed: outOfDate),
+              ),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+              outOfDate
+                  ? 'Preview is for the previous settings'
+                  : 'Low-resolution preview',
+              style: theme.textTheme.bodySmall),
+        ],
+      ],
+    );
+  }
+
+  /// The line under the Preview button, or null when there is nothing to say.
+  String? _previewStatus() {
+    switch (_n.previewPhase) {
+      case VideoPreviewPhase.idle:
+      case VideoPreviewPhase.done:
+        return null;
+      case VideoPreviewPhase.requesting:
+        return 'Asking for a preview…';
+      case VideoPreviewPhase.pending:
+        return 'Waiting for a worker…';
+      case VideoPreviewPhase.running:
+        return 'Rendering preview…';
+      case VideoPreviewPhase.failed:
+        return "The preview couldn't be made — try again";
+      case VideoPreviewPhase.busy:
+        return 'Workers are busy — try again later';
+      case VideoPreviewPhase.tooLong:
+        return 'The preview took too long — try again';
+      case VideoPreviewPhase.rateLimited:
+        final s = _n.previewRetryAfterS;
+        if (s == null) return 'Too many previews — try again later';
+        final min = (s / 60).ceil().clamp(1, 60);
+        return 'Too many previews — try again in $min min';
+      case VideoPreviewPhase.unavailable:
+        return 'Preview unavailable';
+      case VideoPreviewPhase.error:
+        return _n.previewError ?? 'Could not make the preview. Please try again.';
+    }
   }
 
   /// Camera choices: the notifier's value, the title and the one-line

@@ -132,7 +132,7 @@ def _point_at(leg: Leg, fraction: float) -> Tuple[float, float, float]:
     i = max(1, min(i, len(cum) - 1))
     span = cum[i] - cum[i - 1]
     f = 0.0 if span <= 0 else min(1.0, max(0.0, (target - cum[i - 1]) / span))
-    (lon0, lat0), (lon1, lat1) = leg.coords[i - 1], leg.coords[i]
+    (lon0, lat0), (lon1, lat1) = leg.point(i - 1), leg.point(i)
     return (lon0 + f * (lon1 - lon0), lat0 + f * (lat1 - lat0),
             bearing(lon0, lat0, lon1, lat1))
 

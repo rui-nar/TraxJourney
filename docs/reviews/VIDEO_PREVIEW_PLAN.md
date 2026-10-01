@@ -1,0 +1,319 @@
+# Review ledger — Trip video preview (#519)
+
+Subject: docs/VIDEO_PREVIEW_PLAN.md
+Envelope: plan section "Review envelope" (REVIEW.md defaults + the trip video envelopes of docs/TRIP_VIDEO_PLAN.md and docs/VIDEO_CAMERA_QUALITY_PLAN.md; previews on the shared `default` queue in scope)
+
+## Round 1 — 2026-09-30, reviewed at 88295660
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
+
+Envelope question (to the user, not triaged): 8 fps doesn't divide 30 fps, so preview frames can only be the nearest video frame (±1/60 s). Accept nearest-frame sampling, or use 6 or 10 fps so every preview frame is an exact video frame?
+Owner answer (2026-09-30): 8 fps with nearest-frame sampling.
+
+### R1-1 — The preview's camera isn't the video's: absolute zoom floors/caps and per-frame thresholds are evaluated at 320×180 / 8 fps
+- Trigger: user previews a Follow/Fixed video with hikes/rides, likes it, spends a video → clips framed 3–6× wider and cut/flown differently; nothing warns
+- Scores: trigger=concrete, impact=silent-wrong, detect=silent, later=cheap, fix=M/shared, confidence=verified
+- Decision: Fix now (D3)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed in plan (D1, Current state, Convention 3, U2: camera built at target size and 30 fps, sampled, zoom offset; preview request carries the resolution; U4 marks stale on resolution change)
+
+### R1-2 — Sweeps and the killed-horse handler email 'could not be made' for a failed preview
+- Trigger: preview worker OOM-killed/restarted or preview goes stale → failure email for a video never requested
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: a preview row is failed by the hourly sweep or the killed-horse handler; a preview hits its 300 s timeout; a user reports a failure email for a video never requested
+- Guard: —
+- Override: user: Fix now — small, cheap fixes worth making before the preview ships
+- Outcome: fixed in plan (D7, U3 3 and acceptance: no email on any preview path)
+
+### R1-3 — A lost preview spins in the dialog up to ~2 h: no client deadline or terminal handling; only the hourly sweep cleans up
+- Trigger: deploy/restart during a preview → row stays running/pending, dialog spins, rate-limit slot used
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: #520 gives previews their own lane; a stuck preview spinner is seen after a deploy
+- Guard: —
+- Override: user: Fix now — small, cheap fixes worth making before the preview ships
+- Outcome: fixed in plan (U4 deadlines and failed branch; D6 15-minute rule; envelope updated)
+
+### R1-4 — On Flutter web in Safari/Firefox the animated WebP may show only its first frame
+- Trigger: Safari/Firefox user taps Preview → a still title card
+- Scores: trigger=plausible (triager: was concrete — engine fallback may animate; unverified either way), impact=wrong-visible, detect=user-visible, later=cheap, fix=M/local, confidence=inferred
+- Decision: Defer (D10) — flagged: floor-adjacent rescoring
+- Revisit when: the val check of U4 in Safari/Firefox shows a still image (then concrete, D6)
+- Guard: —
+- Override: user: Fix now — small, cheap fixes worth making before the preview ships
+- Outcome: fixed in plan (U4: web shows the WebP through an <img> HtmlElementView; gate G2 checks Chrome/Safari/Firefox/Android)
+
+### R1-5 — The preview routes omit ?owner=, so a companion on a shared trip gets 404
+- Trigger: companion taps Preview on a shared trip → 404 while Create video works
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified (triager: was inferred)
+- Decision: Fix now (D6)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed in plan (U3: owner: OwnerParam on all preview routes; companion test)
+
+### R1-6 — The rate limit is checked after consent and the timeline, so an over-limit request costs a consent dialog and a timeline build before the 429
+- Trigger: user at 10/hour on an encrypted trip → decrypt, upload, timeline, then 429
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: preview 429s appear more than occasionally; the limit is lowered; a consent-then-429 is reported
+- Guard: —
+- Override: user: Fix now — small, cheap fixes worth making before the preview ships
+- Outcome: fixed in plan (D6 and U3: non-authoritative check before consent; previews_left in the 409 body)
+
+### R1-7 — D5's 'default jobs are short' is false (resolves up to 600 s, posters minutes); the client can't tell queued from rendering
+- Trigger: a resolve and a poster occupy both default consumers → preview pending for minutes under 'Rendering preview…'
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10) — D5's wording to be corrected with the R1-1 edit
+- Revisit when: #520 lands; at G1/val the queue wait often exceeds the render budget; a long misleading spinner is reported
+- Guard: —
+- Override: user: Fix now — small, cheap fixes worth making before the preview ships
+- Outcome: fixed in plan (D5 reason corrected; U4 shows waiting vs rendering)
+
+## Round 2 — 2026-09-30, reviewed 88295660..feaaf959
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
+
+### R2-1 — U1 still specifies the round-1 rate-limit count, so D6's 15-minute rule has no unit implementing it
+- Trigger: U1 implements the old count → a lost preview counts for the hour; U3 expects the new rule but entitlements.py is outside its scope
+- Scores: trigger=concrete, impact=maintainability (triager: was wrong-visible), detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed in plan (U1 Do 4 and acceptance implement the 15-minute rule)
+
+### R2-2 — 'A FrameRenderer fed with those shots' leaves the frame state sampled at n/30 s, not at the sampled video frame
+- Trigger: U2 feeds shots to a FrameRenderer → marker, route progress, HUD and card fade at video time n/30 s under the camera of frame round(n×30/8)
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed in plan (U2: state sampled at round(n×30/8)/30 with the shot; FrameRenderer renders explicit (shot, state) pairs; state test)
+
+### R2-3 — U2's 'frame matches the video's frame downscaled' test can't pass (different tile bands, overlay size clamps), so it would be loosened
+- Trigger: U2 writes the test with fake_tile → every frame fails the golden tolerance
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed in plan (U2: pixel test against a direct 320×180 render of the same (shot, state), not a downscaled video frame)
+
+### R2-4 — The dialog gives up on a running preview at 3 min while the server allows 5 min
+- Trigger: slow render under load passes 3 min → dialog says 'took too long', the job finishes unseen and still counts; the retry repeats it
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: G1 or val logs show a preview running > 120 s; the budget is raised or fps falls back; a 'took too long' then duplicate render is reported; #520 changes the job timeout
+- Guard: —
+- Override: user: Fix now — client and server must agree on when a preview has failed
+- Outcome: fixed in plan (U4: running deadline 6 min, past the 300 s job timeout)
+
+## Round 3 — 2026-09-30, reviewed feaaf959..630cd90c
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). Round 3 is the policy cap.
+
+### R3-1 — The counting rule makes failed previews free, so a preview that times out or OOMs can be retried without limit on the shared default queue
+- Trigger: a preview killed at the 300 s job timeout or OOM-killed → user retries repeatedly → each attempt ends failed, which the limit ignores → one default consumer held up to 5 min per tap
+- Scores: trigger=plausible, impact=degraded-ux, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: G1 or val logs show a preview hitting the 300 s timeout or being OOM-killed; one user has 3+ failed previews in an hour; default jobs reported waiting behind previews; #520 slips and previews stay on default in production
+- Guard: —
+- Override: user: Fix now — a failed attempt still used a worker
+- Outcome: fixed in plan (D6 and U1 count failed previews that started)
+
+### R3-2 — The camera test's negative controls cannot fail for overview (either control) or fixed/fixed_strict (the 320×180 control) on the synthetic trip
+- Trigger: U2 writes the required negative controls for every mode → overview and fixed modes are size/fps-invariant by construction → the controls pass → dropped, or acceptance unmet
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed in plan (U2 negative controls required for variable only, invariance stated)
+
+### R3-3 — The pixel test does not say whether frame k is decoded from the lossy WebP or taken before encoding
+- Trigger: U2 compares decoded q50 WebP frames under the golden tolerance → 4:2:0 smears 2-px lines past it → tolerance loosened; or it compares pre-encode frames and never checks the WebP
+- Scores: trigger=plausible, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=inferred
+- Decision: Defer (D10)
+- Revisit when: U2's pixel test fails on decoded WebP frames; an implementer proposes loosening _differs or a preview tolerance; U2 lands a pixel test that never checks the WebP content
+- Guard: —
+- Override: user: Fix now — remove the ambiguity before delivery
+- Outcome: fixed in plan (U2 pixel test on pre-encode frames; separate WebP check with a measured codec tolerance)
+
+Review closed after round 3 (policy cap); round-3 fixes applied without a further round, as the owner approved.
+
+## Unit U1 review, round 1 — 2026-09-30, reviewed 27b3eb3d..a999bc26 (DELIVERY.md §5.3, migration)
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
+
+### U1R1-1 — U1 exposes only a count, so U3 cannot compute D6's Retry-After without copying the counting predicate
+- Trigger: U3 needs 429 + Retry-After → previews_in_last_hour returns an int and entitlements.py is outside U3's scope → predicate copied into api/video.py → copies drift; U4's "try again in N min" is wrong
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (a2df39fe)
+
+### U1R1-2 — A preview orphaned in `running` stops counting at 15 min, then counts again once the hourly sweep fails it
+- Trigger: default worker stopped hard mid-preview → row stays running → drops out at 900 s → user makes more → hourly sweep fails it keeping started_at → it re-counts until created_at + 3600 → unexpected 429
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: U3 gives previews a stale-running threshold shorter than STALE_RUNNING_S; logs show a preview failed by the hourly sweep; a user reports a 429 with fewer than 10 recent previews
+- Guard: —
+- Override: user: Fix now — the plan already fails previews after ~10 min (D5), so the re-count window is ~45 min
+- Outcome: fixed (a2df39fe)
+
+## Unit U1 review, round 2 — 2026-09-30, reviewed a999bc26..a2df39fe (fixes only)
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
+
+### U1R2-1 — preview_slot_frees_at forecasts an in-flight preview as lost, so Retry-After is too short in the normal case
+- Trigger: 10th preview still rendering when the user taps again → 429 says ~15 min (created+900) → the 10th finishes and counts to created+3600 → refused again at 15 min
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (f367b892)
+
+### U1R2-2 — The plan still describes the round-1 counting rule and never names preview_slot_frees_at
+- Trigger: U3 implementer reads the plan for 429 + Retry-After → copies the predicate or tests the old failed-row rule
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed in plan (634d37f8)
+
+## Unit U1 review, round 3 — 2026-09-30, reviewed a2df39fe..f367b892 and plan 7cc83cb9..634d37f8 (fixes only)
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). U1R2-1 and U1R2-2 found fixed; the U1 code came back clean.
+
+### U1R3-1 — U3 acceptance demands two Retry-After values be "the same" although each is ceil()'d from its own now
+- Trigger: U3 test on real time asserts exact equality → the two nows straddle a second boundary → CI flakes on a green change
+- Scores: trigger=plausible, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=inferred
+- Decision: Defer (D10)
+- Revisit when: a U3 test compares Retry-After exactly against real time or early check vs locked check without a fixed now; any CI run fails on it. U3's brief should say: inject a fixed now, or check within 1 s
+- Guard: —
+- Override: user: Fix now — one sentence in U3's brief prevents a flaky CI run
+- Outcome: fixed in plan (U3 acceptance: fixed now or within 1 s)
+
+## U2b plan review, round 1 — 2026-09-30, reviewed 93307c56..edb72206 (D11 and unit U2b added after gate G1)
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
+
+### U2bR1-1 — tests/test_video_api.py:365 compares Leg.coords to a tuple of tuples; neither U2b nor U3 may edit it
+- Trigger: U2b makes Leg.coords array('d') → that test fails → nobody's Scope covers it
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed in plan
+
+### U2bR1-2 — The memory test's window ends before the first drawn frame, where _Route.kept() still builds per-point tuples
+- Trigger: kept() left building a full list per leg at first draw → test passes → largest leg's list on top of the base peak
+- Scores: trigger=plausible, impact=degraded-ux, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: real-trip preview peaks ≥ 450 MB; OOM after the first frame; kept() left building tuples
+- Guard: —
+- Override: user: Fix now — one sentence of plan text; memory is the point of U2b
+- Outcome: fixed in plan
+
+### U2bR1-3 — Fixed-zoom cameras are outside the memory test; _fixed_zoom builds per-clip point lists Do 1 doesn't name
+- Trigger: fixed/fixed_strict on a trip with one very large clip → trip-size-bound peak while the test stays green
+- Scores: trigger=plausible, impact=degraded-ux, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: a fixed-mode render logs peak RSS well above variable for the same trip, or is OOM-killed
+- Guard: —
+- Override: user: Fix now — one sentence of plan text; memory is the point of U2b
+- Outcome: fixed in plan
+
+### U2bR1-4 — The real-trip memory check names "the G1 investigation's script", which is not in the repository
+- Trigger: orchestrator reaches acceptance → script not in repo → check improvised or skipped
+- Scores: trigger=plausible, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified (triager: was inferred)
+- Decision: Defer (D10)
+- Revisit when: the orchestrator cannot reproduce the G1 script at U2b acceptance
+- Guard: —
+- Override: user: Fix now — one sentence of plan text; memory is the point of U2b
+- Outcome: fixed in plan
+
+## U2b plan review, round 2 — 2026-09-30, reviewed edb72206..e9c17136 (fixes only)
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). U2bR1-1..4 found fixed.
+
+### U2bR2-1 — The 120 B/pt bound covers kept()'s cached per-level index lists (List[int], ~37 B/pt per level), so it passes or fails on the synthetic trip's spacing
+- Trigger: implementer draws a frame at each integer zoom on a metre-spaced 200 k-point trip → kept(12..16) caches push the peak past 120 B/pt with A+B+C done right → trip densified until it passes, or bound changed unasked
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified (triager: was inferred)
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed in plan
+
+## Unit U3 review, round 1 — 2026-09-30, reviewed e9c17136..b3bb6850 (DELIVERY.md §5.3, jobs and consent geometry)
+
+Reviewer: adversarial-reviewer (Fable). No findings; no envelope questions. Review clean.
+
+## Integrated review, round 1 — 2026-10-01, reviewed origin/main (0bf5ce89)..02672b14 (DELIVERY.md §5.2)
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus).
+
+Envelope question (to owner): the dialog shows a notice instead of the options in the `noneLeft` and `unavailable` phases, so there is no Preview button once the month's videos are used up (every Free user after their one video) or while worker-video is down, although D3 makes previews free and the server allows them. Is hiding Preview there intended?
+Owner answer (2026-10-01): no — option (a): Preview stays reachable in `noneLeft` and `unavailable`, with Create video disabled and the notice shown beside the options. Delivered by fix unit F-a.
+
+### F1-1 — A preview's consent accept/decline forces the request phase back to `ready`, discarding `quotaExceeded`
+- Trigger: quota spent elsewhere → 402 → quotaExceeded → Preview on an encrypted trip needing consent → 409 → accept/decline → phase reset to ready → notice vanishes, Create video re-enabled → same 402
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: the owner lets Preview run in noneLeft/unavailable (then Preview → 409 → consent → reset becomes the normal path); the plan request stops requiring consent; a report of the quota notice vanishing after consent
+- Guard: —
+- Override: user: Fix now — with Preview reachable in noneLeft/unavailable, consent → reset becomes the normal path
+- Outcome: fixed (26b643fa)
+
+## Integrated review, round 2 — 2026-10-01, reviewed 9df755dd..26b643fa (fix unit F-a only)
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). F1-1 and the envelope answer found implemented.
+
+### F2-1 — In noneLeft/unavailable on an encrypted trip the options show the server's empty plan, so every length reads "0 clips", before and after the preview's consent
+- Trigger: Free user with the month's video spent opens the dialog on an encrypted trip → 200 with an empty plan → "0 clips" under every length → Preview + consent → preview animates clips, labels still "0 clips"
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (4f91ff12)
+
+## Integrated review, round 3 — 2026-10-01, reviewed 26b643fa..4f91ff12 (fix unit F-b only)
+
+Reviewer: adversarial-reviewer (Fable). F2-1 found fixed. No findings; no envelope questions. Integrated review CLEAN.
+
+## Delivery
+
+Branch `feat/519-video-preview`, from `origin/main` 0bf5ce89. Orchestrator worktree `.claude/worktrees/v519-plan`; unit worktrees made by hand from the branch.
+
+| Unit | Goal | Route | Rule | Attempts | Escalated | Verified first time | Findings traced |
+|---|---|---|---|---|---|---|---|
+| U1 | Preview kind, migration, quota filter, preview count | Opus | S4 | 1 | — | yes | U1R1-1, U1R1-2, U1R2-1, U1R3-1 |
+| U1-F | Shared counting clause, preview_slot_frees_at, in-flight bound on failed rows | Opus | S5 | 1 | — | yes | U1R1-1, U1R1-2 |
+| U1-F2 | Forecast every counted preview at created + 1 h | Opus | S5 | 1 | — | yes | U1R2-1 |
+| U2 | Preview render (animated WebP), bench --preview | Sonnet → Opus | — | 2 | X1 → Opus (libwebp merges identical frames; acceptance restated as durations by the orchestrator) | no | — |
+| U2-F | Rename the test trip away from the old product name | Sonnet | — | 1 | — | yes | — |
+| U2b | Compact trip geometry (D11, added after gate G1) | Opus | S2 | 1 | — | yes | U2bR1-1..4, U2bR2-1 |
+| U3 | Preview jobs: API, runner, sweeps, rate limit | Opus | S5 | 1 | X3 (one `_EXEMPT` line in tests/test_project_cache_invalidation.py; Scope widened) | yes | — |
+| U4 | Preview in the video dialog | Opus | S5 | 1 | — | yes | F1-1 |
+| F-a | Preview reachable in noneLeft/unavailable; consent restores the prior phase | Opus | S5 | 2 | — | no (missing `unavailable` tests) | F1-1 |
+| F-b | No "0 clips" before consent; plan reloaded after a preview's consent | Opus | S5 | 1 | — | no (verified with F-a) | F2-1 |
+
+Owner decisions during delivery: key-frame WebPs (~575 KB per 30 s) accepted; gate G1 passed on time (60 s: variable 39.9 s, overview 9.0 s) but showed a 936 MB peak → memory investigation → D11/U2b (streaming encode dropped); Preview reachable when no video can be made (integrated review envelope answer).
+
+Reviews: unit U1 (3 rounds), unit U3 (clean), U2b plan (2 rounds), integrated (3 rounds, round 3 clean).
+
+Checks at the final merge: server suite 5464 passed (rail extract workflow left to CI on this machine); video tests in the Linux image 469 passed, 3 skipped (manual benchmarks); Flutter analyze clean, 1863 tests, build web OK; real-trip preview peak RSS 329–338 MB in all four camera modes (was 764 / 930); `alembic heads` single head.
+
+Gate G2 passed (owner, 2026-10-01): the preview animates in Chrome, Safari, Firefox and on Android, and its framing matches the final video's.

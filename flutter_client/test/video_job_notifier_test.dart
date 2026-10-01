@@ -1,10 +1,14 @@
 // Tests the trip-video request flow (docs/TRIP_VIDEO_PLAN.md, U7) against a
 // fake HTTP client: the polyline encoder the consent geometry is sent in,
 // building that geometry on the device, and VideoRequestNotifier's phases —
-// above all that decrypted geometry leaves the device only after consent.
+// above all that decrypted geometry leaves the device only after consent —
+// and the preview flow (docs/VIDEO_PREVIEW_PLAN.md, U4) on a fake clock,
+// including when no video can be made, the phase a preview's consent step
+// puts back (F-a) and the plan it reloads with the geometry (F2-1).
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -596,6 +600,546 @@ void main() {
         expect(body(sent.last)['camera'], 'overview');
         expect(body(sent.last).containsKey('decrypted_geometry'), isTrue);
       });
+    });
+  });
+
+  group('preview (#519 U4)', () {
+    late List<http.Request> sent;
+    late DateTime t;
+    final webp = Uint8List.fromList([82, 73, 70, 70, 1, 2, 3]);
+
+    Map<String, dynamic> body(http.Request r) =>
+        jsonDecode(r.body) as Map<String, dynamic>;
+
+    bool isPreviewCreate(http.Request r) =>
+        r.method == 'POST' && r.url.path == '/api/projects/Trip/video/preview';
+
+    /// A notifier on a fake clock: every poll wait moves [t] on by the wait.
+    VideoRequestNotifier notifier(
+        Future<http.Response> Function(http.Request) handler,
+        {ProjectRef ref = const ProjectRef(name: 'Trip')}) {
+      sent = [];
+      t = DateTime.utc(2026, 9, 30, 12);
+      final client = ApiClient(httpClient: MockClient((req) async {
+        sent.add(req);
+        return handler(req);
+      }))
+        ..setToken('jwt');
+      return VideoRequestNotifier(
+        ref: ref,
+        activities: activities,
+        client: client,
+        reveal: fakeReveal,
+        fetchTrack: fakeFetch([]),
+        now: () => t,
+        wait: (d) async => t = t.add(d),
+      );
+    }
+
+    /// Serves the plan (asking consent without geometry when [encrypted]),
+    /// preview 9 whose status is [status] at the fake clock's time, its
+    /// bytes, and video 40.
+    Future<http.Response> Function(http.Request) server(
+      String Function(DateTime at) status, {
+      bool encrypted = false,
+      List<int> resolutions = const [720],
+    }) =>
+        (req) async {
+          final path = req.url.path;
+          if (req.method == 'POST' &&
+              encrypted &&
+              !body(req).containsKey('decrypted_geometry')) {
+            return _json(409, consent409);
+          }
+          if (path.endsWith('/plan')) {
+            return _json(200, {...planJson(), 'resolutions': resolutions});
+          }
+          if (path.endsWith('/video/preview')) return _json(201, {'job_id': 9});
+          if (path.endsWith('/video/preview/9/bytes')) {
+            return http.Response.bytes(webp, 200,
+                headers: {'content-type': 'image/webp'});
+          }
+          if (path.endsWith('/video/preview/9')) {
+            return _json(200, {'status': status(t), 'progress': 0});
+          }
+          if (path.endsWith('/video')) return _json(201, {'job_id': 40});
+          return _json(404, {'detail': 'Not found'});
+        };
+
+    /// pending for [pending], then running for [running], then done.
+    String Function(DateTime) timed(DateTime start,
+            {Duration pending = const Duration(seconds: 4),
+            Duration running = const Duration(seconds: 4)}) =>
+        (at) {
+          final d = at.difference(start);
+          if (d < pending) return 'pending';
+          if (d < pending + running) return 'running';
+          return 'done';
+        };
+
+    test('the request carries the length, camera, resolution, owner and the '
+        'consented geometry; the result is fetched', () async {
+      late DateTime start;
+      final n = notifier(
+          server((at) => timed(start)(at),
+              encrypted: true, resolutions: const [720, 1080]),
+          ref: const ProjectRef(name: 'Trip', ownerId: 5, role: 'editor'));
+      start = t;
+      await n.loadPlan();
+      expect(n.phase, VideoRequestPhase.consentNeeded);
+      await n.acceptConsent();
+      expect(n.phase, VideoRequestPhase.ready);
+      n.setLength(30);
+      n.setCamera('fixed');
+      n.setFixedZoomOut(false);
+      n.setHeight(720);
+
+      await n.preview();
+
+      final create = sent.singleWhere(isPreviewCreate);
+      expect(create.url.queryParameters['owner'], '5');
+      expect(body(create)['length_s'], 30);
+      expect(body(create)['camera'], 'fixed_strict');
+      expect(body(create)['height'], 720);
+      expect((body(create)['decrypted_geometry'] as Map).keys,
+          unorderedEquals(['7', '8']));
+      final polls = sent.where((r) => r.method == 'GET').toList();
+      expect(polls, isNotEmpty);
+      for (final r in polls) {
+        expect(r.url.path, startsWith('/api/projects/Trip/video/preview/9'));
+        expect(r.url.queryParameters['owner'], '5');
+      }
+      expect(polls.last.url.path, '/api/projects/Trip/video/preview/9/bytes');
+      expect(n.previewPhase, VideoPreviewPhase.done);
+      expect(n.previewBytes, webp);
+      expect(n.previewOutOfDate, isFalse);
+    });
+
+    test('pending, then running, then done', () async {
+      late DateTime start;
+      final n = notifier(server((at) => timed(start)(at)));
+      start = t;
+      await n.loadPlan();
+      final phases = <VideoPreviewPhase>[];
+      n.addListener(() {
+        if (phases.isEmpty || phases.last != n.previewPhase) {
+          phases.add(n.previewPhase);
+        }
+      });
+      await n.preview();
+      expect(phases, [
+        VideoPreviewPhase.requesting,
+        VideoPreviewPhase.pending,
+        VideoPreviewPhase.running,
+        VideoPreviewPhase.done,
+      ]);
+    });
+
+    test('gives up after 10 min waiting for a worker, not before', () async {
+      final n = notifier(server((_) => 'pending'));
+      await n.loadPlan();
+      final start = t;
+      await n.preview();
+      expect(n.previewPhase, VideoPreviewPhase.busy);
+      final waited = t.difference(start);
+      expect(waited, greaterThan(kPreviewPendingDeadline));
+      expect(waited, lessThanOrEqualTo(
+          kPreviewPendingDeadline + kPreviewPollInterval));
+      final polls = sent.where((r) => r.method == 'GET').length;
+      await Future<void>.delayed(Duration.zero);
+      expect(sent.where((r) => r.method == 'GET'), hasLength(polls),
+          reason: 'polling stops');
+      expect(n.canPreview, isTrue);
+    });
+
+    test('gives up 6 min into a render, past the server job timeout',
+        () async {
+      late DateTime start;
+      final n = notifier(server((at) =>
+          timed(start, running: const Duration(hours: 1))(at)));
+      start = t;
+      await n.loadPlan();
+      await n.preview();
+      expect(n.previewPhase, VideoPreviewPhase.tooLong);
+      final rendering = t.difference(start) - const Duration(seconds: 4);
+      expect(rendering, greaterThan(kPreviewRunningDeadline));
+      expect(rendering, greaterThan(const Duration(seconds: 300)));
+    });
+
+    test('a slow render that succeeds at 5.5 min is shown', () async {
+      late DateTime start;
+      final n = notifier(server((at) => timed(start,
+          pending: const Duration(minutes: 9),
+          running: const Duration(minutes: 5, seconds: 30))(at)));
+      start = t;
+      await n.loadPlan();
+      await n.preview();
+      expect(n.previewPhase, VideoPreviewPhase.done);
+      expect(n.previewBytes, webp);
+    });
+
+    test('a failed preview says so; an expired one is no preview', () async {
+      var status = 'failed';
+      final n = notifier(server((_) => status));
+      await n.loadPlan();
+      await n.preview();
+      expect(n.previewPhase, VideoPreviewPhase.failed);
+      expect(n.previewBytes, isNull);
+
+      status = 'expired';
+      await n.preview();
+      expect(n.previewPhase, VideoPreviewPhase.idle);
+      expect(n.previewBytes, isNull);
+    });
+
+    test('changing the length, camera or resolution makes it out of date',
+        () async {
+      final n = notifier(
+          server((_) => 'done', resolutions: const [720, 1080]));
+      await n.loadPlan();
+      expect(n.height, 1080);
+      await n.preview();
+      expect(n.previewOutOfDate, isFalse);
+
+      n.setLength(90);
+      expect(n.previewOutOfDate, isTrue);
+      n.setLength(60);
+      expect(n.previewOutOfDate, isFalse);
+
+      n.setCamera('overview');
+      expect(n.previewOutOfDate, isTrue);
+      n.setCamera('variable');
+      expect(n.previewOutOfDate, isFalse);
+
+      n.setHeight(720);
+      expect(n.previewOutOfDate, isTrue);
+
+      await n.preview();
+      expect(n.previewOutOfDate, isFalse);
+      expect(body(sent.lastWhere(isPreviewCreate))['height'], 720);
+    });
+
+    test('429 keeps the wait from the body; 503 is unavailable', () async {
+      var answer = _json(429, {
+        'detail': {
+          'code': 'preview_rate_limited',
+          'message': 'You can make 10 previews an hour.',
+          'limit': 10,
+          'retry_after_s': 125,
+        }
+      });
+      final n = notifier((req) async =>
+          req.url.path.endsWith('/plan') ? _json(200, planJson()) : answer);
+      await n.loadPlan();
+      await n.preview();
+      expect(n.previewPhase, VideoPreviewPhase.rateLimited);
+      expect(n.previewRetryAfterS, 125);
+      expect(n.phase, VideoRequestPhase.ready);
+
+      answer = _json(503, {'detail': 'Previews are not available right now'});
+      await n.preview();
+      expect(n.previewPhase, VideoPreviewPhase.unavailable);
+      expect(n.phase, VideoRequestPhase.ready);
+      expect(n.canSubmit, isTrue, reason: 'the video can still be made');
+    });
+
+    test("a preview's 409 asks consent even with no video left, then "
+        'retries; the video reuses that consent', () async {
+      final n = notifier((req) async {
+        final path = req.url.path;
+        if (path.endsWith('/plan')) return _json(200, planJson());
+        if (path.endsWith('/video/preview')) {
+          return body(req).containsKey('decrypted_geometry')
+              ? _json(201, {'job_id': 9})
+              : _json(409, {
+                  'detail': {
+                    ...(consent409With(quota: quotaNone)['detail'] as Map),
+                    'previews_left': 4,
+                  }
+                });
+        }
+        if (path.endsWith('/bytes')) return http.Response.bytes(webp, 200);
+        if (path.endsWith('/video/preview/9')) {
+          return _json(200, {'status': 'done'});
+        }
+        return body(req).containsKey('decrypted_geometry')
+            ? _json(201, {'job_id': 41})
+            : _json(409, consent409);
+      });
+      await n.loadPlan();
+      await n.preview();
+      expect(n.phase, VideoRequestPhase.consentNeeded,
+          reason: 'previews are free: a used-up month does not stop them');
+      await n.acceptConsent();
+      expect(n.previewPhase, VideoPreviewPhase.done);
+      expect(n.phase, VideoRequestPhase.ready);
+      expect(sent.where(isPreviewCreate), hasLength(2));
+
+      await n.submit();
+      expect(n.phase, VideoRequestPhase.started);
+      expect(n.jobId, 41);
+      expect(sent.where((r) => r.url.path == '/api/projects/Trip/video'),
+          hasLength(1),
+          reason: 'the video carried the geometry the first time');
+    });
+
+    test("declining a preview's consent keeps the dialog's options", () async {
+      final n = notifier((req) async => req.url.path.endsWith('/plan')
+          ? _json(200, planJson())
+          : _json(409, consent409));
+      await n.loadPlan();
+      await n.preview();
+      expect(n.phase, VideoRequestPhase.consentNeeded);
+      n.declineConsent();
+      expect(n.phase, VideoRequestPhase.ready);
+      expect(n.previewPhase, VideoPreviewPhase.idle);
+      expect(sent.where((r) => r.body.contains('decrypted_geometry')), isEmpty);
+    });
+
+    group('when no video can be made (F-a)', () {
+      final quota402 = _json(402, {
+        'detail': 'Your plan includes 1 video per month. Upgrade to make more.',
+        'code': 'quota_exceeded',
+        'resource': 'videos',
+        'plan': 'free',
+        'limit': 1,
+        'used': 1,
+        'needed': 2,
+      });
+
+      /// Serves [plan], or [consentedPlan] for a plan carrying geometry; a
+      /// preview asks consent without geometry (when [encrypted]) and is
+      /// done at once; the video answers [video].
+      Future<http.Response> Function(http.Request) previewServer(
+              Map<String, dynamic> plan,
+              {bool encrypted = false,
+              http.Response? consentedPlan,
+              http.Response? video}) =>
+          (req) async {
+            final path = req.url.path;
+            if (path.endsWith('/plan')) {
+              return consentedPlan != null &&
+                      body(req).containsKey('decrypted_geometry')
+                  ? consentedPlan
+                  : _json(200, plan);
+            }
+            if (path.endsWith('/video/preview')) {
+              return encrypted && !body(req).containsKey('decrypted_geometry')
+                  ? _json(409, {
+                      'detail': {
+                        ...(consent409With(quota: quotaNone)['detail'] as Map),
+                        'previews_left': 4,
+                      }
+                    })
+                  : _json(201, {'job_id': 9});
+            }
+            if (path.endsWith('/bytes')) return http.Response.bytes(webp, 200);
+            if (path.endsWith('/video/preview/9')) {
+              return _json(200, {'status': 'done'});
+            }
+            return video ?? _json(201, {'job_id': 40});
+          };
+
+      for (final (name, plan, phase) in [
+        ('no video left', emptyPlanJson(), VideoRequestPhase.noneLeft),
+        (
+          'video rendering unavailable',
+          planJson(available: false),
+          VideoRequestPhase.unavailable
+        ),
+      ]) {
+        test('$name: a preview can still be made, the video cannot',
+            () async {
+          final n = notifier(previewServer(plan));
+          await n.loadPlan();
+          expect(n.phase, phase);
+          expect(n.canSubmit, isFalse);
+          expect(n.canPreview, isTrue);
+          await n.preview();
+          expect(n.previewPhase, VideoPreviewPhase.done);
+          expect(n.previewBytes, webp);
+          expect(n.phase, phase);
+          expect(n.canSubmit, isFalse);
+        });
+      }
+
+      Future<VideoRequestNotifier> quotaExceeded(
+          {http.Response? consentedPlan}) async {
+        final n = notifier(previewServer(planJson(),
+            encrypted: true, consentedPlan: consentedPlan, video: quota402));
+        await n.loadPlan();
+        await n.submit();
+        expect(n.phase, VideoRequestPhase.quotaExceeded);
+        return n;
+      }
+
+      Future<VideoRequestNotifier> noneLeft(
+          {http.Response? consentedPlan}) async {
+        final n = notifier(previewServer(emptyPlanJson(),
+            encrypted: true, consentedPlan: consentedPlan));
+        await n.loadPlan();
+        expect(n.phase, VideoRequestPhase.noneLeft);
+        return n;
+      }
+
+      /// Rendering unavailable on an encrypted trip: the server plans it
+      /// without asking consent, so the plan is empty.
+      Future<VideoRequestNotifier> unavailable(
+          {http.Response? consentedPlan}) async {
+        final n = notifier(previewServer(
+            emptyPlanJson(available: false, quota: quotaOne),
+            encrypted: true,
+            consentedPlan: consentedPlan));
+        await n.loadPlan();
+        expect(n.phase, VideoRequestPhase.unavailable);
+        return n;
+      }
+
+      for (final (name, make, phase, consented) in [
+        (
+          'quotaExceeded',
+          quotaExceeded,
+          VideoRequestPhase.quotaExceeded,
+          planJson(quota: quotaNone)
+        ),
+        ('noneLeft', noneLeft, VideoRequestPhase.noneLeft,
+            planJson(quota: quotaNone)),
+        ('unavailable', unavailable, VideoRequestPhase.unavailable,
+            planJson(available: false)),
+      ]) {
+        test("$name: accepting a preview's consent reloads the plan with the "
+            'geometry, keeps the phase, then previews (F2-1)', () async {
+          final n = await make(
+              consentedPlan: _json(200, {
+            ...consented,
+            'legs': 5,
+            'clip_counts': {'30': 4, '60': 5, '90': 5},
+          }));
+          await n.preview();
+          expect(n.phase, VideoRequestPhase.consentNeeded);
+          await n.acceptConsent();
+          expect(n.plan!.legs, 5);
+          expect(n.plan!.clipCounts, {30: 4, 60: 5, 90: 5});
+          expect(n.phase, phase);
+          expect(n.canSubmit, isFalse);
+          expect(n.previewPhase, VideoPreviewPhase.done);
+          final plans = sent
+              .where((r) => r.url.path.endsWith('/plan'))
+              .toList();
+          expect(body(plans.last)['decrypted_geometry'], isNotNull);
+          final preview = sent.lastWhere(isPreviewCreate);
+          expect(body(preview)['decrypted_geometry'],
+              body(plans.last)['decrypted_geometry']);
+          expect(sent.indexOf(plans.last), lessThan(sent.indexOf(preview)),
+              reason: 'the plan is reloaded before the preview starts');
+          if (phase == VideoRequestPhase.quotaExceeded) {
+            expect(n.quotaError!.resource, 'videos');
+          }
+        });
+
+        test("$name: a failed plan reload after a preview's consent keeps "
+            'the previous plan and still previews (F2-1)', () async {
+          final n = await make(
+              consentedPlan: _json(500, {'detail': 'Server error'}));
+          final before = n.plan;
+          await n.preview();
+          await n.acceptConsent();
+          expect(
+              sent.where((r) =>
+                  r.url.path.endsWith('/plan') &&
+                  body(r).containsKey('decrypted_geometry')),
+              hasLength(1),
+              reason: 'the reload was tried');
+          expect(n.plan, same(before));
+          expect(n.phase, phase);
+          expect(n.errorMessage, isNull);
+          expect(n.previewPhase, VideoPreviewPhase.done);
+          expect(body(sent.lastWhere(isPreviewCreate))['decrypted_geometry'],
+              isNotNull);
+        });
+
+        test("$name survives accepting a preview's consent (F1-1)", () async {
+          final n = await make();
+          await n.preview();
+          expect(n.phase, VideoRequestPhase.consentNeeded);
+          await n.acceptConsent();
+          expect(n.previewPhase, VideoPreviewPhase.done);
+          expect(n.phase, phase);
+          expect(n.canSubmit, isFalse);
+          if (phase == VideoRequestPhase.quotaExceeded) {
+            expect(n.quotaError!.resource, 'videos');
+          }
+        });
+
+        test("$name survives declining a preview's consent (F1-1)", () async {
+          final n = await make();
+          await n.preview();
+          expect(n.phase, VideoRequestPhase.consentNeeded);
+          n.declineConsent();
+          expect(n.previewPhase, VideoPreviewPhase.idle);
+          expect(n.phase, phase);
+          expect(n.canSubmit, isFalse);
+          expect(n.canPreview, isTrue);
+          expect(sent.where((r) => r.body.contains('decrypted_geometry')),
+              isEmpty);
+        });
+      }
+    });
+
+    test("a preview's 409 arriving while the video is being created leaves "
+        'the phase to the video', () async {
+      final previewGate = Completer<void>();
+      final videoGate = Completer<void>();
+      final n = notifier((req) async {
+        final path = req.url.path;
+        if (path.endsWith('/plan')) return _json(200, planJson());
+        if (path.endsWith('/video/preview')) {
+          await previewGate.future;
+          return _json(409, consent409);
+        }
+        await videoGate.future;
+        return _json(201, {'job_id': 40});
+      });
+      await n.loadPlan();
+      final previewing = n.preview();
+      await Future<void>.delayed(Duration.zero);
+      final submitting = n.submit();
+      expect(n.phase, VideoRequestPhase.submitting);
+      previewGate.complete();
+      await previewing;
+      expect(n.phase, VideoRequestPhase.submitting);
+      expect(n.previewPhase, VideoPreviewPhase.idle);
+      videoGate.complete();
+      await submitting;
+      expect(n.phase, VideoRequestPhase.started);
+    });
+
+    test('disposed while waiting: polling stops', () async {
+      final gate = Completer<void>();
+      sent = [];
+      final client = ApiClient(httpClient: MockClient((req) async {
+        sent.add(req);
+        if (req.url.path.endsWith('/plan')) return _json(200, planJson());
+        if (req.url.path.endsWith('/video/preview')) {
+          return _json(201, {'job_id': 9});
+        }
+        return _json(200, {'status': 'pending'});
+      }))
+        ..setToken('jwt');
+      final n = VideoRequestNotifier(
+        ref: const ProjectRef(name: 'Trip'),
+        activities: activities,
+        client: client,
+        wait: (_) => gate.future,
+      );
+      await n.loadPlan();
+      final running = n.preview();
+      await Future<void>.delayed(Duration.zero);
+      expect(n.previewPhase, VideoPreviewPhase.pending);
+      n.dispose();
+      gate.complete();
+      await running;
+      expect(sent.where((r) => r.method == 'GET'), isEmpty);
     });
   });
 }

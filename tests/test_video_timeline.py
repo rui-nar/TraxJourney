@@ -14,7 +14,7 @@ import pytest
 from src.models.activity import Activity
 from src.models.project import ConnectingSegment, Project, ProjectItem, SegmentEndpoint
 from src.video.__main__ import format_timeline
-from src.video.legs import Leg, LegSet, build_legs, feature_coords, prefix_km
+from src.video.legs import Leg, LegSet, build_legs, feature_coords, flat_coords, prefix_km
 from src.video.pacing import (
     END_S,
     MIN_CLIP_S,
@@ -77,7 +77,7 @@ def _project(*things, trip_start=None) -> Project:
 def _leg(i, *, mode="ride", real_s=3600.0, day=date(2026, 5, 1), km=None,
          lon0=None) -> Leg:
     lon0 = float(i) * 0.1 if lon0 is None else lon0
-    coords = ((lon0, 45.0), (lon0 + 0.05, 45.02), (lon0 + 0.1, 45.0))
+    coords = flat_coords(((lon0, 45.0), (lon0 + 0.05, 45.02), (lon0 + 0.1, 45.0)))
     cum = prefix_km(coords)
     return Leg(index=i, kind="activity", ref=i, label=f"leg {i}", mode=mode,
                coords=coords, cum_km=cum, km=cum[-1] if km is None else km,
@@ -347,17 +347,17 @@ def test_sampling_at_clip_boundaries():
         first = clip.subs[0].leg
         at = tl.sample(clip.start_s)
         assert (at.kind, at.clip_index, at.sub_index) == ("clip", i, 0)
-        assert (at.lon, at.lat) == pytest.approx(first.coords[0])
+        assert (at.lon, at.lat) == pytest.approx(first.point(0))
         assert at.km_by_mode.get(first.mode, 0.0) == pytest.approx(
             sum(l.km for l in tl.legs[:first.index] if l.mode == first.mode))
         if i:
             before = tl.sample(clip.start_s - 1e-9)
             prev_last = tl.clips[i - 1].subs[-1].leg
             assert before.clip_index == i - 1
-            assert (before.lon, before.lat) == pytest.approx(prev_last.coords[-1], abs=1e-6)
+            assert (before.lon, before.lat) == pytest.approx(prev_last.point(-1), abs=1e-6)
     end = tl.sample(tl.clips_end_s)
     assert end.kind == "end"
-    assert (end.lon, end.lat) == pytest.approx(tl.legs[-1].coords[-1])
+    assert (end.lon, end.lat) == pytest.approx(tl.legs[-1].point(-1))
     assert tl.sample(tl.total_s + 5).kind == "end"
     assert tl.sample(-1).kind == "title"
 
@@ -395,7 +395,7 @@ def test_short_sub_leg_is_drawn_at_once():
     assert tiny.instant
     at = tl.sample(tl.clips_end_s - 1e-6)
     assert at.sub_index == 1
-    assert (at.lon, at.lat) == pytest.approx(legs[1].coords[-1])
+    assert (at.lon, at.lat) == pytest.approx(legs[1].point(-1))
 
 
 def test_nothing_to_animate_and_too_short():
@@ -511,10 +511,10 @@ def test_longitudes_stay_continuous_across_legs():
     too, not 360° away; distances are those of the real route."""
     legs = build_legs(_pacific_trip()).legs
     flight, walk = legs
-    lons = [lon for leg in legs for lon, _ in leg.coords]
+    lons = [lon for leg in legs for lon, _ in leg.points()]
     assert all(abs(b - a) < 180 for a, b in zip(lons, lons[1:]))
-    assert flight.coords[0][0] == pytest.approx(TOKYO[1])
-    assert flight.coords[-1][0] == pytest.approx(LAX[1] + 360)
-    assert walk.coords[0][0] == pytest.approx(LAX[1] + 360, abs=1e-4)
+    assert flight.point(0)[0] == pytest.approx(TOKYO[1])
+    assert flight.point(-1)[0] == pytest.approx(LAX[1] + 360)
+    assert walk.point(0)[0] == pytest.approx(LAX[1] + 360, abs=1e-4)
     assert 8500 < flight.km < 9000
     assert walk.cum_km[-1] < 3.0

@@ -17,7 +17,7 @@ import os
 import time
 from datetime import datetime, timezone
 
-from sqlmodel import func, select
+from sqlmodel import and_, func, or_, select
 
 from models.billing import Subscription, UserUsage
 from models.project_db import DBProject, DBVideoJob
@@ -202,19 +202,103 @@ def videos_this_month(sess, user_info_id: int, now: float | None = None) -> int:
     Every job counts — pending, running, done, expired — except a ``failed``
     one: the user did not get a video, so it must not cost them one. The month
     is UTC rather than the user's local one so nobody can buy an extra render
-    by moving their clock across a timezone.
+    by moving their clock across a timezone. Previews (``kind='preview'``) are
+    free and never count (docs/VIDEO_PREVIEW_PLAN.md D3).
     """
     start, end = _utc_month_bounds(time.time() if now is None else now)
     return int(
         sess.exec(
             select(func.count(DBVideoJob.id)).where(
                 DBVideoJob.user_info_id == user_info_id,
+                DBVideoJob.kind == "video",
                 DBVideoJob.status != "failed",
                 DBVideoJob.created_at >= start,
                 DBVideoJob.created_at < end,
             )
         ).one()
     )
+
+
+#: The rolling window of the preview rate limit (docs/VIDEO_PREVIEW_PLAN.md D6).
+PREVIEW_WINDOW_S = 3600.0
+#: How long a pending or running preview keeps counting. Past this it is taken
+#: as lost (its worker died, its enqueue vanished) and stops costing the user.
+PREVIEW_IN_FLIGHT_S = 900.0
+
+
+def _counting_preview(user_info_id: int, now: float):
+    """The WHERE clause of a preview that counts toward the hourly limit (D6).
+
+    The one definition shared by :func:`previews_in_last_hour` and
+    :func:`preview_slot_frees_at`, so the count and the Retry-After can never
+    disagree about which rows cost the user a slot.
+    """
+    return and_(
+        DBVideoJob.user_info_id == user_info_id,
+        DBVideoJob.kind == "preview",
+        DBVideoJob.created_at > now - PREVIEW_WINDOW_S,
+        or_(
+            DBVideoJob.status == "done",
+            and_(DBVideoJob.status == "failed",
+                 DBVideoJob.started_at.is_not(None),
+                 DBVideoJob.completed_at.is_not(None),
+                 DBVideoJob.completed_at
+                 <= DBVideoJob.created_at + PREVIEW_IN_FLIGHT_S),
+            and_(DBVideoJob.status.in_(("pending", "running")),
+                 DBVideoJob.created_at > now - PREVIEW_IN_FLIGHT_S),
+        ),
+    )
+
+
+def previews_in_last_hour(sess, user_info_id: int, now: float | None = None) -> int:
+    """Preview jobs that count toward the user's hourly rate limit (D6).
+
+    Counted: previews created in the last hour that are ``done``, ``failed``
+    after starting and within :data:`PREVIEW_IN_FLIGHT_S` of creation (a
+    timed-out or OOM-killed attempt still used a worker), or
+    ``pending``/``running`` and younger than :data:`PREVIEW_IN_FLIGHT_S`. A
+    preview that failed before it started, or has ``expired``, does not count.
+    The window is open at its old end: a row exactly one hour old has left it.
+
+    The in-flight bound on ``failed`` is what keeps a row from coming back: a
+    preview orphaned in ``running`` stops counting at 15 minutes, and when the
+    hourly sweep later fails it (``started_at`` kept, ``completed_at`` well
+    past 15 minutes) it must not start counting again.
+    """
+    now = time.time() if now is None else now
+    return int(
+        sess.exec(
+            select(func.count(DBVideoJob.id)).where(
+                _counting_preview(user_info_id, now))
+        ).one()
+    )
+
+
+def preview_slot_frees_at(sess, user_info_id: int, now: float | None = None,
+                          limit: int = 10) -> float | None:
+    """The earliest instant the preview count drops below ``limit``, or None.
+
+    None when the user is already under ``limit``. Otherwise every counting
+    row — ``done``, counted ``failed``, ``pending`` or ``running`` — is taken to
+    leave the count at ``created_at +`` :data:`PREVIEW_WINDOW_S`, and the count
+    first goes below ``limit`` when ``count - limit + 1`` of them have left.
+
+    The forecast assumes in-flight previews complete, which is the normal path:
+    a preview finishes in about a minute and then counts for the full hour. A
+    lost preview drops out earlier, at ``created_at +``
+    :data:`PREVIEW_IN_FLIGHT_S`, so it makes the answer an over-estimate — the
+    safe direction, since a Retry-After means "not before".
+    """
+    now = time.time() if now is None else now
+    created = sess.exec(
+        select(DBVideoJob.created_at).where(
+            _counting_preview(user_info_id, now))
+    ).all()
+    excess = len(created) - limit
+    if excess < 0:
+        return None
+    leaves = sorted(c + PREVIEW_WINDOW_S for c in created)
+    return leaves[excess]
 
 
 def ensure_video_quota(sess, user_info_id: int, now: float | None = None) -> None:
