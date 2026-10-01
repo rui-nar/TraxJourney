@@ -93,8 +93,15 @@ them to make faster.
   exception, which is raised when the render asks for that tile, so the
   render fails at the same point with the same exception. When the frame
   loop ends, for any reason, the prefetcher is closed: queued fetches are
-  cancelled and the pool is shut down without waiting for in-flight
-  requests (`shutdown(wait=False, cancel_futures=True)`). The prefetcher
+  dropped, a stop event tells the pool threads to exit, and in-flight
+  requests are not waited for. The pool is the prefetcher's own few
+  **daemon threads**, not `concurrent.futures.ThreadPoolExecutor`, whose
+  atexit hook joins its threads. A process therefore exits at once after a
+  failed render, whatever a fetch thread is doing, including the bench
+  (owner, review round 1, envelope question 2). A thread still inside a
+  request or a retry sleep when the prefetcher closes finishes that fetch
+  in the background and then exits; its result is discarded. The
+  prefetcher
   starts on the first `frame()` call, so building a `FrameRenderer` starts no
   threads. A render that needs no tile still never needs `MAPBOX_TOKEN`.
   **No thread ever waits on the window** (review R1-1): there is no producer
@@ -146,7 +153,8 @@ REVIEW.md §2 defaults apply, plus:
   prefetcher's pending-results table and window. Required properties: no
   deadlock when the render asks for tiles out of order or stops early, no
   thread still fetching after the prefetcher is closed (beyond the in-flight
-  requests), and a stored exception never lost.
+  requests), no fetch thread delaying process exit (daemon threads, D7),
+  and a stored exception never lost.
 - **External service:** Mapbox's per-account rate limit (6,000 per minute).
   The render shares it with the prod and val stacks, with posters (same
   client), and with users browsing the interactive satellite map in the
@@ -244,8 +252,10 @@ humans read it, and docs/VIDEO.md documents it.
        bytes, or raises its stored exception. Any other call is a miss: it is
        fetched synchronously on the calling thread and counted.
      - `threads == 0` makes every call a direct, synchronous fetch.
-     - Closing it cancels queued work and doesn't wait for in-flight
-       requests. Calling it after `close()` fetches synchronously.
+     - The pool is `threads` daemon threads taking work from a queue, with
+       a stop event (D7), not `ThreadPoolExecutor`. Closing it drops queued
+       work, sets the event and doesn't wait for in-flight requests.
+       Calling it after `close()` fetches synchronously.
      - Results that are never consumed (out-of-order renders) must not keep
        the window full forever. When a miss shows the render has moved past
        them, discard them (local design: say how).
@@ -273,7 +283,9 @@ humans read it, and docs/VIDEO.md documents it.
   - **errors:** a failing fetch raises the same exception, once, at the
     consumer's call for that key;
   - **close:** after `close()`, no new fetch starts. A test proves this by
-    counting fake calls after close, with in-flight calls allowed to finish.
+    counting fake calls after close, with in-flight calls allowed to finish;
+  - **exit:** a subprocess whose consumer raises while a fake fetch sleeps
+    for 30 s exits within 3 s;
 - **Out of scope:** wiring into `FrameRenderer`, logging, docs.
 - **Latitude:** local design
 - **Escalate if:** X3; `Sheet.requests` can't be made to match

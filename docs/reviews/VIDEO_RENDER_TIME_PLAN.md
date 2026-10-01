@@ -11,7 +11,7 @@ Envelope question 1 (to the user, not triaged): the Flutter clients' interactive
 Owner answer (2026-10-01): yes, assume map browsing shares the budget. Plan envelope updated.
 
 Envelope question 2 (to the user, not triaged): in the bench, a plain process, concurrent.futures' atexit joins in-flight fetch threads, so after a failed render the bench may take up to about 2 minutes to exit. The RQ work horse is not affected (os._exit). Is that acceptable, or should the bench's shutdown be bounded too?
-Owner answer (2026-10-01): asked for faster alternatives (daemon fetch threads with a stop event / stop event only / os._exit in the bench); choice pending.
+Owner answer (2026-10-01): asked for faster alternatives (daemon fetch threads with a stop event / stop event only / os._exit in the bench); chose A, daemon fetch threads. Plan D7, envelope, and U2a Do 3 and acceptance "exit" updated.
 
 ### R1-1 — A prefetcher started by frame() is only closed by encode/_write_preview_webp; other frame-loop drivers leak a parked prefetcher
 - Trigger: CI runs the video tests that call FrameRenderer.frame() directly (test_video_renderer, test_video_camera_render, test_video_memory, test_video_preview_render) → each starts a prefetcher whose producer fills the window and waits for a consumer that never comes; nothing closes it → idle pools and blocked threads pile up; the atexit join can hang the run
