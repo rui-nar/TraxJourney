@@ -97,16 +97,37 @@ them to make faster.
   requests (`shutdown(wait=False, cancel_futures=True)`). The prefetcher
   starts on the first `frame()` call, so building a `FrameRenderer` starts no
   threads. A render that needs no tile still never needs `MAPBOX_TOKEN`.
+  **No thread ever waits on the window** (review R1-1): there is no producer
+  thread. The consumer's own call tops up the submissions, up to the window,
+  each time it takes a result. A renderer that draws a few frames and is then
+  dropped without `close()` (many tests and the bench's `--dump-frames`)
+  leaves at most `window` fetches to finish, then idle threads. A
+  `weakref.finalize` on `FrameRenderer` closes the prefetcher when the
+  renderer is collected. A closed prefetcher is never restarted, and calls
+  after `close()` fetch synchronously.
 - **D8 — 429 is retried.** `MapboxTileClient` treats 429 like a transient
-  error: it waits `Retry-After` seconds when the header is present (capped
-  at 30 s), otherwise the existing backoff, within the same `MAX_RETRIES`.
-  Today a single 429 fails the render, and parallel fetching makes one more
-  likely.
+  error, within the same `MAX_RETRIES`. Mapbox documents
+  `X-Rate-Limit-Reset` (a Unix timestamp) on rate-limited responses, not
+  `Retry-After` (review R1-2), so the wait is, in order of preference:
+  1. `X-Rate-Limit-Reset` minus now;
+  2. `Retry-After` in seconds;
+  3. the existing `2 ** attempt` backoff.
+
+  The wait is capped at 30 s and never below 1 s. A missing, malformed or
+  past header counts as absent, so parsing never raises anything but
+  `APIError` out of the client. Today a single 429 fails the render, and
+  parallel fetching makes one more likely.
 - **D9 — What "fetch" means in the summary.** The `fetch` stage stays "time
   the frame loop spends waiting for tiles". With prefetching that is
   blocked time, not network time. The summary line gains two fields:
   `tile_ms`, the mean network time per tile measured inside the pool (so a
-  slow network is still visible), and `prefetch_misses`.
+  slow network is still visible), and `prefetch_misses`. `tile_ms` is a
+  diagnostic only: gate G1 decides on `fetch_ms` and `prefetch_misses`. Its
+  counters are updated from the pool threads and guarded, not locked
+  (review R1-3, Guard). The U2a tests assert that, after an in-order run with
+  4 threads, `fetched` equals the fake fetcher's thread-safe call count.
+  `close()` logs a warning if `fetched` plus `misses` differs from the number
+  of fetches completed.
 - **D10 — CPU stages: profile now, change later** (owner decision). The bench
   gains `--profile FILE`, which runs the frame loop under `cProfile`, writes
   the stats and prints the top 30 functions by own time. The owner runs it
@@ -127,9 +148,12 @@ REVIEW.md §2 defaults apply, plus:
   thread still fetching after the prefetcher is closed (beyond the in-flight
   requests), and a stored exception never lost.
 - **External service:** Mapbox's per-account rate limit (6,000 per minute).
-  The prod and val stacks may share an account, and posters fetch through the
-  same client. The design bounds concurrency (D6) and retries 429 (D8); it
-  does not coordinate across processes.
+  The render shares it with the prod and val stacks, with posters (same
+  client), and with users browsing the interactive satellite map in the
+  Flutter clients, which draws the same style on the same account (owner,
+  review round 1). The render's own peak is bounded (D6) and a 429 is waited
+  out (D8). Nothing coordinates across processes or with clients, so a
+  render must survive the budget being used up by others for up to a minute.
 - **RQ timeout:** the work horse is killed, or the frame loop raises
   `JobTimeoutException`. Either way, no thread may keep the horse alive.
 - **Scale:** at most `MAX_TILES = 3000` tiles per render, as today.
@@ -167,16 +191,21 @@ humans read it, and docs/VIDEO.md documents it.
 - **Do:**
   1. Give the client a thread-local `requests.Session`, created on first
      use in each thread, and fetch through it.
-  2. Treat 429 as retryable within `MAX_RETRIES`. Sleep for `Retry-After`
-     (integer seconds) capped at 30 s when the header is present, otherwise
-     `2 ** attempt`.
+  2. Treat 429 as retryable within `MAX_RETRIES`. Choose the wait as D8
+     says: `X-Rate-Limit-Reset` minus now, then `Retry-After`, then
+     `2 ** attempt`. Clamp it to [1, 30] s. A missing, malformed or past
+     header counts as absent (review R1-2).
   3. Leave every other behaviour unchanged: 5xx and network retries, other
      4xx raising at once, error messages and the URL.
 - **Acceptance:** `pytest tests/test_tile_stitcher.py tests/test_poster*.py`
   passes. New tests:
   - two fetches on one thread use one session object; two threads use two;
-  - a 429 followed by 200 returns the tile and slept `Retry-After`;
-  - a 429 with `Retry-After: 120` sleeps 30;
+  - a 429 with `X-Rate-Limit-Reset` 10 s ahead, then a 200, returns the
+    tile after sleeping about 10 s (with the clock faked);
+  - a reset 120 s ahead sleeps 30;
+  - a 429 with `Retry-After: 5` only sleeps 5;
+  - a 429 with a malformed or past reset falls back to the backoff and
+    raises only `APIError`;
   - persistent 429 raises `APIError` after `MAX_RETRIES`;
   - a 404 still raises at once without sleeping.
 - **Out of scope:** prefetching, caching, the poster renderer.
@@ -207,17 +236,22 @@ humans read it, and docs/VIDEO.md documents it.
      window=PREFETCH_WINDOW)` is callable as a `TileFetcher`. It has
      `close()`, is a context manager, and exposes `misses`, `fetched` and
      `net_seconds`.
-     - A producer keeps at most `window` requests submitted but not yet
-       consumed. Consuming a pending result frees a slot.
+     - There is no producer thread, and no thread ever waits on the
+       window (review R1-1). The first call submits up to `window`
+       requests. Each time a call takes a pending result, it submits more,
+       up to `window` submitted but unconsumed.
      - A call with a pending result for its key waits for it and returns its
        bytes, or raises its stored exception. Any other call is a miss: it is
        fetched synchronously on the calling thread and counted.
      - `threads == 0` makes every call a direct, synchronous fetch.
      - Closing it cancels queued work and doesn't wait for in-flight
        requests. Calling it after `close()` fetches synchronously.
-     - Results that are never consumed (out-of-order or stopped renders)
-       must not stall the producer forever. When a miss shows the render has
-       moved past them, discard them (local design: say how).
+     - Results that are never consumed (out-of-order renders) must not keep
+       the window full forever. When a miss shows the render has moved past
+       them, discard them (local design: say how).
+     - The counters `fetched` and `net_seconds` are updated from the pool
+       threads without a lock (D9, review R1-3 Guard). `close()` logs a
+       warning if `fetched` plus `misses` differs from the fetches completed.
 - **Acceptance:** `pytest tests/test_video_tile_prefetch.py
   tests/test_video_renderer.py tests/test_video_camera.py` passes. New tests:
   - **plan order:** for the renderer's synthetic trip in every camera mode,
@@ -229,8 +263,13 @@ humans read it, and docs/VIDEO.md documents it.
   - **serving:** in-order consumption makes zero misses and returns the
     right bytes per key, including a key requested twice;
   - **misses:** an unknown key is a miss and still returns the right bytes;
-    an out-of-order and a stopped-early consumer neither deadlock nor
-    stall the producer (bounded test timeout);
+    an out-of-order consumer neither deadlocks nor stops prefetching
+    (bounded test timeout);
+  - **abandoned:** a prefetcher that served a few calls and is then dropped
+    without `close()` has every pool thread idle or gone once its last
+    in-flight fetch ends: no thread is blocked on the window;
+  - **counters (R1-3 guard):** after an in-order run with 4 threads,
+    `fetched` equals the fake fetcher's thread-safe call count;
   - **errors:** a failing fetch raises the same exception, once, at the
     consumer's call for that key;
   - **close:** after `close()`, no new fetch starts. A test proves this by
@@ -281,7 +320,9 @@ humans read it, and docs/VIDEO.md documents it.
      `fetch` is the frame loop's wait (D9).
   3. Start the prefetcher on the first `frame()` call. Add
      `FrameRenderer.close()`, which is idempotent and called in a `finally`
-     by `encode` and `_write_preview_webp`.
+     by `encode` and `_write_preview_webp`. Also register a
+     `weakref.finalize` that closes the prefetcher when the renderer is
+     collected (review R1-1). A closed prefetcher is never restarted.
   4. Add `tile_ms` and `prefetch_misses` to the summary line for both kinds.
   5. Update docs/VIDEO.md.
 - **Acceptance:** in the Linux image (CI=1), `pytest tests/test_video_*.py`
@@ -297,6 +338,9 @@ humans read it, and docs/VIDEO.md documents it.
   - **failure cleanup:** after a failing fetch, the render raises the
     fetcher's exception and no prefetch thread is still alive afterwards
     (`threading.enumerate()`, bounded wait);
+  - **dropped renderer:** a `FrameRenderer` that drew a few frames
+    directly, with no `encode`, and was then dropped and collected leaves no
+    prefetch thread fetching (bounded wait);
   - **summary:** the line carries `tile_ms=` and `prefetch_misses=`.
 - **Out of scope:** CPU stages, the poster renderer, caching, timeouts.
 - **Latitude:** local design
@@ -323,7 +367,8 @@ from the profile.
   `fetch_ms` is ≤ 10 ms per frame and `prefetch_misses` is 0.
 - The tile count per render is unchanged, and frames are bit-identical with
   and without prefetching; existing goldens pass unchanged.
-- A 429 from Mapbox no longer fails a render on its own.
+- A Mapbox 429, including one that lasts until the end of the current minute,
+  no longer fails a render on its own.
 - A failed or timed-out render leaves no prefetch thread fetching.
 - The render summary reports `tile_ms` and `prefetch_misses`;
   docs/VIDEO.md documents them and records the gate run.
