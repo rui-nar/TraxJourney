@@ -292,3 +292,28 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). F1-1 and
 ## Integrated review, round 3 — 2026-10-01, reviewed 26b643fa..4f91ff12 (fix unit F-b only)
 
 Reviewer: adversarial-reviewer (Fable). F2-1 found fixed. No findings; no envelope questions. Integrated review CLEAN.
+
+## Delivery
+
+Branch `feat/519-video-preview`, from `origin/main` 0bf5ce89. Orchestrator worktree `.claude/worktrees/v519-plan`; unit worktrees made by hand from the branch.
+
+| Unit | Goal | Route | Rule | Attempts | Escalated | Verified first time | Findings traced |
+|---|---|---|---|---|---|---|---|
+| U1 | Preview kind, migration, quota filter, preview count | Opus | S4 | 1 | — | yes | U1R1-1, U1R1-2, U1R2-1, U1R3-1 |
+| U1-F | Shared counting clause, preview_slot_frees_at, in-flight bound on failed rows | Opus | S5 | 1 | — | yes | U1R1-1, U1R1-2 |
+| U1-F2 | Forecast every counted preview at created + 1 h | Opus | S5 | 1 | — | yes | U1R2-1 |
+| U2 | Preview render (animated WebP), bench --preview | Sonnet → Opus | — | 2 | X1 → Opus (libwebp merges identical frames; acceptance restated as durations by the orchestrator) | no | — |
+| U2-F | Rename the test trip away from the old product name | Sonnet | — | 1 | — | yes | — |
+| U2b | Compact trip geometry (D11, added after gate G1) | Opus | S2 | 1 | — | yes | U2bR1-1..4, U2bR2-1 |
+| U3 | Preview jobs: API, runner, sweeps, rate limit | Opus | S5 | 1 | X3 (one `_EXEMPT` line in tests/test_project_cache_invalidation.py; Scope widened) | yes | — |
+| U4 | Preview in the video dialog | Opus | S5 | 1 | — | yes | F1-1 |
+| F-a | Preview reachable in noneLeft/unavailable; consent restores the prior phase | Opus | S5 | 2 | — | no (missing `unavailable` tests) | F1-1 |
+| F-b | No "0 clips" before consent; plan reloaded after a preview's consent | Opus | S5 | 1 | — | no (verified with F-a) | F2-1 |
+
+Owner decisions during delivery: key-frame WebPs (~575 KB per 30 s) accepted; gate G1 passed on time (60 s: variable 39.9 s, overview 9.0 s) but showed a 936 MB peak → memory investigation → D11/U2b (streaming encode dropped); Preview reachable when no video can be made (integrated review envelope answer).
+
+Reviews: unit U1 (3 rounds), unit U3 (clean), U2b plan (2 rounds), integrated (3 rounds, round 3 clean).
+
+Checks at the final merge: server suite 5464 passed (rail extract workflow left to CI on this machine); video tests in the Linux image 469 passed, 3 skipped (manual benchmarks); Flutter analyze clean, 1863 tests, build web OK; real-trip preview peak RSS 329–338 MB in all four camera modes (was 764 / 930); `alembic heads` single head.
+
+Owed: gate G2 (owner: preview animates in Chrome, Safari, Firefox and on Android; Follow framing looks like the final video's).
