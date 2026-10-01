@@ -274,4 +274,21 @@ Owner answer (2026-10-01): no — option (a): Preview stays reachable in `noneLe
 - Revisit when: the owner lets Preview run in noneLeft/unavailable (then Preview → 409 → consent → reset becomes the normal path); the plan request stops requiring consent; a report of the quota notice vanishing after consent
 - Guard: —
 - Override: user: Fix now — with Preview reachable in noneLeft/unavailable, consent → reset becomes the normal path
-- Outcome: fix unit F-a
+- Outcome: fixed (26b643fa)
+
+## Integrated review, round 2 — 2026-10-01, reviewed 9df755dd..26b643fa (fix unit F-a only)
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). F1-1 and the envelope answer found implemented.
+
+### F2-1 — In noneLeft/unavailable on an encrypted trip the options show the server's empty plan, so every length reads "0 clips", before and after the preview's consent
+- Trigger: Free user with the month's video spent opens the dialog on an encrypted trip → 200 with an empty plan → "0 clips" under every length → Preview + consent → preview animates clips, labels still "0 clips"
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (4f91ff12)
+
+## Integrated review, round 3 — 2026-10-01, reviewed 26b643fa..4f91ff12 (fix unit F-b only)
+
+Reviewer: adversarial-reviewer (Fable). F2-1 found fixed. No findings; no envelope questions. Integrated review CLEAN.
