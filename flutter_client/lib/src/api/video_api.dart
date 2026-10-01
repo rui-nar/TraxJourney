@@ -7,15 +7,20 @@
 ///   GET  /api/projects/{name}/video/{job_id}/download -> the MP4
 ///   GET  /api/video/{token}                           -> [VideoJobStatus]
 ///   GET  /api/video/{token}/download                  -> the MP4 (no session)
+///   POST /api/projects/{name}/video/preview           -> {job_id}
+///   GET  /api/projects/{name}/video/preview/{job_id}  -> [VideoJobStatus]
+///   GET  /api/projects/{name}/video/preview/{job_id}/bytes -> the WebP
 ///
 /// One-shot calls only, like `poster_job_notifier.dart`: the request flow
 /// lives in `video_job_notifier.dart` and the poll loop in
 /// `video_status_card.dart`. Errors come back as the [ApiException] the
 /// server's status maps to; [VideoConsentRequired.fromApiException] reads a
-/// 409 and `QuotaError.fromApiException` a 402.
+/// 409, `QuotaError.fromApiException` a 402 and
+/// [VideoPreviewRateLimited.fromApiException] a preview's 429.
 library;
 
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
@@ -144,6 +149,30 @@ class VideoConsentRequired {
   }
 }
 
+/// A preview's 429 (docs/VIDEO_PREVIEW_PLAN.md, D6): too many previews in
+/// the last hour. The wait is read from the body's `retry_after_s`, since a
+/// web app on another origin can't read the `Retry-After` header.
+class VideoPreviewRateLimited {
+  /// Seconds until a preview may be asked for again; null when not sent.
+  final int? retryAfterS;
+
+  const VideoPreviewRateLimited({this.retryAfterS});
+
+  /// Parse a 429, or null for any other failure.
+  static VideoPreviewRateLimited? fromApiException(ApiException e) {
+    if (e.statusCode != 429) return null;
+    try {
+      final body = jsonDecode(e.body);
+      final detail = body is Map ? body['detail'] : null;
+      final s = detail is Map ? detail['retry_after_s'] : null;
+      return VideoPreviewRateLimited(
+          retryAfterS: s is num ? s.ceil() : null);
+    } catch (_) {
+      return const VideoPreviewRateLimited();
+    }
+  }
+}
+
 /// `JobStatusOut`.
 class VideoJobStatus {
   /// 'pending' | 'running' | 'done' | 'failed' | 'expired'.
@@ -227,6 +256,51 @@ Future<int> createVideoJob({
     timeout: _kPlanTimeout,
   ) as Map<String, dynamic>;
   return (result['job_id'] as num).toInt();
+}
+
+/// Starts a low-resolution preview of the video these settings would make
+/// (docs/VIDEO_PREVIEW_PLAN.md) and returns its job id. [height] is the
+/// resolution of that video, which the preview frames like.
+Future<int> createVideoPreview({
+  required ProjectRef ref,
+  required int lengthS,
+  required int height,
+  String camera = kVideoCameraDefault,
+  Map<int, String>? geometry,
+  ApiClient? client,
+}) async {
+  final result = await (client ?? api).post(
+    ref.path('/video/preview'),
+    {
+      'length_s': lengthS,
+      'height': height,
+      'camera': camera,
+      if (geometry != null) 'decrypted_geometry': _geometryJson(geometry),
+    },
+    timeout: _kPlanTimeout,
+  ) as Map<String, dynamic>;
+  return (result['job_id'] as num).toInt();
+}
+
+Future<VideoJobStatus> fetchVideoPreviewStatus({
+  required ProjectRef ref,
+  required int jobId,
+  ApiClient? client,
+}) async {
+  final result = await (client ?? api).get(ref.path('/video/preview/$jobId'))
+      as Map<String, dynamic>;
+  return VideoJobStatus.fromJson(result);
+}
+
+/// The animated WebP of a done preview.
+Future<Uint8List> fetchVideoPreviewBytes({
+  required ProjectRef ref,
+  required int jobId,
+  ApiClient? client,
+}) async {
+  final res =
+      await (client ?? api).getRaw(ref.path('/video/preview/$jobId/bytes'));
+  return res.bodyBytes;
 }
 
 Future<VideoJobStatus> fetchVideoJobStatus({
