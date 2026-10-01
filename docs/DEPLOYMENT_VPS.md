@@ -433,6 +433,14 @@ running. The deploy prints how long the pull took, which is roughly the
 downtime the old down-first order cost on every deploy, and how long after
 `up -d` the new version first answered.
 
+Once a deploy is verified, it runs `docker image prune -f` to remove the
+images the pull left untagged; §8's webhook does the same after its own
+check succeeds. Without it every deploy left a full old image behind until
+the disk filled. It removes dangling images only, never one a tag or any
+container still uses, so prod and val sharing the host can't remove each
+other's. A failed deploy skips it, keeping the previous image on disk to go
+back to, and a failed prune is only a warning.
+
 Everything on the host happens over **one** SSH connection, so a key with a
 passphrase and no agent asks for it once. Windows' OpenSSH cannot share a
 connection (`ControlMaster` is not supported there), so

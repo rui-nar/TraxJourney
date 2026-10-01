@@ -29,11 +29,16 @@ ControlMaster to share one. In that session, in this order:
    containers run the image that was just pulled.
 5. Re-check. Reads the containers once more ``RECHECK_SECONDS`` later, so a
    container that crashes after the checks passed still fails the deploy.
+6. Prune. Once the deploy is verified, ``docker image prune -f`` removes the
+   images the pull left untagged. Every deploy pulls a full image and nothing
+   else removes the old one, which filled the VPS disk. Only after a verified
+   deploy, so a failed one keeps the previous image on the host to go back
+   to; a failed prune is a warning, since the deploy itself took effect.
 
 ``expect`` prints the version the deployed server should report, for the
 banner deploy.ps1 shows before it starts.
 
-Apart from the push, the pull and ``up -d``, everything here only reads:
+Apart from the push, the pull, ``up -d`` and the prune, everything here only reads:
 ``docker compose config``/``ps``, ``docker inspect`` and an HTTP GET. It is
 stdlib-only so any Python 3 can run it, and the SSH session, push, HTTP fetch,
 clock and sleep are injectable so the logic is tested without a host
@@ -499,6 +504,12 @@ def up_command(host: Host) -> str:
     return remote(host, "docker compose up -d 1>&2")
 
 
+# Dangling images only: never one a tag or any container (running or stopped)
+# still uses, so the other environment's images on the same host are safe.
+def prune_command(host: Host) -> str:
+    return remote(host, "docker image prune -f 1>&2")
+
+
 def host_state_command(host: Host, image: str) -> str:
     return remote(
         host,
@@ -730,7 +741,14 @@ def cmd_deploy(args: argparse.Namespace, session: Callable[[Host], Session] = op
             print(f"FAIL: `docker compose up -d` failed (exit {code})")
             return 1
 
-        return verify(args, host, shell.run, expectation, previous, baseline, started, fetch, clock, sleep)
+        code = verify(args, host, shell.run, expectation, previous, baseline, started, fetch, clock, sleep)
+        if code == 0:
+            print("  pruning the images this pull left untagged...")
+            pruned, _ = shell.run(prune_command(host))
+            if pruned != 0:
+                print(f"WARNING: `docker image prune` failed (exit {pruned}); "
+                      "the deploy is fine, but old images stay on the host's disk")
+        return code
 
 
 def cmd_expect(args: argparse.Namespace, git: Optional[GitRunner] = None) -> int:

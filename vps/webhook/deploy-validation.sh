@@ -64,6 +64,12 @@ for ((attempt = 1; attempt <= VERIFY_ATTEMPTS; attempt++)); do
   if [[ "$reported" =~ ^validation-([0-9a-f]{7,40})$ ]]; then
     if [[ "$sha" == "${BASH_REMATCH[1]}"* ]]; then
       log "SUCCESS $short: $VERSION_URL reports $reported"
+      # Drop the images the pull left untagged, or every build adds one to the
+      # disk. Only after success, so a failed deploy keeps the previous image
+      # to go back to. Dangling only: nothing a tag or container still uses.
+      if ! docker image prune -f >>"$LOG_FILE" 2>&1; then
+        log "WARNING $short: docker image prune failed; old images stay on disk"
+      fi
       exit 0
     fi
   fi
