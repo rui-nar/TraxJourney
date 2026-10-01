@@ -294,7 +294,7 @@ def test_a_matching_version_succeeds(deploy):
     result = deploy.run(SHA, versions=f"validation-{SHA[:7]}")
     assert result.returncode == 0, result.stdout + result.stderr
     assert f"SUCCESS {SHA[:7]}" in deploy.log.read_text()
-    assert [args for _, _, args in deploy.calls()] == ["compose pull", "compose up -d"]
+    assert [args for _, _, args in deploy.calls()] == ["compose pull", "compose up -d", "image prune -f"]
     assert all(Path(cwd) == deploy.val_dir for cwd, _, _ in deploy.calls())
 
 
@@ -319,6 +319,21 @@ def test_a_different_version_fails_loudly(deploy):
 
 
 @needs_bash
+def test_a_failed_deploy_keeps_the_previous_image(deploy):
+    assert deploy.run(SHA, versions=f"validation-{OTHER_SHA[:7]}").returncode != 0
+    assert "image prune -f" not in [args for _, _, args in deploy.calls()]
+
+
+@needs_bash
+def test_a_failed_prune_warns_but_the_deploy_still_succeeds(deploy):
+    (Path(deploy.env["PATH"].split(os.pathsep)[0]) / "docker").write_text(
+        _FAKE_DOCKER + 'case "$*" in "image prune"*) exit 1;; esac\n', encoding="utf-8", newline="\n")
+    result = deploy.run(SHA, versions=f"validation-{SHA[:7]}")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"WARNING {SHA[:7]}: docker image prune failed" in deploy.log.read_text().splitlines()[-1]
+
+
+@needs_bash
 def test_no_answer_at_all_fails(deploy):
     assert deploy.run(SHA, versions="down").returncode != 0
 
@@ -339,7 +354,7 @@ def test_anything_but_a_full_sha_is_refused_before_deploying(deploy, arg):
 @needs_bash
 def test_the_deploy_runs_under_the_lock(deploy):
     assert deploy.run(SHA, versions=f"validation-{SHA[:7]}").returncode == 0
-    assert [lock for _, lock, _ in deploy.calls()] == ["held", "held"]
+    assert [lock for _, lock, _ in deploy.calls()] == ["held", "held", "held"]
 
 
 @needs_bash

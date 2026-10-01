@@ -726,8 +726,8 @@ class FakeHost:
     """The far end of the deploy's SSH session: answers each command it is sent."""
 
     def __init__(self, images=f"{VAL}\nredis:7-alpine\n", baseline="[]", pull=0, up=0,
-                 states=("healthy",), connect=0):
-        self.images, self.baseline, self.pull, self.up = images, baseline, pull, up
+                 states=("healthy",), connect=0, prune=0):
+        self.images, self.baseline, self.pull, self.up, self.prune = images, baseline, pull, up, prune
         self.states = list(states)
         self.connect = connect
         self.commands = []
@@ -752,6 +752,7 @@ class FakeHost:
             dv.baseline_command(SESSION_HOST): "baseline",
             dv.pull_command(SESSION_HOST): "pull",
             dv.up_command(SESSION_HOST): "up",
+            dv.prune_command(SESSION_HOST): "prune",
             dv.host_state_command(SESSION_HOST, VAL): "state",
         }[command]
         self.commands.append(kind)
@@ -759,7 +760,7 @@ class FakeHost:
             return 0, self.images
         if kind == "baseline":
             return 0, self.baseline
-        if kind in ("pull", "up"):
+        if kind in ("pull", "up", "prune"):
             return getattr(self, kind), ""
         state = self.states.pop(0) if len(self.states) > 1 else self.states[0]
         return 0, state if state.startswith("###") else transcript(state)
@@ -788,7 +789,7 @@ def test_deploy_checks_the_host_then_pulls_then_starts_then_verifies(capsys):
     code, _, _ = deploy(host, *BUILT)
     out = capsys.readouterr().out
     assert code == 0, out
-    assert host.commands == ["images", "baseline", "pull", "up", "state", "state"]
+    assert host.commands == ["images", "baseline", "pull", "up", "state", "state", "prune"]
     assert "FAIL" not in out
 
 
@@ -951,7 +952,37 @@ def test_the_re_check_waits_before_reading_again():
     _, _, clock = deploy(host, *BUILT)
     assert dv.RECHECK_SECONDS >= 15
     assert clock.sleeps[-1] == dv.RECHECK_SECONDS
-    assert host.commands[-2:] == ["state", "state"]
+    assert host.commands[-3:] == ["state", "state", "prune"]
+
+
+# ── pruning the replaced images ──────────────────────────────────────────────
+
+def test_prune_removes_dangling_images_only():
+    """Never `-a`: prod and val share the host, and a stopped stack's images
+    must survive the other one's deploy."""
+    assert dv.prune_command(HOST) == "cd /opt/traxjourney-val || exit 1; docker image prune -f 1>&2"
+
+
+def test_a_failed_deploy_keeps_the_previous_image():
+    host = FakeHost(states=("healthy", "flapping"))
+    code, _, _ = deploy(host, *BUILT)
+    assert code == 1
+    assert "prune" not in host.commands
+
+
+@pytest.mark.parametrize("host", [FakeHost(pull=1), FakeHost(up=1)], ids=["pull", "up"])
+def test_nothing_is_pruned_when_the_deploy_stops_early(host):
+    deploy(host, *BUILT)
+    assert "prune" not in host.commands
+
+
+def test_a_failed_prune_warns_but_the_deploy_still_passes(capsys):
+    host = FakeHost(prune=1)
+    code, _, _ = deploy(host, *BUILT)
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "WARNING: `docker image prune` failed (exit 1)" in out
+    assert "FAIL" not in out
 
 
 # ── the version the banner shows (#439) ──────────────────────────────────────
