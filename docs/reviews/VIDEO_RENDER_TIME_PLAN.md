@@ -91,7 +91,7 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). No envel
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed in plan (U2a Do 3: the prefetcher exposes its own threads; U2b "failure cleanup" and "dropped renderer" check only that prefetcher's threads, or those new since a snapshot)
 
 ### R3-2 — Cutting the request timeout to the time left can pass a timeout ≤ 0: urllib3 raises ValueError (not APIError), and the preview shows a garbled warning
 - Trigger: a 429 wait ends milliseconds before the poster preview's deadline → remaining ≤ 0 → session.get raises ValueError, which escapes fetch_tile → the grey map shows "Map imagery unavailable: Attempted to set connect timeout to -0.003…"
@@ -99,5 +99,5 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). No envel
 - Decision: Defer (D10)
 - Revisit when: a preview warning or API log contains "timeout cannot be set" or a ValueError from MapboxTileClient.fetch_tile, or a caller that passes a deadline relies on the client raising only APIError
 - Guard: —
-- Override: —
-- Outcome: open
+- Override: user: Fix now — one line, with the R2-1 deadline work; keeps the client raising only APIError
+- Outcome: fixed in plan (D8 and U1 Do 3: MIN_REQUEST_S = 0.5; U1 acceptance)

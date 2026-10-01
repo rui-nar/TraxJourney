@@ -136,7 +136,10 @@ them to make faster.
   **A deadline bounds every wait** (review R2-1). The client takes an
   optional `deadline` (a `time.monotonic()` instant). A wait that would end
   past it is not taken: the client raises `APIError` at once. A request's
-  own timeout is also cut to what is left before the deadline.
+  own timeout is also cut to what is left before the deadline. When less
+  than `MIN_REQUEST_S = 0.5` is left, the deadline counts as passed and the
+  client raises `APIError` without sending a request, so it never passes
+  `requests` a timeout ≤ 0 (review R3-2).
   `render_basemap` passes its `deadline` to the default client it builds.
   The synchronous poster preview (10 s budget, `poster_renderer.py`)
   therefore still falls back to its grey map within budget instead of
@@ -229,7 +232,9 @@ humans read it, and docs/VIDEO.md documents it.
      malformed or past header counts as absent (reviews R1-2, R2-3).
   3. Add an optional `deadline` to the client and to `_default_tile_fetcher`.
      A wait that would end past it raises `APIError` at once, and a
-     request's timeout is cut to the time left. `render_basemap` passes its
+     request's timeout is cut to the time left. When less than
+     `MIN_REQUEST_S = 0.5` is left, raise `APIError` without sending
+     (review R3-2). `render_basemap` passes its
      own `deadline` when it builds the default client (review R2-1).
   4. Leave every other behaviour unchanged: 5xx and network retries, other
      4xx raising at once, error messages and the URL.
@@ -244,6 +249,8 @@ humans read it, and docs/VIDEO.md documents it.
   - with a `deadline` 10 s ahead, a 429 whose reset is 60 s ahead raises
     `APIError` without sleeping. `render_basemap` with a deadline and no
     injected fetcher hands that deadline to the client (R2-1);
+  - with 0.2 s left before the deadline, or the deadline already past, the
+    client raises `APIError` and makes no request (R3-2);
   - a 429 with `Retry-After: 5` only sleeps 5;
   - a 429 with a malformed or past reset falls back to the backoff and
     raises only `APIError`;
@@ -295,8 +302,10 @@ humans read it, and docs/VIDEO.md documents it.
      - Each pool fetch returns its network time with its bytes. `fetched`,
        `net_seconds` and `misses` are updated only on the consumer's thread
        (D9, review R2-4).
-     - Name the pool threads with a common prefix (e.g. `tile-prefetch-`)
-       so tests can find them in `threading.enumerate()`.
+     - Name the pool threads with a common prefix (`tile-prefetch-`), and
+       expose the prefetcher's own threads (e.g. a `threads` property), so a
+       test can check a given prefetcher's threads. Other tests in the same
+       process may leave idle threads of their own (review R3-1).
 - **Acceptance:** `pytest tests/test_video_tile_prefetch.py
   tests/test_video_renderer.py tests/test_video_camera.py` passes. New tests:
   - **plan order:** for the renderer's synthetic trip in every camera mode,
@@ -384,12 +393,17 @@ humans read it, and docs/VIDEO.md documents it.
   - **overlap:** with a fake fetcher that sleeps 20 ms per tile, the `fetch`
     stage is under 25% of the summed sleep;
   - **failure cleanup:** after a failing fetch, the render raises the
-    fetcher's exception and no prefetch thread is still alive afterwards
-    (`threading.enumerate()`, bounded wait);
+    fetcher's exception, and none of **its own** prefetcher's threads is
+    still alive afterwards (bounded wait). The check uses the prefetcher's
+    `threads`, or the `tile-prefetch-` threads that are new since a
+    `threading.enumerate()` snapshot taken before the renderer was built.
+    Never check every thread in the process (R3-1);
   - **dropped renderer:** a `FrameRenderer` draws a few frames directly,
     with no `encode`. After `del` and `gc.collect()`, a weak reference to it
-    is dead and no `tile-prefetch-` thread is alive (bounded wait). Shown to
-    fail with a finalizer that closes over the renderer (R2-2);
+    is dead, and none of the `tile-prefetch-` threads that are new since a
+    snapshot taken before the renderer was built is alive (bounded wait).
+    Shown to fail with a finalizer that closes over the renderer (R2-2,
+    R3-1);
   - **summary:** the line carries `tile_ms=` and `prefetch_misses=`.
 - **Out of scope:** CPU stages, the poster renderer, caching, timeouts.
 - **Latitude:** local design
