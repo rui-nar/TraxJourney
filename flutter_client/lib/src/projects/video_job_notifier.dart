@@ -302,6 +302,10 @@ class VideoRequestNotifier extends ChangeNotifier {
   /// What the consent step interrupted.
   _ConsentFor _consentFor = _ConsentFor.plan;
 
+  /// With [_ConsentFor.preview]: the phase the preview's 409 found, which
+  /// accepting or declining puts back (a used-up month stays used up).
+  VideoRequestPhase _phaseBeforeConsent = VideoRequestPhase.ready;
+
   /// How many of [consentIds] have been fetched and decrypted, while
   /// [acceptConsent] runs; null otherwise.
   int? consentProgress;
@@ -340,12 +344,16 @@ class VideoRequestNotifier extends ChangeNotifier {
       previewPhase == VideoPreviewPhase.pending ||
       previewPhase == VideoPreviewPhase.running;
 
-  /// Previews are free (D3), so the monthly quota doesn't gate them.
+  /// Previews are free (D3) and render on the default queue, so neither the
+  /// monthly quota nor the `video` worker being down gates them.
   bool get canPreview =>
-      (phase == VideoRequestPhase.ready ||
-          phase == VideoRequestPhase.quotaExceeded) &&
-      height != null &&
-      !previewInFlight;
+      _previewable(phase) && height != null && !previewInFlight;
+
+  static bool _previewable(VideoRequestPhase p) =>
+      p == VideoRequestPhase.ready ||
+      p == VideoRequestPhase.quotaExceeded ||
+      p == VideoRequestPhase.noneLeft ||
+      p == VideoRequestPhase.unavailable;
 
   bool get canSubmit =>
       phase == VideoRequestPhase.ready &&
@@ -480,17 +488,17 @@ class VideoRequestNotifier extends ChangeNotifier {
       case _ConsentFor.plan:
         await loadPlan();
       case _ConsentFor.preview:
-        _set(VideoRequestPhase.ready);
+        _set(_phaseBeforeConsent);
         await preview();
     }
   }
 
   /// Declining ends the request, except for a preview: the dialog goes back
-  /// to its options and no preview is made.
+  /// to where it was and no preview is made.
   void declineConsent() {
     if (_consentFor == _ConsentFor.preview) {
       _setPreview(VideoPreviewPhase.idle);
-      _set(VideoRequestPhase.ready);
+      _set(_phaseBeforeConsent);
       return;
     }
     _geometry = null;
@@ -592,8 +600,13 @@ class VideoRequestNotifier extends ChangeNotifier {
     if (e is ApiException) {
       final consent = VideoConsentRequired.fromApiException(e);
       if (consent != null) {
+        // The video's own request moved on meanwhile (it is being created,
+        // or asks consent itself): that step owns the phase, and it will ask
+        // for the same consent if it needs it.
+        if (!_previewable(phase)) return _setPreview(VideoPreviewPhase.idle);
         consentIds = consent.activityIds;
         _consentFor = _ConsentFor.preview;
+        _phaseBeforeConsent = phase;
         previewPhase = VideoPreviewPhase.idle;
         _set(VideoRequestPhase.consentNeeded);
         return;

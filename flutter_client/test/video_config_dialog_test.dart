@@ -4,7 +4,8 @@
 // unavailable state; tracks /meta deferred fetched with progress; and no way
 // to close the dialog while a job is being created (U7a); and the preview
 // (docs/VIDEO_PREVIEW_PLAN.md, U4): its messages, deadlines on a fake clock,
-// the out-of-date state, a 360 dp phone, and one consent for preview and video.
+// the out-of-date state, a 360 dp phone, and one consent for preview and video;
+// and the preview when no video can be made, whose consent keeps that (F-a).
 //
 // The dialog shows a CircularProgressIndicator while busy, so pumpAndSettle
 // would never return then: fixed frames are pumped instead.
@@ -569,10 +570,13 @@ void main() {
     bool isPreviewCreate(http.Request r) =>
         r.method == 'POST' && r.url.path == '/api/projects/Trip/video/preview';
 
-    /// Plan, preview 9 (whose status is [status]) and its bytes, video 50.
-    /// With [consentOn], a POST to a path ending so without geometry is 409.
+    /// Plan ([plan], else one allowing [res]), preview 9 (whose status is
+    /// [status]) and its bytes, video 50. With [consentOn], a POST to a path
+    /// ending so without geometry is 409.
     Future<http.Response> Function(http.Request) server(
-            {List<int> res = const [720], String? consentOn}) =>
+            {List<int> res = const [720],
+            String? consentOn,
+            Map<String, dynamic>? plan}) =>
         (req) async {
           final path = req.url.path;
           if (consentOn != null &&
@@ -588,7 +592,9 @@ void main() {
               }
             });
           }
-          if (path.endsWith('/plan')) return _json(200, _plan(res: res));
+          if (path.endsWith('/plan')) {
+            return _json(200, plan ?? _plan(res: res));
+          }
           if (path.endsWith('/video/preview')) return _json(201, {'job_id': 9});
           if (path.endsWith('/video/preview/9/bytes')) {
             return http.Response.bytes(png, 200,
@@ -726,27 +732,35 @@ void main() {
       expect(create.onPressed, isNotNull);
     });
 
-    testWidgets('the preview box fits a 360 dp phone', (tester) async {
-      tester.view.physicalSize = const Size(360, 640);
-      tester.view.devicePixelRatio = 1.0;
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
+    for (final noneLeft in [false, true]) {
+      testWidgets(
+          'the preview box fits a 360 dp phone'
+          '${noneLeft ? ' with no video left' : ''}', (tester) async {
+        tester.view.physicalSize = const Size(360, 640);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
 
-      await openPreview(tester, server());
-      await tapPreview(tester);
-      await tester.ensureVisible(find.byType(VideoPreviewImage));
-      await _frames(tester);
-      expect(tester.takeException(), isNull);
+        await openPreview(
+            tester, server(plan: noneLeft ? _plan(quota: _quotaNone) : null));
+        if (noneLeft) {
+          expect(find.textContaining("You've used all 1 video"), findsOneWidget);
+        }
+        await tapPreview(tester);
+        await tester.ensureVisible(find.byType(VideoPreviewImage));
+        await _frames(tester);
+        expect(tester.takeException(), isNull);
 
-      final box = tester.getRect(find.ancestor(
-          of: find.byType(VideoPreviewImage),
-          matching: find.byType(AspectRatio)));
-      final dialog = tester.getRect(find.byType(AlertDialog));
-      expect(box.left, greaterThanOrEqualTo(dialog.left));
-      expect(box.right, lessThanOrEqualTo(dialog.right));
-      expect(box.width, greaterThan(200));
-      expect(box.height, moreOrLessEquals(box.width * 9 / 16, epsilon: 0.5));
-    });
+        final box = tester.getRect(find.ancestor(
+            of: find.byType(VideoPreviewImage),
+            matching: find.byType(AspectRatio)));
+        final dialog = tester.getRect(find.byType(AlertDialog));
+        expect(box.left, greaterThanOrEqualTo(dialog.left));
+        expect(box.right, lessThanOrEqualTo(dialog.right));
+        expect(box.width, greaterThan(200));
+        expect(box.height, moreOrLessEquals(box.width * 9 / 16, epsilon: 0.5));
+      });
+    }
 
     testWidgets('consent given for the plan covers the preview and the video',
         (tester) async {
@@ -788,6 +802,66 @@ void main() {
       expect(sent.last.url.path, '/api/projects/Trip/video');
       expect(body(sent.last)['decrypted_geometry'], {'7': _track});
       expect(startedJob, 50);
+    });
+
+    group('when no video can be made (F-a)', () {
+      ButtonStyleButton button(WidgetTester tester, String label) =>
+          tester.widget<ButtonStyleButton>(find.ancestor(
+              of: find.text(label),
+              matching:
+                  find.byWidgetPredicate((w) => w is ButtonStyleButton)));
+
+      for (final (name, plan, notice) in [
+        (
+          'no video left',
+          _plan(quota: _quotaNone),
+          "You've used all 1 video your plan includes this month."
+        ),
+        (
+          'video rendering unavailable',
+          _plan(available: false),
+          "Video rendering isn't available right now. Please try again later."
+        ),
+      ]) {
+        testWidgets('$name: the notice, the options and a working Preview; '
+            'Create video disabled', (tester) async {
+          await openPreview(tester, server(plan: plan));
+          expect(find.text(notice), findsOneWidget);
+          expect(find.text('60 s'), findsOneWidget);
+          expect(find.text('720p'), findsOneWidget);
+          expect(find.text('Follow'), findsOneWidget);
+          expect(button(tester, 'Create video').onPressed, isNull);
+          expect(button(tester, 'Preview').onPressed, isNotNull);
+
+          await tapPreview(tester);
+          expect(find.text('Low-resolution preview'), findsOneWidget);
+          expect(sent.where(isPreviewCreate), hasLength(1));
+          expect(find.text(notice), findsOneWidget);
+          expect(button(tester, 'Create video').onPressed, isNull);
+        });
+      }
+
+      for (final accept in [true, false]) {
+        testWidgets(
+            'no video left: still so after '
+            "${accept ? 'accepting' : 'declining'} a preview's consent "
+            '(F1-1)', (tester) async {
+          await openPreview(
+              tester,
+              server(
+                  plan: _plan(quota: _quotaNone), consentOn: '/video/preview'));
+          await tapPreview(tester);
+          expect(find.byType(VideoConsentDialog), findsOneWidget);
+          await tester.tap(find.text(accept ? 'Send and continue' : 'Decline'));
+          await _frames(tester);
+
+          expect(find.byType(VideoConfigDialog), findsOneWidget);
+          expect(find.textContaining("You've used all 1 video"), findsOneWidget);
+          expect(button(tester, 'Create video').onPressed, isNull);
+          expect(find.text('Low-resolution preview'),
+              accept ? findsOneWidget : findsNothing);
+        });
+      }
     });
 
     testWidgets("declining a preview's consent keeps the dialog open",
