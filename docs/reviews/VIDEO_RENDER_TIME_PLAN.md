@@ -39,3 +39,43 @@ Owner answer (2026-10-01): asked for faster alternatives (daemon fetch threads w
 - Guard: (proposed) the U2a tests assert, after an in-order run with threads=4, that `prefetcher.fetched` equals the fake fetcher's thread-safe call count; close() logs a warning if fetched + misses differs from the completed fetches
 - Override: —
 - Outcome: guard added in plan (D9, U2a Do 3 and acceptance "counters")
+
+## Round 2 — 2026-10-01, reviewed at a64b734b (fixes since 2dc0cb22)
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). No envelope questions.
+
+### R2-1 — D8's 30 s 429 wait runs inside the synchronous poster preview, so its grey-basemap fallback becomes a client timeout
+- Trigger: the account budget is used up by others → a user opens the poster editor (synchronous POST /poster/preview) → the first tile gets a 429 with the reset ~60 s away → fetch_tile sleeps 30 s twice, and render_basemap's 10 s deadline is never checked during a sleep → the client's ~20 s HTTP timeout fires; the user sees "preview was not available" instead of the grey map, and an API thread stays busy for about 60 s
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/shared, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: a POST /poster/preview takes longer than the client's ~20 s timeout, a Mapbox 429 is logged on the poster preview path, or the owner overrides because this undoes the #14 preview budget
+- Guard: —
+- Override: —
+- Outcome: open
+
+### R2-2 — The R1-1 "dropped renderer" test passes whether or not the weakref.finalize fires
+- Trigger: CI runs the test against `weakref.finalize(self, self.close)` → the callback holds a strong reference, so the renderer is never collected → the pool threads sit idle, so "no prefetch thread fetching" holds → the test passes while the R1-1 fix does nothing
+- Scores: trigger=concrete, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
+
+### R2-3 — D8's two 30 s waits add up to exactly 60 s, so the last attempt lands on the reset boundary with no margin
+- Trigger: the budget is used up at the start of a window → 429 with the reset ~60 s ahead → sleep 30, another 429, sleep ~30 → the third and last attempt is sent at the reset instant → clock skew or limiter lag returns 429 again → APIError → the render fails
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=inferred
+- Decision: Defer (D10)
+- Revisit when: a render fails with a Mapbox 429 APIError after the full D8 waits, or R2-1 is reopened (settle the cap and the margin together)
+- Guard: —
+- Override: —
+- Outcome: open
+
+### R2-4 — The R1-3 guard compares counters while in-flight fetches are still completing, so it can warn spuriously on a failed render
+- Trigger: a render fails mid-way → close() runs while pool threads are still fetching → the counters change between the reads → a spurious "counters disagree" warning
+- Scores: trigger=plausible, impact=cosmetic, detect=logged, later=cheap, fix=S/local, confidence=inferred
+- Decision: Defer (D10)
+- Revisit when: the warning appears in a worker or bench log; first check whether that render failed with fetches in flight
+- Guard: —
+- Override: —
+- Outcome: open
