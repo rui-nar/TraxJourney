@@ -15,6 +15,12 @@ overlay's overview layout draws through, are outside it too).
 Measured in the Linux image on this trip, 220,000 points: the tuple-based
 code before U2b peaked at 391 (variable), 467 (overview), 349 (fixed) and 349
 (fixed_strict) bytes per point; U2b's at 112, 81, 81 and 81.
+
+Drawing one frame of a long leg zoomed in costs what is on screen, not the
+leg's length (#523, docs/VIDEO_ROUTE_DRAWING_PLAN.md U1): the overlay converts
+and draws only the runs of the leg that can touch the frame. Measured in the
+Linux image at zoom 16 and 1080p: 180.5 MB for a 500,000-point leg and 36.0 MB
+for a 100,000-point one before, 0.13 and 0.14 MB after.
 """
 from __future__ import annotations
 
@@ -32,8 +38,9 @@ from PIL import Image
 from src.models.activity import Activity
 from src.models.project import Project, ProjectItem
 from src.video import camera as camera_mod
-from src.video.camera import CAMERA_MODES, TILE_SIZE, camera_path
+from src.video.camera import CAMERA_MODES, TILE_SIZE, Shot, camera_path
 from src.video.legs import build_legs
+from src.video.overlay import Overlay
 from src.video.renderer import FrameRenderer
 from src.video.timeline import build_timeline
 
@@ -136,3 +143,33 @@ def test_the_pipeline_costs_under_120_bytes_per_point(big_trip, mode):
         tracemalloc.stop()
         _clear_caches()
     assert peak / n_points < MAX_BYTES_PER_POINT, f"{mode}: {peak / n_points:.0f} B/point"
+
+
+def _one_leg(n_points: int) -> Project:
+    """A single ride of *n_points*."""
+    ride = _track(random.Random(523), 45.0, 6.0, n_points)
+    return Project(name="Long ride", activities=[_activity(1, "Ride", date(2026, 5, 1), ride)],
+                   items=[ProjectItem(item_type="activity", activity_id=1)])
+
+
+@pytest.mark.parametrize("n_points", [500_000, 100_000])
+def test_a_frame_of_a_long_leg_zoomed_in_costs_under_5_mb(n_points):
+    """One 1080p frame at zoom 16, centred on the leg's middle point, the
+    whole leg travelled: under 5 MB for either length, so the cost doesn't
+    grow with the leg (#523). The first draw builds the zoom level's kept
+    points, once per render; the second, one frame's own cost, is measured."""
+    timeline = build_timeline(build_legs(_one_leg(n_points)), 10.0)
+    overlay = Overlay(timeline, (1920, 1080), "Long ride")
+    shot = Shot(*timeline.legs[0].point(n_points // 2), 16.0, False)
+    state = timeline.sample(timeline.total_s)
+    assert state.kind == "end"
+    frame = Image.new("RGB", overlay.size, (90, 110, 130))
+    overlay._draw_route(frame, shot, state)
+    gc.collect()
+    tracemalloc.start()
+    try:
+        overlay._draw_route(frame, shot, state)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 5_000_000, f"{n_points} points: {peak / 1e6:.1f} MB"
