@@ -97,4 +97,4 @@ The reviewer judged both delivery deviations acceptable; they are recorded here 
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (fix unit F1, 4abc379f: a Clipping bullet in docs/VIDEO.md's Overlay section)
