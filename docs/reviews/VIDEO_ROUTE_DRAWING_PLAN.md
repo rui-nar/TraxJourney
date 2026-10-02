@@ -73,3 +73,11 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). No envel
 - Guard: —
 - Override: —
 - Outcome: fixed in plan (U1 identity: the dense fixture sampled, ≤ 40 pairs per mode; small trips still on every pair)
+
+## Round 3 — 2026-10-02, reviewed at a8c6902e (fixes since 86d1a88a)
+
+Reviewer: adversarial-reviewer (Fable). No findings and no envelope questions: the round is clean, and the plan review is closed. Checked:
+- the B_disk20 figures quoted in D5;
+- that a 10 s fixture is buildable (pacing keeps every leg; 300 frames);
+- that the 2× no-disk control and the D5 bounds can both hold on one fixture;
+- that the identity sample stays bounded (a handful of integer zooms per mode).
