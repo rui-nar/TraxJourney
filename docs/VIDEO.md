@@ -90,7 +90,7 @@ returned frame by frame:
 - **Prefetching.** Because every sheet is planned before frame 1, the order
   of every tile request is known too (`plan_requests`). A `TilePrefetcher`
   (`src/video/tile_prefetch.py`) fetches them in that order on
-  `PREFETCH_THREADS` (4) background threads, at most `PREFETCH_WINDOW` (32)
+  `PREFETCH_THREADS` (8) background threads, at most `PREFETCH_WINDOW` (32)
   tiles ahead, while the frames are drawn. The frame loop then waits only for
   a tile that isn't fetched yet. Each request is matched by its tile, not by
   its position: a request with nothing pending for it is a *miss*, fetched

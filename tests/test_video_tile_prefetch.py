@@ -22,7 +22,7 @@ from src.models.project import ConnectingSegment, Project, ProjectItem, SegmentE
 from src.video.basemap_bands import Basemaps, plan_bands, plan_requests
 from src.video.camera import CAMERA_MODES, camera_path
 from src.video.legs import build_legs
-from src.video.tile_prefetch import TilePrefetcher
+from src.video.tile_prefetch import PREFETCH_THREADS, PREFETCH_WINDOW, TilePrefetcher
 from src.video.timeline import build_timeline
 from tests.test_video_renderer import SMALL, fake_tile, timeline30, timeline30_ny
 
@@ -206,6 +206,39 @@ def test_fetches_run_on_the_pool_threads_concurrently_within_the_window():
     assert {name for _, name in fake.calls} <= {t.name for t in pf.threads}
     assert all(t.name.startswith("tile-prefetch-") for t in pf.threads)
     assert len(pf.threads) == threads
+
+
+def test_the_default_pool_runs_eight_fetches_at_once_within_the_window():
+    """D6 as amended: 8 threads by default, and the 32-tile window still bounds
+    what is fetched ahead. Every fetch waits on a gate until all 8 are in."""
+    assert (PREFETCH_THREADS, PREFETCH_WINDOW) == (8, 32)
+    seq = keys(100)
+    index = {k: i for i, k in enumerate(seq)}
+    entered = [0]                    # calls made by the consumer so far
+    ahead = []                       # per pool fetch: how far past the consumer
+    gate = threading.Event()
+    fake = FakeFetcher(gate=gate)
+    fake.on_start = lambda key: ahead.append(index[key] + 1 - entered[0])
+
+    def consume():
+        for k in seq:
+            entered[0] += 1
+            assert pf(*k) == tile_bytes(*k)
+
+    with TilePrefetcher(fake, seq) as pf:
+        consumer = threading.Thread(target=consume, daemon=True)
+        consumer.start()
+        try:
+            assert wait_until(lambda: fake.active == PREFETCH_THREADS)
+        finally:
+            gate.set()
+        consumer.join(10)
+        assert not consumer.is_alive(), "deadlocked"
+    assert fake.max_active == PREFETCH_THREADS
+    assert max(ahead) <= PREFETCH_WINDOW
+    assert len(pf.threads) == PREFETCH_THREADS
+    assert pf.misses == 0
+    assert fake.count == len(seq)
 
 
 def test_zero_threads_fetches_every_call_directly():
