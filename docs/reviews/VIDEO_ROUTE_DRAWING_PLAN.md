@@ -13,8 +13,8 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). No envel
 - Decision: Fix now (D7)
 - Revisit when: —
 - Guard: —
-- Override: —
-- Outcome: open
+- Override: user: approved; option (a), separate overview bounds (2026-10-02)
+- Outcome: fixed in plan (table per camera; D5 overview bounds ≤ 0.04 / ≤ 0.15% / ≥ 42 dB)
 
 ### R1-2 — On the renderer's synthetic trips the D5 bounds are vacuous, so the no-joints negative control cannot fail
 - Trigger: the bounds test runs on timeline30/timeline30_ny (20–25-point legs, straight walks) → dropping joints entirely stays inside the bounds → the acceptance is unachievable, or the test is weakened
@@ -23,7 +23,7 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). No envel
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed in plan (D5 dense fixture; U2 bounds test on it, with the no-disk control)
 
 ### R1-3 — D4 specifies a disk of the line's full width, but the probe used Pillow's joint radius width/2 − 1 (and no joints at width ≤ 4)
 - Trigger: the implementer follows D4 literally → disks one layer pixel past the line's edge, and a scalloped edge → a fatter route than was measured
@@ -32,7 +32,7 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). No envel
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed in plan (D4: box vertex ± (width/2 − 1), only for width > 4)
 
 ### R1-4 — The identity test renders every frame of every trip at 1080p through the full renderer, twice, in four modes
 - Trigger: CI runs test_video_route_clip.py → ~14,400 full 1080p frames plus the 320×180 pass → an estimated 12–15 minutes on every push
@@ -41,7 +41,7 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). No envel
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed in plan (U1 identity on _draw_route over a flat frame; a few full frames as smoke)
 
 ### R1-5 — The "no pie slices" test conflicts with _overview_hud, which keeps joint="curve" and is outside U2's scope
 - Trigger: the patched-pieslice render runs in overview at 1080p → Overlay.__init__ → _overview_hud draws its footprint with joint="curve" at width 11 → the test fails before frame 1, for code U2 may not touch
@@ -50,4 +50,4 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). No envel
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed in plan (U2 patches pieslice after the Overlay is built; DoD: none while frames are drawn)

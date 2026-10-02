@@ -47,7 +47,7 @@ prototypes in the session scratchpad `probe525/variants.py`):
 |---|---|---|
 | A: clip legs to the frame | 1.49 / 0.95 / 1.30 | identical on 300/300 sampled frames (2 of 900 fixed frames had 1 pixel off, see D2) |
 | B: one disk per vertex instead of `joint="curve"` | 2.31 / 1.72 / 2.28 | max 247, mean 0.007, 0.032% differ, 51.7 dB |
-| **A + B** | **2.76 / 1.61 / 2.50** | as B |
+| **A + B** | **2.76 / 1.61 / 2.50** | as B, per camera (review R1-1): variable 0.007 / 0.032% / 51.7 dB, fixed 0.007 / 0.035% / 52.2 dB, **overview 0.029 / 0.072% / 43.8 dB** (mean / share differing / PSNR) |
 | C: coarser decimation (2–3 px) | 1.17–1.48 | 0.24–0.27% differ, visibly more angular |
 | E: skia-python | 2.94 / 1.96 / 2.92 | 0.41% differ; +108 MB image |
 | E: aggdraw | 3.49 | miter joints only: spikes on sharp turns |
@@ -93,10 +93,14 @@ The cost no longer grows with the leg's length.
 - **D4 — Round joints as disks** (owner: a disk at every vertex). Each line
   that uses `joint="curve"` today (the casing and the mode colour, on both
   the colour layer and the mask) is drawn as one `line(..., joint=None)`
-  call. Then a filled disk of that
-  line's own width is drawn at every interior vertex, with
-  `ImageDraw.ellipse` centred on the vertex in the same layer coordinates.
-  No `pieslice` is drawn any more.
+  call. Then a filled disk is drawn at every interior vertex, with
+  `ImageDraw.ellipse` in the same layer coordinates. The disk matches
+  Pillow's own joint, which is what the probe measured (review R1-3):
+  - its box is the vertex ± (width/2 − 1) layer pixels;
+  - it is drawn only when the line's width is over 4, since Pillow draws no
+    joint at width ≤ 4.
+
+  No `pieslice` is drawn while frames are drawn.
   - **Where the disks go:** line ends get no disk; today's ends are flat,
     with no joint at an end.
   - **Faint line:** today it is drawn without `joint="curve"`, so it stays
@@ -105,14 +109,27 @@ The cost no longer grows with the leg's length.
     pie-slice joints leave in the casing (probe crops).
 - **D5 — Fidelity bounds, not goldens.** The goldens can't tell good
   fidelity from bad here: every variant, skia included, passed them. So B is
-  held to measured bounds at 1080p against today's code, on the renderer's
-  synthetic trips in every camera mode:
-  - mean absolute difference ≤ 0.02;
-  - ≤ 0.1% of pixels differ;
-  - PSNR ≥ 48 dB.
+  held to measured bounds at 1080p against today's code.
 
-  The probe measured 0.007, 0.032% and 51.7 dB on the real trip. The
-  existing goldens must still pass unchanged, without re-recording.
+  **The fixture** (review R1-2): a dense synthetic trip, a few legs of a few
+  thousand points each, with a drifting heading, like
+  `tests/test_video_memory.py`'s `_track`. It is framed at a follow zoom (the
+  variable and fixed cameras) and in overview. The renderer's 20–25-point
+  trips have too few joints for any bound to fail.
+
+  **The bounds**, per camera:
+
+  | | Mean absolute difference | Pixels that differ | PSNR |
+  |---|---|---|---|
+  | Variable and fixed cameras | ≤ 0.02 | ≤ 0.1% | ≥ 48 dB |
+  | Overview (owner, review R1-1) | ≤ 0.04 | ≤ 0.15% | ≥ 42 dB |
+
+  Overview's bounds are separate because the whole trip is on screen, so it
+  has the most joints. On the real trip, the probe measured 0.007 / 0.032% /
+  51.7 dB (variable), 0.007 / 0.035% / 52.2 dB (fixed) and 0.029 / 0.072% /
+  43.8 dB (overview). The owner checks overview frames by eye at the gate.
+
+  The existing goldens must still pass unchanged, without re-recording.
 - **D6 — Gate on the VPS.** Gate G1 is the same bench as #517's G1 (90 s,
   1080p, variable, the same trip). It passes when overlay ms per frame is at
   most half of 122.3 (≤ 61), the issue's acceptance. The total is recorded
@@ -171,10 +188,17 @@ None.
   `pytest tests/test_video_route_clip.py tests/test_video_memory.py tests/test_video_renderer.py tests/test_video_preview_render.py`
   passes, with goldens unchanged. New tests:
   - **identity:** with clipping on and off (a module switch the test flips),
-    every frame of the renderer's synthetic trips is byte-identical in every
-    camera mode, at 1080p and at the 320×180 preview size. Include a leg
-    that leaves and re-enters the frame, a marker on an off-screen-crossing
-    segment, and the antimeridian trip;
+    `Overlay._draw_route` gives byte-identical output for every (shot,
+    state) pair of the renderer's synthetic trips, in every camera mode, at
+    1080p and at the 320×180 preview size. It draws over a flat frame, as
+    `tests/test_video_overlay.py` does, not through the full renderer
+    (review R1-4). Include:
+    - a leg that leaves and re-enters the frame;
+    - a marker on a segment that crosses the frame's edge;
+    - the antimeridian trip;
+    - the dense fixture of D5.
+
+    A handful of full-renderer frames per mode serve as a smoke check;
   - **memory (#523):** one 500 k-point leg at zoom 16, fully travelled, then
     a 100 k-point one. The traced peak of one `_draw_route` is under 5 MB
     for both, so it does not grow with the leg's length;
@@ -208,16 +232,19 @@ None.
   `pytest tests/test_video_route_joints.py tests/test_video_route_clip.py tests/test_video_renderer.py tests/test_video_preview_render.py tests/test_video_memory.py`
   passes, with goldens unchanged (not re-recorded). New tests:
   - **bounds:** against the pre-U2 drawing (kept in the test as a reference
-    function, or as frames recorded at the start of the unit), 1080p frames
-    of the synthetic trips in every camera mode meet D5. Shown to fail if
-    joints are dropped entirely (no disks).
-  - **no pie slices:** `ImageDraw.ImageDraw.pieslice` is patched to raise,
-    and a full render still succeeds.
+    function, or as frames recorded at the start of the unit), the 1080p
+    route of D5's dense fixture meets D5's bounds for its camera. It is drawn
+    with `_draw_route` over a flat frame at follow zoom and in overview.
+    Shown to fail when joints are dropped entirely (no disks) (review R1-2);
+  - **no pie slices:** once the `Overlay` is built, `ImageDraw.ImageDraw.pieslice`
+    is patched to raise while frames are drawn, and a render in every camera
+    mode still succeeds. `_overview_hud` runs once, in `__init__`, and keeps
+    its `joint="curve"` (out of scope, review R1-5).
   - **clipping still identical:** U1's identity test passes with the new
     joints.
 - **Out of scope:** clipping, decimation, the marker and HUD.
 - **Latitude:** local design.
-- **Escalate if:** X3; D5's bounds are not met on a synthetic trip.
+- **Escalate if:** X3; D5's bounds are not met on the dense fixture.
 - **Depends on:** U1.
 
 **Gate G1 (owner, after wave 2):** push the branch to `validation`. On val,
@@ -238,6 +265,7 @@ records it in docs/VIDEO.md. The owner also watches the rendered MP4, or the
   docs/VIDEO.md.
 - Drawing one frame of a 500 k-point leg at zoom 16 peaks below 5 MB, and
   the peak does not grow with the leg's length (#523).
-- Frames are byte-identical with clipping on and off. Against today's code,
-  joint changes stay within D5's bounds. Existing goldens pass unchanged.
-- No `pieslice` is drawn per vertex; no new dependency.
+- The route is byte-identical with clipping on and off. Against today's
+  code, joint changes stay within D5's bounds for each camera. Existing
+  goldens pass unchanged.
+- No `pieslice` is drawn while frames are drawn; no new dependency.
