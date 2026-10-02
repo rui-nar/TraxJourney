@@ -111,11 +111,21 @@ The cost no longer grows with the leg's length.
   fidelity from bad here: every variant, skia included, passed them. So B is
   held to measured bounds at 1080p against today's code.
 
-  **The fixture** (review R1-2): a dense synthetic trip, a few legs of a few
-  thousand points each, with a drifting heading, like
-  `tests/test_video_memory.py`'s `_track`. It is framed at a follow zoom (the
-  variable and fixed cameras) and in overview. The renderer's 20–25-point
-  trips have too few joints for any bound to fail.
+  **The fixture** (reviews R1-2, R2-1): a dense synthetic trip, 10 s long
+  (300 frames at 30 fps). It has:
+  - a few legs of a few thousand points each, with a drifting heading, like
+    `tests/test_video_memory.py`'s `_track`;
+  - a zig-zag leg whose consecutive kept vertices turn by 30–120°, the sharp
+    joints the bounds can see. The probe showed that dropping every joint
+    under 20° stays inside the bounds.
+
+  It is framed at a follow zoom (the variable and fixed cameras) and in
+  overview. The renderer's 20–25-point trips have too few joints for any
+  bound to fail.
+
+  **The no-disk control:** with no joints at all, the route must exceed its
+  camera's bound by at least 2× on the mean or on the share of pixels that
+  differ. If it doesn't, the fixture is too weak and U2 escalates.
 
   **The bounds**, per camera:
 
@@ -196,9 +206,12 @@ None.
     - a leg that leaves and re-enters the frame;
     - a marker on a segment that crosses the frame's edge;
     - the antimeridian trip;
-    - the dense fixture of D5.
+    - D5's dense fixture, on a **sample** of its pairs only: one per integer
+      zoom per mode, plus the edge cases above, at most 40 per mode (review
+      R2-2). Today's pie-slice joints make every pair of it costly.
 
-    A handful of full-renderer frames per mode serve as a smoke check;
+    The renderer's small synthetic trips are still checked on every pair. A
+    handful of full-renderer frames per mode serve as a smoke check;
   - **memory (#523):** one 500 k-point leg at zoom 16, fully travelled, then
     a 100 k-point one. The traced peak of one `_draw_route` is under 5 MB
     for both, so it does not grow with the leg's length;
@@ -235,7 +248,9 @@ None.
     function, or as frames recorded at the start of the unit), the 1080p
     route of D5's dense fixture meets D5's bounds for its camera. It is drawn
     with `_draw_route` over a flat frame at follow zoom and in overview.
-    Shown to fail when joints are dropped entirely (no disks) (review R1-2);
+    Shown to fail when joints are dropped entirely (no disks), by at least
+    2× its camera's bound on the mean or on the share of pixels that differ
+    (reviews R1-2, R2-1);
   - **no pie slices:** once the `Overlay` is built, `ImageDraw.ImageDraw.pieslice`
     is patched to raise while frames are drawn, and a render in every camera
     mode still succeeds. `_overview_hud` runs once, in `__init__`, and keeps
@@ -244,7 +259,8 @@ None.
     joints.
 - **Out of scope:** clipping, decimation, the marker and HUD.
 - **Latitude:** local design.
-- **Escalate if:** X3; D5's bounds are not met on the dense fixture.
+- **Escalate if:** X3; D5's bounds are not met on the dense fixture; the
+  no-disk control does not exceed the bounds by 2×.
 - **Depends on:** U1.
 
 **Gate G1 (owner, after wave 2):** push the branch to `validation`. On val,

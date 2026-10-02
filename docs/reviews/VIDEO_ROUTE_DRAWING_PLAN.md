@@ -63,7 +63,7 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). No envel
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed in plan (D5: a 10 s fixture with a zig-zag leg turning 30–120°; the no-disk control must exceed the bound 2×; U2 escalate line)
 
 ### R2-2 — U1's identity test now runs the dense fixture for every (shot, state) pair, 4 modes, twice, with pie-slice joints, so R1-4's cost returns
 - Trigger: CI runs test_video_route_clip.py → _draw_route on every frame of a fixture with no stated length → an estimated 10–20 minutes on every push
@@ -72,4 +72,4 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). No envel
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed in plan (U1 identity: the dense fixture sampled, ≤ 40 pairs per mode; small trips still on every pair)
