@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 import pstats
 import re
-import time
 
 import pytest
 from PIL import Image
@@ -27,35 +26,44 @@ from tests.test_video_renderer import SMALL, db, fake_tile, needs_ffmpeg, timeli
 @needs_ffmpeg
 def test_stage_totals_sum_to_the_measured_wall_time(tmp_path, caplog):
     """The render summary's five per-stage ms/frame figures, multiplied back
-    up by the frame count, cover nearly all of the wall time actually
-    measured around the render: at least 85%, and (bar rounding) never more
-    than the 100% they're part of.
+    up by the frame count, cover nearly all of the render's own ``elapsed_s``:
+    at least 90%, and (bar rounding) never more than the 100% they're part
+    of. This is what catches a stage that silently stops being timed.
+
+    The check is against the renderer's own ``elapsed_s``, not a clock run
+    around ``render_timeline``: the fixed per-render setup outside
+    ``encode()``'s timing window (building the ``FrameRenderer``, starting
+    ffmpeg) depends on the machine and on the size of the calling process's
+    heap, and CI once spent 0.88 s there, failing a check whose stages
+    covered 98% of ``elapsed_s`` (#535). docs/VIDEO.md documents that the
+    stages add up to ``elapsed_s``. Every stage is timed inside that window,
+    so the upper bound allows only the summary's 2-decimal rounding of the
+    five ms/frame figures (times 900 frames) and of ``elapsed_s``; it also
+    catches the window's start moving past a timed stage.
 
     The whole 30s/900-frame timeline is rendered, not a short clip of it:
-    fixed per-job costs that no stage times — building the timeline and
-    camera path, planning basemap bands, starting and closing ffmpeg — are
-    paid once per render, so a short render lets them dominate the wall time
-    and starve this check regardless of how complete the stage accounting
-    actually is."""
+    the time inside the window that no stage covers (closing ffmpeg and
+    waiting for it to finish encoding) is paid once per render, so a short
+    render lets it dominate ``elapsed_s`` and starve this check regardless
+    of how complete the stage accounting actually is."""
     tl = timeline30()
-    start = time.perf_counter()
     with caplog.at_level(logging.INFO, logger="src.video.renderer"):
         render_timeline(tl, SMALL, tmp_path / "video.mp4", title="Trip",
                         tile_fetcher=fake_tile, frame_range=range(0, 900))
-    measured = time.perf_counter() - start
 
     lines = [r.getMessage() for r in caplog.records if "video render summary" in r.getMessage()]
     assert len(lines) == 1
     line = lines[0]
     frames = int(re.search(r"frames=(\d+)", line).group(1))
     assert frames == 900
+    elapsed_s = float(re.search(r"elapsed_s=([\d.]+)", line).group(1))
     stage_ms = {
-        name: float(re.search(rf"{name}_ms=([\d.]+)", line).group(1))
+        name: float(re.search(rf"\b{name}_ms=([\d.]+)", line).group(1))
         for name in ("fetch", "stitch", "basemap", "overlay", "write")
     }
     stage_total_s = sum(stage_ms.values()) / 1000 * frames
-    assert stage_total_s >= 0.85 * measured
-    assert stage_total_s <= 1.01 * measured
+    assert stage_total_s >= 0.90 * elapsed_s
+    assert stage_total_s <= elapsed_s + 0.03
 
 
 @needs_ffmpeg
