@@ -13,9 +13,9 @@ import 'dart:typed_data';
 
 import 'package:exif/exif.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:image/image.dart' as img;
 
 import '../core/picked_file_bytes.dart';
+import 'perceptual_hash.dart';
 import 'photo_match.dart';
 
 /// EXIF capture timestamp and GPS location extracted from a photo's bytes,
@@ -165,47 +165,4 @@ double? _gpsCoordinate(
     unit /= 60.0;
   }
   return ref.toUpperCase() == negativeRef ? -sum : sum;
-}
-
-/// Perceptual hash bit-grid size: 8x8 = 64 bits, matching the 64-bit
-/// assumption in `photo_match.dart`'s [hammingDistance].
-const _kHashSize = 8;
-
-/// A simple, self-contained average hash (aHash): downscale to an
-/// [_kHashSize]x[_kHashSize] grid, take each pixel's luminance, and set a
-/// bit per pixel for whether it's above the grid's mean luminance. Chosen
-/// over a fancier pHash (e.g. DCT-based) because aHash is a handful of
-/// lines with no extra dependencies and is plenty robust to the
-/// thumbnail-vs-original resolution/compression differences this feature
-/// deals with. Returns null if [bytes] can't be decoded as an image — the
-/// `image` package's format-sniffing can throw (rather than return null) on
-/// very short/malformed input, so decode failures are caught here too.
-int? computeAverageHash(Uint8List bytes) {
-  img.Image? decoded;
-  try {
-    decoded = img.decodeImage(bytes);
-  } catch (_) {
-    return null;
-  }
-  if (decoded == null) return null;
-  // decodeImage never applies the EXIF orientation tag to pixel data (that's
-  // a separate, opt-in `bakeOrientation` transform) — without this, a
-  // portrait phone photo stored as rotated sensor data hashes completely
-  // differently from an already-upright thumbnail of the same shot.
-  final oriented = img.bakeOrientation(decoded);
-  final resized = img.copyResize(oriented, width: _kHashSize, height: _kHashSize);
-
-  final luminances = <double>[];
-  for (var y = 0; y < _kHashSize; y++) {
-    for (var x = 0; x < _kHashSize; x++) {
-      luminances.add(resized.getPixel(x, y).luminance.toDouble());
-    }
-  }
-  final mean = luminances.reduce((a, b) => a + b) / luminances.length;
-
-  var hash = 0;
-  for (final l in luminances) {
-    hash = (hash << 1) | (l >= mean ? 1 : 0);
-  }
-  return hash;
 }
