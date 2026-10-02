@@ -137,6 +137,19 @@ a track in Fiji) is animated, framed and drawn along its short way.
   G1 within its allowed 2–4 range; see [Gate G2
   measurements](#gate-g2-measurements-518-2026-09-29) for what it costs per
   frame.
+- **Joints.** The travelled line's casing and colour have round joints, but
+  not Pillow's `joint="curve"`, which draws a pie slice per vertex in Python
+  and was most of the overlay's time (#525). Each line is drawn plain, then
+  a filled disk the size of Pillow's joint (the vertex ± width/2 − 1 layer
+  px, only at a width over 4) at every interior vertex, on the colour layer
+  and the mask alike; the ends stay flat. The faint line has no joints. The
+  result differs from Pillow's joints within the bounds of
+  docs/VIDEO_ROUTE_DRAWING_PLAN.md D5, checked by
+  `tests/test_video_route_joints.py` on a dense synthetic trip. On the owner's
+  test trip at 1080p: mean difference 0.007 (overview 0.029), 0.03% of pixels
+  (overview 0.07%), the overlay 1.7–1.8× faster than with clipping alone.
+  No `pieslice` is drawn per frame; `_overview_hud` still uses
+  `joint="curve"`, once per render.
 - **Marker.** The mode icon on a white disc ringed in the mode colour, inside
   a soft halo, composed into a 4× sprite and scaled down for smooth edges. The
   icon itself is downsized once per size from a 512 px source (D6): the same
