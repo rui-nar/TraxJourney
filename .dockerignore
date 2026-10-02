@@ -20,11 +20,15 @@ data/
 docs/
 tests/
 scripts/
-# ...except the one script that runs *in* the image: the rail data refresh is
+# ...except the scripts that run *in* the image. The rail data refresh is
 # `docker compose run --rm --entrypoint python traxjourney
-# scripts/fetch_rail_data.py` (issue #345), so the file has to be in the build
-# context. Must stay after `scripts/`: docker's last matching pattern wins.
+# scripts/fetch_rail_data.py` (issue #345), and the read-only audits are run
+# the same way against each instance's database after a deploy (#468, #471),
+# so these files have to be in the build context. Must stay after `scripts/`:
+# docker's last matching pattern wins.
 !scripts/fetch_rail_data.py
+!scripts/audit_activity_ownership.py
+!scripts/audit_photo_names.py
 
 # Secrets
 config/config.json
