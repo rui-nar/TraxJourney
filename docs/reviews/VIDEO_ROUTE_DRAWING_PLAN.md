@@ -110,4 +110,4 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). No envel
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (fix unit F2, 222e8dd7: the figure is named as tracemalloc's Python heap, without Pillow's image buffers)
