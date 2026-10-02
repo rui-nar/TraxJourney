@@ -81,3 +81,20 @@ Reviewer: adversarial-reviewer (Fable). No findings and no envelope questions: t
 - that a 10 s fixture is buildable (pacing keeps every leg; 300 frames);
 - that the 2× no-disk control and the D5 bounds can both hold on one fixture;
 - that the identity sample stays bounded (a handful of integer zooms per mode).
+
+## Integrated round 1 — 2026-10-02, reviewed at b4d390b1 (the #525 part: 473e65a4..b4d390b1)
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). No envelope questions.
+
+The reviewer judged both delivery deviations acceptable; they are recorded here as accepted, not as findings:
+- **U1's identity test samples 1080p:** every 12th pair, plus every pair where a leg has several runs. Every pair is checked at 320×180, and all of them with VIDEO_CLIP_ALL=1. Identity follows algebraically from the shared conversion formula, and every 1080p pair with a different run structure is included.
+- **U2's bounds and control use only frames with a travelled line:** frames without one are identical for both candidate and control. Excluding them makes the D5 bounds stricter, and the 2× control easier in the same proportion, which is the ratio the control measures.
+
+### I1-1 — docs/VIDEO.md's Overlay section mentions "clipping" but never describes it (#523's behaviour)
+- Trigger: a maintainer reads the Overlay section to learn why a zoomed-in frame of a 500 k-point leg no longer peaks at 180 MB → finds only "with clipping alone" → has to recover the design from the plan and a test docstring
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
