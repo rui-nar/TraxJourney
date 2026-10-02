@@ -54,7 +54,14 @@ def test_no_tracked_file_claims_the_mit_licence():
     for rel in _tracked_files():
         path = ROOT / rel
         # The vendored fonts and their licences are theirs, not ours.
-        if not path.is_file() or rel == "tests/test_license.py" or rel.startswith("assets/fonts/"):
+        # graphify-out/GRAPH_REPORT.md is generated and quotes this test's own
+        # docstrings (see tests/test_no_legacy_brand.py's ALLOWED entry for it).
+        if (
+            not path.is_file()
+            or rel == "tests/test_license.py"
+            or rel.startswith("assets/fonts/")
+            or rel == "graphify-out/GRAPH_REPORT.md"
+        ):
             continue
         text = path.read_bytes().decode("utf-8", errors="ignore")
         for n, line in enumerate(text.splitlines(), 1):
