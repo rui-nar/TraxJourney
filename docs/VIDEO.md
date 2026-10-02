@@ -87,6 +87,19 @@ returned frame by frame:
   `MAX_TILES` (3000). If the plan is over budget, the highest band is lowered
   one level at a time until the plan fits: coarser tiles, scaled up. The
   camera's framing never changes, and the render never fails for the budget.
+- **Prefetching.** Because every sheet is planned before frame 1, the order
+  of every tile request is known too (`plan_requests`). A `TilePrefetcher`
+  (`src/video/tile_prefetch.py`) fetches them in that order on
+  `PREFETCH_THREADS` (8) background threads, at most `PREFETCH_WINDOW` (32)
+  tiles ahead, while the frames are drawn. The frame loop then waits only for
+  a tile that isn't fetched yet. Each request is matched by its tile, not by
+  its position: a request with nothing pending for it is a *miss*, fetched
+  on the spot as before, so a wrong order costs time, never a wrong frame.
+  The same tiles are requested as without prefetching (no cache, no
+  deduplication), and frames are bit-identical either way. The prefetcher
+  starts on the first frame and stops when the frame loop ends, whatever
+  ended it; a fetch error is raised when the render reaches that tile. A
+  render that needs no tile still needs no `MAPBOX_TOKEN`.
 
 ## The antimeridian
 
@@ -124,6 +137,33 @@ a track in Fiji) is animated, framed and drawn along its short way.
   G1 within its allowed 2–4 range; see [Gate G2
   measurements](#gate-g2-measurements-518-2026-09-29) for what it costs per
   frame.
+- **Clipping.** `_draw_route` (via `_lines`) converts and draws only the
+  runs of each visible leg's kept points whose segments come within a
+  margin of the frame; the rest of a long leg, off screen, is never
+  converted to pixels or drawn. Finding the runs is cheap: each zoom
+  level's kept points are cut into blocks, each with its own world bbox
+  cached alongside the level (`_Route.blocks`), so `_runs` skips whole
+  blocks off the frame without reading their points. Frames are
+  byte-identical with clipping on and off: the colour and mask layers'
+  origin and size come from the visible legs' cached per-block bboxes,
+  not from what is clipped; `_CLIP` turns clipping off for the identity
+  tests. Measured at zoom 16 and 1080p with tracemalloc, one zoomed-in
+  frame of a 500,000-point leg's Python heap fell from 180.5 MB to
+  0.13 MB, excluding Pillow's image buffers, no longer growing with the
+  leg's length (#523, `tests/test_video_memory.py`).
+- **Joints.** The travelled line's casing and colour have round joints, but
+  not Pillow's `joint="curve"`, which draws a pie slice per vertex in Python
+  and was most of the overlay's time (#525). Each line is drawn plain, then
+  a filled disk the size of Pillow's joint (the vertex ± width/2 − 1 layer
+  px, only at a width over 4) at every interior vertex, on the colour layer
+  and the mask alike; the ends stay flat. The faint line has no joints. The
+  result differs from Pillow's joints within the bounds of
+  docs/VIDEO_ROUTE_DRAWING_PLAN.md D5, checked by
+  `tests/test_video_route_joints.py` on a dense synthetic trip. On the owner's
+  test trip at 1080p: mean difference 0.007 (overview 0.029), 0.03% of pixels
+  (overview 0.07%), the overlay 1.7–1.8× faster than with clipping alone.
+  No `pieslice` is drawn per frame; `_overview_hud` still uses
+  `joint="curve"`, once per render.
 - **Marker.** The mode icon on a white disc ringed in the mode colour, inside
   a soft halo, composed into a 4× sprite and scaled down for smooth edges. The
   icon itself is downsized once per size from a 512 px source (D6): the same
@@ -174,26 +214,39 @@ ffmpeg 7.1) under Docker Desktop, 10 CPUs, with `--memory 896m` (the
 ## Stage timings
 
 Every render logs one INFO summary line when it finishes encoding — frame
-count, wall time, setup time, ms per frame for each stage, sheets, tiles and
-peak RSS of the renderer and of ffmpeg:
+count, wall time, setup time, ms per frame for each stage, sheets, tiles, the
+tile fetch figures, and peak RSS of the renderer and of ffmpeg:
 
 ```
 video render summary: frames=1800 elapsed_s=112.32 setup_s=0.05 ms_per_frame=62.4
 fetch_ms=18.10 stitch_ms=9.40 basemap_ms=21.60 overlay_ms=11.20 write_ms=2.10
-sheets=86 tiles=1479 peak_rss_renderer_mb=363 peak_rss_ffmpeg_mb=318
+sheets=86 tiles=1479 tile_ms=52.3 prefetch_misses=0
+peak_rss_renderer_mb=363 peak_rss_ffmpeg_mb=318
 ```
 
 The five stages are mutually exclusive (they add up to `elapsed_s`, not past
-it): `fetch` is time inside the tile fetcher; `stitch` is a new sheet's own
-decode/paste/resize, net of any `fetch` it did; `basemap` is a frame's crop,
-scale and cross-fade blend, net of any `fetch`/`stitch` a new sheet needed;
-`overlay` is drawing the route, marker and HUD; `write` is time blocked
-writing a frame to ffmpeg's stdin (its own encoding work happens
+it): `fetch` is time the frame loop spends waiting for tiles; `stitch` is a
+new sheet's own decode/paste/resize, net of any `fetch` it did; `basemap` is
+a frame's crop, scale and cross-fade blend, net of any `fetch`/`stitch` a new
+sheet needed; `overlay` is drawing the route, marker and HUD; `write` is time
+blocked writing a frame to ffmpeg's stdin (its own encoding work happens
 concurrently, in the ffmpeg process, and isn't part of any of these).
 `setup_s` is the time before `elapsed_s` starts, in neither it nor any stage:
 building the camera path, basemap band plan, basemaps and overlay, and
 starting ffmpeg (a preview has no ffmpeg; its setup includes the video's own
 camera path it samples).
+
+Tiles are prefetched (see [Basemap](#basemap-bands-and-sheets-srcvideobasemap_bandspy)),
+so `fetch` is blocked time, not network time: with the pool keeping ahead of
+the frames, it is near 0. Two fields show the network itself:
+
+- `tile_ms` is the mean network time per tile, measured on the prefetch
+  threads (and on the frame loop's own thread for a miss). A slow or
+  rate-limited Mapbox shows here even when `fetch_ms` stays low. It is a
+  diagnostic only.
+- `prefetch_misses` counts the tiles the frame loop had to fetch itself
+  because none was pending for it. It is 0 for a render drawn from frame 0
+  in order; anything else means the prefetch order and the render disagree.
 
 ## Profiling on the server
 
@@ -204,7 +257,8 @@ summary line, without going through a job row, quota or the queue:
 ```
 python -m src.video.bench --project "Tour de France" --owner 3 \
     --length 90 --height 1080 [--camera variable] [--crf 20] \
-    [--tune animation] [--dump-frames 450,1350,2250] [--out DIR]
+    [--tune animation] [--dump-frames 450,1350,2250] [--out DIR] \
+    [--profile FILE]
 ```
 
 - `--camera` is passed to the renderer as-is: `variable` (default),
@@ -218,6 +272,13 @@ python -m src.video.bench --project "Tour de France" --owner 3 \
   judged from.
 - `--out` is where the MP4 and any dumped frames land; omitted, it's a fresh
   temp directory (printed at the end).
+- `--profile FILE` (D10, #517) runs the render under `cProfile`, dumps its
+  stats to *FILE* (loadable with `pstats.Stats(FILE)`) and prints the top 30
+  functions by own time (`tottime`) after the render summary line. It is how
+  the CPU stages (basemap, overlay) get profiled below the per-stage level
+  the summary line already gives. **A profiled run's own timings are
+  inflated** by `cProfile`'s per-call overhead: gate G1's ms-per-frame
+  figures always come from a run without `--profile`.
 
 **Run it in its own container, never inside the live worker** — a
 `docker compose run` gets its own process and memory limit, with no RQ
@@ -282,3 +343,47 @@ Same VPS, same trip and settings as G1, on the wave-2 code (sharper overlay, CRF
 - **Projected 90 s 1080p render:** 695 s as measured, about 920 s if tile fetching is as slow as at G1. Both are well under the 1,600 s threshold (D4, G2).
 - **Overview is 2.9× faster than variable** and fetches 9 tiles instead of 2,414.
 - **Memory is dominated by loading the trip:** the renderer peaks at 725 MB in both modes, because loading the trip dominates. The peaks add up to more than `worker-video`'s 896 MB limit, but they didn't coincide and the runs completed. This concerns worker sizing (#520), not this change.
+
+## Gate G1 measurements (#517, 2026-10-01)
+
+Tile prefetching (docs/VIDEO_RENDER_TIME_PLAN.md) on the same VPS and the same trip as #518's G2, variable camera, 90 s at 1080p (2,700 frames):
+
+| Stage (ms per frame) | #518 G2 (before) | #517 G1 |
+|---|---|---|
+| Tile fetch (time the frame loop waits) | 44.6 | **0.6** |
+| Sheet stitch | 9.9 | 9.6 |
+| Basemap | 48.6 | 47.2 |
+| Overlay | 129.4 | 122.3 |
+| Write to ffmpeg | 13.8 | 14.0 |
+| **Total** | **257.4** (695 s) | **200.8** (542 s) |
+| Tiles / sheets | 2,414 / 152 | 2,414 / 152 |
+| Network time per tile (`tile_ms`) | — | 104.9 |
+| Prefetch misses | — | 0 |
+| Peak RSS renderer / ffmpeg | 725 / 299 MB | 501 / 309 MB |
+
+- **The tile fetch is now hidden.** Each tile still took 105 ms on the network, against about 50 ms at #518's G2 and 143 ms at its G1: the network varies, but the frame loop no longer waits on it (0.6 ms per frame). The tiles are the same, so the Mapbox cost is the same.
+- **Peak renderer memory** dropped from 725 to 501 MB, thanks to #519's compact geometry, not this change.
+
+**Profile** (`--profile`, same render; profiled timings are inflated, 268.5 ms per frame): of 748 s, the route line takes about 490 s (`overlay._draw_route`, cumulative). Most of it is Pillow's `ImageDraw.line(..., joint="curve")`, which draws a pie slice per vertex in Python (8.4 M line calls, 7.9 M pie slices, about 378 s). Basemap `resize` takes 115 s (1,848 calls, 62 ms each). Writing to ffmpeg takes 35 s, and `_decimate` 25 s. The CPU follow-up is #525.
+
+## Gate G1 measurements (#525, 2026-10-02)
+
+Route clipping and disk joints (docs/VIDEO_ROUTE_DRAWING_PLAN.md) on the same VPS and the same trip as #517's G1. The first #525 run used 4 prefetch threads; the owner then raised them to 8 (#517 D6, amended) and the bench ran again.
+
+| Stage (ms per frame), 90 s 1080p variable | #517 G1 | #525, 4 threads | #525, 8 threads (final) |
+|---|---|---|---|
+| Tile fetch (time the frame loop waits) | 0.6 | 10.3 | **0.2** |
+| Sheet stitch | 9.6 | 9.7 | 10.1 |
+| Basemap | 47.2 | 49.2 | 47.8 |
+| Overlay | 122.3 | 60.9 | **59.4** |
+| Write to ffmpeg | 14.0 | 13.0 | 13.6 |
+| **Total** | **200.8** (542 s) | **150.6** (406 s) | **137.7** (372 s) |
+| Network time per tile (`tile_ms`) | 104.9 | 271.2 | 14.5 |
+| Prefetch misses | 0 | 0 | 0 |
+| Peak RSS renderer / ffmpeg | 501 / 309 MB | 503 / 324 MB | 507 / 314 MB |
+
+**Overview**, 30 s at 1080p, 900 frames: 71.1 ms per frame (64 s), with the overlay at 47.7 ms. At #518's G2 it was 110.6 ms per frame, with the overlay at 83.5 ms.
+
+- **The overlay halved**, from 122.3 to 59.4 ms per frame, within the gate's ≤ 61. The dev-box estimate was 45–48 ms; the VPS's vCPUs are slower than that estimate assumed.
+- **With 4 threads, the frame loop waited 10.3 ms per frame** for tiles on a slow network (271 ms per tile), because the render had become faster. 8 threads cover about 30 tiles per second at that speed. The final run had a fast network (14.5 ms per tile), so it doesn't demonstrate the slow-network case; the thread test in `tests/test_video_tile_prefetch.py` does.
+- **A 90 s 1080p render now takes 372 s**, against 695 s before #517 (−46%), well inside the 1,800 s job timeout.

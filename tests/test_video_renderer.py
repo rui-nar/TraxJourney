@@ -14,15 +14,24 @@ The 1080p benchmark runs only with ``VIDEO_BENCH=1``::
 """
 from __future__ import annotations
 
+import collections
+import contextlib
 import functools
+import gc
+import hashlib
 import io
 import json
+import logging
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
+import types
+import weakref
 from datetime import date, datetime
 from pathlib import Path
 
@@ -32,17 +41,20 @@ from PIL import Image, ImageChops, ImageDraw
 from sqlmodel import Session, SQLModel, create_engine
 
 import models.db as db_module
+import src.poster.tile_stitcher as tile_stitcher
 import src.video.renderer as renderer
 from models.project_db import DBActivity, DBProject, DBProjectItem
 from models.user import UserInfo
+from src.exceptions.errors import APIError
 from src.models.activity import Activity
 from src.models.project import ConnectingSegment, Project, ProjectItem, SegmentEndpoint
-from src.video import job_runner
+from src.video import job_runner, tile_prefetch
 from src.video.basemap_bands import (
     PIXEL_RATIO,
     Basemaps,
     band_weights,
     plan_bands,
+    plan_requests,
     view_rect,
 )
 from src.video.camera import CAMERA_MODES, TILE_SIZE, camera_path, fixed_zoom, lonlat_to_world
@@ -559,6 +571,229 @@ def test_missing_ffmpeg_is_a_fixed_error(tmp_path, monkeypatch):
     with pytest.raises(VideoEncodeError, match="^ffmpeg is not installed$"):
         render_timeline(timeline30(), SMALL, tmp_path / "video.mp4", title="Trip",
                         tile_fetcher=fake_tile, frame_range=range(0, 5))
+
+
+# ── tile prefetching (docs/VIDEO_RENDER_TIME_PLAN.md U2b) ───────────────────
+#
+# The prefetcher calls the fetcher from its pool threads, so the fakes here
+# count and record under a lock (Conventions). A test that waits on threads
+# does so with a bound, and only ever looks at the threads of the renderer it
+# built, never every thread in the process (review R3-1).
+
+class RecordingFetcher:
+    """Thread-safe: the tiles of :func:`fake_tile`, every request counted.
+    *delay* sleeps per tile; *jitter* adds a small per-key sleep so the pool's
+    fetches finish out of order; a key in *fail* raises its exception once."""
+
+    def __init__(self, delay: float = 0.0, jitter: bool = False, fail: dict = None) -> None:
+        self.delay = delay
+        self.jitter = jitter
+        self.fail = dict(fail or {})
+        self.lock = threading.Lock()
+        self.requests = collections.Counter()
+
+    def __call__(self, z: int, x: int, y: int) -> bytes:
+        with self.lock:
+            self.requests[(z, x, y)] += 1
+            error = self.fail.pop((z, x, y), None)
+        if self.delay:
+            time.sleep(self.delay)
+        if self.jitter:
+            time.sleep(0.001 * ((x * 7 + y * 3) % 4))
+        if error is not None:
+            raise error
+        return fake_tile(z, x, y)
+
+    @property
+    def total(self) -> int:
+        with self.lock:
+            return sum(self.requests.values())
+
+
+@contextlib.contextmanager
+def prefetch_threads(n: int):
+    """``PREFETCH_THREADS`` at *n* for the renderers built inside."""
+    old = tile_prefetch.PREFETCH_THREADS
+    tile_prefetch.PREFETCH_THREADS = n
+    try:
+        yield
+    finally:
+        tile_prefetch.PREFETCH_THREADS = old
+
+
+def wait_until(cond, timeout: float = 5.0) -> bool:
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if cond():
+            return True
+        time.sleep(0.005)
+    return cond()
+
+
+def new_prefetch_threads(before):
+    """The ``tile-prefetch-`` threads started since the *before* snapshot."""
+    return [t for t in threading.enumerate()
+            if t not in before and t.name.startswith("tile-prefetch-")]
+
+
+@functools.lru_cache(maxsize=None)
+def _every_frame(mode: str, threads: int):
+    """Every frame of the 30 s video in *mode*, drawn in order as ``encode``
+    draws them, with ``PREFETCH_THREADS`` at *threads*: (each frame's digest,
+    the tile request multiset, the planned tile count, the prefetch misses,
+    how many pool threads the render had)."""
+    fetcher = RecordingFetcher(jitter=True)
+    with prefetch_threads(threads):
+        frames = FrameRenderer(timeline30(), SMALL, "Paris to Lyon", tile_fetcher=fetcher,
+                               camera=mode)
+        try:
+            digests = tuple(hashlib.sha256(frames.frame(n).tobytes()).digest()
+                            for n in range(len(frames)))
+        finally:
+            frames.close()
+    return (digests, dict(fetcher.requests), frames.plan.tiles, frames.prefetch_misses,
+            len(frames._prefetcher.threads))
+
+
+@pytest.mark.parametrize("mode", CAMERA_MODES)
+def test_frames_are_bit_identical_with_and_without_prefetching(mode):
+    on, off = _every_frame(mode, 4), _every_frame(mode, 0)
+    assert on[4] == 4 and off[4] == 0      # prefetching really was on, then off
+    assert len(on[0]) == len(off[0]) == len(camera_path(timeline30(), 30, SMALL, mode))
+    assert on[0] == off[0]
+
+
+@pytest.mark.parametrize("mode", CAMERA_MODES)
+def test_prefetching_requests_the_same_tiles_and_misses_none(mode):
+    """The same multiset of tiles as the sequential render, which is the
+    plan's own count (D5), and every one served by the pool (D3, D4)."""
+    _, on_tiles, planned, misses, _ = _every_frame(mode, 4)
+    _, off_tiles, _, _, _ = _every_frame(mode, 0)
+    assert on_tiles == off_tiles
+    assert sum(on_tiles.values()) == planned
+    assert misses == 0
+
+
+def test_a_render_with_no_tiles_needs_no_mapbox_token(monkeypatch):
+    """No tile, no token: the default client is built on the first tile, so
+    neither building the renderer nor starting its frame loop needs one."""
+    monkeypatch.delenv("MAPBOX_TOKEN", raising=False)
+    monkeypatch.setattr(tile_stitcher, "_mapbox_token", lambda: "")
+    frames = FrameRenderer(timeline30(), SMALL, "Trip", shots=(), states=())
+    assert frames.plan.tiles == 0
+    for n in range(len(frames)):
+        frames.frame(n)
+    frames.close()
+    # The control: a render that does need tiles fails at its first one.
+    frames = FrameRenderer(timeline30(), SMALL, "Trip")
+    try:
+        with pytest.raises(APIError, match="MAPBOX_TOKEN"):
+            frames.frame(0)
+    finally:
+        frames.close()
+
+
+def _render_all(fetcher: RecordingFetcher) -> FrameRenderer:
+    frames = FrameRenderer(timeline30(), SMALL, "Trip", tile_fetcher=fetcher)
+    try:
+        for n in range(len(frames)):
+            frames.frame(n)
+    finally:
+        frames.close()
+    return frames
+
+
+def test_the_frame_loop_waits_for_a_fraction_of_the_network_time():
+    """With 20 ms a tile, the ``fetch`` stage — the frame loop's own wait
+    (D9) — is under a quarter of the time the fetcher slept: the pool fetches
+    ahead while frames are drawn. Without prefetching it is all of it."""
+    fetcher = RecordingFetcher(delay=0.02)
+    frames = _render_all(fetcher)
+    slept = fetcher.total * 0.02
+    assert fetcher.total == frames.plan.tiles
+    assert frames.timings.fetch < 0.25 * slept
+    assert frames.tile_ms >= 20.0
+
+    fetcher = RecordingFetcher(delay=0.02)
+    with prefetch_threads(0):
+        frames = _render_all(fetcher)
+    assert frames.timings.fetch >= 0.9 * fetcher.total * 0.02
+
+
+@pytest.mark.parametrize("kind", [pytest.param("video", marks=needs_ffmpeg), "preview"])
+def test_a_failed_fetch_fails_the_render_and_ends_its_prefetch_threads(kind, tmp_path):
+    """The render raises the fetcher's own exception, and once it has, none
+    of its prefetcher's threads is left (D7)."""
+    before = set(threading.enumerate())
+    fetcher = RecordingFetcher()
+    frames = FrameRenderer(timeline30(), SMALL, "Trip", tile_fetcher=fetcher)
+    assert new_prefetch_threads(before) == []     # building starts no thread
+    boom = RuntimeError("tile failed")
+    fetcher.fail[plan_requests(frames.plan)[10]] = boom
+    with pytest.raises(RuntimeError) as info:
+        if kind == "video":
+            renderer.encode(frames, tmp_path / "video.mp4")
+        else:
+            renderer._write_preview_webp(frames, tmp_path / "preview.webp")
+    assert info.value is boom
+    own = frames._prefetcher.threads
+    assert own and set(new_prefetch_threads(before)) <= set(own)
+    assert wait_until(lambda: not any(t.is_alive() for t in own))
+
+
+def _draw_a_few_frames_then_drop_the_renderer():
+    """A renderer that draws five frames directly, with no ``encode`` and no
+    ``close()``, then is dropped: (a weak reference to it, the prefetch
+    threads it started)."""
+    before = set(threading.enumerate())
+    frames = FrameRenderer(timeline30(), SMALL, "Trip", tile_fetcher=fake_tile)
+    for n in range(5):
+        frames.frame(n)
+    started = new_prefetch_threads(before)
+    assert started and set(started) == set(frames._prefetcher.threads)
+    ref = weakref.ref(frames)
+    del frames
+    gc.collect()
+    return ref, started
+
+
+def test_a_dropped_renderer_is_collected_and_its_prefetch_threads_end():
+    ref, started = _draw_a_few_frames_then_drop_the_renderer()
+    assert ref() is None
+    assert wait_until(lambda: not any(t.is_alive() for t in started))
+
+
+def test_the_dropped_renderer_check_fails_with_a_finalizer_that_holds_the_renderer(monkeypatch):
+    """The control for the test above (review R2-2): a finalizer whose
+    callback refers to the renderer keeps it alive, and its threads with it."""
+    registered = []
+
+    def closes_over_the_renderer(obj, fn):
+        f = weakref.finalize(obj, lambda: (obj, fn()))
+        registered.append(f)
+        return f
+
+    monkeypatch.setattr(renderer, "weakref", types.SimpleNamespace(finalize=closes_over_the_renderer))
+    ref, started = _draw_a_few_frames_then_drop_the_renderer()
+    try:
+        assert registered
+        assert ref() is not None
+        assert not wait_until(lambda: not any(t.is_alive() for t in started), timeout=0.5)
+    finally:
+        for f in registered:
+            f()     # closes the prefetcher and lets the renderer go
+    assert wait_until(lambda: not any(t.is_alive() for t in started))
+
+
+@needs_ffmpeg
+def test_video_summary_line_carries_tile_ms_and_prefetch_misses(tmp_path, caplog):
+    with caplog.at_level(logging.INFO, logger="src.video.renderer"):
+        render_timeline(timeline30(), SMALL, tmp_path / "video.mp4", title="Trip",
+                        tile_fetcher=RecordingFetcher(), frame_range=range(0, 60))
+    lines = [r.getMessage() for r in caplog.records if "video render summary" in r.getMessage()]
+    assert len(lines) == 1
+    assert re.search(r" tile_ms=[\d.]+ ", lines[0])
+    assert " prefetch_misses=0 " in lines[0]
 
 
 # ── render_video: the job runner's contract (Convention 5) ──────────────────

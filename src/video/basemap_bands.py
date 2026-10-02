@@ -96,6 +96,18 @@ class Sheet:
             total += (x_max - x_min + 1) * (y_max - y_min + 1)
         return total
 
+    @property
+    def requests(self) -> List[Tuple[int, int, int]]:
+        """The ``(z, x, y)`` tile requests stitching this sheet makes, in
+        ``render_basemap``'s order: piece by piece, then row by row, then
+        column by column, at zoom ``band`` (``Basemaps._sheet`` pins it)."""
+        out = []
+        for _, _, bounds in self.pieces:
+            x_min, x_max, y_min, y_max = tile_range_for_bounds(bounds, self.band, TILE_SIZE)
+            out.extend((self.band, x, y) for y in range(y_min, y_max + 1)
+                       for x in range(x_min, x_max + 1))
+        return out
+
 
 @dataclass
 class BandPlan:
@@ -194,6 +206,20 @@ def plan_bands(shots: Sequence[Shot], size: Size, max_tiles: int = MAX_TILES) ->
             break
         plan = _plan(shots, size, top - 1)
     return plan
+
+
+def plan_requests(plan: BandPlan) -> List[Tuple[int, int, int]]:
+    """Every tile request a render of *plan* makes, in order: frame by frame,
+    each frame's sheets in turn, each sheet's :attr:`Sheet.requests` at its
+    first use (docs/VIDEO_RENDER_TIME_PLAN.md D3)."""
+    out: List[Tuple[int, int, int]] = []
+    seen = set()
+    for refs in plan.frames:
+        for i, _ in refs:
+            if i not in seen:
+                seen.add(i)
+                out.extend(plan.sheets[i].requests)
+    return out
 
 
 def _crop_scaled(sheet_img: Image.Image, sheet: Sheet, rect: Tuple[float, float, float, float],

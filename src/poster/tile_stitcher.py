@@ -20,6 +20,7 @@ from __future__ import annotations
 import io
 import math
 import os
+import threading
 import time
 from typing import Callable, Dict, Optional, Tuple
 
@@ -175,13 +176,37 @@ class MapboxTileClient:
     """Minimal HTTP client for fetching Mapbox raster tiles.
 
     Mirrors the general shape of ``src/api/strava_client.py``'s ``StravaAPI``
-    (a class wrapping ``requests`` with basic retry handling), but tile
-    fetches don't need Strava's sliding-window rate limiter — Mapbox tile
-    requests aren't window-limited the same way — so this just retries
-    transient (5xx / network) failures with a short exponential backoff.
+    (a class wrapping ``requests`` with basic retry handling). Transient
+    (5xx / network) failures are retried ``MAX_RETRIES`` times with a short
+    exponential backoff.
+
+    A 429 (the account's rate limit, shared with the other stacks and the
+    clients' interactive maps) is waited out on its own budget of
+    ``MAX_RATE_LIMIT_WAIT_S`` total sleep per tile (issue #517): long enough
+    that a limit window used up at its very start still ends with an attempt
+    after Mapbox's reset.
+
+    Each thread gets its own ``requests.Session``, so consecutive tiles reuse
+    keep-alive connections instead of opening a new TCP + TLS connection per
+    tile. One per thread because ``Session`` is not documented as
+    thread-safe. Sessions are never closed explicitly: RQ work horses and the
+    bench are short-lived processes.
+
+    ``deadline`` (a ``time.monotonic()`` instant) bounds every wait and every
+    request: a wait that would leave no time for a request is not taken, a
+    request's timeout is cut to what is left, and with less than
+    ``MIN_REQUEST_S`` left nothing is sent. Every failure, deadline included,
+    raises ``APIError``.
     """
 
     MAX_RETRIES = 3
+    MAX_RATE_LIMIT_WAIT_S = 65.0
+    MIN_REQUEST_S = 0.5
+    # Bounds on a single 429 wait, whatever the headers say.
+    MIN_RATE_LIMIT_SLEEP_S = 1.0
+    MAX_RATE_LIMIT_SLEEP_S = 30.0
+    # Margin past X-Rate-Limit-Reset, so the retry lands after the reset.
+    RATE_LIMIT_RESET_MARGIN_S = 1.0
 
     def __init__(
         self,
@@ -192,6 +217,7 @@ class MapboxTileClient:
         tile_size: int = DEFAULT_TILE_SIZE,
         pixel_ratio: int = DEFAULT_PIXEL_RATIO,
         timeout: float = 15.0,
+        deadline: Optional[float] = None,
     ):
         if not token:
             raise APIError("MAPBOX_TOKEN is not configured; cannot fetch basemap tiles")
@@ -201,6 +227,61 @@ class MapboxTileClient:
         self.tile_size = tile_size
         self.pixel_ratio = pixel_ratio
         self.timeout = timeout
+        self.deadline = deadline
+        self._local = threading.local()
+
+    def _session(self) -> requests.Session:
+        """This thread's session, created on its first fetch."""
+        session = getattr(self._local, "session", None)
+        if session is None:
+            session = self._local.session = requests.Session()
+        return session
+
+    def _request_timeout(self) -> float:
+        """The next request's timeout, cut to what the deadline leaves.
+
+        Raises ``APIError`` when less than ``MIN_REQUEST_S`` is left, so
+        ``requests`` is never handed a timeout <= 0.
+        """
+        if self.deadline is None:
+            return self.timeout
+        left = self.deadline - time.monotonic()
+        if left < self.MIN_REQUEST_S:
+            raise APIError("Mapbox tile fetch ran out of time before its deadline")
+        return min(self.timeout, left)
+
+    def _wait(self, seconds: float, reason: str) -> None:
+        """Sleep *seconds*, unless no request could follow before the deadline."""
+        if self.deadline is not None and (
+            time.monotonic() + seconds + self.MIN_REQUEST_S > self.deadline
+        ):
+            raise APIError(
+                f"Mapbox tile fetch failed ({reason}); no time left before the "
+                f"deadline to wait {seconds:.0f} s and retry"
+            )
+        time.sleep(seconds)
+
+    def _rate_limit_wait(self, resp, attempt: int) -> float:
+        """Seconds to wait after a tile's *attempt*-th 429 (0-based).
+
+        ``X-Rate-Limit-Reset`` (a Unix timestamp, what Mapbox documents) wins,
+        plus a margin; then ``Retry-After`` in seconds; then ``2 ** attempt``.
+        A missing, malformed or past header counts as absent. The result is
+        clamped to [MIN_RATE_LIMIT_SLEEP_S, MAX_RATE_LIMIT_SLEEP_S].
+        """
+        headers = getattr(resp, "headers", None) or {}
+        wait: Optional[float] = None
+        reset = _header_seconds(headers, "X-Rate-Limit-Reset")
+        until_reset = None if reset is None else reset - time.time()
+        if until_reset is not None and until_reset > 0:
+            wait = until_reset + self.RATE_LIMIT_RESET_MARGIN_S
+        if wait is None:
+            retry_after = _header_seconds(headers, "Retry-After")
+            if retry_after is not None and retry_after >= 0:
+                wait = retry_after
+        if wait is None:
+            wait = float(2 ** attempt)
+        return min(max(wait, self.MIN_RATE_LIMIT_SLEEP_S), self.MAX_RATE_LIMIT_SLEEP_S)
 
     def fetch_tile(self, z: int, x: int, y: int) -> bytes:
         """Fetch one raster tile's raw image bytes (PNG) from Mapbox's Styles API.
@@ -214,42 +295,73 @@ class MapboxTileClient:
             f"https://api.mapbox.com/styles/v1/{self.style_username}/{self.style_id}"
             f"/tiles/{self.tile_size}/{z}/{x}/{y}{retina}"
         )
+        session = self._session()
         last_error: Optional[str] = None
-        for attempt in range(self.MAX_RETRIES):
+        attempt = 0  # 5xx / network failures, bounded by MAX_RETRIES
+        rate_limited = 0  # 429s, bounded by MAX_RATE_LIMIT_WAIT_S of sleep
+        rate_limit_waited = 0.0
+        while attempt < self.MAX_RETRIES:
+            timeout = self._request_timeout()
             try:
-                resp = requests.get(url, params={"access_token": self.token}, timeout=self.timeout)
+                resp = session.get(url, params={"access_token": self.token}, timeout=timeout)
             except requests.RequestException as exc:
                 last_error = str(exc)
-                if attempt < self.MAX_RETRIES - 1:
-                    time.sleep(2 ** attempt)
+                attempt += 1
+                if attempt < self.MAX_RETRIES:
+                    self._wait(2 ** (attempt - 1), last_error)
                 continue
 
             if resp.status_code == 200:
                 return resp.content
+            if resp.status_code == 429:
+                wait = self._rate_limit_wait(resp, rate_limited)
+                rate_limited += 1
+                if rate_limit_waited + wait > self.MAX_RATE_LIMIT_WAIT_S:
+                    raise APIError(
+                        f"Mapbox tile fetch failed (429): still rate-limited after "
+                        f"waiting {rate_limit_waited:.0f} s"
+                    )
+                self._wait(wait, "429")
+                rate_limit_waited += wait
+                continue
             if resp.status_code >= 500:
                 last_error = f"Server error {resp.status_code}"
-                if attempt < self.MAX_RETRIES - 1:
-                    time.sleep(2 ** attempt)
+                attempt += 1
+                if attempt < self.MAX_RETRIES:
+                    self._wait(2 ** (attempt - 1), last_error)
                 continue
-            # 4xx (bad token, missing tile, etc.) — not retryable.
+            # Other 4xx (bad token, missing tile, etc.) — not retryable.
             raise APIError(f"Mapbox tile fetch failed ({resp.status_code}): {resp.text[:200]}")
 
         raise APIError(f"Mapbox tile fetch failed after {self.MAX_RETRIES} attempts: {last_error}")
+
+
+def _header_seconds(headers, name: str) -> Optional[float]:
+    """Header *name* as a finite float, or None when missing or malformed."""
+    try:
+        value = float(headers.get(name))
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
 
 
 def _default_tile_fetcher(
     tile_size: int = DEFAULT_TILE_SIZE,
     pixel_ratio: int = DEFAULT_PIXEL_RATIO,
     timeout: float = 15.0,
+    deadline: Optional[float] = None,
 ) -> TileFetcher:
     """Build the default network tile_fetcher from the configured MAPBOX_TOKEN.
 
     Constructed lazily — only called from inside ``render_basemap`` when no
     fetcher is injected — so importing this module and running its
     pure-math / injected-fetcher tests never requires a token or network
-    access.
+    access. *deadline* is handed to the client (see ``MapboxTileClient``).
     """
-    client = MapboxTileClient(_mapbox_token(), tile_size=tile_size, pixel_ratio=pixel_ratio, timeout=timeout)
+    client = MapboxTileClient(
+        _mapbox_token(), tile_size=tile_size, pixel_ratio=pixel_ratio,
+        timeout=timeout, deadline=deadline,
+    )
     return client.fetch_tile
 
 
@@ -328,7 +440,8 @@ def render_basemap(
     than continuing to fetch the remaining tiles. ``None`` (the default,
     used by the full-resolution render) means no budget. *tile_timeout* is
     the per-request timeout passed to the default ``MapboxTileClient`` when
-    *tile_fetcher* is not injected.
+    *tile_fetcher* is not injected. That default client also gets *deadline*,
+    so its retry waits (a 429 can wait up to a minute) stay within budget.
     """
     zoom = zoom_for_target_size(bounds, target_width, target_height, tile_size, max_zoom)
     x_min, x_max, y_min, y_max = tile_range_for_bounds(bounds, zoom, tile_size)
@@ -341,7 +454,9 @@ def render_basemap(
             "oblong or oversized extent"
         )
 
-    fetcher = tile_fetcher or _default_tile_fetcher(tile_size, pixel_ratio, timeout=tile_timeout)
+    fetcher = tile_fetcher or _default_tile_fetcher(
+        tile_size, pixel_ratio, timeout=tile_timeout, deadline=deadline
+    )
 
     left, top, right, bottom = crop_rect_for_bounds(bounds, zoom, tile_size)
     canvas = Image.new("RGB", (target_width, target_height))
