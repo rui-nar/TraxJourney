@@ -49,6 +49,41 @@ def _reset_project_payload_cache():
     _geo_gen.clear()
 
 
+def release_per_test_engines():
+    """Drop the library caches that keep each test's engine alive (issue #540).
+
+    Most tests build their own in-memory engine, and two process-wide caches
+    keep it reachable after the test ends:
+
+    - every SQLModel mapper keeps an LRU of compiled INSERT/UPDATE/DELETE
+      statements (100 per mapper) keyed by the *dialect*, and each engine has
+      its own dialect, holding every column type's per-dialect memo;
+    - FastAPI keeps LRUs (4096 entries) of every dependency callable it has
+      classified, which include the tests' ``dependency_overrides`` lambdas —
+      closures over the test's engine, its pool and so its whole in-memory
+      database.
+
+    The app has one engine and a fixed set of dependencies, so neither cache
+    grows in production. Across the suite they held ~250 MB by the end.
+    """
+    from fastapi.dependencies import models as fastapi_dependency_models
+    from sqlmodel.main import default_registry
+
+    for mapper in default_registry.mappers:
+        mapper._compiled_cache.clear()
+    for name in ("_is_gen_callable_cached", "_is_async_gen_callable_cached",
+                 "_is_coroutine_callable_cached"):
+        cache = getattr(fastapi_dependency_models, name, None)
+        if cache is not None:
+            cache.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _release_per_test_engines():
+    yield
+    release_per_test_engines()
+
+
 @pytest.fixture
 def metric():
     """Read a Prometheus sample by name + labels, 0.0 if the series is absent.
