@@ -89,6 +89,14 @@ them to make faster.
   while the window fills: a render consumes about 4 tiles per second on
   average. `PREFETCH_THREADS = 0` disables prefetching, for tests that need
   the sequential path.
+
+  **Raised to 8 threads during delivery** (owner, 2026-10-02, after #525's
+  gate). Once #525 made the render faster, a slow-network run (271 ms per
+  tile) waited 10.3 ms per frame for tiles with 4 threads. 8 threads cover
+  about 30 tiles per second at that speed. The 32-tile window is unchanged,
+  so memory and the size of a burst are too. A burst can briefly exceed 100
+  requests per second, but Mapbox's limit is per minute (6,000), and bursts
+  are bounded by the window.
 - **D7 — Errors surface where they do today.** A failed prefetch stores its
   exception, which is raised when the render asks for that tile, so the
   render fails at the same point with the same exception. When the frame
