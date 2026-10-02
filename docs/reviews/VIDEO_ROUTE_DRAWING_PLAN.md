@@ -51,3 +51,25 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). No envel
 - Guard: —
 - Override: —
 - Outcome: fixed in plan (U2 patches pieslice after the Overlay is built; DoD: none while frames are drawn)
+
+## Round 2 — 2026-10-02, reviewed at 86d1a88a (fixes since 66c33d29)
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). No envelope questions.
+
+### R2-1 — The dense fixture's joints are shallow turns, which the D5 bounds don't detect, so the no-disk control isn't shown able to fail
+- Trigger: the U2 implementer builds a _track-like fixture (heading drift σ 0.08 rad) → the no-disk control stays inside the bounds → the implementer densifies the fixture or weakens the control, with no number in the plan to steer by
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=inferred (probe B_disk20: joints under 20° dropped and still inside the bounds)
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
+
+### R2-2 — U1's identity test now runs the dense fixture for every (shot, state) pair, 4 modes, twice, with pie-slice joints, so R1-4's cost returns
+- Trigger: CI runs test_video_route_clip.py → _draw_route on every frame of a fixture with no stated length → an estimated 10–20 minutes on every push
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=inferred
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
