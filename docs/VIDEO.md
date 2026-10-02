@@ -147,9 +147,10 @@ a track in Fiji) is animated, framed and drawn along its short way.
   byte-identical with clipping on and off: the colour and mask layers'
   origin and size come from the visible legs' cached per-block bboxes,
   not from what is clipped; `_CLIP` turns clipping off for the identity
-  tests. Measured at zoom 16 and 1080p, one zoomed-in frame of a
-  500,000-point leg fell from 180.5 MB to 0.13 MB, no longer growing with
-  the leg's length (#523, `tests/test_video_memory.py`).
+  tests. Measured at zoom 16 and 1080p with tracemalloc, one zoomed-in
+  frame of a 500,000-point leg's Python heap fell from 180.5 MB to
+  0.13 MB, excluding Pillow's image buffers, no longer growing with the
+  leg's length (#523, `tests/test_video_memory.py`).
 - **Joints.** The travelled line's casing and colour have round joints, but
   not Pillow's `joint="curve"`, which draws a pie slice per vertex in Python
   and was most of the overlay's time (#525). Each line is drawn plain, then
