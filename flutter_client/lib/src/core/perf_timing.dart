@@ -159,7 +159,9 @@ class PerfTiming {
 //     ran entirely on a worker isolate costs zero frames — useful for
 //     time-to-interactive, meaningless for jank.
 
-/// One line per recorded span: count, total, worst. Pure + testable, mirroring
+/// One line per recorded span: count, total, p50, p90, worst. The worst alone
+/// is not what a user mostly waits for: one cold request among twenty warm
+/// ones dominates it (issue #401). Pure + testable, mirroring
 /// [perfSummaryLine]'s split so the numbers read off a dev run are trustworthy.
 /// [label] distinguishes the two buckets in the printed report.
 String perfSpanReport(String label, Map<String, List<double>> spans) {
@@ -175,8 +177,11 @@ String perfSpanReport(String label, Map<String, List<double>> spans) {
     for (final s in samples) {
       total += s;
     }
+    final sorted = [...samples]..sort();
     buf.write('\n  $name  n=${samples.length}  '
         'total=${total.toStringAsFixed(1)}ms  '
+        'p50=${perfPercentile(sorted, 50).toStringAsFixed(1)}ms  '
+        'p90=${perfPercentile(sorted, 90).toStringAsFixed(1)}ms  '
         'worst=${_spanMax(samples).toStringAsFixed(1)}ms');
   }
   return buf.toString();

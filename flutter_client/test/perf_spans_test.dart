@@ -516,6 +516,29 @@ void main() {
       expect(line, contains('worst=30.0ms'));
     });
 
+    // Issue #401: the worst of 20 fetches is one cold request; the typical
+    // fetch is what a user waits for, so the line carries both percentiles.
+    test('reports p50 and p90 of the samples, whatever their order', () {
+      final line = perfSpanReport('stage', const {
+        'fetch_geo_lod': [
+          700.0, 100.0, 1000.0, 300.0, 500.0, 200.0, 900.0, 400.0, 600.0,
+          800.0, //
+        ],
+      });
+      // Nearest rank over 10 samples: p50 is index round(4.5) = 5 -> 600,
+      // p90 is index round(8.1) = 8 -> 900.
+      expect(line, contains('p50=600.0ms'));
+      expect(line, contains('p90=900.0ms'));
+      expect(line, contains('worst=1000.0ms'));
+    });
+
+    test('a single sample is its own p50, p90 and worst', () {
+      final line = perfSpanReport('stage', const {
+        'decode_geo_lod': [42.0],
+      });
+      expect(line, contains('p50=42.0ms  p90=42.0ms  worst=42.0ms'));
+    });
+
     test('worst span is listed first', () {
       final report = perfSpanReport('blocking', const {
         'cheap': [1.0],
