@@ -14,7 +14,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'basemaps.dart';
 import 'geo_viewport.dart';
-import 'download_stub.dart' if (dart.library.html) 'download_web.dart';
+import 'download_stub.dart' if (dart.library.js_interop) 'download_web.dart';
 import 'elevation_chart.dart';
 import 'gpx_import_dialog.dart';
 import '../api/client.dart' show ApiException;

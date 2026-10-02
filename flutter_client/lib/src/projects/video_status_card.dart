@@ -24,7 +24,7 @@ import '../api/client.dart';
 import '../api/video_api.dart';
 import '../core/design_tokens.dart' show kShadow2;
 import '../core/project_ref.dart';
-import 'download_stub.dart' if (dart.library.html) 'download_web.dart';
+import 'download_stub.dart' if (dart.library.js_interop) 'download_web.dart';
 
 enum VideoCardState { hidden, rendering, done, failed, expired }
 
