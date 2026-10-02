@@ -10,6 +10,8 @@ library;
 
 import 'dart:math' as math;
 
+import 'perceptual_hash.dart';
+
 /// A photo picked from the user's device, with metadata already extracted
 /// by a later phase (EXIF timestamp/GPS, perceptual hash).
 class PhotoCandidate {
@@ -20,7 +22,7 @@ class PhotoCandidate {
   final double? lon;
 
   /// Pre-computed perceptual hash, or null if not yet computed.
-  final int? pHash;
+  final PerceptualHash? pHash;
 
   const PhotoCandidate({
     required this.capturedAt,
@@ -224,7 +226,7 @@ const int kDefaultMaxHammingDistance = 12;
 /// unmatched.
 MatchResult pairCandidatesWithThumbnails({
   required List<PhotoCandidate> candidates,
-  required List<int> thumbnailPHashes,
+  required List<PerceptualHash> thumbnailPHashes,
   int maxHammingDistance = kDefaultMaxHammingDistance,
   int ambiguityMargin = 4,
 }) {
@@ -290,8 +292,8 @@ MatchResult pairCandidatesWithThumbnails({
 /// straight distance-vs-threshold check. Returns null when either side has
 /// no pHash to compare (nothing to conclude either way).
 bool? looksLikeSamePhoto(
-  int? candidateHash,
-  int? thumbnailHash, {
+  PerceptualHash? candidateHash,
+  PerceptualHash? thumbnailHash, {
   int maxHammingDistance = kDefaultMaxHammingDistance,
 }) {
   if (candidateHash == null || thumbnailHash == null) return null;
@@ -299,12 +301,4 @@ bool? looksLikeSamePhoto(
 }
 
 /// Hamming distance (bit difference count) between two perceptual hashes.
-int hammingDistance(int a, int b) {
-  var x = a ^ b;
-  var count = 0;
-  for (var i = 0; i < 64; i++) {
-    if ((x & 1) != 0) count++;
-    x = x >>> 1;
-  }
-  return count;
-}
+int hammingDistance(PerceptualHash a, PerceptualHash b) => a.distanceTo(b);

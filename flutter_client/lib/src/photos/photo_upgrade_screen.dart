@@ -18,6 +18,7 @@ import 'package:http/http.dart' as http;
 import '../core/design_tokens.dart';
 import '../projects/project_notifier.dart';
 import 'immich_source.dart';
+import 'perceptual_hash.dart';
 import 'photo_match.dart';
 import 'photo_source.dart';
 
@@ -35,11 +36,11 @@ void showPhotoUpgradeDialog(
   ProjectNotifier notifier,
   Map<String, dynamic> memory, {
   @visibleForTesting Future<PickedPhoto?> Function()? pickSinglePhotoOverride,
-  @visibleForTesting Future<int?> Function(String uuid)? fetchThumbnailHashOverride,
+  @visibleForTesting Future<PerceptualHash?> Function(String uuid)? fetchThumbnailHashOverride,
   @visibleForTesting Future<bool> Function()? checkImmichConnectedOverride,
   @visibleForTesting Future<List<ImmichCandidate>> Function()? fetchImmichCandidatesOverride,
   @visibleForTesting
-  Future<int?> Function(ImmichCandidate candidate)? fetchImmichThumbnailHashOverride,
+  Future<PerceptualHash?> Function(ImmichCandidate candidate)? fetchImmichThumbnailHashOverride,
   @visibleForTesting
   Future<PickedPhoto> Function(ImmichCandidate candidate)? downloadImmichCandidateOverride,
 }) {
@@ -64,7 +65,7 @@ enum _RowStatus { empty, picked, applying, applied, failed }
 class _UpgradeRow {
   final String oldUuid;
   PickedPhoto? picked;
-  int? thumbHash;
+  PerceptualHash? thumbHash;
   bool thumbHashChecked = false;
   bool? looksSame;
   DayGeoMismatch dayGeoMismatch = DayGeoMismatch.none;
@@ -89,10 +90,10 @@ class _PhotoUpgradeDialog extends StatefulWidget {
   final ProjectNotifier notifier;
   final Map<String, dynamic> memory;
   final Future<PickedPhoto?> Function() pickSinglePhoto;
-  final Future<int?> Function(String uuid)? fetchThumbnailHash;
+  final Future<PerceptualHash?> Function(String uuid)? fetchThumbnailHash;
   final Future<bool> Function()? checkImmichConnected;
   final Future<List<ImmichCandidate>> Function()? fetchImmichCandidates;
-  final Future<int?> Function(ImmichCandidate candidate)? fetchImmichThumbnailHash;
+  final Future<PerceptualHash?> Function(ImmichCandidate candidate)? fetchImmichThumbnailHash;
   final Future<PickedPhoto> Function(ImmichCandidate candidate)? downloadImmichCandidate;
 
   const _PhotoUpgradeDialog({
@@ -116,7 +117,7 @@ class _PhotoUpgradeDialogState extends State<_PhotoUpgradeDialog> {
   bool _immichConnected = false;
   bool _suggestingAll = false;
   List<ImmichCandidate>? _dayCandidatesCache;
-  final Map<String, int?> _immichHashCache = {};
+  final Map<String, PerceptualHash?> _immichHashCache = {};
 
   String get _memoryId => widget.memory['id']?.toString() ?? '';
 
@@ -189,14 +190,14 @@ class _PhotoUpgradeDialogState extends State<_PhotoUpgradeDialog> {
   /// comparing against a row's *existing* thumbnail hash (fetched via
   /// [_fetchThumbnailHash]). Cached per candidate id since the same day's
   /// candidates are compared against every row.
-  Future<int?> _immichCandidateHash(ImmichCandidate candidate) async {
+  Future<PerceptualHash?> _immichCandidateHash(ImmichCandidate candidate) async {
     if (_immichHashCache.containsKey(candidate.id)) return _immichHashCache[candidate.id];
     final hash = await _fetchImmichThumbnailHash(candidate);
     _immichHashCache[candidate.id] = hash;
     return hash;
   }
 
-  Future<int?> _fetchImmichThumbnailHash(ImmichCandidate candidate) async {
+  Future<PerceptualHash?> _fetchImmichThumbnailHash(ImmichCandidate candidate) async {
     if (widget.fetchImmichThumbnailHash != null) {
       return widget.fetchImmichThumbnailHash!(candidate);
     }
@@ -351,7 +352,7 @@ class _PhotoUpgradeDialogState extends State<_PhotoUpgradeDialog> {
     });
   }
 
-  Future<int?> _fetchThumbnailHash(String uuid) async {
+  Future<PerceptualHash?> _fetchThumbnailHash(String uuid) async {
     if (widget.fetchThumbnailHash != null) {
       return widget.fetchThumbnailHash!(uuid);
     }

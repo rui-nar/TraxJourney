@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:traxjourney_client/src/core/design_tokens.dart';
 import 'package:traxjourney_client/src/core/theme.dart';
 import 'package:traxjourney_client/src/photos/immich_source.dart';
+import 'package:traxjourney_client/src/photos/perceptual_hash.dart';
 import 'package:traxjourney_client/src/photos/photo_match.dart';
 import 'package:traxjourney_client/src/photos/photo_source.dart';
 import 'package:traxjourney_client/src/photos/photo_upgrade_screen.dart';
@@ -39,12 +40,12 @@ class _FakeNotifier extends ProjectNotifier {
 final _day = DateTime.utc(2026, 7, 10, 12, 0);
 final _otherDay = DateTime.utc(2026, 6, 1, 12, 0);
 
-const _thumbHighHash = 0x0F; // existing thumbnail for the "looks the same" row
-const _clearJpgHash = 0x0D; // distance 1 from _thumbHighHash -> looks the same
-const _thumbLowHash = 0x00; // existing thumbnail for the "looks different" row
-const _farHash = 0x7FFFFFFFFFFFFFFF; // distance 63 from _thumbLowHash -> flagged
+const _thumbHighHash = PerceptualHash(0, 0x0F); // existing thumbnail for the "looks the same" row
+const _clearJpgHash = PerceptualHash(0, 0x0D); // distance 1 from _thumbHighHash -> looks the same
+const _thumbLowHash = PerceptualHash(0, 0x00); // existing thumbnail for the "looks different" row
+const _farHash = PerceptualHash(0x7FFFFFFF, 0xFFFFFFFF); // distance 63 from _thumbLowHash -> flagged
 
-Future<int?> _fakeThumbnailHash(String uuid) async {
+Future<PerceptualHash?> _fakeThumbnailHash(String uuid) async {
   switch (uuid) {
     case 'thumb-high-uuid':
       return _thumbHighHash;
@@ -93,7 +94,7 @@ Future<_FakeNotifier> _openDialog(
   Map<String, dynamic>? memory,
   Future<bool> Function()? checkImmichConnected,
   Future<List<ImmichCandidate>> Function()? fetchImmichCandidates,
-  Future<int?> Function(ImmichCandidate candidate)? fetchImmichThumbnailHash,
+  Future<PerceptualHash?> Function(ImmichCandidate candidate)? fetchImmichThumbnailHash,
   Future<PickedPhoto> Function(ImmichCandidate candidate)? downloadImmichCandidate,
 }) async {
   final notifier = _FakeNotifier();
