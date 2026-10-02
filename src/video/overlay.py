@@ -73,6 +73,13 @@ _ROUTE_CELL = 32
 # The marker sprite and the HUD panels' rounded corners are drawn at 4× and
 # scaled down.
 _SPRITE_SS = 4
+# Each zoom level's kept points are cut into blocks of this many segments,
+# each with its world bbox, so finding a leg's on-screen runs skips the blocks
+# off screen (docs/VIDEO_ROUTE_DRAWING_PLAN.md, D3).
+_BLOCK = 64
+# Only the runs of each leg that can touch the frame are converted and drawn
+# (#523, D2). Pixel-neutral: the tests switch it off to show no frame changes.
+_CLIP = True
 
 # A card fades over this long: the title out as it ends, the end card in.
 CARD_FADE_S = 0.5
@@ -121,6 +128,53 @@ def _decimate(world: array, scale: float, threshold: float) -> array:
     return keep
 
 
+def _blocks(world: array, idx: array) -> array:
+    """The world bbox of each block of :data:`_BLOCK` segments of the kept
+    points *idx* of flat *world*, flat ``x0, y0, x1, y1`` per block. Block
+    ``j`` holds the segments from kept position ``j · _BLOCK``: its points are
+    those positions up to ``(j + 1) · _BLOCK``, the last one shared with the
+    next block, so every segment is in exactly one block."""
+    out = array("d")
+    last = len(idx) - 1
+    for a in range(0, last, _BLOCK):
+        span = idx[a:min(a + _BLOCK, last) + 1]
+        xs = [world[2 * k] for k in span]
+        ys = [world[2 * k + 1] for k in span]
+        out.extend((min(xs), min(ys), max(xs), max(ys)))
+    return out
+
+
+def _runs(world: array, idx: array, blocks: array,
+          rect: Tuple[float, float, float, float]) -> List[Tuple[int, int]]:
+    """The runs of consecutive segments of the kept points *idx* whose bbox
+    meets *rect* (world ``x0, y0, x1, y1``), as (first, last) kept positions,
+    in order. A segment that misses *rect* lies wholly outside it, its end
+    points too, so a run's first and last segments are the ones crossing it.
+    *blocks* (:func:`_blocks`) lets whole blocks off *rect* be skipped
+    without reading their points."""
+    rx0, ry0, rx1, ry1 = rect
+    runs: List[List[int]] = []
+    last = len(idx) - 1
+    for j in range(0, len(blocks), 4):
+        if (blocks[j + 2] < rx0 or blocks[j] > rx1 or
+                blocks[j + 3] < ry0 or blocks[j + 1] > ry1):
+            continue
+        a = j // 4 * _BLOCK
+        k = idx[a]
+        px, py = world[2 * k], world[2 * k + 1]
+        for p in range(a, min(a + _BLOCK, last)):
+            k = idx[p + 1]
+            qx, qy = world[2 * k], world[2 * k + 1]
+            if ((px if px > qx else qx) >= rx0 and (px if px < qx else qx) <= rx1 and
+                    (py if py > qy else qy) >= ry0 and (py if py < qy else qy) <= ry1):
+                if runs and runs[-1][1] == p:
+                    runs[-1][1] = p + 1
+                else:
+                    runs.append([p, p + 1])
+            px, py = qx, qy
+    return [(a, b) for a, b in runs]
+
+
 def _world(leg) -> array:
     """*leg*'s points in world units, flat ``x0, y0, x1, y1, …``."""
     return array("d", itertools.chain.from_iterable(
@@ -147,7 +201,8 @@ class _Scaled:
 class _Route:
     """The legs in world units, decimated once per integer zoom they are
     drawn at. Each leg's points are a flat ``array('d')``, each level's kept
-    indices an ``array('i')`` (docs/VIDEO_PREVIEW_PLAN.md, D11)."""
+    indices an ``array('i')`` (docs/VIDEO_PREVIEW_PLAN.md, D11), with their
+    blocks' bboxes (:func:`_blocks`, about 0.5 byte per kept point)."""
 
     def __init__(self, timeline: Timeline) -> None:
         self.legs = timeline.legs
@@ -155,6 +210,7 @@ class _Route:
         self.bbox = [(min(pts[0::2]), min(pts[1::2]), max(pts[0::2]), max(pts[1::2]))
                      for pts in self.world]
         self._levels: Dict[int, List[array]] = {}
+        self._blocks: Dict[int, List[Tuple[Tuple[float, float, float, float], array]]] = {}
         # km each leg's mode had covered before it: the marker's fraction of
         # its leg is read back from the per-mode counters.
         before: Dict[str, float] = {}
@@ -169,6 +225,22 @@ class _Route:
             scale = TILE_SIZE * 2 ** level
             out = [_decimate(pts, scale, 1.5) for pts in self.world]
             self._levels[level] = out
+        return out
+
+    def blocks(self, level: int) -> List[Tuple[Tuple[float, float, float, float], array]]:
+        """Each leg's (world bbox of its kept points, :func:`_blocks`) at
+        *level*."""
+        out = self._blocks.get(level)
+        if out is None:
+            out = []
+            for pts, idx in zip(self.world, self.kept(level)):
+                b = _blocks(pts, idx)
+                if b:
+                    box = (min(b[0::4]), min(b[1::4]), max(b[2::4]), max(b[3::4]))
+                else:                          # a single point
+                    box = (pts[2 * idx[0]], pts[2 * idx[0] + 1]) * 2
+                out.append((box, b))
+            self._blocks[level] = out
         return out
 
     def fraction(self, n: int, state: FrameState) -> float:
@@ -388,34 +460,53 @@ class Overlay:
         return x1 >= cx - hw and x0 <= cx + hw and y1 >= cy - hh and y0 <= cy + hh
 
     def _lines(self, shot: Shot, state: FrameState):
-        """The visible legs and what of them is travelled, in world units
-        with the frame-pixel transform ``(scale, ox, oy)``: a point (x, y)
-        is at ``(x · scale + ox, y · scale + oy)`` in the frame.
+        """The visible legs, the runs of each that can touch the frame, and
+        what of them is travelled, in world units with the frame-pixel
+        transform ``(scale, ox, oy)``: a point (x, y) is at
+        ``(x · scale + ox, y · scale + oy)`` in the frame.
 
-        Returns ``(transform, faint, travelled)``: *faint* one (flat world
-        points, kept indices) per visible leg; *travelled* one (mode, its
-        position in *faint*, how many of its kept points are travelled, the
-        marker's frame position or None) per travelled line. A leg's line is
-        only ever held in pixels once, scaled for drawing (D11)."""
+        Returns ``(transform, rect, box, faint, travelled)``: *rect* the world
+        rectangle a segment must meet to be drawn, the frame grown by more
+        than the route's reach (None draws every segment, :data:`_CLIP`
+        off); *box* the world bbox of the visible legs' kept points, whatever
+        is clipped; *faint* one (flat world points, kept indices, runs) per
+        visible leg, a run a (first, last) pair of kept positions
+        (:func:`_runs`); *travelled* one (mode, its position in *faint*, how
+        many of its kept points are travelled, the marker's world position or
+        None) per travelled line. A run's line is only ever held in pixels
+        once, scaled for drawing (D11)."""
         scale = TILE_SIZE * 2 ** shot.zoom
         cx, cy = lonlat_to_world(shot.lon, shot.lat)
         ox, oy = self.size[0] / 2 - cx * scale, self.size[1] / 2 - cy * scale
         level = max(0, min(22, int(shot.zoom)))
         kept = self.route.kept(level)
+        blocks = self.route.blocks(level)
         if state.kind == "title":
             current = 0
         elif state.kind == "end":
             current = len(self.route.legs)
         else:
             current = state.leg_index
+        rect = None
+        if _CLIP:
+            # Nothing a segment draws reaches further from it than the
+            # casing's colour, (outer + 2) / 2 frame px (a round joint's
+            # radius is less): the margin also covers the layers' rounding.
+            reach = self.line_w + 2 * self.casing_w + 4
+            rect = ((-reach - ox) / scale, (-reach - oy) / scale,
+                    (self.size[0] + reach - ox) / scale, (self.size[1] + reach - oy) / scale)
 
         faint, travelled = [], []
+        box = [math.inf, math.inf, -math.inf, -math.inf]
         pad = self.line_w * 2
         for i, pts in enumerate(self.route.world):
             if not self._visible(i, shot, scale, pad):
                 continue
             idx = kept[i]
-            faint.append((pts, idx))
+            (bx0, by0, bx1, by1), leg_blocks = blocks[i]
+            box = [min(box[0], bx0), min(box[1], by0), max(box[2], bx1), max(box[3], by1)]
+            runs = [(0, len(idx) - 1)] if rect is None else _runs(pts, idx, leg_blocks, rect)
+            faint.append((pts, idx, runs))
             if i < current:
                 travelled.append((self.route.legs[i].mode, len(faint) - 1, len(idx), None))
             elif i == current and state.kind == "clip":
@@ -423,36 +514,32 @@ class Overlay:
                 target = self.route.fraction(i, state) * leg.cum_km[-1]
                 cut = bisect.bisect_left(leg.cum_km, target)
                 m = bisect.bisect_left(idx, cut)     # the kept points before *cut*
-                mx, my = lonlat_to_world(state.lon, state.lat)
                 if m + 1 >= 2:
                     travelled.append((leg.mode, len(faint) - 1, m,
-                                      (mx * scale + ox, my * scale + oy)))
-        return (scale, ox, oy), faint, travelled
+                                      lonlat_to_world(state.lon, state.lat)))
+        return (scale, ox, oy), rect, tuple(box), faint, travelled
 
     def _draw_route(self, frame: Image.Image, shot: Shot, state: FrameState) -> None:
         """One colour layer and one coverage mask for the whole route, drawn
         :data:`ROUTE_SS` times larger and box-filtered down for anti-aliasing,
         pasted in one go — all over the route's bounding box only. The colour
         layer is drawn a pixel wider than the mask so the partly covered edge
-        never picks up its background."""
-        (scale, ox, oy), faint, travelled = self._lines(shot, state)
+        never picks up its background.
+
+        Only the runs of each leg that can touch the frame are converted and
+        drawn (:meth:`_lines`). The layers' origin and size come from every
+        visible kept point, as if nothing were clipped: each point's layer
+        coordinates, rounded by Pillow, are then the same whatever is
+        clipped, and so are the frame's pixels (D2)."""
+        (scale, ox, oy), rect, (wx0, wy0, wx1, wy1), faint, travelled = self._lines(shot, state)
         if not faint:
             return
         outer = self.line_w + 2 * self.casing_w
         pad = outer + 4
-        lx = ly = math.inf
-        hx = hy = -math.inf
-        for pts, idx in faint:
-            for k in idx:
-                x, y = pts[2 * k] * scale + ox, pts[2 * k + 1] * scale + oy
-                if x < lx:
-                    lx = x
-                if x > hx:
-                    hx = x
-                if y < ly:
-                    ly = y
-                if y > hy:
-                    hy = y
+        # x · scale + ox never decreases with x, so these are the least and
+        # greatest of the kept points' frame coordinates, bit for bit.
+        lx, ly = wx0 * scale + ox, wy0 * scale + oy
+        hx, hy = wx1 * scale + ox, wy1 * scale + oy
         x0, y0 = max(0, int(lx) - pad), max(0, int(ly) - pad)
         x1 = min(self.size[0], int(hx) + pad + 1)
         y1 = min(self.size[1], int(hy) + pad + 1)
@@ -464,6 +551,47 @@ class Overlay:
         # coordinate maps to the centre of its block.
         c = (ss - 1) / 2
 
+        # Each run straight from world units to the layers' pixels, through
+        # the frame's pixels exactly as the bbox above. Per visible leg, its
+        # runs as (first kept position, line).
+        legs = [[(a, [((pts[2 * k] * scale + ox - x0) * ss + c,
+                       (pts[2 * k + 1] * scale + oy - y0) * ss + c) for k in idx[a:b + 1]])
+                 for a, b in runs]
+                for pts, idx, runs in faint]
+        trav = []
+        for mode, j, m, marker in travelled:
+            if marker is None:
+                trav.append((mode, [line for _, line in legs[j]]))
+                continue
+            # The kept points before the marker, then the marker: each run's
+            # travelled part, and the segment to the marker if it can show,
+            # which carries on the run that ends where it starts.
+            pts, idx, _ = faint[j]
+            last = m - 1
+            lines, reached = [], -1
+            for a, line in legs[j]:
+                if a < last:
+                    lines.append(line[:last - a + 1])
+                    reached = a + len(lines[-1]) - 1
+            mx, my = marker
+            px, py = pts[2 * idx[last]], pts[2 * idx[last] + 1]
+            if rect is None or ((px if px > mx else mx) >= rect[0] and
+                                (px if px < mx else mx) <= rect[2] and
+                                (py if py > my else my) >= rect[1] and
+                                (py if py < my else my) <= rect[3]):
+                mx, my = mx * scale + ox, my * scale + oy
+                end = ((mx - x0) * ss + c, (my - y0) * ss + c)
+                if reached == last:
+                    lines[-1].append(end)
+                else:
+                    lines.append([((px * scale + ox - x0) * ss + c,
+                                   (py * scale + oy - y0) * ss + c), end])
+            trav.append((mode, lines))
+        faint = [line for runs in legs for _, line in runs]
+        lines = faint + [line for _, runs in trav for line in runs]
+        if not lines:
+            return
+
         box = (x1 - x0, y1 - y0)
         big = (box[0] * ss, box[1] * ss)
         # The colour layer is left unfilled (filling an RGB layer this size
@@ -473,26 +601,33 @@ class Overlay:
         color = Image.new("RGB", big, None)
         mask = Image.new("L", big, 0)
         cd, md = ImageDraw.Draw(color), ImageDraw.Draw(mask)
-        # Each line straight from world units to the layers' pixels, through
-        # the frame's pixels exactly as the bbox above.
-        faint = [[((pts[2 * k] * scale + ox - x0) * ss + c,
-                   (pts[2 * k + 1] * scale + oy - y0) * ss + c) for k in idx]
-                 for pts, idx in faint]
         for line in faint:
             cd.line(line, fill=_FAINT, width=(self.faint_w + 2) * ss)
         for line in faint:
             md.line(line, fill=_FAINT_ALPHA, width=self.faint_w * ss)
-        travelled = [(mode, faint[j] if marker is None else
-                      faint[j][:m] + [((marker[0] - x0) * ss + c, (marker[1] - y0) * ss + c)])
-                     for mode, j, m, marker in travelled]
-        for _, line in travelled:
-            cd.line(line, fill=_CASING, width=(outer + 2) * ss, joint="curve")
-            md.line(line, fill=255, width=outer * ss, joint="curve")
-        for mode, line in travelled:
-            cd.line(line, fill=mode_color(mode), width=self.line_w * ss, joint="curve")
+
+        def stroke(draw: ImageDraw.ImageDraw, line, fill, width: int) -> None:
+            """*line* with round joints: one plain line, then a disk at each
+            interior vertex, the size of the joint Pillow draws at a width
+            over 4 (D4). Pillow's own ``joint="curve"`` works out a pie slice
+            per vertex in Python, most of the route's time. The ends stay
+            flat, as Pillow's."""
+            draw.line(line, fill=fill, width=width)
+            if width > 4:
+                r = width / 2 - 1
+                ellipse = draw.ellipse
+                for x, y in line[1:-1]:
+                    ellipse((x - r, y - r, x + r, y + r), fill=fill)
+
+        for _, runs in trav:
+            for line in runs:
+                stroke(cd, line, _CASING, (outer + 2) * ss)
+                stroke(md, line, 255, outer * ss)
+        for mode, runs in trav:
+            for line in runs:
+                stroke(cd, line, mode_color(mode), self.line_w * ss)
         # reduce() is the box filter at an integer factor, about 3× faster
         # than resize(BOX) at these sizes.
-        lines = faint + [line for _, line in travelled]
         for a, b, top, bottom in _route_cells(lines, box, ss):
             area = (a * ss, top * ss, b * ss, bottom * ss)
             frame.paste(color.reduce(ss, area), (x0 + a, y0 + top), mask.reduce(ss, area))

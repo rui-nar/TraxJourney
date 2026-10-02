@@ -17,8 +17,10 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
-from dataclasses import dataclass
+import weakref
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -26,7 +28,8 @@ from PIL import Image
 
 from src.poster.tile_stitcher import TileFetcher, render_basemap
 from src.utils.logging import get_logger
-from src.video.basemap_bands import MAX_TILES, Basemaps, plan_bands
+from src.video import tile_prefetch
+from src.video.basemap_bands import MAX_TILES, Basemaps, plan_bands, plan_requests
 from src.video.camera import Shot, camera_path, frame_count
 from src.video.overlay import Overlay
 from src.video.timeline import FrameState, Timeline, timeline_for_project
@@ -97,23 +100,41 @@ class StageTimes:
         return self.fetch + self.stitch + self.basemap + self.overlay + self.write
 
 
-class _TimedFetcher:
-    """Times every tile fetch into *timings* (Do 1). *fetcher* may be
-    ``None``: the real network client is then built lazily on the first tile,
-    exactly as ``render_basemap`` would build it itself, so a render that
-    never needs a tile never needs ``MAPBOX_TOKEN``."""
+class _LazyDefaultFetcher:
+    """The real network client, built on the first tile, exactly as
+    ``render_basemap`` would build it itself, so a render that never needs a
+    tile never needs ``MAPBOX_TOKEN``. It holds no reference to the renderer:
+    the prefetcher's pool threads hold it, and must not keep a dropped
+    renderer alive (docs/VIDEO_RENDER_TIME_PLAN.md D7). The pool calls it
+    from several threads, so the client is built under a lock, once."""
 
-    def __init__(self, fetcher: Optional[TileFetcher], timings: StageTimes) -> None:
-        self._fetcher = fetcher
-        self._timings = timings
+    def __init__(self) -> None:
+        self._fetcher: Optional[TileFetcher] = None
+        self._lock = threading.Lock()
 
     def __call__(self, z: int, x: int, y: int) -> bytes:
         if self._fetcher is None:
-            from src.poster.tile_stitcher import _default_tile_fetcher
-            self._fetcher = _default_tile_fetcher()
+            with self._lock:
+                if self._fetcher is None:
+                    from src.poster import tile_stitcher
+                    self._fetcher = tile_stitcher._default_tile_fetcher()
+        return self._fetcher(z, x, y)
+
+
+class _TimedFetcher:
+    """Times every tile fetch into *timings* (Do 1). Once the frame loop
+    starts, *fetcher* is the renderer's :class:`TilePrefetcher`, so ``fetch``
+    is the time the frame loop waits for tiles, not network time
+    (docs/VIDEO_RENDER_TIME_PLAN.md D9)."""
+
+    def __init__(self, fetcher: TileFetcher, timings: StageTimes) -> None:
+        self.fetcher = fetcher
+        self._timings = timings
+
+    def __call__(self, z: int, x: int, y: int) -> bytes:
         start = time.perf_counter()
         try:
-            return self._fetcher(z, x, y)
+            return self.fetcher(z, x, y)
         finally:
             self._timings.add("fetch", time.perf_counter() - start)
 
@@ -182,19 +203,23 @@ def _ffmpeg_peak_rss_mb(peak_kb: Optional[int]) -> float:
 
 def _log_render_summary(*, kind: str = "video", camera: str, frames: int, elapsed: float,
                         stages: StageTimes, sheets: int, tiles: int, renderer_mb: float,
-                        ffmpeg_mb: float) -> None:
+                        ffmpeg_mb: float, tile_ms: float = 0.0, prefetch_misses: int = 0) -> None:
     """One INFO line per job: where the time went (Do 1). *kind* is
     ``"video"`` for a full render, ``"preview"`` for U2's animated WebP
-    (#519 D1), which has no ffmpeg step (*ffmpeg_mb* is 0)."""
+    (#519 D1), which has no ffmpeg step (*ffmpeg_mb* is 0). *tile_ms* is the
+    mean network time per tile, measured on the prefetcher's threads, and
+    *prefetch_misses* the tiles the frame loop had to fetch itself
+    (docs/VIDEO_RENDER_TIME_PLAN.md D9)."""
     per_frame = (lambda s: s / frames * 1000) if frames else (lambda s: 0.0)
     _log.info(
         "video render summary: kind=%s camera=%s frames=%d elapsed_s=%.2f ms_per_frame=%.1f "
         "fetch_ms=%.2f stitch_ms=%.2f basemap_ms=%.2f overlay_ms=%.2f write_ms=%.2f "
-        "sheets=%d tiles=%d peak_rss_renderer_mb=%.0f peak_rss_ffmpeg_mb=%.0f",
+        "sheets=%d tiles=%d tile_ms=%.1f prefetch_misses=%d "
+        "peak_rss_renderer_mb=%.0f peak_rss_ffmpeg_mb=%.0f",
         kind, camera, frames, elapsed, per_frame(elapsed),
         per_frame(stages.fetch), per_frame(stages.stitch), per_frame(stages.basemap),
         per_frame(stages.overlay), per_frame(stages.write),
-        sheets, tiles, renderer_mb, ffmpeg_mb,
+        sheets, tiles, tile_ms, prefetch_misses, renderer_mb, ffmpeg_mb,
     )
 
 
@@ -208,7 +233,14 @@ class FrameRenderer:
     (U2's preview render, whose frame *n* is a different video frame's shot
     and state, not the *n*-th of its own path — review R2-2). *camera* still
     names the mode they were built in, for the render summary and the
-    overlay's overview HUD layout."""
+    overlay's overview HUD layout.
+
+    Tiles are fetched ahead of the frames through a :class:`TilePrefetcher`
+    (docs/VIDEO_RENDER_TIME_PLAN.md D2, D7), created on the first
+    :meth:`frame` (or :meth:`basemap`) call with the plan's requests from that
+    frame on. :meth:`close` stops it; a renderer dropped without ``close()``
+    stops it when it is collected. Once closed, tiles are fetched
+    synchronously and the prefetcher is never restarted."""
 
     def __init__(self, timeline: Timeline, size: Size, title: str, *,
                  tile_fetcher: Optional[TileFetcher] = None,
@@ -227,18 +259,64 @@ class FrameRenderer:
             _log.info("Video basemap capped at zoom %d to stay within %d tiles (%d planned)",
                       self.plan.max_band, max_tiles, self.plan.tiles)
         self.timings = StageTimes()
+        # The raw fetcher the prefetcher's threads call: never anything that
+        # refers to this renderer (D7, review R2-2).
+        self._raw_fetcher: TileFetcher = (tile_fetcher if tile_fetcher is not None
+                                          else _LazyDefaultFetcher())
+        self._timed_fetcher = _TimedFetcher(self._raw_fetcher, self.timings)
+        self._prefetcher: Optional[tile_prefetch.TilePrefetcher] = None
+        self._closed = False
         self.basemaps = Basemaps(self.shots, self.size, self.plan,
-                                 tile_fetcher=_TimedFetcher(tile_fetcher, self.timings),
+                                 tile_fetcher=self._timed_fetcher,
                                  render=_TimedRender(render_basemap, self.timings))
         self.overlay = Overlay(timeline, self.size, title, camera)
 
     def __len__(self) -> int:
         return len(self.shots)
 
+    def _start(self, n: int) -> None:
+        """Create the prefetcher on the first frame asked for, *n*: it
+        fetches the plan's tiles in first-use order from frame *n* on. Its
+        threads start on its first tile. After :meth:`close`, it is created
+        without threads, so tiles are fetched synchronously but still counted
+        for the summary."""
+        if self._prefetcher is not None:
+            return
+        requests = plan_requests(replace(self.plan, frames=self.plan.frames[n:]))
+        threads = 0 if self._closed else tile_prefetch.PREFETCH_THREADS
+        prefetcher = tile_prefetch.TilePrefetcher(self._raw_fetcher, requests, threads=threads,
+                                                  window=tile_prefetch.PREFETCH_WINDOW)
+        # The prefetcher's own bound close(), which holds no reference to
+        # this renderer, so the renderer can still be collected (review R2-2).
+        weakref.finalize(self, prefetcher.close)
+        self._prefetcher = prefetcher
+        self._timed_fetcher.fetcher = prefetcher
+
+    def close(self) -> None:
+        """Stop prefetching: queued fetches are dropped and in-flight ones are
+        not waited for (D7). Idempotent; frames drawn after it fetch their
+        tiles synchronously."""
+        self._closed = True
+        if self._prefetcher is not None:
+            self._prefetcher.close()
+
+    @property
+    def tile_ms(self) -> float:
+        """Mean network time per tile fetched so far, in ms (D9)."""
+        p = self._prefetcher
+        return p.net_seconds / p.fetched * 1000 if p is not None and p.fetched else 0.0
+
+    @property
+    def prefetch_misses(self) -> int:
+        """Tiles the frame loop fetched itself because none was pending (D4)."""
+        return self._prefetcher.misses if self._prefetcher is not None else 0
+
     def basemap(self, n: int) -> Image.Image:
+        self._start(n)
         return self.basemaps.frame(n)
 
     def frame(self, n: int) -> Image.Image:
+        self._start(n)
         state = self.states[n] if self.states is not None else self.timeline.sample(n / self.fps)
         fetch_before, stitch_before = self.timings.fetch, self.timings.stitch
         start = time.perf_counter()
@@ -313,6 +391,7 @@ def encode(frames: FrameRenderer, out_path: Path, *, progress: Optional[Progress
                 proc.stdin.close()  # a dead ffmpeg's pipe, so GC doesn't flush into it
             except (BrokenPipeError, OSError):
                 pass
+            frames.close()  # stop prefetching, whatever ended the frame loop (D7)
         if code != 0:
             err.seek(0)
             _log.warning("ffmpeg exited with %s: %s", code,
@@ -324,7 +403,8 @@ def encode(frames: FrameRenderer, out_path: Path, *, progress: Optional[Progress
         ffmpeg_mb = _ffmpeg_peak_rss_mb(ffmpeg_peak_kb)
         _log_render_summary(camera=frames.camera, frames=len(todo), elapsed=elapsed, stages=frames.timings,
                             sheets=len(frames.plan.sheets), tiles=frames.plan.tiles,
-                            renderer_mb=renderer_mb, ffmpeg_mb=ffmpeg_mb)
+                            renderer_mb=renderer_mb, ffmpeg_mb=ffmpeg_mb,
+                            tile_ms=frames.tile_ms, prefetch_misses=frames.prefetch_misses)
     os.replace(part, out_path)
     return out_path
 
@@ -470,10 +550,13 @@ def _write_preview_webp(frames: FrameRenderer, out_path: Path, *,
     part = out_path.with_name(out_path.stem + ".part" + out_path.suffix)
     start = time.perf_counter()
     images: List[Image.Image] = []
-    for i in range(n):
-        images.append(frames.frame(i))
-        if progress is not None and i % PROGRESS_EVERY == 0:
-            progress(0.97 * i / n, "rendering")
+    try:
+        for i in range(n):
+            images.append(frames.frame(i))
+            if progress is not None and i % PROGRESS_EVERY == 0:
+                progress(0.97 * i / n, "rendering")
+    finally:
+        frames.close()  # stop prefetching, whatever ended the frame loop (D7)
     write_start = time.perf_counter()
     try:
         images[0].save(part, format="WEBP", save_all=True, append_images=images[1:],
@@ -488,7 +571,8 @@ def _write_preview_webp(frames: FrameRenderer, out_path: Path, *,
     renderer_mb = _renderer_peak_rss_mb()
     _log_render_summary(kind="preview", camera=frames.camera, frames=n, elapsed=elapsed,
                         stages=frames.timings, sheets=len(frames.plan.sheets),
-                        tiles=frames.plan.tiles, renderer_mb=renderer_mb, ffmpeg_mb=0.0)
+                        tiles=frames.plan.tiles, renderer_mb=renderer_mb, ffmpeg_mb=0.0,
+                        tile_ms=frames.tile_ms, prefetch_misses=frames.prefetch_misses)
     return out_path
 
 
