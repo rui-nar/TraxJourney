@@ -181,7 +181,7 @@ them to make faster.
 
 REVIEW.md §2 defaults apply, plus:
 
-- **Concurrency inside a render:** up to 4 fetch threads beside the frame
+- **Concurrency inside a render:** up to 8 fetch threads (4 until the owner's D6 amendment of 2026-10-02) beside the frame
   loop, in one process (the RQ work horse, or the bench). Shared state is the
   prefetcher's pending-results table and window. Required properties: no
   deadlock when the render asks for tiles out of order or stops early, no

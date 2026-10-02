@@ -130,3 +130,14 @@ Checks at the final merge (4885c3b8):
 - frames: bit-identical with prefetching on and off in every camera mode; goldens unchanged.
 
 Gate G1 passed (owner, 2026-10-01, VPS val, 90 s 1080p variable, same trip as #518's G2): `fetch_ms` 0.63, against 44.6 before and a target of ≤ 10; `prefetch_misses` 0. Total 200.8 ms per frame (542 s), against 257.4 (695 s) at #518's G2. Recorded in docs/VIDEO.md. The profile went into follow-up #525: the route's round joints (`joint="curve"`) and the basemap resize.
+
+## Integrated round 2 — 2026-10-02, reviewed at fc145d5f (the owner-requested change since c7bb9c23)
+
+Reviewer: adversarial-reviewer (Fable). No findings: the round is clean. The owner raised `PREFETCH_THREADS` from 4 to 8 after #525's gate (D6 amended; fix unit F3, Opus S5, verified first time). The reviewer checked:
+- the rate limit (window unchanged, so bursts are unchanged);
+- the per-thread 429 waits;
+- memory, bounded by the window;
+- thread start-up in the preview's work horse;
+- every test that depends on the thread count (each sets its own).
+
+Envelope question: the envelope still said "up to 4 fetch threads". Answered by the owner's decision to ship 8: the envelope now reads 8. The U2a and U2b acceptance text that names 4 stays, because those tests set 4 themselves.
