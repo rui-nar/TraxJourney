@@ -111,3 +111,7 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). No envel
 - Guard: —
 - Override: —
 - Outcome: fixed (fix unit F2, 222e8dd7: the figure is named as tracemalloc's Python heap, without Pillow's image buffers)
+
+## Integrated round 3 — 2026-10-02, reviewed at 2f40ac39 (the F2 fix since 2c122aae)
+
+Reviewer: adversarial-reviewer (Fable). No findings and no envelope questions: the round is clean, and the integrated review is closed. The changed sentence matches what tests/test_video_memory.py measures, and Pillow's image buffers are the only material exclusion from that measurement.
