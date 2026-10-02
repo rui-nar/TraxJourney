@@ -605,13 +605,27 @@ class Overlay:
             cd.line(line, fill=_FAINT, width=(self.faint_w + 2) * ss)
         for line in faint:
             md.line(line, fill=_FAINT_ALPHA, width=self.faint_w * ss)
+
+        def stroke(draw: ImageDraw.ImageDraw, line, fill, width: int) -> None:
+            """*line* with round joints: one plain line, then a disk at each
+            interior vertex, the size of the joint Pillow draws at a width
+            over 4 (D4). Pillow's own ``joint="curve"`` works out a pie slice
+            per vertex in Python, most of the route's time. The ends stay
+            flat, as Pillow's."""
+            draw.line(line, fill=fill, width=width)
+            if width > 4:
+                r = width / 2 - 1
+                ellipse = draw.ellipse
+                for x, y in line[1:-1]:
+                    ellipse((x - r, y - r, x + r, y + r), fill=fill)
+
         for _, runs in trav:
             for line in runs:
-                cd.line(line, fill=_CASING, width=(outer + 2) * ss, joint="curve")
-                md.line(line, fill=255, width=outer * ss, joint="curve")
+                stroke(cd, line, _CASING, (outer + 2) * ss)
+                stroke(md, line, 255, outer * ss)
         for mode, runs in trav:
             for line in runs:
-                cd.line(line, fill=mode_color(mode), width=self.line_w * ss, joint="curve")
+                stroke(cd, line, mode_color(mode), self.line_w * ss)
         # reduce() is the box filter at an integer factor, about 3× faster
         # than resize(BOX) at these sizes.
         for a, b, top, bottom in _route_cells(lines, box, ss):
