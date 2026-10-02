@@ -37,9 +37,11 @@ from src.poster.tile_stitcher import TileFetcher
 
 Key = Tuple[int, int, int]
 
-# Concurrent fetches. At ~50 ms a tile, 4 threads top out near 80 requests a
-# second, under Mapbox's 100. 0 disables prefetching.
-PREFETCH_THREADS = 4
+# Concurrent fetches (D6, raised from 4 to 8). At 271 ms a tile on a slow
+# network, 4 threads left the frames waiting; 8 cover about 30 tiles a
+# second. A burst may briefly pass 100 requests a second, but Mapbox's limit
+# is per minute (6,000) and the window bounds a burst. 0 disables prefetching.
+PREFETCH_THREADS = 8
 # Tiles fetched or in flight but not yet consumed: about two sheets.
 PREFETCH_WINDOW = 32
 
