@@ -152,4 +152,4 @@ Gate G1 (owner, 2026-10-02, VPS val, the #517 bench, final run with 8 threads):
 - total 137.7 ms per frame (372 s for 90 s at 1080p);
 - overview 71.1 ms per frame.
 
-Recorded in docs/VIDEO.md. The owner's check of the route's look is pending.
+Recorded in docs/VIDEO.md. Look check passed (owner, 2026-10-02). It covered the VPS frames, plus a before/after on the real trip (frames 450, 1350 and 2250 variable, 300 and 600 overview): ≤ 0.1% of pixels differ, 45.7–65.7 dB, and the overview's casing is cleaner than before.
