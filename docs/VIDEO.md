@@ -137,6 +137,19 @@ a track in Fiji) is animated, framed and drawn along its short way.
   G1 within its allowed 2–4 range; see [Gate G2
   measurements](#gate-g2-measurements-518-2026-09-29) for what it costs per
   frame.
+- **Clipping.** `_draw_route` (via `_lines`) converts and draws only the
+  runs of each visible leg's kept points whose segments come within a
+  margin of the frame; the rest of a long leg, off screen, is never
+  converted to pixels or drawn. Finding the runs is cheap: each zoom
+  level's kept points are cut into blocks, each with its own world bbox
+  cached alongside the level (`_Route.blocks`), so `_runs` skips whole
+  blocks off the frame without reading their points. Frames are
+  byte-identical with clipping on and off: the colour and mask layers'
+  origin and size come from the visible legs' cached per-block bboxes,
+  not from what is clipped; `_CLIP` turns clipping off for the identity
+  tests. Measured at zoom 16 and 1080p, one zoomed-in frame of a
+  500,000-point leg fell from 180.5 MB to 0.13 MB, no longer growing with
+  the leg's length (#523, `tests/test_video_memory.py`).
 - **Joints.** The travelled line's casing and colour have round joints, but
   not Pillow's `joint="curve"`, which draws a pie slice per vertex in Python
   and was most of the overlay's time (#525). Each line is drawn plain, then
