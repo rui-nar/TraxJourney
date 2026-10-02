@@ -16,7 +16,7 @@ import '../api/client.dart';
 import 'app_version.dart';
 import 'brand.dart';
 import 'version_reload_stub.dart'
-    if (dart.library.html) 'version_reload_web.dart';
+    if (dart.library.js_interop) 'version_reload_web.dart';
 
 /// True when the running client bundle is older/different than what the server
 /// reports — i.e. the user is on a stale build and should reload.
