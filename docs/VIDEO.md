@@ -361,3 +361,25 @@ Tile prefetching (docs/VIDEO_RENDER_TIME_PLAN.md) on the same VPS and the same t
 - **Peak renderer memory** dropped from 725 to 501 MB, thanks to #519's compact geometry, not this change.
 
 **Profile** (`--profile`, same render; profiled timings are inflated, 268.5 ms per frame): of 748 s, the route line takes about 490 s (`overlay._draw_route`, cumulative). Most of it is Pillow's `ImageDraw.line(..., joint="curve")`, which draws a pie slice per vertex in Python (8.4 M line calls, 7.9 M pie slices, about 378 s). Basemap `resize` takes 115 s (1,848 calls, 62 ms each). Writing to ffmpeg takes 35 s, and `_decimate` 25 s. The CPU follow-up is #525.
+
+## Gate G1 measurements (#525, 2026-10-02)
+
+Route clipping and disk joints (docs/VIDEO_ROUTE_DRAWING_PLAN.md) on the same VPS and the same trip as #517's G1. The first #525 run used 4 prefetch threads; the owner then raised them to 8 (#517 D6, amended) and the bench ran again.
+
+| Stage (ms per frame), 90 s 1080p variable | #517 G1 | #525, 4 threads | #525, 8 threads (final) |
+|---|---|---|---|
+| Tile fetch (time the frame loop waits) | 0.6 | 10.3 | **0.2** |
+| Sheet stitch | 9.6 | 9.7 | 10.1 |
+| Basemap | 47.2 | 49.2 | 47.8 |
+| Overlay | 122.3 | 60.9 | **59.4** |
+| Write to ffmpeg | 14.0 | 13.0 | 13.6 |
+| **Total** | **200.8** (542 s) | **150.6** (406 s) | **137.7** (372 s) |
+| Network time per tile (`tile_ms`) | 104.9 | 271.2 | 14.5 |
+| Prefetch misses | 0 | 0 | 0 |
+| Peak RSS renderer / ffmpeg | 501 / 309 MB | 503 / 324 MB | 507 / 314 MB |
+
+**Overview**, 30 s at 1080p, 900 frames: 71.1 ms per frame (64 s), with the overlay at 47.7 ms. At #518's G2 it was 110.6 ms per frame, with the overlay at 83.5 ms.
+
+- **The overlay halved**, from 122.3 to 59.4 ms per frame, within the gate's ≤ 61. The dev-box estimate was 45–48 ms; the VPS's vCPUs are slower than that estimate assumed.
+- **With 4 threads, the frame loop waited 10.3 ms per frame** for tiles on a slow network (271 ms per tile), because the render had become faster. 8 threads cover about 30 tiles per second at that speed. The final run had a fast network (14.5 ms per tile), so it doesn't demonstrate the slow-network case; the thread test in `tests/test_video_tile_prefetch.py` does.
+- **A 90 s 1080p render now takes 372 s**, against 695 s before #517 (−46%), well inside the 1,800 s job timeout.

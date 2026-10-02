@@ -118,6 +118,7 @@ Branch `feat/517-video-render-time`, from the plan branch at 1bfd2ca8 (based on 
 | U2a | Tile prefetcher and `Sheet.requests` / `plan_requests` | Opus | S5 | 1 | — | yes | R1-1, R1-3, R2-4, R3-1 |
 | U3 | Bench `--profile` | Sonnet | — | 1 | — | yes | — |
 | U2b | Prefetch in every render; `tile_ms` and `prefetch_misses` in the summary | Opus | S5 | 1 | — | yes | R1-1, R2-2, R3-1 |
+| F3 | Eight prefetch threads (owner, after #525's gate; D6 amended) | Opus | S5 | 1 | — | yes | — |
 
 Owner decisions during delivery: none beyond the plan.
 

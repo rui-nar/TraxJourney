@@ -115,3 +115,41 @@ Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). No envel
 ## Integrated round 3 — 2026-10-02, reviewed at 2f40ac39 (the F2 fix since 2c122aae)
 
 Reviewer: adversarial-reviewer (Fable). No findings and no envelope questions: the round is clean, and the integrated review is closed. The changed sentence matches what tests/test_video_memory.py measures, and Pillow's image buffers are the only material exclusion from that measurement.
+
+## Delivery
+
+Same branch and PR as #517 (`feat/517-video-render-time`). The plan was added at 66c33d29 after #517's delivery, at the owner's request. Unit worktrees `.claude/worktrees/v525-*` were made by hand from the branch.
+
+Before planning, an Opus probe measured the options on the owner's real trip in the Linux image with `--cpus 2`. Its scripts were kept in the session scratchpad (`probe525/`).
+
+| Unit | Goal | Route | Rule | Attempts | Escalated | Verified first time | Findings traced |
+|---|---|---|---|---|---|---|---|
+| U1 | Draw only the on-screen runs of each leg (#523) | Opus | S2 | 1 | — | yes | R1-4, R2-2 |
+| U2 | Round joints as disks | Opus | S2 | 1 | — | yes | R1-1, R1-2, R1-3, R1-5, R2-1 |
+| F1 | Document the clipping in docs/VIDEO.md | Sonnet | — | 1 | — | yes | I1-1 |
+| F2 | Qualify the clipping memory figure | Sonnet | — | 1 | — | yes | I2-1 |
+
+Owner decisions:
+- **Planning:** evaluate a native library too, then drop it (skia +108 MB; aggdraw can't draw round joints); include #523; a disk at every vertex; no basemap thread; separate overview bounds (R1-1).
+- **During delivery:** accepted two deviations:
+  - U1 samples the 1080p identity pairs;
+  - U2 compares only frames that draw a travelled line.
+
+  The integrated review judged both sound.
+- **After the first gate run:** raise the tile prefetch threads to 8, fix unit F3 of #517, recorded in that ledger.
+
+Reviews: plan (3 rounds, 7 findings, all fixed in the plan); integrated (3 rounds: I1-1 and I2-1 fixed, round 3 clean).
+
+Checks at the final merge:
+- server suite: 5569 passed, 38 skipped (the rail extract workflow test is left to CI on this machine);
+- video and tile tests in the Linux image: 599 passed, 3 skipped (with F3);
+- frames: byte-identical with clipping on and off, and against the pre-#525 code;
+- joints: within D5's bounds for each camera;
+- goldens: unchanged.
+
+Gate G1 (owner, 2026-10-02, VPS val, the #517 bench, final run with 8 threads):
+- overlay 59.4 ms per frame, against 122.3 before and a limit of ≤ 61;
+- total 137.7 ms per frame (372 s for 90 s at 1080p);
+- overview 71.1 ms per frame.
+
+Recorded in docs/VIDEO.md. The owner's check of the route's look is pending.
