@@ -214,11 +214,11 @@ ffmpeg 7.1) under Docker Desktop, 10 CPUs, with `--memory 896m` (the
 ## Stage timings
 
 Every render logs one INFO summary line when it finishes encoding — frame
-count, wall time, ms per frame for each stage, sheets, tiles, the tile fetch
-figures, and peak RSS of the renderer and of ffmpeg:
+count, wall time, setup time, ms per frame for each stage, sheets, tiles, the
+tile fetch figures, and peak RSS of the renderer and of ffmpeg:
 
 ```
-video render summary: frames=1800 elapsed_s=112.32 ms_per_frame=62.4
+video render summary: frames=1800 elapsed_s=112.32 setup_s=0.05 ms_per_frame=62.4
 fetch_ms=18.10 stitch_ms=9.40 basemap_ms=21.60 overlay_ms=11.20 write_ms=2.10
 sheets=86 tiles=1479 tile_ms=52.3 prefetch_misses=0
 peak_rss_renderer_mb=363 peak_rss_ffmpeg_mb=318
@@ -231,6 +231,10 @@ a frame's crop, scale and cross-fade blend, net of any `fetch`/`stitch` a new
 sheet needed; `overlay` is drawing the route, marker and HUD; `write` is time
 blocked writing a frame to ffmpeg's stdin (its own encoding work happens
 concurrently, in the ffmpeg process, and isn't part of any of these).
+`setup_s` is the time before `elapsed_s` starts, in neither it nor any stage:
+building the camera path, basemap band plan, basemaps and overlay, and
+starting ffmpeg (a preview has no ffmpeg; its setup includes the video's own
+camera path it samples).
 
 Tiles are prefetched (see [Basemap](#basemap-bands-and-sheets-srcvideobasemap_bandspy)),
 so `fetch` is blocked time, not network time: with the pool keeping ahead of

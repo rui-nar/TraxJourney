@@ -10,10 +10,10 @@ candidate encoder settings — and dump frames for the sharpness comparison
 Reads the database named by ``DATABASE_URL`` and fetches basemap tiles with
 the server's ``MAPBOX_TOKEN``, exactly like a real render does — nothing here
 is faked. Prints the same one-line render summary the renderer logs (frames,
-ms per frame per stage, sheets, tiles, peak RSS). ``--profile FILE`` runs the
-render under ``cProfile``, dumps its stats to *FILE* and prints the top 30
-functions by own time (D10, #517) — a profiled run's own timings are
-inflated, so the gate's figures come from a run without it.
+setup time, ms per frame per stage, sheets, tiles, peak RSS). ``--profile
+FILE`` runs the render under ``cProfile``, dumps its stats to *FILE* and
+prints the top 30 functions by own time (D10, #517) — a profiled run's own
+timings are inflated, so the gate's figures come from a run without it.
 
 Run this on the server in its **own** container, never inside the live
 worker, so a benchmark run can neither starve nor be starved by a user's

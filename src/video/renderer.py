@@ -203,20 +203,22 @@ def _ffmpeg_peak_rss_mb(peak_kb: Optional[int]) -> float:
 
 def _log_render_summary(*, kind: str = "video", camera: str, frames: int, elapsed: float,
                         stages: StageTimes, sheets: int, tiles: int, renderer_mb: float,
-                        ffmpeg_mb: float, tile_ms: float = 0.0, prefetch_misses: int = 0) -> None:
+                        ffmpeg_mb: float, setup: float = 0.0, tile_ms: float = 0.0,
+                        prefetch_misses: int = 0) -> None:
     """One INFO line per job: where the time went (Do 1). *kind* is
     ``"video"`` for a full render, ``"preview"`` for U2's animated WebP
-    (#519 D1), which has no ffmpeg step (*ffmpeg_mb* is 0). *tile_ms* is the
-    mean network time per tile, measured on the prefetcher's threads, and
+    (#519 D1), which has no ffmpeg step (*ffmpeg_mb* is 0). *setup* is the
+    time before *elapsed* started, which no stage covers (#539). *tile_ms* is
+    the mean network time per tile, measured on the prefetcher's threads, and
     *prefetch_misses* the tiles the frame loop had to fetch itself
     (docs/VIDEO_RENDER_TIME_PLAN.md D9)."""
     per_frame = (lambda s: s / frames * 1000) if frames else (lambda s: 0.0)
     _log.info(
-        "video render summary: kind=%s camera=%s frames=%d elapsed_s=%.2f ms_per_frame=%.1f "
+        "video render summary: kind=%s camera=%s frames=%d elapsed_s=%.2f setup_s=%.2f ms_per_frame=%.1f "
         "fetch_ms=%.2f stitch_ms=%.2f basemap_ms=%.2f overlay_ms=%.2f write_ms=%.2f "
         "sheets=%d tiles=%d tile_ms=%.1f prefetch_misses=%d "
         "peak_rss_renderer_mb=%.0f peak_rss_ffmpeg_mb=%.0f",
-        kind, camera, frames, elapsed, per_frame(elapsed),
+        kind, camera, frames, elapsed, setup, per_frame(elapsed),
         per_frame(stages.fetch), per_frame(stages.stitch), per_frame(stages.basemap),
         per_frame(stages.overlay), per_frame(stages.write),
         sheets, tiles, tile_ms, prefetch_misses, renderer_mb, ffmpeg_mb,
@@ -247,6 +249,7 @@ class FrameRenderer:
                  max_tiles: int = MAX_TILES, camera: str = "variable",
                  shots: Optional[Sequence[Shot]] = None,
                  states: Optional[Sequence[FrameState]] = None) -> None:
+        start = time.perf_counter()
         self.timeline = timeline
         self.size = (int(size[0]), int(size[1]))
         self.fps = timeline.fps
@@ -270,6 +273,8 @@ class FrameRenderer:
                                  tile_fetcher=self._timed_fetcher,
                                  render=_TimedRender(render_basemap, self.timings))
         self.overlay = Overlay(timeline, self.size, title, camera)
+        # Building all of the above, for the render summary's setup_s (#539).
+        self.setup_seconds = time.perf_counter() - start
 
     def __len__(self) -> int:
         return len(self.shots)
@@ -345,6 +350,7 @@ def encode(frames: FrameRenderer, out_path: Path, *, progress: Optional[Progress
     *out_path*, written under a temporary name and moved into place only
     when ffmpeg exits 0. *crf*/*tune* override the encoder (D4/U1); their
     defaults are G1's choice (D7), :data:`_FFMPEG_ARGS`."""
+    setup_start = time.perf_counter()
     w, h = frames.size
     todo = frame_range if frame_range is not None else range(len(frames))
     part = out_path.with_name(out_path.stem + ".part" + out_path.suffix)
@@ -355,6 +361,7 @@ def encode(frames: FrameRenderer, out_path: Path, *, progress: Optional[Progress
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=err)
         ffmpeg_peak_kb: Optional[int] = None
         start = time.perf_counter()
+        setup = frames.setup_seconds + start - setup_start
         try:
             for i, n in enumerate(todo):
                 data = frames.frame(n).tobytes()
@@ -403,7 +410,7 @@ def encode(frames: FrameRenderer, out_path: Path, *, progress: Optional[Progress
         ffmpeg_mb = _ffmpeg_peak_rss_mb(ffmpeg_peak_kb)
         _log_render_summary(camera=frames.camera, frames=len(todo), elapsed=elapsed, stages=frames.timings,
                             sheets=len(frames.plan.sheets), tiles=frames.plan.tiles,
-                            renderer_mb=renderer_mb, ffmpeg_mb=ffmpeg_mb,
+                            renderer_mb=renderer_mb, ffmpeg_mb=ffmpeg_mb, setup=setup,
                             tile_ms=frames.tile_ms, prefetch_misses=frames.prefetch_misses)
     os.replace(part, out_path)
     return out_path
@@ -525,10 +532,14 @@ def _preview_frame_renderer(timeline: Timeline, target_size: Size, camera: str, 
     (:func:`preview_frames`) — the same basemap and overlay machinery a full
     video uses. Shared by :func:`render_preview` and the bench's
     ``--preview``."""
+    start = time.perf_counter()
     shots = camera_path(timeline, timeline.fps, target_size, camera)
     p_shots, p_states = preview_frames(timeline, shots, target_size)
-    return FrameRenderer(timeline, PREVIEW_SIZE, title, tile_fetcher=tile_fetcher,
-                         camera=camera, shots=p_shots, states=p_states)
+    paths = time.perf_counter() - start
+    frames = FrameRenderer(timeline, PREVIEW_SIZE, title, tile_fetcher=tile_fetcher,
+                           camera=camera, shots=p_shots, states=p_states)
+    frames.setup_seconds += paths  # the video's camera path is this preview's (#539)
+    return frames
 
 
 def _write_preview_webp(frames: FrameRenderer, out_path: Path, *,
@@ -572,6 +583,7 @@ def _write_preview_webp(frames: FrameRenderer, out_path: Path, *,
     _log_render_summary(kind="preview", camera=frames.camera, frames=n, elapsed=elapsed,
                         stages=frames.timings, sheets=len(frames.plan.sheets),
                         tiles=frames.plan.tiles, renderer_mb=renderer_mb, ffmpeg_mb=0.0,
+                        setup=frames.setup_seconds,
                         tile_ms=frames.tile_ms, prefetch_misses=frames.prefetch_misses)
     return out_path
 
