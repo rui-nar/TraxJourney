@@ -98,3 +98,16 @@ The reviewer judged both delivery deviations acceptable; they are recorded here 
 - Guard: —
 - Override: —
 - Outcome: fixed (fix unit F1, 4abc379f: a Clipping bullet in docs/VIDEO.md's Overlay section)
+
+## Integrated round 2 — 2026-10-02, reviewed at fec61585 (the F1 fix since 694723f6)
+
+Reviewer: adversarial-reviewer (Fable); triager: review-triager (Opus). No envelope questions.
+
+### I2-1 — The Clipping bullet's "180.5 MB to 0.13 MB" is a tracemalloc Python-heap figure without Pillow's layer buffers, shown next to RSS figures
+- Trigger: a maintainer reads 0.13 MB beside the document's RSS figures → sizes or debugs worker-video memory as if a 1080p frame cost 0.13 MB → the frame's RGB+L layers at ROUTE_SS=3 (tens of MB) were never counted
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
