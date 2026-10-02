@@ -17,8 +17,9 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import 'perceptual_hash.dart';
 import 'photo_match.dart';
-import 'photo_source.dart' show PickedPhoto, computeAverageHash;
+import 'photo_source.dart' show PickedPhoto;
 
 /// A candidate photo from an Immich library. Unlike `photo_source.dart`'s
 /// [PickedPhoto], capture time/GPS come straight from Immich's search

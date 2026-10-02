@@ -17,7 +17,7 @@ import '../core/legal_links.dart';
 import '../core/perf_timing.dart' show perfSpans;
 import '../projects/basemaps.dart' show kMapTileModePref, mapTileModeNotifier;
 import '../core/version_reload_stub.dart'
-    if (dart.library.html) '../core/version_reload_web.dart';
+    if (dart.library.js_interop) '../core/version_reload_web.dart';
 import '../crypto/enable_encryption_screen.dart';
 import '../crypto/encryption.dart';
 import '../crypto/manage_devices_screen.dart';

@@ -16,7 +16,7 @@ import 'package:go_router/go_router.dart';
 
 import '../api/client.dart';
 import '../core/brand.dart';
-import 'download_stub.dart' if (dart.library.html) 'download_web.dart';
+import 'download_stub.dart' if (dart.library.js_interop) 'download_web.dart';
 
 /// Extracts the server's `detail` message out of an exception, mirroring
 /// verifyErrorMessage in verify_email_screen.dart.

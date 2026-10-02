@@ -1,16 +1,19 @@
-// This file is only ever compiled for web (conditional import), so dart:html is
-// the right tool here.
-// ignore_for_file: deprecated_member_use, avoid_web_libraries_in_flutter
-import 'dart:html' as html;
+import 'dart:js_interop';
 import 'dart:typed_data' show Uint8List;
+
+import 'package:web/web.dart' as web;
 
 /// Triggers a browser file download for [bytes] as [filename] with the given
 /// [mimeType] (blob URL + a click on a hidden anchor element).
 void triggerBrowserDownload(Uint8List bytes, String mimeType, String filename) {
-  final blob = html.Blob([bytes], mimeType);
-  final url = html.Url.createObjectUrlFromBlob(blob);
-  html.AnchorElement(href: url)
-    ..setAttribute('download', filename)
+  final blob = web.Blob(
+    [bytes.toJS as JSAny].toJS,
+    web.BlobPropertyBag(type: mimeType),
+  );
+  final url = web.URL.createObjectURL(blob);
+  (web.document.createElement('a') as web.HTMLAnchorElement)
+    ..href = url
+    ..download = filename
     ..click();
-  html.Url.revokeObjectUrl(url);
+  web.URL.revokeObjectURL(url);
 }

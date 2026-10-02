@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:traxjourney_client/src/photos/perceptual_hash.dart';
 import 'package:traxjourney_client/src/photos/photo_match.dart';
 
 void main() {
@@ -207,11 +208,11 @@ void main() {
     test('a clear-cut single candidate/thumbnail pair is high confidence',
         () {
       final candidates = [
-        PhotoCandidate(capturedAt: DateTime.utc(2026, 7, 10), pHash: 0x00),
+        PhotoCandidate(capturedAt: DateTime.utc(2026, 7, 10), pHash: PerceptualHash(0, 0x00)),
       ];
       final result = pairCandidatesWithThumbnails(
         candidates: candidates,
-        thumbnailPHashes: [0x03], // Hamming distance 2
+        thumbnailPHashes: [PerceptualHash(0, 0x03)], // Hamming distance 2
       );
 
       expect(result.matches, hasLength(1));
@@ -227,12 +228,12 @@ void main() {
     test('two candidates close in distance to the same thumbnail are '
         'flagged low-confidence rather than silently resolved', () {
       final candidates = [
-        PhotoCandidate(capturedAt: DateTime.utc(2026, 7, 10), pHash: 0x01),
-        PhotoCandidate(capturedAt: DateTime.utc(2026, 7, 10), pHash: 0x03),
+        PhotoCandidate(capturedAt: DateTime.utc(2026, 7, 10), pHash: PerceptualHash(0, 0x01)),
+        PhotoCandidate(capturedAt: DateTime.utc(2026, 7, 10), pHash: PerceptualHash(0, 0x03)),
       ];
       final result = pairCandidatesWithThumbnails(
         candidates: candidates,
-        thumbnailPHashes: [0x00],
+        thumbnailPHashes: [PerceptualHash(0, 0x00)],
       );
 
       // Still produces a pairing (best available), but flags it.
@@ -251,7 +252,7 @@ void main() {
       ];
       final result = pairCandidatesWithThumbnails(
         candidates: candidates,
-        thumbnailPHashes: [0x00],
+        thumbnailPHashes: [PerceptualHash(0, 0x00)],
       );
 
       expect(result.matches, isEmpty);
@@ -262,11 +263,14 @@ void main() {
     test('more thumbnails than confidently-paired candidates leaves the '
         'rest unmatched', () {
       final candidates = [
-        PhotoCandidate(capturedAt: DateTime.utc(2026, 7, 10), pHash: 0x00),
+        PhotoCandidate(capturedAt: DateTime.utc(2026, 7, 10), pHash: PerceptualHash(0, 0x00)),
       ];
       final result = pairCandidatesWithThumbnails(
         candidates: candidates,
-        thumbnailPHashes: [0x00, 0xFFFFFFFF], // second is far away
+        thumbnailPHashes: [
+          PerceptualHash(0, 0x00),
+          PerceptualHash(0, 0xFFFFFFFF), // second is far away
+        ],
       );
 
       expect(result.matches, hasLength(1));
@@ -277,26 +281,42 @@ void main() {
 
   group('looksLikeSamePhoto', () {
     test('returns null when either side has no pHash', () {
-      expect(looksLikeSamePhoto(null, 0x00), isNull);
-      expect(looksLikeSamePhoto(0x00, null), isNull);
+      expect(looksLikeSamePhoto(null, PerceptualHash(0, 0x00)), isNull);
+      expect(looksLikeSamePhoto(PerceptualHash(0, 0x00), null), isNull);
     });
 
     test('true when within the distance threshold', () {
-      expect(looksLikeSamePhoto(0x00, 0x03), isTrue); // distance 2
+      expect(looksLikeSamePhoto(PerceptualHash(0, 0x00), PerceptualHash(0, 0x03)), isTrue); // distance 2
     });
 
     test('false when past the distance threshold', () {
-      expect(looksLikeSamePhoto(0x00, 0x7FFFFFFFFFFFFFFF), isFalse);
+      expect(
+        looksLikeSamePhoto(
+            PerceptualHash(0, 0x00), PerceptualHash(0x7FFFFFFF, 0xFFFFFFFF)),
+        isFalse,
+      );
     });
   });
 
   group('hammingDistance', () {
     test('identical hashes have distance 0', () {
-      expect(hammingDistance(0x1234, 0x1234), 0);
+      expect(hammingDistance(PerceptualHash(0x5678, 0x1234), PerceptualHash(0x5678, 0x1234)), 0);
     });
 
     test('counts differing bits', () {
-      expect(hammingDistance(0x00, 0x07), 3);
+      expect(hammingDistance(PerceptualHash(0, 0x00), PerceptualHash(0, 0x07)), 3);
+    });
+
+    // The top half is what the JS web build used to drop (issue #527).
+    test('counts differing bits in the top half', () {
+      expect(hammingDistance(PerceptualHash(0x00, 0), PerceptualHash(0x80000001, 0)), 2);
+    });
+
+    test('counts all 64 bits', () {
+      expect(
+        hammingDistance(PerceptualHash(0, 0), PerceptualHash(0xFFFFFFFF, 0xFFFFFFFF)),
+        64,
+      );
     });
   });
 }
