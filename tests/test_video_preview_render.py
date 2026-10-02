@@ -16,6 +16,8 @@ from __future__ import annotations
 import functools
 import logging
 import math
+import re
+import time
 from datetime import date
 
 import pytest
@@ -330,6 +332,35 @@ def test_preview_summary_line_carries_kind_preview(db, tmp_path, caplog):
     lines = [r.getMessage() for r in caplog.records if "video render summary" in r.getMessage()]
     assert len(lines) == 1
     assert "kind=preview" in lines[0] and "frames=80 " in lines[0]
+
+
+def test_preview_summary_reports_setup_time_outside_elapsed(db, tmp_path, caplog,
+                                                            monkeypatch):
+    """A preview's ``setup_s`` (#539) includes the video's own camera path it
+    samples, built before its FrameRenderer (here slowed by 0.3 s), and that
+    time is not in ``elapsed_s``: the two together never exceed the wall
+    time measured around the render."""
+    real_camera_path = renderer.camera_path
+
+    def slow_camera_path(*args, **kwargs):
+        time.sleep(0.3)
+        return real_camera_path(*args, **kwargs)
+
+    monkeypatch.setattr(renderer, "camera_path", slow_camera_path)
+    start = time.perf_counter()
+    with caplog.at_level(logging.INFO, logger="src.video.renderer"):
+        render_preview(
+            job_id=1, user_info_id=db["owner"], project_id=db["trip"],
+            request={"length_s": 10, "height": 720, "width": 1280, "camera": "variable"},
+            out_path=tmp_path / "preview.webp", geometry=None, progress=lambda f, s: None,
+            tile_fetcher=fake_tile)
+    measured = time.perf_counter() - start
+    lines = [r.getMessage() for r in caplog.records if "video render summary" in r.getMessage()]
+    assert len(lines) == 1
+    setup = float(re.search(r"setup_s=([\d.]+)", lines[0]).group(1))
+    elapsed = float(re.search(r"elapsed_s=([\d.]+)", lines[0]).group(1))
+    assert setup >= 0.3
+    assert elapsed + setup <= measured + 0.01   # each rounded to 2 decimals
 
 
 def test_a_failed_encode_leaves_no_partial_file(tmp_path, monkeypatch):

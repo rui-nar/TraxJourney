@@ -58,6 +58,40 @@ def test_stage_totals_sum_to_the_measured_wall_time(tmp_path, caplog):
 
 
 @needs_ffmpeg
+def test_setup_time_is_reported_outside_elapsed(tmp_path, caplog, monkeypatch):
+    """``setup_s`` covers what ``elapsed_s`` doesn't (#539): building the
+    FrameRenderer (here its band planning, slowed by 0.3 s) and starting
+    ffmpeg (slowed by 0.2 s). Neither delay is in ``elapsed_s``: the two
+    figures together never exceed the wall time measured around the render,
+    which they would if ``elapsed_s`` counted either delay as well."""
+    real_plan_bands, real_popen = renderer.plan_bands, renderer.subprocess.Popen
+
+    def slow_plan_bands(*args, **kwargs):
+        time.sleep(0.3)
+        return real_plan_bands(*args, **kwargs)
+
+    def slow_popen(*args, **kwargs):
+        time.sleep(0.2)
+        return real_popen(*args, **kwargs)
+
+    monkeypatch.setattr(renderer, "plan_bands", slow_plan_bands)
+    monkeypatch.setattr(renderer.subprocess, "Popen", slow_popen)
+    tl = timeline30()
+    start = time.perf_counter()
+    with caplog.at_level(logging.INFO, logger="src.video.renderer"):
+        render_timeline(tl, SMALL, tmp_path / "video.mp4", title="Trip",
+                        tile_fetcher=fake_tile, frame_range=range(0, 30))
+    measured = time.perf_counter() - start
+
+    lines = [r.getMessage() for r in caplog.records if "video render summary" in r.getMessage()]
+    assert len(lines) == 1
+    setup = float(re.search(r"setup_s=([\d.]+)", lines[0]).group(1))
+    elapsed = float(re.search(r"elapsed_s=([\d.]+)", lines[0]).group(1))
+    assert setup >= 0.5
+    assert elapsed + setup <= measured + 0.01   # each rounded to 2 decimals
+
+
+@needs_ffmpeg
 def test_ffmpeg_peak_is_its_own_not_the_renderers(tmp_path, caplog):
     """The summary's ``peak_rss_ffmpeg_mb`` is ffmpeg's own peak (read from
     its ``/proc/<pid>/status`` VmHWM), not the renderer's ``RUSAGE_CHILDREN``
