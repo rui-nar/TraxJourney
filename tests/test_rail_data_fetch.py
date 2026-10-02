@@ -690,8 +690,8 @@ def test_the_delivery_step_is_in_the_image():
     name simply is not there, and every documented invocation dies with
     ``can't open file '/app/scripts/fetch_rail_data.py'``.
 
-    The exception is deliberately one file: the rest of ``scripts/`` is CI's,
-    not the image's.
+    The exceptions are deliberately single files: the rest of ``scripts/`` is
+    CI's, not the image's.
     """
     patterns = (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
     assert not _dockerignore_excludes(patterns, "scripts/fetch_rail_data.py")
