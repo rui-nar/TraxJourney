@@ -23,9 +23,10 @@ from pathlib import Path
 from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from models.db import get_session
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 from sqlmodel import select
 
@@ -60,6 +61,9 @@ _log = get_logger(__name__)
 
 _DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
 _THUMB_SIZE = (400, 400)
+# Same cap as memory and journal photos — see api/memories.py's
+# _MAX_PHOTO_UPLOAD_BYTES for why 25MB.
+_MAX_AVATAR_UPLOAD_BYTES = 25 * 1024 * 1024
 
 
 # ── Response schemas ──────────────────────────────────────────────────────────
@@ -70,10 +74,42 @@ class IDOut(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _avatar_dir(user_id: str, person_id: int) -> Path:
-    p = Path(_DATA_DIR) / "users" / user_id / "people" / str(person_id)
-    p.mkdir(parents=True, exist_ok=True)
-    return p
+def person_owner_dir_id(sess, person_row: DBPerson) -> str:
+    """Canonical avatar-dir key for a person: the trip OWNER's user id.
+
+    With travel companions (issue #106) the caller may be an editor or viewer
+    rather than the owner, but every member must resolve the same folder, and
+    the owner's storage pays for it (issue #470) — keying on the caller would
+    scatter one trip's avatars across several users' dirs. Mirrors
+    ``api.memories._owner_dir_id``. ``sess.get`` hits the identity map, so this
+    is free after ``_get_owned_person`` already loaded the project.
+    """
+    return str(sess.get(DBProject, person_row.project_id).user_info_id)
+
+
+def _avatar_folder(owner_dir: str, person_id: int) -> Path:
+    """The person's avatar folder in the owner's tree. Not created."""
+    return photo_folder(_DATA_DIR, owner_dir, "people", person_id)
+
+
+def _save_avatar_files(owner_dir: str, person_id: int, uuid_str: str, raw: bytes) -> None:
+    """Write the avatar and its thumbnail in the owner's folder and charge the
+    owner. Decodes first, so a non-image upload leaves nothing on disk."""
+    try:
+        img = Image.open(io.BytesIO(raw)).convert("RGB")
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Invalid image file",
+        ) from exc
+    folder = _avatar_folder(owner_dir, person_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    full = folder / f"{uuid_str}.jpg"
+    thumb = folder / f"{uuid_str}_thumb.jpg"
+    full.write_bytes(raw)
+    img.thumbnail(_THUMB_SIZE, Image.LANCZOS)
+    img.save(str(thumb), "JPEG", quality=85)
+    record_written(owner_dir, full, thumb)
 
 
 def _get_owned_person(sess, person_id: int, user_info_id: int, min_role: str = "editor") -> DBPerson:
@@ -109,9 +145,8 @@ def _person_out(row: DBPerson) -> dict:
     }
 
 
-def _delete_avatar_files(user_id: str, person_id: int, uuid_str: str) -> None:
-    unlink_and_record(user_id, photo_files(
-        photo_folder(_DATA_DIR, user_id, "people", person_id), [uuid_str]))
+def _delete_avatar_files(owner_dir: str, person_id: int, uuid_str: str) -> None:
+    unlink_and_record(owner_dir, photo_files(_avatar_folder(owner_dir, person_id), [uuid_str]))
 
 
 def _parse_ps_username(raw: str | None) -> str | None:
@@ -299,7 +334,7 @@ def delete_person(
             sess.delete(e)
 
         if row.avatar_photo:
-            _delete_avatar_files(current_user["sub"], person_id, row.avatar_photo)
+            _delete_avatar_files(person_owner_dir_id(sess, row), person_id, row.avatar_photo)
 
         # Make this delete visible to the optimistic lock too: a structural
         # rewrite that loaded before it would otherwise pass the CAS and
@@ -321,31 +356,56 @@ async def upload_avatar(
     file: Annotated[UploadFile, File()],
     current_user: Annotated[dict, Depends(get_current_user)],
 ):
-    """Upload a JPEG avatar; a 400×400 thumbnail is generated. Replaces any existing avatar."""
-    user_info_id = int(current_user["sub"])
-    raw = await file.read()
-    with get_session() as sess:
-        ensure_storage_quota(sess, user_info_id, len(raw))
-    new_uuid = str(uuid_lib.uuid4())
-    photo_path = _avatar_dir(current_user["sub"], person_id)
-    full = photo_path / f"{new_uuid}.jpg"
-    thumb = photo_path / f"{new_uuid}_thumb.jpg"
-    full.write_bytes(raw)
-    img = Image.open(io.BytesIO(raw)).convert("RGB")
-    img.thumbnail(_THUMB_SIZE, Image.LANCZOS)
-    img.save(str(thumb), "JPEG", quality=85)
-    record_written(current_user["sub"], full, thumb)
+    """Upload a JPEG avatar; a 400×400 thumbnail is generated. Replaces any existing avatar.
 
+    The files live in the trip owner's folder and count against the owner's
+    storage (issue #470). Permission, size and quota are all checked before
+    anything is written, so a refused upload leaves no file and no usage.
+    """
+    user_info_id = int(current_user["sub"])
     with get_session() as sess:
-        row = _get_owned_person(sess, person_id, user_info_id)
-        old = row.avatar_photo
-        row.avatar_photo = new_uuid
-        sess.add(row)
-        cache_ref = project_cache_ref(sess, row.project_id)
-        sess.commit()
-        bust_project_payloads(cache_ref)
+        row = _get_owned_person(sess, person_id, user_info_id, min_role="editor")
+        owner_dir = person_owner_dir_id(sess, row)
+    raw = await file.read()
+    if len(raw) > _MAX_AVATAR_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"Photo exceeds the {_MAX_AVATAR_UPLOAD_BYTES // (1024 * 1024)}MB upload limit",
+        )
+    with get_session() as sess:
+        ensure_storage_quota(sess, int(owner_dir), len(raw))
+    new_uuid = str(uuid_lib.uuid4())
+    # Decode + LANCZOS resize is CPU-bound: keep it off the event loop.
+    await run_in_threadpool(_save_avatar_files, owner_dir, person_id, new_uuid, raw)
+
+    try:
+        with get_session() as sess:
+            row = _get_owned_person(sess, person_id, user_info_id, min_role="editor")
+            old = row.avatar_photo
+            row.avatar_photo = new_uuid
+            sess.add(row)
+            cache_ref = project_cache_ref(sess, row.project_id)
+            sess.commit()
+            bust_project_payloads(cache_ref)
+    except HTTPException:
+        # The person was deleted or access revoked while the files were being
+        # written: nothing will ever point at them, so take them back out.
+        _delete_avatar_files(owner_dir, person_id, new_uuid)
+        raise
     if old:
-        _delete_avatar_files(current_user["sub"], person_id, old)
+        _delete_avatar_files(owner_dir, person_id, old)
+    # Guard (review U4-R1-1): two simultaneous uploads for one person can
+    # leave the losing upload's files behind, charged to the owner. Only
+    # reported for now; the folder should hold just the new pair.
+    expected = {f"{new_uuid}.jpg", f"{new_uuid}_thumb.jpg"}
+    try:
+        stray = sorted(p.name for p in _avatar_folder(owner_dir, person_id).iterdir()
+                       if p.name not in expected)
+    except OSError:
+        stray = []
+    if stray:
+        _log.warning("stray avatar files person_id=%s owner_dir=%s files=%s",
+                     person_id, owner_dir, stray)
     return {"id": person_id}
 
 
@@ -360,7 +420,7 @@ def delete_avatar(
     with get_session() as sess:
         row = _get_owned_person(sess, person_id, user_info_id)
         if row.avatar_photo:
-            _delete_avatar_files(current_user["sub"], person_id, row.avatar_photo)
+            _delete_avatar_files(person_owner_dir_id(sess, row), person_id, row.avatar_photo)
             row.avatar_photo = None
             sess.add(row)
             cache_ref = project_cache_ref(sess, row.project_id)
@@ -378,10 +438,10 @@ def serve_avatar(
     with get_session() as sess:
         row = _get_owned_person(sess, person_id, user_info_id, min_role="viewer")
         uuid_str = row.avatar_photo
+        owner_dir = person_owner_dir_id(sess, row)
     if not uuid_str:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No avatar")
-    full_path = photo_file(
-        photo_folder(_DATA_DIR, current_user["sub"], "people", person_id), uuid_str)
+    full_path = photo_file(_avatar_folder(owner_dir, person_id), uuid_str)
     if full_path is None or not full_path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     return FileResponse(str(full_path), media_type="image/jpeg")
@@ -397,9 +457,10 @@ def serve_avatar_thumb(
     with get_session() as sess:
         row = _get_owned_person(sess, person_id, user_info_id, min_role="viewer")
         uuid_str = row.avatar_photo
+        owner_dir = person_owner_dir_id(sess, row)
     if not uuid_str:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No avatar")
-    photo_dir = photo_folder(_DATA_DIR, current_user["sub"], "people", person_id)
+    photo_dir = _avatar_folder(owner_dir, person_id)
     thumb_path = photo_file(photo_dir, uuid_str, "_thumb")
     if thumb_path is None or not thumb_path.exists():
         full_path = photo_file(photo_dir, uuid_str)
