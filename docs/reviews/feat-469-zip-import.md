@@ -313,3 +313,29 @@ Reviewer: adversarial-reviewer (Fable). Triager: review-triager (Opus). 1 findin
 - Override: —
 - Outcome: fixed (05431904)
 Review closed after integrated round 3 (owner, 2026-10-04: no fourth round).
+
+## Delivery
+
+Resumed on 2026-10-03 after a pause on 2026-09-28. All branches were rebased onto main a44519c8, and U3's work, staged but never committed, was committed as WIP. Integration was on feat/469-zip-import.
+
+| Unit | Goal | Route | Rule | Attempts | Escalated | Verified first time | Findings traced |
+|---|---|---|---|---|---|---|---|
+| U0 | StagedPhoto / StagedPhotos type | Sonnet | — | 1 | — | yes | — |
+| U1 | Full-format ZIP export with journal photos, streamed (#484) | Opus | S4 | 1 | — | yes | — |
+| U2 | Ingest stores only names with a file; placement after commit | Opus | S4 | 1 | — | yes (its own acceptance; a U1 test interaction → F1, F2) | U2R1-1, U2R1-2 |
+| U3 | Shared photo processing + safe ZIP stager | Opus | S5 | 2 (2026-09-28 unfinished; resumed with the rebase conflict in memories.py vs #430) | — | yes | IR1-1, IR2-1, IR2-2, IR3-1 |
+| U4 | POST /import-zip, import guard, auth before body | Opus | S5 | 1 (+ 1 scope widening) | X3: the guard made the existing concurrent-import test obsolete → moved to the repo level | yes | U4R1-1, U4R1-2 |
+| U5 | Client: import a ZIP | Sonnet | — | 1 (+ 2 scope widenings) | X3 ×2 (picker text tests, signature tests); escalated the web memory limit → U6 (owner) | yes | — |
+| U6 | Client: stream trip-file uploads (added at delivery, owner decision) | Opus | S2 | 1 | — | yes | IR1-2 (deferred) |
+| F1 | ZIP export test uploads a real photo (U1/U2 interaction) | Sonnet | — | 1 | — | yes (orchestrator diff check) | — |
+| F2 | ZIP round-trip test expects no photo names after a .traxj re-import | Sonnet | — | 1 | — | yes (orchestrator diff check) | — |
+| FU4 | Unit-review fixes (U2R1-1, U2R1-2, U4R1-1) + upload deadline (owner) | Opus | S5 | 1 | — | yes | U2R1-1, U2R1-2, U4R1-1 |
+| FI1 | IR1-1 + accept a single common root folder (owner) | Opus | S5 | 1 | stopped once on an obsolete test assertion; orchestrator approved the rewrite | yes | IR1-1 |
+| FI2 | Stored/deflated only (owner) + IR2-2 | Opus | S5 | 1 | — | yes | IR2-1, IR2-2 |
+| FI3 | IR3-1: bounded entry offsets | Opus | S5 | 1 | — | yes | IR3-1 |
+
+Delivery notes:
+- U2's unit review (§5 point 3) ran after integration instead of before it. That was an orchestrator slip; its findings were fixed in FU4.
+- The harness's own worktree isolation failed (path case), so worktrees were created by hand (E:/Dev/TraxJourney-469-*).
+- Locally, tests/test_validation_webhook.py fails on main as well (environmental). It is not related to #469.
+- Open before release: the streamed web upload (U6) has only been compiled. Upload a real ZIP in a browser on validation.
