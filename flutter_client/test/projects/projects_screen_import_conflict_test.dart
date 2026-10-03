@@ -35,13 +35,15 @@ class _ConflictingNotifier extends ProjectsNotifier {
   void clearNameConflict() => _taken = null;
 
   @override
-  Future<({List<int> bytes, String defaultName})?> pickProjectFile() async =>
-      (bytes: <int>[1, 2, 3], defaultName: 'Alps');
+  Future<({List<int> bytes, String defaultName, String extension})?>
+      pickProjectFile() async =>
+          (bytes: <int>[1, 2, 3], defaultName: 'Alps', extension: 'traxj');
 
   @override
   Future<String?> uploadProjectFile({
     required List<int> bytes,
     required String name,
+    String? extension,
     ImportConflictChoice? onConflict,
   }) async {
     sent.add(onConflict);

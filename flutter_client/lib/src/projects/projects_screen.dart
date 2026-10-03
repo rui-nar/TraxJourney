@@ -368,7 +368,7 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
                           icon: const Icon(Icons.upload_rounded),
                           label: Text(notifier.isLoading
                               ? 'Importing…'
-                              : 'Choose a .$kProjectFileExtension or .$kProjectZipExtension file'),
+                              : 'Choose .$kProjectFileExtension or .$kProjectZipExtension file'),
                         ),
                       ],
                     ),

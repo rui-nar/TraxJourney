@@ -119,6 +119,6 @@ void main() {
     expect(find.descendant(of: find.byType(AppBar), matching: find.text('TraxJourney')),
         findsOneWidget);
     expect(find.text('Import a .traxj or .zip trip file.'), findsOneWidget);
-    expect(find.text('Choose a .traxj or .zip file'), findsOneWidget);
+    expect(find.text('Choose .traxj or .zip file'), findsOneWidget);
   });
 }
