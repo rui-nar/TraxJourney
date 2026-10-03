@@ -90,3 +90,14 @@ Envelope: the plan's "Review envelope" section (REVIEW.md defaults + SQLite only
 Triager's recommendation: all four come from R2-1 re-implementing part of delete_local_activity. Either (a) reuse delete_local_activity inside delete_project's transaction (removes the class; shared risk; needs its own review), or (b) take split families out of trip-delete pruning for this package (revert the R2-1 amendment, reopen R2-1 as Defer).
 
 Owner decisions 2026-10-03: patch the four findings rather than revert R2-1, which authorises a round 4 limited to these amendments; split tails belong to one trip (Review envelope).
+
+## Round 4 — 2026-10-03, reviewed the round-3 amendments at f61be8ab (owner-authorised)
+
+### R4-1 — A former member's split tail removed from the timeline is refused by activity_rewritable_by_trip and pins its root; the R3-3 warning then fires with no race
+- Trigger: A companion imports and splits a Strava activity in a shared trip, then leaves → the owner removes the tail's item → the tail is not deleted (not rewritable) and its root is never re-checked → after a trip delete the R3-3 warning logs, indistinguishable from the race, and root and tail stay.
+- Scores: trigger=concrete, impact=maintainability, detect=silent (triager corrected from logged), later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7). Step 3 frees a Strava-family tail under the same ownership rule as step 4 (R3-4), via delete_local_activity without the rewritable gate.
+- Override: —
+- Outcome: fixed (plan amended; passage tagged R4-1)
+
+Owner decision 2026-10-03: apply R4-1 and stop plan reviews; U6's code review after delivery covers it. The plan is approved for delivery.

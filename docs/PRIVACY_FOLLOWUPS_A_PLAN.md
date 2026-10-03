@@ -304,7 +304,11 @@ Definition of done).
      
      If `ids` is given, it considers only those ids, whoever owns the row: the owner filter applies only when `ids` is not given (R1-3). It also takes `tail_ids=None`, so split tails and their roots are decided in the same transaction (R2-1).
   2. `strava_disconnect` calls it for the user, in the same session as the token and cache deletes.
-  3. The item-removal path calls it with the removed activity's id, after the project save, when the id is positive. When the removed item was a split tail (negative id) and its row was deleted, it then calls it with the tail's `split_root_id` when that is positive (R1-6).
+  3. The item-removal path calls it with the removed activity's id, after the project save, when the id is positive.
+     - When the removed item was a split tail (negative id) whose row has a positive, Strava-origin `split_root_id`, the path deletes the tail with `delete_local_activity` whoever owns the row, without the `activity_rewritable_by_trip` gate. This is the same ownership rule as step 4 (R3-4): a tail belongs to one trip (Review envelope), so the item being removed proves it is this trip's. `delete_local_activity` still refuses a row another project references. (R4-1)
+     - Other negative ids keep the `activity_rewritable_by_trip` gate.
+     - When the tail row was deleted, it then calls the repo method with the tail's `split_root_id` (R1-6).
+     - Update the rationale comment at `api/project_items.py:66-70` ("its owner can still delete it from a trip of their own") for Strava-family tails, since that route no longer exists under the one-trip envelope.
   4. Before `delete_project`, the trip-delete endpoint collects:
      - the trip's positive activity ids;
      - its negative (tail) ids whose row has a positive, Strava-origin `split_root_id`, whoever owns the row: the same ownership rule as the roots (R1-3), so a former member's split family is freed too. Since a tail belongs to one trip (Review envelope), the deleted trip's tails are its own to delete (R3-4).
@@ -328,6 +332,7 @@ Definition of done).
     - deleting a trip holding a split family imported and split by a companion who has since left deletes that family;
     - a root kept only by unreferenced tails logs the R3-3 warning;
     - removing the head piece of a split Strava activity, then its last tail, deletes the root;
+    - an owner removing the only tail of a split Strava activity imported and split by a companion who has since left deletes the tail, and once the head is removed too, the root goes (R4-1);
     - a concurrent add of the same activity to another trip, racing the removal, ends with the row present and referenced (file-backed SQLite, real threads);
     - a companion's Strava activity in the owner's trip survives the companion's disconnect.
   - The deletion tests fail on the current code.
