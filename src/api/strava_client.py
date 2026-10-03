@@ -8,7 +8,6 @@ from typing import Any, Callable, Dict, Optional
 
 from src.config.settings import Config
 from src.auth.oauth import OAuth2Session
-from src.auth.token_store import TokenStore
 from src.exceptions.errors import (
     APIError,
     AuthenticationError,
@@ -153,7 +152,12 @@ STRAVA_RATE_LIMIT_CAPACITY.labels("daily").set(1000)
 
 
 class StravaAPI:
-    """Client for interacting with the Strava API."""
+    """Client for interacting with the Strava API.
+
+    Holds its tokens in memory only. The caller loads them from the database
+    and persists every refresh through :attr:`on_token_refresh`; the client
+    writes nothing to disk.
+    """
 
     BASE_URL = "https://www.strava.com/api/v3"
     MAX_RETRIES: int = 3
@@ -169,7 +173,7 @@ class StravaAPI:
         self.config = config
         self.user_id = user_id
         self.oauth = OAuth2Session(config)
-        self.token_data = TokenStore.load_token(user_id) or {}
+        self.token_data: Dict[str, Any] = {}
         # Shared, not per-instance: Strava's quota belongs to the application,
         # and this object is built fresh for every request (issue #130).
         self._rate_limiters = _ALL_LIMITERS
@@ -182,8 +186,7 @@ class StravaAPI:
         self.on_token_refresh: Optional[Callable[[Dict[str, Any]], None]] = None
 
     def _token_refreshed(self) -> None:
-        """Store freshly refreshed tokens and tell the owner about them."""
-        TokenStore.save_token(self.user_id, self.token_data)
+        """Hand freshly refreshed tokens to the owner, which stores them."""
         if self.on_token_refresh is not None:
             self.on_token_refresh(dict(self.token_data))
 
@@ -206,19 +209,12 @@ class StravaAPI:
                 )
 
     def clear_token(self) -> None:
-        """Clear stored token data."""
+        """Forget the token data held by this client."""
         self.token_data = {}
-        try:
-            TokenStore.delete_token(self.user_id)
-        except Exception:
-            # Anticipated — the token may already be gone (e.g. a previous
-            # clear_token() call, or it was never persisted).
-            _log.warning("clear_token: could not delete stored token for user=%s", self.user_id, exc_info=True)
 
     def set_token(self, token_data: Dict[str, Any]) -> None:
-        """Store initial token data."""
+        """Set initial token data."""
         self.token_data = token_data
-        TokenStore.save_token(self.user_id, token_data)
 
     def request(self, method: str, path: str, max_retries: int = MAX_RETRIES, **kwargs) -> Dict[str, Any]:
         """Make an authenticated request with rate limiting and retry logic.

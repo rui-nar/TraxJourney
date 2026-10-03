@@ -267,10 +267,6 @@ def file_engine(monkeypatch, tmp_path):
     monkeypatch.setattr(db_module, "engine", engine)
     SQLModel.metadata.create_all(engine)
     monkeypatch.setattr(strava_module, "_cfg", _StravaConfig())
-    # StravaAPI still mirrors refreshed tokens into ~/.config (review R1-5,
-    # out of scope here); keep the test off the developer's home directory.
-    monkeypatch.setattr("src.api.strava_client.TokenStore.save_token", lambda *_a: None)
-    monkeypatch.setattr("src.api.strava_client.TokenStore.delete_token", lambda *_a: None)
     try:
         yield engine
     finally:

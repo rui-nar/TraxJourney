@@ -123,6 +123,7 @@ These are read by the backend at **runtime** (`os.getenv`) — a value passed to
 | Variable | Purpose |
 |---|---|
 | `JWT_SECRET` | **Required — the server will not start without it.** Signs every login token. Generate with `openssl rand -hex 32`, never reuse one between deployments, and note that changing it signs all users out |
+| `CREDENTIALS_ENCRYPTION_KEY` | **Required — the server will not start without it.** Encrypts the Strava, Polarsteps and Immich credentials users connect, so the database and its backups never hold them in plain text. Generate with `openssl rand -hex 32` and keep it out of the database backups. If it is lost, users have to reconnect those services. `CREDENTIALS_ENCRYPTION_KEYS_RETIRED` (optional, comma-separated) lists previous keys during a rotation; `scripts/rotate_credentials_key.py --apply` re-encrypts under the current one |
 | `DATABASE_URL` | SQLAlchemy URL for the DB (defaults to local `traxjourney.db`; the server refuses to start on that default next to an old `viewtripweb.db` until it is renamed) |
 | `GOOGLE_TRANSLATE_API_KEY` | Enables memory translation endpoints (optional) |
 | `GOOGLE_CLIENT_ID` | Google OAuth client id; takes priority over `config.json` (optional) |

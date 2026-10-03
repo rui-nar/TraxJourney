@@ -8,7 +8,6 @@ from unittest.mock import patch, MagicMock
 from src.config.settings import Config
 from src.api.strava_client import StravaAPI, RateLimiter
 from src.auth.oauth import OAuth2Session
-from src.auth.token_store import TokenStore
 from src.exceptions.errors import APIError, AuthenticationError
 
 
@@ -42,24 +41,17 @@ def test_set_token_and_store(tmp_path, monkeypatch):
     assert client.token_data["access_token"] == "abc"
 
 
-@patch("src.api.strava_client.TokenStore.save_token")
-@patch("src.api.strava_client.TokenStore.load_token")
-def test_ensure_token_refresh(mock_load, mock_save, monkeypatch):
-    expired = {"access_token": "old", "refresh_token": "r", "expires_at": time.time() - 10}
-    mock_load.return_value = expired
-    config = DummyConfig()
-    client = StravaAPI(config)
+def test_ensure_token_refresh(monkeypatch):
+    client = _client_with_token(expires_offset=-10)
 
     refreshed = {"access_token": "new", "refresh_token": "r2", "expires_at": time.time() + 1000}
     monkeypatch.setattr(OAuth2Session, "refresh_token", lambda self, rt: refreshed)
 
     client._ensure_token()
     assert client.token_data["access_token"] == "new"
-    mock_save.assert_called_once()
 
 
-@patch("src.api.strava_client.TokenStore.save_token")
-def test_on_token_refresh_fires_when_an_expired_token_is_refreshed(mock_save, monkeypatch):
+def test_on_token_refresh_fires_when_an_expired_token_is_refreshed(monkeypatch):
     """Issue #440: the owner of the client persists a rotation the moment it
     happens, so the callback must fire from the pre-request refresh."""
     client = _client_with_token(expires_offset=-10)
@@ -73,9 +65,8 @@ def test_on_token_refresh_fires_when_an_expired_token_is_refreshed(mock_save, mo
     assert seen == [refreshed]
 
 
-@patch("src.api.strava_client.TokenStore.save_token")
 @patch("src.api.strava_client.requests.request")
-def test_on_token_refresh_fires_on_the_401_refresh_path(mock_req, mock_save, monkeypatch):
+def test_on_token_refresh_fires_on_the_401_refresh_path(mock_req, monkeypatch):
     client = _client_with_token()
     refreshed = {"access_token": "new", "refresh_token": "r2", "expires_at": time.time() + 1000}
     monkeypatch.setattr(OAuth2Session, "refresh_token", lambda self, rt: refreshed)
@@ -102,8 +93,7 @@ def test_request_without_token_raises():
 
 def test_clear_token_removes_data():
     client = _client_with_token()
-    with patch("src.api.strava_client.TokenStore.delete_token"):
-        client.clear_token()
+    client.clear_token()
     assert client.token_data == {}
 
 
@@ -111,15 +101,6 @@ def test_clear_token_removes_data():
 # Logging (issue #205) — the client used to swallow both of these failures
 # with a bare `except Exception: pass`.
 # ---------------------------------------------------------------------------
-
-def test_clear_token_logs_on_delete_failure(caplog):
-    client = _client_with_token()
-    with patch("src.api.strava_client.TokenStore.delete_token", side_effect=Exception("db locked")):
-        with caplog.at_level(logging.WARNING, logger="src.api.strava_client"):
-            client.clear_token()
-    assert client.token_data == {}
-    assert "could not delete stored token" in caplog.text
-
 
 @patch("src.api.strava_client.requests.request")
 def test_request_401_refresh_failure_is_logged(mock_req, caplog):
@@ -129,10 +110,9 @@ def test_request_401_refresh_failure_is_logged(mock_req, caplog):
     mock_req.return_value = MagicMock(status_code=401, text="unauthorized")
 
     with patch.object(OAuth2Session, "refresh_token", side_effect=Exception("refresh token revoked")):
-        with patch("src.api.strava_client.TokenStore.delete_token"):
-            with caplog.at_level(logging.WARNING, logger="src.api.strava_client"):
-                with pytest.raises(AuthenticationError):
-                    client.request("GET", "/test")
+        with caplog.at_level(logging.WARNING, logger="src.api.strava_client"):
+            with pytest.raises(AuthenticationError):
+                client.request("GET", "/test")
 
     assert "token refresh after 401 failed" in caplog.text
 

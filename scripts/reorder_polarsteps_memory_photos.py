@@ -21,7 +21,8 @@ linked for auto-sync), or from an explicit ``--project-trip
 PROJECT_ID:TRIP_ID`` override for projects that were imported once and never
 linked. The owner's Polarsteps session is the ``remember_token`` already
 stored in ``polarstepstoken`` (see scripts/inspect_polarsteps_steps.py) — no
-credentials need to be supplied.
+credentials need to be supplied, but the server's CREDENTIALS_ENCRYPTION_KEY
+must be set, since the stored token is encrypted.
 
 A memory is left untouched (flagged for manual review, not guessed at) when
 too many of its source downloads fail or too few of its local photos match
@@ -55,6 +56,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 # `src` package imports (same convention as scripts/dedupe_polarsteps_memories.py).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.api.polarsteps_client import PolarstepsClient, format_step  # noqa: E402
+from src.auth.credentials_crypto import CredentialDecryptError, decrypt_credential  # noqa: E402
 from src.utils.photo_paths import photo_file, photo_folder  # noqa: E402
 
 ClientFactory = Callable[[str], "object"]
@@ -197,7 +199,12 @@ def run(
             print(f"• project {project_id}: owner has no stored Polarsteps token, skipping")
             continue
 
-        client = client_factory(tok["remember_token"])
+        try:
+            remember_token = decrypt_credential(tok["remember_token"], "polarstepstoken.remember_token")
+        except CredentialDecryptError as exc:
+            print(f"• project {project_id}: owner's Polarsteps token unreadable ({exc}), skipping")
+            continue
+        client = client_factory(remember_token)
         try:
             raw_steps = client.get_trip_steps(trip_id)
         except Exception as exc:

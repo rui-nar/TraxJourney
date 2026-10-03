@@ -18,7 +18,10 @@ from tests.test_rail_data_fetch import _dockerignore_excludes
 
 ROOT = Path(__file__).resolve().parent.parent
 
-AUDITS = ["scripts/audit_activity_ownership.py", "scripts/audit_photo_names.py"]
+AUDITS = ["scripts/audit_activity_ownership.py", "scripts/audit_photo_names.py",
+          # Not an audit, run the same way: re-encrypts stored credentials
+          # after a CREDENTIALS_ENCRYPTION_KEY rotation.
+          "scripts/rotate_credentials_key.py"]
 
 
 def _patterns() -> list[str]:
@@ -31,6 +34,8 @@ def test_audit_script_is_in_the_image(script):
     assert not _dockerignore_excludes(_patterns(), script)
 
 
-@pytest.mark.parametrize("package", ["models/project_db.py", "src/utils/photo_paths.py"])
+@pytest.mark.parametrize("package", ["models/project_db.py", "src/utils/photo_paths.py",
+                                     "models/user.py", "models/db_url.py",
+                                     "src/auth/credentials_crypto.py"])
 def test_what_the_audits_import_is_in_the_image(package):
     assert not _dockerignore_excludes(_patterns(), package)

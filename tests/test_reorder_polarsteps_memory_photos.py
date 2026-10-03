@@ -111,6 +111,9 @@ class _FakeClient:
     """Stands in for PolarstepsClient: returns canned raw steps for one trip."""
 
     def __init__(self, remember_token: str):
+        # The script reads the table directly, so it must decrypt the token
+        # the model stored encrypted.
+        assert remember_token == "123|deadbeef"
         self.remember_token = remember_token
 
     def get_trip_steps(self, trip_id: int):

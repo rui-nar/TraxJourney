@@ -60,6 +60,7 @@ from alembic.config import Config as AlembicConfig
 from models.db import checkpoint_wal, engine
 from models.project_db import _check_schema_contract
 from src.admin.bootstrap import seed_admin
+from src.auth.credentials_crypto import credentials_keyring
 from src.backup.backup_service import backup_db
 from src.billing.usage import reconcile_all_usage
 from src.utils.logging import configure_logging, env_level, get_logger, request_id_var
@@ -110,6 +111,9 @@ async def lifespan(_app: FastAPI):
     # failure mode was silence (issue #156). Fail at boot rather than on the
     # first login, so a bad deploy is obvious immediately.
     jwt_secret()
+    # Same for the key the connected-service credentials are stored under:
+    # without it no Strava, Polarsteps or Immich connection can be read or saved.
+    credentials_keyring()
     if not _IS_API_PROCESS:
         # A worker shares this codebase but must not own schema or schedules.
         _log.info("TRAXJOURNEY_ROLE=%s — skipping migrations, admin seed and scheduler", _ROLE)

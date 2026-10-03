@@ -106,8 +106,7 @@ class TestStravaCounters:
         mock_req.return_value = MagicMock(status_code=401)
 
         client = _strava_client()
-        with patch("src.api.strava_client.TokenStore.delete_token"), \
-                patch.object(client.oauth, "refresh_token", side_effect=RuntimeError):
+        with patch.object(client.oauth, "refresh_token", side_effect=RuntimeError):
             with pytest.raises(AuthenticationError):
                 client.request("GET", "/test", max_retries=1)
 
