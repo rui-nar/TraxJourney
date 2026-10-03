@@ -20,6 +20,12 @@ again. Disk is the only record of progress:
 
 Only current members' folders are searched (review R1-2, deferred): an avatar
 uploaded by a companion who has since left is reported as found nowhere.
+
+Once the moves are done it also deletes the photo files left in a current
+member's folder for a person of that trip that no person references any more
+(owner decision, pre-U4 leftovers), giving the usage back to the member. A
+name any person still holds is never deleted, and the owner's folder is never
+touched.
 """
 from __future__ import annotations
 
@@ -32,7 +38,7 @@ from sqlmodel import select
 
 from models.db import get_session
 from models.project_db import DBPerson, DBProject, DBProjectMember
-from src.billing.usage import record_delta
+from src.billing.usage import record_delta, unlink_and_record
 from src.utils.logging import get_logger
 from src.utils.photo_paths import PHOTO_SUFFIXES, photo_file
 
@@ -53,17 +59,19 @@ def move_companion_avatars() -> int:
         return 0
 
 
-def _candidates() -> list[tuple[int, str, str, list[str]]]:
-    """``(person id, avatar name, owner dir, member dirs)`` for every person
-    with an avatar whose trip still exists."""
+def _load() -> tuple[list[tuple[int, str | None, str, list[str]]], set[str]]:
+    """``(person id, avatar name or None, owner dir, member dirs)`` for every
+    person whose trip still exists, and every avatar name any person holds."""
     from api.people import person_owner_dir_id
 
     with get_session() as sess:
         people = sess.exec(
-            select(DBPerson)
-            .join(DBProject, DBProject.id == DBPerson.project_id)
-            .where(DBPerson.avatar_photo.is_not(None))
+            select(DBPerson).join(DBProject, DBProject.id == DBPerson.project_id)
         ).all()
+        # Every person's, trip or no trip: a name still referenced is never stale.
+        names = set(sess.exec(
+            select(DBPerson.avatar_photo).where(DBPerson.avatar_photo.is_not(None))
+        ).all())
         project_ids = {p.project_id for p in people}
         members: dict[int, list[str]] = {}
         if project_ids:
@@ -78,24 +86,70 @@ def _candidates() -> list[tuple[int, str, str, list[str]]]:
             owner_dir = person_owner_dir_id(sess, p)
             out.append((p.id, p.avatar_photo, owner_dir,
                         [m for m in members.get(p.project_id, []) if m != owner_dir]))
-        return out
+        return out, names
 
 
 def _move_all() -> int:
     # Read everything first: no pooled connection is held through the file work.
-    candidates = _candidates()
+    people, current_names = _load()
     counts = {"moved": 0, "present": 0, "missing": 0, "conflict": 0, "failed": 0}
-    for person_id, name, owner_dir, member_dirs in candidates:
+    left_in_place: set[str] = set()
+    for person_id, name, owner_dir, member_dirs in people:
+        if name is None:
+            continue
         try:
             outcome = _move_one(person_id, name, owner_dir, member_dirs)
         except Exception:  # noqa: BLE001 — one bad avatar must not stop the rest
             _log.exception("avatar move failed person_id=%s", person_id)
             outcome = "failed"
+        if outcome in ("conflict", "failed"):
+            left_in_place.add(name)
         counts[outcome] += 1
+    # After the moves, so a member's copy of a current avatar is only ever
+    # moved, never deleted as stale.
+    stale = 0
+    keep = current_names | left_in_place
+    for person_id, _, _, member_dirs in people:
+        for member in member_dirs:
+            try:
+                stale += _delete_stale(person_id, member, keep)
+            except Exception:  # noqa: BLE001 — one bad folder must not stop the rest
+                _log.exception("stale avatar cleanup failed person_id=%s member=%s",
+                               person_id, member)
     _log.info("avatar move sweep: moved=%d already_in_place=%d not_found=%d "
-              "conflict=%d failed=%d", counts["moved"], counts["present"],
-              counts["missing"], counts["conflict"], counts["failed"])
+              "conflict=%d failed=%d stale_deleted=%d", counts["moved"],
+              counts["present"], counts["missing"], counts["conflict"],
+              counts["failed"], stale)
     return counts["moved"]
+
+
+def _delete_stale(person_id: int, member: str, keep: set[str]) -> int:
+    """Delete the photo files in a member's folder for this person that no
+    person references any more. Returns how many were deleted.
+
+    Before #470 an avatar lived in its uploader's folder, and replacing or
+    removing it from another account deleted in *that* account's folder, so
+    the uploader's copy stayed behind, still counted against them. Only names
+    the app itself makes are considered (``photo_file``), never one in *keep*.
+    """
+    from api.people import _avatar_folder
+
+    folder = _avatar_folder(member, person_id)
+    if not folder.is_dir():
+        return 0
+    deleted = 0
+    for path in sorted(folder.iterdir()):
+        stem = path.name[:-len(".jpg")] if path.name.endswith(".jpg") else None
+        if stem is None:
+            continue
+        name, suffix = (stem[:-len("_thumb")], "_thumb") if stem.endswith("_thumb")             else (stem, "")
+        if name in keep or photo_file(folder, name, suffix) != path or not path.is_file():
+            continue
+        unlink_and_record(member, [path])
+        _log.info("stale avatar file deleted person_id=%s member=%s file=%s",
+                  person_id, member, path.name)
+        deleted += 1
+    return deleted
 
 
 def _move_one(person_id: int, name: str, owner_dir: str, member_dirs: list[str]) -> str:
@@ -132,8 +186,13 @@ def _move_one(person_id: int, name: str, owner_dir: str, member_dirs: list[str])
              for s in PHOTO_SUFFIXES]
     owner_folder.mkdir(parents=True, exist_ok=True)
     for src, dst in pairs:
-        if src is None or dst is None or not src.is_file():
+        if src is None or not src.is_file():
             continue
+        if dst is None:
+            # Guard (review U5-R1-1): the owner-side path was refused, so this
+            # file cannot be moved. Stop before deleting anything.
+            raise RuntimeError(f"no owner-side path for person_id={person_id} "
+                               f"file={src.name}")
         if not dst.is_file():
             _copy_into_place(src, dst)
         if not filecmp.cmp(src, dst, shallow=False):

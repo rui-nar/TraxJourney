@@ -283,3 +283,181 @@ def test_sweep_exception_does_not_break_startup(monkeypatch):
     with TestClient(router.app) as client:
         assert client.get("/api/version").status_code == 200
     assert calls == [1]
+
+
+# ── Guard U5-R1-1: an owner-side path photo_file refuses ─────────────────────
+
+def test_refused_owner_path_fails_before_any_delete(env, monkeypatch, caplog):
+    engine, ids, data_dir = env
+    _put(data_dir, ids["editor"], ids["person"], ids["name"])
+    _set_usage(engine, ids["editor"], 10_000)
+    owner_folder = _folder(data_dir, ids["owner"], ids["person"])
+
+    real = avatar_move.photo_file
+    def refuse_owner_thumb(folder, name, suffix=""):
+        if folder == owner_folder and suffix == "_thumb":
+            return None
+        return real(folder, name, suffix)
+    monkeypatch.setattr(avatar_move, "photo_file", refuse_owner_thumb)
+
+    with caplog.at_level(logging.INFO, logger=avatar_move.__name__):
+        assert avatar_move.move_companion_avatars() == 0
+
+    member_folder = _folder(data_dir, ids["editor"], ids["person"])
+    assert (member_folder / f"{ids['name']}_thumb.jpg").read_bytes() == THUMB
+    assert (member_folder / f"{ids['name']}.jpg").read_bytes() == FULL
+    assert _usage(engine, ids["editor"]) == 10_000
+    assert "avatar move failed" in caplog.text
+    assert "failed=1" in caplog.text
+
+
+# ── Guard U5-R1-2: replacing an avatar the owner's folder doesn't hold ───────
+
+def test_replacing_avatar_missing_from_owner_folder_warns(env, caplog):
+    import io
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from PIL import Image
+
+    from api.deps import get_current_user
+
+    engine, ids, data_dir = env
+    _put(data_dir, ids["editor"], ids["person"], ids["name"])
+    app = FastAPI()
+    app.dependency_overrides[get_current_user] = lambda: {"sub": str(ids["owner"])}
+    app.include_router(people_mod.router)
+    buf = io.BytesIO()
+    Image.new("RGB", (20, 20), (10, 200, 30)).save(buf, "JPEG")
+
+    with caplog.at_level(logging.WARNING, logger=people_mod.__name__):
+        r = TestClient(app).post(f"/api/people/{ids['person']}/avatar",
+                                 files={"file": ("a.jpg", buf.getvalue(), "image/jpeg")})
+    assert r.status_code == 201
+
+    warnings = [r.getMessage() for r in caplog.records
+                if r.levelno == logging.WARNING and "old avatar not in owner folder" in r.getMessage()]
+    assert len(warnings) == 1
+    assert f"person_id={ids['person']}" in warnings[0]
+    assert f"owner_dir={ids['owner']}" in warnings[0]
+    assert ids["name"] in warnings[0]
+
+
+# ── Owner decision: pre-U4 leftovers in members' folders ─────────────────────
+
+def test_stale_pair_in_member_folder_is_deleted_with_usage_given_back(env, caplog):
+    engine, ids, data_dir = env
+    _put(data_dir, ids["owner"], ids["person"], ids["name"])
+    stale = str(uuid_lib.uuid4())
+    _put(data_dir, ids["editor"], ids["person"], stale)
+    _set_usage(engine, ids["editor"], 10_000)
+    _set_usage(engine, ids["owner"], 500)
+
+    with caplog.at_level(logging.INFO, logger=avatar_move.__name__):
+        avatar_move.move_companion_avatars()
+
+    assert _files(data_dir) == _owner_files(ids)
+    assert _usage(engine, ids["editor"]) == 10_000 - len(FULL) - len(THUMB)
+    assert _usage(engine, ids["owner"]) == 500
+    assert caplog.text.count("stale avatar file deleted") == 2
+    assert "stale_deleted=2" in caplog.text
+
+
+def test_stale_cleanup_also_covers_people_without_avatar(env):
+    engine, ids, data_dir = env
+    with Session(engine) as sess:
+        bare = DBPerson(project_id=ids["project"], name="Bare")
+        sess.add(bare); sess.commit(); sess.refresh(bare)
+        bare_id = bare.id
+    _put(data_dir, ids["viewer"], bare_id, str(uuid_lib.uuid4()))
+
+    avatar_move.move_companion_avatars()
+
+    assert not list(_folder(data_dir, ids["viewer"], bare_id).iterdir())
+
+
+def test_pending_move_is_moved_not_deleted(env, monkeypatch):
+    """A member's copy of a current avatar is untouched until it is moved."""
+    engine, ids, data_dir = env
+    _put(data_dir, ids["editor"], ids["person"], ids["name"])
+    _set_usage(engine, ids["editor"], 10_000)
+
+    # The move fails this run: the member's copy must survive the cleanup.
+    def broken(*a, **k):
+        raise OSError("disk full")
+    real = avatar_move._copy_into_place
+    monkeypatch.setattr(avatar_move, "_copy_into_place", broken)
+    avatar_move.move_companion_avatars()
+    member_folder = _folder(data_dir, ids["editor"], ids["person"])
+    assert sorted(p.name for p in member_folder.iterdir()) == \
+        [f"{ids['name']}.jpg", f"{ids['name']}_thumb.jpg"]
+    assert _usage(engine, ids["editor"]) == 10_000
+
+    monkeypatch.setattr(avatar_move, "_copy_into_place", real)
+    assert avatar_move.move_companion_avatars() == 1
+    assert _files(data_dir) == _owner_files(ids)
+
+
+def test_another_persons_current_avatar_is_never_deleted(env):
+    """A name in this member's folder for one person that is another person's
+    current avatar (any trip) is kept."""
+    engine, ids, data_dir = env
+    with Session(engine) as sess:
+        other_owner = UserInfo(display_name="other", email="other@e.com")
+        sess.add(other_owner); sess.commit(); sess.refresh(other_owner)
+        other_proj = DBProject(user_info_id=other_owner.id, name="Elsewhere")
+        sess.add(other_proj); sess.commit(); sess.refresh(other_proj)
+        other_name = str(uuid_lib.uuid4())
+        sess.add(DBPerson(project_id=other_proj.id, name="Carol", avatar_photo=other_name))
+        sess.commit()
+    _put(data_dir, ids["owner"], ids["person"], ids["name"])
+    _put(data_dir, ids["editor"], ids["person"], other_name)
+
+    avatar_move.move_companion_avatars()
+
+    folder = _folder(data_dir, ids["editor"], ids["person"])
+    assert sorted(p.name for p in folder.iterdir()) == \
+        [f"{other_name}.jpg", f"{other_name}_thumb.jpg"]
+
+
+def test_owner_folder_is_never_cleaned(env):
+    engine, ids, data_dir = env
+    _put(data_dir, ids["owner"], ids["person"], ids["name"])
+    stale = str(uuid_lib.uuid4())
+    _put(data_dir, ids["owner"], ids["person"], stale)
+    _set_usage(engine, ids["owner"], 10_000)
+
+    avatar_move.move_companion_avatars()
+
+    assert len(_files(data_dir)) == 4
+    assert _usage(engine, ids["owner"]) == 10_000
+
+
+def test_non_photo_names_in_member_folder_are_left(env):
+    engine, ids, data_dir = env
+    _put(data_dir, ids["owner"], ids["person"], ids["name"])
+    folder = _folder(data_dir, ids["editor"], ids["person"])
+    folder.mkdir(parents=True)
+    (folder / "notes.jpg").write_bytes(b"x")
+    (folder / f"{uuid_lib.uuid4()}.png").write_bytes(b"x")
+
+    avatar_move.move_companion_avatars()
+
+    assert len(list(folder.iterdir())) == 2
+
+
+def test_stale_cleanup_second_run_is_a_no_op(env, caplog):
+    engine, ids, data_dir = env
+    _put(data_dir, ids["owner"], ids["person"], ids["name"])
+    _put(data_dir, ids["editor"], ids["person"], str(uuid_lib.uuid4()))
+    _set_usage(engine, ids["editor"], 10_000)
+    avatar_move.move_companion_avatars()
+    files, editor = _files(data_dir), _usage(engine, ids["editor"])
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger=avatar_move.__name__):
+        avatar_move.move_companion_avatars()
+
+    assert _files(data_dir) == files
+    assert _usage(engine, ids["editor"]) == editor
+    assert "stale_deleted=0" in caplog.text
