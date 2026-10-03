@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Dict, List, Optional
@@ -34,11 +33,11 @@ from api.deps import get_current_user
 from api.geo import bust_geo_cache, warm_geo_cache
 from api.project_access import OwnerParam, resolve_project
 from api.project_shared import _refresh_share_tiles, _refresh_stats_background, _repo, queue_share_tiles_refresh, queue_stats_refresh, warm_meta_cache
+from api.strava import _strava_client_for_token
 from models.project_db import DBActivity, DBProject, DBProjectItem
 from models.user import StravaToken
 from src.api.strava_client import RateLimiter, StravaAPI
 from src.billing.entitlements import ensure_trip_days_quota
-from src.config.settings import Config
 from src.exceptions.errors import RateLimitError
 from src.gpx.importer import (
     GPXImportError,
@@ -67,11 +66,6 @@ from src.project.repo_activities import store_prepared_geometry
 from src.utils.logging import get_logger
 
 _log = get_logger(__name__)
-_cfg = Config("config/config.json")
-if os.environ.get("STRAVA_CLIENT_ID"):
-    _cfg.set("strava.client_id", os.environ["STRAVA_CLIENT_ID"])
-if os.environ.get("STRAVA_CLIENT_SECRET"):
-    _cfg.set("strava.client_secret", os.environ["STRAVA_CLIENT_SECRET"])
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -158,20 +152,19 @@ class GPXImportOut(BaseModel):
 # ── Strava stream enrichment ───────────────────────────────────────────────────
 
 def _strava_client_for_user(user_info_id: int) -> Optional[StravaAPI]:
-    """Return a StravaAPI instance for the given user, or None if not connected."""
+    """Return a StravaAPI instance for the given user, or None if not connected.
+
+    Built by :func:`api.strava._strava_client_for_token`, so a token rotation
+    during enrichment is stored — or revoked after a disconnect — the moment
+    Strava issues it (issue #512).
+    """
     with get_session() as sess:
         token_row = sess.exec(
             select(StravaToken).where(StravaToken.user_info_id == user_info_id)
         ).first()
         if not token_row:
             return None
-    client = StravaAPI(_cfg)
-    client.token_data = {
-        "access_token":  token_row.access_token,
-        "refresh_token": token_row.refresh_token,
-        "expires_at":    token_row.expires_at,
-    }
-    return client
+    return _strava_client_for_token(token_row)
 
 
 def _enrich_activities(
