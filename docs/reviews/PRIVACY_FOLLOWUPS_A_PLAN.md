@@ -129,3 +129,17 @@ Owner decision 2026-10-03: apply R4-1 and stop plan reviews; U6's code review af
 - Revisit when: A log shows _persist_rotated_token / _claim_token_row failing ("database is locked") in val or prod; a user reports Strava still listing the app after disconnecting; a user is asked to reconnect soon after an import.
 - Override: —
 - Outcome: open
+
+## Unit U6 review — round 1, 2026-10-03, reviewed at 22999e85 (DELIVERY.md §5 point 3)
+
+### U6-R1-1 — A Strava re-fetch job in flight recreates the row U6 just deleted
+- Trigger: A user starts a re-fetch, then removes the activity from its only trip, deletes the trip or disconnects → U6 deletes the row → force_update_activity finds no row and inserts a fresh one no item references.
+- Scores: trigger=plausible, impact=maintainability, detect=silent, later=cheap, fix=S/shared, confidence=verified
+- Decision: Guard (D9)
+- Guard: WARNING in force_update_activity's insert branch ("row deleted while the re-fetch was in flight"); its only production caller runs on a row marked pending, so it fires only on this race.
+- Override: —
+- Outcome: open
+
+Envelope question from the reviewer, owner answer 2026-10-03: removal (and the R4-1 tail rule) deletes a row only when the caller owns that activity or is the trip owner. An editor removing someone else's activity only unlinks it; the owner's later disconnect or own removal cleans it up. Trip deletion is done by the trip owner, so it keeps the any-owner rule (R1-4, R3-4).
+
+Owner approval 2026-10-03: U4-R1-1 Guard, U4-R1-2 Defer, U6-R1-1 Guard, as triaged.
