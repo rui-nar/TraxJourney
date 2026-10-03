@@ -59,6 +59,17 @@ def test_a_photo_is_stored_as_it_came_with_a_thumbnail(tmp_path):
         assert t.size == (400, 267)
 
 
+def test_the_thumbnail_carries_no_comment(tmp_path):
+    """Pillow carries a JPEG comment across the re-encode; the thumbnail is
+    served to share links, so it must not (issue #430)."""
+    buf = io.BytesIO()
+    Image.new("RGB", (800, 600), (1, 2, 3)).save(buf, "JPEG", comment=b"taken at home")
+    full, thumb = write_photo_files(tmp_path, NAME, buf.getvalue())
+
+    assert b"taken at home" in full.read_bytes()
+    assert b"taken at home" not in thumb.read_bytes()
+
+
 @pytest.mark.parametrize("fmt,mode", [("PNG", "RGBA"), ("PNG", "P"), ("PNG", "L"),
                                       ("JPEG", "L"), ("JPEG", "CMYK"), ("GIF", "P")])
 def test_every_mode_gets_an_rgb_jpeg_thumbnail(tmp_path, fmt, mode):
