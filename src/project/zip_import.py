@@ -23,6 +23,7 @@ removes the whole directory.
 from __future__ import annotations
 
 import json
+import lzma
 import shutil
 import zipfile
 import zlib
@@ -74,8 +75,13 @@ _ARCHIVE_FOLDERS = {"memories": "photos", "journal": "journal"}
 
 _CHUNK = 64 * 1024
 
-#: What zipfile raises for a corrupt, truncated or unsupported entry.
-_ENTRY_ERRORS = (zipfile.BadZipFile, NotImplementedError, RuntimeError, EOFError, zlib.error)
+#: What zipfile raises for a corrupt, truncated or unsupported entry: OSError
+#: is corrupt bzip2 data, lzma.LZMAError corrupt LZMA data, and ValueError
+#: (UnicodeDecodeError) a local header name flagged UTF-8 that isn't. Caught
+#: around the zipfile calls only, so a disk error writing a staged photo is
+#: not mistaken for a fault of the archive.
+_ENTRY_ERRORS = (zipfile.BadZipFile, NotImplementedError, RuntimeError, EOFError, zlib.error,
+                 OSError, lzma.LZMAError, ValueError)
 
 
 class InvalidTripArchive(ValueError):
@@ -121,6 +127,8 @@ def _read_entry(zf: zipfile.ZipFile, info: zipfile.ZipInfo, limit: int, what: st
                 if total > limit:
                     raise too_large
                 chunks.append(chunk)
+    except InvalidTripArchive:
+        raise  # too large: a ValueError too, but not "damaged"
     except _ENTRY_ERRORS:
         raise InvalidTripArchive(f"The {what} in this archive is damaged or unreadable.") from None
     return b"".join(chunks)
@@ -201,7 +209,9 @@ def read_trip_zip(fileobj: BinaryIO, staging_dir: Path, *, importer: int,
     fileobj.seek(0)
     try:
         zf = zipfile.ZipFile(fileobj)
-    except (zipfile.BadZipFile, zipfile.LargeZipFile, NotImplementedError, EOFError, OSError):
+    except (zipfile.BadZipFile, zipfile.LargeZipFile, NotImplementedError, EOFError, OSError,
+            ValueError):
+        # ValueError: a directory name flagged UTF-8 that isn't (UnicodeDecodeError).
         raise InvalidTripArchive("This file is not a ZIP archive, or it is damaged.") from None
     with zf:
         infos = zf.infolist()

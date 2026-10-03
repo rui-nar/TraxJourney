@@ -398,3 +398,50 @@ def test_a_damaged_photo_is_refused(tmp_path):
     at = data.find(photo) + len(photo) // 2
     data[at:at + 16] = bytes(b ^ 0xFF for b in data[at:at + 16])  # CRC no longer matches
     _refused(bytes(data), tmp_path / "s", match="damaged or unreadable")
+
+
+def test_a_directory_name_flagged_utf8_that_isnt_is_refused(tmp_path):
+    """ZipFile() decodes a name with flag 0x800 as UTF-8 (IR1-1)."""
+    data = _export(extra=[("\u00e9.txt", b"x")])  # non-ASCII: zipfile sets 0x800
+    assert data.count("\u00e9".encode()) == 2  # local header and directory
+    _refused(data.replace("\u00e9".encode(), b"\xff\xfe"), tmp_path / "s", match="not a ZIP archive")
+
+
+def test_a_local_name_flagged_utf8_that_isnt_is_refused(tmp_path):
+    """Opening an entry decodes its local header name by that header's flag (IR1-1)."""
+    name = f"photos/7/{U1}.jpg".encode()
+    data = bytearray(_export(photos={f"photos/7/{U1}.jpg": _jpeg()}))
+    lh = data.find(b"PK\x03\x04")
+    while data[lh + 30: lh + 30 + len(name)] != name:
+        lh = data.find(b"PK\x03\x04", lh + 4)
+    struct.pack_into("<H", data, lh + 6, struct.unpack_from("<H", data, lh + 6)[0] | 0x800)
+    data[lh + 30 + len(name) - 1] = 0xFF
+    _refused(bytes(data), tmp_path / "s", match=f"photo photos/7/{U1}.jpg .* damaged or unreadable")
+
+
+@pytest.mark.parametrize("compression", [zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA],
+                         ids=["bzip2", "lzma"])
+def test_a_photo_with_corrupt_compressed_data_is_refused(tmp_path, compression):
+    """Corrupt bzip2 data raises OSError, corrupt LZMA data LZMAError (IR1-1)."""
+    photo = _jpeg((900, 900), color=(10, 200, 90))
+    data = bytearray(_zip([("Alps.traxj", _trip_bytes(_project())), (f"photos/7/{U1}.jpg", photo)],
+                          compression=compression))
+    name = f"photos/7/{U1}.jpg".encode()
+    lh = data.find(b"PK\x03\x04")
+    while data[lh + 30: lh + 30 + len(name)] != name:
+        lh = data.find(b"PK\x03\x04", lh + 4)
+    size = struct.unpack_from("<L", data, lh + 18)[0]
+    start = lh + 30 + len(name) + struct.unpack_from("<H", data, lh + 28)[0]
+    for at in range(start + 8, start + size - 8, 7):
+        data[at] ^= 0x5A  # garble the stream throughout, past its header
+    _refused(bytes(data), tmp_path / "s", match="damaged or unreadable")
+
+
+def test_a_disk_error_staging_a_photo_is_not_blamed_on_the_archive(tmp_path, monkeypatch):
+    """OSError is an archive fault only around the zipfile calls (IR1-1)."""
+    def disk_full(*a, **k):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(zip_import, "write_photo_files", disk_full)
+    with pytest.raises(OSError) as exc:
+        _read(_export(), tmp_path / "s")
+    assert not isinstance(exc.value, InvalidTripArchive)
