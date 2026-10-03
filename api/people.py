@@ -394,6 +394,18 @@ async def upload_avatar(
         raise
     if old:
         _delete_avatar_files(owner_dir, person_id, old)
+    # Guard (review U4-R1-1): two simultaneous uploads for one person can
+    # leave the losing upload's files behind, charged to the owner. Only
+    # reported for now; the folder should hold just the new pair.
+    expected = {f"{new_uuid}.jpg", f"{new_uuid}_thumb.jpg"}
+    try:
+        stray = sorted(p.name for p in _avatar_folder(owner_dir, person_id).iterdir()
+                       if p.name not in expected)
+    except OSError:
+        stray = []
+    if stray:
+        _log.warning("stray avatar files person_id=%s owner_dir=%s files=%s",
+                     person_id, owner_dir, stray)
     return {"id": person_id}
 
 

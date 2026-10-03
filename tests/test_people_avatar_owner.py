@@ -231,3 +231,36 @@ def test_person_deleted_during_upload_leaves_no_files(env, monkeypatch):
     assert _upload(client, ids["person"]).status_code == 404
     assert _files(data_dir) == []
     assert _usage(engine, ids["owner"]) == 0
+
+
+def _stray_warnings(caplog) -> list:
+    return [r.getMessage() for r in caplog.records
+            if r.name == "api.people" and r.levelname == "WARNING"
+            and "stray avatar files" in r.getMessage()]
+
+
+def test_upload_warns_about_stray_files_in_avatar_folder(env, caplog):
+    # Guard U4-R1-1: a racing upload's leftovers are reported, not silent.
+    client, engine, ids, act_as, data_dir = env
+    folder = data_dir / "users" / str(ids["owner"]) / "people" / str(ids["person"])
+    folder.mkdir(parents=True)
+    (folder / "1f2e3d4c-5b6a-4978-8695-a4b3c2d1e0f9.jpg").write_bytes(b"x")
+
+    caplog.set_level("WARNING", logger="api.people")
+    assert _upload(client, ids["person"]).status_code == 201
+
+    warnings = _stray_warnings(caplog)
+    assert len(warnings) == 1
+    assert "1f2e3d4c-5b6a-4978-8695-a4b3c2d1e0f9.jpg" in warnings[0]
+    assert f"person_id={ids['person']}" in warnings[0]
+    assert f"owner_dir={ids['owner']}" in warnings[0]
+    assert _avatar_uuid(engine, ids["person"]) not in warnings[0]
+
+
+def test_clean_upload_logs_no_stray_warning(env, caplog):
+    client, engine, ids, act_as, data_dir = env
+    caplog.set_level("WARNING", logger="api.people")
+    assert _upload(client, ids["person"]).status_code == 201
+    # A replacement removes the old pair, so it is clean too.
+    assert _upload(client, ids["person"]).status_code == 201
+    assert _stray_warnings(caplog) == []
