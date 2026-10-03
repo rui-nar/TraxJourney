@@ -110,7 +110,7 @@ Owner decision 2026-10-03: apply R4-1 and stop plan reviews; U6's code review af
 - Decision: Guard (D9)
 - Guard: after the old-avatar cleanup, list the person's avatar folder and log a WARNING naming any file that isn't the new avatar's pair.
 - Override: —
-- Outcome: open
+- Outcome: guard added (62be0639; warning names stray files in the avatar folder; tested)
 
 ### U4-R1-2 — A non-HTTP failure after the files are written leaves them on disk, charged to the owner
 - Trigger: The row update fails with e.g. "database is locked" → 500, the written files stay counted; a retry doubles the cost.
