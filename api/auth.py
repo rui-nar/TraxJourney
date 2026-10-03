@@ -140,6 +140,15 @@ class GoogleTokenRequest(BaseModel):
 class UpdateProfileRequest(BaseModel):
     display_name: str = Field(description="New public display name")
 
+    # A blank name would show to companions as "Traveller" (issue #507), so
+    # clearing it is refused rather than stored.
+    @field_validator("display_name")
+    @classmethod
+    def _must_not_be_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("Display name must not be empty")
+        return v.strip()
+
 class VerifyEmailRequest(BaseModel):
     token: str = Field(description="Verification token from the emailed link")
 
@@ -205,11 +214,16 @@ def login(body: TokenRequest):
             )
         user_info = _user_info_for_local_id(sess, user.id)
         if user_info is None:
-            # Auto-create UserInfo for legacy local-auth users
+            # Auto-create UserInfo for legacy local-auth users. The username
+            # is the email since #110: it goes in ``email``, never in the
+            # public name, which stays blank until the user sets one (#507).
+            # A pre-#110 username that isn't an address (the seeded "admin")
+            # is not one to mail, so it is left out.
             user_info = UserInfo(
                 local_auth_id=user.id,
-                display_name=user.username,
-                email="",
+                display_name="",
+                email=(normalize_email(user.username)
+                       if is_valid_email(user.username) else ""),
                 auth_provider="local",
             )
             sess.add(user_info)
@@ -441,7 +455,7 @@ def update_me(
         user_info = sess.get(UserInfo, user_info_id)
         if user_info is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-        user_info.display_name = body.display_name.strip()
+        user_info.display_name = body.display_name
         sess.add(user_info)
         sess.commit()
         sess.refresh(user_info)
