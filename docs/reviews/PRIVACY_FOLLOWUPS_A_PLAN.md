@@ -170,8 +170,17 @@ Owner approval 2026-10-04: U5-R1-1 Guard (flagged, accepted as a guard), U5-R1-2
 - Trigger: A companion uploaded a person's avatar before this release, then the owner deleted that person (or the trip) → the companion's pair under users/<companion>/people/<old id>/ is never scanned → charged to the companion for good.
 - Scores: trigger=concrete, impact=degraded-ux, detect=silent, later=cheap, fix=S/local, confidence=verified
 - Decision: Fix now (D7), under the owner's reading of the leftover decision.
-- Override: user (envelope, 2026-10-04): the cleanup also covers folders of deleted people (person ids are never reused, so nothing can reference them), never a living person's owner folder.
-- Outcome: open
+- Override: user (envelope, 2026-10-04): the cleanup also covers folders of deleted people, never a living person's owner folder. CORRECTION (2026-10-04): person ids CAN be reused (the person table has no AUTOINCREMENT); the cleanup is safe because it never deletes a name that is any person's current avatar_photo (the keep set), not because ids are unique over time.
+- Outcome: fixed (5d5e218c)
 
 ## Delivery note — U3 scope widened (X3), 2026-10-04
 U3's implementer found five more places that show another user's raw display_name (public share owner_name, comment and like authors, signed-in visitor names), which is the email for legacy auto-created profiles. The Definition of done for #507 covers every response, so U3's Scope is widened to api/share.py, api/memories.py and api/project_shares.py at those sites only. No other unit touches those files in wave 2.
+
+## Unit U5 review — round 3, 2026-10-04, reviewed at 5d5e218c (the cap)
+
+### U5-R3-1 — The orphan pass skips a living person's folder in an ex-member's tree, so a companion who left keeps paying for a replaced avatar
+- Trigger: A companion uploaded a person's avatar before this release, then left the trip; the owner later replaced or removed it → U4 deletes from the owner's folder only, the member pass doesn't visit ex-members, and the orphan pass skips living persons' folders → the pair stays charged to the ex-member for good.
+- Scores: trigger=plausible, impact=degraded-ux, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: owner to decide (envelope reading): D9/D7 fix if ex-member folders of living persons are in scope, D1 if not.
+- Override: —
+- Outcome: open
