@@ -461,3 +461,126 @@ def test_stale_cleanup_second_run_is_a_no_op(env, caplog):
     assert _files(data_dir) == files
     assert _usage(engine, ids["editor"]) == editor
     assert "stale_deleted=0" in caplog.text
+
+
+# ── U5-R2-1: folders whose person row is gone ────────────────────────────────
+
+def _delete_person(engine, person_id):
+    with Session(engine) as sess:
+        sess.delete(sess.get(DBPerson, person_id))
+        sess.commit()
+
+
+def test_companion_pair_of_deleted_person_is_deleted(env, caplog):
+    engine, ids, data_dir = env
+    stale = str(uuid_lib.uuid4())
+    _put(data_dir, ids["editor"], ids["person"], stale)
+    _delete_person(engine, ids["person"])
+    _set_usage(engine, ids["editor"], 10_000)
+
+    with caplog.at_level(logging.INFO, logger=avatar_move.__name__):
+        avatar_move.move_companion_avatars()
+
+    assert _files(data_dir) == []
+    assert not _folder(data_dir, ids["editor"], ids["person"]).exists()
+    assert _usage(engine, ids["editor"]) == 10_000 - len(FULL) - len(THUMB)
+    assert "orphan_deleted=2" in caplog.text
+
+
+def test_pair_left_after_whole_trip_deleted_is_deleted(env):
+    """The trip and its members are gone too: every user's tree is scanned,
+    not only current members'."""
+    engine, ids, data_dir = env
+    stale = str(uuid_lib.uuid4())
+    _put(data_dir, ids["editor"], ids["person"], stale)
+    with Session(engine) as sess:
+        for m in sess.exec(select(DBProjectMember)).all():
+            sess.delete(m)
+        sess.delete(sess.get(DBPerson, ids["person"]))
+        sess.delete(sess.get(DBProject, ids["project"]))
+        sess.commit()
+    _set_usage(engine, ids["editor"], 10_000)
+
+    avatar_move.move_companion_avatars()
+
+    assert _files(data_dir) == []
+    assert _usage(engine, ids["editor"]) == 10_000 - len(FULL) - len(THUMB)
+
+
+def test_orphan_folder_keeps_non_photo_files_and_current_names(env):
+    engine, ids, data_dir = env
+    with Session(engine) as sess:
+        other = DBPerson(project_id=ids["project"], name="Dan",
+                         avatar_photo=str(uuid_lib.uuid4()))
+        sess.add(other); sess.commit(); sess.refresh(other)
+        other_name = other.avatar_photo
+    _put(data_dir, ids["owner"], ids["person"], ids["name"])
+    gone = 999_999
+    _put(data_dir, ids["viewer"], gone, other_name)
+    _put(data_dir, ids["viewer"], gone, str(uuid_lib.uuid4()))
+    (_folder(data_dir, ids["viewer"], gone) / "notes.txt").write_bytes(b"x")
+
+    avatar_move.move_companion_avatars()
+
+    assert sorted(p.name for p in _folder(data_dir, ids["viewer"], gone).iterdir()) == \
+        sorted([f"{other_name}.jpg", f"{other_name}_thumb.jpg", "notes.txt"])
+
+
+def test_living_persons_owner_folder_untouched_by_orphan_pass(env):
+    engine, ids, data_dir = env
+    _put(data_dir, ids["owner"], ids["person"], ids["name"])
+    _put(data_dir, ids["owner"], ids["person"], str(uuid_lib.uuid4()))
+    _set_usage(engine, ids["owner"], 10_000)
+
+    avatar_move.move_companion_avatars()
+
+    assert len(_files(data_dir)) == 4
+    assert _usage(engine, ids["owner"]) == 10_000
+
+
+def test_living_persons_non_member_folder_untouched_by_orphan_pass(env):
+    """A living person's folder in a user who is not a member of the trip is
+    outside both rules: left alone."""
+    engine, ids, data_dir = env
+    with Session(engine) as sess:
+        stranger = UserInfo(display_name="stranger", email="s@e.com")
+        sess.add(stranger); sess.commit(); sess.refresh(stranger)
+        stranger_id = stranger.id
+    _put(data_dir, ids["owner"], ids["person"], ids["name"])
+    _put(data_dir, stranger_id, ids["person"], str(uuid_lib.uuid4()))
+
+    avatar_move.move_companion_avatars()
+
+    assert len(list(_folder(data_dir, stranger_id, ids["person"]).iterdir())) == 2
+
+
+def test_living_persons_member_folder_keeps_member_rules(env, caplog):
+    """The pending move of a current avatar still happens, a stale name is
+    still cleaned, and nothing is counted as orphaned."""
+    engine, ids, data_dir = env
+    stale = str(uuid_lib.uuid4())
+    _put(data_dir, ids["editor"], ids["person"], ids["name"])
+    _put(data_dir, ids["editor"], ids["person"], stale)
+
+    with caplog.at_level(logging.INFO, logger=avatar_move.__name__):
+        assert avatar_move.move_companion_avatars() == 1
+
+    assert _files(data_dir) == _owner_files(ids)
+    assert "stale_deleted=2 orphan_deleted=0" in caplog.text
+
+
+def test_orphan_cleanup_second_run_is_a_no_op(env, caplog):
+    engine, ids, data_dir = env
+    _put(data_dir, ids["editor"], ids["person"], str(uuid_lib.uuid4()))
+    _delete_person(engine, ids["person"])
+    _set_usage(engine, ids["editor"], 10_000)
+    avatar_move.move_companion_avatars()
+    files, editor = _files(data_dir), _usage(engine, ids["editor"])
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger=avatar_move.__name__):
+        avatar_move.move_companion_avatars()
+
+    assert _files(data_dir) == files
+    assert _usage(engine, ids["editor"]) == editor
+    assert "orphan_deleted=0" in caplog.text

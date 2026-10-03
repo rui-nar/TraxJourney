@@ -25,7 +25,9 @@ Once the moves are done it also deletes the photo files left in a current
 member's folder for a person of that trip that no person references any more
 (owner decision, pre-U4 leftovers), giving the usage back to the member. A
 name any person still holds is never deleted, and the owner's folder is never
-touched.
+touched. A ``people/<id>/`` folder whose person no longer exists at all
+(person or trip deleted) is cleaned the same way in every user's tree, and
+removed once empty (review U5-R2-1).
 """
 from __future__ import annotations
 
@@ -59,9 +61,10 @@ def move_companion_avatars() -> int:
         return 0
 
 
-def _load() -> tuple[list[tuple[int, str | None, str, list[str]]], set[str]]:
+def _load() -> tuple[list[tuple[int, str | None, str, list[str]]], set[str], set[int]]:
     """``(person id, avatar name or None, owner dir, member dirs)`` for every
-    person whose trip still exists, and every avatar name any person holds."""
+    person whose trip still exists, every avatar name any person holds, and
+    the id of every person row, trip or no trip."""
     from api.people import person_owner_dir_id
 
     with get_session() as sess:
@@ -72,6 +75,7 @@ def _load() -> tuple[list[tuple[int, str | None, str, list[str]]], set[str]]:
         names = set(sess.exec(
             select(DBPerson.avatar_photo).where(DBPerson.avatar_photo.is_not(None))
         ).all())
+        person_ids = set(sess.exec(select(DBPerson.id)).all())
         project_ids = {p.project_id for p in people}
         members: dict[int, list[str]] = {}
         if project_ids:
@@ -86,12 +90,12 @@ def _load() -> tuple[list[tuple[int, str | None, str, list[str]]], set[str]]:
             owner_dir = person_owner_dir_id(sess, p)
             out.append((p.id, p.avatar_photo, owner_dir,
                         [m for m in members.get(p.project_id, []) if m != owner_dir]))
-        return out, names
+        return out, names, person_ids
 
 
 def _move_all() -> int:
     # Read everything first: no pooled connection is held through the file work.
-    people, current_names = _load()
+    people, current_names, person_ids = _load()
     counts = {"moved": 0, "present": 0, "missing": 0, "conflict": 0, "failed": 0}
     left_in_place: set[str] = set()
     for person_id, name, owner_dir, member_dirs in people:
@@ -116,11 +120,48 @@ def _move_all() -> int:
             except Exception:  # noqa: BLE001 — one bad folder must not stop the rest
                 _log.exception("stale avatar cleanup failed person_id=%s member=%s",
                                person_id, member)
+    orphaned = _delete_orphaned(person_ids, keep)
     _log.info("avatar move sweep: moved=%d already_in_place=%d not_found=%d "
-              "conflict=%d failed=%d stale_deleted=%d", counts["moved"],
-              counts["present"], counts["missing"], counts["conflict"],
-              counts["failed"], stale)
+              "conflict=%d failed=%d stale_deleted=%d orphan_deleted=%d",
+              counts["moved"], counts["present"], counts["missing"],
+              counts["conflict"], counts["failed"], stale, orphaned)
     return counts["moved"]
+
+
+def _delete_orphaned(person_ids: set[int], keep: set[str]) -> int:
+    """Clean every user's ``people/<id>/`` folder whose person row is gone
+    (review U5-R2-1), and remove it once empty. Returns how many files were
+    deleted.
+
+    A folder whose person still exists is left to the member-only rule above;
+    here, with no row, nothing can point at the files — and the name check
+    against *keep* holds even if SQLite later hands the id to a new person.
+    """
+    from api import people as people_mod
+
+    users_dir = Path(people_mod._DATA_DIR) / "users"
+    if not users_dir.is_dir():
+        return 0
+    deleted = 0
+    for user in sorted(users_dir.iterdir()):
+        people_dir = user / "people"
+        if not _is_id(user.name) or not people_dir.is_dir():
+            continue
+        for folder in sorted(people_dir.iterdir()):
+            if not _is_id(folder.name) or int(folder.name) in person_ids \
+                    or not folder.is_dir():
+                continue
+            try:
+                deleted += _delete_stale(int(folder.name), user.name, keep)
+                if not any(folder.iterdir()):
+                    folder.rmdir()
+            except Exception:  # noqa: BLE001 — one bad folder must not stop the rest
+                _log.exception("orphaned avatar cleanup failed folder=%s", folder)
+    return deleted
+
+
+def _is_id(name: str) -> bool:
+    return name.isascii() and name.isdigit()
 
 
 def _delete_stale(person_id: int, member: str, keep: set[str]) -> int:
@@ -142,11 +183,12 @@ def _delete_stale(person_id: int, member: str, keep: set[str]) -> int:
         stem = path.name[:-len(".jpg")] if path.name.endswith(".jpg") else None
         if stem is None:
             continue
-        name, suffix = (stem[:-len("_thumb")], "_thumb") if stem.endswith("_thumb")             else (stem, "")
+        name, suffix = (stem[:-len("_thumb")], "_thumb") if stem.endswith("_thumb") \
+            else (stem, "")
         if name in keep or photo_file(folder, name, suffix) != path or not path.is_file():
             continue
         unlink_and_record(member, [path])
-        _log.info("stale avatar file deleted person_id=%s member=%s file=%s",
+        _log.info("stale avatar file deleted person_id=%s user=%s file=%s",
                   person_id, member, path.name)
         deleted += 1
     return deleted
