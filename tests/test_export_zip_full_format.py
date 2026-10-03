@@ -140,6 +140,14 @@ def _without_photo_refs(doc: dict) -> dict:
     return doc
 
 
+def _without_photos(doc: dict) -> dict:
+    for item in doc["items"]:
+        content = item.get(item["item_type"])
+        if isinstance(content, dict):
+            content.pop("photos", None)
+    return doc
+
+
 def test_the_zip_s_trip_file_is_the_full_trip_export_with_every_photo(env):
     client, _, ids, _, data = env
     assert _import(client, "Alps", _alps(2, 100)).status_code == 201
@@ -182,10 +190,15 @@ def test_the_zip_s_trip_file_is_the_full_trip_export_with_every_photo(env):
         sorted([f"photos/{mid}/{u}.jpg" for u in mem_photos]
                + [f"journal/{jid}/{u}.jpg" for u in jnl_photos])
 
-    # And the trip file imports back to the same content.
+    # And the trip file imports back to the same content, but for the photo
+    # names: a .traxj carries no photo files, so its import keeps no name
+    # (#469 Decision 9).
     assert _import(client, "Restored", _trip_file(zf)).status_code == 201
     restored = client.get("/api/projects/Restored/export-traxj").content
-    assert _content(restored) == _content(traxj.content)
+    for item in json.loads(restored)["items"]:
+        if item["item_type"] in ("memory", "journal"):
+            assert item[item["item_type"]]["photos"] == []
+    assert _without_photos(_content(restored)) == _without_photos(_content(traxj.content))
 
 
 def test_a_photo_missing_on_disk_is_left_out_but_still_referenced(env):
