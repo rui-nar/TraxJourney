@@ -14,6 +14,7 @@ without taking the guard.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 
@@ -249,3 +250,83 @@ def test_a_stranger_gets_get_current_user_s_401_unread(env, monkeypatch, route, 
     assert got_headers.get("www-authenticate") == expected.headers.get("www-authenticate")
     assert consumed == 0
     assert spy.taken == 0
+
+
+# ── Deadlines: no upload holds the guard indefinitely ────────────────────────
+
+def _drive(app, route: str, chunks: list[bytes], gap: float, stall_after: int | None = None):
+    """Send *chunks* *gap* seconds apart; after *stall_after* of them, send
+    nothing more. Returns (status, body)."""
+    sent: list[dict] = []
+    given = 0
+
+    async def receive():
+        nonlocal given
+        if stall_after is not None and given >= stall_after:
+            await asyncio.sleep(3600)
+        if given < len(chunks):
+            await asyncio.sleep(gap)
+            given += 1
+            return {"type": "http.request", "body": chunks[given - 1],
+                    "more_body": given < len(chunks)}
+        await asyncio.sleep(3600)
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+        "method": "POST", "scheme": "http", "path": route,
+        "raw_path": route.encode(), "root_path": "", "query_string": b"",
+        "headers": [_CT], "client": ("test", 1), "server": ("test", 80),
+    }
+    asyncio.run(asyncio.wait_for(app(scope, receive, send), timeout=30))
+    start = next(m for m in sent if m["type"] == "http.response.start")
+    return start["status"], b"".join(m.get("body", b"") for m in sent
+                                      if m["type"] == "http.response.body")
+
+
+@pytest.mark.parametrize("route", _ROUTES)
+def test_a_stalled_upload_is_cut_off_with_408_and_frees_the_guard(env, monkeypatch, route):
+    app, client, engine, uid = env
+    monkeypatch.setattr(transfer_mod, "UPLOAD_IDLE_TIMEOUT_SECONDS", 0.3)
+    name = b"Trip.zip" if route.endswith("-zip") else b"Trip.traxj"
+    chunks = _chunks(name, b"x" * 8192)
+
+    status, body = _drive(app, route, chunks, gap=0, stall_after=2)
+
+    assert status == 408
+    assert "too slow" in json.loads(body)["detail"]
+    assert _guard_free()
+    assert _import(client, "After").status_code == 201
+    assert _names(engine, uid) == {"After"}
+
+
+@pytest.mark.parametrize("route", _ROUTES)
+def test_a_trickling_upload_is_cut_off_at_the_total_deadline(env, monkeypatch, route):
+    """Never idle, yet never done: the total deadline still ends it."""
+    app, client, engine, uid = env
+    monkeypatch.setattr(transfer_mod, "UPLOAD_IDLE_TIMEOUT_SECONDS", 5)
+    monkeypatch.setattr(transfer_mod, "UPLOAD_TOTAL_TIMEOUT_SECONDS", 0.5)
+    name = b"Trip.zip" if route.endswith("-zip") else b"Trip.traxj"
+    chunks = _chunks(name, b"x" * 200 * 1024)  # 200 chunks at 50 ms: 10 s
+
+    status, body = _drive(app, route, chunks, gap=0.05)
+
+    assert status == 408
+    assert json.loads(body)["detail"]
+    assert _guard_free()
+    assert _import(client, "After").status_code == 201
+
+
+def test_an_upload_within_the_deadlines_is_imported(env, monkeypatch):
+    app, _client, engine, uid = env
+    monkeypatch.setattr(transfer_mod, "UPLOAD_IDLE_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(transfer_mod, "UPLOAD_TOTAL_TIMEOUT_SECONDS", 5)
+
+    status, body = _drive(app, "/api/projects/import", _chunks(b"Trip.traxj", _trip()), gap=0.05)
+
+    assert status == 201, body
+    assert _names(engine, uid) == {"Trip"}
+    assert _guard_free()

@@ -132,6 +132,19 @@ _STAGING_PREFIX = "import-"
 #: as a single process, so a process-wide semaphore covers every import.
 _import_guard = threading.BoundedSemaphore(1)
 
+#: Longest wait, in seconds, for the next piece of an import's body. The
+#: import guard is held while the body arrives, and neither uvicorn nor the
+#: reverse proxy limits how slowly a body may be sent, so a stalled or
+#: trickling upload would keep every other import refused (owner decision,
+#: #469 review). A working connection sends something well within a minute.
+UPLOAD_IDLE_TIMEOUT_SECONDS = 60
+
+#: Longest time, in seconds, an import's whole body may take to arrive, for
+#: the same reason: a body that keeps trickling is never idle. 30 minutes
+#: fits the 1 GB ZIP cap at about 4.7 Mbit/s, and a 50 MB .traxj at well
+#: under 1 Mbit/s.
+UPLOAD_TOTAL_TIMEOUT_SECONDS = 30 * 60
+
 
 def _size_text(limit: int) -> str:
     gb = 1024 * 1024 * 1024
@@ -145,6 +158,14 @@ def _too_large(limit: Optional[int] = None) -> HTTPException:
         status_code=413,
         detail=(f"This file is too large to import. The limit is "
                 f"{_size_text(MAX_IMPORT_BYTES if limit is None else limit)}."),
+    )
+
+
+def _upload_too_slow() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_408_REQUEST_TIMEOUT,
+        detail="The upload was too slow or stalled, so the import was stopped. "
+               "Check your connection and try again.",
     )
 
 
@@ -201,8 +222,10 @@ class _CappedUploadRoute(APIRoute):
 
     Before that, the caller is authenticated (401) and, after it, the import
     guard is taken (503 when another import holds it), both before any of the
-    body is read. The guard is released once the handler has returned or
-    raised, a 413 cut-off included.
+    body is read. A body that stalls or takes too long to arrive is cut off
+    with 408, so no upload holds the guard indefinitely. The guard is
+    released once the handler has returned or raised, a 413 or 408 cut-off
+    included.
 
     :meth:`file_limit` is the largest file the route takes, read per request.
     """
@@ -228,10 +251,16 @@ class _CappedUploadRoute(APIRoute):
             try:
                 receive = request.receive
                 seen = 0
+                deadline = time.monotonic() + UPLOAD_TOTAL_TIMEOUT_SECONDS
 
                 async def bounded_receive():
                     nonlocal seen
-                    message = await receive()
+                    wait = min(UPLOAD_IDLE_TIMEOUT_SECONDS, deadline - time.monotonic())
+                    try:
+                        with anyio.fail_after(max(wait, 0)):
+                            message = await receive()
+                    except TimeoutError:
+                        raise _upload_too_slow() from None
                     if message["type"] == "http.request":
                         seen += len(message.get("body", b""))
                         if seen > limit:
@@ -385,6 +414,7 @@ router.add_api_route(
         409: {"description": "The name is taken and on_conflict was not given; "
                              "the body's name field holds it"},
         413: {"description": "The file is larger than MAX_IMPORT_BYTES"},
+        408: {"description": "The upload stalled, or took too long to arrive"},
         503: {"description": "Another trip import is in progress"},
     },
     route_class_override=_CappedUploadRoute,
@@ -611,6 +641,7 @@ router.add_api_route(
         409: {"description": "The name is taken and on_conflict was not given; "
                              "the body's name field holds it"},
         413: {"description": "The file is larger than MAX_ZIP_IMPORT_BYTES"},
+        408: {"description": "The upload stalled, or took too long to arrive"},
         503: {"description": "Another trip import is in progress"},
     },
     route_class_override=_CappedZipUploadRoute,
