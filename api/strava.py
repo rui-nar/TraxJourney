@@ -236,7 +236,7 @@ def strava_connect(current_user: Annotated[dict, Depends(get_current_user)]):
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Strava not configured (missing client_id/secret in config.json)",
         )
-    from api.deps import create_access_token
+    from api.deps import create_strava_oauth_state
     from models.user import UserInfo
     from sqlmodel import select
 
@@ -247,7 +247,7 @@ def strava_connect(current_user: Annotated[dict, Depends(get_current_user)]):
         ).first()
         if user_info is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-        state_token = create_access_token(user_info)
+        state_token = create_strava_oauth_state(user_info.id)
 
     oauth = OAuth2Session(_cfg)
     oauth.redirect_uri = _CALLBACK_URI
@@ -268,13 +268,11 @@ def strava_callback(
     if not state:
         return RedirectResponse(f"{_FRONTEND_ORIGIN}/oauth_callback.html?strava=error&reason=no_state")
 
-    from api.deps import decode_token
-    try:
-        payload = decode_token(state)
-    except HTTPException:
+    # Only a state issued by strava_connect is accepted — a session token is not.
+    from api.deps import decode_strava_oauth_state
+    user_info_id = decode_strava_oauth_state(state)
+    if user_info_id is None:
         return RedirectResponse(f"{_FRONTEND_ORIGIN}/oauth_callback.html?strava=error&reason=invalid_state")
-
-    user_info_id = int(payload["sub"])
 
     try:
         oauth = OAuth2Session(_cfg)
