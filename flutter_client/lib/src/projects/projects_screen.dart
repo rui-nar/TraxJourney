@@ -343,6 +343,7 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
                                           notifier.uploadProjectFile(
                                         bytes: picked.bytes,
                                         name: name,
+                                        extension: picked.extension,
                                         onConflict: choice,
                                       ),
                                       takeNameConflict: () {
