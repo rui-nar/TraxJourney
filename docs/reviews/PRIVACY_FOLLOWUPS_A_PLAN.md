@@ -143,3 +143,23 @@ Owner decision 2026-10-03: apply R4-1 and stop plan reviews; U6's code review af
 Envelope question from the reviewer, owner answer 2026-10-03: removal (and the R4-1 tail rule) deletes a row only when the caller owns that activity or is the trip owner. An editor removing someone else's activity only unlinks it; the owner's later disconnect or own removal cleans it up. Trip deletion is done by the trip owner, so it keeps the any-owner rule (R1-4, R3-4).
 
 Owner approval 2026-10-03: U4-R1-1 Guard, U4-R1-2 Defer, U6-R1-1 Guard, as triaged.
+
+## Unit U5 review — round 1, 2026-10-04, reviewed at df28a0b8 (DELIVERY.md §5 point 3)
+
+### U5-R1-1 — A member's thumbnail is deleted uncopied when the owner-side thumb path is refused by photo_file
+- Trigger: The owner's thumb path resolves outside its folder (a hand-placed link) or resolve() raises → the pair is skipped without copying → the member's thumb is still deleted and its bytes moved to the owner's count.
+- Scores: trigger=theoretical, impact=data-loss, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Guard (D4, F2), flagged to the owner. Guard: raise in the verify loop when src exists and dst is None, so nothing is handed over and the person counts as failed.
+- Override: —
+- Outcome: open
+
+### U5-R1-2 — An avatar whose move failed is stranded in the member's folder once the user replaces or removes it
+- Trigger: The sweep hits an OSError → the avatar stays in the member's folder → it 404s → the user re-uploads or deletes → U4 deletes the old name from the owner's folder only → the member's files stay forever, counted against the member.
+- Scores: trigger=plausible, impact=degraded-ux, detect=silent, later=cheap, fix=M/shared, confidence=verified
+- Decision: Guard (D9). Guard: in api/people.py, before deleting an old avatar (replace, avatar delete, person delete), warn when the owner's folder doesn't hold its full-size file.
+- Override: —
+- Outcome: open
+
+Envelope question from the reviewer, owner answer 2026-10-04: pre-U4 leftovers (photo files in current members' people/<id>/ folders that no person references) are IN scope: the U5 sweep also deletes them and gives back their usage. U5 gets a round-2 review for it.
+
+Owner approval 2026-10-04: U5-R1-1 Guard (flagged, accepted as a guard), U5-R1-2 Guard (U5 Scope widened to api/people.py for it, X3).
