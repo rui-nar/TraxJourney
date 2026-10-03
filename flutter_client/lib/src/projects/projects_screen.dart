@@ -315,7 +315,7 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Import a .$kProjectFileExtension project file.',
+                          'Import a .$kProjectFileExtension or .$kProjectZipExtension trip file.',
                           style: theme.textTheme.bodySmall,
                         ),
                         const SizedBox(height: 16),
@@ -368,7 +368,7 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
                           icon: const Icon(Icons.upload_rounded),
                           label: Text(notifier.isLoading
                               ? 'Importing…'
-                              : 'Choose .$kProjectFileExtension file'),
+                              : 'Choose a .$kProjectFileExtension or .$kProjectZipExtension file'),
                         ),
                       ],
                     ),

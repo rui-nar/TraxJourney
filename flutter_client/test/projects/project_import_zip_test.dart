@@ -10,7 +10,6 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:traxjourney_client/src/projects/import_conflict_dialog.dart';
 import 'package:traxjourney_client/src/projects/projects_notifier.dart';
 import 'package:traxjourney_client/src/projects/projects_service.dart';
 
@@ -49,8 +48,7 @@ void main() {
       final (notifier, post) = await _upload('zip');
 
       expect(post!.url.path, '/api/projects/import-zip');
-      expect((post as http.MultipartRequest).files.single.filename,
-          'Alps.zip');
+      expect((post as http.Request).body, contains('filename="Alps.zip"'));
       expect(notifier.error, isNull);
     });
 
@@ -58,8 +56,7 @@ void main() {
       final (_, post) = await _upload('traxj');
 
       expect(post!.url.path, '/api/projects/import');
-      expect((post as http.MultipartRequest).files.single.filename,
-          'Alps.traxj');
+      expect((post as http.Request).body, contains('filename="Alps.traxj"'));
     });
 
     test('with no extension given, the upload is a .traxj', () async {
@@ -86,7 +83,7 @@ void main() {
         final (_, post) = await _upload('zip', onConflict: choice);
 
         expect(post!.url.path, '/api/projects/import-zip');
-        expect(post!.url.queryParameters['on_conflict'], sent);
+        expect(post.url.queryParameters['on_conflict'], sent);
       });
     }
   });

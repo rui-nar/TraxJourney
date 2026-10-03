@@ -152,14 +152,15 @@ class ProjectsNotifier extends ChangeNotifier {
   }
 
   /// Step 2 of import: upload [bytes] as project [name]. A `zip` [extension]
-  /// goes to `/import-zip`, a `traxj` one to `/import`.
+  /// goes to `/import-zip`, a `traxj` one (the default) to `/import`. A proxy's bare 413 names the
+  /// file type's cap only when [extension] is given.
   /// Returns the saved project name on success, null on failure — or when the
   /// name is taken and no [onConflict] was given, in which case
   /// [nameConflict] holds it.
   Future<String?> uploadProjectFile({
     required List<int> bytes,
     required String name,
-    String extension = kProjectFileExtension,
+    String? extension,
     ImportConflictChoice? onConflict,
   }) async {
     _isLoading = true;
@@ -170,7 +171,7 @@ class ProjectsNotifier extends ChangeNotifier {
     try {
       final data = await _uploadBytes(
           bytes: bytes,
-          filename: '$name.$extension',
+          filename: '$name.${extension ?? kProjectFileExtension}',
           onConflict: onConflict);
       await load();
       return data['name'] as String?;
@@ -178,7 +179,7 @@ class ProjectsNotifier extends ChangeNotifier {
       _nameConflict = _conflictName(e);
       if (_nameConflict == null) {
         _quotaError = _quota(e);
-        _error = _msg(e);
+        _error = _msg(e, extension: extension);
       }
       _isLoading = false;
       notifyListeners();
