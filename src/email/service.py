@@ -42,7 +42,7 @@ class ConsoleEmailService(EmailService):
     """Logs the email instead of sending it. Never raises — the safe default
     for dev and for any deployment without SMTP configured.
 
-    The body (and any html_body) is logged only when EMAIL_CONSOLE_SHOW_BODY=1
+    The text body is logged only when EMAIL_CONSOLE_SHOW_BODY=1
     is set — emails carry verification and invite links with bearer tokens in
     them, and logging those by default would hand out working credentials to
     anyone with log access."""

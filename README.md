@@ -126,7 +126,7 @@ These are read by the backend at **runtime** (`os.getenv`) — a value passed to
 | `DATABASE_URL` | SQLAlchemy URL for the DB (defaults to local `traxjourney.db`; the server refuses to start on that default next to an old `viewtripweb.db` until it is renamed) |
 | `GOOGLE_TRANSLATE_API_KEY` | Enables memory translation endpoints (optional) |
 | `GOOGLE_CLIENT_ID` | Google OAuth client id; takes priority over `config.json` (optional) |
-| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USERNAME` / `SMTP_PASSWORD` / `MAIL_FROM` | Transactional email via any provider's SMTP relay (optional — without `SMTP_HOST`, emails are logged to the console instead of sent). `MAIL_FROM` must be on a domain verified with the provider, or mail is delivered to spam |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USERNAME` / `SMTP_PASSWORD` / `MAIL_FROM` | Transactional email via any provider's SMTP relay (optional — without `SMTP_HOST`, emails are not sent: only their recipient and subject are logged, so users cannot verify their email address or receive invites. `EMAIL_CONSOLE_SHOW_BODY=1` also logs the body, links included, for local debugging). `MAIL_FROM` must be on a domain verified with the provider, or mail is delivered to spam |
 | `FRONTEND_ORIGIN` | Base URL for links in outgoing mail (invites, email verification) — must be where users actually reach the app |
 | `APP_VERSION` | Running version; set automatically from the git tag at image build |
 | `BILLING_ENABLED` / `STRIPE_*` / `FREE_MAX_*` / `TIER_N_MAX_*` | Tier plans and payments (optional — **unset means no billing at all: self-hosted instances are never metered**). See [docs/BILLING.md](docs/BILLING.md) |
