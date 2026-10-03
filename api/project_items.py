@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Annotated, Dict, List
 
 from models.db import get_session
+from models.project_db import DBActivity
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -63,23 +64,48 @@ def delete_item(
     # timeline item. remove_item only unlinks the item, so without this the
     # row is orphaned in the activity table and its negative id gets reused
     # by the next split → UNIQUE constraint failure. Delete the row once no
-    # remaining item references it — and only if it is the trip's to delete:
-    # its owner is the trip's owner or a current member. Otherwise the item
-    # is unlinked and the row left in place, unreferenced; nothing prunes it
-    # automatically, but it costs no one quota and its owner can still
-    # delete it from a trip of their own.
+    # remaining item references it — and only if it is the trip's to delete.
+    #
+    # A tail of a Strava activity is: a tail belongs to one trip, so the
+    # item just removed proves it is this one's, whoever cut it — a
+    # companion who has since left included (issue #509). Its root is then
+    # reconsidered, since the tail was what kept it.
+    #
+    # Any other local row only if its owner is the trip's owner or a current
+    # member. Otherwise the item is unlinked and the row left in place,
+    # unreferenced; nothing prunes it automatically, but it costs no one
+    # quota and its owner can still delete it from a trip of their own.
+    #
+    # A Strava row (positive id) is deleted once no trip references it, as
+    # nothing else would ever reach it again (issue #509).
     gone = removed["item"]
+    gone_id = gone.activity_id or 0
     if (
         gone.item_type == "activity"
-        and (gone.activity_id or 0) < 0
+        and gone_id != 0
         and not any(
-            it.item_type == "activity" and it.activity_id == gone.activity_id
+            it.item_type == "activity" and it.activity_id == gone_id
             for it in project.items
         )
     ):
         with get_session() as sess:
-            if _repo.activity_rewritable_by_trip(sess, project_row_id, gone.activity_id):
-                _repo.delete_local_activity(sess, project_row_id, gone.activity_id)
+            if gone_id > 0:
+                _repo.delete_unreferenced_strava_activities(sess, owner_id, ids=[gone_id])
+            else:
+                tail = sess.get(DBActivity, gone_id)
+                strava_root = (
+                    tail.split_root_id
+                    if tail is not None
+                    and (tail.split_root_id or 0) > 0
+                    and tail.source in (None, "", "strava")
+                    else None
+                )
+                if strava_root is not None or _repo.activity_rewritable_by_trip(
+                        sess, project_row_id, gone_id):
+                    deleted = _repo.delete_local_activity(sess, project_row_id, gone_id)
+                    if deleted and strava_root is not None:
+                        _repo.delete_unreferenced_strava_activities(
+                            sess, owner_id, ids=[strava_root])
     bust_geo_cache(owner_id, name)
     queue_stats_refresh(background_tasks, owner_id, name)
     queue_share_tiles_refresh(background_tasks, owner_id, name)

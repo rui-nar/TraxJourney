@@ -6,13 +6,15 @@ for the composed class and module docstring.
 from __future__ import annotations
 
 import json
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional, Set
 
-from sqlalchemy import delete
+from sqlalchemy import and_, delete, exists, or_, update
+from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
 from models.db import get_session
 from models.project_db import DBActivity, DBActivityGeoPrepared, DBProject, DBProjectItem, DBProjectMember
+from models.user import UserInfo
 from src.models.activity import Activity, is_activity_id
 from src.models.prepared_geo import prepare_polyline
 from src.models.simplify import PREPARED_GEO_VERSION
@@ -20,6 +22,17 @@ from src.project.local_ids import allocate_local_activity_id
 from src.project.elevation_downsample import downsample_elevation
 from src.project.repo_core import bump_lock_version, check_and_bump_lock_version
 from src.utils.encryption_check import is_encrypted_envelope
+from src.utils.logging import get_logger
+
+_log = get_logger(__name__)
+
+# Rows imported from Strava: ``source`` is NULL on every row that predates the
+# column, and "strava" is accepted for any writer that spells it out. A GPX
+# import says "gpx" and is never pruned here (issue #509).
+_STRAVA_ORIGIN = or_(DBActivity.source.is_(None), DBActivity.source.in_(("", "strava")))
+
+# Bound on the ids one IN (...) carries, well under SQLite's variable limit.
+_ID_CHUNK = 500
 
 
 def _low_res_ep_json(ep_json: Optional[str]) -> Optional[str]:
@@ -732,6 +745,138 @@ class ActivityMixin:
             self._renumber_split_family(sess, root_id)
         sess.commit()
         return True
+
+    def delete_unreferenced_strava_activities(
+        self,
+        sess: Session,
+        user_info_id: int,
+        ids: Optional[Iterable[int]] = None,
+        tail_ids: Optional[Iterable[int]] = None,
+    ) -> Set[int]:
+        """Delete Strava activity rows no trip references any more (issue #509).
+
+        A Strava row is shared by every trip that holds it, so it may go only
+        once nothing points at it: no project item's ``activity_id``, and no
+        other activity's ``split_root_id`` or ``split_parent_id`` (a split
+        tail still being in a trip keeps its root). Its prepared geometry goes
+        with it. GPX and other local rows are never touched.
+
+        *ids* names the rows to consider, **whoever owns them**: an owner
+        removing an activity a companion imported frees it too. Without *ids*,
+        every Strava row of *user_info_id* is considered (a disconnect).
+
+        *tail_ids* are split tails a deleted trip held. Those of a Strava
+        family that no item references are deleted first, as one set, so a
+        tail named only by another tail of the set goes too. Their roots are
+        then considered with *ids* and renumbered if they survive. Given
+        *ids*, a WARNING names any row considered and kept only by tails no
+        item references — a split committed while the trip was being deleted
+        (plan R3-3).
+
+        One write transaction, the write lock taken first (the no-op UPDATE
+        of ``src.billing.subscriptions.lock_account``): an add of the same
+        activity to another trip either committed before the "unreferenced"
+        check, so the row is kept, or waits and recreates it after the
+        delete — never commits between the check and the delete. Anything
+        the caller already wrote in *sess* commits with it.
+
+        Returns the ids of the projects whose items were renamed by the
+        renumbering, after advancing their ``lock_version``.
+        """
+        sess.execute(
+            update(UserInfo)
+            .where(UserInfo.id == user_info_id)
+            .values(created_at=UserInfo.created_at)
+        )
+
+        referenced = exists().where(DBProjectItem.activity_id == DBActivity.id)
+        roots: Set[int] = set()
+        tails = sorted({t for t in (tail_ids or ()) if t < 0})
+        if tails:
+            doomed = sess.exec(
+                select(DBActivity)
+                .where(
+                    DBActivity.id.in_(tails),
+                    DBActivity.split_root_id > 0,
+                    _STRAVA_ORIGIN,
+                    ~referenced,
+                )
+                .execution_options(populate_existing=True)
+            ).all()
+            parent_of = {t.id: t.split_parent_id for t in doomed}
+            # A surviving piece cut out of a doomed one is adopted by its
+            # nearest surviving ancestor, as delete_local_activity does.
+            if parent_of:
+                for child in sess.exec(
+                    select(DBActivity).where(
+                        DBActivity.split_parent_id.in_(list(parent_of)),
+                        DBActivity.id.not_in(list(parent_of)),
+                    )
+                ).all():
+                    parent = child.split_parent_id
+                    while parent in parent_of:
+                        parent = parent_of[parent]
+                    child.split_parent_id = parent
+                    sess.add(child)
+            roots = {t.split_root_id for t in doomed}
+            self._delete_activity_rows(sess, list(parent_of))
+
+        considered = DBActivity.id.in_(set(ids or ()) | roots)
+        if ids is None:
+            considered = or_(DBActivity.user_info_id == user_info_id, considered)
+        other = aliased(DBActivity)
+        named = exists().where(
+            other.id != DBActivity.id,
+            or_(other.split_root_id == DBActivity.id,
+                other.split_parent_id == DBActivity.id),
+        )
+        strava = and_(DBActivity.id > 0, _STRAVA_ORIGIN, considered, ~referenced)
+        self._delete_activity_rows(
+            sess, list(sess.exec(select(DBActivity.id).where(strava, ~named)).all()))
+
+        if ids is not None:
+            for kept in sess.exec(select(DBActivity.id).where(strava)).all():
+                namers = list(sess.exec(select(DBActivity.id).where(
+                    or_(DBActivity.split_root_id == kept,
+                        DBActivity.split_parent_id == kept),
+                    DBActivity.id != kept,
+                )).all())
+                if all(n < 0 for n in namers) and not sess.exec(
+                    select(DBProjectItem.id).where(DBProjectItem.activity_id.in_(namers))
+                ).first():
+                    _log.warning(
+                        "activity %s kept only by split tails no trip holds: %s",
+                        kept, sorted(namers))
+
+        renamed: Set[int] = set()
+        for root_id in sorted(roots):
+            if sess.get(DBActivity, root_id) is None:
+                continue
+            family = select(DBActivity.id).where(
+                (DBActivity.id == root_id) | (DBActivity.split_root_id == root_id))
+            holders = set(sess.exec(select(DBProjectItem.project_id).where(
+                DBProjectItem.activity_id.in_(family))).all())
+            # Bump before renaming (issue #173): the names are part of what a
+            # native client caches under that counter.
+            for project_id in sorted(holders - renamed):
+                bump_lock_version(sess, project_id)
+            renamed |= holders
+            self._renumber_split_family(sess, root_id)
+        sess.commit()
+        return renamed
+
+    @staticmethod
+    def _delete_activity_rows(sess: Session, ids: List[int]) -> None:
+        """Delete activity rows and their prepared geometry, in bounded batches.
+
+        SQLite is not enforcing the foreign key (models/db.py sets no PRAGMA
+        foreign_keys), so the prepared-geometry rows go explicitly.
+        """
+        for i in range(0, len(ids), _ID_CHUNK):
+            chunk = ids[i:i + _ID_CHUNK]
+            sess.execute(delete(DBActivityGeoPrepared).where(
+                DBActivityGeoPrepared.activity_id.in_(chunk)))
+            sess.execute(delete(DBActivity).where(DBActivity.id.in_(chunk)))
 
     def force_update_activity(
         self, sess: Session, user_info_id: int, act: Activity,
