@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import json
 import struct
+import tempfile
 import warnings
 import zipfile
 import zlib
@@ -335,9 +336,116 @@ def test_an_archive_without_a_trip_file_is_refused(tmp_path):
     _refused(_zip([(f"photos/7/{U1}.jpg", _jpeg())]), tmp_path / "s", match="no .* trip file")
 
 
-def test_a_trip_file_below_the_top_level_is_not_taken(tmp_path):
-    _refused(_zip([("Alps/Alps.traxj", _trip_bytes(_project()))]), tmp_path / "s",
+def test_a_trip_file_in_the_one_top_level_folder_is_taken(tmp_path):
+    """Once refused; accepted since the owner's 2026-10-03 envelope decision
+    (#469 integrated review, round 1): it is a re-zipped export."""
+    project, staged = _read(_zip([("Alps/Alps.traxj", _trip_bytes(_project()))]), tmp_path / "s")
+    assert project.name == "Alps" and staged == {}
+
+
+def test_a_trip_file_two_folders_down_is_not_taken(tmp_path):
+    _refused(_zip([("a/b/x.traxj", _trip_bytes(_project()))]), tmp_path / "s",
              match="no .* trip file")
+
+
+# ── An export unzipped and zipped again ───────────────────────────────────────
+
+def _rezipped(folder="Alps", extra=()) -> bytes:
+    """An export as Finder's "Compress" makes it from the unzipped folder:
+    folder entries, every file under *folder*/, and __MACOSX/ AppleDouble
+    files beside them."""
+    photos = {f"photos/7/{U1}.jpg": _jpeg(), f"photos/7/{U2}.jpg": _jpeg((300, 900)),
+              f"journal/3/{U3}.jpg": _jpeg((50, 50))}
+    entries = [(f"{folder}/", b""), (f"{folder}/Alps.traxj", _trip_bytes(_project())),
+               (f"{folder}/photos/", b""), (f"{folder}/photos/7/", b""),
+               (f"{folder}/journal/", b""), (f"{folder}/journal/3/", b"")]
+    entries += [(f"{folder}/{n}", d) for n, d in photos.items()]
+    entries += [("__MACOSX/", b""), (f"__MACOSX/{folder}/", b""),
+                (f"__MACOSX/{folder}/._Alps.traxj", b"\x00\x05\x16\x07"),
+                (f"__MACOSX/{folder}/photos/7/._{U1}.jpg", b"\x00\x05\x16\x07"),
+                (f"{folder}/._Alps.traxj", b"\x00\x05\x16\x07")]
+    return _zip([*entries, *extra])
+
+
+def test_a_rezipped_export_round_trips_with_its_photos(tmp_path):
+    staging = tmp_path / "s"
+    project, staged = _read(_rezipped(), staging)
+    assert project.name == "Alps"
+    assert {k: set(v) for k, v in staged.items()} == {
+        ("memories", 7): {U1, U2}, ("journal", 3): {U3}}
+    assert _staged_files(staging) == sorted([
+        f"journal/3/{U3}.jpg", f"journal/3/{U3}_thumb.jpg",
+        f"memories/7/{U1}.jpg", f"memories/7/{U1}_thumb.jpg",
+        f"memories/7/{U2}.jpg", f"memories/7/{U2}_thumb.jpg",
+    ])
+
+
+def _dot_underscore_trip() -> Project:
+    project = _project(memory_photos=(U1,), journal_photos=())
+    project.name = "._Alps"
+    return project
+
+
+def test_the_export_of_a_trip_named_dot_underscore_imports(tmp_path):
+    """``._Alps.traxj`` with no ``Alps.traxj`` beside it is the trip file, not
+    AppleDouble metadata (IR2-2)."""
+    data = _zip([("._Alps.traxj", _trip_bytes(_dot_underscore_trip())),
+                 (f"photos/7/{U1}.jpg", _jpeg())])
+    project, staged = _read(data, tmp_path / "s")
+    assert project.name == "._Alps" and set(staged[("memories", 7)]) == {U1}
+
+
+def test_a_trip_named_dot_underscore_imports_when_rezipped(tmp_path):
+    data = _zip([("._Alps/._Alps.traxj", _trip_bytes(_dot_underscore_trip())),
+                 (f"._Alps/photos/7/{U1}.jpg", _jpeg()),
+                 ("__MACOSX/._Alps/._._Alps.traxj", b"\x00\x05\x16\x07")])
+    project, staged = _read(data, tmp_path / "s")
+    assert project.name == "._Alps" and set(staged[("memories", 7)]) == {U1}
+
+
+def test_an_appledouble_file_beside_the_trip_file_is_not_a_second_trip(tmp_path):
+    data = _export(extra=[("._Alps.traxj", b"\x00\x05\x16\x07")])
+    project, _ = _read(data, tmp_path / "s")
+    assert project.name == "Alps"
+
+
+def test_an_archive_with_two_top_level_folders_is_refused(tmp_path):
+    trip = _trip_bytes(_project())
+    _refused(_zip([("Alps/Alps.traxj", trip), (f"Other/photos/7/{U1}.jpg", _jpeg())]),
+             tmp_path / "s", match="no .* trip file")
+
+
+def test_a_file_beside_the_folder_is_refused(tmp_path):
+    _refused(_zip([("Alps/Alps.traxj", _trip_bytes(_project())), ("readme.txt", b"hi")]),
+             tmp_path / "s", match="no .* trip file")
+
+
+@pytest.mark.parametrize("folder", ["..", ".", ""], ids=["dotdot", "dot", "absolute"])
+def test_a_dot_or_absolute_folder_is_never_a_root(tmp_path, folder):
+    _refused(_zip([(f"{folder}/Alps.traxj", _trip_bytes(_project()))]), tmp_path / "s",
+             match="no .* trip file")
+
+
+def test_traversal_names_under_the_folder_are_ignored_and_never_written(tmp_path):
+    staging = tmp_path / "deep" / "import-x"
+    data = _rezipped(extra=[
+        ("Alps/../evil.jpg", _jpeg()),
+        ("Alps/../../evil.jpg", _jpeg()),
+        ("Alps/photos/7/../../../evil.jpg", _jpeg()),
+        (f"Alps/photos/7/{U1}/../../../../evil.jpg", _jpeg()),
+        ("Alps/photos\\7\\evil.jpg", _jpeg()),
+    ])
+    _, staged = _read(data, staging)
+    assert {k: set(v) for k, v in staged.items()} == {
+        ("memories", 7): {U1, U2}, ("journal", 3): {U3}}
+    assert [p for p in tmp_path.rglob("*") if "evil" in p.name] == []
+
+
+def test_a_root_level_export_ignores_photos_under_a_folder(tmp_path):
+    """With the trip file at the top level, the root is the top level."""
+    data = _export(photos={f"Alps/photos/7/{U1}.jpg": _jpeg()})
+    _, staged = _read(data, tmp_path / "s")
+    assert staged == {}
 
 
 def test_an_archive_with_two_trip_files_is_refused(tmp_path):
@@ -398,3 +506,188 @@ def test_a_damaged_photo_is_refused(tmp_path):
     at = data.find(photo) + len(photo) // 2
     data[at:at + 16] = bytes(b ^ 0xFF for b in data[at:at + 16])  # CRC no longer matches
     _refused(bytes(data), tmp_path / "s", match="damaged or unreadable")
+
+
+def test_a_directory_name_flagged_utf8_that_isnt_is_refused(tmp_path):
+    """ZipFile() decodes a name with flag 0x800 as UTF-8 (IR1-1)."""
+    data = _export(extra=[("\u00e9.txt", b"x")])  # non-ASCII: zipfile sets 0x800
+    assert data.count("\u00e9".encode()) == 2  # local header and directory
+    _refused(data.replace("\u00e9".encode(), b"\xff\xfe"), tmp_path / "s", match="not a ZIP archive")
+
+
+def test_a_local_name_flagged_utf8_that_isnt_is_refused(tmp_path):
+    """Opening an entry decodes its local header name by that header's flag (IR1-1)."""
+    name = f"photos/7/{U1}.jpg".encode()
+    data = bytearray(_export(photos={f"photos/7/{U1}.jpg": _jpeg()}))
+    lh = data.find(b"PK\x03\x04")
+    while data[lh + 30: lh + 30 + len(name)] != name:
+        lh = data.find(b"PK\x03\x04", lh + 4)
+    struct.pack_into("<H", data, lh + 6, struct.unpack_from("<H", data, lh + 6)[0] | 0x800)
+    data[lh + 30 + len(name) - 1] = 0xFF
+    _refused(bytes(data), tmp_path / "s", match=f"photo photos/7/{U1}.jpg .* damaged or unreadable")
+
+
+def _zstd_supported() -> bool:
+    try:
+        zipfile.ZipFile(io.BytesIO(), "w").writestr(
+            zipfile.ZipInfo("x"), b"x", compress_type=zipfile.ZIP_ZSTANDARD)
+    except (AttributeError, RuntimeError, NotImplementedError, ImportError):
+        return False
+    return True
+
+
+_OTHER_METHODS = [
+    pytest.param(zipfile.ZIP_BZIP2, "bzip2", id="bzip2"),
+    pytest.param(zipfile.ZIP_LZMA, "lzma", id="lzma"),
+    pytest.param(getattr(zipfile, "ZIP_ZSTANDARD", 93), "zstd", id="zstd",
+                 marks=pytest.mark.skipif(not _zstd_supported(),
+                                          reason="no Zstandard support in this zipfile")),
+]
+
+
+def _with_photo_in(compression) -> bytes:
+    """An export whose trip file is deflated and whose photo uses *compression*."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(zipfile.ZipInfo("Alps.traxj"), _trip_bytes(_project()),
+                    compress_type=zipfile.ZIP_DEFLATED)
+        zf.writestr(zipfile.ZipInfo(f"photos/7/{U1}.jpg"), _jpeg((900, 900), color=(10, 200, 90)),
+                    compress_type=compression)
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("compression,method", _OTHER_METHODS)
+def test_a_photo_with_corrupt_compressed_data_is_refused(tmp_path, compression, method):
+    """Corrupt bzip2, LZMA or Zstandard data each raise an error of their own
+    decompressor (IR1-1, IR2-1); the method is refused before the entry is
+    opened (owner decision, 2026-10-03)."""
+    data = bytearray(_with_photo_in(compression))
+    name = f"photos/7/{U1}.jpg".encode()
+    lh = data.find(b"PK\x03\x04")
+    while data[lh + 30: lh + 30 + len(name)] != name:
+        lh = data.find(b"PK\x03\x04", lh + 4)
+    size = struct.unpack_from("<L", data, lh + 18)[0]
+    start = lh + 30 + len(name) + struct.unpack_from("<H", data, lh + 28)[0]
+    for at in range(start + 8, start + size - 8, 7):
+        data[at] ^= 0x5A  # garble the stream throughout, past its header
+    _refused(bytes(data), tmp_path / "s",
+             match=rf"unsupported compression method \({method}\)\. Re-create it as a standard ZIP")
+
+
+@pytest.mark.parametrize("compression,method", _OTHER_METHODS)
+def test_an_intact_photo_in_another_method_is_refused(tmp_path, compression, method):
+    _refused(_with_photo_in(compression), tmp_path / "s",
+             match=rf"unsupported compression method \({method}\)")
+
+
+def test_a_trip_file_in_another_method_is_refused_before_it_is_opened(tmp_path, monkeypatch):
+    data = _zip([("Alps.traxj", _trip_bytes(_project()))], compression=zipfile.ZIP_BZIP2)
+    def no_open(*a, **k):
+        pytest.fail("the entry was opened")
+    monkeypatch.setattr(zipfile.ZipFile, "open", no_open)
+    _refused(data, tmp_path / "s", match=r"unsupported compression method \(bzip2\)")
+
+
+def test_an_unread_entry_in_another_method_does_not_block_the_import(tmp_path):
+    """Only the entries read are checked: every other entry is ignored."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("Alps.traxj", _trip_bytes(_project(memory_photos=(U1,), journal_photos=())))
+        zf.writestr(f"photos/7/{U1}.jpg", _jpeg())
+        zf.writestr(zipfile.ZipInfo("notes.txt"), b"hello" * 100, compress_type=zipfile.ZIP_BZIP2)
+    _, staged = _read(buf.getvalue(), tmp_path / "s")
+    assert set(staged[("memories", 7)]) == {U1}
+
+
+def test_a_disk_error_staging_a_photo_is_not_blamed_on_the_archive(tmp_path, monkeypatch):
+    """OSError is a disk error, never taken for a fault of the archive (IR1-1, IR3-1)."""
+    def disk_full(*a, **k):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(zip_import, "write_photo_files", disk_full)
+    with pytest.raises(OSError) as exc:
+        _read(_export(), tmp_path / "s")
+    assert not isinstance(exc.value, InvalidTripArchive)
+
+
+# ── Entry offsets outside the upload, on a disk-spooled upload ────────────────
+# Starlette spools an upload over 1 MB to a real temporary file, where seeking
+# to a negative offset raises OSError and to 2**63 or more OverflowError
+# (IR3-1); an in-memory buffer raises ValueError instead, so these tests read
+# from a temporary file.
+
+def _large_export() -> bytes:
+    """An export over 1 MB: the trip file, a small photo, then a large
+    stored one (the entry the offset tests move)."""
+    big = _jpeg() + bytes(1024 * 1024 + 1)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("Alps.traxj", _trip_bytes(_project(memory_photos=(U1, U2), journal_photos=())))
+        zf.writestr(f"photos/7/{U1}.jpg", _jpeg())
+        zf.writestr(f"photos/7/{U2}.jpg", big)
+    data = buf.getvalue()
+    assert len(data) > 1024 * 1024
+    return data
+
+
+def _directory_entry(data, name: str) -> int:
+    name = name.encode()
+    cd = data.rfind(b"PK\x01\x02")
+    while data[cd + 46: cd + 46 + len(name)] != name:
+        cd = data.rfind(b"PK\x01\x02", 0, cd)
+    return cd
+
+
+def _refused_from_disk(data: bytes, staging, match=None) -> InvalidTripArchive:
+    with tempfile.TemporaryFile() as f:
+        f.write(data)
+        f.seek(0)
+        with pytest.raises(InvalidTripArchive, match=match) as exc:
+            read_trip_zip(f, staging, importer=42, trip_name="Alps")
+    assert _staged_files(staging) == []
+    return exc.value
+
+
+def test_a_large_export_is_read_from_disk(tmp_path):
+    """The archive the tests below forge reads cleanly as it is."""
+    with tempfile.TemporaryFile() as f:
+        f.write(_large_export())
+        f.seek(0)
+        _, staged = read_trip_zip(f, tmp_path / "s", importer=42, trip_name="Alps")
+    assert set(staged[("memories", 7)]) == {U1, U2}
+
+
+def test_a_raised_directory_offset_is_refused(tmp_path):
+    """Raising the end record's directory offset moves every entry back by as
+    much: the first one to before the start of the upload."""
+    data = _large_export()
+    pos = data.rfind(b"PK\x05\x06")
+    fields = list(_EOCD.unpack_from(data, pos))
+    fields[6] += 1000
+    data = data[:pos] + _EOCD.pack(*fields) + data[pos + _EOCD.size:]
+    _refused_from_disk(data, tmp_path / "s", match="trip file .* damaged or unreadable")
+
+
+def test_an_entry_offset_past_the_end_is_refused(tmp_path):
+    data = bytearray(_large_export())
+    struct.pack_into("<L", data, _directory_entry(data, f"photos/7/{U2}.jpg") + 42,
+                     len(data) - 10)
+    _refused_from_disk(bytes(data), tmp_path / "s",
+                       match=f"photo photos/7/{U2}.jpg .* damaged or unreadable")
+
+
+def test_a_zip64_entry_offset_of_2_to_the_63_is_refused(tmp_path):
+    """The offset moves into a ZIP64 extra field, set to 2**63."""
+    data = bytearray(_large_export())
+    cd = _directory_entry(data, f"photos/7/{U2}.jpg")
+    name_len, extra_len = struct.unpack_from("<2H", data, cd + 28)
+    assert extra_len == 0
+    struct.pack_into("<L", data, cd + 42, 0xFFFFFFFF)
+    struct.pack_into("<H", data, cd + 30, 12)
+    at = cd + 46 + name_len
+    data[at:at] = struct.pack("<2HQ", 0x0001, 8, 2 ** 63)
+    pos = data.rfind(b"PK\x05\x06")
+    fields = list(_EOCD.unpack_from(data, pos))
+    fields[5] += 12  # the directory grew by the extra field
+    data[pos:pos + _EOCD.size] = _EOCD.pack(*fields)
+    _refused_from_disk(bytes(data), tmp_path / "s",
+                       match=f"photo photos/7/{U2}.jpg .* damaged or unreadable")

@@ -275,3 +275,40 @@ Answer (owner, 2026-10-03): yes (option a); accepted in fix unit FI1. Table appr
 - Guard: —
 - Override: —
 - Outcome: open
+## Integrated review — round 2, 2026-10-03, FI1 (800fcaf9, cbff9234) against 698afde9
+
+Reviewer: adversarial-reviewer (Fable). Triager: review-triager (Opus). 2 findings, both well-formed.
+
+Envelope question (to the owner): the export only writes stored and deflated entries, but the reader inflates every method the archive declares, so each stdlib decompressor's errors must be caught by hand (IR1-1, IR2-1). Should the reader accept only stored and deflated entries and refuse any other method with a 400 naming it?
+Answer (owner, 2026-10-03): yes — only stored and deflated entries; any other method is refused with a 400 naming it, before any entry is opened.
+
+### IR2-1 — A corrupt Zstandard entry (Python 3.14 zipfile) still escapes as a 500
+- Trigger: an authenticated user uploads a ZIP with a garbled ZIP_ZSTANDARD entry → compression.zstd.ZstdError is not caught → 500.
+- Scores: trigger=concrete, impact=wrong-visible, detect=logged, later=cheap, fix=S/local, confidence=inferred
+- Decision: Fix now (D6). Moot if the owner accepts only stored and deflated entries (check compress_type before any open).
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
+
+### IR2-2 — The `._*` litter rule drops the app's own export for a trip named "._…"
+- Trigger: a user names a trip `._Alps`, exports it, and re-imports the untouched ZIP → `._Alps.traxj` is treated as OS litter → 400 "no trip file". A regression from round 1.
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10), overridden. Fix: `._X` counts as litter only when its sibling `X` exists, plus all of `__MACOSX/`.
+- Revisit when: a user reports a 400 "no trip file" on their own export, or the litter or root detection is touched again.
+- Guard: —
+- Override: user: Fix now — a one-line regression in a file already being edited
+- Outcome: open
+
+## Integrated review — round 3, 2026-10-03, FI2 (68a59787, 51949a2e) against cbff9234
+
+Reviewer: adversarial-reviewer (Fable). Triager: review-triager (Opus). 1 finding, well-formed. IR2-1 and IR2-2 are confirmed closed. No envelope questions.
+
+### IR3-1 — A crafted central-directory offset makes zf.open() seek a disk-spooled upload to a negative position → uncaught OSError → 500
+- Trigger: an authenticated user uploads a ZIP over 1 MB whose end record's central-directory offset is raised → entry header_offset goes negative → seek on Starlette's spooled temp file raises OSError EINVAL, which FI2 stopped catching → 500. A regression from FI2. A ZIP64 header_offset ≥ 2**63 gives an OverflowError, which predates FI2.
+- Scores: trigger=concrete, impact=wrong-visible, detect=logged, later=cheap, fix=S/local, confidence=inferred
+- Decision: Fix now (D6). Before any open, refuse an entry whose header_offset is negative or leaves under 30 bytes before the end of the upload; keep OSError uncaught; test both cases with an upload over 1 MB.
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open

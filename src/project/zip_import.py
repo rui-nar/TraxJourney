@@ -10,6 +10,12 @@ The archive is untrusted: any signed-in user can upload one, crafted or not.
   ``journal/{id}/{uuid}.jpg`` for each photo the trip file lists. Every other
   entry, ``../`` and absolute names included, is ignored, and no entry name is
   ever joined to a filesystem path;
+- takes an export unzipped and zipped again (Finder "Compress", Explorer
+  "Compress folder") as it was: when every entry sits under one top-level
+  folder, that folder is the root. Finder's ``__MACOSX/`` entries and
+  AppleDouble ``._X`` files beside their ``X`` are left out when finding it;
+- reads stored and deflated entries only, the two methods an export, Finder
+  and Explorer write, and refuses any other method before opening the entry;
 - counts the bytes it inflates instead of trusting the sizes the archive
   declares;
 - decodes each photo like an upload (src/utils/photo_store.py), one at a time,
@@ -28,7 +34,7 @@ import zipfile
 import zlib
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import BinaryIO, Dict, List, Tuple
+from typing import AbstractSet, BinaryIO, Dict, List, Tuple
 
 from src.brand import APP_NAME
 from src.models.project import Project
@@ -69,13 +75,61 @@ MAX_STAGED_PHOTO_BYTES = 1024 * 1024 * 1024
 #: directory left behind by a crash can be traced to its import.
 MANIFEST_NAME = "manifest.json"
 
+#: Size of a local file header without its name and extra field: an entry
+#: must start at least this far before the end of the upload.
+_LOCAL_HEADER_BYTES = 30
+
 #: Where each kind's photos are in the archive, by photo_folder kind.
 _ARCHIVE_FOLDERS = {"memories": "photos", "journal": "journal"}
 
 _CHUNK = 64 * 1024
 
-#: What zipfile raises for a corrupt, truncated or unsupported entry.
-_ENTRY_ERRORS = (zipfile.BadZipFile, NotImplementedError, RuntimeError, EOFError, zlib.error)
+#: The compression methods an entry that is read may use: what an export,
+#: Finder and Explorer write. Each other method is a decompressor with errors
+#: of its own (bzip2, LZMA, Zstandard ...), so it is refused before the entry
+#: is opened rather than caught one by one.
+_METHODS = (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
+
+#: What zipfile raises for a corrupt, truncated or unsupported stored or
+#: deflated entry: ValueError (UnicodeDecodeError) is a local header name
+#: flagged UTF-8 that isn't. Caught around the zipfile calls only. OSError is
+#: never caught: it is a disk error (reading the spooled upload or writing a
+#: staged photo), a server fault, not a fault of the archive. The one way an
+#: archive could cause it, an entry offset outside the upload, is refused
+#: before the entry is opened.
+_ENTRY_ERRORS = (zipfile.BadZipFile, NotImplementedError, RuntimeError, EOFError, zlib.error,
+                 ValueError)
+
+
+def _is_os_litter(name: str, names: AbstractSet[str]) -> bool:
+    """Whether *name*, among the archive's *names*, is metadata a desktop zip
+    tool adds: anything in macOS's ``__MACOSX/`` folder, or an AppleDouble
+    ``._X`` beside its file ``X``. A ``._X`` alone is a file of its own: a trip
+    named "._Alps" exports as ``._Alps.traxj``."""
+    if name.startswith("__MACOSX/"):
+        return True
+    folder, _, base = name.rpartition("/")
+    if not base.startswith("._"):
+        return False
+    return (f"{folder}/{base[2:]}" if folder else base[2:]) in names
+
+
+def _root(names: AbstractSet[str]) -> str:
+    """The prefix the export's entries sit under: ``""`` when a trip file is at
+    the top level, else ``"P/"`` when every entry (OS litter aside) is under
+    the one top-level folder ``P``, as when an unzipped export is zipped again.
+    Otherwise ``""``, where no trip file will be found."""
+    kept = [n for n in names if not _is_os_litter(n, names)]
+    if any("/" not in n and n.endswith(ProjectIO.EXTENSION) for n in kept):
+        return ""
+    if not kept or any("/" not in n for n in kept):
+        return ""
+    tops = {n.split("/", 1)[0] for n in kept}
+    if len(tops) != 1:
+        return ""
+    (top,) = tops
+    # "/x" is absolute, "./x" and "../x" relative: never a folder to read from.
+    return "" if top in ("", ".", "..") else top + "/"
 
 
 class InvalidTripArchive(ValueError):
@@ -105,11 +159,24 @@ def _check_end_record(fileobj: BinaryIO) -> None:
         raise InvalidTripArchive("This archive's table of contents is too large.")
 
 
-def _read_entry(zf: zipfile.ZipFile, info: zipfile.ZipInfo, limit: int, what: str) -> bytes:
+def _read_entry(zf: zipfile.ZipFile, info: zipfile.ZipInfo, upload_size: int, limit: int,
+                what: str) -> bytes:
     """The bytes of *info*, refused once more than *limit* have been inflated,
-    whatever size the archive declares."""
+    whatever size the archive declares. *upload_size* is the archive's size in
+    bytes."""
+    damaged = InvalidTripArchive(f"The {what} in this archive is damaged or unreadable.")
     too_large = InvalidTripArchive(
         f"The {what} in this archive is too large. The limit is {limit // (1024 * 1024)} MB.")
+    # A crafted directory offset can place an entry before the start of the
+    # upload or past its end: seeking there raises OSError (a negative seek on
+    # a file) or OverflowError (a ZIP64 offset of 2**63 or more).
+    if not 0 <= info.header_offset <= upload_size - _LOCAL_HEADER_BYTES:
+        raise damaged
+    if info.compress_type not in _METHODS:
+        method = zipfile.compressor_names.get(info.compress_type, f"method {info.compress_type}")
+        raise InvalidTripArchive(
+            f"This archive uses an unsupported compression method ({method}). "
+            "Re-create it as a standard ZIP.")
     if info.file_size > limit:
         raise too_large
     chunks: List[bytes] = []
@@ -121,8 +188,10 @@ def _read_entry(zf: zipfile.ZipFile, info: zipfile.ZipInfo, limit: int, what: st
                 if total > limit:
                     raise too_large
                 chunks.append(chunk)
+    except InvalidTripArchive:
+        raise  # too large: a ValueError too, but not "damaged"
     except _ENTRY_ERRORS:
-        raise InvalidTripArchive(f"The {what} in this archive is damaged or unreadable.") from None
+        raise damaged from None
     return b"".join(chunks)
 
 
@@ -150,8 +219,8 @@ def _photo_lists(project: Project) -> List[Tuple[str, int, List[str]]]:
     return lists
 
 
-def _stage(zf: zipfile.ZipFile, entries: Dict[str, zipfile.ZipInfo], project: Project,
-           staging_dir: Path) -> StagedPhotos:
+def _stage(zf: zipfile.ZipFile, entries: Dict[str, zipfile.ZipInfo], root: str,
+           upload_size: int, project: Project, staging_dir: Path) -> StagedPhotos:
     staged: StagedPhotos = {}
     inflated = 0
     for kind, item_id, photos in _photo_lists(project):
@@ -160,11 +229,11 @@ def _stage(zf: zipfile.ZipFile, entries: Dict[str, zipfile.ZipInfo], project: Pr
             # from it is plain; and the name is never used as a path itself.
             if not is_photo_name(name) or name in staged.get((kind, item_id), {}):
                 continue
-            entry_name = f"{_ARCHIVE_FOLDERS[kind]}/{item_id}/{name}.jpg"
+            entry_name = f"{root}{_ARCHIVE_FOLDERS[kind]}/{item_id}/{name}.jpg"
             info = entries.get(entry_name)
             if info is None:
                 continue  # missing from the archive: ingest drops the name
-            raw = _read_entry(zf, info, MAX_PHOTO_BYTES, f"photo {entry_name}")
+            raw = _read_entry(zf, info, upload_size, MAX_PHOTO_BYTES, f"photo {entry_name}")
             inflated += len(raw)
             if inflated > MAX_STAGED_PHOTO_BYTES:
                 raise InvalidTripArchive(
@@ -198,10 +267,13 @@ def read_trip_zip(fileobj: BinaryIO, staging_dir: Path, *, importer: int,
     staging_dir.mkdir(parents=True, exist_ok=True)
     _write_manifest(staging_dir, importer, trip_name)
     _check_end_record(fileobj)
+    upload_size = fileobj.seek(0, 2)
     fileobj.seek(0)
     try:
         zf = zipfile.ZipFile(fileobj)
-    except (zipfile.BadZipFile, zipfile.LargeZipFile, NotImplementedError, EOFError, OSError):
+    except (zipfile.BadZipFile, zipfile.LargeZipFile, NotImplementedError, EOFError, OSError,
+            ValueError):
+        # ValueError: a directory name flagged UTF-8 that isn't (UnicodeDecodeError).
         raise InvalidTripArchive("This file is not a ZIP archive, or it is damaged.") from None
     with zf:
         infos = zf.infolist()
@@ -217,14 +289,18 @@ def read_trip_zip(fileobj: BinaryIO, staging_dir: Path, *, importer: int,
                     "This archive holds two files with the same name, so it can't be imported.")
             entries[info.filename] = info
 
-        trip_files = [n for n in entries if "/" not in n and n.endswith(ProjectIO.EXTENSION)]
+        names = entries.keys()
+        root = _root(names)
+        trip_files = [n for n in names if n.startswith(root) and not _is_os_litter(n, names)
+                      and "/" not in n[len(root):] and n.endswith(ProjectIO.EXTENSION)]
         if not trip_files:
             raise InvalidTripArchive(
                 f"This archive holds no {APP_NAME} trip file ({ProjectIO.EXTENSION}) at its top level.")
         if len(trip_files) > 1:
             raise InvalidTripArchive(
                 f"This archive holds more than one trip file ({ProjectIO.EXTENSION}) at its top level.")
-        raw = _read_entry(zf, entries[trip_files[0]], MAX_TRIP_FILE_BYTES, "trip file")
+        raw = _read_entry(zf, entries[trip_files[0]], upload_size, MAX_TRIP_FILE_BYTES,
+                          "trip file")
         try:
             project = ProjectIO.from_bytes(raw)
         except InvalidProjectFile as exc:
@@ -233,7 +309,7 @@ def read_trip_zip(fileobj: BinaryIO, staging_dir: Path, *, importer: int,
         del raw
 
         try:
-            staged = _stage(zf, entries, project, staging_dir)
+            staged = _stage(zf, entries, root, upload_size, project, staging_dir)
         except BaseException:
             # Nothing staged survives a refused archive (or any other failure):
             # only the manifest stays, for the caller to remove with the
