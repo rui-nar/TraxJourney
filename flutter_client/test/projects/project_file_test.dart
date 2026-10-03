@@ -79,7 +79,7 @@ void main() {
         '/api/projects/Trip/export-traxj');
   });
 
-  test('the import picker accepts only .traxj and strips it from the name',
+  test('the import picker accepts .traxj and .zip and strips the extension from the name',
       () async {
     final picker = _RecordingFilePickerPlatform(_FakePlatformFile('Trip.traxj'));
     FilePickerPlatform.instance = picker;
@@ -87,7 +87,7 @@ void main() {
     final picked =
         await ProjectsNotifier(_FakeProjectsService()).pickProjectFile();
 
-    expect(picker.allowedExtensions, ['traxj']);
+    expect(picker.allowedExtensions, ['traxj', 'zip']);
     expect(picked!.defaultName, 'Trip');
   });
 

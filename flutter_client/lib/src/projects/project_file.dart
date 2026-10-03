@@ -6,5 +6,9 @@ library;
 /// File extension of a project file, without the leading dot.
 const kProjectFileExtension = 'traxj';
 
+/// File extension of a trip archive (project file plus photos), without the
+/// leading dot. Imported through the server's `/import-zip` route (issue #469).
+const kProjectZipExtension = 'zip';
+
 /// Suffix under `ProjectRef.path()` that downloads the project file.
 const kProjectFileExportRoute = '/export-$kProjectFileExtension';

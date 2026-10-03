@@ -113,31 +113,37 @@ class ProjectsNotifier extends ChangeNotifier {
     }
   }
 
-  /// Step 1 of import: open file picker and return the bytes + suggested name.
+  /// Step 1 of import: open file picker and return the bytes, the suggested
+  /// name and the file's extension (`traxj` or `zip`, lower case).
   /// Returns null if the user cancels or on error (sets [error] on failure).
-  Future<({List<int> bytes, String defaultName})?> pickProjectFile() async {
+  Future<({List<int> bytes, String defaultName, String extension})?>
+      pickProjectFile() async {
     _error = null;
     notifyListeners();
     try {
       final picked = await FilePicker.pickFile(
         type: FileType.custom,
-        allowedExtensions: [kProjectFileExtension],
+        allowedExtensions: [kProjectFileExtension, kProjectZipExtension],
       );
       if (picked == null) return null;
       final rawName = picked.name;
-      const suffix = '.$kProjectFileExtension';
+      final lower = rawName.toLowerCase();
       // The extension filter is only a hint on web ("All files" bypasses it)
-      // and the upload always adds .traxj, so an older-format project file would
-      // otherwise import as a project named after its old suffix.
-      if (!rawName.toLowerCase().endsWith(suffix) ||
-          rawName.length == suffix.length) {
-        _error = 'Choose a $suffix project file.';
+      // and the upload keeps the extension to pick the route, so any other
+      // file would otherwise import as a project named after its suffix.
+      final extension = [kProjectFileExtension, kProjectZipExtension]
+          .where((e) => lower.endsWith('.$e') && rawName.length > e.length + 1)
+          .firstOrNull;
+      if (extension == null) {
+        _error = 'Choose a .$kProjectFileExtension or .$kProjectZipExtension '
+            'file.';
         notifyListeners();
         return null;
       }
       final bytes = await picked.readAsBytes();
-      final defaultName = rawName.substring(0, rawName.length - suffix.length);
-      return (bytes: bytes, defaultName: defaultName);
+      final defaultName =
+          rawName.substring(0, rawName.length - extension.length - 1);
+      return (bytes: bytes, defaultName: defaultName, extension: extension);
     } on Exception catch (e) {
       _error = _msg(e);
       notifyListeners();
@@ -145,13 +151,16 @@ class ProjectsNotifier extends ChangeNotifier {
     }
   }
 
-  /// Step 2 of import: upload [bytes] as project [name].
+  /// Step 2 of import: upload [bytes] as project [name]. A `zip` [extension]
+  /// goes to `/import-zip`, a `traxj` one (the default) to `/import`. A proxy's bare 413 names the
+  /// file type's cap only when [extension] is given.
   /// Returns the saved project name on success, null on failure — or when the
   /// name is taken and no [onConflict] was given, in which case
   /// [nameConflict] holds it.
   Future<String?> uploadProjectFile({
     required List<int> bytes,
     required String name,
+    String? extension,
     ImportConflictChoice? onConflict,
   }) async {
     _isLoading = true;
@@ -162,7 +171,7 @@ class ProjectsNotifier extends ChangeNotifier {
     try {
       final data = await _uploadBytes(
           bytes: bytes,
-          filename: '$name.$kProjectFileExtension',
+          filename: '$name.${extension ?? kProjectFileExtension}',
           onConflict: onConflict);
       await load();
       return data['name'] as String?;
@@ -170,7 +179,7 @@ class ProjectsNotifier extends ChangeNotifier {
       _nameConflict = _conflictName(e);
       if (_nameConflict == null) {
         _quotaError = _quota(e);
-        _error = _msg(e);
+        _error = _msg(e, extension: extension);
       }
       _isLoading = false;
       notifyListeners();
@@ -187,7 +196,10 @@ class ProjectsNotifier extends ChangeNotifier {
     ImportConflictChoice? onConflict,
   }) async {
     final token = api.tokenForUpload;
-    final url = Uri.parse('${api.baseUrl}/api/projects/import');
+    final route = filename.toLowerCase().endsWith('.$kProjectZipExtension')
+        ? 'import-zip'
+        : 'import';
+    final url = Uri.parse('${api.baseUrl}/api/projects/$route');
     final request = http.MultipartRequest(
       'POST',
       onConflict == null
@@ -217,13 +229,25 @@ class ProjectsNotifier extends ChangeNotifier {
 
   // ── Error helper ──────────────────────────────────────────────────────────────
 
-  String _msg(Exception e) {
+  /// [extension] names the import's file type, so a proxy's bare 413 can say
+  /// which limit the file broke (the server's caps: 1 GB ZIP, 50 MB .traxj).
+  String _msg(Exception e, {String? extension}) {
     final s = e.toString();
     final m = RegExp(r'"detail"\s*:\s*"([^"]+)"').firstMatch(s);
     if (m != null) return m.group(1)!;
     // A 413 from a proxy in front of the server has no JSON detail (issue #434).
     if (e is ApiException && e.statusCode == 413) {
+      if (extension == kProjectZipExtension) {
+        return 'This file is too large to import. The limit is 1 GB.';
+      }
+      if (extension == kProjectFileExtension) {
+        return 'This file is too large to import. The limit is 50 MB.';
+      }
       return 'This file is too large to import.';
+    }
+    // The server's busy answer, when a proxy or the body drops its detail.
+    if (e is ApiException && e.statusCode == 503) {
+      return 'Another trip import is in progress. Try again in a minute.';
     }
     return s.replaceFirst('Exception: ', '');
   }
