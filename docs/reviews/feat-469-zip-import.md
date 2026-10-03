@@ -251,3 +251,27 @@ Answer (owner, 2026-10-03): approved with the recommendation, inside the envelop
 - Guard: —
 - Override: —
 - Outcome: open
+## Integrated review — round 1, 2026-10-03, feat/469-zip-import at 9a98c76a against main a44519c8 (docs excluded)
+
+Reviewer: adversarial-reviewer (Fable). Triager: review-triager (Opus). 2 findings, both well-formed.
+
+Envelope question (to the owner): an export unzipped and re-zipped with Finder or Explorer has one top-level folder (plus __MACOSX/), and Decision 6 refuses it with 400. Should the reader accept one common root prefix?
+Answer (owner, 2026-10-03): yes (option a); accepted in fix unit FI1. Table approved as is.
+
+### IR1-1 — Crafted or oddly-encoded archives fail inside zipfile with uncaught exceptions → 500 instead of 400
+- Trigger: an authenticated user uploads a ZIP whose entry has the UTF-8 flag set but non-UTF-8 name bytes (UnicodeDecodeError from ZipFile()), or a corrupt bzip2 entry (OSError) or LZMA entry (LZMAError) → 500. Nothing leaks.
+- Scores: trigger=concrete (triager corrected from plausible), impact=wrong-visible, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6). Catch ValueError around ZipFile(); add OSError and lzma.LZMAError to _ENTRY_ERRORS, around the zipfile calls only; one test per exception type.
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
+
+### IR1-2 — Native clients see a socket error instead of the server's early 503/401/408/413
+- Trigger: an Android user starts a large ZIP import while another holds the guard → the server answers 503 before reading the body, Caddy closes after more than 256 KiB unread, and dart:io only reads the response after the body is sent → "Connection closed" instead of "Another trip import is in progress".
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local (triager corrected from M), confidence=inferred
+- Decision: Defer (D10). Cheap client mitigation if wanted: map a mid-upload socket error to a readable "upload interrupted — another import may be running or your session expired; try again".
+- Revisit when: a report or device test shows a native ZIP import ending in a socket error, or the logs show early 503/401/408/413 on /import-zip followed by a client failure, or the native upload path is reworked.
+- Guard: —
+- Override: —
+- Outcome: open
