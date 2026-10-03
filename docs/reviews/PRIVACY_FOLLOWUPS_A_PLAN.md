@@ -138,7 +138,7 @@ Owner decision 2026-10-03: apply R4-1 and stop plan reviews; U6's code review af
 - Decision: Guard (D9)
 - Guard: WARNING in force_update_activity's insert branch ("row deleted while the re-fetch was in flight"); its only production caller runs on a row marked pending, so it fires only on this race.
 - Override: —
-- Outcome: open
+- Outcome: guard added (fb4c0e04). Delivery found the insert branch never commits (_upsert_activity only sess.add, the refresh session closes without commit), so the row is not actually recreated today; the warning logs the attempt.
 
 Envelope question from the reviewer, owner answer 2026-10-03: removal (and the R4-1 tail rule) deletes a row only when the caller owns that activity or is the trip owner. An editor removing someone else's activity only unlinks it; the owner's later disconnect or own removal cleans it up. Trip deletion is done by the trip owner, so it keeps the any-owner rule (R1-4, R3-4).
 
