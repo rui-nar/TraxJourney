@@ -379,6 +379,35 @@ def test_a_rezipped_export_round_trips_with_its_photos(tmp_path):
     ])
 
 
+def _dot_underscore_trip() -> Project:
+    project = _project(memory_photos=(U1,), journal_photos=())
+    project.name = "._Alps"
+    return project
+
+
+def test_the_export_of_a_trip_named_dot_underscore_imports(tmp_path):
+    """``._Alps.traxj`` with no ``Alps.traxj`` beside it is the trip file, not
+    AppleDouble metadata (IR2-2)."""
+    data = _zip([("._Alps.traxj", _trip_bytes(_dot_underscore_trip())),
+                 (f"photos/7/{U1}.jpg", _jpeg())])
+    project, staged = _read(data, tmp_path / "s")
+    assert project.name == "._Alps" and set(staged[("memories", 7)]) == {U1}
+
+
+def test_a_trip_named_dot_underscore_imports_when_rezipped(tmp_path):
+    data = _zip([("._Alps/._Alps.traxj", _trip_bytes(_dot_underscore_trip())),
+                 (f"._Alps/photos/7/{U1}.jpg", _jpeg()),
+                 ("__MACOSX/._Alps/._._Alps.traxj", b"\x00\x05\x16\x07")])
+    project, staged = _read(data, tmp_path / "s")
+    assert project.name == "._Alps" and set(staged[("memories", 7)]) == {U1}
+
+
+def test_an_appledouble_file_beside_the_trip_file_is_not_a_second_trip(tmp_path):
+    data = _export(extra=[("._Alps.traxj", b"\x00\x05\x16\x07")])
+    project, _ = _read(data, tmp_path / "s")
+    assert project.name == "Alps"
+
+
 def test_an_archive_with_two_top_level_folders_is_refused(tmp_path):
     trip = _trip_bytes(_project())
     _refused(_zip([("Alps/Alps.traxj", trip), (f"Other/photos/7/{U1}.jpg", _jpeg())]),

@@ -13,7 +13,7 @@ The archive is untrusted: any signed-in user can upload one, crafted or not.
 - takes an export unzipped and zipped again (Finder "Compress", Explorer
   "Compress folder") as it was: when every entry sits under one top-level
   folder, that folder is the root. Finder's ``__MACOSX/`` entries and
-  AppleDouble ``._*`` files are left out when finding it;
+  AppleDouble ``._X`` files beside their ``X`` are left out when finding it;
 - reads stored and deflated entries only, the two methods an export, Finder
   and Explorer write, and refuses any other method before opening the entry;
 - counts the bytes it inflates instead of trusting the sizes the archive
@@ -34,7 +34,7 @@ import zipfile
 import zlib
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import BinaryIO, Dict, List, Tuple
+from typing import AbstractSet, BinaryIO, Dict, List, Tuple
 
 from src.brand import APP_NAME
 from src.models.project import Project
@@ -94,24 +94,30 @@ _ENTRY_ERRORS = (zipfile.BadZipFile, NotImplementedError, RuntimeError, EOFError
                  ValueError)
 
 
-def _is_os_litter(name: str) -> bool:
-    """Whether *name* is metadata a desktop zip tool adds: macOS's
-    ``__MACOSX/`` folder, or an AppleDouble ``._*`` file in any folder."""
-    return name.startswith("__MACOSX/") or any(
-        part.startswith("._") for part in name.split("/"))
+def _is_os_litter(name: str, names: AbstractSet[str]) -> bool:
+    """Whether *name*, among the archive's *names*, is metadata a desktop zip
+    tool adds: anything in macOS's ``__MACOSX/`` folder, or an AppleDouble
+    ``._X`` beside its file ``X``. A ``._X`` alone is a file of its own: a trip
+    named "._Alps" exports as ``._Alps.traxj``."""
+    if name.startswith("__MACOSX/"):
+        return True
+    folder, _, base = name.rpartition("/")
+    if not base.startswith("._"):
+        return False
+    return (f"{folder}/{base[2:]}" if folder else base[2:]) in names
 
 
-def _root(names: List[str]) -> str:
+def _root(names: AbstractSet[str]) -> str:
     """The prefix the export's entries sit under: ``""`` when a trip file is at
     the top level, else ``"P/"`` when every entry (OS litter aside) is under
     the one top-level folder ``P``, as when an unzipped export is zipped again.
     Otherwise ``""``, where no trip file will be found."""
-    names = [n for n in names if not _is_os_litter(n)]
-    if any("/" not in n and n.endswith(ProjectIO.EXTENSION) for n in names):
+    kept = [n for n in names if not _is_os_litter(n, names)]
+    if any("/" not in n and n.endswith(ProjectIO.EXTENSION) for n in kept):
         return ""
-    if not names or any("/" not in n for n in names):
+    if not kept or any("/" not in n for n in kept):
         return ""
-    tops = {n.split("/", 1)[0] for n in names}
+    tops = {n.split("/", 1)[0] for n in kept}
     if len(tops) != 1:
         return ""
     (top,) = tops
@@ -267,8 +273,9 @@ def read_trip_zip(fileobj: BinaryIO, staging_dir: Path, *, importer: int,
                     "This archive holds two files with the same name, so it can't be imported.")
             entries[info.filename] = info
 
-        root = _root(list(entries))
-        trip_files = [n for n in entries if n.startswith(root) and not _is_os_litter(n)
+        names = entries.keys()
+        root = _root(names)
+        trip_files = [n for n in names if n.startswith(root) and not _is_os_litter(n, names)
                       and "/" not in n[len(root):] and n.endswith(ProjectIO.EXTENSION)]
         if not trip_files:
             raise InvalidTripArchive(
