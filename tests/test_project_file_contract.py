@@ -120,7 +120,7 @@ def test_zip_export_contains_the_project_file_with_the_project_extension(client)
 
     assert r.status_code == 200, r.text
     names = zipfile.ZipFile(io.BytesIO(r.content)).namelist()
-    project_files = [n for n in names if not n.startswith("photos/")]
+    project_files = [n for n in names if not n.startswith(("photos/", "journal/"))]
     assert project_files == [f"Trip{ProjectIO.EXTENSION}"], names
 
 

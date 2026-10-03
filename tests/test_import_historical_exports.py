@@ -161,7 +161,8 @@ def test_an_export_of_uploaded_gpx_tracks_imports_back(env, source):
 
 
 def test_the_trip_file_inside_the_zip_export_imports(env):
-    """It carries photo_refs on memories, and leaves out people and day notes."""
+    """It is the full trip document, people and day notes included, and
+    carries photo_refs on memories (#469)."""
     client, _ = env
     assert _import(client, "Alps", _trip(2, 100)).status_code == 201
     r = client.get("/api/projects/Alps/export-zip")
@@ -169,7 +170,9 @@ def test_the_trip_file_inside_the_zip_export_imports(env):
     zf = zipfile.ZipFile(io.BytesIO(r.content))
     (name,) = [n for n in zf.namelist() if n.endswith(ProjectIO.EXTENSION)]
     body = zf.read(name)
-    assert any("photo_refs" in (i.get("memory") or {}) for i in json.loads(body)["items"])
+    doc = json.loads(body)
+    assert any("photo_refs" in (i.get("memory") or {}) for i in doc["items"])
+    assert doc["people"] and doc["groups"] and doc["day_meta"]
 
     r = _import(client, "Restored", body)
 
