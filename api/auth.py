@@ -51,6 +51,27 @@ _log = get_logger(__name__)
 # exact knob for this exact reason.
 _GOOGLE_CLOCK_SKEW_SECONDS = 10
 
+# google-auth's exception types don't separate the failure reasons (expired,
+# too early and wrong audience are all InvalidValue), and its messages quote
+# the posted token on malformed input. So the reason is looked up by keyword
+# and only this fixed label is logged — never the message text (#510).
+_GOOGLE_FAILURE_REASONS = (
+    ("expired", "expired"),
+    ("too early", "too_early"),
+    ("audience", "audience"),
+    ("issuer", "issuer"),
+    ("signature", "signature"),
+    ("segment", "malformed"),
+)
+
+
+def _google_failure_reason(exc: Exception) -> str:
+    message = str(exc).lower()
+    for keyword, reason in _GOOGLE_FAILURE_REASONS:
+        if keyword in message:
+            return reason
+    return "other"
+
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 # Env var takes priority; fall back to config file for local dev.
@@ -273,8 +294,12 @@ def google_login(body: GoogleTokenRequest):
         # google-auth raises ValueError with a specific reason (expired token,
         # clock skew "used too early", wrong issuer/audience, bad signature).
         # The client only ever sees a generic 401, so log the real reason here —
-        # without it every Google auth failure is undiagnosable.
-        _log.warning("Google id_token verification failed: %s", exc)
+        # without it every Google auth failure is undiagnosable. The message
+        # itself can quote the token, so only its class and mapped reason go out.
+        _log.warning(
+            "Google id_token verification failed: %s (reason=%s)",
+            type(exc).__name__, _google_failure_reason(exc),
+        )
         LOGINS.labels("google", "failure").inc()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
