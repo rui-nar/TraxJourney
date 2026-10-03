@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import json
 import struct
+import tempfile
 import warnings
 import zipfile
 import zlib
@@ -599,10 +600,94 @@ def test_an_unread_entry_in_another_method_does_not_block_the_import(tmp_path):
 
 
 def test_a_disk_error_staging_a_photo_is_not_blamed_on_the_archive(tmp_path, monkeypatch):
-    """OSError is an archive fault only around the zipfile calls (IR1-1)."""
+    """OSError is a disk error, never taken for a fault of the archive (IR1-1, IR3-1)."""
     def disk_full(*a, **k):
         raise OSError(28, "No space left on device")
     monkeypatch.setattr(zip_import, "write_photo_files", disk_full)
     with pytest.raises(OSError) as exc:
         _read(_export(), tmp_path / "s")
     assert not isinstance(exc.value, InvalidTripArchive)
+
+
+# ── Entry offsets outside the upload, on a disk-spooled upload ────────────────
+# Starlette spools an upload over 1 MB to a real temporary file, where seeking
+# to a negative offset raises OSError and to 2**63 or more OverflowError
+# (IR3-1); an in-memory buffer raises ValueError instead, so these tests read
+# from a temporary file.
+
+def _large_export() -> bytes:
+    """An export over 1 MB: the trip file, a small photo, then a large
+    stored one (the entry the offset tests move)."""
+    big = _jpeg() + bytes(1024 * 1024 + 1)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("Alps.traxj", _trip_bytes(_project(memory_photos=(U1, U2), journal_photos=())))
+        zf.writestr(f"photos/7/{U1}.jpg", _jpeg())
+        zf.writestr(f"photos/7/{U2}.jpg", big)
+    data = buf.getvalue()
+    assert len(data) > 1024 * 1024
+    return data
+
+
+def _directory_entry(data, name: str) -> int:
+    name = name.encode()
+    cd = data.rfind(b"PK\x01\x02")
+    while data[cd + 46: cd + 46 + len(name)] != name:
+        cd = data.rfind(b"PK\x01\x02", 0, cd)
+    return cd
+
+
+def _refused_from_disk(data: bytes, staging, match=None) -> InvalidTripArchive:
+    with tempfile.TemporaryFile() as f:
+        f.write(data)
+        f.seek(0)
+        with pytest.raises(InvalidTripArchive, match=match) as exc:
+            read_trip_zip(f, staging, importer=42, trip_name="Alps")
+    assert _staged_files(staging) == []
+    return exc.value
+
+
+def test_a_large_export_is_read_from_disk(tmp_path):
+    """The archive the tests below forge reads cleanly as it is."""
+    with tempfile.TemporaryFile() as f:
+        f.write(_large_export())
+        f.seek(0)
+        _, staged = read_trip_zip(f, tmp_path / "s", importer=42, trip_name="Alps")
+    assert set(staged[("memories", 7)]) == {U1, U2}
+
+
+def test_a_raised_directory_offset_is_refused(tmp_path):
+    """Raising the end record's directory offset moves every entry back by as
+    much: the first one to before the start of the upload."""
+    data = _large_export()
+    pos = data.rfind(b"PK\x05\x06")
+    fields = list(_EOCD.unpack_from(data, pos))
+    fields[6] += 1000
+    data = data[:pos] + _EOCD.pack(*fields) + data[pos + _EOCD.size:]
+    _refused_from_disk(data, tmp_path / "s", match="trip file .* damaged or unreadable")
+
+
+def test_an_entry_offset_past_the_end_is_refused(tmp_path):
+    data = bytearray(_large_export())
+    struct.pack_into("<L", data, _directory_entry(data, f"photos/7/{U2}.jpg") + 42,
+                     len(data) - 10)
+    _refused_from_disk(bytes(data), tmp_path / "s",
+                       match=f"photo photos/7/{U2}.jpg .* damaged or unreadable")
+
+
+def test_a_zip64_entry_offset_of_2_to_the_63_is_refused(tmp_path):
+    """The offset moves into a ZIP64 extra field, set to 2**63."""
+    data = bytearray(_large_export())
+    cd = _directory_entry(data, f"photos/7/{U2}.jpg")
+    name_len, extra_len = struct.unpack_from("<2H", data, cd + 28)
+    assert extra_len == 0
+    struct.pack_into("<L", data, cd + 42, 0xFFFFFFFF)
+    struct.pack_into("<H", data, cd + 30, 12)
+    at = cd + 46 + name_len
+    data[at:at] = struct.pack("<2HQ", 0x0001, 8, 2 ** 63)
+    pos = data.rfind(b"PK\x05\x06")
+    fields = list(_EOCD.unpack_from(data, pos))
+    fields[5] += 12  # the directory grew by the extra field
+    data[pos:pos + _EOCD.size] = _EOCD.pack(*fields)
+    _refused_from_disk(bytes(data), tmp_path / "s",
+                       match=f"photo photos/7/{U2}.jpg .* damaged or unreadable")

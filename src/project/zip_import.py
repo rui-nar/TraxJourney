@@ -75,6 +75,10 @@ MAX_STAGED_PHOTO_BYTES = 1024 * 1024 * 1024
 #: directory left behind by a crash can be traced to its import.
 MANIFEST_NAME = "manifest.json"
 
+#: Size of a local file header without its name and extra field: an entry
+#: must start at least this far before the end of the upload.
+_LOCAL_HEADER_BYTES = 30
+
 #: Where each kind's photos are in the archive, by photo_folder kind.
 _ARCHIVE_FOLDERS = {"memories": "photos", "journal": "journal"}
 
@@ -88,8 +92,11 @@ _METHODS = (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
 
 #: What zipfile raises for a corrupt, truncated or unsupported stored or
 #: deflated entry: ValueError (UnicodeDecodeError) is a local header name
-#: flagged UTF-8 that isn't. Caught around the zipfile calls only, so a disk
-#: error writing a staged photo is not mistaken for a fault of the archive.
+#: flagged UTF-8 that isn't. Caught around the zipfile calls only. OSError is
+#: never caught: it is a disk error (reading the spooled upload or writing a
+#: staged photo), a server fault, not a fault of the archive. The one way an
+#: archive could cause it, an entry offset outside the upload, is refused
+#: before the entry is opened.
 _ENTRY_ERRORS = (zipfile.BadZipFile, NotImplementedError, RuntimeError, EOFError, zlib.error,
                  ValueError)
 
@@ -152,11 +159,19 @@ def _check_end_record(fileobj: BinaryIO) -> None:
         raise InvalidTripArchive("This archive's table of contents is too large.")
 
 
-def _read_entry(zf: zipfile.ZipFile, info: zipfile.ZipInfo, limit: int, what: str) -> bytes:
+def _read_entry(zf: zipfile.ZipFile, info: zipfile.ZipInfo, upload_size: int, limit: int,
+                what: str) -> bytes:
     """The bytes of *info*, refused once more than *limit* have been inflated,
-    whatever size the archive declares."""
+    whatever size the archive declares. *upload_size* is the archive's size in
+    bytes."""
+    damaged = InvalidTripArchive(f"The {what} in this archive is damaged or unreadable.")
     too_large = InvalidTripArchive(
         f"The {what} in this archive is too large. The limit is {limit // (1024 * 1024)} MB.")
+    # A crafted directory offset can place an entry before the start of the
+    # upload or past its end: seeking there raises OSError (a negative seek on
+    # a file) or OverflowError (a ZIP64 offset of 2**63 or more).
+    if not 0 <= info.header_offset <= upload_size - _LOCAL_HEADER_BYTES:
+        raise damaged
     if info.compress_type not in _METHODS:
         method = zipfile.compressor_names.get(info.compress_type, f"method {info.compress_type}")
         raise InvalidTripArchive(
@@ -176,7 +191,7 @@ def _read_entry(zf: zipfile.ZipFile, info: zipfile.ZipInfo, limit: int, what: st
     except InvalidTripArchive:
         raise  # too large: a ValueError too, but not "damaged"
     except _ENTRY_ERRORS:
-        raise InvalidTripArchive(f"The {what} in this archive is damaged or unreadable.") from None
+        raise damaged from None
     return b"".join(chunks)
 
 
@@ -205,7 +220,7 @@ def _photo_lists(project: Project) -> List[Tuple[str, int, List[str]]]:
 
 
 def _stage(zf: zipfile.ZipFile, entries: Dict[str, zipfile.ZipInfo], root: str,
-           project: Project, staging_dir: Path) -> StagedPhotos:
+           upload_size: int, project: Project, staging_dir: Path) -> StagedPhotos:
     staged: StagedPhotos = {}
     inflated = 0
     for kind, item_id, photos in _photo_lists(project):
@@ -218,7 +233,7 @@ def _stage(zf: zipfile.ZipFile, entries: Dict[str, zipfile.ZipInfo], root: str,
             info = entries.get(entry_name)
             if info is None:
                 continue  # missing from the archive: ingest drops the name
-            raw = _read_entry(zf, info, MAX_PHOTO_BYTES, f"photo {entry_name}")
+            raw = _read_entry(zf, info, upload_size, MAX_PHOTO_BYTES, f"photo {entry_name}")
             inflated += len(raw)
             if inflated > MAX_STAGED_PHOTO_BYTES:
                 raise InvalidTripArchive(
@@ -252,6 +267,7 @@ def read_trip_zip(fileobj: BinaryIO, staging_dir: Path, *, importer: int,
     staging_dir.mkdir(parents=True, exist_ok=True)
     _write_manifest(staging_dir, importer, trip_name)
     _check_end_record(fileobj)
+    upload_size = fileobj.seek(0, 2)
     fileobj.seek(0)
     try:
         zf = zipfile.ZipFile(fileobj)
@@ -283,7 +299,8 @@ def read_trip_zip(fileobj: BinaryIO, staging_dir: Path, *, importer: int,
         if len(trip_files) > 1:
             raise InvalidTripArchive(
                 f"This archive holds more than one trip file ({ProjectIO.EXTENSION}) at its top level.")
-        raw = _read_entry(zf, entries[trip_files[0]], MAX_TRIP_FILE_BYTES, "trip file")
+        raw = _read_entry(zf, entries[trip_files[0]], upload_size, MAX_TRIP_FILE_BYTES,
+                          "trip file")
         try:
             project = ProjectIO.from_bytes(raw)
         except InvalidProjectFile as exc:
@@ -292,7 +309,7 @@ def read_trip_zip(fileobj: BinaryIO, staging_dir: Path, *, importer: int,
         del raw
 
         try:
-            staged = _stage(zf, entries, root, project, staging_dir)
+            staged = _stage(zf, entries, root, upload_size, project, staging_dir)
         except BaseException:
             # Nothing staged survives a refused archive (or any other failure):
             # only the manifest stays, for the caller to remove with the

@@ -299,3 +299,16 @@ Answer (owner, 2026-10-03): yes — only stored and deflated entries; any other 
 - Guard: —
 - Override: user: Fix now — a one-line regression in a file already being edited
 - Outcome: open
+
+## Integrated review — round 3, 2026-10-03, FI2 (68a59787, 51949a2e) against cbff9234
+
+Reviewer: adversarial-reviewer (Fable). Triager: review-triager (Opus). 1 finding, well-formed. IR2-1 and IR2-2 are confirmed closed. No envelope questions.
+
+### IR3-1 — A crafted central-directory offset makes zf.open() seek a disk-spooled upload to a negative position → uncaught OSError → 500
+- Trigger: an authenticated user uploads a ZIP over 1 MB whose end record's central-directory offset is raised → entry header_offset goes negative → seek on Starlette's spooled temp file raises OSError EINVAL, which FI2 stopped catching → 500. A regression from FI2. A ZIP64 header_offset ≥ 2**63 gives an OverflowError, which predates FI2.
+- Scores: trigger=concrete, impact=wrong-visible, detect=logged, later=cheap, fix=S/local, confidence=inferred
+- Decision: Fix now (D6). Before any open, refuse an entry whose header_offset is negative or leaves under 30 bytes before the end of the upload; keep OSError uncaught; test both cases with an upload over 1 MB.
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
