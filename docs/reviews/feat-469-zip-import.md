@@ -205,3 +205,49 @@ Envelope question raised: FastAPI reads the multipart body before dependencies, 
 - Outcome: fixed (plan revised: Decision 13, U4 Do 3 and acceptance). Owner: no further plan review rounds (2026-09-28).
 - Fix note (triager): in the wrapper, solve only get_current_user's Dependant through FastAPI's dependency machinery (never the endpoint's, whose File/Form parameters read the body). That honours overrides, gives HTTPBearer's real 401, and follows any future change to get_current_user. solve_dependencies is not public API, but it fails closed and the existing import tests catch a break on upgrade. Rejected: reading dependency_overrides directly, which is a test seam in auth code and a hand-copy of the check that can drift. Add an acceptance test: an override-authenticated test passes the wrapper, and a request with no header gets the same response get_current_user gives.
 
+
+## Unit review U2 — 2026-10-03, reviewed 09c7867b against 1c8b21f6 (DELIVERY §5 point 3, run after integration by mistake)
+
+Reviewer: adversarial-reviewer (Fable). Triager: review-triager (Opus). 2 findings, both well-formed. No envelope questions.
+
+### U2R1-1 — On Replace, a deleted row's removal and a new row's placement can name the same folder and uuid (SQLite reuses ids)
+- Trigger: the owner replaces trip X from the ZIP of a Keep-both copy of X while X's memories hold the highest ids → the new rows reuse id N with the same uuids → if place_photos ran before _remove_photos, the placed photo would be deleted and the row would name a missing file, silently.
+- Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3). U4's code already removes before it places (project_transfer.py:565, then 566), but no test pins the order.
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (FU4, 2beab092)
+
+### U2R1-2 — replace_project without data_dir would drop every on-disk photo name from kept rows (flagged: floor F2, theoretical)
+- Trigger: theoretical — a future caller omits data_dir → kept memories are stored with [] while their files stay on disk and counted. Both current callers pass it.
+- Scores: trigger=theoretical, impact=data-loss, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Guard (D4), flagged to the owner.
+- Revisit when: —
+- Guard: (to add) replace_project raises when data_dir is None; one test.
+- Override: owner kept the guard (2026-10-03)
+- Outcome: guard added (FU4, 2b054158)
+## Unit review U4 — 2026-10-03, reviewed u469/u4 (f114f077, c9b0464e) against 8405cc19 (DELIVERY §5 point 3)
+
+Reviewer: adversarial-reviewer (Fable). Triager: review-triager (Opus). 2 findings, both well-formed.
+
+Envelope question (to the owner): any authenticated account can hold the one-import guard for hours by trickling a 1 GB body (no body-read timeout in uvicorn or Caddy), so everyone else's imports get 503. Is a per-upload deadline in the wrapper inside the envelope?
+Answer (owner, 2026-10-03): approved with the recommendation, inside the envelope. Idle 60 s / total 30 min deadline, 408, guard released (in fix unit FU4).
+
+### U4R1-1 — A Replace that stores nothing is refused with 402 once the account is already over its storage limit
+- Trigger: a user whose subscription lapsed (over the free limit) restores a trip from its own ZIP with Replace → staged_total is 0, `used + 0 > limit` → 402 for an import that writes nothing. A photo-less ZIP under a new name gets the same 402.
+- Scores: trigger=concrete (triager corrected from plausible), impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6). Skip the storage check in _ingest_zip when staged_total is 0; add a test with usage above the limit.
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (FU4, 2beab092)
+
+### U4R1-2 — An exception in the post-commit photo removal deletes the staging directory before placement
+- Trigger: theoretical — the OS refuses to unlink a dropped file in the API's own users/<id>/ folder during a ZIP Replace → place_photos never runs, staging is removed → 500; a second Replace re-places the photos (already_present checks the disk).
+- Scores: trigger=theoretical (triager corrected from plausible), impact=wrong-visible, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Reject (D11). The same class as R2-6 and R3-4. Cheap close-out if wanted: catch and log at ERROR in _remove_photos so that placement still runs.
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
