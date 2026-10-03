@@ -96,7 +96,11 @@ work left six defects in code those changes did not touch:
      may belong to the companion who imported it, not to the caller or the
      owner. (R1-3)
    - On **trip deletion**: every Strava-origin row the deleted trip
-     referenced, under the same rule. (R1-4)
+     referenced, under the same rule. (R1-4) Split tails of a Strava-origin
+     root that the deleted trip held, and that no other project item
+     references, go with it, and the root is judged after them. Tails are
+     local rows, but they belong to a Strava family, so they are the one
+     exception to "GPX and local rows are never touched". (R2-1)
    - After a **split tail is deleted**, the tail's `split_root_id`, when
      positive, is checked again: a root kept only because a tail named it
      becomes an orphan when its last tail goes. (R1-6)
@@ -293,10 +297,18 @@ Definition of done).
      - referenced by no `DBProjectItem.activity_id` in any project;
      - named by no other activity's `split_root_id` or `split_parent_id`.
      
-     If `ids` is given, it considers only those ids, whoever owns the row: the owner filter applies only when `ids` is not given (R1-3).
+     If `ids` is given, it considers only those ids, whoever owns the row: the owner filter applies only when `ids` is not given (R1-3). It also takes `tail_ids=None`, so split tails and their roots are decided in the same transaction (R2-1).
   2. `strava_disconnect` calls it for the user, in the same session as the token and cache deletes.
   3. The item-removal path calls it with the removed activity's id, after the project save, when the id is positive. When the removed item was a split tail (negative id) and its row was deleted, it then calls it with the tail's `split_root_id` when that is positive (R1-6).
-  4. The trip-delete endpoint collects the trip's positive activity ids before deleting the trip, and calls it with them afterwards (R1-4).
+  4. Before `delete_project`, the trip-delete endpoint collects:
+     - the trip's positive activity ids;
+     - its negative (tail) ids whose row has a positive, Strava-origin `split_root_id`, and which `activity_rewritable_by_trip` allows for this trip (checked while the project row still exists).
+     
+     After `delete_project`, in the repo method's single write transaction with the write lock taken first:
+     - delete those tail rows (and their `DBActivityGeoPrepared` rows) that no `DBProjectItem` references, treating them as one set, so a tail named only by another tail in the same set as its `split_parent_id` still goes;
+     - then apply the Strava-origin rule to the positive ids and the tails' roots.
+     
+     (R1-4, R2-1)
   5. Bust the geo and stats caches the same way the negative-id path does, where needed.
 - **Acceptance:**
   - Tests:
@@ -304,6 +316,7 @@ Definition of done).
     - removing an activity from its last trip deletes it, and removing it from one of two trips keeps it;
     - an owner removing a companion-imported Strava activity from a shared trip deletes it when no other trip references it;
     - deleting a trip deletes its now-unreferenced Strava rows and keeps those another trip still references;
+    - deleting a trip that holds a split Strava activity (head, a tail and a tail of a tail) deletes the root, both tails and their prepared geometry; if another trip still references one tail, that tail and the root are kept;
     - removing the head piece of a split Strava activity, then its last tail, deletes the root;
     - a concurrent add of the same activity to another trip, racing the removal, ends with the row present and referenced (file-backed SQLite, real threads);
     - a companion's Strava activity in the owner's trip survives the companion's disconnect.
@@ -346,7 +359,7 @@ Definition of done).
 
 - No log line contains any part of a posted Google id_token (U1 tests).
 - Enrichment and the Strava routes save token rotations the same way; a refresh during enrichment leaves a working token in the DB (U2 tests).
-- Disconnecting Strava, or removing an activity from its last trip, leaves no unreferenced Strava activity row and keeps every referenced row and split root (U6 tests).
+- Disconnecting Strava, removing an activity from its last trip, or deleting a trip, leaves no unreferenced Strava activity row and keeps every referenced row and split root (U6 tests).
 - No response or email shows another user's email address as their name; a blank display name can't be saved (U3 tests).
 - A companion sees and manages avatars in the owner's folder; a refused upload writes nothing; existing companion-uploaded avatars are moved at the next start (U4, U5 tests).
 - The full Python suite and the Flutter suite pass in CI; the plan's adversarial review ledger is committed.

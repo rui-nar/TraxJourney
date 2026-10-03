@@ -47,3 +47,12 @@ Envelope: the plan's "Review envelope" section (REVIEW.md defaults + SQLite only
 - Decision: Fix now (D7)
 - Override: —
 - Outcome: fixed (plan amended; passage tagged with this id)
+
+## Round 2 — 2026-10-03, reviewed the round-1 amendments at 4d0a6826
+
+### R2-1 — The trip-deletion rule (R1-4) never frees a split Strava activity: the trip's tails stay and keep naming the root
+- Trigger: A user splits a Strava activity in a trip, then deletes the trip → delete_project keeps the tail rows → the cleanup keeps the root because the tails name it → root, tails and their prepared geometry stay for good.
+- Scores: trigger=concrete, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7). New evidence that the R1-4 fix does not hold for split activities; not a duplicate.
+- Override: —
+- Outcome: fixed (plan amended; passages tagged R2-1)
