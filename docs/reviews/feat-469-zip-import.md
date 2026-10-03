@@ -265,7 +265,7 @@ Answer (owner, 2026-10-03): yes (option a); accepted in fix unit FI1. Table appr
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (800fcaf9)
 
 ### IR1-2 — Native clients see a socket error instead of the server's early 503/401/408/413
 - Trigger: an Android user starts a large ZIP import while another holds the guard → the server answers 503 before reading the body, Caddy closes after more than 256 KiB unread, and dart:io only reads the response after the body is sent → "Connection closed" instead of "Another trip import is in progress".
@@ -289,7 +289,7 @@ Answer (owner, 2026-10-03): yes — only stored and deflated entries; any other 
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (68a59787, owner's stored/deflated decision)
 
 ### IR2-2 — The `._*` litter rule drops the app's own export for a trip named "._…"
 - Trigger: a user names a trip `._Alps`, exports it, and re-imports the untouched ZIP → `._Alps.traxj` is treated as OS litter → 400 "no trip file". A regression from round 1.
@@ -298,7 +298,7 @@ Answer (owner, 2026-10-03): yes — only stored and deflated entries; any other 
 - Revisit when: a user reports a 400 "no trip file" on their own export, or the litter or root detection is touched again.
 - Guard: —
 - Override: user: Fix now — a one-line regression in a file already being edited
-- Outcome: open
+- Outcome: fixed (51949a2e)
 
 ## Integrated review — round 3, 2026-10-03, FI2 (68a59787, 51949a2e) against cbff9234
 
@@ -311,4 +311,5 @@ Reviewer: adversarial-reviewer (Fable). Triager: review-triager (Opus). 1 findin
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (05431904)
+Review closed after integrated round 3 (owner, 2026-10-04: no fourth round).
