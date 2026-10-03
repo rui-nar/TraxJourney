@@ -17,18 +17,15 @@ Routes:
 """
 from __future__ import annotations
 
-import io
 import json
 import os
 import uuid as uuid_lib
-from pathlib import Path
 from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from models.db import get_session
-from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
@@ -48,8 +45,9 @@ from models.project_db import DBJournalEntry, DBProject, DBProjectItem
 from src.models.value_bounds import Lat, Lon
 from src.project.project_repo import bump_lock_version
 from src.billing.entitlements import ensure_storage_quota, ensure_trip_days_quota
-from src.billing.usage import record_written, unlink_and_record
+from src.billing.usage import unlink_and_record
 from src.utils.photo_paths import photo_file, photo_files, photo_folder
+from src.utils.photo_store import InvalidPhoto, PhotoTooLarge, save_photo_files
 from src.utils.safe_fetch import fetch_bytes
 from src.exceptions.errors import QuotaExceeded
 from src.utils.logging import get_logger
@@ -59,7 +57,6 @@ router = APIRouter(prefix="/api/journal", tags=["journal"])
 _log = get_logger(__name__)
 
 _DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
-_THUMB_SIZE = (400, 400)
 
 # Per-file cap on a photo upload, checked before the (CPU-bound) decode/resize
 # work — see api/memories.py's _MAX_PHOTO_UPLOAD_BYTES for why 25MB.
@@ -83,12 +80,6 @@ class QueuedOut(BaseModel):
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _photo_dir(user_id: str, journal_id: int) -> Path:
-    p = Path(_DATA_DIR) / "users" / user_id / "journal" / str(journal_id)
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
 
 def _get_owned_journal(
     sess, journal_id: int, user_info_id: int, min_role: str = "editor"
@@ -157,24 +148,21 @@ def _resolve_geo(sess, project_id: int, date: str, geo_mode: str):
 
 
 def _save_photo_files(user_id: str, journal_id: int, uuid_str: str, raw: bytes) -> None:
-    # Decode before writing anything to disk: a corrupt/non-image upload must
-    # not leave an orphaned full-res file behind with no valid thumbnail.
+    # Decode, write and count the photo (src/utils/photo_store.py). Journals
+    # are per-user, so the bytes are the writing user's own.
+    folder = photo_folder(_DATA_DIR, user_id, "journal", journal_id)
     try:
-        img = Image.open(io.BytesIO(raw)).convert("RGB")
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        save_photo_files(user_id, folder, uuid_str, raw)
+    except PhotoTooLarge as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"This photo is too large: {exc}.",
+        ) from exc
+    except InvalidPhoto as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Invalid image file",
         ) from exc
-    photo_path = _photo_dir(user_id, journal_id)
-    full = photo_path / f"{uuid_str}.jpg"
-    thumb = photo_path / f"{uuid_str}_thumb.jpg"
-    full.write_bytes(raw)
-    img.thumbnail(_THUMB_SIZE, Image.LANCZOS)
-    img.save(str(thumb), "JPEG", quality=85)
-    # Storage accounting for quota checks (issue #121) — see api/memories.py.
-    # Journals are per-user, so the bytes are the writing user's own.
-    record_written(user_id, full, thumb)
 
 
 def _write_journal_photo(journal_id: int, uuid_str: str, order: Optional[int] = None) -> None:
