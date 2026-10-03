@@ -9,6 +9,9 @@ import pytest
 # minimum for HS256, which is what produced the InsecureKeyLengthWarning noise
 # across the suite. setdefault so a caller can still pin their own.
 os.environ.setdefault("JWT_SECRET", "0123456789abcdef" * 4)
+# Third-party credentials are stored encrypted under this key, which the app
+# likewise refuses to start without.
+os.environ.setdefault("CREDENTIALS_ENCRYPTION_KEY", "fedcba9876543210" * 4)
 
 from prometheus_client import REGISTRY
 

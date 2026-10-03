@@ -187,6 +187,11 @@ ever set `keepalive` explicitly in the Caddyfile, keep it below uvicorn's value;
 - `FRONTEND_ORIGIN` / `STRAVA_REDIRECT_URI` point at `traxjourney.com`.
 - `JWT_SECRET` freshly generated (`openssl rand -hex 32`) — not reused from
   the NAS, no reason to carry an old session-signing key to a new host.
+- `CREDENTIALS_ENCRYPTION_KEY` (`openssl rand -hex 32`), required: the
+  Strava, Polarsteps and Immich credentials in the database are encrypted with
+  it. Unlike `JWT_SECRET` it must move with the database — a host that gets
+  the database without this key cannot read them, and users have to reconnect
+  those services. Keep a copy outside the database backups.
 
 All other env values (Mapbox, Google client ID/Translate key, Strava
 client ID/secret) are unchanged from NAS prod.

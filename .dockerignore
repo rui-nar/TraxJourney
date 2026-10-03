@@ -24,11 +24,13 @@ scripts/
 # `docker compose run --rm --entrypoint python traxjourney
 # scripts/fetch_rail_data.py` (issue #345), and the read-only audits are run
 # the same way against each instance's database after a deploy (#468, #471),
-# so these files have to be in the build context. Must stay after `scripts/`:
+# so these files have to be in the build context, as does the credentials key
+# rotation, run the same way. Must stay after `scripts/`:
 # docker's last matching pattern wins.
 !scripts/fetch_rail_data.py
 !scripts/audit_activity_ownership.py
 !scripts/audit_photo_names.py
+!scripts/rotate_credentials_key.py
 
 # Secrets
 config/config.json
