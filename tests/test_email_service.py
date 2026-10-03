@@ -38,16 +38,38 @@ def _reset_service_singleton():
 
 class TestConsoleEmailService:
     @pytest.mark.anyio
-    async def test_send_logs_and_does_not_raise(self, caplog):
+    async def test_send_logs_recipient_and_subject_but_not_body_by_default(
+        self, caplog, monkeypatch,
+    ):
+        monkeypatch.delenv("EMAIL_CONSOLE_SHOW_BODY", raising=False)
         svc = ConsoleEmailService()
         with caplog.at_level(logging.INFO):
             await svc.send(EmailMessage(
-                to="a@b.com", subject="Hi", text_body="body text",
+                to="a@b.com", subject="Hi",
+                text_body="body text http://x/verify/tok123",
+                html_body="<p>body</p>"))
+
+        assert "a@b.com" in caplog.text
+        assert "Hi" in caplog.text
+        assert "body text" not in caplog.text
+        assert "http://x/verify/tok123" not in caplog.text
+
+    @pytest.mark.anyio
+    async def test_send_logs_body_when_show_body_opt_in_is_set(
+        self, caplog, monkeypatch,
+    ):
+        monkeypatch.setenv("EMAIL_CONSOLE_SHOW_BODY", "1")
+        svc = ConsoleEmailService()
+        with caplog.at_level(logging.INFO):
+            await svc.send(EmailMessage(
+                to="a@b.com", subject="Hi",
+                text_body="body text http://x/verify/tok123",
                 html_body="<p>body</p>"))
 
         assert "a@b.com" in caplog.text
         assert "Hi" in caplog.text
         assert "body text" in caplog.text
+        assert "http://x/verify/tok123" in caplog.text
 
 
 class TestGetEmailService:
@@ -65,6 +87,31 @@ class TestGetEmailService:
         monkeypatch.delenv("SMTP_HOST", raising=False)
 
         assert get_email_service() is get_email_service()
+
+    def test_selecting_console_backend_warns_that_contents_are_not_logged(
+        self, monkeypatch, caplog,
+    ):
+        monkeypatch.delenv("SMTP_HOST", raising=False)
+        monkeypatch.delenv("EMAIL_CONSOLE_SHOW_BODY", raising=False)
+
+        with caplog.at_level(logging.WARNING):
+            get_email_service()
+
+        assert "SMTP_HOST is not set" in caplog.text
+        assert "not logged" in caplog.text
+        assert "WILL be logged" not in caplog.text
+
+    def test_selecting_console_backend_with_show_body_warns_louder(
+        self, monkeypatch, caplog,
+    ):
+        monkeypatch.delenv("SMTP_HOST", raising=False)
+        monkeypatch.setenv("EMAIL_CONSOLE_SHOW_BODY", "1")
+
+        with caplog.at_level(logging.WARNING):
+            get_email_service()
+
+        assert "WILL be logged" in caplog.text
+        assert "never" in caplog.text
 
 
 class TestSmtpEmailServiceConstruction:
