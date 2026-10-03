@@ -317,6 +317,83 @@ def test_replace_with_the_trip_s_own_zip_leaves_its_photos_alone(env, monkeypatc
     assert json.loads(m.photos_json) == mem and json.loads(j.photos_json) == jnl
 
 
+def test_replace_keeps_a_photo_placed_in_a_reused_row_id(env):
+    """Review U2R1-1. Replacing trip X with the ZIP of its Keep-both copy
+    deletes X's memory and journal entry (the copy's have other public ids
+    and ids) and creates new ones. While X's rows hold the highest ids,
+    SQLite gives the new rows those same ids, with the same photo names: a
+    removal and a placement then name the same files, and only removing
+    before placing leaves the photos in place."""
+    client, engine, ids, act_as, data = env
+    archive, mid, jid, mem, jnl = _source(client, act_as)
+    assert _import_zip(client, "Alps.zip", archive, on_conflict="copy").status_code == 201
+    r = client.get("/api/projects/Alps (2)/export-zip")
+    assert r.status_code == 200, r.text
+    copy_archive = r.content
+    # The copy goes again, so X's rows hold the highest ids once more.
+    assert client.delete("/api/projects/Alps (2)").status_code == 204
+
+    r = _import_zip(client, "Alps.zip", copy_archive, on_conflict="replace")
+
+    assert r.status_code == 201, r.text
+    assert r.json()["outcome"] == "replaced"
+    m, j = _rows(engine, ids["owner"], "Alps")
+    assert (m.id, j.id) == (mid, jid)  # the ids were reused: the case under test
+    assert json.loads(m.photos_json) == mem and json.loads(j.photos_json) == jnl
+    _placed(data, ids["owner"], "memories", m.id, mem)
+    _placed(data, ids["owner"], "journal", j.id, jnl)
+    on_disk = sum(p.stat().st_size for p in _files(data / "users" / str(ids["owner"])))
+    assert _usage(engine, ids["owner"]) == on_disk
+
+
+def _over_the_limit(monkeypatch, engine, uid) -> None:
+    """An account over its 1 MB storage limit, say after its plan lapsed."""
+    monkeypatch.setenv("BILLING_ENABLED", "1")
+    monkeypatch.setenv("BILLING_ENFORCE_QUOTAS", "1")
+    monkeypatch.setenv("FREE_MAX_PROJECTS", "10")
+    monkeypatch.setenv("FREE_MAX_STORAGE_MB", "1")
+    _set_usage(engine, uid, 2 * _MB)
+
+
+def test_over_the_limit_a_replace_that_stores_nothing_is_accepted(env, monkeypatch):
+    """Review U4R1-1: restoring a trip from its own ZIP adds no byte."""
+    client, engine, ids, act_as, data = env
+    archive, *_ = _source(client, act_as)
+    _over_the_limit(monkeypatch, engine, ids["owner"])
+
+    r = _import_zip(client, "Alps.zip", archive, on_conflict="replace")
+
+    assert r.status_code == 201, r.text
+    assert r.json()["outcome"] == "replaced"
+    assert _usage(engine, ids["owner"]) == 2 * _MB
+
+
+def test_over_the_limit_a_zip_without_photos_is_accepted(env, monkeypatch):
+    client, engine, ids, act_as, data = env
+    act_as("other")
+    _over_the_limit(monkeypatch, engine, ids["other"])
+
+    r = _import_zip(client, "Plain.zip", _make_zip(_trip(), {}))
+
+    assert r.status_code == 201, r.text
+    assert _names(engine, ids["other"]) == {"Plain"}
+    assert _usage(engine, ids["other"]) == 2 * _MB
+
+
+def test_over_the_limit_a_zip_with_new_photos_is_refused(env, monkeypatch):
+    client, engine, ids, act_as, data = env
+    archive, *_ = _source(client, act_as)
+    act_as("other")
+    _over_the_limit(monkeypatch, engine, ids["other"])
+
+    r = _import_zip(client, "Alps.zip", archive)
+
+    assert r.status_code == 402, r.text
+    assert r.json()["resource"] == "storage"
+    assert _names(engine, ids["other"]) == set()
+    assert _files(data / "users" / str(ids["other"])) == set()
+
+
 # ── Refusals ─────────────────────────────────────────────────────────────────
 
 def test_a_taken_name_is_refused_before_the_archive_is_read(env, monkeypatch):

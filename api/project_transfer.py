@@ -440,6 +440,14 @@ def _new_staging_dir() -> Path:
     return staging
 
 
+def _ensure_room(sess, user_info_id: int, incoming: int) -> None:
+    """The storage quota, for bytes the import will store. Nothing stored is
+    nothing to refuse: an account over its limit is refused only what would
+    take it further over."""
+    if incoming:
+        ensure_storage_quota(sess, user_info_id, incoming)
+
+
 def _ingest_zip(
     user_info_id: int, name: str, project: Project, staged: StagedPhotos,
     on_conflict: Optional[str],
@@ -451,7 +459,9 @@ def _ingest_zip(
     staged photos to move into place, all as of the commit.
 
     The quota counts every staged photo, less, on a Replace only, those the
-    trip already has in place: a copy or a new name places every one.
+    trip already has in place: a copy or a new name places every one. An
+    import that stores no new bytes is not checked at all, so an account
+    already over its limit can still restore a trip that adds nothing.
     """
     placements: List[Placement] = []
     removals = None
@@ -459,7 +469,7 @@ def _ingest_zip(
     with get_session() as sess:
         if on_conflict == "replace" and _repo.project_exists(sess, user_info_id, name):
             skip = already_present(sess, user_info_id, name, project, data_dir=data_dir)
-            ensure_storage_quota(sess, user_info_id, staged_total(staged, skip))
+            _ensure_room(sess, user_info_id, staged_total(staged, skip))
             removals = _repo.replace_project(
                 sess, user_info_id, name, project, data_dir=data_dir,
                 staged=staged, placements=placements)
@@ -467,7 +477,7 @@ def _ingest_zip(
             return name, removals, placements
         # A new trip, or the trip to replace went meanwhile.
         ensure_project_quota(sess, user_info_id)
-        ensure_storage_quota(sess, user_info_id, staged_total(staged))
+        _ensure_room(sess, user_info_id, staged_total(staged))
         try:
             imported = _repo.import_project(
                 sess, user_info_id, name, project, copy=on_conflict == "copy",
@@ -561,6 +571,9 @@ async def import_project_zip(
             # A concurrent request took the name after the check above.
             return _name_conflict(name)
 
+        # Removals first: SQLite can give a new row the id of a row the
+        # Replace deleted, so a removal and a placement can name the same
+        # folder and photo, and removing after placing would delete it.
         if removals is not None:
             await run_in_threadpool(_remove_photos, removals)
         failed = await run_in_threadpool(
