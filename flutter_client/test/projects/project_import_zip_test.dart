@@ -13,6 +13,8 @@ import 'package:http/testing.dart';
 import 'package:traxjourney_client/src/projects/projects_notifier.dart';
 import 'package:traxjourney_client/src/projects/projects_service.dart';
 
+import 'trip_file_fixture.dart';
+
 /// Uploads as [extension], the server answering the POST with [response] (or
 /// a 201 when null); returns the notifier and the POST the server saw.
 Future<(ProjectsNotifier, http.BaseRequest?)> _upload(
@@ -24,7 +26,7 @@ Future<(ProjectsNotifier, http.BaseRequest?)> _upload(
   http.BaseRequest? post;
   await http.runWithClient(
     () => notifier.uploadProjectFile(
-        bytes: [1, 2, 3],
+        file: MemoryTripFile([1, 2, 3]),
         name: 'Alps',
         extension: extension,
         onConflict: onConflict),
@@ -63,7 +65,7 @@ void main() {
       final notifier = ProjectsNotifier(ProjectsService());
       http.BaseRequest? post;
       await http.runWithClient(
-        () => notifier.uploadProjectFile(bytes: [1], name: 'Alps'),
+        () => notifier.uploadProjectFile(file: MemoryTripFile([1]), name: 'Alps'),
         () => MockClient((req) async {
           if (req.method != 'POST') return http.Response('[]', 200);
           post = req;

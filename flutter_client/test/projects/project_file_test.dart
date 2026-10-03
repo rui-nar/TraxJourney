@@ -19,6 +19,8 @@ import 'package:traxjourney_client/src/projects/project_file.dart';
 import 'package:traxjourney_client/src/projects/projects_notifier.dart';
 import 'package:traxjourney_client/src/projects/projects_service.dart';
 
+import 'trip_file_fixture.dart';
+
 class _FakeProjectsService extends ProjectsService {
   @override
   Future<List<Map<String, dynamic>>> list() async => [];
@@ -110,7 +112,7 @@ void main() {
     final notifier = ProjectsNotifier(_FakeProjectsService());
 
     await http.runWithClient(
-      () => notifier.uploadProjectFile(bytes: utf8.encode('{}'), name: 'Trip'),
+      () => notifier.uploadProjectFile(file: MemoryTripFile(utf8.encode('{}')), name: 'Trip'),
       () => MockClient((req) async {
         body = req.body;
         return http.Response(jsonEncode({'name': 'Trip'}), 201);

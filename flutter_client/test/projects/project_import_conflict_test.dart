@@ -15,6 +15,8 @@ import 'package:traxjourney_client/src/projects/import_conflict_dialog.dart';
 import 'package:traxjourney_client/src/projects/projects_notifier.dart';
 import 'package:traxjourney_client/src/projects/projects_service.dart';
 
+import 'trip_file_fixture.dart';
+
 http.Response _conflict(String name) => http.Response(
       jsonEncode({
         'detail': 'You already have a trip with this name.',
@@ -32,7 +34,7 @@ void main() {
       final notifier = ProjectsNotifier(ProjectsService());
 
       final saved = await http.runWithClient(
-        () => notifier.uploadProjectFile(bytes: [1], name: 'Alps'),
+        () => notifier.uploadProjectFile(file: MemoryTripFile([1]), name: 'Alps'),
         () => MockClient((_) async => _conflict('Alps')),
       );
 
@@ -56,7 +58,7 @@ void main() {
 
         final saved = await http.runWithClient(
           () => notifier.uploadProjectFile(
-              bytes: [1], name: 'Alps', onConflict: choice),
+              file: MemoryTripFile([1]), name: 'Alps', onConflict: choice),
           () => MockClient((req) async {
             if (req.method == 'POST') {
               url = req.url;
@@ -79,7 +81,7 @@ void main() {
       Uri? url;
 
       await http.runWithClient(
-        () => notifier.uploadProjectFile(bytes: [1], name: 'Alps'),
+        () => notifier.uploadProjectFile(file: MemoryTripFile([1]), name: 'Alps'),
         () => MockClient((req) async {
           if (req.method == 'POST') url = req.url;
           return req.method == 'POST'
