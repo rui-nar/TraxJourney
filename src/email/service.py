@@ -40,13 +40,24 @@ class EmailService(ABC):
 
 class ConsoleEmailService(EmailService):
     """Logs the email instead of sending it. Never raises — the safe default
-    for dev and for any deployment without SMTP configured."""
+    for dev and for any deployment without SMTP configured.
+
+    The text body is logged only when EMAIL_CONSOLE_SHOW_BODY=1
+    is set — emails carry verification and invite links with bearer tokens in
+    them, and logging those by default would hand out working credentials to
+    anyone with log access."""
 
     async def send(self, message: EmailMessage) -> None:
-        logger.info(
-            "EMAIL (console backend, not sent) to=%s subject=%r\n%s",
-            message.to, message.subject, message.text_body,
-        )
+        if os.environ.get("EMAIL_CONSOLE_SHOW_BODY") == "1":
+            logger.info(
+                "EMAIL (console backend, not sent) to=%s subject=%r\n%s",
+                message.to, message.subject, message.text_body,
+            )
+        else:
+            logger.info(
+                "EMAIL (console backend, not sent) to=%s subject=%r",
+                message.to, message.subject,
+            )
 
 
 class SmtpEmailService(EmailService):
@@ -84,5 +95,20 @@ def get_email_service() -> EmailService:
     """The process-wide EmailService, lazily selected on first use."""
     global _service
     if _service is None:
-        _service = SmtpEmailService() if os.environ.get("SMTP_HOST") else ConsoleEmailService()
+        if os.environ.get("SMTP_HOST"):
+            _service = SmtpEmailService()
+        else:
+            if os.environ.get("EMAIL_CONSOLE_SHOW_BODY") == "1":
+                logger.warning(
+                    "SMTP_HOST is not set: emails are logged instead of sent, "
+                    "and EMAIL_CONSOLE_SHOW_BODY=1 means message bodies "
+                    "(including links) WILL be logged — never enable this on "
+                    "a real deployment."
+                )
+            else:
+                logger.warning(
+                    "SMTP_HOST is not set: emails are logged instead of sent, "
+                    "and their contents are not logged."
+                )
+            _service = ConsoleEmailService()
     return _service

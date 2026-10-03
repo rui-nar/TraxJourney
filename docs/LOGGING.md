@@ -75,9 +75,10 @@ Never log:
   use); OAuth codes, share tokens and search terms travel in the URL
 - a full client IP address — only the truncated form below
 
-Email logging: log the recipient and subject only, never the body. Exception:
-the `ConsoleEmailService` dev backend logging the full body is fine — that's
-a dev-only code path, not something that reaches a shared log stream.
+Email logging: log the recipient and subject only, never the body. Bodies
+carry verification and invite links. The `ConsoleEmailService` backend, used
+whenever `SMTP_HOST` is unset, follows the same rule; it logs the body only
+when `EMAIL_CONSOLE_SHOW_BODY=1` is set for local debugging.
 
 ## Access log: client address and retention
 
