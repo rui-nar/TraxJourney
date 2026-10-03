@@ -177,6 +177,50 @@ def test_owner_removing_a_companions_activity_deletes_it(engine):
     assert _prepared(engine) == set()
 
 
+def test_an_editor_removing_the_owners_activity_only_unlinks_it(engine):
+    """Owner decision 2026-10-03: a companion frees only their own rows. The
+    owner's activity leaves the timeline and stays, for the owner's own
+    removal or disconnect to free."""
+    owner = _user(engine, "owner")
+    companion = _user(engine, "companion")
+    _activity(engine, 1, owner)
+    _trip(engine, owner, "Trip", [1], members=[companion])
+
+    _remove(companion, "Trip", 0, owner=owner)
+
+    assert _rows(engine) == {1}
+    assert _prepared(engine) == {1}
+    with Session(engine) as sess:
+        assert sess.exec(select(DBProjectItem).where(DBProjectItem.activity_id == 1)).first() is None
+
+
+def test_an_editor_removing_their_own_activity_deletes_it(engine):
+    owner = _user(engine, "owner")
+    companion = _user(engine, "companion")
+    _activity(engine, 7, companion)
+    _trip(engine, owner, "Trip", [7], members=[companion])
+
+    _remove(companion, "Trip", 0, owner=owner)
+
+    assert _rows(engine) == set()
+    assert _prepared(engine) == set()
+
+
+def test_an_editor_removing_a_tail_of_the_owners_split_only_unlinks_it(engine):
+    owner = _user(engine, "owner")
+    companion = _user(engine, "companion")
+    _activity(engine, 111, owner, name="Ride (1/2)", split_base_name="Ride", is_edited=True)
+    _activity(engine, -5, owner, name="Ride (2/2)", split_root_id=111, split_parent_id=111,
+              start_date="2026-06-10T10:00:00Z")
+    _trip(engine, owner, "Trip", [111, -5], members=[companion])
+
+    _remove(companion, "Trip", 1, owner=owner)
+
+    assert _rows(engine) == {111, -5}
+    with Session(engine) as sess:
+        assert sess.exec(select(DBProjectItem).where(DBProjectItem.activity_id == -5)).first() is None
+
+
 def test_removing_the_head_then_the_last_tail_deletes_the_root(engine):
     """The root is kept while its tail is in the trip, and reconsidered when
     the tail goes (plan R1-6)."""
@@ -304,6 +348,24 @@ def test_deleting_a_trip_keeps_gpx_rows(engine):
     _delete_trip(uid, "Trip")
 
     assert _rows(engine) == {-40}
+
+
+def test_a_refresh_that_outlives_its_row_warns_as_it_reinserts(engine, caplog):
+    """Guard U6-R1-1: the background re-fetch finds the row gone — the
+    activity left its last trip while Strava was answering — and says so
+    as it recreates it."""
+    from api.project_shared import _repo
+    from src.models.activity import Activity
+
+    uid = _user(engine, "owner")
+    act = Activity.from_strava_api(_raw_strava_activity(900))
+
+    with caplog.at_level(logging.WARNING, logger="src.project.repo_activities"):
+        with Session(engine) as sess:
+            _repo.force_update_activity(sess, uid, act)
+
+    assert (f"refresh re-inserting activity=900 user={uid}: row deleted while the "
+            "re-fetch was in flight (#509 orphan)") in caplog.text
 
 
 # ── The add that races a removal (Review envelope, U6 concurrency) ─────────────

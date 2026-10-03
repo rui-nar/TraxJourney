@@ -915,6 +915,12 @@ class ActivityMixin:
 
         existing = sess.get(DBActivity, act.id)
         if existing is None:
+            # The background re-fetch outlived the row: the activity left its
+            # last trip while Strava was answering, and this insert creates a
+            # row no trip references (issue #509, review guard U6-R1-1).
+            _log.warning(
+                "refresh re-inserting activity=%s user=%s: row deleted while the "
+                "re-fetch was in flight (#509 orphan)", act.id, user_info_id)
             self._upsert_activity(sess, user_info_id, act)
             return
         # An activity row belongs to one account for good: another account's
