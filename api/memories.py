@@ -40,6 +40,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
 from api.deps import get_current_user
+from api.members import public_name
 from api.project_access import (
     OwnerParam,
     assert_project_access,
@@ -907,7 +908,8 @@ def add_comment(
     with get_session() as sess:
         mem_row = _get_owned_memory(sess, memory_id, user_info_id)
         user_row = sess.get(UserInfo, user_info_id)
-        commenter_name = user_row.display_name if user_row else ""
+        # Snapshot shown to other members: never the address (#507).
+        commenter_name = public_name(sess, user_row)
 
         if body.parent_comment_id is not None:
             parent = sess.get(DBMemoryComment, body.parent_comment_id)
@@ -1014,7 +1016,8 @@ def like_memory(
         if existing:
             return
         user_row = sess.get(UserInfo, user_info_id)
-        liker_name = user_row.display_name if user_row else ""
+        # Snapshot shown to other members: never the address (#507).
+        liker_name = public_name(sess, user_row)
         sess.add(DBMemoryLike(
             memory_id=memory_id,
             user_info_id=user_info_id,
