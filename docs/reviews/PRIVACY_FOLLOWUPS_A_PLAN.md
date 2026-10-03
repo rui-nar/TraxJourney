@@ -163,3 +163,15 @@ Owner approval 2026-10-03: U4-R1-1 Guard, U4-R1-2 Defer, U6-R1-1 Guard, as triag
 Envelope question from the reviewer, owner answer 2026-10-04: pre-U4 leftovers (photo files in current members' people/<id>/ folders that no person references) are IN scope: the U5 sweep also deletes them and gives back their usage. U5 gets a round-2 review for it.
 
 Owner approval 2026-10-04: U5-R1-1 Guard (flagged, accepted as a guard), U5-R1-2 Guard (U5 Scope widened to api/people.py for it, X3).
+
+## Unit U5 review — round 2, 2026-10-04, reviewed at 34ff79e9
+
+### U5-R2-1 — The leftover cleanup only visits folders of persons that still exist
+- Trigger: A companion uploaded a person's avatar before this release, then the owner deleted that person (or the trip) → the companion's pair under users/<companion>/people/<old id>/ is never scanned → charged to the companion for good.
+- Scores: trigger=concrete, impact=degraded-ux, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7), under the owner's reading of the leftover decision.
+- Override: user (envelope, 2026-10-04): the cleanup also covers folders of deleted people (person ids are never reused, so nothing can reference them), never a living person's owner folder.
+- Outcome: open
+
+## Delivery note — U3 scope widened (X3), 2026-10-04
+U3's implementer found five more places that show another user's raw display_name (public share owner_name, comment and like authors, signed-in visitor names), which is the email for legacy auto-created profiles. The Definition of done for #507 covers every response, so U3's Scope is widened to api/share.py, api/memories.py and api/project_shares.py at those sites only. No other unit touches those files in wave 2.
