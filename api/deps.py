@@ -149,7 +149,12 @@ def create_strava_oauth_state(user_info_id: int) -> str:
 
 def decode_strava_oauth_state(token: str) -> Optional[int]:
     """The user id a Strava ``state`` was issued for; None when it is not a
-    valid, unexpired state token (a session token included)."""
+    valid state token (a session token included).
+
+    Raises :class:`jwt.ExpiredSignatureError` for a genuine state that ran out
+    — a user who lingered at Strava — so the callback can say so. Like
+    :func:`decode_token`, expiry is not logged and anything else is.
+    """
     try:
         payload = jwt.decode(
             token, jwt_secret(), algorithms=[_JWT_ALGORITHM],
@@ -157,7 +162,11 @@ def decode_strava_oauth_state(token: str) -> Optional[int]:
             options={"require": ["aud", "sub", "jti", "exp"]},
         )
         return int(payload["sub"])
-    except (jwt.PyJWTError, ValueError):
+    except jwt.ExpiredSignatureError:
+        raise
+    except (jwt.PyJWTError, ValueError) as exc:
+        # Never log the token itself.
+        _log.warning("invalid Strava OAuth state rejected: %s", exc)
         return None
 
 

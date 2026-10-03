@@ -12,6 +12,7 @@ network is never touched.
 from __future__ import annotations
 
 import datetime
+import logging
 from urllib.parse import parse_qs, urlparse
 
 import jwt
@@ -194,15 +195,50 @@ def test_callback_refuses_a_session_token_as_state(client, users, engine, exchan
     assert _token_row(engine, a.id) is None
 
 
-def test_callback_refuses_an_expired_state(client, users, engine, exchange):
+def test_callback_refuses_an_expired_state_and_says_it_expired(
+        client, users, engine, exchange, caplog):
     a, _ = users
+    state = _expired_state(a.id)
 
-    resp = _callback(client, _expired_state(a.id))
+    with caplog.at_level(logging.DEBUG, logger="api.deps"):
+        resp = _callback(client, state)
 
     assert resp.headers["location"].endswith(
-        "/oauth_callback.html?strava=error&reason=invalid_state")
+        "/oauth_callback.html?strava=error&reason=state_expired")
     assert exchange == []
     assert _token_row(engine, a.id) is None
+    # Routine, like an expired session: not logged.
+    assert [r for r in caplog.records if r.name == "api.deps"] == []
+
+
+def test_expired_session_token_as_state_is_invalid_not_expired(client, users, exchange):
+    """Only a genuine state can be reported as expired."""
+    a, _ = users
+    expired_session = jwt.encode(
+        {"sub": str(a.id),
+         "exp": datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=1)},
+        jwt_secret(), algorithm="HS256",
+    )
+
+    resp = _callback(client, expired_session)
+
+    assert resp.headers["location"].endswith("reason=invalid_state")
+    assert exchange == []
+
+
+def test_invalid_state_logs_a_warning_without_the_token(client, users, exchange, caplog):
+    a, _ = users
+    session = create_access_token(a)
+
+    with caplog.at_level(logging.WARNING, logger="api.deps"):
+        resp = _callback(client, session)
+
+    assert resp.headers["location"].endswith("reason=invalid_state")
+    warnings = [r for r in caplog.records
+                if r.name == "api.deps" and r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "Strava OAuth state" in warnings[0].getMessage()
+    assert session not in caplog.text
 
 
 def test_callback_refuses_a_state_signed_with_another_key(client, users, engine, exchange):

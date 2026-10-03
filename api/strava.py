@@ -269,8 +269,12 @@ def strava_callback(
         return RedirectResponse(f"{_FRONTEND_ORIGIN}/oauth_callback.html?strava=error&reason=no_state")
 
     # Only a state issued by strava_connect is accepted — a session token is not.
+    import jwt
     from api.deps import decode_strava_oauth_state
-    user_info_id = decode_strava_oauth_state(state)
+    try:
+        user_info_id = decode_strava_oauth_state(state)
+    except jwt.ExpiredSignatureError:
+        return RedirectResponse(f"{_FRONTEND_ORIGIN}/oauth_callback.html?strava=error&reason=state_expired")
     if user_info_id is None:
         return RedirectResponse(f"{_FRONTEND_ORIGIN}/oauth_callback.html?strava=error&reason=invalid_state")
 
