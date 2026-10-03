@@ -14,6 +14,8 @@ The archive is untrusted: any signed-in user can upload one, crafted or not.
   "Compress folder") as it was: when every entry sits under one top-level
   folder, that folder is the root. Finder's ``__MACOSX/`` entries and
   AppleDouble ``._*`` files are left out when finding it;
+- reads stored and deflated entries only, the two methods an export, Finder
+  and Explorer write, and refuses any other method before opening the entry;
 - counts the bytes it inflates instead of trusting the sizes the archive
   declares;
 - decodes each photo like an upload (src/utils/photo_store.py), one at a time,
@@ -27,7 +29,6 @@ removes the whole directory.
 from __future__ import annotations
 
 import json
-import lzma
 import shutil
 import zipfile
 import zlib
@@ -79,13 +80,18 @@ _ARCHIVE_FOLDERS = {"memories": "photos", "journal": "journal"}
 
 _CHUNK = 64 * 1024
 
-#: What zipfile raises for a corrupt, truncated or unsupported entry: OSError
-#: is corrupt bzip2 data, lzma.LZMAError corrupt LZMA data, and ValueError
-#: (UnicodeDecodeError) a local header name flagged UTF-8 that isn't. Caught
-#: around the zipfile calls only, so a disk error writing a staged photo is
-#: not mistaken for a fault of the archive.
+#: The compression methods an entry that is read may use: what an export,
+#: Finder and Explorer write. Each other method is a decompressor with errors
+#: of its own (bzip2, LZMA, Zstandard ...), so it is refused before the entry
+#: is opened rather than caught one by one.
+_METHODS = (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
+
+#: What zipfile raises for a corrupt, truncated or unsupported stored or
+#: deflated entry: ValueError (UnicodeDecodeError) is a local header name
+#: flagged UTF-8 that isn't. Caught around the zipfile calls only, so a disk
+#: error writing a staged photo is not mistaken for a fault of the archive.
 _ENTRY_ERRORS = (zipfile.BadZipFile, NotImplementedError, RuntimeError, EOFError, zlib.error,
-                 OSError, lzma.LZMAError, ValueError)
+                 ValueError)
 
 
 def _is_os_litter(name: str) -> bool:
@@ -145,6 +151,11 @@ def _read_entry(zf: zipfile.ZipFile, info: zipfile.ZipInfo, limit: int, what: st
     whatever size the archive declares."""
     too_large = InvalidTripArchive(
         f"The {what} in this archive is too large. The limit is {limit // (1024 * 1024)} MB.")
+    if info.compress_type not in _METHODS:
+        method = zipfile.compressor_names.get(info.compress_type, f"method {info.compress_type}")
+        raise InvalidTripArchive(
+            f"This archive uses an unsupported compression method ({method}). "
+            "Re-create it as a standard ZIP.")
     if info.file_size > limit:
         raise too_large
     chunks: List[bytes] = []

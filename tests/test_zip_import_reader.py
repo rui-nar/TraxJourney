@@ -497,13 +497,41 @@ def test_a_local_name_flagged_utf8_that_isnt_is_refused(tmp_path):
     _refused(bytes(data), tmp_path / "s", match=f"photo photos/7/{U1}.jpg .* damaged or unreadable")
 
 
-@pytest.mark.parametrize("compression", [zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA],
-                         ids=["bzip2", "lzma"])
-def test_a_photo_with_corrupt_compressed_data_is_refused(tmp_path, compression):
-    """Corrupt bzip2 data raises OSError, corrupt LZMA data LZMAError (IR1-1)."""
-    photo = _jpeg((900, 900), color=(10, 200, 90))
-    data = bytearray(_zip([("Alps.traxj", _trip_bytes(_project())), (f"photos/7/{U1}.jpg", photo)],
-                          compression=compression))
+def _zstd_supported() -> bool:
+    try:
+        zipfile.ZipFile(io.BytesIO(), "w").writestr(
+            zipfile.ZipInfo("x"), b"x", compress_type=zipfile.ZIP_ZSTANDARD)
+    except (AttributeError, RuntimeError, NotImplementedError, ImportError):
+        return False
+    return True
+
+
+_OTHER_METHODS = [
+    pytest.param(zipfile.ZIP_BZIP2, "bzip2", id="bzip2"),
+    pytest.param(zipfile.ZIP_LZMA, "lzma", id="lzma"),
+    pytest.param(getattr(zipfile, "ZIP_ZSTANDARD", 93), "zstd", id="zstd",
+                 marks=pytest.mark.skipif(not _zstd_supported(),
+                                          reason="no Zstandard support in this zipfile")),
+]
+
+
+def _with_photo_in(compression) -> bytes:
+    """An export whose trip file is deflated and whose photo uses *compression*."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(zipfile.ZipInfo("Alps.traxj"), _trip_bytes(_project()),
+                    compress_type=zipfile.ZIP_DEFLATED)
+        zf.writestr(zipfile.ZipInfo(f"photos/7/{U1}.jpg"), _jpeg((900, 900), color=(10, 200, 90)),
+                    compress_type=compression)
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("compression,method", _OTHER_METHODS)
+def test_a_photo_with_corrupt_compressed_data_is_refused(tmp_path, compression, method):
+    """Corrupt bzip2, LZMA or Zstandard data each raise an error of their own
+    decompressor (IR1-1, IR2-1); the method is refused before the entry is
+    opened (owner decision, 2026-10-03)."""
+    data = bytearray(_with_photo_in(compression))
     name = f"photos/7/{U1}.jpg".encode()
     lh = data.find(b"PK\x03\x04")
     while data[lh + 30: lh + 30 + len(name)] != name:
@@ -512,7 +540,33 @@ def test_a_photo_with_corrupt_compressed_data_is_refused(tmp_path, compression):
     start = lh + 30 + len(name) + struct.unpack_from("<H", data, lh + 28)[0]
     for at in range(start + 8, start + size - 8, 7):
         data[at] ^= 0x5A  # garble the stream throughout, past its header
-    _refused(bytes(data), tmp_path / "s", match="damaged or unreadable")
+    _refused(bytes(data), tmp_path / "s",
+             match=rf"unsupported compression method \({method}\)\. Re-create it as a standard ZIP")
+
+
+@pytest.mark.parametrize("compression,method", _OTHER_METHODS)
+def test_an_intact_photo_in_another_method_is_refused(tmp_path, compression, method):
+    _refused(_with_photo_in(compression), tmp_path / "s",
+             match=rf"unsupported compression method \({method}\)")
+
+
+def test_a_trip_file_in_another_method_is_refused_before_it_is_opened(tmp_path, monkeypatch):
+    data = _zip([("Alps.traxj", _trip_bytes(_project()))], compression=zipfile.ZIP_BZIP2)
+    def no_open(*a, **k):
+        pytest.fail("the entry was opened")
+    monkeypatch.setattr(zipfile.ZipFile, "open", no_open)
+    _refused(data, tmp_path / "s", match=r"unsupported compression method \(bzip2\)")
+
+
+def test_an_unread_entry_in_another_method_does_not_block_the_import(tmp_path):
+    """Only the entries read are checked: every other entry is ignored."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("Alps.traxj", _trip_bytes(_project(memory_photos=(U1,), journal_photos=())))
+        zf.writestr(f"photos/7/{U1}.jpg", _jpeg())
+        zf.writestr(zipfile.ZipInfo("notes.txt"), b"hello" * 100, compress_type=zipfile.ZIP_BZIP2)
+    _, staged = _read(buf.getvalue(), tmp_path / "s")
+    assert set(staged[("memories", 7)]) == {U1}
 
 
 def test_a_disk_error_staging_a_photo_is_not_blamed_on_the_archive(tmp_path, monkeypatch):
