@@ -31,6 +31,9 @@ from models.project_db import (
     DBProjectMember,
     DBProjectPendingInvite,
     DBProjectSyncMeta,
+    DBPosterJob,
+    DBRouteJob,
+    DBVideoJob,
     DBActivity,
     DBActivityGeoPrepared,
     DBShareMemoryContent,
@@ -43,6 +46,7 @@ from models.project_db import (
 from models.billing import Subscription, SubscriptionRefund, UserUsage
 from models.user import (
     EmailVerification,
+    ImmichToken,
     LocalUser,
     PolarstepsToken,
     StravaToken,
@@ -478,6 +482,15 @@ def delete_user_and_data(sess: Session, user_info_id: int) -> None:
         _delete_all(DBProjectPendingInvite,
                     DBProjectPendingInvite.project_id.in_(project_ids))
 
+    # Jobs this user started, on their own trips or as a companion on someone
+    # else's, removed before the projects they point at. Their output files
+    # live under ``data/users/{id}/`` (posters/, videos/) and go with
+    # purge_user_files. Jobs another user started on this user's trips are
+    # that user's rows, with files under that user's folder, and stay.
+    _delete_all(DBPosterJob, DBPosterJob.user_info_id == user_info_id)
+    _delete_all(DBVideoJob, DBVideoJob.user_info_id == user_info_id)
+    _delete_all(DBRouteJob, DBRouteJob.user_info_id == user_info_id)
+
     if project_ids:
         _delete_all(DBMemory, DBMemory.project_id.in_(project_ids))
         _delete_all(DBJournalEntry, DBJournalEntry.project_id.in_(project_ids))
@@ -495,6 +508,7 @@ def delete_user_and_data(sess: Session, user_info_id: int) -> None:
     _delete_all(PolarstepsToken, PolarstepsToken.user_info_id == user_info_id)
     _delete_all(DBDeviceKey, DBDeviceKey.user_info_id == user_info_id)
     _delete_all(DBRecoveryWrap, DBRecoveryWrap.user_info_id == user_info_id)
+    _delete_all(ImmichToken, ImmichToken.user_info_id == user_info_id)
     # Billing rows (issue #121). Any subscription that could still bill was
     # cancelled at the provider by cancel_live_subscription above (issue #429).
     # The refund ledger (#441) is keyed by Stripe customer, not by account:
