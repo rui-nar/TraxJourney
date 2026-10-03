@@ -101,3 +101,31 @@ Owner decisions 2026-10-03: patch the four findings rather than revert R2-1, whi
 - Outcome: fixed (plan amended; passage tagged R4-1)
 
 Owner decision 2026-10-03: apply R4-1 and stop plan reviews; U6's code review after delivery covers it. The plan is approved for delivery.
+
+## Unit U4 review — round 1, 2026-10-03, reviewed at d6e00db3 (DELIVERY.md §5 point 3)
+
+### U4-R1-1 — Two concurrent avatar uploads for one person leave the losing upload's files on disk, charged to the owner
+- Trigger: Two editors (or a client retry) upload the same person's avatar at once → both write and charge the owner, both read the same old avatar, the second commit wins → the first upload's files stay, referenced by nothing, counted in the owner's storage.
+- Scores: trigger=plausible, impact=degraded-ux, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Guard (D9)
+- Guard: after the old-avatar cleanup, list the person's avatar folder and log a WARNING naming any file that isn't the new avatar's pair.
+- Override: —
+- Outcome: open
+
+### U4-R1-2 — A non-HTTP failure after the files are written leaves them on disk, charged to the owner
+- Trigger: The row update fails with e.g. "database is locked" → 500, the written files stay counted; a retry doubles the cost.
+- Scores: trigger=plausible, impact=degraded-ux, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: A non-HTTP exception from upload_avatar shows up in val or prod logs, the U4-R1-1 warning fires, or a user reports storage usage that doesn't match their content.
+- Override: —
+- Outcome: open
+
+## Unit U2 review — round 1, 2026-10-03, reviewed at 7b8ae342 (DELIVERY.md §5 point 3)
+
+### U2-R1-1 — A rotation whose DB write fails mid-enrichment keeps running on the new tokens while the row keeps the retired refresh token
+- Trigger: An import's enrichment refreshes an expired token while SQLite stays locked past busy_timeout → _persist_rotated_token raises, enrichment logs and continues → the row keeps the retired token; the next Strava action asks to re-authenticate, and a disconnect revokes the retired token while the app stays authorised.
+- Scores: trigger=plausible, impact=wrong-visible, detect=logged, later=cheap, fix=S/shared, confidence=verified
+- Decision: Defer (D10). The real fix is _persist_rotated_token retrying or failing loudly for every caller (api/strava.py), outside U2's Scope.
+- Revisit when: A log shows _persist_rotated_token / _claim_token_row failing ("database is locked") in val or prod; a user reports Strava still listing the app after disconnecting; a user is asked to reconnect soon after an import.
+- Override: —
+- Outcome: open
