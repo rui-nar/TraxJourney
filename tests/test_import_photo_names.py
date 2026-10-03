@@ -445,3 +445,16 @@ def test_already_present_matches_as_replace_does(env):
     # Of the kept rows, only the memory gets a photo placed: X.
     assert [(p.kind, p.uuid) for p in placements if (p.kind, p.row_id) in {
         ("memories", lake), ("journal", note)}] == [("memories", X)]
+
+
+def test_replace_without_a_data_dir_is_refused_and_changes_nothing(env):
+    """Without the data root no kept row's photo is found on disk, so every
+    kept row would silently lose its names (review U2R1-2)."""
+    lake, note = _alps(env)
+    with Session(env["engine"]) as sess:
+        with pytest.raises(ValueError, match="replace_project"):
+            ProjectRepo().replace_project(
+                sess, env["owner"], "Alps", ProjectIO.from_bytes(_doc(
+                    _memory("pub-lake", [A, B]), _journal("note", [C, D], file_id=note))))
+    assert _photos(env, DBMemory) == {"pub-lake": [A, B]}
+    assert _photos(env, DBJournalEntry) == {"note": [C, D]}

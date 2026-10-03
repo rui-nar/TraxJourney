@@ -260,8 +260,18 @@ class ImportExportMixin:
         already in place.
 
         Returns the photo files the caller must delete once this has
-        committed, or None if the trip does not exist (any more).
+        committed, or None if the trip does not exist (any more). The caller
+        deletes them *before* it moves *placements* into place: SQLite can
+        give a new row the id of a row this deleted, so a removal and a
+        placement can name the same folder and photo, and the other order
+        would delete the photo just placed.
+
+        Raises ValueError when *data_dir* is None: without it no kept row's
+        photo is found on disk, and every kept row would lose its names
+        while their files stay, counted.
         """
+        if data_dir is None:
+            raise ValueError("replace_project needs data_dir to keep the photos already on disk")
         row = self._get_project_row(sess, user_info_id, name)
         if row is None:
             return None
