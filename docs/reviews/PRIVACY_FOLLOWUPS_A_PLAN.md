@@ -56,3 +56,37 @@ Envelope: the plan's "Review envelope" section (REVIEW.md defaults + SQLite only
 - Decision: Fix now (D7). New evidence that the R1-4 fix does not hold for split activities; not a duplicate.
 - Override: —
 - Outcome: fixed (plan amended; passages tagged R2-1)
+
+## Round 3 — 2026-10-03, reviewed the R2-1 amendment at 5e175550 (the policy's cap)
+
+### R3-1 — The trip-delete tail purge does not re-parent a surviving tail-of-tail; a later reset of the root restores the track over it
+- Trigger: Split family R → T1 → T2 with T2 also in a second trip; deleting the first trip deletes T1 and keeps T2 pointing at it → resetting R misses T2 → the stretch is counted twice, unwarned.
+- Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3, F3) if a tail held by two trips is a supported state; Reject (D1) if not (envelope question to the owner).
+- Override: user: split tails belong to one trip (2026-10-03) → Reject (D1); the plan acceptance case that asserted a multi-trip tail is dropped
+- Outcome: — (rejected)
+
+### R3-2 — Surviving split pieces are not renumbered after the trip-delete purge
+- Trigger: A root kept by another trip shows "Ride (1/3)" as the only piece left.
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6). Triager note: main already shows this today; the purge is the natural place to fix it.
+- Override: —
+- Outcome: fixed (plan amended; passage tagged R3-2)
+
+### R3-3 — Ids are collected outside delete_project's transaction; a split or add committed in between is never collected
+- Trigger: A companion splits an activity while the owner deletes the trip → the new tail is orphaned and pins its root.
+- Scores: trigger=plausible, impact=maintainability, detect=silent, later=cheap, fix=S/shared, confidence=verified
+- Decision: Guard (D9): warn when a root is kept only by unreferenced tails.
+- Override: —
+- Outcome: guard specified in the plan (tagged R3-3 guard)
+
+### R3-4 — The tail filter (activity_rewritable_by_trip) and the root rule (any owner, R1-3) disagree for a former member's split family
+- Trigger: A companion imports and splits an activity, leaves; the owner deletes the trip → tails aren't collected and pin the root forever.
+- Scores: trigger=concrete (triager corrected from plausible), impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Override: —
+- Outcome: fixed (plan amended; passage tagged R3-4)
+
+Triager's recommendation: all four come from R2-1 re-implementing part of delete_local_activity. Either (a) reuse delete_local_activity inside delete_project's transaction (removes the class; shared risk; needs its own review), or (b) take split families out of trip-delete pruning for this package (revert the R2-1 amendment, reopen R2-1 as Defer).
+
+Owner decisions 2026-10-03: patch the four findings rather than revert R2-1, which authorises a round 4 limited to these amendments; split tails belong to one trip (Review envelope).

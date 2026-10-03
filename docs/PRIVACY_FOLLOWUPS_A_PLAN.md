@@ -163,6 +163,11 @@ REVIEW.md defaults apply, with:
 - **Startup work (U5):** the sweep runs once per API start, in the single API
   process (E1). It must be safe to interrupt at any point and to run again:
   a half-done move must not lose a file or count it twice.
+- **Split tails belong to one trip** (owner decision 2026-10-03). A local
+  split piece referenced from more than one trip is an unsupported state:
+  `delete_local_activity` already calls it corruption and refuses it. Findings
+  that need it are outside the envelope. (That `add_activities` still accepts
+  a negative id is filed as its own issue.)
 - **Trust:** none new. Companions are trusted members of a trip (as for
   memories: viewer role may read, editor role may write).
 
@@ -302,11 +307,13 @@ Definition of done).
   3. The item-removal path calls it with the removed activity's id, after the project save, when the id is positive. When the removed item was a split tail (negative id) and its row was deleted, it then calls it with the tail's `split_root_id` when that is positive (R1-6).
   4. Before `delete_project`, the trip-delete endpoint collects:
      - the trip's positive activity ids;
-     - its negative (tail) ids whose row has a positive, Strava-origin `split_root_id`, and which `activity_rewritable_by_trip` allows for this trip (checked while the project row still exists).
+     - its negative (tail) ids whose row has a positive, Strava-origin `split_root_id`, whoever owns the row: the same ownership rule as the roots (R1-3), so a former member's split family is freed too. Since a tail belongs to one trip (Review envelope), the deleted trip's tails are its own to delete (R3-4).
      
      After `delete_project`, in the repo method's single write transaction with the write lock taken first:
      - delete those tail rows (and their `DBActivityGeoPrepared` rows) that no `DBProjectItem` references, treating them as one set, so a tail named only by another tail in the same set as its `split_parent_id` still goes;
-     - then apply the Strava-origin rule to the positive ids and the tails' roots.
+     - for each distinct root of the deleted tails that survives, call `_renumber_split_family(sess, root_id)` (as `delete_local_activity` does), so the remaining pieces are renumbered and a lone root gets its base name back (R3-2);
+     - then apply the Strava-origin rule to the positive ids and the tails' roots;
+     - when a collected root is kept only because tails name it and none of those tails is referenced by any `DBProjectItem`, log a WARNING with the root id and those tail ids (R3-3 guard).
      
      (R1-4, R2-1)
   5. Bust the geo and stats caches the same way the negative-id path does, where needed.
@@ -316,7 +323,10 @@ Definition of done).
     - removing an activity from its last trip deletes it, and removing it from one of two trips keeps it;
     - an owner removing a companion-imported Strava activity from a shared trip deletes it when no other trip references it;
     - deleting a trip deletes its now-unreferenced Strava rows and keeps those another trip still references;
-    - deleting a trip that holds a split Strava activity (head, a tail and a tail of a tail) deletes the root, both tails and their prepared geometry; if another trip still references one tail, that tail and the root are kept;
+    - deleting a trip that holds a split Strava activity (head, a tail and a tail of a tail) deletes the root, both tails and their prepared geometry;
+    - deleting a trip whose split activity's root is also held by another trip deletes the tails, keeps the root, and the root is renumbered (a lone root shows its base name, not "(1/3)");
+    - deleting a trip holding a split family imported and split by a companion who has since left deletes that family;
+    - a root kept only by unreferenced tails logs the R3-3 warning;
     - removing the head piece of a split Strava activity, then its last tail, deletes the root;
     - a concurrent add of the same activity to another trip, racing the removal, ends with the row present and referenced (file-backed SQLite, real threads);
     - a companion's Strava activity in the owner's trip survives the companion's disconnect.
