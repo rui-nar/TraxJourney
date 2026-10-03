@@ -370,12 +370,30 @@ def test_a_plain_import_that_loses_the_race_is_a_409_not_a_500(env, monkeypatch)
 
 
 def test_concurrent_copies_each_get_their_own_name(env):
+    """Tested below the HTTP route, where the race still exists.
+
+    The import routes take one import at a time (#469, Decision 12 of
+    docs/TRIP_ZIP_IMPORT_PLAN.md), so overlapping requests no longer reach the
+    ingest together: the second gets 503 (tests/test_import_guard.py). The
+    ingest's retry on a lost name still protects every writer below that
+    guard, so it is raced here directly, as the route calls it.
+    """
+    from api.project_shared import _repo
+
     client, engine, uid = env
     _seed(client, "Alps")
     results: list = []
+    errors: list = []
+    start = threading.Barrier(4)
 
     def _worker():
-        results.append(_import(client, "Alps", _trip(), on_conflict="copy"))
+        project = ProjectIO.from_bytes(_trip())
+        try:
+            start.wait()
+            with Session(engine) as sess:
+                results.append(_repo.import_project(sess, uid, "Alps", project, copy=True))
+        except Exception as exc:  # noqa: BLE001 — reported by the assertion below
+            errors.append(exc)
 
     threads = [threading.Thread(target=_worker) for _ in range(4)]
     for t in threads:
@@ -383,8 +401,9 @@ def test_concurrent_copies_each_get_their_own_name(env):
     for t in threads:
         t.join()
 
-    assert [r.status_code for r in results] == [201] * 4, [r.text for r in results]
-    names = {r.json()["name"] for r in results}
+    assert errors == []
+    names = set(results)
+    assert len(results) == 4
     assert names == {"Alps (2)", "Alps (3)", "Alps (4)", "Alps (5)"}
     assert _names(engine, uid) == {"Alps"} | names
 
