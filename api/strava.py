@@ -327,9 +327,10 @@ def strava_disconnect(current_user: Annotated[dict, Depends(get_current_user)]):
     """Disconnect Strava: revoke the app at Strava, then drop the stored token
     and the cached raw activity list (issue #440).
 
-    Activities already added to trips are the user's own and stay. The revoke
-    is best effort — if Strava is unreachable the local data is removed all the
-    same, so the user is disconnected either way.
+    Activities still in a trip are the user's own and stay; those in none are
+    deleted (issue #509). The revoke is best effort — if Strava is unreachable
+    the local data is removed all the same, so the user is disconnected either
+    way.
     """
     user_info_id = int(current_user["sub"])
     # Read, then revoke outside any session — the Strava round trip (up to two
@@ -360,6 +361,9 @@ def strava_disconnect(current_user: Annotated[dict, Depends(get_current_user)]):
         cache_row = sess.get(DBStravaCache, user_info_id)
         if cache_row is not None:
             sess.delete(cache_row)
+        # Strava rows no trip holds any more go too (issue #509); those still
+        # in a trip, the user's or a companion's, stay.
+        _project_repo.delete_unreferenced_strava_activities(sess, user_info_id)
         sess.commit()
     if rotated is not None:
         deauthorize_strava(user_info_id, *rotated, cfg=_cfg)

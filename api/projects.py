@@ -1038,7 +1038,27 @@ def delete_project(
     with get_session() as sess:
         row = resolve_project(sess, user_info_id, name, owner, min_role="owner")
         owner_id = row.user_info_id
+        # The trip's activities, to free those no other trip holds once it is
+        # gone (issue #509): its Strava rows, and its split tails whoever cut
+        # them — a tail belongs to one trip, so this one's are its own to
+        # delete. The repo keeps only Strava-family tails among the latter.
+        held = sess.exec(select(DBProjectItem.activity_id).where(
+            DBProjectItem.project_id == row.id,
+            DBProjectItem.activity_id.is_not(None),
+        )).all()
         found = _repo.delete_project(sess, owner_id, name)
+        renamed = []
+        if found:
+            renamed_ids = _repo.delete_unreferenced_strava_activities(
+                sess, owner_id,
+                ids=[a for a in held if a > 0],
+                tail_ids=[a for a in held if a < 0],
+            )
+            renamed = sess.exec(select(DBProject.user_info_id, DBProject.name).where(
+                DBProject.id.in_(renamed_ids))).all() if renamed_ids else []
     bust_project_cache(owner_id, name)
+    # Another trip holding the surviving pieces shows them renumbered.
+    for other_owner, other_name in renamed:
+        bust_project_cache(other_owner, other_name)
     if not found:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
