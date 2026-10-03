@@ -10,6 +10,10 @@ The archive is untrusted: any signed-in user can upload one, crafted or not.
   ``journal/{id}/{uuid}.jpg`` for each photo the trip file lists. Every other
   entry, ``../`` and absolute names included, is ignored, and no entry name is
   ever joined to a filesystem path;
+- takes an export unzipped and zipped again (Finder "Compress", Explorer
+  "Compress folder") as it was: when every entry sits under one top-level
+  folder, that folder is the root. Finder's ``__MACOSX/`` entries and
+  AppleDouble ``._*`` files are left out when finding it;
 - counts the bytes it inflates instead of trusting the sizes the archive
   declares;
 - decodes each photo like an upload (src/utils/photo_store.py), one at a time,
@@ -82,6 +86,31 @@ _CHUNK = 64 * 1024
 #: not mistaken for a fault of the archive.
 _ENTRY_ERRORS = (zipfile.BadZipFile, NotImplementedError, RuntimeError, EOFError, zlib.error,
                  OSError, lzma.LZMAError, ValueError)
+
+
+def _is_os_litter(name: str) -> bool:
+    """Whether *name* is metadata a desktop zip tool adds: macOS's
+    ``__MACOSX/`` folder, or an AppleDouble ``._*`` file in any folder."""
+    return name.startswith("__MACOSX/") or any(
+        part.startswith("._") for part in name.split("/"))
+
+
+def _root(names: List[str]) -> str:
+    """The prefix the export's entries sit under: ``""`` when a trip file is at
+    the top level, else ``"P/"`` when every entry (OS litter aside) is under
+    the one top-level folder ``P``, as when an unzipped export is zipped again.
+    Otherwise ``""``, where no trip file will be found."""
+    names = [n for n in names if not _is_os_litter(n)]
+    if any("/" not in n and n.endswith(ProjectIO.EXTENSION) for n in names):
+        return ""
+    if not names or any("/" not in n for n in names):
+        return ""
+    tops = {n.split("/", 1)[0] for n in names}
+    if len(tops) != 1:
+        return ""
+    (top,) = tops
+    # "/x" is absolute, "./x" and "../x" relative: never a folder to read from.
+    return "" if top in ("", ".", "..") else top + "/"
 
 
 class InvalidTripArchive(ValueError):
@@ -158,8 +187,8 @@ def _photo_lists(project: Project) -> List[Tuple[str, int, List[str]]]:
     return lists
 
 
-def _stage(zf: zipfile.ZipFile, entries: Dict[str, zipfile.ZipInfo], project: Project,
-           staging_dir: Path) -> StagedPhotos:
+def _stage(zf: zipfile.ZipFile, entries: Dict[str, zipfile.ZipInfo], root: str,
+           project: Project, staging_dir: Path) -> StagedPhotos:
     staged: StagedPhotos = {}
     inflated = 0
     for kind, item_id, photos in _photo_lists(project):
@@ -168,7 +197,7 @@ def _stage(zf: zipfile.ZipFile, entries: Dict[str, zipfile.ZipInfo], project: Pr
             # from it is plain; and the name is never used as a path itself.
             if not is_photo_name(name) or name in staged.get((kind, item_id), {}):
                 continue
-            entry_name = f"{_ARCHIVE_FOLDERS[kind]}/{item_id}/{name}.jpg"
+            entry_name = f"{root}{_ARCHIVE_FOLDERS[kind]}/{item_id}/{name}.jpg"
             info = entries.get(entry_name)
             if info is None:
                 continue  # missing from the archive: ingest drops the name
@@ -227,7 +256,9 @@ def read_trip_zip(fileobj: BinaryIO, staging_dir: Path, *, importer: int,
                     "This archive holds two files with the same name, so it can't be imported.")
             entries[info.filename] = info
 
-        trip_files = [n for n in entries if "/" not in n and n.endswith(ProjectIO.EXTENSION)]
+        root = _root(list(entries))
+        trip_files = [n for n in entries if n.startswith(root) and not _is_os_litter(n)
+                      and "/" not in n[len(root):] and n.endswith(ProjectIO.EXTENSION)]
         if not trip_files:
             raise InvalidTripArchive(
                 f"This archive holds no {APP_NAME} trip file ({ProjectIO.EXTENSION}) at its top level.")
@@ -243,7 +274,7 @@ def read_trip_zip(fileobj: BinaryIO, staging_dir: Path, *, importer: int,
         del raw
 
         try:
-            staged = _stage(zf, entries, project, staging_dir)
+            staged = _stage(zf, entries, root, project, staging_dir)
         except BaseException:
             # Nothing staged survives a refused archive (or any other failure):
             # only the manifest stays, for the caller to remove with the

@@ -249,6 +249,30 @@ def test_a_new_name_imports_the_trip_with_every_photo(env):
     assert client.get(f"/api/memories/{m.id}/photos/{mem[0]}/thumb").status_code == 200
 
 
+def test_an_export_unzipped_and_zipped_again_imports_with_its_photos(env):
+    """Finder's "Compress" of the unzipped export: every file under one
+    folder, plus __MACOSX/ AppleDouble files (owner decision, 2026-10-03)."""
+    client, engine, ids, act_as, data = env
+    archive, _mid, _jid, mem, jnl = _source(client, act_as)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(archive)) as src, zipfile.ZipFile(buf, "w") as dst:
+        dst.writestr("Alps/", b"")
+        for name in src.namelist():
+            dst.writestr(f"Alps/{name}", src.read(name))
+            dst.writestr(f"__MACOSX/Alps/._{name.rsplit('/', 1)[-1]}", b"\x00\x05\x16\x07")
+
+    act_as("other")
+    r = _import_zip(client, "Alps.zip", buf.getvalue())
+
+    assert r.status_code == 201, r.text
+    assert r.json() == {"name": "Alps", "outcome": "created"}
+    m, j = _rows(engine, ids["other"], "Alps")
+    assert json.loads(m.photos_json) == mem and json.loads(j.photos_json) == jnl
+    _placed(data, ids["other"], "memories", m.id, mem)
+    _placed(data, ids["other"], "journal", j.id, jnl)
+    assert _staging_dirs(data) == []
+
+
 def test_keep_both_imports_a_copy_with_its_own_photos(env):
     client, engine, ids, act_as, data = env
     archive, _mid, _jid, mem, jnl = _source(client, act_as)

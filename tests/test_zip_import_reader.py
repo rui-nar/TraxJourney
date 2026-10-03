@@ -335,9 +335,87 @@ def test_an_archive_without_a_trip_file_is_refused(tmp_path):
     _refused(_zip([(f"photos/7/{U1}.jpg", _jpeg())]), tmp_path / "s", match="no .* trip file")
 
 
-def test_a_trip_file_below_the_top_level_is_not_taken(tmp_path):
-    _refused(_zip([("Alps/Alps.traxj", _trip_bytes(_project()))]), tmp_path / "s",
+def test_a_trip_file_in_the_one_top_level_folder_is_taken(tmp_path):
+    """Once refused; accepted since the owner's 2026-10-03 envelope decision
+    (#469 integrated review, round 1): it is a re-zipped export."""
+    project, staged = _read(_zip([("Alps/Alps.traxj", _trip_bytes(_project()))]), tmp_path / "s")
+    assert project.name == "Alps" and staged == {}
+
+
+def test_a_trip_file_two_folders_down_is_not_taken(tmp_path):
+    _refused(_zip([("a/b/x.traxj", _trip_bytes(_project()))]), tmp_path / "s",
              match="no .* trip file")
+
+
+# ── An export unzipped and zipped again ───────────────────────────────────────
+
+def _rezipped(folder="Alps", extra=()) -> bytes:
+    """An export as Finder's "Compress" makes it from the unzipped folder:
+    folder entries, every file under *folder*/, and __MACOSX/ AppleDouble
+    files beside them."""
+    photos = {f"photos/7/{U1}.jpg": _jpeg(), f"photos/7/{U2}.jpg": _jpeg((300, 900)),
+              f"journal/3/{U3}.jpg": _jpeg((50, 50))}
+    entries = [(f"{folder}/", b""), (f"{folder}/Alps.traxj", _trip_bytes(_project())),
+               (f"{folder}/photos/", b""), (f"{folder}/photos/7/", b""),
+               (f"{folder}/journal/", b""), (f"{folder}/journal/3/", b"")]
+    entries += [(f"{folder}/{n}", d) for n, d in photos.items()]
+    entries += [("__MACOSX/", b""), (f"__MACOSX/{folder}/", b""),
+                (f"__MACOSX/{folder}/._Alps.traxj", b"\x00\x05\x16\x07"),
+                (f"__MACOSX/{folder}/photos/7/._{U1}.jpg", b"\x00\x05\x16\x07"),
+                (f"{folder}/._Alps.traxj", b"\x00\x05\x16\x07")]
+    return _zip([*entries, *extra])
+
+
+def test_a_rezipped_export_round_trips_with_its_photos(tmp_path):
+    staging = tmp_path / "s"
+    project, staged = _read(_rezipped(), staging)
+    assert project.name == "Alps"
+    assert {k: set(v) for k, v in staged.items()} == {
+        ("memories", 7): {U1, U2}, ("journal", 3): {U3}}
+    assert _staged_files(staging) == sorted([
+        f"journal/3/{U3}.jpg", f"journal/3/{U3}_thumb.jpg",
+        f"memories/7/{U1}.jpg", f"memories/7/{U1}_thumb.jpg",
+        f"memories/7/{U2}.jpg", f"memories/7/{U2}_thumb.jpg",
+    ])
+
+
+def test_an_archive_with_two_top_level_folders_is_refused(tmp_path):
+    trip = _trip_bytes(_project())
+    _refused(_zip([("Alps/Alps.traxj", trip), (f"Other/photos/7/{U1}.jpg", _jpeg())]),
+             tmp_path / "s", match="no .* trip file")
+
+
+def test_a_file_beside_the_folder_is_refused(tmp_path):
+    _refused(_zip([("Alps/Alps.traxj", _trip_bytes(_project())), ("readme.txt", b"hi")]),
+             tmp_path / "s", match="no .* trip file")
+
+
+@pytest.mark.parametrize("folder", ["..", ".", ""], ids=["dotdot", "dot", "absolute"])
+def test_a_dot_or_absolute_folder_is_never_a_root(tmp_path, folder):
+    _refused(_zip([(f"{folder}/Alps.traxj", _trip_bytes(_project()))]), tmp_path / "s",
+             match="no .* trip file")
+
+
+def test_traversal_names_under_the_folder_are_ignored_and_never_written(tmp_path):
+    staging = tmp_path / "deep" / "import-x"
+    data = _rezipped(extra=[
+        ("Alps/../evil.jpg", _jpeg()),
+        ("Alps/../../evil.jpg", _jpeg()),
+        ("Alps/photos/7/../../../evil.jpg", _jpeg()),
+        (f"Alps/photos/7/{U1}/../../../../evil.jpg", _jpeg()),
+        ("Alps/photos\\7\\evil.jpg", _jpeg()),
+    ])
+    _, staged = _read(data, staging)
+    assert {k: set(v) for k, v in staged.items()} == {
+        ("memories", 7): {U1, U2}, ("journal", 3): {U3}}
+    assert [p for p in tmp_path.rglob("*") if "evil" in p.name] == []
+
+
+def test_a_root_level_export_ignores_photos_under_a_folder(tmp_path):
+    """With the trip file at the top level, the root is the top level."""
+    data = _export(photos={f"Alps/photos/7/{U1}.jpg": _jpeg()})
+    _, staged = _read(data, tmp_path / "s")
+    assert staged == {}
 
 
 def test_an_archive_with_two_trip_files_is_refused(tmp_path):
