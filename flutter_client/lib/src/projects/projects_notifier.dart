@@ -1,13 +1,14 @@
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show ChangeNotifier;
-import 'package:file_picker/file_picker.dart';
-import 'package:http/http.dart' as http;
 
 import '../api/client.dart';
 import '../billing/billing_service.dart';
 import 'project_file.dart';
 import 'projects_service.dart';
+import 'upload/trip_file.dart';
+import 'upload/trip_file_io.dart'
+    if (dart.library.js_interop) 'upload/trip_file_web.dart' as platform;
 
 /// What to do when an imported trip's name is already taken (issue #452).
 enum ImportConflictChoice {
@@ -25,6 +26,7 @@ enum ImportConflictChoice {
 
 class ProjectsNotifier extends ChangeNotifier {
   final ProjectsService _service;
+  final TripFileUploader _uploader;
 
   List<Map<String, dynamic>> _projects = [];
   bool _isLoading = false;
@@ -32,7 +34,9 @@ class ProjectsNotifier extends ChangeNotifier {
   QuotaError? _quotaError;
   String? _nameConflict;
 
-  ProjectsNotifier(this._service);
+  /// [uploader] sends imported files; the platform's streaming one by default.
+  ProjectsNotifier(this._service, {TripFileUploader? uploader})
+      : _uploader = uploader ?? platform.platformTripFileUploader();
 
   List<Map<String, dynamic>> get projects => List.unmodifiable(_projects);
   bool get isLoading => _isLoading;
@@ -113,18 +117,18 @@ class ProjectsNotifier extends ChangeNotifier {
     }
   }
 
-  /// Step 1 of import: open file picker and return the bytes, the suggested
-  /// name and the file's extension (`traxj` or `zip`, lower case).
-  /// Returns null if the user cancels or on error (sets [error] on failure).
-  Future<({List<int> bytes, String defaultName, String extension})?>
+  /// Step 1 of import: open file picker and return the picked file (a handle,
+  /// never its bytes), the suggested name and the file's extension (`traxj`
+  /// or `zip`, lower case).
+  /// Returns null if the user cancels or on error (sets [error] on failure),
+  /// including a file over its type's import limit, refused unread.
+  Future<({TripFile file, String defaultName, String extension})?>
       pickProjectFile() async {
     _error = null;
     notifyListeners();
     try {
-      final picked = await FilePicker.pickFile(
-        type: FileType.custom,
-        allowedExtensions: [kProjectFileExtension, kProjectZipExtension],
-      );
+      final picked = await platform
+          .pickTripFile([kProjectFileExtension, kProjectZipExtension]);
       if (picked == null) return null;
       final rawName = picked.name;
       final lower = rawName.toLowerCase();
@@ -140,10 +144,15 @@ class ProjectsNotifier extends ChangeNotifier {
         notifyListeners();
         return null;
       }
-      final bytes = await picked.readAsBytes();
+      // The server would refuse it only once the whole file was sent.
+      if (picked.size > _importLimitBytes(extension)) {
+        _error = _tooLarge(extension);
+        notifyListeners();
+        return null;
+      }
       final defaultName =
           rawName.substring(0, rawName.length - extension.length - 1);
-      return (bytes: bytes, defaultName: defaultName, extension: extension);
+      return (file: picked, defaultName: defaultName, extension: extension);
     } on Exception catch (e) {
       _error = _msg(e);
       notifyListeners();
@@ -151,14 +160,16 @@ class ProjectsNotifier extends ChangeNotifier {
     }
   }
 
-  /// Step 2 of import: upload [bytes] as project [name]. A `zip` [extension]
-  /// goes to `/import-zip`, a `traxj` one (the default) to `/import`. A proxy's bare 413 names the
+  /// Step 2 of import: upload [file] as project [name], streamed from the
+  /// handle on every call, so a retry after a name conflict sends it again.
+  /// A `zip` [extension] goes to `/import-zip`, a `traxj` one (the default)
+  /// to `/import`. A proxy's bare 413 names the
   /// file type's cap only when [extension] is given.
   /// Returns the saved project name on success, null on failure — or when the
   /// name is taken and no [onConflict] was given, in which case
   /// [nameConflict] holds it.
   Future<String?> uploadProjectFile({
-    required List<int> bytes,
+    required TripFile file,
     required String name,
     String? extension,
     ImportConflictChoice? onConflict,
@@ -169,8 +180,8 @@ class ProjectsNotifier extends ChangeNotifier {
     _nameConflict = null;
     notifyListeners();
     try {
-      final data = await _uploadBytes(
-          bytes: bytes,
+      final data = await _uploadFile(
+          file: file,
           filename: '$name.${extension ?? kProjectFileExtension}',
           onConflict: onConflict);
       await load();
@@ -189,9 +200,9 @@ class ProjectsNotifier extends ChangeNotifier {
 
   // ── Upload helpers ────────────────────────────────────────────────────────────
 
-  /// Web-safe multipart upload using raw bytes — never touches dart:io.
-  Future<Map<String, dynamic>> _uploadBytes({
-    required List<int> bytes,
+  /// Multipart upload of [file] through the platform's streaming uploader.
+  Future<Map<String, dynamic>> _uploadFile({
+    required TripFile file,
     required String filename,
     ImportConflictChoice? onConflict,
   }) async {
@@ -200,20 +211,15 @@ class ProjectsNotifier extends ChangeNotifier {
         ? 'import-zip'
         : 'import';
     final url = Uri.parse('${api.baseUrl}/api/projects/$route');
-    final request = http.MultipartRequest(
-      'POST',
-      onConflict == null
+    final res = await _uploader.send(
+      url: onConflict == null
           ? url
           : url.replace(queryParameters: {'on_conflict': onConflict.queryValue}),
+      headers: {if (token != null) 'Authorization': 'Bearer $token'},
+      field: 'file',
+      filename: filename,
+      file: file,
     );
-    if (token != null) {
-      request.headers['Authorization'] = 'Bearer $token';
-    }
-    request.files.add(
-      http.MultipartFile.fromBytes('file', bytes, filename: filename),
-    );
-    final streamed = await request.send();
-    final res = await http.Response.fromStream(streamed);
     if (res.statusCode != 201) {
       throw ApiException(res.statusCode, res.body);
     }
@@ -236,21 +242,30 @@ class ProjectsNotifier extends ChangeNotifier {
     final m = RegExp(r'"detail"\s*:\s*"([^"]+)"').firstMatch(s);
     if (m != null) return m.group(1)!;
     // A 413 from a proxy in front of the server has no JSON detail (issue #434).
-    if (e is ApiException && e.statusCode == 413) {
-      if (extension == kProjectZipExtension) {
-        return 'This file is too large to import. The limit is 1 GB.';
-      }
-      if (extension == kProjectFileExtension) {
-        return 'This file is too large to import. The limit is 50 MB.';
-      }
-      return 'This file is too large to import.';
-    }
+    if (e is ApiException && e.statusCode == 413) return _tooLarge(extension);
     // The server's busy answer, when a proxy or the body drops its detail.
     if (e is ApiException && e.statusCode == 503) {
       return 'Another trip import is in progress. Try again in a minute.';
     }
     return s.replaceFirst('Exception: ', '');
   }
+
+  /// The "too large" message, naming [extension]'s limit when it has one.
+  String _tooLarge(String? extension) {
+    if (extension == kProjectZipExtension) {
+      return 'This file is too large to import. The limit is 1 GB.';
+    }
+    if (extension == kProjectFileExtension) {
+      return 'This file is too large to import. The limit is 50 MB.';
+    }
+    return 'This file is too large to import.';
+  }
+
+  /// The server's upload cap for [extension]: `MAX_ZIP_IMPORT_BYTES` for a
+  /// ZIP, `MAX_IMPORT_BYTES` for a .traxj.
+  int _importLimitBytes(String extension) => extension == kProjectZipExtension
+      ? 1024 * 1024 * 1024
+      : 50 * 1024 * 1024;
 
   /// The taken name of a 409 `name_conflict`, or null for any other failure.
   String? _conflictName(Exception e) {

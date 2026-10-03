@@ -14,6 +14,9 @@ import 'package:traxjourney_client/src/auth/auth_service.dart';
 import 'package:traxjourney_client/src/projects/projects_notifier.dart';
 import 'package:traxjourney_client/src/projects/projects_screen.dart';
 import 'package:traxjourney_client/src/projects/projects_service.dart';
+import 'package:traxjourney_client/src/projects/upload/trip_file.dart';
+
+import 'trip_file_fixture.dart';
 
 class _FakeProjectsService extends ProjectsService {
   @override
@@ -35,13 +38,16 @@ class _ConflictingNotifier extends ProjectsNotifier {
   void clearNameConflict() => _taken = null;
 
   @override
-  Future<({List<int> bytes, String defaultName, String extension})?>
-      pickProjectFile() async =>
-          (bytes: <int>[1, 2, 3], defaultName: 'Alps', extension: 'traxj');
+  Future<({TripFile file, String defaultName, String extension})?>
+      pickProjectFile() async => (
+            file: MemoryTripFile([1, 2, 3]),
+            defaultName: 'Alps',
+            extension: 'traxj'
+          );
 
   @override
   Future<String?> uploadProjectFile({
-    required List<int> bytes,
+    required TripFile file,
     required String name,
     String? extension,
     ImportConflictChoice? onConflict,

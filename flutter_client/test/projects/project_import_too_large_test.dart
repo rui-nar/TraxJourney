@@ -14,10 +14,12 @@ import 'package:http/testing.dart';
 import 'package:traxjourney_client/src/projects/projects_notifier.dart';
 import 'package:traxjourney_client/src/projects/projects_service.dart';
 
+import 'trip_file_fixture.dart';
+
 Future<ProjectsNotifier> _uploadAnswered(http.Response response) async {
   final notifier = ProjectsNotifier(ProjectsService());
   await http.runWithClient(
-    () => notifier.uploadProjectFile(bytes: [1, 2, 3], name: 'Trip'),
+    () => notifier.uploadProjectFile(file: MemoryTripFile([1, 2, 3]), name: 'Trip'),
     () => MockClient((_) async => response),
   );
   return notifier;

@@ -341,7 +341,7 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
                                         await importResolvingNameConflicts(
                                       upload: (choice) =>
                                           notifier.uploadProjectFile(
-                                        bytes: picked.bytes,
+                                        file: picked.file,
                                         name: name,
                                         extension: picked.extension,
                                         onConflict: choice,
