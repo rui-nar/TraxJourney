@@ -24,8 +24,10 @@ uploaded by a companion who has since left is reported as found nowhere.
 Once the moves are done it also deletes the photo files left in a current
 member's folder for a person of that trip that no person references any more
 (owner decision, pre-U4 leftovers), giving the usage back to the member. A
-name any person still holds is never deleted, and the owner's folder is never
-touched. Every other ``people/<id>/`` folder in any user's tree is cleaned the
+name any person still holds is never deleted. The owner's folder of a living
+person is cleaned the same way but never removed (owner envelope decision,
+owner-folder cleanup): a companion who replaced an avatar the owner uploaded
+deleted in their own folder, leaving the owner's old file behind. Every other ``people/<id>/`` folder in any user's tree is cleaned the
 same way and removed once empty: one whose person no longer exists at all
 (person or trip deleted, review U5-R2-1), or one of a living person in a user
 who is neither the trip's owner nor a current member, such as an ex-member
@@ -122,13 +124,24 @@ def _move_all() -> int:
             except Exception:  # noqa: BLE001 — one bad folder must not stop the rest
                 _log.exception("stale avatar cleanup failed person_id=%s member=%s",
                                person_id, member)
+    # The owner's folder too, under the same keep rule: after the moves, so an
+    # avatar moved in this run is in place and its name in *keep*. Never
+    # removed, so the next upload has its folder.
+    owner_stale = 0
+    for person_id, _, owner_dir, _ in people:
+        try:
+            owner_stale += _delete_stale(person_id, owner_dir, keep)
+        except Exception:  # noqa: BLE001 — one bad folder must not stop the rest
+            _log.exception("stale avatar cleanup failed person_id=%s owner=%s",
+                           person_id, owner_dir)
     protected = {pid: {owner_dir, *member_dirs}
                  for pid, _, owner_dir, member_dirs in people}
     orphaned = _delete_orphaned(person_ids, protected, keep)
     _log.info("avatar move sweep: moved=%d already_in_place=%d not_found=%d "
-              "conflict=%d failed=%d stale_deleted=%d orphan_deleted=%d",
+              "conflict=%d failed=%d stale_deleted=%d orphan_deleted=%d "
+              "owner_stale_deleted=%d",
               counts["moved"], counts["present"], counts["missing"],
-              counts["conflict"], counts["failed"], stale, orphaned)
+              counts["conflict"], counts["failed"], stale, orphaned, owner_stale)
     return counts["moved"]
 
 
@@ -140,8 +153,8 @@ def _delete_orphaned(person_ids: set[int], protected: dict[int, set[str]],
 
     That is a folder whose person row is gone (review U5-R2-1), or a living
     person's folder in any other user's tree, such as an ex-member's (review
-    U5-R3-1). The owner's folder is never cleaned and current members' are left
-    to the member pass above. A living person whose trip is gone has no known
+    U5-R3-1). The owner's and current members' folders are left to the passes
+    above. A living person whose trip is gone has no known
     owner, so all their folders are left alone. Nothing in *keep* is deleted,
     so an ex-member's copy of a current avatar (review R1-2) stays, and the
     name check holds even if SQLite later hands a deleted id to a new person.
@@ -177,7 +190,7 @@ def _is_id(name: str) -> bool:
 
 
 def _delete_stale(person_id: int, member: str, keep: set[str]) -> int:
-    """Delete the photo files in a member's folder for this person that no
+    """Delete the photo files in a user's folder for this person that no
     person references any more. Returns how many were deleted.
 
     Before #470 an avatar lived in its uploader's folder, and replacing or

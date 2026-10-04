@@ -420,17 +420,21 @@ def test_another_persons_current_avatar_is_never_deleted(env):
         [f"{other_name}.jpg", f"{other_name}_thumb.jpg"]
 
 
-def test_owner_folder_is_never_cleaned(env):
+def test_owner_stale_pair_is_deleted_and_current_avatar_stays(env, caplog):
+    """A companion replaced an avatar the owner uploaded before this release:
+    the owner's old pair goes, with its usage; the current avatar stays."""
     engine, ids, data_dir = env
     _put(data_dir, ids["owner"], ids["person"], ids["name"])
-    stale = str(uuid_lib.uuid4())
-    _put(data_dir, ids["owner"], ids["person"], stale)
+    _put(data_dir, ids["owner"], ids["person"], str(uuid_lib.uuid4()))
     _set_usage(engine, ids["owner"], 10_000)
 
-    avatar_move.move_companion_avatars()
+    with caplog.at_level(logging.INFO, logger=avatar_move.__name__):
+        avatar_move.move_companion_avatars()
 
-    assert len(_files(data_dir)) == 4
-    assert _usage(engine, ids["owner"]) == 10_000
+    assert _files(data_dir) == _owner_files(ids)
+    assert _usage(engine, ids["owner"]) == 10_000 - len(FULL) - len(THUMB)
+    assert caplog.text.count("stale avatar file deleted") == 2
+    assert "owner_stale_deleted=2" in caplog.text
 
 
 def test_non_photo_names_in_member_folder_are_left(env):
@@ -526,16 +530,59 @@ def test_orphan_folder_keeps_non_photo_files_and_current_names(env):
         sorted([f"{other_name}.jpg", f"{other_name}_thumb.jpg", "notes.txt"])
 
 
-def test_living_persons_owner_folder_untouched_by_orphan_pass(env):
+def test_owner_folder_keeps_any_persons_current_avatar(env):
+    """A name that is another person's current avatar is never deleted from
+    the owner's folder, and the folder holding the current avatar stays."""
     engine, ids, data_dir = env
+    with Session(engine) as sess:
+        other = DBPerson(project_id=ids["project"], name="Eve",
+                         avatar_photo=str(uuid_lib.uuid4()))
+        sess.add(other); sess.commit(); sess.refresh(other)
+        other_name = other.avatar_photo
     _put(data_dir, ids["owner"], ids["person"], ids["name"])
-    _put(data_dir, ids["owner"], ids["person"], str(uuid_lib.uuid4()))
+    _put(data_dir, ids["owner"], ids["person"], other_name)
     _set_usage(engine, ids["owner"], 10_000)
 
     avatar_move.move_companion_avatars()
 
     assert len(_files(data_dir)) == 4
     assert _usage(engine, ids["owner"]) == 10_000
+
+
+def test_avatar_moved_into_owner_folder_this_run_stays(env, caplog):
+    engine, ids, data_dir = env
+    _put(data_dir, ids["editor"], ids["person"], ids["name"])
+    _put(data_dir, ids["owner"], ids["person"], str(uuid_lib.uuid4()))
+    _set_usage(engine, ids["editor"], 10_000)
+    _set_usage(engine, ids["owner"], 10_000)
+
+    with caplog.at_level(logging.INFO, logger=avatar_move.__name__):
+        assert avatar_move.move_companion_avatars() == 1
+
+    assert _files(data_dir) == _owner_files(ids)
+    # The owner gains the moved pair and loses the stale one: both are the
+    # same size here.
+    assert _usage(engine, ids["owner"]) == 10_000
+    assert _usage(engine, ids["editor"]) == 10_000 - len(FULL) - len(THUMB)
+    assert "owner_stale_deleted=2" in caplog.text
+
+
+def test_owner_cleanup_second_run_is_a_no_op(env, caplog):
+    engine, ids, data_dir = env
+    _put(data_dir, ids["owner"], ids["person"], ids["name"])
+    _put(data_dir, ids["owner"], ids["person"], str(uuid_lib.uuid4()))
+    _set_usage(engine, ids["owner"], 10_000)
+    avatar_move.move_companion_avatars()
+    assert _files(data_dir) == _owner_files(ids)
+    owner = _usage(engine, ids["owner"])
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger=avatar_move.__name__):
+        avatar_move.move_companion_avatars()
+
+    assert _files(data_dir) == _owner_files(ids)
+    assert _usage(engine, ids["owner"]) == owner
+    assert "owner_stale_deleted=0" in caplog.text
 
 
 def _ex_member(engine):
