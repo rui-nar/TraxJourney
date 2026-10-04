@@ -1,0 +1,312 @@
+# Review ledger — E2EE plaintext remnants (#504, #505, #506, #366)
+
+Subject: docs/E2EE_REMNANTS_PLAN.md
+Envelope: docs/E2EE_REMNANTS_PLAN.md § Review envelope
+
+## Round 1 — 2026-10-04, reviewed at 622c5619 (+ uncommitted plan)
+
+### R1-1 — Catch-up nulls the edit snapshot, so Reset on an encrypted edited activity wipes its track
+- Trigger: encrypted owner trims a GPX track (decision 7) → catch-up's extracted `_migrateActivity` nulls `original_*` → Reset restores a null track (or 500s on envelope decode if originals kept)
+- Scores: trigger=concrete, impact=data-loss, detect=user-visible, later=cheap, fix=M/local, confidence=verified
+- Decision: Fix now (D3)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R1-2 — Catch-up writes are not compare-and-swap; a stale pass reverts a concurrent edit permanently
+- Trigger: catch-up walks plaintext activities → user saves a track edit/split on X meanwhile → pass PUTs encrypt(old geometry) of X with no version check → edit lost, row enveloped, never revisited (same for memory text)
+- Scores: trigger=plausible, impact=data-loss, detect=silent, later=cheap, fix=M/shared, confidence=verified
+- Decision: Fix now (D3)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R1-3 — "Before unknown" also disables time apportioning on trim/split of encrypted activities
+- Trigger: encrypted user trims or splits a 3 h ride → frac=1.0 → pieces keep full moving/elapsed time, split tail dated at the original end
+- Scores: trigger=concrete, impact=silent-wrong, detect=silent, later=expensive, fix=M/local, confidence=verified
+- Decision: Fix now (D3)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R1-4 — Journal entries an encrypted user wrote as a companion are never encrypted
+- Trigger: user journals on a friend's trip, then enables encryption → migration skips shared trips, catch-up on non-owned trips only repairs memories → journal stays plaintext
+- Scores: trigger=concrete, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R1-5 — Catch-up cannot encrypt companion-owned activity rows; plan's skip+log contradicts its DoD
+- Trigger: owner's former companion imported activities into the trip, owner enables → PUT 404 each load, skipped → plaintext permanently, nothing shown
+- Scores: trigger=plausible, impact=silent-wrong, detect=logged, later=cheap, fix=M/shared, confidence=verified
+- Decision: Fix now (D3)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R1-6 — U4 removes `_compute_low_res_geo`, which `api/geo.py` still calls
+- Trigger: U4 implementer deletes the function as instructed → `api/geo.py` import fails
+- Scores: trigger=concrete, impact=maintainability (triage-corrected from wrong-visible), detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R1-7 — Poster preview consent 409 breaks the live preview and protects nothing
+- Trigger: encrypted owner opens the poster dialog with memories → preview POST → 409 with no consent path → preview error; preview stores nothing
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified (triager)
+- Decision: Fix now (D6)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R1-8 — In-memory Strava cache bypasses disconnect, cache-status and account deletion
+- Trigger: encrypted user disconnects and connects a different athlete within the hour → picker shows the previous athlete's list
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: a user reports a previous Strava account's activities after reconnecting, a client calls /api/strava/cache/status, or the cache moves out of process
+- Override: —
+- Outcome: open
+
+### R1-9 — Catch-up fed revealed (decrypted-in-place) maps re-encrypts everything on every load
+- Trigger: encrypted owner opens a fully encrypted trip → reveal overwrites map values → step sees plaintext everywhere → N PUTs, lock bumps, cache busts per load; repair can't find its own envelopes
+- Scores: trigger=concrete, impact=degraded-ux, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R1-10 — Structural envelope check refuses ordinary "v1.x.y" text under the new 409s
+- Trigger: plaintext-account user saves a memory titled "v1.2.3" → treated as envelope → 409 encryption_not_shared
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/shared, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: a plaintext-account user reports an encryption_not_shared 409 on ordinary text, or another refusal starts depending on is_encrypted_envelope
+- Override: —
+- Outcome: open
+
+## Round 2 — 2026-10-04, reviewed the round-1 plan fixes (uncommitted)
+
+### R2-1 — Memory/journal PUTs never bump the lock, so the catch-up's CAS can't see a concurrent plain save
+- Trigger: pass starts → user saves memory/journal text (no lock_version) → pass's CAS still matches → stale envelope overwrites the edit permanently
+- Scores: trigger=plausible, impact=data-loss, detect=silent, later=cheap, fix=S/shared, confidence=verified
+- Decision: Fix now (D3)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R2-2 — Decision 14 puts a former companion's Strava row under the owner's key
+- Trigger: companion's rows encrypted by owner's catch-up → companion syncs into own trip, row reused with envelopes → their activity unreadable
+- Scores: trigger=plausible, impact=data-loss (triage-corrected from wrong-visible), detect=user-visible, later=expensive, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R2-3 — Decision 14 is vacuously true for orphan rows: any user can write another's activity
+- Trigger: non-freeable positive row left unreferenced → any user PUTs envelopes to it → owner's next sync reuses it unreadable
+- Scores: trigger=plausible, impact=security, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R2-4 — The client never receives original_*, so the catch-up can't encrypt edit snapshots
+- Trigger: catch-up built from the server payload has no original_* → snapshots stay plaintext (or nulled)
+- Scores: trigger=concrete, impact=silent-wrong, detect=silent, later=cheap, fix=M/shared, confidence=verified
+- Decision: Fix now (D3)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R2-5 — The editor has no originals to send, so Reset on encrypted edited activities always 409s
+- Trigger: owner taps Reset → no original points available → 409 "Reset failed" every time
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=M/shared, confidence=verified
+- Decision: Fix now (D6)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R2-6 — Stored Strava distance as "before" makes edit→reset drift times permanently
+- Trigger: trim then reset an encrypted Strava activity → net factor hav(original)/distance_strava → times/avg speed off by a few %
+- Scores: trigger=concrete, impact=silent-wrong, detect=silent, later=cheap, fix=M/local, confidence=verified
+- Decision: Fix now (D3)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R2-7 — Catch-up hook pinned to _applyDetails never runs on a plain trip open
+- Trigger: user opens a trip → load() reveals without _applyDetails → no pass → plaintext stays
+- Scores: trigger=concrete, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R2-8 — U11's unlocked notice may need app_screen.dart if U6 mounts its banner only when locked
+- Trigger: U6 follows the offline-banner Selector pattern → U11 can't show the notice when unlocked → X3 escalation
+- Scores: trigger=plausible (triage-corrected), impact=maintainability, detect=logged (triage-corrected), later=cheap, fix=S/local, confidence=inferred
+- Decision: Defer (D10)
+- Revisit when: U6's banner is mounted conditionally in app_screen.dart, or U11 escalates under X3
+- Override: user: Fix now — one sentence in U6 avoids a likely wave-3 stall
+- Outcome: fixed (in plan)
+
+### R2-9 — Decision 6 and decision 13/U7 disagree on whether a stale write ends the pass
+- Trigger: implementer follows decision 6 and continues after stale_write → every chained write 409s
+- Scores: trigger=concrete, impact=maintainability, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Override: —
+- Outcome: fixed (in plan)
+
+## Round 3 — 2026-10-04, reviewed the round-2 plan fixes (uncommitted)
+
+### R3-1 — Hook sites receive /meta: catch-up never sees the polyline and writes the low-res profile over the full one
+- Trigger: owner opens a trip with a plaintext activity → pass fed /meta (polyline null, low-res profile) → polyline never encrypted; downsampled profile encrypted into both profile columns
+- Scores: trigger=concrete, impact=data-loss, detect=silent, later=expensive, fix=M/local, confidence=verified
+- Decision: Fix now (D3)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R3-2 — Editor on an unlocked E2EE trip never calls GET …/track, so Reset still has no originals
+- Trigger: owner taps Reset → editor opened from the decrypted in-memory copy → no originals, posts {} → 409 every time
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R3-3 — Split after unsaved trims on an encrypted row uses the trimmed track as "before"
+- Trigger: user trims, then splits without saving → head+tail keep 100 % of stored times → inflated times/avg speed
+- Scores: trigger=concrete, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R3-4 — GET …/track would return pre-edit originals to viewer-role members
+- Trigger: owner trims the home stretch → a viewer calls GET …/track → receives the untrimmed original track
+- Scores: trigger=plausible, impact=security, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R3-5 — The new flag and originals need src/models/activity.py, outside U2 Scope
+- Trigger: U2 implementer follows Scope → Activity dataclass lacks the fields → X3 stop; adding them to to_strava_dict changes the .traxj export
+- Scores: trigger=concrete, impact=maintainability, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Override: —
+- Outcome: fixed (in plan)
+
+## Round 4 — 2026-10-04, reviewed the round-3 plan fixes (uncommitted; fourth round at the user's request)
+
+### R4-1 — Activity writes with /track's lock_version re-open the stale-write hole for memories
+- Trigger: device A loads (v10) → device B saves memory M (v11) → A's pass chains from /track's v11 → encrypt(old M) wins the CAS
+- Scores: trigger=plausible, impact=data-loss, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R4-2 — Reset on a row whose originals the shipped migration nulled wipes the track
+- Trigger: owner resets an activity edited before enabling → null originals copied into geometry → no track, irreversible
+- Scores: trigger=concrete, impact=data-loss, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R4-3 — Client measures before_distance_m with latlong2 Vincenty, server with haversine R=6371
+- Trigger: owner saves an encrypted track → times scaled by mismatched lengths → drift per save, edit→reset not exact
+- Scores: trigger=concrete, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Override: —
+- Outcome: fixed (in plan: design replaced — decision 7 moved editing to the device, before_distance_m removed)
+
+### R4-4 — Split fallback to stored distance is 0 for the tail
+- Trigger: old build splits an encrypted activity without before_distance_m → tail frac=1.0 → keeps 100 % of times
+- Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Override: —
+- Outcome: fixed (in plan: design replaced — decision 7 moved editing to the device, before_distance_m removed)
+
+### R4-5 — U7 doesn't state that the low-res profile column gets the full profile's envelope
+- Trigger: implementer leaves low-res plaintext or writes a 300-point envelope → endless re-flagging or U8 recomputes from a downsample
+- Scores: trigger=plausible, impact=maintainability (triage-corrected from silent-wrong), detect=logged (triage-corrected), later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: U7's implementation or review shows the low-res column written from anything but the full-profile envelope, or still in plain_fields after a pass
+- Override: —
+- Outcome: open
+
+### R4-6 — plain_fields computed from the row on the light path lazy-loads deferred columns
+- Trigger: any trip open → /meta touches polyline/profile per activity → #276 load regression returns
+- Scores: trigger=concrete, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R4-7 — GET …/track loads the whole project heavy; the pass calls it per plaintext activity
+- Trigger: enabling on a 200-activity trip → 200 heavy project loads in the single API process
+- Scores: trigger=concrete, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R4-8 — Rows the owner may not encrypt are re-fetched and re-PUT on every load
+- Trigger: trip with a former companion's Strava rows → every open fetches /track and 404s on PUT for each
+- Scores: trigger=plausible, impact=degraded-ux, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: logs show repeated catch-up 404s on the same activity for real users, or owner-unwritable rows become common
+- Override: —
+- Outcome: open
+
+### R4-9 — U11 sends a reset lock_version that U2 never defines
+- Trigger: U2 adds only points to the reset body → U11's lock_version dropped → reset runs unchecked
+- Scores: trigger=concrete, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Override: —
+- Outcome: fixed (in plan)
+
+## Design change after round 4 — 2026-10-04
+
+User decision: track edit, split and reset of encrypted activities move to the device (decision 7 rewritten). The server-side "edit with plaintext in transit" design accounted for R1-1, R1-3, R2-4–R2-6, R3-2–R3-4, R4-2–R4-4 and R4-9. Units U2 and U3 rewritten, U11 retired, U12–U14 added; plan now has 5 waves.
+
+## Round 5 — 2026-10-04, reviewed the redesigned plan parts (uncommitted; fifth round at the user's request)
+
+### R5-1 — GET …/track returns two of the four geometry originals, so endpoint snapshots stay plaintext
+- Trigger: plaintext edit then enable → catch-up can't read original_start/end_latlng_json from /track → stay plaintext, row re-fetched every load
+- Scores: trigger=concrete, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R5-2 — Strict envelope check named base64url; client envelopes are standard base64
+- Trigger: owner saves an encrypted track → envelope contains + or / → 422 on nearly every save/split
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R5-3 — Reset of an encrypted edited activity nulls the low-res profile
+- Trigger: owner resets encrypted activity → _low_res_ep_json(envelope) = None → /meta chart empty, never repaired
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R5-4 — Encrypted edit/split can't express an activity with no elevation profile
+- Trigger: owner edits an encrypted GPX track without elevations → profile/elev_high/elev_low None → 422, never editable
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R5-5 — plain_fields via case-insensitive SQLite LIKE misses "V1.x.y" plaintext
+- Trigger: activity named "V1.0.1 shakedown ride" → classed as envelope in SQL → never encrypted
+- Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Override: —
+- Outcome: fixed (in plan)
+
+### R5-6 — Snapshot columns and writers ship in different waves
+- Trigger: deploy after wave 1 only → edits get NULL scalar snapshots → after encryption Reset 409s forever
+- Scores: trigger=theoretical (triage-corrected: waves integrate into one PR, never deployed separately), impact=wrong-visible, detect=user-visible, later=expensive, fix=S/local, confidence=verified
+- Decision: Reject (D11)
+- Override: —
+- Outcome: —
+
+### R5-7 — Python round half-to-even vs Dart round half-away in time apportioning
+- Trigger: t*frac lands exactly on .5 → 1 s difference
+- Scores: trigger=theoretical (triage-corrected), impact=cosmetic, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Reject (D11)
+- Override: —
+- Outcome: —
+
+### R5-8 — Wave 4 U8 and U14 share flutter_client/test/crypto/
+- Trigger: parallel worktrees both add tests in the same directory → W1 violated
+- Scores: trigger=concrete, impact=maintainability, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Override: —
+- Outcome: fixed (in plan)
+
+Review stopped after round 5 with user approval (2026-10-04): round-5 fixes are wording-level; the integrated diff gets its own review after delivery (DELIVERY.md §5.2).
