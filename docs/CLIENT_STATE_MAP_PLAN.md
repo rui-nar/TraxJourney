@@ -426,6 +426,53 @@ Package C groups client-side defects and debt around the app-wide
       versions. That cannot reach builds that send no header either, and it
       turns every endpoint into a version check.
 
+16. **A recovery key is confirmed, or replaced.** (Owner decision,
+    2026-10-04, unit review U5-R3-1, design A.)
+    - **Problem.** If the session ends while the enable request is in
+      flight, the server has enabled encryption but the one-time recovery
+      key is never shown. The server keeps only the wrap and cannot show
+      the key again. The setup screen's "I've saved my recovery key"
+      checkbox is local to the screen and never reaches the server, so the
+      same happens when the user simply leaves the screen. Only the
+      `recovery_key` method has a one-time secret; passphrase and security
+      answers are typed by the user.
+    - **Server.**
+      - `recovery_wrap` gains `confirmed` (boolean, not null,
+        `server_default` true). One Alembic migration. Existing rows are
+        confirmed, so no existing user is prompted.
+      - `POST /enable` stores a `recovery_key` wrap with
+        `confirmed = false`; every other method is stored confirmed.
+      - `GET /status` gains `unconfirmed_recovery_methods: List[str]`
+        (additive).
+      - `POST /api/encryption/recovery/confirm` with `{method}` marks that
+        wrap confirmed. Idempotent; 404 if the method has no wrap.
+      - `PUT /api/encryption/recovery/recovery_key` with
+        `{wrapped_cmk, salt}` replaces the wrap in place and leaves it
+        unconfirmed. It is allowed **only while the current wrap is
+        unconfirmed** (409 otherwise), so a stolen session cannot overwrite
+        a recovery key the user has saved. Rotating a confirmed key is out
+        of scope.
+      - The row count per method stays one: replace updates the existing
+        row inside one session.
+    - **Client.**
+      - The setup screen's "I've saved it" Done calls `confirm`. If that
+        call fails, the key stays unconfirmed on the server and the next
+        sign-in offers a replacement; nothing else changes on screen.
+      - After an unlock, when the status lists `recovery_key` as
+        unconfirmed and the CMK is held, the projects screen shows a banner
+        (shaped like `VerifyEmailBanner`): "Your recovery key was never
+        confirmed. Create a new one now." It opens a screen that generates
+        a new secret, wraps the CMK, sends the replacement, shows the key
+        once and asks for the same confirmation.
+      - The replacement honours the lock generation like `enable()`: a
+        session that ends before the request is sent sends nothing.
+    - **Old builds.** They never call `confirm`, so a recovery key created
+      from an old APK after this deploy is stored unconfirmed, and that user
+      sees the banner once after updating. Accepted: it costs one extra key
+      for users who did save theirs.
+    - Rules out: (B) a pending two-step enable, which old APKs would never
+      complete; showing the key again, which would mean storing it.
+
 ## Review envelope
 
 What this plan adds to REVIEW.md §2's defaults:
@@ -450,6 +497,10 @@ What this plan adds to REVIEW.md §2's defaults:
 - **Client concurrency inside the notifier.** Facet moves must keep every
   existing supersession guard (`isCurrent(token, ref)`) in front of facet
   writes, exactly where the field writes were.
+- **Recovery wraps (Decision 16).** A signed-in session is the only
+  authority the replace and confirm endpoints check, as for the existing
+  device approval. A stolen session can confirm or replace only an
+  unconfirmed recovery key; a confirmed one cannot be overwritten.
 - **Old builds (E5).**
   - They gain `min_client_version` on `/api/version`, which they ignore.
     `/me` is unchanged (Decision 3).
@@ -484,7 +535,12 @@ What this plan adds to REVIEW.md §2's defaults:
     user-`0` cache entries (Decision 5).
   - After that, `projectDataCache` keys by the real account id, so an
     existing user's cached trips (keyed `0` today) are fetched again once.
-- **Schema:** none. No migration.
+- **Schema:** one migration (U5b-1): `recovery_wrap.confirmed`, boolean,
+  not null, `server_default` true (existing rows confirmed).
+- **API (U5b):** `GET /api/encryption/status` gains
+  `unconfirmed_recovery_methods` (additive); new
+  `POST /api/encryption/recovery/confirm` and
+  `PUT /api/encryption/recovery/recovery_key`.
 - **Export formats:** none.
 
 ## Conventions
@@ -907,6 +963,74 @@ merged. Kept here for the record.*
 - **Escalate if:** X3.
 - **Depends on:** U20 (its contract).
 
+### Wave 4b — recovery key confirm or replace (Decision 16; disjoint, parallel)
+
+**U5b-1 — Server: confirmed recovery wraps, confirm and replace**
+- **Goal:** the server half of Decision 16.
+- **Scope:** `models/project_db.py` (`DBRecoveryWrap` only); one new
+  migration under `alembic/versions/` on the single head; `api/encryption.py`;
+  `docs/ENCRYPTION.md` (the recovery section: unconfirmed keys and the
+  replacement); `tests/test_encryption.py`; `tests/test_alembic_migrations.py`
+  only if a migration test there must name the new revision.
+- **Context:** `POST /enable` and `GET /status` (`api/encryption.py:94-190`)
+  and `GET /recovery/{method}` (`:230`); the boolean add-column style of
+  `1604d06d464d` (`sa.Boolean(), nullable=False,
+  server_default=sa.text('1')`); `tests/test_encryption.py` (`enc_env`,
+  `_enable_body`) is the test to follow.
+- **Do:** as Decision 16's Server list. Confirm and replace require
+  encryption enabled (409 otherwise). Replace validates the body shape like
+  `RecoveryWrapIn` and keeps `method`, bumps nothing else.
+- **Acceptance:** tests: enable with `recovery_key` stores it unconfirmed
+  and status lists it; enable with `passphrase` stores it confirmed;
+  confirm marks it and is idempotent; replace works only while
+  unconfirmed (409 after confirm), leaves exactly one row and leaves it
+  unconfirmed; another user's call cannot touch the wrap; existing rows
+  migrate to confirmed (`alembic upgrade` on a database with a wrap row);
+  `alembic heads` shows one head; the pytest CI command passes.
+- **Out of scope:** rotating a confirmed key; deleting wraps; disabling
+  encryption; the admin tier stub.
+- **Latitude:** local design.
+- **Escalate if:** account deletion or any other writer of `recovery_wrap`
+  needs to change; X3.
+- **Depends on:** —
+
+**U5b-2 — Client: confirm on setup, replace after sign-in**
+- **Goal:** the client half of Decision 16.
+- **Scope:** `flutter_client/lib/src/crypto/encryption_service.dart`,
+  `encryption_api_http.dart`, `enable_encryption_screen.dart`, a new
+  `replace_recovery_key_screen.dart` and a new
+  `recovery_key_banner.dart` under `lib/src/crypto/`;
+  `flutter_client/lib/src/projects/projects_screen.dart` (placing the
+  banner only); the router entry for the new screen in
+  `flutter_client/lib/src/core/app_router.dart` (one route only); tests:
+  every `EncryptionApi` fake under `flutter_client/test/crypto/` (adding
+  the two new methods only), `encryption_service_test.dart`,
+  `enable_encryption_screen_test.dart`, `encryption_api_http_test.dart`,
+  and new `replace_recovery_key_screen_test.dart` and
+  `recovery_key_banner_test.dart`.
+- **Context:** `enable()` and its lock-generation checks
+  (`encryption_service.dart:148-202`), `approveDevice` (`:265`) for a CMK
+  operation inside the service, `_buildRecoveryKey`
+  (`enable_encryption_screen.dart:423-464`), `VerifyEmailBanner`
+  (`lib/src/auth/verify_email_banner.dart`) and its placement at
+  `projects_screen.dart:177`.
+- **Do:** as Decision 16's Client list. `EncryptionStatus` gains
+  `unconfirmedRecoveryMethods`; the service keeps the last status from
+  `prepareForSession` and exposes `needsRecoveryKeyReplacement` (true only
+  while unlocked and `recovery_key` is unconfirmed); `lock()` clears it.
+- **Acceptance:** tests: Done on the setup screen calls confirm; a failed
+  confirm leaves the key shown and a message; the banner shows only while
+  unlocked with an unconfirmed `recovery_key` and not after `lock()`; the
+  replace screen sends one replacement, shows the new key and confirms; a
+  `lock()` before the replacement is sent sends nothing; the http client
+  maps both endpoints; `flutter analyze` and `flutter test` pass.
+- **Out of scope:** listing recovery methods in Settings; rotating a
+  confirmed key; the admin tier stub.
+- **Latitude:** local design.
+- **Escalate if:** showing the banner needs `auth_notifier.dart` or another
+  file outside Scope; X3.
+- **Depends on:** U5b-1's contract (can run alongside: disjoint files).
+
 ### Wave 4 — #278
 
 **U8 — Resolve polling survives the queue (#278)**
@@ -1266,6 +1390,10 @@ because its listener inventory can reach any file (R1-3).
 - **Depends on:** U18.
 
 ## Definition of done
+
+- **Recovery key (Decision 16):** a recovery key that was never confirmed
+  is offered for replacement at the next sign-in, and a confirmed one cannot
+  be overwritten. Existing users are not prompted.
 
 - **#418**
   - After a logout or a 401, a second account on the same device sees none
