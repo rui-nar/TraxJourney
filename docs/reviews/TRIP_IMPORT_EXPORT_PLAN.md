@@ -164,4 +164,4 @@ Answer (owner, 2026-10-04): skip the lookup for candidates with errors (option a
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (FU1, 29afd6c5)
