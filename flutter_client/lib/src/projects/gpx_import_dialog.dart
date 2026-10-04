@@ -255,14 +255,25 @@ class _GpxImportDialogState extends State<GpxImportDialog> {
     }
 
     // A connecting segment an export wrote is not something to pick between:
-    // a file of one activity and its connections opens that activity.
+    // a file of one activity and its connections opens that activity, and a
+    // file of connections alone has nothing to open — the review step would
+    // let an arc be imported as an activity.
     final tracks = inspection.importAllCandidates;
+    if (tracks.isEmpty) {
+      setState(() {
+        _stage = _Stage.pick;
+        _serverErrors = const [
+          'This file has no importable track, only connecting segments.'
+        ];
+      });
+      return;
+    }
     setState(() {
       _inspection = inspection;
-      if (tracks.length > 1 || (tracks.isEmpty && importable.length > 1)) {
+      if (tracks.length > 1) {
         _stage = _Stage.choose;
       } else {
-        _choose(tracks.isNotEmpty ? tracks.first : importable.first);
+        _choose(tracks.first);
       }
     });
   }
@@ -401,6 +412,10 @@ class _GpxImportDialogState extends State<GpxImportDialog> {
     final fields = <String, String>{
       'activity_name': _nameController.text.trim(),
       'activity_type': _activityType!,
+      // What the form holds is the user's decision, "Other" included: without
+      // this the server reads Workout as an older client's echo and swaps in
+      // the file's own type.
+      'activity_type_is_exact': 'true',
       'track_index': '${_chosen!.index}',
     };
     // Only send times the user actually set. Sending the file's own back,

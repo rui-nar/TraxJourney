@@ -835,6 +835,29 @@ void main() {
       expect(recorder.field('activity_type'), 'Kayaking');
     });
 
+    testWidgets('picking Other on a Kayaking track is sent as exactly that',
+        (tester) async {
+      final recorder = _Recorder();
+      await tester.pumpWidget(_harness(
+        recorder,
+        client: recorder.client(
+            inspect: _inspectBody(candidates: [
+          _candidate(type: 'Workout', typeExact: 'Kayaking'),
+        ])),
+      ));
+      await _openAndPick(tester);
+
+      await tester.tap(find.byKey(const ValueKey('gpx_type_field')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Other').last);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const ValueKey('gpx_import_confirm')));
+      await tester.pumpAndSettle();
+      expect(recorder.field('activity_type'), 'Workout');
+      expect(recorder.field('activity_type_is_exact'), 'true');
+    });
+
     testWidgets('a server without the field keeps the compatible type',
         (tester) async {
       final recorder = _Recorder();
@@ -886,6 +909,45 @@ void main() {
       expect(find.byKey(const ValueKey('gpx_import_all')), findsNothing);
       // The one real track is simply opened.
       expect(find.text('Import this track?'), findsOneWidget);
+    });
+
+    testWidgets('a file whose only importable track is a connection opens nothing',
+        (tester) async {
+      final recorder = _Recorder();
+      await tester.pumpWidget(_harness(
+        recorder,
+        client: recorder.client(
+            inspect: _inspectBody(candidates: [
+          _candidate(
+              index: 0,
+              name: 'Day 1',
+              errors: const ['Track has fewer than 2 points (1).']),
+          _candidate(index: 1, name: 'Link', isConnection: true),
+        ])),
+      ));
+      await _openAndPick(tester);
+
+      expect(find.text('Import this track?'), findsNothing);
+      expect(find.text('Import a GPX file'), findsOneWidget);
+      expect(find.byKey(const ValueKey('gpx_import_confirm')), findsNothing);
+      expect(find.textContaining('no importable track'), findsOneWidget);
+    });
+
+    testWidgets('a file of connections alone opens nothing', (tester) async {
+      final recorder = _Recorder();
+      await tester.pumpWidget(_harness(
+        recorder,
+        client: recorder.client(
+            inspect: _inspectBody(candidates: [
+          _candidate(index: 0, name: 'Link', isConnection: true),
+          _candidate(index: 1, name: 'Link 2', isConnection: true),
+        ])),
+      ));
+      await _openAndPick(tester);
+
+      expect(find.text('Import this track?'), findsNothing);
+      expect(find.text('Which track?'), findsNothing);
+      expect(find.textContaining('no importable track'), findsOneWidget);
     });
 
     testWidgets('posts the file alone to import-gpx-tracks and reports skips',
