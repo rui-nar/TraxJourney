@@ -160,7 +160,10 @@ def test_an_end_before_the_start_runs_past_midnight(env):
     assert resp.status_code == 200, resp.text
     with Session(engine) as sess:
         row = sess.get(DBActivity, resp.json()["activity_id"])
-    assert row.start_date.startswith("2024-06-01T22:30")
+    # Typed times for an untimed track are the wall clock where it starts
+    # (issue #365): near Paris, 22:30 CEST is 20:30Z.
+    assert row.start_date_local.startswith("2024-06-01T22:30")
+    assert row.start_date.startswith("2024-06-01T20:30")
     assert row.elapsed_time == 160 * 60      # two hours forty, over midnight
 
 
