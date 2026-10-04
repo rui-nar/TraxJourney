@@ -169,3 +169,19 @@ Answer (user, 2026-10-04): leave `id` off `/me`. U1 is dropped (not merged); new
 - Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
 - Decision: Fix now (D3). Pre-existing on main, not introduced by U5; U5's doc comment promised the opposite
 - Outcome: partly fixed (4885887b: no server call once the session ended before sending; setup screen cannot be left while busy). Session ending during the request itself: pending owner decision on a follow-up unit
+
+## Integrated review Part 1, round 1 — 2026-10-04, reviewed at eeedd614 (code since 44f73762)
+
+### I1-R1-1 — A stale refetch still replaces a resolved train route: the pre-resolve feature already says route_mode 'rail'
+- Trigger: user sets a train segment to follow the route and saves → the PUT stores route_mode 'rail' before the resolve → a refetch in flight across the resolve brings back the arc tagged 'rail' → reconcile drops the patch → the map draws the arc until the next zoom bucket
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10) — flagged: the plan's #278 goal "a stale refetch never puts the placeholder back" is not met under this decision
+- Revisit when: the owner wants the #278 goal met in Part 1, or a resolved segment is seen drawn as an arc after a refetch
+- Override: user: Fix now — the #278 goal must be met in Part 1
+- Outcome: open
+
+### I1-R1-2 — The 405 fallback PUT reads dayMeta after the await, with no trip check
+- Trigger: new APK against a not-yet-deployed server → save a note on trip A, open trip B → B's /meta lands before A's 405 → the whole-map PUT sends B's days to A's path → the old server replaces all of A's days
+- Scores: trigger=plausible, impact=data-loss, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Outcome: open
