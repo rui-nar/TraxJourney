@@ -17,6 +17,7 @@ import 'geo_viewport.dart';
 import 'download_stub.dart' if (dart.library.js_interop) 'download_web.dart';
 import 'elevation_chart.dart';
 import 'gpx_import_dialog.dart';
+import 'incoming_gpx.dart';
 import '../api/client.dart' show ApiException;
 import '../auth/auth_notifier.dart';
 import '../core/brand.dart';
@@ -254,6 +255,13 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
         // that never render the banner and must not carry this timer around.
         _degradedRouteWatchNotifier = notifier;
         notifier.startDegradedRouteWatch(notifier.ref ?? projectRef);
+        // A .gpx opened from another app, for which this trip was picked
+        // (issue #368): straight to its import review.
+        final shared = incomingGpx.takeFor(projectRef);
+        if (shared != null) {
+          _openGpxImportDialog(context,
+              initialFile: (name: shared.name, bytes: shared.bytes));
+        }
       }
 
       // This (singleton, manage-mode) notifier may already hold this exact
@@ -642,7 +650,8 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
     });
   }
 
-  Future<void> _openGpxImportDialog(BuildContext context) async {
+  Future<void> _openGpxImportDialog(BuildContext context,
+      {({String name, Uint8List bytes})? initialFile}) async {
     final notifier = context.read<ProjectNotifier>();
     final messenger = ScaffoldMessenger.of(context);
     final imported = await showDialog<GpxImportResult>(
@@ -654,6 +663,7 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
         // outside it is flagged before it silently extends the trip.
         tripStart: notifier.tripStart,
         tripEnd: notifier.tripEnd,
+        initialFile: initialFile,
       ),
     );
     if (imported == null || !mounted) return;

@@ -178,6 +178,7 @@ Widget _harness(
   http.Client? client,
   String? tripStart,
   String? tripEnd,
+  ({String name, Uint8List bytes})? initialFile,
 }) =>
     MaterialApp(
       home: Scaffold(
@@ -191,6 +192,7 @@ Widget _harness(
                   httpClient: client ?? recorder.client(),
                   tripStart: tripStart,
                   tripEnd: tripEnd,
+                  initialFile: initialFile,
                 ),
               );
             },
@@ -650,5 +652,26 @@ void main() {
     // cruelty; every other missing field says "Required".
     expect(find.textContaining("The file doesn't say"), findsOneWidget);
     expect(_confirmButton(tester).onPressed, isNull);
+  });
+
+  testWidgets('a file already in hand skips the pick step and is inspected',
+      (tester) async {
+    // A .gpx opened from another app (issue #368) arrives with the dialog.
+    FilePickerPlatform.instance =
+        _FakeFilePickerPlatform(() => fail('the picker must not open'));
+    final recorder = _Recorder();
+    await tester.pumpWidget(_harness(recorder,
+        initialFile: (name: 'shared.gpx', bytes: _gpxBytes)));
+    await tester.tap(find.text('open'));
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('gpx_pick_file')), findsNothing);
+    expect(find.text('Reading shared.gpx…'), findsOneWidget);
+
+    await tester.pumpAndSettle();
+    expect(recorder.requests.single.url.path,
+        endsWith('/api/projects/Trip/activities/gpx/inspect'));
+    expect(recorder.bodies.single, contains('filename="shared.gpx"'));
+    expect(find.text('Import this track?'), findsOneWidget);
   });
 }

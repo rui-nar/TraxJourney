@@ -23,12 +23,14 @@ import 'return_to.dart';
 import 'splash_screen.dart' show kSplashBackground;
 import '../projects/projects_screen.dart';
 import '../projects/app_screen.dart';
+import '../projects/incoming_gpx.dart';
 import '../projects/join_trip_screen.dart';
 import '../projects/poster_download_screen.dart';
 import '../projects/video_download_screen.dart';
 import '../projects/view_screen.dart';
 import '../projects/strava_import_screen.dart';
 import '../projects/strava_import_notifier.dart';
+import '../projects/trip_picker_screen.dart';
 import '../projects/polarsteps_import_screen.dart';
 import '../projects/polarsteps_import_notifier.dart';
 import '../projects/project_settings_screen.dart';
@@ -101,6 +103,13 @@ Future<String?> authRedirectTarget(
     return '/login?return_to=${Uri.encodeComponent(loc)}';
   }
 
+  // A .gpx opened from another app (issue #368) leads to the trip picker,
+  // which needs a session. Same round-trip as an invite: the file itself waits
+  // in `incomingGpx`, only the way back rides in return_to.
+  if (!isLoggedIn && loc == kIncomingGpxRoute) {
+    return '/login?return_to=${Uri.encodeComponent(loc)}';
+  }
+
   // On a native Android/iOS build, bare root never shows the marketing
   // WelcomeScreen (its "Sign in" button sits under the status bar there
   // anyway — it's built for a browser chrome, not a phone). First launch
@@ -146,8 +155,26 @@ GoRouter buildRouter(BuildContext context) {
   final authNotifier = context.read<AuthNotifier>();
   final onboardingNotifier = context.read<OnboardingNotifier>();
 
-  return GoRouter(
-    initialLocation: initialLocationFor(isWeb: kIsWeb, base: Uri.base),
+  // A .gpx another app opened in this one (issue #368) can arrive as the
+  // platform's first route (`file://` on iOS) or as a pushed one. A file is
+  // not a route: started here, BEFORE the GoRouter exists, so its guard is the
+  // first to see a pushed location, and a launch file is swapped for '/'.
+  final launchLocation =
+      WidgetsBinding.instance.platformDispatcher.defaultRouteName;
+  final launchedWithFile = !kIsWeb && isIncomingFileLocation(launchLocation);
+  late final GoRouter router;
+  if (!kIsWeb) {
+    incomingGpx.start(
+      onArrived: () => router.go(kIncomingGpxRoute),
+      launchLocation: launchLocation,
+    );
+  }
+
+  router = GoRouter(
+    initialLocation: launchedWithFile
+        ? '/'
+        : initialLocationFor(isWeb: kIsWeb, base: Uri.base),
+    overridePlatformDefaultLocation: launchedWithFile,
     // Re-evaluate redirect whenever auth state or the onboarding flag changes
     // (login / logout / init / onboarding markSeen()).
     refreshListenable: Listenable.merge([authNotifier, onboardingNotifier]),
@@ -312,6 +339,11 @@ GoRouter buildRouter(BuildContext context) {
           );
         },
       ),
+      GoRoute(
+        path: kIncomingGpxRoute,
+        builder: (context, state) => const TripPickerScreen(),
+      ),
     ],
   );
+  return router;
 }
