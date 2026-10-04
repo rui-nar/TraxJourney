@@ -13,6 +13,8 @@ import 'package:http/testing.dart';
 import 'package:traxjourney_client/src/projects/projects_notifier.dart';
 import 'package:traxjourney_client/src/projects/projects_service.dart';
 
+import 'trip_file_fixture.dart';
+
 void main() {
   test("the server's 400 detail is shown verbatim", () async {
     const detail = "This file isn't a valid TraxJourney trip: "
@@ -20,7 +22,7 @@ void main() {
     final notifier = ProjectsNotifier(ProjectsService());
 
     final saved = await http.runWithClient(
-      () => notifier.uploadProjectFile(bytes: [1, 2, 3], name: 'Trip'),
+      () => notifier.uploadProjectFile(file: MemoryTripFile([1, 2, 3]), name: 'Trip'),
       () => MockClient((_) async => http.Response(
             jsonEncode({'detail': detail, 'request_id': 'abcd1234'}),
             400,

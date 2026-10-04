@@ -19,7 +19,6 @@ Routes:
 """
 from __future__ import annotations
 
-import io
 import json
 import logging
 import os
@@ -34,7 +33,6 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Up
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from models.db import get_session
-from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
@@ -56,8 +54,9 @@ from models.project_db import DBMemory, DBMemoryComment, DBMemoryLike, DBMemoryT
 from models.user import UserInfo
 from src.models.value_bounds import Lat, Lon
 from src.billing.entitlements import ensure_storage_quota, ensure_trip_days_quota
-from src.billing.usage import record_written, unlink_and_record
+from src.billing.usage import unlink_and_record
 from src.utils.photo_paths import photo_file, photo_files, photo_folder
+from src.utils.photo_store import InvalidPhoto, PhotoTooLarge, save_photo_files
 from src.utils.safe_fetch import fetch_bytes
 from src.exceptions.errors import QuotaExceeded
 from src.models.memory import Memory
@@ -71,7 +70,6 @@ router = APIRouter(prefix="/api/memories", tags=["memories"])
 _log = logging.getLogger(__name__)
 
 _DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
-_THUMB_SIZE = (400, 400)
 
 # Per-file cap on a photo upload, checked before the (CPU-bound) decode/resize
 # work. The flutter_client photo picker (flutter_client/lib/src/photos) applies
@@ -135,12 +133,6 @@ class TranslationOut(BaseModel):
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _photo_dir(user_id: str, memory_id: int) -> Path:
-    p = Path(_DATA_DIR) / "users" / user_id / "memories" / str(memory_id)
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
 
 def _owner_id_of(sess, project_id: int) -> int:
     """The trip owner's user id — whose plan the trip's limits come from."""
@@ -507,29 +499,21 @@ def delete_memory(
 # ── Photos ────────────────────────────────────────────────────────────────────
 
 def _save_photo_files(user_id: str, memory_id: int, uuid_str: str, raw: bytes) -> None:
-    # Decode before writing anything to disk: a corrupt/non-image upload must
-    # not leave an orphaned full-res file behind with no valid thumbnail.
+    # Decode, write and count the photo (src/utils/photo_store.py). Memory
+    # photos live under the project OWNER's tree (the caller passes that id).
+    folder = photo_folder(_DATA_DIR, user_id, "memories", memory_id)
     try:
-        img = Image.open(io.BytesIO(raw)).convert("RGB")
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        save_photo_files(user_id, folder, uuid_str, raw)
+    except PhotoTooLarge as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"This photo is too large: {exc}.",
+        ) from exc
+    except InvalidPhoto as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Invalid image file",
         ) from exc
-    photo_path = _photo_dir(user_id, memory_id)
-    full = photo_path / f"{uuid_str}.jpg"
-    thumb = photo_path / f"{uuid_str}_thumb.jpg"
-    full.write_bytes(raw)
-    img.thumbnail(_THUMB_SIZE, Image.LANCZOS)
-    # A re-encode drops EXIF, but Pillow does carry a JPEG comment over from
-    # img.info, and the thumbnail is served to share links (issue #430).
-    img.info.clear()
-    img.save(str(thumb), "JPEG", quality=85)
-    # Storage accounting for quota checks (issue #121). Done here rather than at
-    # each call site so every path that writes a photo — upload, replace,
-    # from-url, Polarsteps import — is counted by construction. Attribution
-    # follows the directory: photos live under the project OWNER's tree.
-    record_written(user_id, full, thumb)
 
 
 def _delete_photo_files(user_id: str, memory_id: int, photo_uuids: List[str]) -> None:

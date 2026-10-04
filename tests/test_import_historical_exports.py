@@ -41,6 +41,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from PIL import Image
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -161,15 +162,27 @@ def test_an_export_of_uploaded_gpx_tracks_imports_back(env, source):
 
 
 def test_the_trip_file_inside_the_zip_export_imports(env):
-    """It carries photo_refs on memories, and leaves out people and day notes."""
-    client, _ = env
+    """It is the full trip document, people and day notes included, and
+    carries photo_refs on memories (#469)."""
+    client, engine = env
     assert _import(client, "Alps", _trip(2, 100)).status_code == 201
+    # A .traxj carries no photo files, so the import kept no photo name (#469):
+    # upload a real one to a memory, as the app does.
+    with Session(engine) as sess:
+        memory_id = sess.exec(select(DBMemory.id)).first()
+    buf = io.BytesIO()
+    Image.new("RGB", (16, 16), "red").save(buf, "JPEG")
+    r = client.post(f"/api/memories/{memory_id}/photos",
+                    files={"file": ("p.jpg", buf.getvalue(), "image/jpeg")})
+    assert r.status_code == 201, r.text
     r = client.get("/api/projects/Alps/export-zip")
     assert r.status_code == 200, r.text
     zf = zipfile.ZipFile(io.BytesIO(r.content))
     (name,) = [n for n in zf.namelist() if n.endswith(ProjectIO.EXTENSION)]
     body = zf.read(name)
-    assert any("photo_refs" in (i.get("memory") or {}) for i in json.loads(body)["items"])
+    doc = json.loads(body)
+    assert any("photo_refs" in (i.get("memory") or {}) for i in doc["items"])
+    assert doc["people"] and doc["groups"] and doc["day_meta"]
 
     r = _import(client, "Restored", body)
 
