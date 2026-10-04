@@ -6,6 +6,7 @@ Envelope: the plan's `## Review envelope` section (E7 GitHub Actions, E8 Geofabr
 ## Round 1 — 2026-10-04, reviewed at 0ce8ab09
 
 Envelope question raised (to owner): both stacks refresh at 04:10 on the 4th — is the host-level sum of two simultaneous refreshes inside E1, or should val and prod be staggered?
+Answer: not given at approval; the plan applies the recommended stagger (val on the 4th, prod on the 5th, via RAIL_AUTO_REFRESH_DAY) pending owner confirmation.
 
 ### R1-1 — Ferry strategies B and C need two way classes the rail store schema cannot express
 - Trigger: a user adds an archipelago ferry leg mapped with both route=ferry and ferry=yes → the single `rail` flag forces B to run over both classes (different line, silently) or C to always miss locally → wrong polyline or permanent Overpass traffic
@@ -14,7 +15,7 @@ Envelope question raised (to owner): both stacks refresh at 04:10 on the 4th —
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (in plan)
 
 ### R1-2 — Local relations_in_bbox for bus/ferry strategy A has no size ceiling
 - Trigger: a user adds a bus segment inside a capital → strategy A's box matches every bus relation → the local source decodes all member geometry unbounded → memory spike in the 1 GB worker
@@ -32,7 +33,7 @@ Envelope question raised (to owner): both stacks refresh at 04:10 on the 4th —
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (in plan)
 
 ### R1-4 — The refresh runs inline in the API process when no broker is configured
 - Trigger: a self-hoster on the documented no-worker compose sets RAIL_SOURCE=local → on the 4th, enqueue runs the refresh inline in the APScheduler thread → 49 store builds inside the API's 768 MB cgroup
@@ -41,7 +42,7 @@ Envelope question raised (to owner): both stacks refresh at 04:10 on the 4th —
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (in plan)
 
 ### R1-5 — A successful subset rebuild closes the rail-data issue although the month's release was never published
 - Trigger: the scheduled run fails → owner dispatches a subset recovery → it patches last month's release and succeeds → notify closes the issue → nothing says this month's release is missing until the 40-day warning
@@ -50,7 +51,7 @@ Envelope question raised (to owner): both stacks refresh at 04:10 on the 4th —
 - Revisit when: —
 - Guard: (to add in U1) on success with inputs.regions set and the patched tag not of the current month, a ::warning:: and the same line in the closing comment: "subset run patched <tag>; no rail-data release exists for <YYYY-MM>"
 - Override: —
-- Outcome: open
+- Outcome: guard added (in plan)
 
 ### R1-6 — The data-age alert cannot see a region dropped from the installed manifest
 - Trigger: owner force-publishes a release missing one region → the box's refresh rewrites the installed manifest without it → that country routes via Overpass → the age gauge still reports fresh
@@ -59,7 +60,7 @@ Envelope question raised (to owner): both stacks refresh at 04:10 on the 4th —
 - Revisit when: —
 - Guard: (to add) fetch_rail_data.py logs a WARNING naming each region (region+layer after U8) the previous installed manifest listed and the new release does not
 - Override: —
-- Outcome: open
+- Outcome: guard added (in plan)
 
 ### R1-7 — Refresh peak RSS is measured with rail only, before bus multiplies the data
 - Trigger: the first schema-3 release lands → the monthly refresh builds Germany's ~125 MB bus layer with a with_locations() index in a 1 GB worker → OOM every month, bus never installs
@@ -68,7 +69,7 @@ Envelope question raised (to owner): both stacks refresh at 04:10 on the 4th —
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (in plan)
 
 ### R1-8 — U9's acceptance needs api/segments.py, which U9 does not scope
 - Trigger: U9's implementer finishes the local source → the resolve counter in _compute_segment_geometry is hard-coded to overpass for ferry/bus → acceptance impossible without an out-of-scope edit
@@ -77,7 +78,7 @@ Envelope question raised (to owner): both stacks refresh at 04:10 on the 4th —
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (in plan)
 
 ### R1-9 — U8 needs layer-aware store file names and per-layer keys outside its scope
 - Trigger: U8's implementer installs a schema-3 release → store_filename(region) gives one name for every layer → collision, or the unit stalls on escalation
@@ -85,8 +86,8 @@ Envelope question raised (to owner): both stacks refresh at 04:10 on the 4th —
 - Decision: Defer (D8)
 - Revisit when: U8's implementer escalates on store_filename or the sidecar/carried keying — answer by adding store.py to U8's scope with store_filename(region, layer="rail") and (region, layer) keys
 - Guard: —
-- Override: —
-- Outcome: open
+- Override: user: Fix now — one plan line now; deferring only schedules a known escalation
+- Outcome: fixed (in plan)
 
 ### R1-10 — After U7, a subset rebuild against a schema-2 release is refused
 - Trigger: U7 merges mid-month → a subset recovery is needed → the manifest command refuses the schema-2 base → no recovery until the next full run
@@ -94,8 +95,8 @@ Envelope question raised (to owner): both stacks refresh at 04:10 on the 4th —
 - Decision: Defer (D10)
 - Revisit when: a subset recovery is needed while the newest rail-data release is still manifest schema 2 after U7 has merged
 - Guard: —
-- Override: —
-- Outcome: open
+- Override: user: Fix now — one plan line now; deferring leaves a known gap in the switchover recovery path
+- Outcome: fixed (in plan)
 
 ### R1-11 — No ferry/bus-only switch; rolling back a bad local ferry answer sends rail to Overpass too
 - Trigger: a ferry/bus release ships with a plausible-but-wrong crossing → the only rollback is RAIL_SOURCE=overpass → trains return to the instance that banned the box
