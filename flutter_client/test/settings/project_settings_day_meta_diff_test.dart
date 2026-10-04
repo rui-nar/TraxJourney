@@ -152,12 +152,40 @@ void main() {
       expect(dayMetaWrites, isEmpty);
     });
 
-    testWidgets('a tag edit sends exactly the days it touched', (tester) async {
+    testWidgets('a tag rename sends exactly the renamed days', (tester) async {
       // "old" is on three days and "keep" on two, so "old" is listed first.
-      // The edit is a tag removal, not a rename: the rename dialog disposes
-      // its controller while it is still animating out, which throws under
-      // test. Both edits rewrite the `tags` of exactly the days that carry the
-      // tag, which is what the diff is judged on.
+      final n = _notifier(_days({
+        '2026-06-13': ['old', 'keep'],
+        '2026-06-14': ['keep'],
+        '2026-06-15': ['old'],
+        '2026-06-16': ['old'],
+      }));
+      await _pumpSettings(tester, n);
+      await tester.tap(find.byIcon(Icons.label_outlined));
+      await _frames(tester);
+      await tester.tap(find.byTooltip('Rename').first);
+      await _frames(tester);
+      await tester.enterText(
+          find.descendant(
+              of: find.byType(AlertDialog), matching: find.byType(TextField)),
+          'new');
+      await tester.tap(find.descendant(
+          of: find.byType(AlertDialog), matching: find.text('Rename')));
+      await _frames(tester);
+
+      await _tapSave(tester);
+
+      expect(dayMetaWrites, hasLength(1));
+      final w = dayMetaWrites.single;
+      expect(w.method, 'PATCH');
+      expect(w.body['delete'], isEmpty);
+      final days = w.body['days'] as Map<String, dynamic>;
+      expect(days.keys.toSet(), {'2026-06-13', '2026-06-15', '2026-06-16'});
+      expect((days['2026-06-13'] as Map)['tags'], ['new', 'keep']);
+    });
+
+    testWidgets('a tag removal sends exactly the days it touched',
+        (tester) async {
       final n = _notifier(_days({
         '2026-06-13': ['old', 'keep'],
         '2026-06-14': ['keep'],

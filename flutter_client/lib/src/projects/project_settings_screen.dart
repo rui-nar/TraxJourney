@@ -1291,24 +1291,10 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
   }
 
   Future<void> _showRenameTagDialog(String current) async {
-    final ctrl = TextEditingController(text: current);
     final result = await showDialog<String>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Rename tag'),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: 'New name'),
-          onSubmitted: (v) => Navigator.of(context).pop(v),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.of(context).pop(ctrl.text), child: const Text('Rename')),
-        ],
-      ),
+      builder: (_) => _RenameTagDialog(current: current),
     );
-    ctrl.dispose();
     if (result != null) _renameTag(current, result);
   }
 
@@ -2276,6 +2262,44 @@ class _ColorPickerRow extends StatelessWidget {
             child: const Icon(Icons.colorize, size: 16, color: Colors.white70),
           ),
         ),
+      ],
+    );
+  }
+}
+
+/// Owns the rename field's controller so it is disposed with the dialog's
+/// route, after the exit animation, not when the dialog future completes.
+class _RenameTagDialog extends StatefulWidget {
+  final String current;
+  const _RenameTagDialog({required this.current});
+
+  @override
+  State<_RenameTagDialog> createState() => _RenameTagDialogState();
+}
+
+class _RenameTagDialogState extends State<_RenameTagDialog> {
+  late final TextEditingController _ctrl =
+      TextEditingController(text: widget.current);
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Rename tag'),
+      content: TextField(
+        controller: _ctrl,
+        autofocus: true,
+        decoration: const InputDecoration(hintText: 'New name'),
+        onSubmitted: (v) => Navigator.of(context).pop(v),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
+        FilledButton(onPressed: () => Navigator.of(context).pop(_ctrl.text), child: const Text('Rename')),
       ],
     );
   }
