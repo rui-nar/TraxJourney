@@ -1217,6 +1217,10 @@ class ProjectNotifier extends ChangeNotifier
       // _buildFullTrack() was hopping through compute() could still mutate
       // dayMeta/activities below for a project the user has since left.
       if (!_isCurrent(token, ref)) return;
+      // A resolve started before this load — earlier in the session, before
+      // the app was closed, or on another device — is still polled for, so its
+      // route reaches the map without reopening the trip (issue #278).
+      resumeSegmentResolves();
       _autoFillDaysToToday();  // fill missing dates in-memory before first render
       await _restoreUiState(token, ref);  // issue #76 follow-up: reapply persisted selection/filters
       // Catch Object, not just Exception: retryFetch rethrows whatever the last
@@ -2888,6 +2892,7 @@ class ProjectNotifier extends ChangeNotifier
     _stopPhotoPolling();
     _zoomRefetchTimer?.cancel();
     stopDegradedRouteWatch(); // usually already stopped by the owning screen's dispose()
+    stopSegmentResolvePolling();
     previewArcNotifier.dispose();
     elevationCursorNotifier.dispose();
     mapCursorDistNotifier.dispose();
