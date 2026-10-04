@@ -180,9 +180,14 @@ Package C groups client-side defects and debt around the app-wide
 2. **#418: `clear()` resets everything a load sets.**
    - That covers every field, timer and overlay a load can set, including
      what it misses today.
-   - A test enumerates the notifier's state after `clear()` against a
-     freshly constructed notifier, so a field added later and missing from
-     `clear()` fails it.
+   - A behaviour test compares the state after `clear()` with a freshly
+     constructed notifier, for the fields that exist today.
+   - A source-scan test lists every instance field declared in
+     `project_notifier.dart` and its six mixins. It fails unless each one is
+     reset in `clear()` or appears on an allowlist next to the test with a
+     one-line reason. A field added later and missing from both fails the
+     suite. Flutter has no reflection, so this is the only check that can
+     see a new field. (R1-4)
 3. **#418: fix the empty id at the root, on both sides.**
    - `/me` adds `"id": int(sub)` (additive). Installed builds already read
      `map['id']`.
@@ -312,12 +317,29 @@ Package C groups client-side defects and debt around the app-wide
         and trip-end pruning goes into `delete`.
       - On failure the client reloads day-meta instead of keeping its
         optimistic copy.
-    - **Old builds.** `PUT /day-meta` is left exactly as it is, for
-      installed builds.
+    - **Old builds: the whole-map `PUT` is retired.** (Owner decision,
+      2026-10-04, R1-1.)
+      - An old build's `PUT` sends a stale whole map, and no server check
+        can tell a stale revert from an intended edit. So the `PUT` answers
+        **426 Upgrade Required** with the detail "This version of the app can
+        no longer save day notes. Please update the app."
+      - It writes nothing. Old builds show that detail as their error string
+        and lose nothing.
+      - Old builds' other settings still save, because they send day-meta
+        in a separate, unawaited request.
+      - Stale web tabs are already prompted to reload by `VersionGate`.
     - **Accepted.** When two devices edit the **same** day, the last writer
       wins on that day.
     - Rules out: (B) a version column, which detects a conflict but cannot
-      stop a stale map reverting days the client never touched.
+      stop a stale map reverting days the client never touched. Also rules
+      out keeping the `PUT` for old builds, which keeps exactly that revert
+      (R1-1).
+    - **The client keeps its in-memory gap days.** The days that
+      `_autoFillDaysToToday` adds after the last activity, up to today, exist
+      only in memory. The client merges the response into its map: it adopts
+      the server's value for every day the server returns, drops the days
+      the server no longer has unless they are empty gap-fill days, then
+      re-runs `_autoFillDaysToToday`. (R1-2)
 13. **#478: switching auto-zoom on fits the current selection.** Both map
     panels handle `autoZoom` going from false to true in `didUpdateWidget`
     by running the same fit a selection change runs, when an activity, a
@@ -340,6 +362,26 @@ Package C groups client-side defects and debt around the app-wide
     - **The owner records one device session** afterwards. The larger
       options (#401's padding and per-vertex levels) are decided from it and
       are not in this plan.
+15. **A minimum client version, for every later contract change.** (Owner
+    decision, 2026-10-04, R1-1.)
+    - `GET /api/version` gains `min_client_version`, a server constant (an
+      env override is allowed, like `_APP_VERSION`).
+    - `VersionGate` compares `kClientVersion` with it on start and on resume,
+      on every platform.
+      - Below the minimum, a native build shows a blocking "Update required"
+        screen with a link to its store page.
+      - Below the minimum, a web build shows the existing reload bar, made
+        non-dismissable.
+      - `dev` and empty versions never trigger it, as `isClientStale` already
+        does.
+    - The initial value is `0.0.0`, which is off.
+      - Builds that ship before this gate cannot read it, which is why the
+        `PUT` is retired on the server and not gated (Decision 12).
+      - The gate is for the next contract change.
+      - `docs/RELEASING.md` says when and how to raise the value.
+    - Rules out: a header on every request with a server-side 426 for old
+      versions. That cannot reach builds that send no header either, and it
+      turns every endpoint into a version check.
 
 ## Review envelope
 
@@ -357,16 +399,20 @@ What this plan adds to REVIEW.md §2's defaults:
 - **Concurrency on day-meta.**
   - Two PATCHes to one trip can run at once: the API is one process with a
     thread pool for sync endpoints.
-  - A PATCH can also run alongside a structural `save_project`, a `PUT
-    /day-meta` from an old build, or a trip Replace import.
+  - A PATCH can also run alongside a structural `save_project` or a trip
+    Replace import. The old `PUT` no longer writes (Decision 12).
   - None of them may lose another's change to a different day.
   - The same day edited twice is last-writer-wins by decision, and not a
     defect.
 - **Client concurrency inside the notifier.** Facet moves must keep every
   existing supersession guard (`isCurrent(token, ref)`) in front of facet
   writes, exactly where the field writes were.
-- **Old builds (E5).** They keep `PUT /day-meta` unchanged and gain `id` on
-  `/me`. Nothing they send changes meaning.
+- **Old builds (E5).**
+  - They gain `id` on `/me` and `min_client_version` on `/api/version`. They
+    ignore both.
+  - Their `PUT /day-meta` gets a 426 and writes nothing, by decision: they
+    cannot save day notes until they update.
+  - Nothing else they send changes meaning.
 - **`Server-Timing` on share links** exposes server phase durations to
   holders of a share token. These are timings only, with no content, and
   are accepted.
@@ -378,7 +424,14 @@ What this plan adds to REVIEW.md §2's defaults:
 - **API**
   - `GET /api/auth/me` gains `id` (int). It is additive, and old builds
     already read it.
-  - New `PATCH /api/projects/{name}/day-meta`. `PUT` is unchanged.
+  - New `PATCH /api/projects/{name}/day-meta`.
+  - **`PUT /api/projects/{name}/day-meta` now answers 426 and writes
+    nothing.** This is a deliberate contract break for installed builds
+    (R1-1).
+    - Their day-note, tag and counter saves fail with a readable "please
+      update" message.
+    - Their other settings still save.
+  - `GET /api/version` gains `min_client_version` (additive).
   - `GET /api/geo/project/simplified` and `/api/share/{token}/geo/simplified`
     gain a `Server-Timing` header. The body is unchanged.
 - **Stored data:** none on the server.
@@ -410,6 +463,11 @@ What this plan adds to REVIEW.md §2's defaults:
 
 - **Hysteresis margin.** Proposed 0.3 of a zoom level. Decided when U11 is
   routed; it is a constant.
+- **When to raise `min_client_version`.** Off (`0.0.0`) in this plan. The
+  owner raises it on a later release, following the note U21 adds to
+  `docs/RELEASING.md`.
+- **iOS store link.** U21 needs an App Store URL; if none exists yet, the
+  update screen ships without a link on iOS.
 - **Resolve backoff steps.** Proposed 3 s, then 15 s after 2 minutes, then
   60 s after 10 minutes. Decided when U8 is routed.
 - **What #401 does next.** Decided by the owner from the device session once
@@ -442,10 +500,18 @@ What this plan adds to REVIEW.md §2's defaults:
 
 **U2 — `PATCH /day-meta`, a per-day merge (#397)**
 - **Goal:** the endpoint in Decision 12. It is atomic against concurrent
-  writers, and the PUT stays untouched.
-- **Scope:** `api/projects.py` (a new request model and handler next to the
-  PUT; shared helpers may be extracted but the PUT's behaviour must not
-  change); `tests/test_day_meta_patch.py` (new).
+  writers, and the PUT is retired with 426.
+- **Scope:**
+  - `api/projects.py` (a new request model and handler; the PUT becomes a
+    426 stub; its helpers are reused by the PATCH);
+  - `tests/test_day_meta_patch.py` (new);
+  - the existing tests that write day-meta through the PUT, moved to the
+    PATCH, with their assertions about stored days unchanged:
+    `tests/test_day_meta.py`, `test_day_meta_guard.py`,
+    `test_companion_e2e.py`, `test_companion_roles.py`,
+    `test_content_days.py`, `test_import_trip_settings.py`,
+    `test_meta_cache.py`, `test_project_members.py`,
+    `test_project_write_lost_update.py` and `test_request_value_rules.py`.
 - **Context:**
   - The PUT handler (`api/projects.py:745-784`) and its helpers
     `_check_written_day_notes`, `_keep_days_the_caller_cannot_see` and
@@ -460,7 +526,8 @@ What this plan adds to REVIEW.md §2's defaults:
      `delete: List[str] = []`, plus the optional `sleeping_options`,
      `sleeping_option_groups` and `counters`.
      - A date in both `days` and `delete` is 400.
-     - Date keys are validated as the PUT validates them.
+     - Keys are not validated, as the PUT never validated them. Deleting an
+       absent key is a no-op.
   2. In a retry loop:
      - read the row and its `lock_version`;
      - merge per Decision 12, running `_check_written_day_notes` on the
@@ -471,19 +538,21 @@ What this plan adds to REVIEW.md §2's defaults:
   3. Then do exactly what the PUT does after writing: bust caches and queue
      the stats refresh. Return 200 `{"day_meta": <merged map>}`.
   4. Editor role and above, as for the PUT.
+  5. The PUT answers 426 with Decision 12's detail and writes nothing.
 - **Acceptance:** new tests show:
   - two PATCHes to different days, one injected between the other's read
     and its write, both persist;
-  - a PATCH racing a PUT from an old build and a structural
-    `save_project_with_retry` loses neither's other-day changes;
+  - a PATCH racing a structural `save_project_with_retry` loses neither's
+    changes;
   - `delete` respects #387, and omitting `counters` keeps them;
-  - a viewer gets 403, and a bad date or overlapping keys get 400;
+  - a viewer gets 403, and overlapping keys get 400;
   - the response equals a following `GET /meta`'s `day_meta`;
-  - the existing `test_day_meta*.py` and `test_project_write_lost_update.py`
-    pass unchanged;
+  - a PUT gets 426 with the detail and leaves the column and `lock_version`
+    untouched;
+  - every moved test keeps its assertions about what ends up stored. Only
+    the request changes (`feedback_dont_bend_tests`);
   - the pytest CI command passes.
-- **Out of scope:** changing the PUT; per-field merge inside a day; a
-  migration.
+- **Out of scope:** per-field merge inside a day; a migration; the client.
 - **Latitude:** local design.
 - **Escalate if:**
   - the compare-and-set cannot be made to include the column write in one
@@ -538,7 +607,7 @@ What this plan adds to REVIEW.md §2's defaults:
 - **Escalate if:** X3.
 - **Depends on:** —
 
-### Wave 2 — #418 client
+### Wave 2 — #418 client, version and job-watch server (disjoint)
 
 **U5 — The account owns the client session (#418)**
 - **Goal:** Decisions 1-6. No state of one account survives into the next,
@@ -559,6 +628,8 @@ What this plan adds to REVIEW.md §2's defaults:
   - tests:
     - `flutter_client/test/auth/session_reset_test.dart` (new)
     - `flutter_client/test/projects/project_notifier_clear_complete_test.dart`
+      (new)
+    - `flutter_client/test/projects/project_notifier_clear_scan_test.dart`
       (new)
     - `flutter_client/test/app_screen_account_switch_test.dart` (new)
     - `flutter_client/test/auth/auth_notifier_test.dart`, only the
@@ -591,6 +662,9 @@ What this plan adds to REVIEW.md §2's defaults:
     people, groups, multi-day selection, filters, share tokens and a
     pending segment patch, `clear()` leaves every public getter equal to a
     fresh notifier's, and no timer is active.
+  - `project_notifier_clear_scan_test` (new): the source scan from
+    Decision 2, with its allowlist. Removing a reset from `clear()` makes it
+    fail. (R1-4)
   - `app_screen_account_switch_test`:
     - account A filters Japan to Hotel, then logs out; account B opens
       `/app?project=Japan`;
@@ -616,7 +690,40 @@ What this plan adds to REVIEW.md §2's defaults:
 - **Depends on:** U1 (the server half; the client fallback works without
   it).
 
-### Wave 3 — #397 and #401 clients (disjoint)
+**U20 — `min_client_version`, and a warning for stuck route jobs (Decision
+15, R1-5)**
+- **Goal:** `/api/version` serves `min_client_version`. An hourly job logs
+  route jobs that have been pending or running too long.
+- **Scope:** `api/router.py` (`app_version` and one scheduler entry);
+  `src/jobs/route_jobs.py` (a new read-only `warn_stuck_route_jobs`);
+  `tests/test_app_version.py` (new or existing);
+  `tests/test_stuck_route_jobs.py` (new).
+- **Context:**
+  - `app_version` (`api/router.py:394-403`) and `_APP_VERSION` are the env
+    pattern.
+  - `sweep_orphaned_jobs` (`src/jobs/route_jobs.py:174`) is the query shape.
+  - The `sweep_degraded_segments` scheduler entry (`api/router.py:150`) is
+    the registration to copy.
+- **Do:**
+  1. Add `MIN_CLIENT_VERSION` (default `"0.0.0"`, env override) and return
+     it as `min_client_version`.
+  2. `warn_stuck_route_jobs()` logs one WARNING per job still pending or
+     running 30 minutes after it started (or after it was created, when it
+     never started). The line carries the job id, project id and segment id.
+     It changes nothing.
+  3. Run it hourly.
+- **Acceptance:**
+  - Tests: `/api/version` returns both keys, and the env override works.
+  - A job 31 minutes old logs, one 29 minutes old does not, and a finished
+    one does not.
+  - No row is modified.
+  - The pytest CI command passes.
+- **Out of scope:** re-queueing stuck jobs; the client gate (U21).
+- **Latitude:** none.
+- **Escalate if:** the job row has no usable start or creation time; X3.
+- **Depends on:** —
+
+### Wave 3 — #397, #401 and version-gate clients (disjoint)
 
 **U6 — Per-fetch geometry timing on the client (#401)**
 - **Goal:** the perf report splits each simplified fetch into server time
@@ -679,7 +786,9 @@ What this plan adds to REVIEW.md §2's defaults:
 - **Do:**
   1. `saveDayMeta({days, delete, sleepingOptions?, groups?, counters?})`:
      - apply optimistically;
-     - on 200, replace `dayMeta` with the response's map;
+     - on 200, merge the response into `dayMeta` per Decision 12 (adopt
+       returned days, keep empty gap-fill days, re-run
+       `_autoFillDaysToToday`);
      - on error, reload day-meta from `/meta` and set `error`.
   2. The day editor sends its one day, or puts it in `delete` when it is
      emptied.
@@ -694,7 +803,10 @@ What this plan adds to REVIEW.md §2's defaults:
     - a tag rename sends exactly the renamed days;
     - trip-end pruning sends the pruned days in `delete`;
     - the editor sends one day;
-    - a failed PATCH reloads day-meta.
+    - a failed PATCH reloads day-meta;
+    - on a trip whose last activity was two days ago, saving a note keeps
+      the carousel's tiles up to today (R1-2);
+    - a day another device added arrives in `dayMeta` from the response.
   - The existing trip-end tests keep their expectations about which days
     end up stored.
   - `flutter analyze` and `flutter test` pass.
@@ -703,6 +815,36 @@ What this plan adds to REVIEW.md §2's defaults:
 - **Escalate if:** `_autoFillDaysToToday`'s in-memory gap days would now never
   reach the server, and something depends on them being stored; X3.
 - **Depends on:** U2 (its contract).
+
+**U21 — Client: minimum-version gate (Decision 15)**
+- **Goal:** a build below `min_client_version` is stopped with an update
+  screen (native) or a non-dismissable reload bar (web).
+- **Scope:**
+  - `flutter_client/lib/src/core/version_gate.dart`
+  - `flutter_client/lib/src/core/app_version.dart`
+  - `flutter_client/test/core/version_gate_min_test.dart` (new)
+  - `docs/RELEASING.md` (a short section on raising the minimum)
+- **Context:**
+  - `isClientStale` and `_check` in `version_gate.dart` are the code to
+    extend.
+  - The Android package name is in `api/router.py` (`ANDROID_PACKAGE_NAME`)
+    for the store link.
+- **Do:**
+  - Add a pure `isBelowMinimum(client, minimum)` using numeric x.y.z
+    comparison. `dev`, empty and unparsable values return false.
+  - Show the blocking screen on native and the bar on web.
+  - Re-check on resume.
+- **Acceptance:**
+  - Unit tests for `isBelowMinimum`, including `dev`, `0.0.0`, equal
+    versions, and `0.10.0` greater than `0.9.0`.
+  - Widget tests: below the minimum on native shows the screen; on web
+    shows the bar; at or above it shows nothing.
+  - `flutter analyze` and `flutter test` pass.
+- **Out of scope:** in-app update APIs; per-endpoint gating.
+- **Latitude:** local design.
+- **Escalate if:** no store URL exists for a platform (show the screen
+  without a link and report it); X3.
+- **Depends on:** U20 (its contract).
 
 ### Wave 4 — #278
 
@@ -945,7 +1087,10 @@ LOD (#294, #379)**
 - **Escalate if:** X3.
 - **Depends on:** U14.
 
-### Wave 7 — subscriptions (disjoint, after U15)
+### Wave 7 — map and side panels (disjoint, after U15)
+
+U16 and U17 have no file in common. U18 runs in its own wave afterwards,
+because its listener inventory can reach any file (R1-3).
 
 **U16 — Map panels listen to facets, and version keys replace the guards
 (#294)**
@@ -984,7 +1129,10 @@ LOD (#294, #379)**
   the root. The elevation chart also follows `ElevationFacet`, which fixes
   its stale-`fullTrack` selectors.
 - **Scope:** `activity_panel.dart`, `day_carousel.dart`, `elevation_chart.dart`
-  (under `flutter_client/lib/src/projects/`), and their tests.
+  (under `flutter_client/lib/src/projects/`); tests, renames only unless
+  new: `flutter_client/test/activity_panel_*_test.dart` (7 files),
+  `day_carousel_test.dart`, `elevation_chart_color_test.dart`, and
+  `flutter_client/test/projects/facets/side_panels_scope_test.dart` (new).
 - **Context:** the direct listeners at `activity_panel.dart:415/431` and
   `day_carousel.dart:111/180`; the per-tile `Selector`s at
   `activity_panel.dart:1678-2082`.
@@ -998,6 +1146,8 @@ LOD (#294, #379)**
 - **Latitude:** local design.
 - **Escalate if:** X3.
 - **Depends on:** U15.
+
+### Wave 8 — screens
 
 **U18 — Screens listen to facets (#294)**
 - **Goal:** every remaining `Consumer`, `Selector`, `context.watch` and
@@ -1020,12 +1170,14 @@ LOD (#294, #379)**
   - A grep-based test (`test/projects/facets/root_listener_audit_test.dart`,
     new) fails if a root listener's builder references a facet.
   - `flutter analyze` and `flutter test` pass.
-- **Out of scope:** the three widgets in U16 and U17.
+- **Out of scope:** `map_panel.dart`, `activity_panel.dart`,
+  `day_carousel.dart`, `elevation_chart.dart` (done in U16 and U17). A
+  listener found there is reported, not changed.
 - **Latitude:** local design.
 - **Escalate if:** X3.
-- **Depends on:** U15.
+- **Depends on:** U16, U17.
 
-### Wave 8 — cut the bubble
+### Wave 9 — cut the bubble
 
 **U19 — The root stops re-notifying facet changes (#294)**
 - **Goal:** the last step of Decision 8.
@@ -1050,7 +1202,7 @@ LOD (#294, #379)**
 - **Latitude:** local design.
 - **Escalate if:** a widget stops updating and no facet covers what it reads;
   X3.
-- **Depends on:** U16, U17, U18.
+- **Depends on:** U18.
 
 ## Definition of done
 
@@ -1064,7 +1216,14 @@ LOD (#294, #379)**
 - **#397**
   - Two devices editing different days of one trip both keep their changes.
   - A settings save no longer sends day-meta it didn't change.
-  - Installed builds' `PUT` behaves exactly as before.
+  - An old build's `PUT` gets 426 with a readable message and changes
+    nothing.
+  - Saving a note keeps the carousel's days up to today.
+- **Minimum version:** `/api/version` serves `min_client_version`. A build
+  that ships the gate and later falls below the minimum is stopped with an
+  update screen or a reload bar.
+- **Stuck route jobs:** a route job stuck for more than 30 minutes is logged
+  hourly.
 - **#379**
   - After any edit, `geo` holds geometry at the zoom on screen, stamped with
     the bucket and box it was fetched for.
