@@ -28,7 +28,7 @@ from typing import List, Optional, Sequence, Tuple
 import gpxpy
 import gpxpy.gpx
 
-from src.gpx.export_format import read_activity_extensions
+from src.gpx.export_format import CONNECTION_TRACK_TYPE, read_activity_extensions
 from src.models.great_circle import haversine_km
 from src.models.track_edit import TrackPoint
 
@@ -135,6 +135,9 @@ class GpxCandidate:
     #: (:attr:`moving_seconds`, :attr:`distance_m`) are left as they are.
     carried_moving_seconds: Optional[int] = None
     carried_distance_m: Optional[float] = None
+    #: True for a track a TraxJourney export drew for a connecting segment
+    #: (a train or a flight as a great-circle arc), not an activity (#367).
+    is_connection: bool = False
 
     @property
     def point_count(self) -> int:
@@ -311,6 +314,7 @@ def candidates(gpx: gpxpy.gpx.GPX) -> List[GpxCandidate]:
             activity_type=map_activity_type(track.type),
             points=points, times=times, is_route=False,
             carried_moving_seconds=moving, carried_distance_m=distance,
+            is_connection=(track.type or "").strip() == CONNECTION_TRACK_TYPE,
         ))
     # An element carrying no points is not a candidate. Some tools write an
     # empty <trk> as a placeholder alongside the real <rte>, and treating it
@@ -337,7 +341,8 @@ def _renumbered(found: List[GpxCandidate]) -> List[GpxCandidate]:
                      activity_type=c.activity_type, points=c.points,
                      times=c.times, is_route=c.is_route,
                      carried_moving_seconds=c.carried_moving_seconds,
-                     carried_distance_m=c.carried_distance_m)
+                     carried_distance_m=c.carried_distance_m,
+                     is_connection=c.is_connection)
         for position, c in enumerate(found)
     ]
 
