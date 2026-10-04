@@ -239,3 +239,22 @@ Owner answer 2026-10-04 (F3 envelope question): a replace re-import keeps the cu
 - Decision: Defer (D10)
 - Override: user 2026-10-04: Fix now (F2 introduced the window; the fix is small)
 - Outcome: fixed (ab71cf98)
+
+## Delivery
+
+Feature branch: feat/privacy-followups-a (worktree E:/Dev/TraxJourney-pkgA), from origin/main 1f1e2bd6; origin/main merged in twice (8b647ae8 with #553 ZIP import, then 3df3bef8). Waves were re-cut at split time (W1 shared files, W3 cap): wave 1 = U1, U2, U4, U6; wave 2 = U3, U5; added in delivery: U7 (owner decision on stored comment names); fix wave after the integrated review: F1, F2, F3. Unit worktrees were created by hand because the agent worktree isolation refused the e:/E: drive-letter path.
+
+| Unit | Goal | Route | Rule | Attempts | Escalated | Verified first time | Findings traced |
+|---|---|---|---|---|---|---|---|
+| U1 | Google sign-in failures log no token (#510) | Opus | S5 | 1 | — | yes | R1-5 |
+| U2 | Enrichment saves Strava token rotations (#512) | Opus | S5 | 1 | — (test file moved by orchestrator for W1) | yes | U2-R1-1 |
+| U3 | No email as a name fallback; blank names refused (#507) | Opus | S3 | 2 | X3 (share, memories, project_shares name sites) | yes | R1-1 |
+| U4 | Avatars live in the trip owner's folder (#470) | Opus | S4 | 2 | — | yes | U4-R1-1, U4-R1-2 |
+| U5 | Move companion-uploaded avatars; clean leftovers (#470) | Opus | S4 | 4 | X3 (api/people.py guard, src/people/__init__.py) | yes | R1-2, U5-R1-1, U5-R1-2, U5-R2-1, U5-R3-1 |
+| U6 | Orphan Strava activity rows are deleted (#509) | Opus | S4 | 2 | — | yes | R1-3, R1-4, R1-6, R2-1, R3-2, R3-3, R3-4, R4-1, U6-R1-1 |
+| U7 | Stored comment/like names no longer show an email (#507) | Opus | S4 | 1 | — | yes | — |
+| F1 | Local delete frees the Strava root; owner rule on that route | Opus | S4 | 2 | X3 (Flutter delete error path) | yes | I-R1-1, F1-R1-1 |
+| F2 | Replace import prunes the Strava rows it drops | Opus | S4 | 2 | — | yes | I-R1-2, F2-R1-1 |
+| F3 | Leftover cleanup covers a living person's owner folder | Opus | S4 | 1 | — | yes | F3-R1-1 |
+
+Notes for §7 calibration: every unit routed to Opus (S3–S5); no X1/X2. Per-unit reviews (§5 point 3) found real issues in U4, U5 (three rounds), U6, F1 and F2; most were Guard/Defer or owner-scope questions rather than defects in the unit's own goal. Owner decisions taken during delivery widened scope several times (removal rule, leftover-cleanup reach, stored comment names, replace-import pruning); recorded above where each was taken.
