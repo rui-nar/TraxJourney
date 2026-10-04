@@ -208,3 +208,14 @@ U7: Alembic data migration 87200bcb9342 rewriting stored comment/like author nam
 
 Owner decisions 2026-10-04 on the integrated review: I-R1-1 Fix now; I-R1-2 overridden to Fix now; envelope 1, the leftover cleanup also covers a living person's OWNER folder under the keep-set rule (never a current avatar name); envelope 2, rows imported from a .traxj/ZIP file are treated like Strava rows (removal from their last trip deletes them; re-importing the file restores them), accepted.
 Fix wave: F1 (I-R1-1, api/activities.py), F2 (I-R1-2, src/project/repo_transfer.py + api/project_transfer.py), F3 (owner-folder cleanup, src/people/avatar_move.py), all Opus (S4).
+
+## Fix unit F1 review — round 1, 2026-10-04, reviewed at 53559629
+
+### F1-R1-1 — DELETE .../local still refuses the owner a former member's split tail (rewritable gate before the R4-1 rule)
+- Trigger: A companion imports and splits a Strava activity, then leaves → the owner deletes the tail from the panel → 404; the item reappears on reload; tail and root stay forever.
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6)
+- Override: —
+- Outcome: open
+
+Envelope question from the reviewer, owner answer 2026-10-04: yes. On DELETE .../local a Strava split tail may be deleted only by its owner or the trip owner; anyone else gets a clear refusal, and the app shows the error instead of silently restoring the item. F1 Scope widened (X3) to the Flutter deleteLocalActivity error path.
