@@ -23,6 +23,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import tzfpy
 
+from src.utils.logging import get_logger
+
+_log = get_logger(__name__)
+
 #: What a zone that is UTC, or that cannot be resolved, is stored as.
 UTC_ZONE = "Etc/UTC"
 
@@ -40,8 +44,8 @@ def zone_at(lat: Optional[float], lon: Optional[float]) -> str:
 
     At sea ``tzfpy`` answers a nautical ``Etc/GMT±N`` zone, which is kept.
     Returns :data:`UTC_ZONE` when the coordinate is missing, the lookup finds
-    nothing or a name this platform's tz database does not know, or the zone
-    is UTC. Never returns the bare ``"UTC"``.
+    nothing or a name this platform's tz database does not know (logged as a
+    warning), or the zone is UTC. Never returns the bare ``"UTC"``.
     """
     if lat is None or lon is None:
         return UTC_ZONE
@@ -54,6 +58,10 @@ def zone_at(lat: Optional[float], lon: Optional[float]) -> str:
     try:
         ZoneInfo(name)
     except (ZoneInfoNotFoundError, ValueError):
+        # Neither the system tz database nor the tzdata package knows a name
+        # tzfpy's newer data gives: the activity is stored in UTC, so say so.
+        _log.warning("unknown timezone %r from tzfpy at the track's start "
+                     "— storing %s", name, UTC_ZONE)
         return UTC_ZONE
     return name
 

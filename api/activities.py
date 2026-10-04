@@ -669,7 +669,10 @@ async def inspect_gpx_file(
         # The zone at the track's start, and its span as wall clocks there
         # (issue #365). started_at/ended_at stay UTC instants: installed
         # clients read them so. The server converts because Dart has no zone
-        # database.
+        # database. A candidate that failed validation is not looked up: its
+        # coordinates are not trusted, and it cannot be imported anyway.
+        if summary["errors"]:
+            continue
         first = candidate.points[0] if candidate.points else None
         zone = zone_at(first.lat if first else None,
                        first.lng if first else None)

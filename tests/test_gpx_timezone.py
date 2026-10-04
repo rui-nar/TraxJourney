@@ -21,6 +21,8 @@ from models.project_db import DBActivity, DBProject, DBProjectItem
 from models.user import UserInfo
 from src.billing.entitlements import trip_days_used
 from src.gpx.importer import candidates, parse_gpx_bytes
+import api.activities as activities_module
+import src.gpx.timezone as gpx_timezone
 from src.gpx.timezone import UTC_ZONE, local_to_utc, to_local, zone_at
 from src.project.local_ids import track_fingerprint
 
@@ -53,6 +55,20 @@ class TestZoneAt:
 
     def test_a_coordinate_off_the_globe(self):
         assert zone_at(10.0, 200.0) == "Etc/UTC"
+
+    def test_a_zone_the_tz_database_lacks_is_utc_and_logged(
+            self, monkeypatch, caplog):
+        """tzfpy's data can be newer than every tz database installed. The
+        activity is then stored in UTC, and that must not go unsaid
+        (PU1R1-1)."""
+        monkeypatch.setattr(gpx_timezone.tzfpy, "get_tz",
+                            lambda lon, lat: "Mars/Olympus_Mons")
+
+        with caplog.at_level("WARNING", logger="src.gpx.timezone"):
+            assert zone_at(*TOKYO) == "Etc/UTC"
+
+        assert any("Mars/Olympus_Mons" in r.getMessage() and
+                   r.levelname == "WARNING" for r in caplog.records)
 
 
 class TestToLocal:
@@ -205,6 +221,28 @@ class TestInspect:
         assert only["started_at"] is None
         assert only["timezone"] == "Asia/Tokyo"
         assert only["start_local"] is None and only["end_local"] is None
+
+    def test_a_rejected_candidate_gets_no_zone_lookup(self, env, monkeypatch):
+        """Its coordinates failed validation, so they are not looked up
+        (owner envelope decision); the importable one beside it still is."""
+        client, _ = env
+        calls = []
+
+        def spy(lat, lon):
+            calls.append((lat, lon))
+            return zone_at(lat, lon)
+
+        monkeypatch.setattr(activities_module, "zone_at", spy)
+        good = _track(TOKYO, start=_utc(2024, 8, 12, 0, 0)).decode()
+        bad = _track((35.68, 200.0), start=_utc(2024, 8, 12, 0, 0)).decode()
+        both = good.replace("</gpx>", bad[bad.index("<trk>"):])
+
+        found = _inspect(client, both.encode()).json()["candidates"]
+
+        assert found[0]["errors"] == [] and found[1]["errors"]
+        assert calls == [TOKYO]
+        assert found[0]["timezone"] == "Asia/Tokyo"
+        assert found[1]["start_local"] is None and found[1]["end_local"] is None
 
     def test_each_track_has_its_own_zone(self, env):
         client, _ = env

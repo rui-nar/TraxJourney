@@ -26,6 +26,10 @@ gpxpy>=1.5.0
 # The zone a GPX track was recorded in, from its first point, offline (issue
 # #365, src/gpx/timezone.py). Its wheel carries its own boundary data (~3 MB).
 tzfpy>=2.1.0
+# The IANA database zoneinfo falls back to when the system one lacks a zone
+# tzfpy names (issue #365, src/gpx/timezone.py); without it such a track is
+# stored in Etc/UTC.
+tzdata>=2024.1
 polyline>=2.0.0
 Pillow>=10.0.0
 mercantile>=1.2.0
