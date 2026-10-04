@@ -515,6 +515,7 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
     });
     final coords = _decodePolyline(segMeta['route_polyline']);
     if (coords.isEmpty) return;
+    final polyline = segMeta['route_polyline'];
     upsertSegmentInGeo(segId, {
       'type': 'Feature',
       'geometry': {'type': 'LineString', 'coordinates': coords},
@@ -523,10 +524,32 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
         'segment_id': segId,
         'route_mode': routeMode,
         'route_degraded': degraded,
+        // What [_sameRouteState] checks a server feature against before it
+        // lets this patch go: the server's `route_hash` is the same CRC-32 of
+        // the same stored string.
+        'route_status': 'resolved',
+        if (polyline is String) 'route_hash': _crc32(polyline),
         if (segMeta['segment_type'] != null) 'segment_type': segMeta['segment_type'],
       },
     });
   }
+
+  /// CRC-32 (IEEE, as Python's `zlib.crc32`) of [s]'s UTF-8 bytes.
+  static int _crc32(String s) {
+    var crc = 0xFFFFFFFF;
+    for (final b in utf8.encode(s)) {
+      crc = _crcTable[(crc ^ b) & 0xFF] ^ (crc >>> 8);
+    }
+    return (crc ^ 0xFFFFFFFF) & 0xFFFFFFFF;
+  }
+
+  static final List<int> _crcTable = List<int>.generate(256, (n) {
+    var c = n;
+    for (var k = 0; k < 8; k++) {
+      c = (c & 1) != 0 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+    }
+    return c;
+  });
 
   /// Decode a stored `route_polyline` (JSON string `[[lon,lat],…]`) to coords.
   List<List<double>> _decodePolyline(Object? raw) {
@@ -728,11 +751,23 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
   /// `route_mode` (a great-circle arc carries none, or `great_circle`), and the
   /// same `route_degraded` when both say. Every geo endpoint sends
   /// `route_mode`; only the low-res one sends `route_degraded`.
+  ///
+  /// A resolved-route patch ([applyResolvedSegment]) also needs the server to
+  /// say `route_status: resolved`, and the same `route_hash` when both carry
+  /// one. `route_mode` alone cannot tell the route from the arc a stale fetch
+  /// still holds — the segment PUT stores `rail` before the resolve runs — nor
+  /// a re-resolved route from the one it replaced. A server too old to send
+  /// `route_status` cannot confirm the route, so the patch stays.
   static bool _sameRouteState(Map patch, Map server) {
     final p = patch['properties'] as Map? ?? const {};
     final s = server['properties'] as Map? ?? const {};
     String mode(Map props) => props['route_mode'] as String? ?? 'great_circle';
     if (mode(p) != mode(s)) return false;
+    if (p['route_status'] == 'resolved') {
+      if (s['route_status'] != 'resolved') return false;
+      final ph = p['route_hash'], sh = s['route_hash'];
+      if (ph != null && sh != null && ph != sh) return false;
+    }
     final pd = p['route_degraded'], sd = s['route_degraded'];
     return pd == null || sd == null || pd == sd;
   }

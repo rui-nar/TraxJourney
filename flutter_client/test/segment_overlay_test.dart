@@ -40,6 +40,28 @@ Map<String, dynamic> _segFeature(String id) => {
       'properties': {'type': 'segment', 'segment_id': id},
     };
 
+// Stored route_polyline strings, and their CRC-32 as Python's zlib.crc32
+// computes it — what the server sends as `route_hash`.
+const _routeA = '[[0,0],[0.5,0.7],[1,1]]';
+const _hashA = 2591404778;
+const _routeB = '[[0,0],[0.4,0.9],[1,1]]';
+const _hashB = 2401349885;
+
+/// A server segment feature (two points) in the shape the geo endpoints send
+/// for a train segment set to follow its route.
+Map<String, dynamic> _serverSeg(String id, {String? status, int? hash}) =>
+    _segFeature(id)
+      ..['properties'] = {
+        'type': 'segment',
+        'segment_id': id,
+        'route_mode': 'rail',
+        if (status != null) 'route_status': status,
+        if (hash != null) 'route_hash': hash,
+      };
+
+int _drawnPoints(List<dynamic> merged) =>
+    ((merged.single as Map)['geometry']['coordinates'] as List).length;
+
 List<String> _segIds(List<dynamic> features) => [
       for (final f in features)
         if (f is Map && (f['properties'] as Map?)?['segment_id'] != null)
@@ -115,28 +137,65 @@ void main() {
       ];
       h.applyResolvedSegment('s1', {
         'route_mode': 'rail',
-        'route_polyline': '[[0,0],[0.5,0.7],[1,1]]',
+        'route_polyline': _routeA,
       });
 
-      // A refetch that started before the resolve landed: the server still
-      // drew the great-circle arc.
-      final stale = _segFeature('s1')
-        ..['properties']['route_mode'] = 'great_circle';
+      // A refetch that started before the resolve landed. The segment PUT
+      // already stored route_mode 'rail', so the server's great-circle arc is
+      // tagged 'rail' too — only route_status says it is not the route.
+      final stale = _serverSeg('s1', status: 'pending');
       final staleGeo = {'type': 'FeatureCollection', 'features': [stale]};
       h.reconcileSegmentOverlay(staleGeo);
       final merged = h.mergePendingSegmentPatches(
           List<dynamic>.from(staleGeo['features'] as List));
-      final drawn = merged.single as Map;
-      expect(drawn['properties']['route_mode'], 'rail');
-      expect((drawn['geometry']['coordinates'] as List), hasLength(3));
+      expect(_drawnPoints(merged), 3, reason: 'the resolved route, not the arc');
 
       // Once the server has the route too, the patch is no longer needed.
-      final fresh = _segFeature('s1')..['properties']['route_mode'] = 'rail';
-      h.reconcileSegmentOverlay({'type': 'FeatureCollection', 'features': [fresh]});
-      final passThrough = h.mergePendingSegmentPatches([stale]);
-      expect((passThrough.single as Map)['properties']['route_mode'],
-          'great_circle',
+      // The hash is Python's zlib.crc32 of the same string, so this also pins
+      // the client's CRC-32 to the server's.
+      h.reconcileSegmentOverlay({
+        'type': 'FeatureCollection',
+        'features': [_serverSeg('s1', status: 'resolved', hash: _hashA)],
+      });
+      expect(_drawnPoints(h.mergePendingSegmentPatches([stale])), 2,
           reason: 'the patch was dropped, so the snapshot is drawn as is');
+    });
+
+    test('a server feature without route_status cannot drop a resolved '
+        'route', () {
+      // An older server: route_mode only, which the pre-resolve arc shares.
+      final h = _Host()..geo = {'type': 'FeatureCollection', 'features': []};
+      h.applyResolvedSegment('s1', {
+        'route_mode': 'rail',
+        'route_polyline': _routeA,
+      });
+
+      final old = _serverSeg('s1');
+      h.reconcileSegmentOverlay({'type': 'FeatureCollection', 'features': [old]});
+      expect(_drawnPoints(h.mergePendingSegmentPatches([old])), 3);
+    });
+
+    test('a refetch carrying the previous route does not replace a '
+        're-resolved one', () {
+      final h = _Host()..geo = {'type': 'FeatureCollection', 'features': []};
+      h.applyResolvedSegment('s1', {
+        'route_mode': 'rail',
+        'route_polyline': _routeB,
+      });
+
+      // Fetched before the re-resolve began: resolved, but route A.
+      final stale = _serverSeg('s1', status: 'resolved', hash: _hashA);
+      h.reconcileSegmentOverlay({'type': 'FeatureCollection', 'features': [stale]});
+      final merged = h.mergePendingSegmentPatches([stale]);
+      expect(((merged.single as Map)['geometry']['coordinates'] as List)[1],
+          [0.4, 0.9], reason: 'route B, not the stale route A');
+
+      h.reconcileSegmentOverlay({
+        'type': 'FeatureCollection',
+        'features': [_serverSeg('s1', status: 'resolved', hash: _hashB)],
+      });
+      expect(_drawnPoints(h.mergePendingSegmentPatches([stale])), 2,
+          reason: 'the server caught up with route B, so the patch went');
     });
 
     test('a stale low-res snapshot of a degraded route does not replace a '
