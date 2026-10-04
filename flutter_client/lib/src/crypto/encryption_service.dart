@@ -102,6 +102,15 @@ class EnableResult {
   const EnableResult(this.recoverySecret);
 }
 
+/// Thrown by [EncryptionService.enable] when the session ended (a [lock]
+/// — sign-out or a 401) while it was still building the keys: encryption
+/// was not turned on (U5-R3-1, issue #418).
+class EncryptionSessionEnded implements Exception {
+  const EncryptionSessionEnded();
+  @override
+  String toString() => 'the session ended before encryption was turned on';
+}
+
 class EncryptionService {
   final DeviceKeyStore _store;
   final EncryptionApi _api;
@@ -130,15 +139,17 @@ class EncryptionService {
   /// and to the chosen recovery method, push the wraps to the server, and hold
   /// the CMK unlocked. Returns the one-time recovery secret for Option A.
   ///
-  /// Locked while it was waiting, the server is enabled but the key is not
-  /// held: the session it was for has ended. The recovery secret is still
-  /// returned — it exists nowhere else.
+  /// Locked before the request is sent, nothing is sent or saved and
+  /// [EncryptionSessionEnded] is thrown: a recovery method nobody was shown
+  /// must not be created. Locked while the request itself is out, the server
+  /// is enabled but the key is not held; the result, recovery secret
+  /// included, goes back to a caller whose session has ended, which may no
+  /// longer be there to show it.
   Future<EnableResult> enable(RecoveryChoice choice) async {
     final generation = _lockGeneration;
     final cmk = await generateCmk();
 
     final keyPair = await _store.load() ?? await generateDeviceKeyPair();
-    await _store.save(keyPair);
     final devicePub = await keyPair.extractPublicKey();
     final deviceWrap = await wrapCmkToDevicePublicKey(cmk, devicePub);
 
@@ -165,6 +176,12 @@ class EncryptionService {
         kdfParamsJson = jsonEncode({...params.toJson(), 'questions': questions});
     }
 
+    // Every step above is client-side (Argon2 takes seconds on web), so this
+    // is where a session that ended meanwhile is caught: before anything is
+    // stored or sent. Checked again after the save, which awaits too.
+    if (generation != _lockGeneration) throw const EncryptionSessionEnded();
+    await _store.save(keyPair);
+    if (generation != _lockGeneration) throw const EncryptionSessionEnded();
     await _api.enable({
       'device': {
         'public_key': base64.encode(devicePub.bytes),

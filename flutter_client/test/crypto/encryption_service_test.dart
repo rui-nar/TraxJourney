@@ -94,6 +94,20 @@ class _SlowEnableApi extends FakeEncryptionApi {
   }
 }
 
+/// Holds every key-pair load until [gate] completes; [called] completes when
+/// the first arrives.
+class _SlowLoadStore extends FakeDeviceKeyStore {
+  final called = Completer<void>();
+  final gate = Completer<void>();
+
+  @override
+  Future<SimpleKeyPair?> load() async {
+    if (!called.isCompleted) called.complete();
+    await gate.future;
+    return super.load();
+  }
+}
+
 /// Holds every recovery-wrap answer until [gate] completes.
 class _SlowRecoveryApi extends FakeEncryptionApi {
   final gate = Completer<void>();
@@ -191,6 +205,23 @@ void main() {
       final api = FakeEncryptionApi()..enablePayload = null;
       final svc = EncryptionService(FakeDeviceKeyStore(), api);
       expect(await svc.unlock(), isFalse);
+    });
+
+    test(
+        'a lock() while enable() is still building keys sends and saves '
+        'nothing (U5-R3-1)', () async {
+      final api = FakeEncryptionApi();
+      final store = _SlowLoadStore();
+      final svc = EncryptionService(store, api);
+      final enabling = svc.enable(const RecoveryKeyChoice());
+      await store.called.future; // client-side, nothing sent yet
+      svc.lock(); // the session ends meanwhile
+      store.gate.complete();
+
+      await expectLater(enabling, throwsA(isA<EncryptionSessionEnded>()));
+      expect(api.enablePayload, isNull, reason: 'the server was never asked');
+      expect(await store.load(), isNull, reason: 'no device key was saved');
+      expect(svc.isUnlocked, isFalse);
     });
 
     test('a lock() while enable() is waiting is not undone (U5-R2-1)',
