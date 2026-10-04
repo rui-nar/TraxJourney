@@ -3235,8 +3235,9 @@ class ProjectNotifier extends ChangeNotifier
       } on ApiException catch (e) {
         if (e.statusCode != 405) rethrow;
         // A server that predates the PATCH (the tag publishes the APK before
-        // the server is deployed): its PUT still takes the whole map.
-        if (this.ref != ref) return;
+        // the server is deployed): its PUT still takes the whole map. No trip
+        // check here: [merged] and [ref] are this trip's, captured before the
+        // await, so a trip opened since must not cost this save (I1-R2-1).
         await api.put(ref.path('/day-meta'), {
           'day_meta': merged,
           if (newSleepingOptions != null) 'sleeping_options': newSleepingOptions,
