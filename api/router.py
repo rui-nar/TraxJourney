@@ -22,6 +22,7 @@ from src.jobs.route_jobs import (
     sweep_degraded_segments,
     sweep_orphaned_jobs,
     sweep_stale_resolver_segments,
+    warn_stuck_route_jobs,
 )
 from src.poster.poster_job_runner import sweep_orphaned_poster_jobs
 from src.project.project_repo import StaleWriteError
@@ -168,6 +169,11 @@ async def lifespan(_app: FastAPI):
     # slot (src.jobs.upstream_slots) on every single run rather than by chance.
     _scheduler.add_job(sweep_stale_resolver_segments, "cron", minute=20,
                        id="stale_resolver_retry", replace_existing=True)
+    # sweep_orphaned_jobs only runs at startup: a worker killed mid-resolve
+    # while the API stays up leaves its segment "pending", polled by every open
+    # session, until the next restart. Read-only — this only logs the stall.
+    _scheduler.add_job(warn_stuck_route_jobs, "interval", hours=1,
+                       id="stuck_route_job_warning", replace_existing=True)
     # Prepared geometry for activities that predate issue #369: everything
     # written since derives its blob beside the polyline, so this only ever
     # drains a backlog and then no-ops. Five minutes rather than hourly because
