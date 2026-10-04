@@ -18,7 +18,7 @@ import threading
 import time
 import uuid
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Annotated, Any, Dict, Iterator, List, Literal, Optional, Tuple
 
@@ -35,6 +35,7 @@ from fastapi.dependencies.utils import get_dependant, solve_dependencies
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
+from sqlmodel import select
 from starlette.concurrency import run_in_threadpool
 
 from api.deps import get_current_user
@@ -46,15 +47,21 @@ from api.project_shared import (
     _DATA_DIR, _repo, bust_project_payloads, project_cache_ref,
     queue_share_tiles_refresh, queue_stats_refresh,
 )
-from models.project_db import DBJournalEntry, DBMemory
-from src.billing.entitlements import ensure_project_quota, ensure_storage_quota
+from models.project_db import DBJournalEntry, DBMemory, DBProject
+from src.billing.entitlements import (
+    ensure_project_quota, ensure_storage_quota, ensure_trip_span_quota,
+)
 from src.billing.usage import unlink_and_record
 from src.brand import APP_NAME
+from src.gpx.export_format import (
+    CONNECTION_TRACK_TYPE, EXTENSION_NAMESPACE, EXTENSION_PREFIX,
+    activity_extensions, activity_identity, spread_times,
+)
 from src.models.great_circle import great_circle_points
 from src.models.project import Project
 from src.project.photo_placement import already_present, place_photos
 from src.project.project_io import InvalidProjectFile, ProjectIO
-from src.project.repo_transfer import Placement, PhotoRemoval, ProjectNameTaken
+from src.project.repo_transfer import Placement, PhotoRemoval, ProjectNameTaken, SpanCheck
 from src.project.staged_photos import StagedPhotos, staged_total
 from src.project.zip_import import MANIFEST_NAME, InvalidTripArchive, read_trip_zip
 from src.utils.logging import get_logger, request_id_var
@@ -320,6 +327,15 @@ def _remove_photos(removals: list[PhotoRemoval]) -> None:
                 pass  # not empty: left for storage reconciliation
 
 
+def _trip_days_check(owner_id: int) -> SpanCheck:
+    """The plan's trip-length limit, checked by an import into *owner_id*'s
+    account just before it commits (#492): a trip the import makes longer
+    than the plan allows, and longer than it was, is refused with 402."""
+    def check(sess, used: int, prospective: int) -> None:
+        ensure_trip_span_quota(sess, owner_id, used, prospective)
+    return check
+
+
 async def import_project(
     file: Annotated[UploadFile, File()],
     current_user: Annotated[dict, Depends(get_current_user)],
@@ -367,6 +383,7 @@ async def import_project(
     name = fname[: -len(ProjectIO.EXTENSION)]
     copy = on_conflict == "copy"
     removals = None
+    held: List[int] = []
     with get_session() as sess:
         taken = _repo.project_exists(sess, user_info_id, name)
         # Refused before the plan limit is checked: at the limit the user must
@@ -374,9 +391,11 @@ async def import_project(
         if taken and on_conflict is None:
             return _name_conflict(name)
         if taken and on_conflict == "replace":
-            # The same trip, new content: no new trip, so no plan limit.
+            # The same trip, new content: no new trip, so no limit on the
+            # number of trips. Its length is checked before the commit.
             removals = _repo.replace_project(
-                sess, user_info_id, name, project, data_dir=project_shared._DATA_DIR)
+                sess, user_info_id, name, project, data_dir=project_shared._DATA_DIR,
+                held_activities=held, span_check=_trip_days_check(user_info_id))
         if removals is None:
             # A copy or a new name is a new trip. The storage quota does not
             # apply: nothing lands on disk. The size is bounded by
@@ -384,7 +403,8 @@ async def import_project(
             ensure_project_quota(sess, user_info_id)
             try:
                 imported = _repo.import_project(
-                    sess, user_info_id, name, project, copy=copy)
+                    sess, user_info_id, name, project, copy=copy,
+                    span_check=_trip_days_check(user_info_id))
             except ProjectNameTaken:
                 # A concurrent request took the name after the check above.
                 return _name_conflict(name)
@@ -397,6 +417,9 @@ async def import_project(
     # Cached payloads of this name are now wrong: the replaced trip's, or a
     # deleted trip's of the same name (issue #178).
     bust_geo_cache(user_info_id, imported)
+    if removals is not None:
+        # Last: the import is done and its caches busted whatever happens here.
+        _free_dropped_activities(user_info_id, imported, held)
 
     if removals is not None:
         outcome = "replaced"
@@ -478,9 +501,44 @@ def _ensure_room(sess, user_info_id: int, incoming: int) -> None:
         ensure_storage_quota(sess, user_info_id, incoming)
 
 
+def _free_dropped_activities(user_info_id: int, name: str, held: List[int]) -> None:
+    """Free what a Replace dropped: the Strava rows and Strava split tails the
+    trip *held* before it that no trip references now (issue #509).
+
+    As a trip deletion frees its own: a Replace is the owner's, so the rows
+    go whoever imported them, and ids the file kept are referenced again and
+    stay. Another trip showing a surviving split root renumbered gets its
+    cached payloads busted.
+
+    Runs last, once the import, its photo moves and its cache busts are done,
+    and never fails the import: the trip *name* is replaced whatever happens
+    here. A failure is logged and the rows stay, for the owner's disconnect
+    to free (review F2-R1-1).
+    """
+    if not held:
+        return
+    try:
+        with get_session() as sess:
+            renamed = _repo.delete_unreferenced_strava_activities(
+                sess, user_info_id,
+                ids=[aid for aid in held if aid > 0],
+                tail_ids=[aid for aid in held if aid < 0],
+            )
+            others = sess.exec(select(DBProject.user_info_id, DBProject.name).where(
+                DBProject.id.in_(renamed))).all() if renamed else []
+    except Exception as exc:  # noqa: BLE001 — the import has committed
+        _log.warning(
+            "import: replaced trip %r (user=%s) but could not free the activities it "
+            "dropped %s: %s: %s", name, user_info_id, sorted(held),
+            type(exc).__name__, exc)
+        return
+    for owner_id, trip_name in others:
+        bust_geo_cache(owner_id, trip_name)
+
+
 def _ingest_zip(
     user_info_id: int, name: str, project: Project, staged: StagedPhotos,
-    on_conflict: Optional[str],
+    on_conflict: Optional[str], held: Optional[List[int]] = None,
 ) -> Tuple[Optional[str], Optional[List[PhotoRemoval]], List[Placement]]:
     """Check the storage quota and write the trip; place no file.
 
@@ -502,7 +560,8 @@ def _ingest_zip(
             _ensure_room(sess, user_info_id, staged_total(staged, skip))
             removals = _repo.replace_project(
                 sess, user_info_id, name, project, data_dir=data_dir,
-                staged=staged, placements=placements)
+                staged=staged, placements=placements, held_activities=held,
+                span_check=_trip_days_check(user_info_id))
         if removals is not None:
             return name, removals, placements
         # A new trip, or the trip to replace went meanwhile.
@@ -511,7 +570,8 @@ def _ingest_zip(
         try:
             imported = _repo.import_project(
                 sess, user_info_id, name, project, copy=on_conflict == "copy",
-                staged=staged, placements=placements)
+                staged=staged, placements=placements,
+                span_check=_trip_days_check(user_info_id))
         except ProjectNameTaken:
             return None, None, []
     return imported, None, placements
@@ -595,8 +655,9 @@ async def import_project_zip(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from None
 
+        held: List[int] = []
         imported, removals, placements = await run_in_threadpool(
-            _ingest_zip, user_info_id, name, project, staged, on_conflict)
+            _ingest_zip, user_info_id, name, project, staged, on_conflict, held)
         if imported is None:
             # A concurrent request took the name after the check above.
             return _name_conflict(name)
@@ -621,6 +682,9 @@ async def import_project_zip(
     # Cached payloads of this name are now wrong: the replaced trip's, or a
     # deleted trip's of the same name (issue #178).
     bust_geo_cache(user_info_id, imported)
+    if removals is not None:
+        # Last: the import is done and its caches busted whatever happens here.
+        await run_in_threadpool(_free_dropped_activities, user_info_id, imported, held)
 
     if removals is not None:
         outcome = "replaced"
@@ -692,37 +756,19 @@ def export_project_gpx(
     gpx = gpxpy.gpx.GPX()
     gpx.name = project.name
     gpx.creator = APP_NAME
+    gpx.nsmap[EXTENSION_PREFIX] = EXTENSION_NAMESPACE
 
-    track = gpxpy.gpx.GPXTrack(name=project.name)
-    gpx.tracks.append(track)
-
+    # One <trk> per activity and per connecting segment (#367): the importer
+    # makes one candidate of each <trk>, so a single track of segments read
+    # back as one activity covering the whole trip and the gaps between.
     for item in project.items:
         if item.item_type == "activity":
             act = project.activity_by_id(item.activity_id) if item.activity_id else None
             if act is None:
                 continue
-
-            seg = gpxpy.gpx.GPXTrackSegment()
-
-            if act.summary_polyline:
-                decoded = polyline_lib.decode(act.summary_polyline)
-                for idx, (lat, lon) in enumerate(decoded):
-                    pt = gpxpy.gpx.GPXTrackPoint(lat, lon)
-                    if idx == 0 and act.start_date_local:
-                        pt.time = act.start_date_local
-                    seg.points.append(pt)
-            elif act.start_latlng and act.end_latlng:
-                pt_start = gpxpy.gpx.GPXTrackPoint(act.start_latlng[0], act.start_latlng[1])
-                if act.start_date_local:
-                    pt_start.time = act.start_date_local
-                pt_end = gpxpy.gpx.GPXTrackPoint(act.end_latlng[0], act.end_latlng[1])
-                seg.points.append(pt_start)
-                seg.points.append(pt_end)
-            else:
-                continue
-
-            if seg.points:
-                track.segments.append(seg)
+            track = _activity_track(act)
+            if track is not None:
+                gpx.tracks.append(track)
 
         elif item.item_type == "segment" and item.segment:
             cs = item.segment
@@ -731,10 +777,13 @@ def export_project_gpx(
                 cs.end.lat,   cs.end.lon,
                 n_points=_SEGMENT_GPX_POINTS,
             )
+            track = gpxpy.gpx.GPXTrack(name=cs.label or None)
+            track.type = CONNECTION_TRACK_TYPE
             seg = gpxpy.gpx.GPXTrackSegment()
             for lat, lon in arc:
                 seg.points.append(gpxpy.gpx.GPXTrackPoint(lat, lon))
             track.segments.append(seg)
+            gpx.tracks.append(track)
 
         elif item.item_type == "memory" and item.memory:
             mem = item.memory
@@ -795,6 +844,46 @@ def export_project_gpx(
         media_type="application/gpx+xml",
         headers={"Content-Disposition": f'attachment; filename="{safe}.gpx"'},
     )
+
+
+def _activity_track(act) -> Optional[gpxpy.gpx.GPXTrack]:
+    """One activity as its own ``<trk>``, or None when it has no geometry.
+
+    Named and typed as stored, with the stored moving time and distance in
+    the TraxJourney extension, with its original identity (Q1). Every point is timed, from ``start_date``,
+    the true UTC instant, to ``start_date + elapsed_time``, spread by
+    distance. A GPX row labelled ``"UTC"`` was imported before its instant
+    was known (#365), so it is written with no times at all rather than with
+    ones the export cannot vouch for.
+    """
+    if act.summary_polyline:
+        latlngs = polyline_lib.decode(act.summary_polyline)
+    elif act.start_latlng and act.end_latlng:
+        latlngs = [tuple(act.start_latlng[:2]), tuple(act.end_latlng[:2])]
+    else:
+        return None
+    if not latlngs:
+        return None
+
+    times: List[Optional[datetime]] = [None] * len(latlngs)
+    unknown_instant = act.source == "gpx" and act.timezone == "UTC"
+    if act.start_date and not unknown_instant:
+        start = act.start_date
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)   # the column is UTC
+        times = spread_times(latlngs, start.astimezone(timezone.utc),
+                             act.elapsed_time)
+
+    track = gpxpy.gpx.GPXTrack(name=act.name or None)
+    track.type = act.type or None
+    track.extensions.extend(activity_extensions(
+        act.moving_time, act.distance,
+        activity_identity(act.source, act.source_id, act.id)))
+    seg = gpxpy.gpx.GPXTrackSegment()
+    for (lat, lon), stamp in zip(latlngs, times):
+        seg.points.append(gpxpy.gpx.GPXTrackPoint(lat, lon, time=stamp))
+    track.segments.append(seg)
+    return track
 
 
 # ── .traxj export ─────────────────────────────────────────────────────────────

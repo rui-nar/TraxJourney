@@ -17,6 +17,7 @@ import 'geo_viewport.dart';
 import 'download_stub.dart' if (dart.library.js_interop) 'download_web.dart';
 import 'elevation_chart.dart';
 import 'gpx_import_dialog.dart';
+import 'incoming_gpx.dart';
 import '../api/client.dart' show ApiException;
 import '../auth/auth_notifier.dart';
 import '../core/brand.dart';
@@ -254,6 +255,13 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
         // that never render the banner and must not carry this timer around.
         _degradedRouteWatchNotifier = notifier;
         notifier.startDegradedRouteWatch(notifier.ref ?? projectRef);
+        // A .gpx opened from another app, for which this trip was picked
+        // (issue #368): straight to its import review.
+        final shared = incomingGpx.takeFor(projectRef);
+        if (shared != null) {
+          _openGpxImportDialog(context,
+              initialFile: (name: shared.name, bytes: shared.bytes));
+        }
       }
 
       // This (singleton, manage-mode) notifier may already hold this exact
@@ -646,7 +654,8 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
     });
   }
 
-  Future<void> _openGpxImportDialog(BuildContext context) async {
+  Future<void> _openGpxImportDialog(BuildContext context,
+      {({String name, Uint8List bytes})? initialFile}) async {
     final notifier = context.read<ProjectNotifier>();
     final messenger = ScaffoldMessenger.of(context);
     final imported = await showDialog<GpxImportResult>(
@@ -658,12 +667,28 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
         // outside it is flagged before it silently extends the trip.
         tripStart: notifier.tripStart,
         tripEnd: notifier.tripEnd,
+        initialFile: initialFile,
       ),
     );
     if (imported == null || !mounted) return;
 
     await notifier.load(widget.projectRef);
     if (!mounted) return;
+    if (imported.activityIds.isEmpty) {
+      // "Import all" where every track was already in the trip: nothing to
+      // view or undo.
+      messenger.showSnackBar(SnackBar(
+          content: Text('Nothing imported: ${imported.skipped} '
+              '${imported.skipped == 1 ? 'track was' : 'tracks were'} '
+              'already in this trip.')));
+      return;
+    }
+    final count = imported.activityIds.length;
+    final label = count == 1 && imported.skipped == 0
+        ? 'Imported "${imported.name}"'
+        : 'Imported $count ${count == 1 ? 'track' : 'tracks'}'
+            '${imported.skipped == 0 ? '' : ', skipped ${imported.skipped} '
+                'already in this trip'}';
     // An import is never a one-way door: View goes to what was just added,
     // Undo deletes it. Both are cheap here because a GPX activity is local.
     // A SnackBar carries one action, and this needs two — so Undo sits in the
@@ -672,7 +697,7 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
       duration: const Duration(seconds: 6),
       content: Row(
         children: [
-          Expanded(child: Text('Imported "${imported.name}"')),
+          Expanded(child: Text(label)),
           TextButton(
             onPressed: () async {
               messenger.hideCurrentSnackBar();
@@ -685,7 +710,9 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
               // trips, and whose import is still sitting where they left it.
               if (notifier.ref != widget.projectRef) return;
               try {
-                await notifier.deleteLocalActivity(imported.activityId);
+                for (final id in imported.activityIds) {
+                  await notifier.deleteLocalActivity(id);
+                }
               } catch (_) {
                 if (!mounted) return;
                 messenger.showSnackBar(const SnackBar(

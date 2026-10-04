@@ -138,7 +138,10 @@ class _ActivityIconBox extends StatelessWidget {
       child: Icon(_icon(type), size: 17, color: iconBoxFg(c, dark: dark)),
     );
     if (!manualImport) return box;
-    return Tooltip(
+    // The row's title speaks the phrase last; the badge adds nothing to the
+    // leading's label (issue #408).
+    return ExcludeSemantics(
+      child: Tooltip(
       message: importedLabel,
       child: Semantics(
         label: importedLabel,
@@ -168,6 +171,7 @@ class _ActivityIconBox extends StatelessWidget {
             ),
           ],
         ),
+      ),
       ),
     );
   }
@@ -1648,6 +1652,8 @@ class _ActivityPanelState extends State<ActivityPanel> {
                         final name = shownText(a['name'] as String?) ?? 'Activity';
                         final distM = (a['distance'] as num? ?? 0).toDouble();
                         final movingSec = a['moving_time'];
+                        final statsText =
+                            '${(distM / 1000).toStringAsFixed(1)} km  •  ${_formatDuration(movingSec)}';
                         final activityId = item['activity_id'];
                         // A split-tail activity is stored locally with a
                         // negative id; it gets a dedicated delete affordance
@@ -1689,7 +1695,11 @@ class _ActivityPanelState extends State<ActivityPanel> {
                                   type: type,
                                   typeStyles: notifier.typeStyles,
                                   manualImport: a['source'] == 'gpx'),
-                              title: Column(
+                              title: Semantics(
+                                label: '$name, $statsText'
+                                    '${a['source'] == 'gpx' ? ', ${_ActivityIconBox.importedLabel}' : ''}',
+                                excludeSemantics: true,
+                                child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
@@ -1698,10 +1708,11 @@ class _ActivityPanelState extends State<ActivityPanel> {
                                       style: theme.textTheme.labelSmall,
                                       isSelected: isSelected),
                                   Text(
-                                    '${(distM / 1000).toStringAsFixed(1)} km  •  ${_formatDuration(movingSec)}',
+                                    statsText,
                                     style: theme.textTheme.bodySmall,
                                   ),
                                 ],
+                                ),
                               ),
                               trailing: Row(
                                 mainAxisSize: MainAxisSize.min,
@@ -1735,8 +1746,16 @@ class _ActivityPanelState extends State<ActivityPanel> {
                                                 label: 'Deleted "$name"',
                                                 onOptimistic: () =>
                                                     notifier.removeItemLocally(i),
-                                                onConfirm: () => notifier
-                                                    .deleteLocalActivity(localActId),
+                                                onConfirm: () async {
+                                                  try {
+                                                    await notifier
+                                                        .deleteLocalActivity(localActId);
+                                                  } on Exception {
+                                                    // A refusal has restored the item
+                                                    // and set notifier.error, which
+                                                    // _dismissWithUndo then shows.
+                                                  }
+                                                },
                                               ),
                                     )
                                   else

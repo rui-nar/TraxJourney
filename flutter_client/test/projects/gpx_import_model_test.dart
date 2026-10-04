@@ -100,6 +100,65 @@ void main() {
     });
   });
 
+  group('local times and the precise type (issues #365, #367)', () {
+    test('the local wall clock is read as the clock face, not converted', () {
+      final candidate = GpxCandidate.fromJson(_candidate({
+        'started_at': '2024-08-12T00:00:00+00:00',
+        'ended_at': '2024-08-12T03:30:00+00:00',
+        'timezone': 'Asia/Tokyo',
+        'start_local': '2024-08-12T09:00:00',
+        'end_local': '2024-08-12T12:30:00',
+      }));
+
+      expect(candidate.timezone, 'Asia/Tokyo');
+      expect(candidate.startLocal!.hour, 9);
+      expect(candidate.startLocal!.day, 12);
+      expect(candidate.endLocal!.hour, 12);
+      expect(candidate.endLocal!.minute, 30);
+    });
+
+    test('an offset on a local time is ignored, not applied', () {
+      final candidate = GpxCandidate.fromJson(
+          _candidate({'start_local': '2024-08-12T09:00:00+09:00'}));
+
+      expect(candidate.startLocal!.hour, 9);
+    });
+
+    test('a server that sends none leaves them absent', () {
+      final candidate = GpxCandidate.fromJson(_candidate());
+
+      expect(candidate.timezone, isNull);
+      expect(candidate.startLocal, isNull);
+      expect(candidate.endLocal, isNull);
+      expect(candidate.isConnection, isFalse);
+      expect(candidate.suggestedType, 'ride');
+    });
+
+    test('the precise type wins over the compatible one', () {
+      final candidate = GpxCandidate.fromJson(_candidate({
+        'activity_type': 'Workout',
+        'activity_type_exact': 'Kayaking',
+      }));
+
+      expect(candidate.suggestedType, 'Kayaking');
+    });
+
+    test('"Import all" counts importable tracks that are not connections', () {
+      final inspection = GpxInspection.fromJson({
+        'candidates': [
+          _candidate(),
+          _candidate({'index': 1}),
+          _candidate({'index': 2, 'is_connection': true}),
+          _candidate(
+              {'index': 3, 'errors': ['Track has fewer than 2 points (1).']}),
+        ],
+        'errors': [],
+      });
+
+      expect(inspection.importAllCandidates.map((c) => c.index), [0, 1]);
+    });
+  });
+
   group('what the dialog asks of an inspection', () {
     test('several importable tracks need a choice', () {
       final inspection = GpxInspection.fromJson({

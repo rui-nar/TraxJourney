@@ -42,7 +42,7 @@ from models.project_db import (
     DBProjectMember,
     DBProjectPendingInvite,
 )
-from models.user import UserInfo
+from models.user import LocalUser, UserInfo
 from src.brand import APP_NAME
 from src.email.address import is_valid_email, normalize_email
 from src.email.service import EmailMessage, get_email_service
@@ -130,10 +130,37 @@ class InviteAcceptedOut(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _display_name(user: Optional[UserInfo]) -> str:
+PUBLIC_NAME_FALLBACK = "Traveller"
+
+
+def public_name_given_username(user: Optional[UserInfo],
+                               username: Optional[str]) -> str:
+    """The name another user may see for ``user`` (issue #507).
+
+    Never the sign-in address: a blank display name, or one equal to the
+    account's address (``UserInfo.email`` or ``username``, the linked
+    ``LocalUser.username``; case-insensitive), shows as "Traveller". Accounts
+    auto-created at sign-in before #507 copied the username — the email since
+    #110 — into the name.
+    """
     if user is None:
         return ""
-    return user.display_name or user.email
+    name = (user.display_name or "").strip()
+    if not name:
+        return PUBLIC_NAME_FALLBACK
+    addresses = {(user.email or "").strip().casefold(),
+                 (username or "").strip().casefold()}
+    if name.casefold() in addresses:
+        return PUBLIC_NAME_FALLBACK
+    return name
+
+
+def public_name(sess, user: Optional[UserInfo]) -> str:
+    """:func:`public_name_given_username`, looking up the linked username."""
+    local = None
+    if user is not None and user.local_auth_id is not None:
+        local = sess.get(LocalUser, user.local_auth_id)
+    return public_name_given_username(user, local.username if local else None)
 
 
 async def send_invite_email(to_email: str, project_name: str, owner_name: str,
@@ -306,7 +333,7 @@ def create_invite(
             sess.refresh(pending)
 
         background_tasks.add_task(
-            send_invite_email, target, row.name, _display_name(owner_user),
+            send_invite_email, target, row.name, public_name(sess, owner_user),
             pending.role, pending.token)
         # The shared link's token is still what's returned: the caller asked to
         # email someone, not to be handed that person's private join token.
@@ -397,7 +424,7 @@ def list_members(
         owner_user = sess.get(UserInfo, row.user_info_id)
         members: list[dict] = [{
             "user_id": row.user_info_id,
-            "display_name": _display_name(owner_user),
+            "display_name": public_name(sess, owner_user),
             "avatar_url": owner_user.avatar_url if owner_user else "",
             "role": "owner",
         }]
@@ -409,7 +436,7 @@ def list_members(
             u = sess.get(UserInfo, m.user_info_id)
             members.append({
                 "user_id": m.user_info_id,
-                "display_name": _display_name(u),
+                "display_name": public_name(sess, u),
                 "avatar_url": u.avatar_url if u else "",
                 "role": m.role,
             })
@@ -484,7 +511,7 @@ def list_my_pending_invites(
             out.append({
                 "token": p.token,
                 "project_name": project.name,
-                "owner_name": _display_name(sess.get(UserInfo, project.user_info_id)),
+                "owner_name": public_name(sess, sess.get(UserInfo, project.user_info_id)),
                 "role": p.role,
                 "created_at": p.created_at,
             })
@@ -500,7 +527,7 @@ def preview_invite(
         invite, project, is_pending = _resolve_any_invite(sess, token)
         return {
             "project_name": project.name,
-            "owner_name": _display_name(sess.get(UserInfo, project.user_info_id)),
+            "owner_name": public_name(sess, sess.get(UserInfo, project.user_info_id)),
             "role": invite.role,
             # Set only for a targeted invite, so the join screen can say up
             # front who it's for instead of letting the user tap Join and

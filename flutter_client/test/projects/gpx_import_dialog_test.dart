@@ -39,6 +39,11 @@ Map<String, dynamic> _candidate({
   double? gain = 610,
   List<String> errors = const [],
   List<String> warnings = const [],
+  String? timezone,
+  String? startLocal,
+  String? endLocal,
+  String? typeExact,
+  bool? isConnection,
 }) =>
     {
       'index': index,
@@ -57,6 +62,11 @@ Map<String, dynamic> _candidate({
       'polyline': errors.isEmpty ? _outline : null,
       'errors': errors,
       'warnings': warnings,
+      if (timezone != null) 'timezone': timezone,
+      if (startLocal != null) 'start_local': startLocal,
+      if (endLocal != null) 'end_local': endLocal,
+      if (typeExact != null) 'activity_type_exact': typeExact,
+      if (isConnection != null) 'is_connection': isConnection,
     };
 
 String _inspectBody({
@@ -150,6 +160,7 @@ class _Recorder {
     int inspectStatus = 200,
     String import = '{"activity_id": -42, "total": 3}',
     int importStatus = 200,
+    String importAll = '{"imported": [], "skipped": []}',
   }) =>
       MockClient((request) async {
         requests.add(request);
@@ -158,8 +169,11 @@ class _Recorder {
         // back out of the encoded body.
         bodies.add(request.body);
         final isInspect = request.url.path.endsWith('/gpx/inspect');
+        final isAll = request.url.path.endsWith('/import-gpx-tracks');
         return http.Response(
-          isInspect ? (inspect.isEmpty ? _inspectBody() : inspect) : import,
+          isInspect
+              ? (inspect.isEmpty ? _inspectBody() : inspect)
+              : isAll ? importAll : import,
           isInspect ? inspectStatus : importStatus,
         );
       });
@@ -178,6 +192,7 @@ Widget _harness(
   http.Client? client,
   String? tripStart,
   String? tripEnd,
+  ({String name, Uint8List bytes})? initialFile,
 }) =>
     MaterialApp(
       home: Scaffold(
@@ -191,6 +206,7 @@ Widget _harness(
                   httpClient: client ?? recorder.client(),
                   tripStart: tripStart,
                   tripEnd: tripEnd,
+                  initialFile: initialFile,
                 ),
               );
             },
@@ -650,5 +666,360 @@ void main() {
     // cruelty; every other missing field says "Required".
     expect(find.textContaining("The file doesn't say"), findsOneWidget);
     expect(_confirmButton(tester).onPressed, isNull);
+  });
+
+  testWidgets('a file already in hand skips the pick step and is inspected',
+      (tester) async {
+    // A .gpx opened from another app (issue #368) arrives with the dialog.
+    FilePickerPlatform.instance =
+        _FakeFilePickerPlatform(() => fail('the picker must not open'));
+    final recorder = _Recorder();
+    await tester.pumpWidget(_harness(recorder,
+        initialFile: (name: 'shared.gpx', bytes: _gpxBytes)));
+    await tester.tap(find.text('open'));
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('gpx_pick_file')), findsNothing);
+    expect(find.text('Reading shared.gpx…'), findsOneWidget);
+
+    await tester.pumpAndSettle();
+    expect(recorder.requests.single.url.path,
+        endsWith('/api/projects/Trip/activities/gpx/inspect'));
+    expect(recorder.bodies.single, contains('filename="shared.gpx"'));
+    expect(find.text('Import this track?'), findsOneWidget);
+  });
+
+  group('local times (issue #365)', () {
+    final tokyo = _inspectBody(candidates: [
+      _candidate(
+          startedAt: '2024-08-12T00:00:00Z',
+          endedAt: '2024-08-12T03:30:00Z',
+          timezone: 'Asia/Tokyo',
+          startLocal: '2024-08-12T09:00:00',
+          endLocal: '2024-08-12T12:30:00'),
+    ]);
+
+    testWidgets('the wall clock at the start is prefilled and the zone named',
+        (tester) async {
+      final recorder = _Recorder();
+      await tester
+          .pumpWidget(_harness(recorder, client: recorder.client(inspect: tokyo)));
+      await _openAndPick(tester);
+
+      expect(
+          find.descendant(
+              of: find.byKey(const ValueKey('gpx_start_field')),
+              matching: find.text('09:00')),
+          findsOneWidget);
+      expect(
+          find.descendant(
+              of: find.byKey(const ValueKey('gpx_end_field')),
+              matching: find.text('12:30')),
+          findsOneWidget);
+      expect(find.textContaining('Asia/Tokyo'), findsOneWidget);
+    });
+
+    testWidgets('untouched times are still not sent, nor times_local',
+        (tester) async {
+      final recorder = _Recorder();
+      await tester
+          .pumpWidget(_harness(recorder, client: recorder.client(inspect: tokyo)));
+      await _openAndPick(tester);
+      await tester.tap(find.byKey(const ValueKey('gpx_import_confirm')));
+      await tester.pumpAndSettle();
+
+      expect(recorder.sent('start_time'), isFalse);
+      expect(recorder.sent('times_local'), isFalse);
+    });
+
+    testWidgets('an edited end time sends the wall clock, flagged local',
+        (tester) async {
+      final recorder = _Recorder();
+      await tester
+          .pumpWidget(_harness(recorder, client: recorder.client(inspect: tokyo)));
+      await _openAndPick(tester);
+
+      await tester.tap(find.byKey(const ValueKey('gpx_end_field')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(TextButton, 'OK'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('gpx_import_confirm')));
+      await tester.pumpAndSettle();
+
+      expect(recorder.field('start_time'), '09:00');
+      expect(recorder.field('end_time'), '12:30');
+      expect(recorder.field('date'), '2024-08-12');
+      expect(recorder.field('times_local'), 'true');
+    });
+
+    testWidgets('a route sends the clock it was given as local too',
+        (tester) async {
+      final recorder = _Recorder();
+      await tester.pumpWidget(_harness(
+        recorder,
+        client: recorder.client(
+            inspect: _inspectBody(candidates: [
+          _candidate(
+              isRoute: true,
+              hasTimes: false,
+              startedAt: null,
+              endedAt: null,
+              timezone: 'Asia/Tokyo'),
+        ])),
+      ));
+      await _openAndPick(tester);
+      expect(find.textContaining('Asia/Tokyo'), findsOneWidget);
+
+      for (final key in ['gpx_date_field', 'gpx_start_field', 'gpx_end_field']) {
+        await tester.ensureVisible(find.byKey(ValueKey(key)));
+        await tester.tap(find.byKey(ValueKey(key)));
+        await tester.pumpAndSettle();
+        // Both pickers open on 09:00, and an end equal to the start is
+        // refused, so the end's minutes are moved to :30.
+        if (key == 'gpx_end_field') {
+          await tester.tap(find.byIcon(Icons.keyboard_outlined));
+          await tester.pumpAndSettle();
+          await tester.enterText(find.byType(TextField).last, '30');
+          await tester.pumpAndSettle();
+        }
+        await tester.tap(find.text('OK'));
+        await tester.pumpAndSettle();
+      }
+      expect(_confirmButton(tester).onPressed, isNotNull);
+      await tester.tap(find.byKey(const ValueKey('gpx_import_confirm')));
+      await tester.pumpAndSettle();
+
+      expect(recorder.field('times_local'), 'true');
+    });
+
+    testWidgets('a server that sends no local time keeps the UTC behaviour',
+        (tester) async {
+      // A server that predates #365: the UTC clock is shown and posted, with
+      // no claim that it is local.
+      final recorder = _Recorder();
+      await tester.pumpWidget(_harness(recorder));
+      await _openAndPick(tester);
+
+      expect(find.byKey(const ValueKey('gpx_timezone_note')), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('gpx_date_field')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(TextButton, 'OK'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('gpx_import_confirm')));
+      await tester.pumpAndSettle();
+
+      expect(recorder.field('start_time'), '07:33');
+      expect(recorder.sent('times_local'), isFalse);
+    });
+  });
+
+  group('the precise type (issue #367)', () {
+    testWidgets('a type outside the built-in five is shown and sent',
+        (tester) async {
+      final recorder = _Recorder();
+      await tester.pumpWidget(_harness(
+        recorder,
+        client: recorder.client(
+            inspect: _inspectBody(candidates: [
+          _candidate(type: 'Workout', typeExact: 'Kayaking'),
+        ])),
+      ));
+      await _openAndPick(tester);
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('Kayaking'), findsOneWidget);
+      expect(_confirmButton(tester).onPressed, isNotNull);
+
+      await tester.tap(find.byKey(const ValueKey('gpx_import_confirm')));
+      await tester.pumpAndSettle();
+      expect(recorder.field('activity_type'), 'Kayaking');
+    });
+
+    testWidgets('picking Other on a Kayaking track is sent as exactly that',
+        (tester) async {
+      final recorder = _Recorder();
+      await tester.pumpWidget(_harness(
+        recorder,
+        client: recorder.client(
+            inspect: _inspectBody(candidates: [
+          _candidate(type: 'Workout', typeExact: 'Kayaking'),
+        ])),
+      ));
+      await _openAndPick(tester);
+
+      await tester.tap(find.byKey(const ValueKey('gpx_type_field')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Other').last);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const ValueKey('gpx_import_confirm')));
+      await tester.pumpAndSettle();
+      expect(recorder.field('activity_type'), 'Workout');
+      expect(recorder.field('activity_type_is_exact'), 'true');
+    });
+
+    testWidgets('a server without the field keeps the compatible type',
+        (tester) async {
+      final recorder = _Recorder();
+      await tester.pumpWidget(_harness(recorder));
+      await _openAndPick(tester);
+      await tester.tap(find.byKey(const ValueKey('gpx_import_confirm')));
+      await tester.pumpAndSettle();
+
+      expect(recorder.field('activity_type'), 'ride');
+    });
+  });
+
+  group('Import all (issue #367)', () {
+    final three = _inspectBody(candidates: [
+      _candidate(index: 0, name: 'Day 1'),
+      _candidate(index: 1, name: 'Day 2'),
+      _candidate(index: 2, name: 'Day 1 to Day 2', isConnection: true),
+    ]);
+
+    testWidgets('is offered with two importable tracks, and counts only them',
+        (tester) async {
+      final recorder = _Recorder();
+      await tester.pumpWidget(
+          _harness(recorder, client: recorder.client(inspect: three)));
+      await _openAndPick(tester);
+
+      expect(find.text('Import all 2 tracks'), findsOneWidget);
+      expect(find.text('Connecting segment, not an activity'), findsOneWidget);
+
+      // The connection cannot be picked.
+      await tester.tap(find.byKey(const ValueKey('gpx_candidate_2')));
+      await tester.pumpAndSettle();
+      expect(find.text('Which track?'), findsOneWidget);
+    });
+
+    testWidgets('is not offered when only one track can be imported',
+        (tester) async {
+      final recorder = _Recorder();
+      await tester.pumpWidget(_harness(
+        recorder,
+        client: recorder.client(
+            inspect: _inspectBody(candidates: [
+          _candidate(index: 0, name: 'Day 1'),
+          _candidate(index: 1, name: 'Link', isConnection: true),
+        ])),
+      ));
+      await _openAndPick(tester);
+
+      expect(find.byKey(const ValueKey('gpx_import_all')), findsNothing);
+      // The one real track is simply opened.
+      expect(find.text('Import this track?'), findsOneWidget);
+    });
+
+    testWidgets('a file whose only importable track is a connection opens nothing',
+        (tester) async {
+      final recorder = _Recorder();
+      await tester.pumpWidget(_harness(
+        recorder,
+        client: recorder.client(
+            inspect: _inspectBody(candidates: [
+          _candidate(
+              index: 0,
+              name: 'Day 1',
+              errors: const ['Track has fewer than 2 points (1).']),
+          _candidate(index: 1, name: 'Link', isConnection: true),
+        ])),
+      ));
+      await _openAndPick(tester);
+
+      expect(find.text('Import this track?'), findsNothing);
+      expect(find.text('Import a GPX file'), findsOneWidget);
+      expect(find.byKey(const ValueKey('gpx_import_confirm')), findsNothing);
+      expect(find.textContaining('fewer than 2 points'), findsOneWidget);
+      expect(find.textContaining('only connecting segments'), findsNothing);
+    });
+
+    testWidgets('a file of connections alone opens nothing', (tester) async {
+      final recorder = _Recorder();
+      await tester.pumpWidget(_harness(
+        recorder,
+        client: recorder.client(
+            inspect: _inspectBody(candidates: [
+          _candidate(index: 0, name: 'Link', isConnection: true),
+          _candidate(index: 1, name: 'Link 2', isConnection: true),
+        ])),
+      ));
+      await _openAndPick(tester);
+
+      expect(find.text('Import this track?'), findsNothing);
+      expect(find.text('Which track?'), findsNothing);
+      expect(find.textContaining('no importable track'), findsOneWidget);
+    });
+
+    testWidgets('posts the file alone to import-gpx-tracks and reports skips',
+        (tester) async {
+      final recorder = _Recorder();
+      await tester.pumpWidget(_harness(
+        recorder,
+        client: recorder.client(
+            inspect: three,
+            importAll: jsonEncode({
+              'imported': [
+                {'activity_id': -5, 'name': 'Day 1'}
+              ],
+              'skipped': [
+                {'track_index': 1, 'name': 'Day 2', 'duplicate_of': -3}
+              ],
+            })),
+      ));
+      await _openAndPick(tester);
+      await tester.tap(find.byKey(const ValueKey('gpx_import_all')));
+      await tester.pumpAndSettle();
+
+      expect(recorder.requests.last.url.path,
+          endsWith('/api/projects/Trip/activities/import-gpx-tracks'));
+      expect(recorder.sent('track_index'), isFalse);
+      expect(recorder.sent('activity_name'), isFalse);
+      expect(recorder.result!.activityIds, [-5]);
+      expect(recorder.result!.skipped, 1);
+    });
+
+    testWidgets('a 402 shows its detail and leaves the choice open',
+        (tester) async {
+      final recorder = _Recorder();
+      await tester.pumpWidget(_harness(
+        recorder,
+        client: recorder.client(
+            inspect: three,
+            importAll: jsonEncode({
+              'detail': 'This would make the trip longer than your plan allows.',
+              'code': 'quota_exceeded',
+            }),
+            importStatus: 402),
+      ));
+      await _openAndPick(tester);
+      await tester.tap(find.byKey(const ValueKey('gpx_import_all')));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('longer than your plan'), findsOneWidget);
+      expect(find.text('Which track?'), findsOneWidget);
+      expect(recorder.result, isNull);
+    });
+
+    testWidgets('a 400 naming untimed tracks is shown', (tester) async {
+      final recorder = _Recorder();
+      await tester.pumpWidget(_harness(
+        recorder,
+        client: recorder.client(
+            inspect: three,
+            importAll: jsonEncode({
+              'detail': {
+                'errors': ['"Day 2" has no times. Import it on its own.']
+              }
+            }),
+            importStatus: 400),
+      ));
+      await _openAndPick(tester);
+      await tester.tap(find.byKey(const ValueKey('gpx_import_all')));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('has no times'), findsOneWidget);
+      expect(find.text('Which track?'), findsOneWidget);
+    });
   });
 }

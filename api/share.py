@@ -73,6 +73,7 @@ from fastapi.responses import FileResponse, Response
 from sqlmodel import select
 
 from api.deps import get_optional_current_user
+from api.members import public_name
 from api.geo import _build_full_geo_features, serve_simplified_geo
 from models.project_db import (
     DBMemory, DBMemoryComment, DBMemoryLike, DBProject, DBShareMemoryContent, DBShareVisit,
@@ -346,7 +347,8 @@ def shared_project(
             owner = sess.exec(
                 select(UserInfo).where(UserInfo.id == owner_uid)
             ).first()
-        result["owner_name"] = owner.display_name if owner else ""
+            # Never the owner's address (#507).
+            result["owner_name"] = public_name(sess, owner)
         _details_cache.set(token, result)
         cached_result = result
     return cached_result
@@ -395,7 +397,8 @@ def shared_project_meta(
         owner = sess.exec(
             select(UserInfo).where(UserInfo.id == owner_uid)
         ).first()
-    result["owner_name"] = owner.display_name if owner else ""
+        # Never the owner's address (#507).
+        result["owner_name"] = public_name(sess, owner)
     _meta_cache.set(token, result)
     return result
 
@@ -729,7 +732,8 @@ def shared_add_comment(
     user_info_id = int(current_user["sub"])
     with get_session() as sess:
         user_row = sess.get(UserInfo, user_info_id)
-        commenter_name = user_row.display_name if user_row else ""
+        # Snapshot shown to everyone on the share page: never the address (#507).
+        commenter_name = public_name(sess, user_row)
 
         if body.parent_comment_id is not None:
             parent = sess.get(DBMemoryComment, body.parent_comment_id)
@@ -815,7 +819,8 @@ def shared_like_memory(
         if existing:
             return
         user_row = sess.get(UserInfo, user_info_id)
-        liker_name = user_row.display_name if user_row else ""
+        # Snapshot shown to everyone on the share page: never the address (#507).
+        liker_name = public_name(sess, user_row)
         sess.add(DBMemoryLike(
             memory_id=memory_id,
             user_info_id=user_info_id,

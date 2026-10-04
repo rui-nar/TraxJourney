@@ -20,8 +20,13 @@ class GpxCandidate {
     this.warnings = const [],
     this.name,
     this.activityType,
+    this.activityTypeExact,
+    this.isConnection = false,
     this.startedAt,
     this.endedAt,
+    this.timezone,
+    this.startLocal,
+    this.endLocal,
     this.elapsedSeconds,
     this.movingSeconds,
     this.elevationGainM,
@@ -36,6 +41,18 @@ class GpxCandidate {
   /// confident wrong answer.
   final String? activityType;
 
+  /// The precise type the file named (a kayak is "Kayaking", where
+  /// [activityType] says "Workout"). Null from a server that predates it, in
+  /// which case [activityType] is all there is.
+  final String? activityTypeExact;
+
+  /// What the review step shows and sends: the precise type when there is one.
+  String? get suggestedType => activityTypeExact ?? activityType;
+
+  /// True for a connecting segment an export wrote between two activities. It
+  /// is listed, but is not an activity and is never part of "Import all".
+  final bool isConnection;
+
   final int pointCount;
   final double distanceM;
 
@@ -46,6 +63,17 @@ class GpxCandidate {
   final bool hasTimes;
   final DateTime? startedAt;
   final DateTime? endedAt;
+
+  /// IANA zone at the track's first point (issue #365). Null from a server
+  /// that predates it.
+  final String? timezone;
+
+  /// [startedAt]/[endedAt] as the wall clock in [timezone]. Naive: the fields
+  /// of the [DateTime] are the clock face, and the device's zone has no part
+  /// in them. Null when the server gave none, and then the UTC instants above
+  /// are all there is to show.
+  final DateTime? startLocal;
+  final DateTime? endLocal;
   final int? elapsedSeconds;
   final int? movingSeconds;
 
@@ -70,12 +98,17 @@ class GpxCandidate {
         index: (json['index'] as num).toInt(),
         name: json['name'] as String?,
         activityType: json['activity_type'] as String?,
+        activityTypeExact: json['activity_type_exact'] as String?,
+        isConnection: json['is_connection'] as bool? ?? false,
         pointCount: (json['point_count'] as num?)?.toInt() ?? 0,
         distanceM: (json['distance_m'] as num?)?.toDouble() ?? 0,
         isRoute: json['is_route'] as bool? ?? false,
         hasTimes: json['has_times'] as bool? ?? false,
         startedAt: _parseTime(json['started_at']),
         endedAt: _parseTime(json['ended_at']),
+        timezone: json['timezone'] as String?,
+        startLocal: _parseLocal(json['start_local']),
+        endLocal: _parseLocal(json['end_local']),
         elapsedSeconds: (json['elapsed_seconds'] as num?)?.toInt(),
         movingSeconds: (json['moving_seconds'] as num?)?.toInt(),
         elevationGainM: (json['elevation_gain_m'] as num?)?.toDouble(),
@@ -90,14 +123,23 @@ class GpxCandidate {
 
   static DateTime? _parseTime(Object? raw) {
     if (raw is! String || raw.isEmpty) return null;
-    // Kept in UTC, deliberately. The server normalises a file's offset to
-    // UTC on import and stores it that way, and the app has no per-activity
-    // timezone yet (issue #365). Showing these in the device's local zone
-    // would put 09:33 in the field for a 07:33Z ride, and the moment the
-    // user touched any field that local wall time would be sent back as
-    // though it were UTC — moving the activity by the offset. Display and
-    // submission stay in one clock until there is a real timezone to hold.
+    // Kept in UTC, deliberately: these are instants, and showing them in the
+    // device's zone would put 09:33 in the field for a 07:33Z ride. The
+    // wall clock where the track was recorded comes from the server as
+    // `start_local`/`end_local` (see [_parseLocal]); this is what a server
+    // that sends none falls back to.
     return DateTime.tryParse(raw)?.toUtc();
+  }
+
+  /// A naive wall clock, read field by field. Any offset the string carries is
+  /// ignored rather than converted, so the device's zone never shifts it.
+  static DateTime? _parseLocal(Object? raw) {
+    if (raw is! String || raw.isEmpty) return null;
+    final m = RegExp(r'^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?')
+        .firstMatch(raw);
+    if (m == null) return null;
+    int g(int i) => int.parse(m.group(i) ?? '0');
+    return DateTime.utc(g(1), g(2), g(3), g(4), g(5), g(6));
   }
 
   static List<GeoPoint> _decodeOutline(String? encoded) {
@@ -144,6 +186,12 @@ class GpxInspection {
   final List<String> errors;
 
   bool get needsAChoice => candidates.where((c) => c.isImportable).length > 1;
+
+  /// What "Import all" would import: every importable track that is not a
+  /// connecting segment.
+  List<GpxCandidate> get importAllCandidates => candidates
+      .where((c) => c.isImportable && !c.isConnection)
+      .toList(growable: false);
 
   static GpxInspection fromJson(Map<String, dynamic> json) => GpxInspection(
         candidates: ((json['candidates'] as List?) ?? const [])

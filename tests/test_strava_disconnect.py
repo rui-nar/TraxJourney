@@ -26,7 +26,14 @@ import api.strava as strava_module
 import models.db as db_module
 from api.deps import get_current_user
 from api.router import app
-from models.project_db import DBActivity, DBProject, DBProjectItem, DBStravaCache
+from models.project_db import (
+    DBActivity,
+    DBActivityGeoPrepared,
+    DBProject,
+    DBProjectItem,
+    DBProjectMember,
+    DBStravaCache,
+)
 from models.user import StravaToken, UserInfo
 from src.auth.oauth import OAuth2Session
 from src.config.settings import Config
@@ -206,6 +213,69 @@ def test_strava_not_configured_still_clears_local_data(client, engine, post, mon
     assert resp.status_code == 204
     _assert_local_data_gone_but_trip_kept(engine, uid)
     post.assert_not_called()
+
+
+def _add_activity(engine, act_id: int, owner: int, project_id=None, **kw) -> None:
+    """An activity row with its prepared geometry, optionally in a trip."""
+    with Session(engine) as sess:
+        sess.add(DBActivity(id=act_id, user_info_id=owner, name="ride", **kw))
+        sess.add(DBActivityGeoPrepared(activity_id=act_id, version=1, blob=b"geo"))
+        if project_id is not None:
+            sess.add(DBProjectItem(project_id=project_id, position=act_id,
+                                   item_type="activity", activity_id=act_id))
+        sess.commit()
+
+
+def test_disconnect_deletes_strava_rows_no_trip_holds(client, engine, post):
+    """Issue #509: an unreferenced Strava row goes with its prepared geometry.
+    Kept: one still in a trip (activity 1, seeded), GPX rows, and a split
+    root whose tail is in a trip."""
+    tc, uid = client
+    with Session(engine) as sess:
+        trip_id = sess.exec(select(DBProject.id).where(DBProject.user_info_id == uid)).one()
+    _add_activity(engine, 2, uid)
+    _add_activity(engine, 3, uid, source="strava")
+    _add_activity(engine, 4, uid, source="gpx")
+    _add_activity(engine, -40, uid, source="gpx")
+    _add_activity(engine, 5, uid, split_base_name="ride")
+    _add_activity(engine, -5, uid, project_id=trip_id, split_root_id=5, split_parent_id=5)
+
+    assert tc.delete("/api/strava/disconnect").status_code == 204
+
+    with Session(engine) as sess:
+        assert set(sess.exec(select(DBActivity.id)).all()) == {1, 4, -40, 5, -5}
+        # Activity 1 was seeded without prepared geometry.
+        assert set(sess.exec(select(DBActivityGeoPrepared.activity_id)).all()) == {4, -40, 5, -5}
+
+
+def test_companion_activity_in_owners_trip_survives_companion_disconnect(engine, post):
+    """The companion's row sits in the owner's trip: still referenced, kept.
+    Their unreferenced row goes; the owner's rows are not the companion's to
+    touch."""
+    owner = _seed(engine)
+    with Session(engine) as sess:
+        c = UserInfo(display_name="C", email="c@e.com")
+        sess.add(c)
+        sess.commit()
+        companion = c.id
+        trip_id = sess.exec(select(DBProject.id).where(DBProject.user_info_id == owner)).one()
+        sess.add(DBProjectMember(project_id=trip_id, user_info_id=companion,
+                                 role="editor", invited_by=owner))
+        sess.add(StravaToken(user_info_id=companion, access_token="c-access",
+                             refresh_token="c-refresh", expires_at=time.time() + 3600))
+        sess.commit()
+    _add_activity(engine, 70, companion, project_id=trip_id)
+    _add_activity(engine, 71, companion)
+    _add_activity(engine, 2, owner)
+    tc = _client_for(companion)
+    try:
+        assert tc.delete("/api/strava/disconnect").status_code == 204
+    finally:
+        app.dependency_overrides.clear()
+
+    with Session(engine) as sess:
+        assert set(sess.exec(select(DBActivity.id)).all()) == {1, 2, 70}
+        assert sess.exec(select(DBProjectItem).where(DBProjectItem.activity_id == 70)).first() is not None
 
 
 def test_disconnect_when_not_connected_is_a_noop(engine, post):

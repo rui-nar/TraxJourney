@@ -19,7 +19,7 @@ from api.members import router as members_router, invites_router
 from api.people import router as people_router
 from api.projects import router as projects_router
 from models.project_db import DBProject, DBProjectInvite, DBProjectMember
-from models.user import UserInfo
+from models.user import LocalUser, UserInfo
 
 
 @pytest.fixture
@@ -283,6 +283,136 @@ def test_list_includes_shared_project_with_role_and_owner(env):
     assert entries[0]["owner_id"] == ids["owner"]
 
 
+# ── Public names never fall back to the address (issue #507) ─────────────────
+
+def _set_names(engine, ids, **names):
+    with Session(engine) as sess:
+        for who, name in names.items():
+            u = sess.get(UserInfo, ids[who])
+            u.display_name = name
+            sess.add(u)
+        sess.commit()
+
+
+def _views_naming_others(client, act_as, monkeypatch) -> dict[str, str]:
+    """Every response (and the invite email) that names the owner or the
+    editor to another user, as raw text. The editor must already be a member.
+    """
+    import api.members as members_module
+
+    sent: list[str] = []
+
+    async def _record(to_email, project_name, owner_name, role, token):
+        sent.append(owner_name)
+
+    monkeypatch.setattr(members_module, "send_invite_email", _record)
+    views: dict[str, str] = {}
+    act_as("owner")
+    views["members (owner)"] = client.get("/api/projects/Trip/members").text
+    token = client.post("/api/projects/Trip/members/invite").json()["token"]
+    r = client.post("/api/projects/Trip/members/invite",
+                    json={"email": "stranger@e.com"})
+    assert r.status_code == 200, r.text
+    act_as("editor")
+    views["members (editor)"] = client.get(
+        "/api/projects/Trip/members", params={"owner": _owner_id(client)}).text
+    views["shared list"] = client.get("/api/projects/").text
+    act_as("stranger")
+    views["invite preview"] = client.get(f"/api/invites/{token}").text
+    views["pending invites"] = client.get("/api/invites/pending").text
+    assert len(sent) == 1
+    views["invite email"] = sent[0]
+    return views
+
+
+def _owner_id(client) -> int:
+    return next(e["owner_id"] for e in client.get("/api/projects/").json()
+                if e["name"] == "Trip")
+
+
+def _verify(engine, ids, *who):
+    with Session(engine) as sess:
+        for w in who:
+            u = sess.get(UserInfo, ids[w])
+            u.email_verified = True
+            sess.add(u)
+        sess.commit()
+
+
+def test_blank_names_show_traveller_never_the_address(env, monkeypatch):
+    client, engine, ids, act_as = env
+    _verify(engine, ids, "owner", "stranger")
+    _join(client, act_as)
+    _set_names(engine, ids, owner="", editor="   ")
+
+    views = _views_naming_others(client, act_as, monkeypatch)
+
+    for where, text in views.items():
+        assert "@" not in text, where
+        assert "Traveller" in text, where
+    act_as("owner")
+    names = [m["display_name"] for m in
+             client.get("/api/projects/Trip/members").json()["members"]]
+    assert names == ["Traveller", "Traveller"]
+
+
+def test_name_equal_to_sign_in_address_shows_traveller(env, monkeypatch):
+    """Rows created by the pre-#507 login auto-create hold the address as the
+    name: matched against ``UserInfo.email`` and the linked username, in any
+    case."""
+    client, engine, ids, act_as = env
+    _verify(engine, ids, "owner", "stranger")
+    _join(client, act_as)
+    with Session(engine) as sess:
+        owner = sess.get(UserInfo, ids["owner"])
+        owner.display_name = "Owner@E.com"
+        legacy = LocalUser(username="legacy.editor@e.com")
+        sess.add(legacy); sess.commit(); sess.refresh(legacy)
+        editor = sess.get(UserInfo, ids["editor"])
+        # What the old auto-create stored: the username as the name, no email.
+        editor.local_auth_id = legacy.id
+        editor.display_name = "legacy.editor@e.com"
+        editor.email = ""
+        sess.add(owner); sess.add(editor); sess.commit()
+
+    views = _views_naming_others(client, act_as, monkeypatch)
+
+    for where, text in views.items():
+        assert "@" not in text, where
+        assert "Traveller" in text, where
+
+
+def test_account_auto_created_at_login_is_listed_as_traveller(env):
+    """A local account with no profile gets one at sign-in. It must not carry
+    the username (the address) as its public name (R1-1)."""
+    from api.auth import router as auth_router
+    client, engine, ids, act_as = env
+    with Session(engine) as sess:
+        sess.add(LocalUser(username="legacy@e.com",
+                           password_hash=LocalUser.hash_password("pw-123456")))
+        sess.commit()
+    auth_app = FastAPI()
+    auth_app.include_router(auth_router)
+    r = TestClient(auth_app).post("/api/auth/token",
+                                  json={"username": "legacy@e.com",
+                                        "password": "pw-123456"})
+    assert r.status_code == 200, r.text
+    assert r.json()["user"]["display_name"] == ""
+    assert r.json()["user"]["email"] == "legacy@e.com"
+    new_id = r.json()["user"]["id"]
+
+    ids["legacy"] = new_id
+    act_as("owner")
+    token = client.post("/api/projects/Trip/members/invite").json()["token"]
+    act_as("legacy")
+    assert client.post(f"/api/invites/{token}/accept").status_code == 200
+    act_as("owner")
+    r = client.get("/api/projects/Trip/members")
+    assert "@" not in r.text
+    legacy = next(m for m in r.json()["members"] if m["user_id"] == new_id)
+    assert legacy["display_name"] == "Traveller"
+
+
 def _shared_projects_query_count(n_memberships: int, monkeypatch) -> tuple[int, list]:
     """Set up one member shared into *n_memberships* projects (each with its own
     owner), call GET /api/projects/ as that member, and return
@@ -305,7 +435,11 @@ def _shared_projects_query_count(n_memberships: int, monkeypatch) -> tuple[int, 
         member_id = member.id
 
         for i in range(n_memberships):
-            owner = UserInfo(display_name=f"Owner{i}", email=f"owner{i}@e.com")
+            # A linked sign-in, so the owner_name check (#507) is counted too.
+            local = LocalUser(username=f"owner{i}@e.com")
+            sess.add(local); sess.commit(); sess.refresh(local)
+            owner = UserInfo(display_name=f"Owner{i}", email=f"owner{i}@e.com",
+                             local_auth_id=local.id)
             sess.add(owner); sess.commit(); sess.refresh(owner)
             owner_ids.append(owner.id)
             proj = DBProject(user_info_id=owner.id, name=f"Trip{i}")

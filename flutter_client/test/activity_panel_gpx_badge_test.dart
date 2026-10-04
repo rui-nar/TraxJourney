@@ -95,4 +95,34 @@ void main() {
 
     semantics.dispose();
   });
+
+  testWidgets('a GPX row is announced name first, source phrase last',
+      (tester) async {
+    final semantics = tester.ensureSemantics();
+
+    await pumpPanel(tester, notifierWith(activityId: -7, source: 'gpx'));
+
+    final row = find.bySemanticsLabel(RegExp(r'^Ride, .*Imported from a GPX file$'));
+    expect(row, findsOneWidget);
+    // IconButton exposes its name as the semantics tooltip.
+    expect(tester.getSemantics(find.byTooltip('Edit track')).tooltip,
+        'Edit track');
+    expect(tester.getSemantics(find.byTooltip('Delete local activity')).tooltip,
+        'Delete local activity');
+
+    semantics.dispose();
+  });
+
+  testWidgets('a synced row label is name and stats only', (tester) async {
+    final semantics = tester.ensureSemantics();
+
+    await pumpPanel(tester, notifierWith(activityId: 4242));
+
+    expect(find.bySemanticsLabel(RegExp(r'^Ride, 5\.0 km.*30m$')),
+        findsOneWidget);
+    expect(tester.getSemantics(find.byTooltip('Edit track')).tooltip,
+        'Edit track');
+
+    semantics.dispose();
+  });
 }
