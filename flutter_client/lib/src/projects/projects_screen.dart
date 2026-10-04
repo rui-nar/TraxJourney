@@ -315,7 +315,7 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Import a .$kProjectFileExtension project file.',
+                          'Import a .$kProjectFileExtension or .$kProjectZipExtension trip file.',
                           style: theme.textTheme.bodySmall,
                         ),
                         const SizedBox(height: 16),
@@ -341,8 +341,9 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
                                         await importResolvingNameConflicts(
                                       upload: (choice) =>
                                           notifier.uploadProjectFile(
-                                        bytes: picked.bytes,
+                                        file: picked.file,
                                         name: name,
+                                        extension: picked.extension,
                                         onConflict: choice,
                                       ),
                                       takeNameConflict: () {
@@ -367,7 +368,7 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
                           icon: const Icon(Icons.upload_rounded),
                           label: Text(notifier.isLoading
                               ? 'Importing…'
-                              : 'Choose .$kProjectFileExtension file'),
+                              : 'Choose .$kProjectFileExtension or .$kProjectZipExtension file'),
                         ),
                       ],
                     ),

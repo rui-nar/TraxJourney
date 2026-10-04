@@ -11,6 +11,7 @@ import json
 import re
 import time
 import uuid
+from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from sqlalchemy import delete
@@ -36,7 +37,8 @@ from src.models.project import DEFAULT_SLEEPING_GROUPS, Project, day_counters_to
 from src.project.local_ids import allocate_local_activity_id
 from src.project.project_io import ProjectIO
 from src.project.repo_core import _compute_low_res_geo, bump_lock_version
-from src.utils.photo_paths import photo_file, photo_folder
+from src.project.staged_photos import StagedPhoto, StagedPhotos
+from src.utils.photo_paths import is_photo_name, photo_file, photo_folder
 
 
 class ProjectNameTaken(Exception):
@@ -149,7 +151,8 @@ class ImportExportMixin:
 
     def import_project(
         self, sess: Session, user_info_id: int, name: str, project: Project,
-        *, copy: bool = False,
+        *, copy: bool = False, staged: Optional[StagedPhotos] = None,
+        placements: Optional[List["Placement"]] = None,
     ) -> str:
         """Write a parsed ``.traxj`` project as a new trip; return its name.
 
@@ -162,6 +165,12 @@ class ImportExportMixin:
         The unique index on (owner, name) and the unique memory public_id are
         what settle a race: the loser's insert fails, everything it wrote is
         rolled back, and it picks again from what is committed now.
+
+        *staged* are the photos a ZIP import staged (#469): a row stores only
+        the photo names staged for it. *placements*, when given, receives the
+        staged files to move into place once this has returned, from the
+        attempt that committed only, since each attempt names its own rows.
+        No file is moved here, so a retry finds every staged file where it was.
         """
         for attempt in range(_ATTEMPTS):
             taken = self._taken_names(sess, user_info_id)
@@ -169,7 +178,9 @@ class ImportExportMixin:
             if target in taken:
                 raise ProjectNameTaken(name)
             try:
-                self.ingest_project(sess, user_info_id, target, project)
+                found = self.ingest_project(sess, user_info_id, target, project, staged=staged)
+                if placements is not None:
+                    placements.extend(found)
                 return target
             except IntegrityError as exc:
                 sess.rollback()
@@ -179,8 +190,9 @@ class ImportExportMixin:
         raise AssertionError("unreachable")  # pragma: no cover
 
     def ingest_project(
-        self, sess: Session, user_info_id: int, db_name: str, project: Project
-    ) -> None:
+        self, sess: Session, user_info_id: int, db_name: str, project: Project,
+        *, staged: Optional[StagedPhotos] = None,
+    ) -> List["Placement"]:
         """Write a parsed ``.traxj`` project into the DB under ``db_name``.
 
         The caller derives ``db_name`` from the uploaded **filename** (minus
@@ -194,6 +206,10 @@ class ImportExportMixin:
         an ``IntegrityError`` and the session must be rolled back. Callers go
         through :meth:`import_project`, which decides the name. Activity rows
         are upserted so enriched data is never overwritten.
+
+        Every row is new, so its folder holds nothing yet: a memory or journal
+        entry stores only the photo names *staged* for it. Returns the staged
+        files to move into place after the commit.
         """
         project = self._as_importers_activities(sess, user_info_id, project)
 
@@ -204,12 +220,15 @@ class ImportExportMixin:
         sess.add(row)
         sess.flush()  # populate row.id
 
-        self._write_content(sess, user_info_id, row.id, project)
+        _removals, placements = self._write_content(
+            sess, user_info_id, row.id, project, staged=staged)
         sess.commit()
+        return placements
 
     def replace_project(
         self, sess: Session, user_info_id: int, name: str, project: Project,
-        *, data_dir: Optional[str] = None,
+        *, data_dir: Optional[str] = None, staged: Optional[StagedPhotos] = None,
+        placements: Optional[List["Placement"]] = None,
     ) -> Optional[List["PhotoRemoval"]]:
         """Overwrite the content of the owner's trip *name* with *project*.
 
@@ -234,9 +253,25 @@ class ImportExportMixin:
         their folder (*data_dir* is the data root): a .traxj carries no image
         files, so an export usually names an avatar long replaced.
 
+        A memory or journal entry stores the file's photo names that have a
+        file (#469): those already in a kept row's folder under *data_dir*,
+        and those *staged* for it. *placements*, when given, receives the
+        staged files to move into place once this has committed, less those
+        already in place.
+
         Returns the photo files the caller must delete once this has
-        committed, or None if the trip does not exist (any more).
+        committed, or None if the trip does not exist (any more). The caller
+        deletes them *before* it moves *placements* into place: SQLite can
+        give a new row the id of a row this deleted, so a removal and a
+        placement can name the same folder and photo, and the other order
+        would delete the photo just placed.
+
+        Raises ValueError when *data_dir* is None: without it no kept row's
+        photo is found on disk, and every kept row would lose its names
+        while their files stay, counted.
         """
+        if data_dir is None:
+            raise ValueError("replace_project needs data_dir to keep the photos already on disk")
         row = self._get_project_row(sess, user_info_id, name)
         if row is None:
             return None
@@ -255,11 +290,7 @@ class ImportExportMixin:
 
         # Memories: the trip's own, by public_id. Those the file still has are
         # kept for _write_content to update; the rest go.
-        wanted = {
-            it.memory.public_id for it in project.items
-            if it.item_type == "memory" and it.memory is not None
-            and isinstance(it.memory.public_id, str)
-        }
+        wanted = _wanted_public_ids(project)
         kept_memories: Dict[str, DBMemory] = {}
         for mem in sess.exec(select(DBMemory).where(DBMemory.project_id == project_id)).all():
             if mem.public_id in wanted:
@@ -274,18 +305,13 @@ class ImportExportMixin:
 
         # Journal: the owner's own entries (NULL author = the owner, #106), by
         # the id the export carries. Companions' entries stay as they are.
-        wanted_journal_ids = {
-            it.journal.id for it in project.items
-            if it.item_type == "journal" and it.journal is not None
-            and type(it.journal.id) is int
-        }
+        wanted_journal_ids = _wanted_journal_ids(project)
         kept_journals: Dict[int, DBJournalEntry] = {}
         companion_journals: List[DBJournalEntry] = []
         for entry in sess.exec(
             select(DBJournalEntry).where(DBJournalEntry.project_id == project_id)
         ).all():
-            author = entry.user_info_id if entry.user_info_id is not None else user_info_id
-            if author != user_info_id:
+            if _author(entry, user_info_id) != user_info_id:
                 companion_journals.append(entry)
             elif entry.id in wanted_journal_ids:
                 kept_journals[entry.id] = entry
@@ -326,13 +352,16 @@ class ImportExportMixin:
         sess.add(row)
         sess.flush()
 
-        removals += self._write_content(
+        written, found = self._write_content(
             sess, user_info_id, project_id, project,
             kept_memories=kept_memories, kept_journals=kept_journals,
             kept_people=kept_people, kept_groups=kept_groups,
-            companion_journals=companion_journals, data_dir=data_dir,
+            companion_journals=companion_journals, data_dir=data_dir, staged=staged,
         )
+        removals += written
         sess.commit()
+        if placements is not None:
+            placements.extend(found)
         return removals
 
     def _write_content(
@@ -344,7 +373,8 @@ class ImportExportMixin:
         kept_groups: Optional[Dict[int, DBPersonGroup]] = None,
         companion_journals: Sequence[DBJournalEntry] = (),
         data_dir: Optional[str] = None,
-    ) -> List["PhotoRemoval"]:
+        staged: Optional[StagedPhotos] = None,
+    ) -> Tuple[List["PhotoRemoval"], List["Placement"]]:
         """Write *project*'s activities, people, groups and timeline into the
         trip *project_id*, whose item rows are empty.
 
@@ -352,14 +382,26 @@ class ImportExportMixin:
         *kept_groups* (by id) are existing rows the file's entries update in
         place instead of creating new ones;
         *companion_journals* are other users' journal entries whose timeline
-        items are placed back among the file's by date. Returns the photos
-        the in-place updates dropped.
+        items are placed back among the file's by date.
+
+        A memory's or journal entry's photos are the file's list, keeping only
+        the names that have a file (#469): already in a kept row's folder
+        under *data_dir*, or *staged* for the file's item. No file is moved.
+
+        Returns the photos the in-place updates dropped, and the staged files
+        the rows now name that are not in place yet.
         """
         kept_memories = dict(kept_memories or {})
         kept_journals = dict(kept_journals or {})
         kept_people = dict(kept_people or {})
         kept_groups = dict(kept_groups or {})
+        staged = staged or {}
         removals: List[PhotoRemoval] = []
+        placements: List[Placement] = []
+
+        def kept_folder(kind: str, row_id: int) -> Optional[Path]:
+            # Where a kept row's photos already are, if the data root is known.
+            return photo_folder(data_dir, user_info_id, kind, row_id) if data_dir else None
 
         # 1a. Upsert activities (do NOT overwrite enriched data if row exists)
         for act in project.activities:
@@ -467,12 +509,16 @@ class ImportExportMixin:
                 mem = item.memory
                 mem_row = kept_memories.pop(mem.public_id, None) if isinstance(
                     mem.public_id, str) else None
+                mine = _staged_for(staged, "memories", mem.id)
                 if mem_row is not None:
                     # Same memory: update in place, keeping its id — and with
                     # it its photos on disk, comments, likes and deep links.
-                    removals += _update_memory(sess, user_info_id, mem_row, mem)
+                    photos, to_place = _stored_photos(
+                        mem.photos, mine, kept_folder("memories", mem_row.id))
+                    removals += _update_memory(sess, user_info_id, mem_row, mem, photos)
                     used_public_ids.add(mem_row.public_id)
                 else:
+                    photos, to_place = _stored_photos(mem.photos, mine, None)
                     public_id = mem.public_id
                     if (not isinstance(public_id, str) or not public_id
                             or public_id in used_public_ids):
@@ -485,7 +531,7 @@ class ImportExportMixin:
                         date=mem.date,
                         time=mem.time,
                         description=mem.description,
-                        photos_json=json.dumps(mem.photos),
+                        photos_json=json.dumps(photos),
                         geo_mode=mem.geo_mode,
                         lat=mem.lat,
                         lon=mem.lon,
@@ -493,22 +539,27 @@ class ImportExportMixin:
                     sess.add(mem_row)
                     sess.flush()
                 memory_id = mem_row.id
+                placements += [Placement("memories", mem_row.id, u, mine[u]) for u in to_place]
             elif item.item_type == "journal" and item.journal is not None:
                 # An imported journal entry is the importer's, like one they
                 # wrote. It used to get no row at all, and its item then read
                 # back as a segment at (0, 0).
                 entry = item.journal
                 j_row = kept_journals.pop(entry.id, None) if type(entry.id) is int else None
+                mine = _staged_for(staged, "journal", entry.id)
                 if j_row is not None:
-                    removals += _update_journal(sess, user_info_id, j_row, entry)
+                    photos, to_place = _stored_photos(
+                        entry.photos, mine, kept_folder("journal", j_row.id))
+                    removals += _update_journal(sess, user_info_id, j_row, entry, photos)
                 else:
+                    photos, to_place = _stored_photos(entry.photos, mine, None)
                     j_row = DBJournalEntry(
                         project_id=project_id,
                         user_info_id=user_info_id,
                         date=entry.date,
                         time=entry.time,
                         description=entry.description,
-                        photos_json=json.dumps(entry.photos),
+                        photos_json=json.dumps(photos),
                         geo_mode=entry.geo_mode,
                         lat=entry.lat,
                         lon=entry.lon,
@@ -516,6 +567,7 @@ class ImportExportMixin:
                     sess.add(j_row)
                     sess.flush()
                 journal_id = j_row.id
+                placements += [Placement("journal", j_row.id, u, mine[u]) for u in to_place]
 
             db_items.append((_item_day(item, project), DBProjectItem(
                 project_id=project_id,
@@ -550,7 +602,7 @@ class ImportExportMixin:
         for pos, (_day, db_item) in enumerate(db_items):
             db_item.position = pos
             sess.add(db_item)
-        return removals
+        return removals, placements
 
 
 @dataclasses.dataclass
@@ -568,6 +620,77 @@ class PhotoRemoval:
     remove_dir: bool = False
 
 
+@dataclasses.dataclass(frozen=True)
+class Placement:
+    """A staged photo to move into place once an import has committed (#469).
+
+    ``kind`` and ``row_id`` name the folder, as for :class:`PhotoRemoval`:
+    the committed memory or journal entry whose ``photos_json`` holds
+    ``uuid``.
+    """
+    kind: str
+    row_id: int
+    uuid: str
+    staged: StagedPhoto
+
+
+def _wanted_public_ids(project: Project) -> Set[str]:
+    """The file's memory public_ids: what Replace keeps memories by."""
+    return {
+        it.memory.public_id for it in project.items
+        if it.item_type == "memory" and it.memory is not None
+        and isinstance(it.memory.public_id, str)
+    }
+
+
+def _wanted_journal_ids(project: Project) -> Set[int]:
+    """The file's journal entry ids: what Replace keeps the owner's entries by."""
+    return {
+        it.journal.id for it in project.items
+        if it.item_type == "journal" and it.journal is not None
+        and type(it.journal.id) is int
+    }
+
+
+def _author(entry: DBJournalEntry, owner_id: int) -> int:
+    """Who wrote *entry*: a NULL author is the trip owner (#106)."""
+    return entry.user_info_id if entry.user_info_id is not None else owner_id
+
+
+def _on_disk(folder: Optional[Path], name) -> bool:
+    """True if the photo *name*'s full file is in *folder*."""
+    path = photo_file(folder, name) if folder is not None else None
+    return path is not None and path.is_file()
+
+
+def _staged_for(staged: StagedPhotos, kind: str, file_id) -> Dict[str, StagedPhoto]:
+    """The photos staged for the file's item *file_id*, by uuid."""
+    return staged.get((kind, file_id), {}) if type(file_id) is int else {}
+
+
+def _stored_photos(
+    listed, mine: Dict[str, StagedPhoto], folder: Optional[Path],
+) -> Tuple[List[str], List[str]]:
+    """The photo names a row stores, and those among them to place.
+
+    The file's own list *listed*, in order and once each, keeping a name only
+    if it has a file: already in the kept row's *folder* (None for a new
+    row), or staged in *mine*. Never a folder listing, so a name the file no
+    longer lists stays dropped. A name already in place is not placed again.
+    """
+    names: List[str] = []
+    to_place: List[str] = []
+    for name in listed or []:
+        if name in names:
+            continue  # placed once, stored once
+        if _on_disk(folder, name):
+            names.append(name)
+        elif is_photo_name(name) and name in mine:
+            names.append(name)
+            to_place.append(name)
+    return names, to_place
+
+
 def _photos(photos_json: Optional[str]) -> List[str]:
     try:
         photos = json.loads(photos_json or "[]")
@@ -576,14 +699,19 @@ def _photos(photos_json: Optional[str]) -> List[str]:
     return [p for p in photos if isinstance(p, str)] if isinstance(photos, list) else []
 
 
-def _update_memory(sess: Session, owner_id: int, row: DBMemory, mem) -> List[PhotoRemoval]:
+def _update_memory(
+    sess: Session, owner_id: int, row: DBMemory, mem, photos: List[str],
+) -> List[PhotoRemoval]:
+    """Update *row* from the file's *mem*, storing *photos* (the file's list,
+    kept to the names that have a file). Returns the photos the file no
+    longer lists, for deletion."""
     text_changed = (row.name, row.description) != (mem.name, mem.description)
     dropped = [p for p in _photos(row.photos_json) if p not in set(mem.photos or [])]
     row.name = mem.name
     row.date = mem.date
     row.time = mem.time
     row.description = mem.description
-    row.photos_json = json.dumps(mem.photos)
+    row.photos_json = json.dumps(photos)
     row.geo_mode = mem.geo_mode
     row.lat = mem.lat
     row.lon = mem.lon
@@ -596,12 +724,15 @@ def _update_memory(sess: Session, owner_id: int, row: DBMemory, mem) -> List[Pho
     return [PhotoRemoval(owner_id, "memories", row.id, dropped)] if dropped else []
 
 
-def _update_journal(sess: Session, owner_id: int, row: DBJournalEntry, entry) -> List[PhotoRemoval]:
+def _update_journal(
+    sess: Session, owner_id: int, row: DBJournalEntry, entry, photos: List[str],
+) -> List[PhotoRemoval]:
+    """As :func:`_update_memory`, for a journal entry."""
     dropped = [p for p in _photos(row.photos_json) if p not in set(entry.photos or [])]
     row.date = entry.date
     row.time = entry.time
     row.description = entry.description
-    row.photos_json = json.dumps(entry.photos)
+    row.photos_json = json.dumps(photos)
     row.geo_mode = entry.geo_mode
     row.lat = entry.lat
     row.lon = entry.lon
