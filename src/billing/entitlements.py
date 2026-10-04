@@ -347,12 +347,31 @@ def ensure_trip_days_quota(
     """
     if not quotas_enforced():
         return
+    used = trip_days_used(sess, project_id)
+    prospective = trip_days_used(sess, project_id, *extra_dates)
+    ensure_trip_span_quota(sess, owner_id, used, prospective, now=now)
+
+
+def ensure_trip_span_quota(
+    sess,
+    owner_id: int,
+    used: int,
+    prospective: int,
+    now: float | None = None,
+) -> None:
+    """Raise :class:`QuotaExceeded` if a trip going from ``used`` days to
+    ``prospective`` days breaks the owner's plan limit.
+
+    The one place the trip-length rule lives: :func:`ensure_trip_days_quota`
+    measures the two spans from the dates about to join, a trip import
+    (#492) from the trip before and after its write.
+    """
+    if not quotas_enforced():
+        return
     plan = plan_for(sess, owner_id, now)
     limit = limits_for(plan).max_trip_days
     if limit is None:
         return
-    used = trip_days_used(sess, project_id)
-    prospective = trip_days_used(sess, project_id, *extra_dates)
     # Only a change that makes the trip *longer* can fail. An action that leaves
     # the span alone — or shortens it — is always allowed, so a trip that was
     # already too long when the limits arrived stays fully editable instead of

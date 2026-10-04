@@ -47,7 +47,9 @@ from api.project_shared import (
     queue_share_tiles_refresh, queue_stats_refresh,
 )
 from models.project_db import DBJournalEntry, DBMemory
-from src.billing.entitlements import ensure_project_quota, ensure_storage_quota
+from src.billing.entitlements import (
+    ensure_project_quota, ensure_storage_quota, ensure_trip_span_quota,
+)
 from src.billing.usage import unlink_and_record
 from src.brand import APP_NAME
 from src.gpx.export_format import (
@@ -58,7 +60,7 @@ from src.models.great_circle import great_circle_points
 from src.models.project import Project
 from src.project.photo_placement import already_present, place_photos
 from src.project.project_io import InvalidProjectFile, ProjectIO
-from src.project.repo_transfer import Placement, PhotoRemoval, ProjectNameTaken
+from src.project.repo_transfer import Placement, PhotoRemoval, ProjectNameTaken, SpanCheck
 from src.project.staged_photos import StagedPhotos, staged_total
 from src.project.zip_import import MANIFEST_NAME, InvalidTripArchive, read_trip_zip
 from src.utils.logging import get_logger, request_id_var
@@ -324,6 +326,15 @@ def _remove_photos(removals: list[PhotoRemoval]) -> None:
                 pass  # not empty: left for storage reconciliation
 
 
+def _trip_days_check(owner_id: int) -> SpanCheck:
+    """The plan's trip-length limit, checked by an import into *owner_id*'s
+    account just before it commits (#492): a trip the import makes longer
+    than the plan allows, and longer than it was, is refused with 402."""
+    def check(sess, used: int, prospective: int) -> None:
+        ensure_trip_span_quota(sess, owner_id, used, prospective)
+    return check
+
+
 async def import_project(
     file: Annotated[UploadFile, File()],
     current_user: Annotated[dict, Depends(get_current_user)],
@@ -378,9 +389,11 @@ async def import_project(
         if taken and on_conflict is None:
             return _name_conflict(name)
         if taken and on_conflict == "replace":
-            # The same trip, new content: no new trip, so no plan limit.
+            # The same trip, new content: no new trip, so no limit on the
+            # number of trips. Its length is checked before the commit.
             removals = _repo.replace_project(
-                sess, user_info_id, name, project, data_dir=project_shared._DATA_DIR)
+                sess, user_info_id, name, project, data_dir=project_shared._DATA_DIR,
+                span_check=_trip_days_check(user_info_id))
         if removals is None:
             # A copy or a new name is a new trip. The storage quota does not
             # apply: nothing lands on disk. The size is bounded by
@@ -388,7 +401,8 @@ async def import_project(
             ensure_project_quota(sess, user_info_id)
             try:
                 imported = _repo.import_project(
-                    sess, user_info_id, name, project, copy=copy)
+                    sess, user_info_id, name, project, copy=copy,
+                    span_check=_trip_days_check(user_info_id))
             except ProjectNameTaken:
                 # A concurrent request took the name after the check above.
                 return _name_conflict(name)
@@ -506,7 +520,8 @@ def _ingest_zip(
             _ensure_room(sess, user_info_id, staged_total(staged, skip))
             removals = _repo.replace_project(
                 sess, user_info_id, name, project, data_dir=data_dir,
-                staged=staged, placements=placements)
+                staged=staged, placements=placements,
+                span_check=_trip_days_check(user_info_id))
         if removals is not None:
             return name, removals, placements
         # A new trip, or the trip to replace went meanwhile.
@@ -515,7 +530,8 @@ def _ingest_zip(
         try:
             imported = _repo.import_project(
                 sess, user_info_id, name, project, copy=on_conflict == "copy",
-                staged=staged, placements=placements)
+                staged=staged, placements=placements,
+                span_check=_trip_days_check(user_info_id))
         except ProjectNameTaken:
             return None, None, []
     return imported, None, placements
