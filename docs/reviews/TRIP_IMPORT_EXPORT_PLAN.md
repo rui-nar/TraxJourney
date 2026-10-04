@@ -201,3 +201,27 @@ Envelope questions (to the owner):
 - Guard: —
 - Override: revisit condition met (owner Q2 answer); fixed in PF1/PF2
 - Outcome: open
+## Integrated review — round 2 (server fixes PF1), 2026-10-04, pkgd/pf1 (55a29dfb, 32a68c80) against 925317ca
+
+Reviewer: adversarial-reviewer (Fable). Triager: review-triager (Opus). 1 finding, well-formed. No envelope questions. The PF2 half of round 2 was cut off by a session limit and is being rerun.
+
+### PIR2-1 — Re-importing an export into its own trip still duplicates split tails and rows without a stored fingerprint
+- Trigger: a user splits a ride, exports the trip as GPX, and runs Import all back into the same trip → the tail has no identity (fresh negative id, no source_id) → it is imported again and appears twice. The same applies to Strava split tails and to GPX imports made before #462 (source NULL).
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=expensive (export format), fix=S/local, confidence=verified
+- Decision: Fix now (D5). Rows with neither a fingerprint nor a Strava id export a third identity ("local", id). On read, accept only a negative integer with |id| < 2^53. Match it by DBActivity.id, joined to this trip only, with no source filter. The fingerprint branch stays first. Triager: no realistic wrongful suppression (random 53-bit ids, trip-scoped).
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
+## Integrated review — round 2 (client fixes PF2), 2026-10-04, pkgd/pf2 (4479d252) against 925317ca
+
+Reviewer: adversarial-reviewer (Fable), rerun after a session limit. Decision by the orchestrator under the D table; scores taken as given (D10 needs no floor verification). 1 finding.
+
+### PIR2C-1 — A mixed file (broken activity tracks plus connections) hides the real refusal reasons behind "only connecting segments"
+- Trigger: a user picks an export whose activity tracks all have inspect errors while its connection tracks don't → the pick step says "This file has no importable track, only connecting segments", and the activity tracks' refusal reasons are never shown.
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10). Fix if wanted: also list the non-connection candidates' errors (the same shape as the existing branch).
+- Revisit when: a user reports the misleading message, or gpx_import_dialog's pick-step errors are touched again.
+- Guard: —
+- Override: —
+- Outcome: open
