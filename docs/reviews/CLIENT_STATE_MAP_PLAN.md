@@ -121,3 +121,51 @@ Answer (user, 2026-10-04): leave `id` off `/me`. U1 is dropped (not merged); new
 - Guard: —
 - Override: —
 - Outcome: fixed (U1 dropped)
+
+## Unit review U5 — 2026-10-04, reviewed at 45846265 (pkgc/u5)
+
+### U5-R1-1 — A fetch in flight at sign-out writes A's trip into B's cache
+- Trigger: A signs out (or 401) while details/geo/meta are in flight → B signs in → the late response is keyed to B → B's same-named trip is served A's payload from memory and disk
+- Scores: trigger=plausible, impact=security, detect=silent, later=cheap, fix=M/shared, confidence=verified
+- Decision: Fix now (D3)
+- Outcome: fixed (cc7c2b20)
+
+### U5-R1-2 — An E2EE unlock in flight at sign-out lands after lock()
+- Trigger: A's restore awaits unlock → A signs out → lock() then unlock() assigns A's CMK → B (E2EE off / device unapproved) is left unlocked with A's key
+- Scores: trigger=plausible, impact=security, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Outcome: fixed (cc7c2b20)
+
+### U5-R1-3 — load() assigns low-res geo before its currency check
+- Trigger: A signs out before getLowResGeo answers → A's route lands in the cleared notifier → B's first frame draws it
+- Scores: trigger=plausible, impact=security, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Outcome: fixed (cc7c2b20)
+
+### U5-R1-4 — Reuse restores a view-mode selection on top of the stale edit selection
+- Trigger: day D selected in edit → activity 5 in view mode → back to edit → both selected until the next tap
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6)
+- Outcome: fixed (cc7c2b20)
+
+### U5-R1-5 — The cache's account lags the token during a blocking restore
+- Trigger: deep link with a nearly expired token → load keyed to user 0, then re-keyed mid-load → stale disk details/geo shown once with no sign
+- Scores (corrected by triage): trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Outcome: fixed (cc7c2b20)
+
+## Unit review U5, round 2 — 2026-10-04, reviewed at cc7c2b20 (fixes since 45846265)
+
+### U5-R2-1 — The R1-2 fix covers unlock() only; enable() and recovery still set the key after awaits
+- Trigger: A submits enable-encryption or recovery → signs out while it is pending → lock() runs → the call resumes and sets A's key → B (E2EE off) is left unlocked with A's key
+- Scores: trigger=plausible, impact=security, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Outcome: fixed (7521c6c9)
+
+## Unit review U5, round 3 — 2026-10-04, reviewed at 7521c6c9 (fixes since cc7c2b20)
+
+### U5-R3-1 — enable() commits the server write for an ended session; the recovery key is never shown
+- Trigger: A taps Enable (recovery-key option) → signs out or gets a 401 while key generation or the request is pending → the server enables encryption; the one-time secret goes to a closed screen and is discarded → a recovery method nobody holds; losing the device loses the data
+- Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3). Pre-existing on main, not introduced by U5; U5's doc comment promised the opposite
+- Outcome: partly fixed (4885887b: no server call once the session ended before sending; setup screen cannot be left while busy). Session ending during the request itself: pending owner decision on a follow-up unit
