@@ -51,9 +51,17 @@ SOURCE_GPX = "gpx"
 #: ``traxj:source`` of a Strava activity, whose ``traxj:source_id`` is its
 #: Strava id: a Strava row's id IS its Strava id, always positive.
 SOURCE_STRAVA = "strava"
+#: ``traxj:source`` of an activity with neither (a split tail, or a GPX
+#: import from before fingerprints), whose ``traxj:source_id`` is its own
+#: negative activity id (PIR2-1).
+SOURCE_LOCAL = "local"
 
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
 _STRAVA_ID = re.compile(r"[1-9][0-9]{0,18}")
+_LOCAL_ID = re.compile(r"-[1-9][0-9]{0,15}")
+
+#: Local ids are drawn from 53 bits (``allocate_local_activity_id``).
+_LOCAL_ID_LIMIT = 2 ** 53
 
 #: An activity's original identity: ``(source, source_id)``.
 Identity = Tuple[str, str]
@@ -91,14 +99,19 @@ def activity_identity(source, source_id, activity_id) -> Optional[Identity]:
     """The identity an export writes for a stored activity, or None.
 
     A GPX import is known by its fingerprint, a Strava activity (no
-    ``source``, positive id) by its id. Anything else, such as a split tail,
-    has no identity to carry.
+    ``source``, positive id) by its id. Anything else with a local id, such
+    as a split tail or a GPX import from before fingerprints, is known by
+    that id (PIR2-1).
     """
     if source == SOURCE_GPX:
-        return _valid_identity(SOURCE_GPX, source_id)
-    if source is None and type(activity_id) is int and activity_id > 0:
+        found = _valid_identity(SOURCE_GPX, source_id)
+        if found is not None:
+            return found
+    if type(activity_id) is not int:
+        return None
+    if source is None and activity_id > 0:
         return _valid_identity(SOURCE_STRAVA, str(activity_id))
-    return None
+    return _valid_identity(SOURCE_LOCAL, str(activity_id))
 
 
 def activity_extensions(moving_time, distance,
@@ -154,8 +167,8 @@ def read_activity_identity(elements: Sequence[ET.Element]) -> Optional[Identity]
 
     Untrusted like the figures: a source other than ``gpx`` or ``strava``, or
     a source_id not shaped as that source's ids are (a 64-character lowercase
-    hex fingerprint; a positive Strava id within the id column), counts as
-    absent. The importer matches it only within its own trip.
+    hex fingerprint; a positive Strava id within the id column; a negative
+    local id of at most 53 bits), counts as absent. The importer matches it only within its own trip.
     """
     source = source_id = None
     for element in elements or ():
@@ -176,6 +189,9 @@ def _valid_identity(source, source_id) -> Optional[Identity]:
         return source, source_id
     if (source == SOURCE_STRAVA and _STRAVA_ID.fullmatch(source_id)
             and int(source_id) <= ACTIVITY_ID_MAX):
+        return source, source_id
+    if (source == SOURCE_LOCAL and _LOCAL_ID.fullmatch(source_id)
+            and -int(source_id) < _LOCAL_ID_LIMIT):
         return source, source_id
     return None
 

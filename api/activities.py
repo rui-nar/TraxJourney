@@ -41,7 +41,7 @@ from src.api.strava_client import RateLimiter, StravaAPI
 from src.billing.entitlements import ensure_trip_days_quota
 from src.config.settings import Config
 from src.exceptions.errors import RateLimitError
-from src.gpx.export_format import SOURCE_GPX, SOURCE_STRAVA
+from src.gpx.export_format import SOURCE_GPX, SOURCE_LOCAL, SOURCE_STRAVA
 from src.gpx.importer import (
     GPXImportError,
     candidates as gpx_candidates,
@@ -707,9 +707,10 @@ def _existing_import(sess, project_row_id: int, fingerprint: str):
 
 def _existing_identity(sess, project_row_id: int, identity):
     """The activity in this trip a TraxJourney export says the track is (Q1):
-    the GPX import with that fingerprint, or the Strava activity with that
-    id. Only this trip's timeline is searched, so a file naming an activity
-    elsewhere matches nothing, and says nothing about it."""
+    the GPX import with that fingerprint, the Strava activity with that id,
+    or the local activity with that id (a split tail, an early GPX import;
+    PIR2-1). Only this trip's timeline is searched, so a file naming an
+    activity elsewhere matches nothing, and says nothing about it."""
     if identity is None:
         return None
     source, source_id = identity
@@ -722,6 +723,8 @@ def _existing_identity(sess, project_row_id: int, identity):
     elif source == SOURCE_STRAVA:
         query = (query.where(DBActivity.id == int(source_id))
                  .where(DBActivity.source.is_(None)))
+    elif source == SOURCE_LOCAL:
+        query = query.where(DBActivity.id == int(source_id))
     else:
         return None
     return sess.exec(query).first()

@@ -185,12 +185,18 @@ def test_the_export_carries_each_activitys_identity(env):
     assert hike.carried_identity == ("gpx", _HIKE_FINGERPRINT)
 
 
+def test_an_activity_without_a_fingerprint_or_strava_id_carries_its_local_id():
+    """PIR2-1: a split tail (GPX or Strava), or a GPX import from before
+    fingerprints, is known by its own local id."""
+    assert activity_identity(None, None, -5) == ("local", "-5")
+    assert activity_identity("gpx", None, -6) == ("local", "-6")
+    assert activity_identity("gpx", "xyz", -6) == ("local", "-6")
+    # An old 62-bit GPX id is beyond the 53 bits a local id is drawn from.
+    assert activity_identity(None, None, -(2 ** 53)) is None
+
+
 def test_an_activity_without_an_identity_carries_none():
-    # A split tail: app-made, negative id, no source of its own.
-    assert activity_identity(None, None, -5) is None
-    # A GPX row imported before fingerprints, or with a malformed one.
-    assert activity_identity("gpx", None, -6) is None
-    assert activity_identity("gpx", "xyz", -6) is None
+    assert activity_identity(None, None, None) is None
     assert [e.tag for e in activity_extensions(1, 1.0, None)] == [
         f"{{{EXTENSION_NAMESPACE}}}moving_time",
         f"{{{EXTENSION_NAMESPACE}}}distance"]
@@ -245,6 +251,94 @@ def test_inspect_reports_the_activity_already_in_its_own_trip(env):
     body = _inspect(client, _export(client, "Solo"), "Solo")
 
     assert body["duplicate_of"] == {"activity_id": 101, "name": "Morning run"}
+
+
+def _split(client, trip, activity_id, at=3):
+    r = client.post(f"/api/projects/{trip}/activities/{activity_id}/split",
+                    json={"split_index": at})
+    assert r.status_code == 200, r.text
+
+
+def test_split_pieces_imported_back_into_their_own_trip_are_skipped(env):
+    """PIR2-1: a tail has a fresh local id and no fingerprint, so only its
+    "local" identity recognises it."""
+    client, engine, _ = env
+    _create_trip(client, "Split", [_RUN, _HIKE])
+    _split(client, "Split", 101)
+    _split(client, "Split", -102, at=10)
+    before = _rows(engine, "Split")
+    assert len(before) == 4
+    tails = [row for row in before if row.split_parent_id is not None]
+    assert len(tails) == 2 and all(row.id < 0 for row in tails)
+    assert all(row.source_id is None for row in tails)
+
+    r = _import_all(client, _export(client, "Split"), "Split")
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["imported"] == []
+    assert sorted(s["duplicate_of"]["activity_id"] for s in body["skipped"])         == sorted(row.id for row in before)
+    assert len(_rows(engine, "Split")) == 4
+
+
+def test_a_gpx_import_from_before_fingerprints_is_skipped(env):
+    """A pre-#462 GPX row: source NULL, a negative id, no fingerprint."""
+    client, engine, _ = env
+    early = dict(_HIKE, id=-300, name="Early import", source=None,
+                 source_id=None)
+    _create_trip(client, "Early", [early])
+    content = _export(client, "Early")
+    (candidate,) = candidates(parse_gpx_bytes(content))
+    assert candidate.carried_identity == ("local", "-300")
+
+    r = _import_all(client, content, "Early")
+
+    assert r.status_code == 200, r.text
+    assert r.json()["imported"] == []
+    assert r.json()["skipped"][0]["duplicate_of"] == {
+        "activity_id": -300, "name": "Early import"}
+    single = _import_one(client, content, "Early")
+    assert single.status_code == 409, single.text
+    assert _inspect(client, content, "Early")["duplicate_of"] == {
+        "activity_id": -300, "name": "Early import"}
+    assert len(_rows(engine, "Early")) == 1
+
+
+def test_split_pieces_import_into_an_empty_trip(env):
+    client, engine, _ = env
+    _create_trip(client, "Split", [_RUN, _HIKE])
+    _split(client, "Split", 101)
+    _split(client, "Split", -102, at=10)
+
+    r = _import_all(client, _export(client, "Split"), "Back")
+
+    assert r.status_code == 200, r.text
+    assert len(r.json()["imported"]) == 4
+    assert r.json()["skipped"] == []
+    assert len(_rows(engine, "Back")) == 4
+
+
+def test_a_local_identity_in_another_users_trip_matches_nothing(env):
+    client, engine, as_user = env
+    as_user(2)
+    _create_trip(client, "Theirs", [dict(_HIKE, id=-777, source=None,
+                                         source_id=None)])
+    as_user(1)
+    with Session(engine) as sess:
+        sess.add(DBProject(user_info_id=1, name="Absent"))
+        sess.add(DBProject(user_info_id=1, name="Fresh"))
+        sess.commit()
+
+    assert _inspect(client, _crafted(("local", "-777")), "Back") ==         _inspect(client, _crafted(("local", "-776")), "Back")
+    assert _inspect(client, _crafted(("local", "-777")),
+                    "Back")["duplicate_of"] is None
+    real = _import_all(client, _crafted(("local", "-777")), "Back")
+    absent = _import_all(client, _crafted(("local", "-776")), "Absent")
+    assert real.status_code == absent.status_code == 200
+    assert [i["name"] for i in real.json()["imported"]] ==         [i["name"] for i in absent.json()["imported"]] == ["Track 0"]
+    assert real.json()["skipped"] == absent.json()["skipped"] == []
+    single = _import_one(client, _crafted(("local", "-777")), "Fresh")
+    assert single.status_code == 200, single.text
 
 
 # ── Into another trip ─────────────────────────────────────────────────────────
@@ -327,7 +421,9 @@ def _identity_elements(source, source_id):
     ("strava", str(2 ** 63)), ("strava", "9" * 40), ("strava", ""),
     ("gpx", "AB" * 32), ("gpx", "ab" * 31), ("gpx", "ab" * 33),
     ("gpx", "zz" * 32), ("gpx", "x" * 10_000),
-    ("local", "101"), ("", "101"),
+    ("local", "101"), ("local", "0"), ("local", "-0"), ("local", "-05"),
+    ("local", str(-(2 ** 53))), ("local", "-" + "9" * 40), ("local", "-1.5"),
+    ("local", " -5x"), ("other", "-5"), ("", "101"),
     ("strava", None), (None, "101"),
 ])
 def test_a_malformed_identity_counts_as_absent(source, source_id):
@@ -336,6 +432,7 @@ def test_a_malformed_identity_counts_as_absent(source, source_id):
 
 @pytest.mark.parametrize("source,source_id", [
     ("strava", "1"), ("strava", str(2 ** 63 - 1)), ("gpx", "0f" * 32),
+    ("local", "-1"), ("local", str(-(2 ** 53 - 1))),
 ])
 def test_a_well_formed_identity_is_read(source, source_id):
     assert read_activity_identity(_identity_elements(source, source_id)) == \
