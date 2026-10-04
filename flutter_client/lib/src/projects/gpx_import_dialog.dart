@@ -53,11 +53,27 @@ IconData _typeIcon(String type) => switch (type) {
 
 /// What the dialog hands back on success, so the caller can offer to open the
 /// new activity or undo it rather than only reloading the trip.
+///
+/// One track gives one activity. "Import all" gives [activityIds] (possibly
+/// none, when every track was already in the trip) and counts what it
+/// [skipped] as duplicates, so the caller can say both.
 class GpxImportResult {
-  const GpxImportResult({required this.activityId, required this.name});
+  GpxImportResult({required int activityId, required this.name})
+      : activityIds = [activityId],
+        skipped = 0;
 
-  final int activityId;
+  const GpxImportResult.all({
+    required this.activityIds,
+    required this.skipped,
+    this.name = '',
+  });
+
+  final List<int> activityIds;
+  final int skipped;
   final String name;
+
+  /// The first (for a single import, the only) activity created.
+  int get activityId => activityIds.first;
 }
 
 class GpxImportDialog extends StatefulWidget {
@@ -115,6 +131,10 @@ class _GpxImportDialogState extends State<GpxImportDialog> {
   /// minute back is what gave one file two fingerprints and let a second copy
   /// slip past the duplicate check.
   bool _timesUntouched = true;
+
+  /// True from the moment "Import all" is tapped until its answer arrives:
+  /// the stage is `submitting`, but there is no single track under review.
+  bool _importingAll = false;
 
   List<String>? _serverErrors;
   String? _genericError;
@@ -234,12 +254,15 @@ class _GpxImportDialogState extends State<GpxImportDialog> {
       return;
     }
 
+    // A connecting segment an export wrote is not something to pick between:
+    // a file of one activity and its connections opens that activity.
+    final tracks = inspection.importAllCandidates;
     setState(() {
       _inspection = inspection;
-      if (importable.length > 1) {
+      if (tracks.length > 1 || (tracks.isEmpty && importable.length > 1)) {
         _stage = _Stage.choose;
       } else {
-        _choose(importable.first);
+        _choose(tracks.isNotEmpty ? tracks.first : importable.first);
       }
     });
   }
@@ -254,12 +277,15 @@ class _GpxImportDialogState extends State<GpxImportDialog> {
     _serverErrors = null;
     _genericError = null;
     _nameController.text = candidate.name ?? _inspection?.suggestedName ?? '';
-    _activityType = candidate.activityType;
-    final started = candidate.startedAt;
+    _activityType = candidate.suggestedType;
+    // The wall clock where the track was recorded (issue #365), read as the
+    // clock face it is. A server that sends none leaves the UTC instants, as
+    // before.
+    final started = candidate.startLocal ?? candidate.startedAt;
     if (started != null) {
       _date = started;
       _startTime = TimeOfDay.fromDateTime(started);
-      final ended = candidate.endedAt;
+      final ended = candidate.endLocal ?? candidate.endedAt;
       _endTime = ended != null ? TimeOfDay.fromDateTime(ended) : null;
       _timesUntouched = true;
     } else {
@@ -327,7 +353,10 @@ class _GpxImportDialogState extends State<GpxImportDialog> {
           // Back to a stage the user can act from. Staying in `reading` or
           // `submitting` left a spinner turning with Cancel disabled and no
           // way out of the dialog at all.
-          _stage = _chosen == null ? _Stage.pick : _Stage.review;
+          _stage = _importingAll
+              ? _Stage.choose
+              : _chosen == null ? _Stage.pick : _Stage.review;
+          _importingAll = false;
           _genericError = 'Could not reach the server: '
               '${e.toString().replaceFirst('Exception: ', '')}';
         });
@@ -347,6 +376,12 @@ class _GpxImportDialogState extends State<GpxImportDialog> {
       final errors = (detail is Map ? detail['errors'] : null) as List?;
       if (errors != null && errors.isNotEmpty) {
         _serverErrors = errors.map((e) => e.toString()).toList();
+        return;
+      }
+      // A plan limit (402) and a refused "Import all" (400) answer with the
+      // message itself.
+      if (detail is String && detail.isNotEmpty) {
+        _serverErrors = [detail];
         return;
       }
     } on Object {
@@ -375,6 +410,12 @@ class _GpxImportDialogState extends State<GpxImportDialog> {
       fields['date'] = _toIso(_date!);
       fields['start_time'] = _fmtTime(_startTime!);
       fields['end_time'] = _fmtTime(_endTime!);
+      // They are wall-clock times in the track's zone. Not claimed for a
+      // stamped track the server gave no local time for: its fields hold UTC.
+      final chosen = _chosen!;
+      if (chosen.startLocal != null || !chosen.hasTimes) {
+        fields['times_local'] = 'true';
+      }
     }
 
     final response = await _send('/activities/import-gpx', fields);
@@ -389,6 +430,40 @@ class _GpxImportDialogState extends State<GpxImportDialog> {
     }
     setState(() {
       _stage = _Stage.review;
+      _applyErrorBody(response);
+    });
+  }
+
+  /// Import every track of the file at once. Takes the file and nothing else:
+  /// names, types and times are the file's own.
+  Future<void> _submitAll() async {
+    setState(() {
+      _stage = _Stage.submitting;
+      _importingAll = true;
+      _serverErrors = null;
+      _genericError = null;
+    });
+
+    final response = await _send('/activities/import-gpx-tracks', const {});
+    if (response == null || !mounted) return;
+
+    if (response.statusCode == 200) {
+      final body = jsonDecode(response.body) as Map;
+      final imported = (body['imported'] as List?) ?? const [];
+      final skipped = (body['skipped'] as List?) ?? const [];
+      Navigator.of(context).pop(GpxImportResult.all(
+        activityIds: [
+          for (final item in imported)
+            if (item is Map && item['activity_id'] is num)
+              (item['activity_id'] as num).toInt(),
+        ],
+        skipped: skipped.length,
+      ));
+      return;
+    }
+    setState(() {
+      _stage = _Stage.choose;
+      _importingAll = false;
       _applyErrorBody(response);
     });
   }
@@ -442,6 +517,7 @@ class _GpxImportDialogState extends State<GpxImportDialog> {
     return AlertDialog(
       title: Text(switch (_stage) {
         _Stage.choose => 'Which track?',
+        _Stage.submitting when _importingAll => 'Importing tracks',
         _Stage.review || _Stage.submitting => 'Import this track?',
         _ => 'Import a GPX file',
       }),
@@ -456,6 +532,7 @@ class _GpxImportDialogState extends State<GpxImportDialog> {
                 _Stage.pick => _pickStep(theme),
                 _Stage.reading => _readingStep(theme),
                 _Stage.choose => _chooseStep(theme),
+                _Stage.submitting when _importingAll => _importingAllStep(theme),
                 _Stage.review || _Stage.submitting => _reviewStep(theme),
               },
               if (_serverErrors != null) _errorBox(theme, _serverErrors!),
@@ -479,7 +556,8 @@ class _GpxImportDialogState extends State<GpxImportDialog> {
         onPressed: busy ? null : () => Navigator.of(context).pop(),
         child: const Text('Cancel'),
       ),
-      if (_stage == _Stage.review || _stage == _Stage.submitting)
+      if (_stage == _Stage.review ||
+          (_stage == _Stage.submitting && !_importingAll))
         ElevatedButton(
           key: const ValueKey('gpx_import_confirm'),
           style: ElevatedButton.styleFrom(minimumSize: const Size(80, 44)),
@@ -537,17 +615,45 @@ class _GpxImportDialogState extends State<GpxImportDialog> {
         ),
       ];
 
-  List<Widget> _chooseStep(ThemeData theme) => [
+  List<Widget> _importingAllStep(ThemeData theme) => [
+        Row(
+          children: [
+            const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2)),
+            const SizedBox(width: 12),
+            Expanded(
+                child: Text(
+                    'Importing ${_inspection!.importAllCandidates.length} '
+                    'tracks…',
+                    style: theme.textTheme.bodyMedium)),
+          ],
+        ),
+      ];
+
+  List<Widget> _chooseStep(ThemeData theme) {
+    final all = _inspection!.importAllCandidates;
+    return [
         Text(
             'This file holds ${_inspection!.candidates.length} tracks. '
             'Pick the one to import.',
             style: theme.textTheme.bodyMedium),
+        if (all.length > 1) ...[
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            key: const ValueKey('gpx_import_all'),
+            icon: const Icon(Icons.library_add_outlined, size: 18),
+            label: Text('Import all ${all.length} tracks'),
+            onPressed: _submitAll,
+          ),
+        ],
         const SizedBox(height: 8),
         for (final candidate in _inspection!.candidates)
           ListTile(
             key: ValueKey('gpx_candidate_${candidate.index}'),
             dense: true,
-            enabled: candidate.isImportable,
+            enabled: candidate.isImportable && !candidate.isConnection,
             leading: candidate.outline.isEmpty
                 ? const Icon(Icons.route)
                 : SizedBox(
@@ -557,14 +663,17 @@ class _GpxImportDialogState extends State<GpxImportDialog> {
                         painter: TrackOutlinePainter(
                             candidate.outline, theme.colorScheme.primary))),
             title: Text(candidate.name ?? 'Track ${candidate.index + 1}'),
-            subtitle: Text(candidate.isImportable
-                ? _factsLine(candidate)
-                : candidate.errors.first),
-            onTap: candidate.isImportable
+            subtitle: Text(candidate.isConnection
+                ? 'Connecting segment, not an activity'
+                : candidate.isImportable
+                    ? _factsLine(candidate)
+                    : candidate.errors.first),
+            onTap: candidate.isImportable && !candidate.isConnection
                 ? () => setState(() => _choose(candidate))
                 : null,
           ),
       ];
+  }
 
   String _factsLine(GpxCandidate candidate) {
     final parts = <String>[
@@ -577,6 +686,18 @@ class _GpxImportDialogState extends State<GpxImportDialog> {
     if (moving != null && moving > 0) parts.add(_fmtDuration(moving));
     parts.add('${candidate.pointCount} pts');
     return parts.join('  ·  ');
+  }
+
+  /// The built-in types, plus the one the server suggested when it is none of
+  /// them (a kayak is "Kayaking"): a dropdown whose value is not among its
+  /// items throws, and an empty field would hide what the file said.
+  List<(String, String)> _typeChoices() {
+    final current = _activityType;
+    return [
+      ..._kActivityTypes,
+      if (current != null && !_kActivityTypes.any((t) => t.$1 == current))
+        (current, current),
+    ];
   }
 
   List<Widget> _reviewStep(ThemeData theme) {
@@ -643,7 +764,7 @@ class _GpxImportDialogState extends State<GpxImportDialog> {
               : null,
         ),
         items: [
-          for (final (value, label) in _kActivityTypes)
+          for (final (value, label) in _typeChoices())
             DropdownMenuItem(
               value: value,
               child: Row(
@@ -697,6 +818,13 @@ class _GpxImportDialogState extends State<GpxImportDialog> {
         Text('Start and end cannot be the same time.',
             style: theme.textTheme.bodySmall
                 ?.copyWith(color: theme.colorScheme.error)),
+      ],
+      if (candidate.timezone != null) ...[
+        const SizedBox(height: 6),
+        Text('Local time in ${candidate.timezone}',
+            key: const ValueKey('gpx_timezone_note'),
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
       ],
       if (_crossesMidnight) ...[
         const SizedBox(height: 6),
