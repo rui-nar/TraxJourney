@@ -79,11 +79,10 @@ from models.project_db import (
     DBMemory, DBMemoryComment, DBMemoryLike, DBProject, DBShareMemoryContent, DBShareVisit,
 )
 from models.user import UserInfo
-from src.project.repo_core import _parse_day_meta_json
+from src.project.repo_core import _compute_low_res_geo, _parse_day_meta_json
 from src.utils.encryption_check import is_encrypted_envelope
 
 _DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
-from src.models.great_circle import great_circle_points
 from src.models.project import tag_options_with_untagged
 from src.project.project_repo import ProjectRepo, _compute_stats
 from src.tile_renderer import get_cached_tile, get_or_build_features, get_or_create_tile
@@ -422,57 +421,14 @@ def _build_features(project) -> List[Dict[str, Any]]:
 def shared_project_geo_low_res(token: str):
     """Return low-res GeoJSON for fast initial map render.
 
-    Activities: straight lines (start→end, no polyline decoding).
-    Segments: 50-point great-circle arcs (or stored rail polylines) — same as
-    the full-res endpoint.  Both appear immediately so there are no holes
-    in the route during the low-res phase.
+    The owner's low-res builder, for the same reason ``_build_features`` is the
+    owner's full-res one: this endpoint kept its own rail-only copy of the
+    segment rule, so a shared trip's ferry and bus legs flashed as straight
+    lines until the full geometry arrived (#380).
     """
     project, _token_type, _project_id, _owner_uid = _get_project_and_type(token)
-    features: List[Dict[str, Any]] = []
-    for item in project.items:
-        if item.item_type == "activity":
-            activity = project.activity_by_id(item.activity_id)
-            if activity is None:
-                continue
-            if activity.start_latlng and activity.end_latlng:
-                features.append({
-                    "type": "Feature",
-                    "geometry": {
-                        "type": "LineString",
-                        "coordinates": [
-                            [activity.start_latlng[1], activity.start_latlng[0]],
-                            [activity.end_latlng[1],   activity.end_latlng[0]],
-                        ],
-                    },
-                    "properties": {
-                        "type": "activity",
-                        "activity_id": activity.id,
-                    },
-                })
-        elif item.item_type == "segment" and item.segment is not None:
-            seg = item.segment
-            if seg.route_mode == "rail" and seg.route_polyline:
-                coords = json.loads(seg.route_polyline)
-            else:
-                pts = great_circle_points(
-                    seg.start.lat, seg.start.lon,
-                    seg.end.lat,   seg.end.lon,
-                    n_points=50,
-                )
-                coords = [[lon, lat] for lat, lon in pts]
-            if len(coords) >= 2:
-                features.append({
-                    "type": "Feature",
-                    "geometry": {"type": "LineString", "coordinates": coords},
-                    "properties": {
-                        "type": "segment",
-                        "segment_id": seg.id,
-                        "segment_type": seg.segment_type,
-                        "label": seg.label,
-                        "route_mode": seg.route_mode,
-                    },
-                })
-    return {"type": "FeatureCollection", "features": features}
+    return Response(content=_compute_low_res_geo(project),
+                    media_type="application/json")
 
 
 @router.get("/{token}/geo", summary="Full GeoJSON for shared project")

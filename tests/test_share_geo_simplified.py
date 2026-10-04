@@ -465,3 +465,27 @@ def test_a_renamed_project_is_still_bustable_for_shared_viewers(env):
     assert after.status_code == 200
     assert _coords(after) == before  # same shape, moved
     assert _features(after)[0]["geometry"]["coordinates"] != []
+
+
+# ── the low-res placeholder: the last copy of the segment rule (#380) ────────
+
+def test_a_shared_ferry_is_drawn_along_its_route_in_the_low_res_payload(env):
+    """The low-res payload is replaced within a second or so — on a fast
+    connection. On the slow phone a share link is most often opened on, a
+    routed ferry flashed as a straight arc because this endpoint kept a
+    rail-only copy of the rule."""
+    client, _, _ = env
+
+    (seg,) = _by_kind(client.get(f"/api/share/{TOKEN}/geo/low-res"), "segment")
+
+    assert seg["geometry"]["coordinates"] == _FERRY_ROUTE
+
+
+def test_the_share_and_owner_low_res_payloads_are_one_builder(env):
+    """Every earlier divergence started as a copy patched in one place only."""
+    client, _, _ = env
+
+    shared = client.get(f"/api/share/{TOKEN}/geo/low-res").json()
+    owner = client.get("/api/geo/project/low-res?name=Trip").json()
+
+    assert shared == owner
