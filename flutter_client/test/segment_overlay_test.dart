@@ -107,6 +107,60 @@ void main() {
       expect(_segIds(merged)..sort(), ['s1', 's2']);
     });
 
+    test('a refetch carrying the pre-resolve feature does not replace the '
+        'resolved line (issue #278)', () {
+      final h = _Host()..geo = {'type': 'FeatureCollection', 'features': []};
+      h.items = [
+        {'item_type': 'segment', 'segment': {'id': 's1', 'route_status': 'pending'}},
+      ];
+      h.applyResolvedSegment('s1', {
+        'route_mode': 'rail',
+        'route_polyline': '[[0,0],[0.5,0.7],[1,1]]',
+      });
+
+      // A refetch that started before the resolve landed: the server still
+      // drew the great-circle arc.
+      final stale = _segFeature('s1')
+        ..['properties']['route_mode'] = 'great_circle';
+      final staleGeo = {'type': 'FeatureCollection', 'features': [stale]};
+      h.reconcileSegmentOverlay(staleGeo);
+      final merged = h.mergePendingSegmentPatches(
+          List<dynamic>.from(staleGeo['features'] as List));
+      final drawn = merged.single as Map;
+      expect(drawn['properties']['route_mode'], 'rail');
+      expect((drawn['geometry']['coordinates'] as List), hasLength(3));
+
+      // Once the server has the route too, the patch is no longer needed.
+      final fresh = _segFeature('s1')..['properties']['route_mode'] = 'rail';
+      h.reconcileSegmentOverlay({'type': 'FeatureCollection', 'features': [fresh]});
+      final passThrough = h.mergePendingSegmentPatches([stale]);
+      expect((passThrough.single as Map)['properties']['route_mode'],
+          'great_circle',
+          reason: 'the patch was dropped, so the snapshot is drawn as is');
+    });
+
+    test('a stale low-res snapshot of a degraded route does not replace a '
+        'real one', () {
+      final h = _Host()..geo = {'type': 'FeatureCollection', 'features': []};
+      h.applyResolvedSegment('s1', {
+        'route_mode': 'rail',
+        'route_degraded': false,
+        'route_polyline': '[[0,0],[0.5,0.7],[1,1]]',
+      });
+
+      final stale = _segFeature('s1')
+        ..['properties'] = {
+          'type': 'segment',
+          'segment_id': 's1',
+          'route_mode': 'rail',
+          'route_degraded': true,
+        };
+      h.reconcileSegmentOverlay({'type': 'FeatureCollection', 'features': [stale]});
+
+      final merged = h.mergePendingSegmentPatches([stale]);
+      expect((merged.single as Map)['properties']['route_degraded'], isFalse);
+    });
+
     test('clearSegmentOverlay discards all pending state', () {
       final h = _Host()..geo = {'type': 'FeatureCollection', 'features': []};
       h.upsertSegmentInGeo('s1', _segFeature('s1'));

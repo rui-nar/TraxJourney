@@ -5,6 +5,7 @@
 /// by segment operations.
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
@@ -249,15 +250,17 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
   }
 
   /// Trigger async OSM route resolution for a train, boat, or bus segment and
-  /// poll until it completes.
+  /// wait until it completes.
   ///
   /// The server marks the segment `route_status="pending"` and returns 202
   /// immediately (the HAFAS + Overpass work runs in a background task), so this
   /// method optimistically flips the segment to `pending` — driving a spinner on
-  /// the tile — then polls `/meta` until it resolves or fails.
+  /// the tile — then hands it to the trip's resolve poller
+  /// ([pollSegmentResolution]).
   ///
-  /// Returns a result map `{route_status, …}`. Throws on a `failed` resolution
-  /// so callers can surface the server's error message.
+  /// Returns a result map `{route_status, …}`: `resolved`, or `cancelled` when
+  /// the trip was left or the segment deleted first. Throws on a `failed`
+  /// resolution so callers can surface the server's error message.
   Future<Map<String, dynamic>> resolveTrainRoute(
     String segId, {
     String routeMode = 'rail',
@@ -285,71 +288,181 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
     return pollSegmentResolution(segId);
   }
 
-  /// Poll `/meta` until [segId] flips from `pending` to `resolved`/`failed`.
+  // ── Resolve polling (issue #278) ──────────────────────────────────────────
+  //
+  // One poller per trip, over every segment whose resolve is pending, rather
+  // than a loop per segment with a deadline. The server runs two resolve jobs
+  // at a time, so a third one queued behind them routinely outlived the old
+  // 2-minute deadline, and nothing ever polled for it again: the route only
+  // reached the map once the trip was reopened. There is no deadline now — a
+  // job stuck server-side is the server's to report (it logs route jobs
+  // pending for over 30 minutes) — and the poll backs off instead, so a
+  // forgotten tab costs one /meta a minute.
+
+  /// The running poller, or null when no resolve is pending.
+  _ResolvePoll? _resolvePoll;
+
+  /// Wait for [segId]'s pending resolve to finish, polling `/meta` for it
+  /// along with every other pending segment of this trip.
   ///
-  /// Self-cancels if the user navigates to another project (projectName change)
-  /// or the segment is deleted mid-resolve. On `resolved`, patches the segment's
-  /// geometry into [geo]. On `failed`, throws with the server error message. On
-  /// a timeout, sets [error] — mirrors `_pollActivityRefresh`'s handling of the
-  /// same class of bug (issue #213): a resolve that outlives this poll's own
-  /// deadline (a backgrounded browser tab throttling the poll ticks, most
-  /// plausibly — real elapsed server time can be well under [timeout] even so)
-  /// used to leave the tile spinning forever with no way to notice the result
-  /// had actually landed.
-  Future<Map<String, dynamic>> pollSegmentResolution(
-    String segId, {
-    Duration interval = const Duration(seconds: 3),
-    Duration timeout = const Duration(minutes: 2),
-  }) async {
+  /// On `resolved`, patches the segment's route into [items] and [geo] and
+  /// returns `{route_status: resolved, …}`. On `failed`, throws with the
+  /// server's error message. Returns `{route_status: cancelled}` when the trip
+  /// is left (another trip opened, [resetSegmentState]) or the segment is
+  /// deleted first.
+  Future<Map<String, dynamic>> pollSegmentResolution(String segId) {
     final ref = projectRef;
-    if (ref == null) return {'route_status': 'cancelled'};
-    final deadline = DateTime.now().add(timeout);
-    while (DateTime.now().isBefore(deadline)) {
-      await Future<void>.delayed(interval);
-      if (projectRef != ref) return {'route_status': 'cancelled'};
-      Map<String, dynamic> meta;
-      try {
-        meta = await service.getDetailsMeta(ref);
-      } on Exception {
-        continue; // transient network error — retry on the next tick
-      }
-      if (projectRef != ref) return {'route_status': 'cancelled'};
-      final seg = _segmentFromMeta(meta, segId);
-      if (seg == null) return {'route_status': 'cancelled'}; // deleted mid-resolve
-      final stat = (seg['route_status'] as String?) ?? 'idle';
-      if (stat == 'resolved') {
-        applyResolvedSegment(segId, seg);
-        notifyListeners();
-        return {
-          'route_status': 'resolved',
-          'stop_count': _polylineLength(seg),
-          // True when the server fell back to a straight endpoint chord (no real
-          // track found) — surfaced so the UI doesn't claim a detailed route.
-          'degraded': seg['route_degraded'] == true,
-          // True when the HAFAS lookup for the selected train failed and this
-          // resolved via the generic two-point OSM fallback instead — distinct
-          // from `degraded`.
-          'hafas_failed': seg['route_hafas_failed'] == true,
-          // On a HAFAS fallback the server keeps the provider's own reason here
-          // so the UI can say *why* the train lookup failed (issue #277).
-          'route_error': seg['route_error'],
-        };
-      }
-      if (stat == 'failed') {
-        _patchSegmentFields(segId, {
-          'route_status': 'failed',
-          'route_error': seg['route_error'],
-        });
-        notifyListeners();
-        throw Exception(seg['route_error'] ?? 'Route resolution failed');
-      }
-      // still pending → keep polling
-    }
-    error = 'Route resolution is taking longer than expected. '
-        'Reopen the project to see the result.';
-    notifyListeners();
-    return {'route_status': 'pending'};
+    if (ref == null) return Future.value(const {'route_status': 'cancelled'});
+    final poll = _joinResolvePoll(ref, segId);
+    return poll.waiters.putIfAbsent(segId, Completer.new).future;
   }
+
+  /// Resume polling for every segment in [items] the server reports as still
+  /// resolving — after a load, so a resolve started before the trip was
+  /// opened, or on another device, still reaches the map. Stops a poller left
+  /// running for another trip.
+  void resumeSegmentResolves() {
+    final ref = projectRef;
+    if (ref == null) return;
+    final poll = _resolvePoll;
+    if (poll != null && !_sameTrip(ref, poll.trip)) stopSegmentResolvePolling();
+    for (final item in items) {
+      final seg = item['segment'];
+      if (item['item_type'] == 'segment' &&
+          seg is Map &&
+          seg['route_status'] == 'pending' &&
+          seg['id'] != null) {
+        _joinResolvePoll(ref, seg['id'].toString());
+      }
+    }
+  }
+
+  /// Stop the poller. Anyone still waiting on a segment gets `cancelled`.
+  void stopSegmentResolvePolling() {
+    final poll = _resolvePoll;
+    _resolvePoll = null;
+    if (poll == null) return;
+    poll.timer?.cancel();
+    for (final waiter in poll.waiters.values) {
+      waiter.complete(const {'route_status': 'cancelled'});
+    }
+  }
+
+  /// A trip is the same trip whatever the caller's role on it: the role is
+  /// corrected from the server mid-session, and [ProjectRef.==] includes it.
+  static bool _sameTrip(ProjectRef? a, ProjectRef b) =>
+      a != null && a.name == b.name && a.ownerId == b.ownerId;
+
+  /// The wait before the next poll, by time spent polling since the last
+  /// segment joined: quick while a fresh resolve may land any second, then
+  /// backing off for one queued behind others or stuck server-side.
+  static Duration _resolvePollDelay(Duration elapsed) {
+    if (elapsed < const Duration(minutes: 2)) return const Duration(seconds: 3);
+    if (elapsed < const Duration(minutes: 10)) return const Duration(seconds: 15);
+    return const Duration(seconds: 60);
+  }
+
+  /// Add [segId] to the poller for [ref], starting one if needed. A joining
+  /// segment restarts the quick schedule.
+  _ResolvePoll _joinResolvePoll(ProjectRef ref, String segId) {
+    var poll = _resolvePoll;
+    if (poll != null && !_sameTrip(ref, poll.trip)) {
+      stopSegmentResolvePolling();
+      poll = null;
+    }
+    poll ??= _resolvePoll = _ResolvePoll(ref);
+    // Only a poll sent after this point may judge the segment: one already
+    // in flight can carry the state from before the resolve was requested.
+    poll.segments[segId] = poll.polls;
+    poll.elapsed = Duration.zero;
+    if (!poll.busy) _scheduleResolvePoll(poll);
+    return poll;
+  }
+
+  void _scheduleResolvePoll(_ResolvePoll poll) {
+    poll.timer?.cancel();
+    final delay = _resolvePollDelay(poll.elapsed);
+    poll.timer = Timer(delay, () {
+      poll.timer = null;
+      poll.elapsed += delay;
+      _pollResolves(poll);
+    });
+  }
+
+  Future<void> _pollResolves(_ResolvePoll poll) async {
+    final ref = projectRef;
+    if (!_sameTrip(ref, poll.trip)) {
+      stopSegmentResolvePolling();
+      return;
+    }
+    poll.busy = true;
+    final pollNo = ++poll.polls;
+    Map<String, dynamic>? meta;
+    try {
+      meta = await service.getDetailsMeta(ref!);
+    } on Exception {
+      meta = null; // transient network error — retry on the next tick
+    }
+    if (!identical(_resolvePoll, poll)) return; // stopped meanwhile
+    poll.busy = false;
+    if (!_sameTrip(projectRef, poll.trip)) {
+      stopSegmentResolvePolling();
+      return;
+    }
+    if (meta != null) {
+      var changed = false;
+      for (final entry in poll.segments.entries.toList()) {
+        final segId = entry.key;
+        if (entry.value >= pollNo) continue; // joined after this poll was sent
+        final seg = _segmentFromMeta(meta, segId);
+        final stat = seg == null ? null : seg['route_status'] as String?;
+        if (stat == 'pending') continue;
+        poll.segments.remove(segId);
+        final waiter = poll.waiters.remove(segId);
+        changed = true;
+        if (seg == null) {
+          waiter?.complete(const {'route_status': 'cancelled'}); // deleted
+        } else if (stat == 'resolved') {
+          applyResolvedSegment(segId, seg);
+          waiter?.complete(_resolvedOutcome(seg));
+        } else if (stat == 'failed') {
+          _patchSegmentFields(segId, {
+            'route_status': 'failed',
+            'route_error': seg['route_error'],
+          });
+          waiter?.completeError(
+              Exception(seg['route_error'] ?? 'Route resolution failed'));
+        } else {
+          // No longer resolving, nor resolved: the segment was edited back to
+          // a plain line elsewhere. Show what the server has; nothing to wait on.
+          _patchSegmentFields(segId, {'route_status': stat});
+          waiter?.complete(const {'route_status': 'cancelled'});
+        }
+      }
+      if (changed) notifyListeners();
+    }
+    if (poll.segments.isEmpty) {
+      stopSegmentResolvePolling();
+    } else {
+      _scheduleResolvePoll(poll);
+    }
+  }
+
+  /// What [pollSegmentResolution] returns for a resolved segment.
+  Map<String, dynamic> _resolvedOutcome(Map<String, dynamic> seg) => {
+        'route_status': 'resolved',
+        'stop_count': _polylineLength(seg),
+        // True when the server fell back to a straight endpoint chord (no real
+        // track found) — surfaced so the UI doesn't claim a detailed route.
+        'degraded': seg['route_degraded'] == true,
+        // True when the HAFAS lookup for the selected train failed and this
+        // resolved via the generic two-point OSM fallback instead — distinct
+        // from `degraded`.
+        'hafas_failed': seg['route_hafas_failed'] == true,
+        // On a HAFAS fallback the server keeps the provider's own reason here
+        // so the UI can say *why* the train lookup failed (issue #277).
+        'route_error': seg['route_error'],
+      };
 
   /// Merge [fields] into the matching segment in [items], assigning a new list
   /// reference so identity-based rebuilds fire.
@@ -586,20 +699,42 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
 
   /// Drop overlay entries the authoritative server [serverGeo] already reflects,
   /// so the overlay self-cleans once the backend has caught up. A pending patch
-  /// is cleared when the server geo contains its segment_id; a tombstone is
-  /// cleared when the server geo no longer contains its segment_id.
+  /// is cleared when the server geo carries its segment *in the same route
+  /// state* ([_sameRouteState]); a tombstone is cleared when the server geo no
+  /// longer contains its segment_id.
+  ///
+  /// Matching on the id alone dropped a resolved route's patch on any geo that
+  /// still had the segment — including one fetched before the resolve landed,
+  /// which then put the great-circle line back (issue #278).
   void reconcileSegmentOverlay(Map<String, dynamic> serverGeo) {
-    final serverSegIds = <String>{
+    final serverFeatures = <String, Map>{
       for (final f in (serverGeo['features'] as List? ?? const []))
         if (f is Map &&
             (f['properties'] as Map? ?? {})['segment_id'] != null)
-          (f['properties'] as Map)['segment_id'].toString(),
+          (f['properties'] as Map)['segment_id'].toString(): f,
     };
-    _pendingSegmentPatches.keys
-        .where(serverSegIds.contains)
+    _pendingSegmentPatches.entries
+        .where((e) {
+          final server = serverFeatures[e.key];
+          return server != null && _sameRouteState(e.value, server);
+        })
+        .map((e) => e.key)
         .toList()
         .forEach(_pendingSegmentPatches.remove);
-    _segmentTombstones.removeWhere((id) => !serverSegIds.contains(id));
+    _segmentTombstones.removeWhere((id) => !serverFeatures.containsKey(id));
+  }
+
+  /// Whether two segment features draw the same kind of route: the same
+  /// `route_mode` (a great-circle arc carries none, or `great_circle`), and the
+  /// same `route_degraded` when both say. Every geo endpoint sends
+  /// `route_mode`; only the low-res one sends `route_degraded`.
+  static bool _sameRouteState(Map patch, Map server) {
+    final p = patch['properties'] as Map? ?? const {};
+    final s = server['properties'] as Map? ?? const {};
+    String mode(Map props) => props['route_mode'] as String? ?? 'great_circle';
+    if (mode(p) != mode(s)) return false;
+    final pd = p['route_degraded'], sd = s['route_degraded'];
+    return pd == null || sd == null || pd == sd;
   }
 
   /// Clear the overlay — call when switching projects.
@@ -608,13 +743,15 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
     _segmentTombstones.clear();
   }
 
-  /// Drops all of this mixin's state: the overlay, and the segments held to
-  /// put back if their DELETE fails. For `ProjectNotifier.clear()` (issue
-  /// #418): a DELETE that fails after it must not restore a segment into
-  /// whatever is loaded next.
+  /// Drops all of this mixin's state: the overlay, the segments held to put
+  /// back if their DELETE fails, and the resolve poller. For
+  /// `ProjectNotifier.clear()` (issue #418): a DELETE that fails after it must
+  /// not restore a segment into whatever is loaded next, nor a poll write a
+  /// route into it.
   void resetSegmentState() {
     clearSegmentOverlay();
     _removedSegments.clear();
+    stopSegmentResolvePolling();
   }
 
   // ── Geometry (SLERP great-circle, mirrors src/models/great_circle.py) ─────
@@ -676,4 +813,29 @@ class _RemovedSegment {
   final Map<String, dynamic> item;
   final Map<String, dynamic>? feature;
   const _RemovedSegment(this.index, this.item, this.feature);
+}
+
+/// One trip's resolve poller. See [ProjectSegmentCrudMixin.pollSegmentResolution].
+class _ResolvePoll {
+  _ResolvePoll(this.trip);
+
+  /// The trip it polls for, compared by name and owner only.
+  final ProjectRef trip;
+
+  /// Pending segment ids, each with the number of polls sent before it joined.
+  final Map<String, int> segments = {};
+
+  /// Callers waiting on a segment's outcome, by segment id.
+  final Map<String, Completer<Map<String, dynamic>>> waiters = {};
+
+  Timer? timer;
+
+  /// True while a poll's `/meta` request is in flight.
+  bool busy = false;
+
+  /// Polls sent so far.
+  int polls = 0;
+
+  /// Time spent waiting between polls since the last segment joined.
+  Duration elapsed = Duration.zero;
 }
