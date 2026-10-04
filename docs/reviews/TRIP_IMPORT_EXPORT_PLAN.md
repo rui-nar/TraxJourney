@@ -165,3 +165,39 @@ Answer (owner, 2026-10-04): skip the lookup for candidates with errors (option a
 - Guard: —
 - Override: —
 - Outcome: fixed (FU1, 29afd6c5)
+## Integrated review — round 1, 2026-10-04, feat/import-export-d at 1816ace2 against main 8b647ae8 (docs excluded)
+
+Reviewer: adversarial-reviewer (Fable). Triager: review-triager (Opus). 3 findings, all well-formed.
+
+Envelope questions (to the owner):
+- Q1: importing a TraxJourney GPX export back into the trip it came from duplicates every activity (Strava rows fingerprint on their Strava id; GPX rows on the original file's points), so nothing matches. Is "import your own export into the same trip" inside #367's envelope?
+  Answer (owner, 2026-10-04): yes — the export carries each activity's original fingerprint and import treats a match as a duplicate.
+- Q2: installed clients (E5) don't read is_connection, so they list connection tracks as importable and can import one as a timeless activity. Should import-gpx refuse is_connection candidates server-side?
+  Answer (owner, 2026-10-04): yes — import-gpx refuses a connection track with a readable 400. PIR1-3's revisit condition is met, so it is fixed together with this. Table approved.
+
+### PIR1-1 — The new client's deliberate "Other" pick is overwritten by the file's exact type
+- Trigger: a user on the new client changes a Kayaking track's type to "Other" → the server reads Workout as an installed-client echo → stores Kayaking.
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6). The new client marks its type as exact (an additive form field); the server stores it verbatim.
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
+
+### PIR1-2 — Cold start via Share shows "You have no trip" before the session restore finishes
+- Trigger: a signed-in user cold-starts the app by sharing a .gpx → /import-gpx renders while AuthNotifier is still restoring → the trips list hasn't loaded yet → the empty-list message shows until load() completes.
+- Scores: trigger=concrete (triager corrected), impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified (corrected)
+- Decision: Fix now (D7). The picker shows a loading state until auth is restored and the trips are loaded.
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
+
+### PIR1-3 — A file whose only error-free track is a connection opens review on the connection
+- Trigger: a user picks an export whose activity tracks all have errors but a connection track doesn't → the review opens on the arc → it can be imported as an activity.
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: the owner rules Q2 a defect (then fix together with a server-side refusal of is_connection), or a user reports an imported arc.
+- Guard: —
+- Override: revisit condition met (owner Q2 answer); fixed in PF1/PF2
+- Outcome: open
