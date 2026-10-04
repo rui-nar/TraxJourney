@@ -42,7 +42,17 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
     if (e is! ApiException || e.statusCode != 409) return false;
     try {
       await reloadDetailsOnly(ref);
-      geo = await service.getGeo(ref, bypassCache: true);
+      final fetched =
+          await fetchServerGeo(() => service.getGeo(ref, bypassCache: true));
+      // The overlay belongs to whatever trip is open now.
+      if (_sameTrip(projectRef, ref)) {
+        reconcileSegmentOverlay(fetched.geo, requestedAt: fetched.requestedAt);
+        geo = {
+          'type': 'FeatureCollection',
+          'features': mergePendingSegmentPatches(
+              List<dynamic>.from(fetched.geo['features'] as List? ?? [])),
+        };
+      }
     } catch (_) {
       // Best-effort resync; the next load will reconcile regardless.
     }
@@ -667,9 +677,57 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
   /// snapshot still contains them.
   final Set<String> _segmentTombstones = {};
 
+  // ── Request ordering (I1-R2-2) ────────────────────────────────────────────
+  //
+  // A patch is only ever applied once the server has the change it draws: a
+  // segment's POST or PUT has returned, a poll has seen its resolve land, a
+  // track edit has been saved, a failed DELETE left the segment in place. So a
+  // geo request that starts after a patch is applied answers with the server's
+  // state at least as new as the patch, and that answer stands — whatever it
+  // says, including another writer's re-route (the hourly degraded-route sweep,
+  // another device's track edit) that the patch would otherwise hide until the
+  // trip is reopened. Only a request that started before the patch can carry
+  // the state the patch replaced, and only its content can say whether it
+  // already reflects the patch ([_sameRouteState]).
+
+  /// Orders geo requests against patches: every request start and every patch
+  /// takes the next value. Never reset, not even by `clear()`: a request
+  /// still in flight from before would then look newer than patches made
+  /// after.
+  int _overlayClock = 0;
+
+  /// When each pending patch was applied, on [_overlayClock].
+  final Map<String, int> _patchAppliedAt = {};
+
+  /// The server geo requests [fetchServerGeo] has in flight. Each removes
+  /// itself when it settles.
+  final Set<_GeoRequest> _geoRequestsInFlight = {};
+
+  /// Fetches server geo with [fetch] and returns it with the [_overlayClock]
+  /// reading to pass to [reconcileSegmentOverlay].
+  ///
+  /// The reading is the start of the oldest of this notifier's geo requests
+  /// still in flight, not just this one's: the service hands an identical
+  /// request already in flight to a later caller, so this one's answer may be
+  /// that older request's. Erring early only keeps a patch until a later
+  /// request settles it; erring late would let a stale answer drop it.
+  Future<({Map<String, dynamic> geo, int requestedAt})> fetchServerGeo(
+      Future<Map<String, dynamic>> Function() fetch) async {
+    final request = _GeoRequest(++_overlayClock);
+    final requestedAt = _geoRequestsInFlight.fold(
+        request.startedAt, (int at, r) => math.min(at, r.startedAt));
+    _geoRequestsInFlight.add(request);
+    try {
+      return (geo: await fetch(), requestedAt: requestedAt);
+    } finally {
+      _geoRequestsInFlight.remove(request);
+    }
+  }
+
   /// Upsert a segment feature into [geo] by segment_id (adds if absent).
   void upsertSegmentInGeo(String segId, Map<String, dynamic> feature) {
     _pendingSegmentPatches[segId] = feature;
+    _patchAppliedAt[segId] = ++_overlayClock;
     _segmentTombstones.remove(segId);
     final current = geo;
     if (current == null) return; // overlay re-applies it when geo is rebuilt
@@ -687,6 +745,7 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
   /// Remove a segment feature from [geo] by segment_id.
   void removeSegmentFromGeo(String segId) {
     _pendingSegmentPatches.remove(segId);
+    _patchAppliedAt.remove(segId);
     _segmentTombstones.add(segId);
     final current = geo;
     if (current == null) return;
@@ -721,15 +780,25 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
   }
 
   /// Drop overlay entries the authoritative server [serverGeo] already reflects,
-  /// so the overlay self-cleans once the backend has caught up. A pending patch
-  /// is cleared when the server geo carries its segment *in the same route
-  /// state* ([_sameRouteState]); a tombstone is cleared when the server geo no
-  /// longer contains its segment_id.
+  /// so the overlay self-cleans once the backend has caught up. [requestedAt]
+  /// is when the request for [serverGeo] started, on [_overlayClock]: what
+  /// [fetchServerGeo] returns, or 0 for a snapshot older than every patch (the
+  /// offline cache).
   ///
-  /// Matching on the id alone dropped a resolved route's patch on any geo that
-  /// still had the segment — including one fetched before the resolve landed,
-  /// which then put the great-circle line back (issue #278).
-  void reconcileSegmentOverlay(Map<String, dynamic> serverGeo) {
+  /// A pending patch is cleared when the request started after the patch was
+  /// applied: the server's answer is then at least as new as the patch (see
+  /// "Request ordering" above). One that started before clears it only when
+  /// the server geo carries its segment *in the same route state*
+  /// ([_sameRouteState]). Matching on the id alone dropped a resolved route's
+  /// patch on any geo that still had the segment — including one fetched
+  /// before the resolve landed, which then put the great-circle line back
+  /// (issue #278).
+  ///
+  /// A tombstone is cleared when the server geo no longer contains its
+  /// segment_id, whenever the request started: it is made before the DELETE
+  /// is sent (the undo window), so a later request can still have the segment.
+  void reconcileSegmentOverlay(Map<String, dynamic> serverGeo,
+      {required int requestedAt}) {
     final serverFeatures = <String, Map>{
       for (final f in (serverGeo['features'] as List? ?? const []))
         if (f is Map &&
@@ -738,12 +807,16 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
     };
     _pendingSegmentPatches.entries
         .where((e) {
+          if (requestedAt > (_patchAppliedAt[e.key] ?? 0)) return true;
           final server = serverFeatures[e.key];
           return server != null && _sameRouteState(e.value, server);
         })
         .map((e) => e.key)
         .toList()
-        .forEach(_pendingSegmentPatches.remove);
+        .forEach((segId) {
+          _pendingSegmentPatches.remove(segId);
+          _patchAppliedAt.remove(segId);
+        });
     _segmentTombstones.removeWhere((id) => !serverFeatures.containsKey(id));
   }
 
@@ -775,6 +848,7 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
   /// Clear the overlay — call when switching projects.
   void clearSegmentOverlay() {
     _pendingSegmentPatches.clear();
+    _patchAppliedAt.clear();
     _segmentTombstones.clear();
   }
 
@@ -848,6 +922,13 @@ class _RemovedSegment {
   final Map<String, dynamic> item;
   final Map<String, dynamic>? feature;
   const _RemovedSegment(this.index, this.item, this.feature);
+}
+
+/// A server geo request in flight. See [ProjectSegmentCrudMixin.fetchServerGeo].
+/// An object rather than its start value, so each request removes only itself.
+class _GeoRequest {
+  _GeoRequest(this.startedAt);
+  final int startedAt;
 }
 
 /// One trip's resolve poller. See [ProjectSegmentCrudMixin.pollSegmentResolution].
