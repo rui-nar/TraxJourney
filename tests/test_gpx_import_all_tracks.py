@@ -459,3 +459,47 @@ def test_the_exact_type_sent_back_is_stored(env, exported):
     assert r.status_code == 200, r.text
     (row,) = _rows(engine, "Single")
     assert row.type == "Kayaking"
+
+
+def test_a_type_marked_exact_is_stored_as_sent(env, exported):
+    """The new client's "Other" on a kayak is a pick, not an echo (PIR1-1)."""
+    client, engine = env
+
+    r = _import_one(client, exported, track_index=4, activity_type="Workout",
+                    activity_type_is_exact="true")
+
+    assert r.status_code == 200, r.text
+    (row,) = _rows(engine, "Single")
+    assert row.type == "Workout"
+
+
+# ── Connection tracks (Q2, PIR1-3) ────────────────────────────────────────────
+
+def test_import_gpx_refuses_a_connection_track(env, exported):
+    """Installed clients list a connection track as importable; the server
+    refuses it, whatever the client sends."""
+    client, engine = env
+
+    r = _import_one(client, exported, track_index=1, date="2024-06-01",
+                    start_time="08:00", end_time="09:00")
+
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["errors"] == [
+        "This track is a connecting segment between activities, "
+        "not an activity."]
+    assert _rows(engine, "Single") == []
+
+
+def test_import_gpx_refuses_a_file_that_is_one_connection_track(env):
+    client, engine = env
+    content = (
+        b'<?xml version="1.0"?><gpx version="1.1" creator="x" '
+        b'xmlns="http://www.topografix.com/GPX/1/1"><trk><name>A</name>'
+        b'<type>traxjourney-connection</type><trkseg>'
+        b'<trkpt lat="1" lon="1"/><trkpt lat="1.1" lon="1.1"/></trkseg></trk></gpx>')
+
+    r = _import_one(client, content, date="2024-06-01", start_time="08:00",
+                    end_time="09:00")
+
+    assert r.status_code == 400, r.text
+    assert _rows(engine, "Single") == []

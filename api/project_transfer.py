@@ -54,7 +54,7 @@ from src.billing.usage import unlink_and_record
 from src.brand import APP_NAME
 from src.gpx.export_format import (
     CONNECTION_TRACK_TYPE, EXTENSION_NAMESPACE, EXTENSION_PREFIX,
-    activity_extensions, spread_times,
+    activity_extensions, activity_identity, spread_times,
 )
 from src.models.great_circle import great_circle_points
 from src.models.project import Project
@@ -806,7 +806,7 @@ def _activity_track(act) -> Optional[gpxpy.gpx.GPXTrack]:
     """One activity as its own ``<trk>``, or None when it has no geometry.
 
     Named and typed as stored, with the stored moving time and distance in
-    the TraxJourney extension. Every point is timed, from ``start_date``,
+    the TraxJourney extension, with its original identity (Q1). Every point is timed, from ``start_date``,
     the true UTC instant, to ``start_date + elapsed_time``, spread by
     distance. A GPX row labelled ``"UTC"`` was imported before its instant
     was known (#365), so it is written with no times at all rather than with
@@ -832,7 +832,9 @@ def _activity_track(act) -> Optional[gpxpy.gpx.GPXTrack]:
 
     track = gpxpy.gpx.GPXTrack(name=act.name or None)
     track.type = act.type or None
-    track.extensions.extend(activity_extensions(act.moving_time, act.distance))
+    track.extensions.extend(activity_extensions(
+        act.moving_time, act.distance,
+        activity_identity(act.source, act.source_id, act.id)))
     seg = gpxpy.gpx.GPXTrackSegment()
     for (lat, lon), stamp in zip(latlngs, times):
         seg.points.append(gpxpy.gpx.GPXTrackPoint(lat, lon, time=stamp))

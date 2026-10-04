@@ -41,6 +41,7 @@ from src.api.strava_client import RateLimiter, StravaAPI
 from src.billing.entitlements import ensure_trip_days_quota
 from src.config.settings import Config
 from src.exceptions.errors import RateLimitError
+from src.gpx.export_format import SOURCE_GPX, SOURCE_STRAVA
 from src.gpx.importer import (
     GPXImportError,
     candidates as gpx_candidates,
@@ -704,6 +705,37 @@ def _existing_import(sess, project_row_id: int, fingerprint: str):
     ).first()
 
 
+def _existing_identity(sess, project_row_id: int, identity):
+    """The activity in this trip a TraxJourney export says the track is (Q1):
+    the GPX import with that fingerprint, or the Strava activity with that
+    id. Only this trip's timeline is searched, so a file naming an activity
+    elsewhere matches nothing, and says nothing about it."""
+    if identity is None:
+        return None
+    source, source_id = identity
+    query = (select(DBActivity)
+             .join(DBProjectItem, DBProjectItem.activity_id == DBActivity.id)
+             .where(DBProjectItem.project_id == project_row_id))
+    if source == SOURCE_GPX:
+        query = (query.where(DBActivity.source == SOURCE_GPX)
+                 .where(DBActivity.source_id == source_id))
+    elif source == SOURCE_STRAVA:
+        query = (query.where(DBActivity.id == int(source_id))
+                 .where(DBActivity.source.is_(None)))
+    else:
+        return None
+    return sess.exec(query).first()
+
+
+def _existing_activity(sess, project_row_id: int, candidate, fingerprint):
+    """The activity in this trip already holding *candidate*: by the track's
+    fingerprint, as before, else by the identity its export carried."""
+    return ((_existing_import(sess, project_row_id, fingerprint)
+             if fingerprint is not None else None)
+            or _existing_identity(sess, project_row_id,
+                                  candidate.carried_identity))
+
+
 @router.post("/{name}/activities/gpx/inspect", response_model=GPXInspectOut,
              summary="Read a GPX file without importing it")
 async def inspect_gpx_file(
@@ -759,9 +791,10 @@ async def inspect_gpx_file(
     duplicate = None
     if len(found) == 1 and not out[0]["errors"]:
         fingerprint = _import_fingerprint(found[0], None)
-        if fingerprint is not None:
+        if fingerprint is not None or found[0].carried_identity is not None:
             with get_session() as sess:
-                existing = _existing_import(sess, project_row_id, fingerprint)
+                existing = _existing_activity(sess, project_row_id, found[0],
+                                              fingerprint)
             if existing is not None:
                 duplicate = {"activity_id": existing.id,
                              "name": existing.name}
@@ -878,12 +911,15 @@ def _preview_polyline(points) -> Optional[str]:
 
 def _gpx_activity(gpx, candidate, filename, *, date=None, start_time=None,
                   end_time=None, activity_type=None, activity_name=None,
-                  times_local=False, metrics=None):
+                  times_local=False, activity_type_is_exact=False,
+                  metrics=None):
     """The activity one candidate becomes, and its fingerprint, unsaved and
     without an id: what ``import-gpx`` and ``import-gpx-tracks`` both store.
 
     Raises a 422 for times or geometry the app cannot store. *metrics* are
     the track's, when the caller has already measured them.
+    *activity_type_is_exact* says *activity_type* is the user's own pick,
+    stored as sent (PIR1-1).
     """
     first = candidate.points[0] if candidate.points else None
     zone = zone_at(first.lat if first else None, first.lng if first else None)
@@ -940,10 +976,12 @@ def _gpx_activity(gpx, candidate, filename, *, date=None, start_time=None,
     resolved_name = (activity_name
                      or gpx_suggested_name(gpx, candidate, filename)
                      or "GPX Import")
-    if (activity_type is not None
+    if (activity_type is not None and not activity_type_is_exact
             and activity_type == _installed_client_type(candidate.activity_type)):
         # Sent back as inspect suggested it: an installed client offers no
         # Kayaking, so it suggests and sends Workout for one (Decision 3, E5).
+        # The new client marks its pick as exact, so its "Other" on a kayak
+        # stays Workout (PIR1-1).
         activity_type = candidate.activity_type
     resolved_type = activity_type or candidate.activity_type or "Workout"
 
@@ -985,6 +1023,11 @@ def _gpx_activity(gpx, candidate, filename, *, date=None, start_time=None,
     return activity, fingerprint
 
 
+#: Why import-gpx refuses a connection track (Q2).
+_CONNECTION_REFUSAL = ("This track is a connecting segment between activities, "
+                       "not an activity.")
+
+
 @router.post("/{name}/activities/import-gpx", response_model=GPXImportOut,
              summary="Import a single activity from a GPX file")
 async def import_gpx_activity(
@@ -999,6 +1042,7 @@ async def import_gpx_activity(
     track_index: Annotated[Optional[int], Form()] = None,
     activity_name: Annotated[Optional[str], Form()] = None,
     times_local: Annotated[bool, Form()] = False,
+    activity_type_is_exact: Annotated[bool, Form()] = False,
     owner: OwnerParam = None,
 ):
     """Import a GPX track as a new local activity — no Strava involved.
@@ -1017,6 +1061,14 @@ async def import_gpx_activity(
     ``start_date`` is the true UTC instant, ``start_date_local`` the wall
     clock there. ``times_local=true`` says typed times are wall clock in that
     zone; see :func:`_resolve_times` for how they are read without it.
+
+    ``activity_type_is_exact=true`` stores ``activity_type`` as sent. Without
+    it, the type inspect suggested to installed clients, sent back unchanged,
+    is stored as the file's precise type (Decision 3, PIR1-1).
+
+    A connecting segment's track is refused with a 400: it is a train or a
+    flight drawn as an arc, not an activity, and installed clients do not
+    read ``is_connection`` to leave it out (Q2, PIR1-3).
     """
     user_info_id = int(current_user["sub"])
 
@@ -1035,18 +1087,23 @@ async def import_gpx_activity(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                              detail={"errors": problems})
     candidate = found[track_index or 0]
+    if candidate.is_connection:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"errors": [_CONNECTION_REFUSAL]})
 
     activity, fingerprint = _gpx_activity(
         gpx, candidate, file.filename, date=date, start_time=start_time,
         end_time=end_time, activity_type=activity_type,
-        activity_name=activity_name, times_local=times_local)
+        activity_name=activity_name, times_local=times_local,
+        activity_type_is_exact=activity_type_is_exact)
 
     with get_session() as sess:
         # Refuse a file this trip already holds. The same track legitimately
         # belongs to two different trips, so the check is scoped to this one's
         # timeline rather than to the global activity table.
-        duplicate = (_existing_import(sess, project_row_id, fingerprint)
-                     if fingerprint is not None else None)
+        duplicate = _existing_activity(sess, project_row_id, candidate,
+                                       fingerprint)
         if duplicate is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -1223,10 +1280,13 @@ async def import_gpx_tracks(
         imported.clear()
         skipped.clear()
         new = []
-        seen: Dict[str, Activity] = {}
+        seen: Dict[Any, Activity] = {}
         for candidate, activity, fingerprint in prepared:
+            identity = candidate.carried_identity
             existing = (seen.get(fingerprint)
-                        or _existing_import(qsess, project_row_id, fingerprint))
+                        or (seen.get(identity) if identity else None)
+                        or _existing_activity(qsess, project_row_id, candidate,
+                                              fingerprint))
             if existing is not None:
                 skipped.append({
                     "track_index": candidate.index, "name": activity.name,
@@ -1234,6 +1294,8 @@ async def import_gpx_tracks(
                                      "name": existing.name}})
                 continue
             seen[fingerprint] = activity
+            if identity is not None:
+                seen[identity] = activity
             new.append(activity)
             imported.append({"activity_id": activity.id, "name": activity.name})
         return new
