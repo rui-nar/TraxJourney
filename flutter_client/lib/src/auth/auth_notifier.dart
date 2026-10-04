@@ -6,6 +6,7 @@ import '../api/client.dart';
 import '../crypto/encryption.dart';
 import '../projects/photo_thumb_cache.dart';
 import '../projects/project_data_cache.dart';
+import '../projects/project_service.dart' show resetInFlightFetches;
 import 'auth_service.dart';
 
 // ── User model ─────────────────────────────────────────────────────────────────
@@ -34,8 +35,13 @@ class User {
     this.passwordChangeRequired = false,
   });
 
+  /// [map] is a login/register response's `user`, which carries `id`, or
+  /// /api/auth/me, which echoes the token's payload and names the account
+  /// `sub` (issue #418). Read either: without the fallback a restored
+  /// session's id stayed empty, and everything keyed on it was shared by
+  /// every account on the device.
   factory User.fromMap(Map<String, dynamic> map) => User(
-        id: map['id']?.toString() ?? '',
+        id: (map['id'] ?? map['sub'])?.toString() ?? '',
         email: map['email'] as String? ?? '',
         displayName: map['display_name'] as String? ?? '',
         avatarUrl: map['avatar_url'] as String? ?? '',
@@ -45,15 +51,18 @@ class User {
         passwordChangeRequired: map['password_change_required'] == true,
       );
 
-  /// Sentinel used after restoring a session from secure storage when no
-  /// /api/auth/me endpoint is available yet to fetch the full profile.
-  static const restored = User(
-    id: '',
-    email: '',
-    displayName: '',
-    avatarUrl: '',
-    authProvider: 'local',
-  );
+  /// The user of a session restored from storage before /api/auth/me has
+  /// answered, or when it cannot (offline). Only the id is known: it is read
+  /// from the restored token, so whatever is keyed on it (the last-opened
+  /// trip, the on-device cache, [ProjectNotifier]'s account check) is this
+  /// account's from the first frame, not a shared empty id (issue #418).
+  static User get restored => User(
+        id: api.tokenUserId?.toString() ?? '',
+        email: '',
+        displayName: '',
+        avatarUrl: '',
+        authProvider: 'local',
+      );
 }
 
 // ── AuthNotifier ───────────────────────────────────────────────────────────────
@@ -135,7 +144,7 @@ class AuthNotifier extends ChangeNotifier {
           } on ApiException catch (e) {
             if (e.statusCode == 401) {
               await _service.logout();
-              _user = null;
+              _endSession();
               _recordAppOpened('login_required');
             } else {
               _user = User.restored;
@@ -183,7 +192,7 @@ class AuthNotifier extends ChangeNotifier {
     } on ApiException catch (e) {
       if (e.statusCode == 401) {
         await _service.logout();
-        _user = null;
+        _endSession();
         notifyListeners();
       }
     } catch (_) {
@@ -276,8 +285,7 @@ class AuthNotifier extends ChangeNotifier {
       // Signed out whatever fails below or above: the router keeps a user it
       // still sees out of /login, so a failed wipe used to leave a dead
       // session on screen — after an account deletion, for one (issue #429).
-      encryption.lock();
-      _user = null;
+      _endSession();
       _error = null;
       notifyListeners();
     }
@@ -285,6 +293,19 @@ class AuthNotifier extends ChangeNotifier {
     // another account's cached trip data sitting on disk.
     await projectDataCache.clearAll();
     await photoThumbCache.clearAll();
+  }
+
+  /// Ends the session in memory, the same for an explicit logout and for the
+  /// 401s that force one (issue #418): the key is locked, fetches started for
+  /// this account are forgotten so the next one cannot be handed them, and
+  /// the user is nulled — which is what clears `ProjectNotifier`, through its
+  /// proxy provider. The on-device caches are [logout]'s alone to wipe: they
+  /// are keyed by account, so an expired token does not cost its owner their
+  /// offline trips.
+  void _endSession() {
+    encryption.lock();
+    resetInFlightFetches();
+    _user = null;
   }
 
   /// After a successful login/restore, try to unlock encryption on this trusted

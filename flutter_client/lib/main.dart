@@ -17,6 +17,7 @@ import 'src/projects/project_notifier.dart';
 import 'src/settings/theme_notifier.dart';
 import 'src/core/app_router.dart';
 import 'src/core/brand.dart';
+import 'src/core/last_opened_project.dart';
 import 'src/core/onboarding_notifier.dart';
 import 'src/core/perf_timing.dart';
 import 'src/core/server_config.dart';
@@ -51,6 +52,8 @@ void main() async {
   if (customServerUrl != null) api = ApiClient(baseUrl: customServerUrl);
   final hasSeenOnboarding = await readHasSeenOnboarding();
   await projectDataCache.init();
+  // Before runApp, so before the router's first redirect can read it.
+  await purgeSharedLastOpenedProject();
   await photoThumbCache.init();
   runApp(
     // MultiProvider lives here — above TraxJourneyApp — so its providers are
@@ -72,14 +75,26 @@ void main() async {
           update: (_, auth, previous) =>
               previous!..onAuthChanged(auth.user != null),
         ),
-        ChangeNotifierProvider<ProjectNotifier>(
-          create: (_) => ProjectNotifier(ProjectService()),
-        ),
+        accountScopedProjectNotifier(() => ProjectNotifier(ProjectService())),
       ],
       child: const TraxJourneyApp(),
     ),
   );
 }
+
+/// The app-wide [ProjectNotifier], owned by the signed-in account (issue
+/// #418): [ProjectNotifier.onAuthChanged] clears it whenever the account
+/// changes. Not lazy, so every auth change reaches it — a lazy proxy updates
+/// only when read, and would miss a logout followed by the same account
+/// signing back in before anything read it.
+ChangeNotifierProxyProvider<AuthNotifier, ProjectNotifier>
+    accountScopedProjectNotifier(ProjectNotifier Function() create) =>
+        ChangeNotifierProxyProvider<AuthNotifier, ProjectNotifier>(
+          lazy: false,
+          create: (_) => create(),
+          update: (_, auth, previous) => previous!
+            ..onAuthChanged(auth.user?.id, restoring: auth.isRestoring),
+        );
 
 class TraxJourneyApp extends StatefulWidget {
   const TraxJourneyApp({super.key});

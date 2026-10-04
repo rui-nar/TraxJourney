@@ -43,9 +43,20 @@ Future<Map<String, dynamic>> _dedupFetch(
   // unlistened-to and surface a failed fetch as an unhandled async error the
   // moment `future` rejects. .ignore() marks that deliberate (see the same
   // pattern in ProjectNotifier.load()).
-  future.whenComplete(() => _inFlightFetches.remove(key)).ignore();
+  //
+  // Removed only while it is still this fetch's entry: after a
+  // [resetInFlightFetches] the key may already hold the next account's.
+  future.whenComplete(() {
+    if (identical(_inFlightFetches[key], future)) _inFlightFetches.remove(key);
+  }).ignore();
   return future;
 }
+
+/// Forgets every fetch in flight, so the next caller starts its own. Called
+/// when the session ends (issue #418): the keys name a trip, not an account,
+/// so the next account to open a trip of the same name would otherwise be
+/// handed the previous one's response.
+void resetInFlightFetches() => _inFlightFetches.clear();
 
 /// Human-readable payload size for a [PerfSpans.note]. Shared with the
 /// shared-project service, which records the same notes for its own endpoints.

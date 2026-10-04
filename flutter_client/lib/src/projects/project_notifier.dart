@@ -542,9 +542,12 @@ class ProjectNotifier extends ChangeNotifier
   bool degradedRouteUpgradeAvailable = false;
 
   // ── Track style ───────────────────────────────────────────────────────────
-  Color trackColor = const Color(0xFF6B7280); // gray-500 — shown while project loads
+  // Named so [clear] puts back the same defaults a fresh notifier starts with.
+  static const _kDefaultTrackColor = Color(0xFF6B7280); // gray-500 — shown while project loads
+  static const _kDefaultTrackWidth = 2.5;
+  Color trackColor = _kDefaultTrackColor;
   Color? trackSecondaryColor; // null = auto-derive from primary
-  double trackWidth = 2.5;
+  double trackWidth = _kDefaultTrackWidth;
   bool alternatingTrackColors = false;
   Color? elevationChartColor; // null = "auto" → match the map track line (#22)
   bool elevationChartShowLine = true;
@@ -914,6 +917,18 @@ class ProjectNotifier extends ChangeNotifier
     } catch (_) {
       // Malformed/missing prefs — restore is best-effort only.
     }
+  }
+
+  /// Re-reads the saved selection and filters into a notifier that is reused
+  /// without a reload (issue #418, second comment). Another notifier — view
+  /// mode's — may have changed them since this one last read them, and the
+  /// next tap here would save this one's stale copy over that change.
+  Future<void> restoreSavedUiState() async {
+    final loadRef = _loadTrack.ref;
+    if (loadRef == null) return;
+    final token = _loadTrack.token;
+    await _restoreUiState(token, loadRef);
+    if (_isCurrent(token, loadRef)) notifyListeners();
   }
 
   // Cached aggregate stats — computed once in load(), not on every build.
@@ -2165,24 +2180,103 @@ class ProjectNotifier extends ChangeNotifier
   @visibleForTesting
   int get buildFullTrackGen => _buildFullTrackGen;
 
+  // ── Account (issue #418) ───────────────────────────────────────────────────
+
+  /// The account [onAuthChanged] last saw: a user id, null for none, or
+  /// [_kUnset] before its first call.
+  Object? _authUserId = _kUnset;
+
+  /// Called by the [ChangeNotifierProxyProvider] over `AuthNotifier` on every
+  /// auth change. This notifier is app-wide and outlives a session, so the
+  /// account owns its lifetime: whenever the signed-in user id changes —
+  /// including to or from no account — everything held is dropped with
+  /// [clear]. One check here covers logout, the 401s that force one, account
+  /// deletion and any later way to switch account; a call at each exit is
+  /// what missed the 401 paths (issue #418).
+  ///
+  /// [restoring] is true while `AuthNotifier` restores the session at app
+  /// start. Nothing is recorded then: the restored token is already the
+  /// session's, so a trip opened under the splash belongs to the account the
+  /// restore is about to name, and the null-to-id step that ends the restore
+  /// must not clear it.
+  void onAuthChanged(String? userId, {bool restoring = false}) {
+    if (restoring) return;
+    final previous = _authUserId;
+    _authUserId = userId;
+    if (identical(previous, _kUnset) || previous == userId) return;
+    clear();
+  }
+
+  /// Drops everything a load, and the session since, put in this notifier,
+  /// leaving it as a freshly constructed one would be (issue #418).
+  ///
+  /// Every instance field of this class and its mixins is either reset here,
+  /// in a method called from here, or on the allowlist of
+  /// project_notifier_clear_scan_test.dart with the reason it survives — the
+  /// test fails on a field that is neither.
   void clear() {
     _zoomRefetchTimer?.cancel();
     _loadedZoomBucket = null;
     _loadedGeoBox = null;
     _mapViewport = null;
+    _stopPhotoPolling();
+    stopDegradedRouteWatch();
+    _lastDegradedRouteCount = null;
+    degradedRouteUpgradeAvailable = false;
     ref = null;
+    // The saved state the filters belong to: a held key would let the next
+    // load of the same key keep filters this clear has just dropped.
+    _heldStateKey = null;
     activities = [];
     items = [];
+    people = [];
+    groups = [];
+    undecryptedFields.reset();
     geo = null;
+    resetSegmentState();
     selectedActivityId = null;
     selectedSegmentId = null;
     selectedMemoryId = null;
+    selectedJournalId = null;
     selectedDay = null;
+    showJournals = true;
     resetFilters();
     tripStart = null;
     tripEnd = null;
     dayMeta = {};
     sleepingOptions = [];
+    sleepingOptionGroups = {};
+    counters = [];
+    shareToken = null;
+    shareTokenNoMemories = null;
+    autoSyncEnabled = true;
+    linkedPsTripId = null;
+    lastStravaSyncAt = null;
+    lastPsSyncAt = null;
+    pendingSync = null;
+    trackColor = _kDefaultTrackColor;
+    trackSecondaryColor = null;
+    trackWidth = _kDefaultTrackWidth;
+    alternatingTrackColors = false;
+    elevationChartColor = null;
+    elevationChartShowLine = true;
+    colorByType = false;
+    typeStyles = {};
+    languages = [];
+    quotaError = null;
+    polarstepsOverlaySteps = [];
+    polarstepsOverlayLabel = null;
+    _immichConnectedCheckedAt = null;
+    _immichConnectedCached = false;
+    // Memos keyed on the identity of the lists dropped above. They would
+    // miss anyway, but holding them kept the last trip alive in memory.
+    _dayStatsCache = null;
+    _dayStatsCacheItems = null;
+    _dayStatsCacheActivities = null;
+    _orderedDayKeysCache = null;
+    _orderedDayKeysCacheDayMeta = null;
+    _orderedDayKeysCacheActivities = null;
+    _orderedDayKeysCacheItems = null;
     members = [];
     pendingInvites = [];
     memberInviteToken = null;
@@ -2207,6 +2301,12 @@ class ProjectNotifier extends ChangeNotifier
     totalElevationGainM = 0;
     isLoading = false;
     error = null;
+    loadErrorStatus = null;
+    offlineFromCache = false;
+    isMetaLoaded = true;
+    isElevationLoaded = true;
+    isGeoLoaded = true;
+    isSyncMetaLoaded = true;
     notifyListeners();
   }
 
