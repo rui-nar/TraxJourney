@@ -108,6 +108,66 @@ void main() {
     await tester.pump(const Duration(milliseconds: 6000));
     expect(service.deletedLocal, [('trip', -7)]);
   });
+
+  testWidgets('a refused delete restores the item and says why (F1-R1-1)',
+      (tester) async {
+    const tail = {
+      'id': -7,
+      'type': 'Ride',
+      'name': 'Split tail',
+      'distance': 5000,
+      'moving_time': 1800,
+      'start_date_local': '2026-06-01T08:00:00',
+      'manual': true,
+    };
+    const item = {'item_type': 'activity', 'activity_id': -7};
+    final service = _RefusingService(tail, item);
+    final notifier = ProjectNotifier(service);
+    notifier.ref = const ProjectRef(name: 'trip');
+    notifier.activities = [Map.of(tail)];
+    notifier.items = [Map.of(item)];
+    await pumpPanel(tester, notifier);
+
+    await tester.tap(find.byKey(const ValueKey('del_local_-7')));
+    await tester.pump();
+    expect(notifier.items, isEmpty);
+
+    await tester.pump(const Duration(milliseconds: 6000));
+    await tester.pump();
+
+    expect(notifier.items, [item]);
+    expect(notifier.error, _RefusingService.detail);
+    expect(find.text(_RefusingService.detail), findsOneWidget);
+  });
+}
+
+/// The server's 403 for a companion deleting someone else's Strava split
+/// piece; the reload afterwards still holds the item.
+class _RefusingService extends ProjectService {
+  _RefusingService(this.tail, this.item);
+
+  static const detail =
+      "Only the activity's owner or the trip owner can delete this piece";
+  final Map<String, dynamic> tail;
+  final Map<String, dynamic> item;
+
+  @override
+  Future<void> deleteLocalActivity(ProjectRef ref, int activityId) async {
+    throw Exception('403: {"detail":"$detail"}');
+  }
+
+  @override
+  Future<Map<String, dynamic>> getDetailsMeta(ProjectRef ref) async => {
+        'name': ref.name,
+        'activities': [Map.of(tail)],
+        'items': [Map.of(item)],
+      };
+
+  @override
+  Future<Map<String, dynamic>> getGeo(ProjectRef ref, {bool bypassCache = false}) async => {
+        'type': 'FeatureCollection',
+        'features': const [],
+      };
 }
 
 /// Minimal ProjectService stub that records the local-delete call and

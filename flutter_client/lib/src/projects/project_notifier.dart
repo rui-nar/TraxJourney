@@ -3059,10 +3059,22 @@ class ProjectNotifier extends ChangeNotifier
   }
 
   /// Delete a local (split-tail, negative-id) [activityId].
+  ///
+  /// The server may refuse — a companion deleting someone else's piece of a
+  /// Strava activity gets a 403. The panel has already removed the item
+  /// optimistically, so a refusal reloads to bring it back and sets [error]
+  /// to say why, then rethrows for callers with their own failure message.
   Future<void> deleteLocalActivity(int activityId) async {
     final ref = this.ref;
     if (ref == null) return;
-    await _service.deleteLocalActivity(ref, activityId);
+    try {
+      await _service.deleteLocalActivity(ref, activityId);
+    } on Exception catch (e) {
+      await _silentReload(ref);
+      error = _msg(e);
+      notifyListeners();
+      rethrow;
+    }
     await _silentReload(ref);
   }
 

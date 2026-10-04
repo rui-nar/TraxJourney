@@ -1426,34 +1426,52 @@ def delete_local_activity(
     Only local activities may be deleted (Strava activities are shared). This is
     the undo path for a split — deleting the tail leaves the head in place.
 
-    A tail of a Strava activity kept its root alive, so once it goes the root
-    is reconsidered (issue #509), under the timeline path's rule in
-    ``api/project_items.py``: only when the caller owns the tail or owns the
-    trip. A companion deleting someone else's tail leaves the root in place.
+    A tail of a Strava activity (issue #509) follows the timeline path's rule
+    in ``api/project_items.py`` instead of the trip-rewrite gate: its own
+    account may delete it, and so may the trip's owner when the trip holds
+    it — a companion who has since left included. Any other companion is
+    refused with a 403 (owner decision, review F1-R1-1). Once such a tail
+    goes, its root is reconsidered, since the tail kept it.
     """
     user_info_id = int(current_user["sub"])
     with get_session() as sess:
         row = resolve_project(sess, user_info_id, name, owner, min_role="editor")
         owner_id = row.user_info_id
-        _require_rewritable_by_trip(sess, row, activity_id)
         # Read before the delete: the row is gone afterwards.
         tail = sess.exec(
             select(DBActivity.user_info_id, DBActivity.split_root_id, DBActivity.source)
             .where(DBActivity.id == activity_id)
         ).first()
+        strava_root = (
+            tail.split_root_id
+            if tail is not None
+            and (tail.split_root_id or 0) > 0
+            and tail.source in (None, "", "strava")
+            else None
+        )
+        if strava_root is None:
+            _require_rewritable_by_trip(sess, row, activity_id)
+        elif user_info_id != tail.user_info_id:
+            held = sess.exec(select(DBProjectItem.id).where(
+                DBProjectItem.project_id == row.id,
+                DBProjectItem.item_type == "activity",
+                DBProjectItem.activity_id == activity_id,
+            )).first() is not None
+            if not held:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="Activity not in project")
+            if user_info_id != owner_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Only the activity's owner or the trip owner can delete this piece",
+                )
         if not _repo.delete_local_activity(sess, row.id, activity_id):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Local activity not found",
             )
-        if (
-            tail is not None
-            and (tail.split_root_id or 0) > 0
-            and tail.source in (None, "", "strava")
-            and user_info_id in (tail.user_info_id, owner_id)
-        ):
-            _repo.delete_unreferenced_strava_activities(
-                sess, owner_id, ids=[tail.split_root_id])
+        if strava_root is not None:
+            _repo.delete_unreferenced_strava_activities(sess, owner_id, ids=[strava_root])
     bust_geo_cache(owner_id, name)
     queue_stats_refresh(background_tasks, owner_id, name)
     queue_share_tiles_refresh(background_tasks, owner_id, name)
