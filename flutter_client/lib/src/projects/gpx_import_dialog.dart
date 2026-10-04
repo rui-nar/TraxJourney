@@ -260,11 +260,19 @@ class _GpxImportDialogState extends State<GpxImportDialog> {
     // let an arc be imported as an activity.
     final tracks = inspection.importAllCandidates;
     if (tracks.isEmpty) {
+      // The activity tracks' own refusals are the reason when there are any;
+      // "only connecting segments" is for a file that has nothing else.
+      final reasons = [
+        for (final candidate in inspection.candidates)
+          if (!candidate.isConnection) ...candidate.errors,
+      ];
       setState(() {
         _stage = _Stage.pick;
-        _serverErrors = const [
-          'This file has no importable track, only connecting segments.'
-        ];
+        _serverErrors = reasons.isNotEmpty
+            ? reasons
+            : const [
+                'This file has no importable track, only connecting segments.'
+              ];
       });
       return;
     }

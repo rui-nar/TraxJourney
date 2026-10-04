@@ -930,7 +930,8 @@ void main() {
       expect(find.text('Import this track?'), findsNothing);
       expect(find.text('Import a GPX file'), findsOneWidget);
       expect(find.byKey(const ValueKey('gpx_import_confirm')), findsNothing);
-      expect(find.textContaining('no importable track'), findsOneWidget);
+      expect(find.textContaining('fewer than 2 points'), findsOneWidget);
+      expect(find.textContaining('only connecting segments'), findsNothing);
     });
 
     testWidgets('a file of connections alone opens nothing', (tester) async {
