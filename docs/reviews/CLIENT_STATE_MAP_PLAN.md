@@ -61,3 +61,26 @@ Answer (user, 2026-10-04): retire it — option (b). The PUT answers 426, and a 
 - Guard: —
 - Override: —
 - Outcome: open
+
+## Round 2 — 2026-10-04, reviewed at a63b8d45 (fixes since a97701a7)
+
+Envelope question raised: option (b) was accepted on the premise that old builds show the 426 detail. They do not: an old build's day-meta save fails silently (R2-1). Does the owner still accept retiring the PUT, knowing old builds lose their own unsaved day-meta edit silently, or reconsider?
+Answer (user, 2026-10-04): keep (b) with the wording corrected to the real behaviour, plus a release-order note in docs/RELEASING.md. Table approved as triaged.
+
+### R2-1 — An old build's day-meta save fails silently, not with the promised message
+- Trigger: user on an installed pre-gate build types a day note and saves → the note looks saved, no message, PUT returns 426 → on the next reload the note is gone; same for bulk tags and the trip-end prune
+- Scores: trigger=concrete, impact=silent-wrong, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3) — the plan must state the real behaviour; the envelope answer is the owner's
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed
+
+### R2-2 — U17's test list misses two tests that construct ActivityPanel
+- Trigger: U17 changes how ActivityPanel subscribes → test/crypto/encrypted_display_test.dart and test/segment_degraded_route_indicator_test.dart fail outside Scope → X3 stall
+- Scores (corrected by triage): trigger=plausible, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: U17's implementer finds either file needs editing, or another wave-7 unit claims either file
+- Guard: —
+- Override: —
+- Outcome: open

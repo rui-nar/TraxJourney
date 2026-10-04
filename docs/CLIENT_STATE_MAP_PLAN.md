@@ -323,11 +323,24 @@ Package C groups client-side defects and debt around the app-wide
         can tell a stale revert from an intended edit. So the `PUT` answers
         **426 Upgrade Required** with the detail "This version of the app can
         no longer save day notes. Please update the app."
-      - It writes nothing. Old builds show that detail as their error string
-        and lose nothing.
-      - Old builds' other settings still save, because they send day-meta
-        in a separate, unawaited request.
+      - It writes nothing, so an old build can never revert another
+        device's day.
+      - **What an old build actually shows (R2-1).** Accepted by the owner,
+        2026-10-04 (round-2 envelope question). Nothing:
+        - `saveDayMeta` applies the edit on screen before the request and on
+          failure only sets `notifier.error`. That is rendered only when the
+          trip has no items (`activity_panel.dart:1376-1385`).
+        - So on an old build a day note, a bulk tag or a counter change
+          looks saved and is gone after the next reload. The same applies to
+          the trip-end prune: the new dates save, the pruned days come back.
+        - The loss is limited to the edit just made on that old build, and it
+          ends when the device updates.
+      - Old builds' other settings still save, because the day-meta request
+        is separate from them.
       - Stale web tabs are already prompted to reload by `VersionGate`.
+      - **Release order.** `docs/RELEASING.md` says this release's native
+        store builds are published before, or together with, the server
+        deploy, to keep that window short (U21).
     - **Accepted.** When two devices edit the **same** day, the last writer
       wins on that day.
     - Rules out: (B) a version column, which detects a conflict but cannot
@@ -412,6 +425,9 @@ What this plan adds to REVIEW.md §2's defaults:
     ignore both.
   - Their `PUT /day-meta` gets a 426 and writes nothing, by decision: they
     cannot save day notes until they update.
+  - They show no message for that 426. The edit looks saved until the next
+    reload (Decision 12, R2-1). This silent loss of the old build's own
+    edit is accepted by the owner and is not a defect.
   - Nothing else they send changes meaning.
 - **`Server-Timing` on share links** exposes server phase durations to
   holders of a share token. These are timings only, with no content, and
@@ -428,8 +444,8 @@ What this plan adds to REVIEW.md §2's defaults:
   - **`PUT /api/projects/{name}/day-meta` now answers 426 and writes
     nothing.** This is a deliberate contract break for installed builds
     (R1-1).
-    - Their day-note, tag and counter saves fail with a readable "please
-      update" message.
+    - Their day-note, tag and counter saves fail **silently**. The edit
+      shows until the next reload and is then gone (R2-1, accepted).
     - Their other settings still save.
   - `GET /api/version` gains `min_client_version` (additive).
   - `GET /api/geo/project/simplified` and `/api/share/{token}/geo/simplified`
@@ -823,7 +839,8 @@ What this plan adds to REVIEW.md §2's defaults:
   - `flutter_client/lib/src/core/version_gate.dart`
   - `flutter_client/lib/src/core/app_version.dart`
   - `flutter_client/test/core/version_gate_min_test.dart` (new)
-  - `docs/RELEASING.md` (a short section on raising the minimum)
+  - `docs/RELEASING.md` (a short section on raising the minimum, and the
+    release-order note from Decision 12)
 - **Context:**
   - `isClientStale` and `_check` in `version_gate.dart` are the code to
     extend.
@@ -834,6 +851,11 @@ What this plan adds to REVIEW.md §2's defaults:
     comparison. `dev`, empty and unparsable values return false.
   - Show the blocking screen on native and the bar on web.
   - Re-check on resume.
+  - In `docs/RELEASING.md`:
+    - when and how to raise `MIN_CLIENT_VERSION`;
+    - for this release, publish the native store builds before, or
+      together with, the server deploy, because the server stops accepting
+      old builds' day-meta saves (Decision 12).
 - **Acceptance:**
   - Unit tests for `isBelowMinimum`, including `dev`, `0.0.0`, equal
     versions, and `0.10.0` greater than `0.9.0`.
@@ -1216,8 +1238,10 @@ because its listener inventory can reach any file (R1-3).
 - **#397**
   - Two devices editing different days of one trip both keep their changes.
   - A settings save no longer sends day-meta it didn't change.
-  - An old build's `PUT` gets 426 with a readable message and changes
-    nothing.
+  - An old build's `PUT` gets 426, with the "please update" detail in the
+    body, and changes nothing.
+  - `docs/RELEASING.md` tells the owner to publish the native builds before,
+    or together with, the server deploy.
   - Saving a note keeps the carousel's days up to today.
 - **Minimum version:** `/api/version` serves `min_client_version`. A build
   that ships the gate and later falls below the minimum is stopped with an
