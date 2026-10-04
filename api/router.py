@@ -24,6 +24,7 @@ from src.jobs.route_jobs import (
     sweep_stale_resolver_segments,
 )
 from src.poster.poster_job_runner import sweep_orphaned_poster_jobs
+from src.people.avatar_move import move_companion_avatars
 from src.project.project_repo import StaleWriteError
 from src.video.job_runner import sweep_video_jobs
 
@@ -134,6 +135,10 @@ async def lifespan(_app: FastAPI):
     # the rarer case where the whole worker container went down with it, so
     # nothing was left alive to run that handler (issue #14 follow-up).
     sweep_orphaned_poster_jobs()
+    # Avatars a companion uploaded before issue #470 sit in that companion's
+    # folder; move them once into the trip owner's, with their storage usage.
+    # Idempotent, so it simply runs at every start.
+    move_companion_avatars()
     _scheduler.add_job(backup_db, "cron", hour=2, minute=0, id="daily_backup", replace_existing=True)
     _scheduler.add_job(checkpoint_wal, "interval", seconds=60, id="wal_checkpoint", replace_existing=True)
     # Correct any drift between the per-user storage counters used for quota

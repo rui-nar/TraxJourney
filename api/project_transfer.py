@@ -35,6 +35,7 @@ from fastapi.dependencies.utils import get_dependant, solve_dependencies
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
+from sqlmodel import select
 from starlette.concurrency import run_in_threadpool
 
 from api.deps import get_current_user
@@ -46,7 +47,7 @@ from api.project_shared import (
     _DATA_DIR, _repo, bust_project_payloads, project_cache_ref,
     queue_share_tiles_refresh, queue_stats_refresh,
 )
-from models.project_db import DBJournalEntry, DBMemory
+from models.project_db import DBJournalEntry, DBMemory, DBProject
 from src.billing.entitlements import ensure_project_quota, ensure_storage_quota
 from src.billing.usage import unlink_and_record
 from src.brand import APP_NAME
@@ -367,6 +368,7 @@ async def import_project(
     name = fname[: -len(ProjectIO.EXTENSION)]
     copy = on_conflict == "copy"
     removals = None
+    held: List[int] = []
     with get_session() as sess:
         taken = _repo.project_exists(sess, user_info_id, name)
         # Refused before the plan limit is checked: at the limit the user must
@@ -376,7 +378,8 @@ async def import_project(
         if taken and on_conflict == "replace":
             # The same trip, new content: no new trip, so no plan limit.
             removals = _repo.replace_project(
-                sess, user_info_id, name, project, data_dir=project_shared._DATA_DIR)
+                sess, user_info_id, name, project, data_dir=project_shared._DATA_DIR,
+                held_activities=held)
         if removals is None:
             # A copy or a new name is a new trip. The storage quota does not
             # apply: nothing lands on disk. The size is bounded by
@@ -397,6 +400,9 @@ async def import_project(
     # Cached payloads of this name are now wrong: the replaced trip's, or a
     # deleted trip's of the same name (issue #178).
     bust_geo_cache(user_info_id, imported)
+    if removals is not None:
+        # Last: the import is done and its caches busted whatever happens here.
+        _free_dropped_activities(user_info_id, imported, held)
 
     if removals is not None:
         outcome = "replaced"
@@ -478,9 +484,44 @@ def _ensure_room(sess, user_info_id: int, incoming: int) -> None:
         ensure_storage_quota(sess, user_info_id, incoming)
 
 
+def _free_dropped_activities(user_info_id: int, name: str, held: List[int]) -> None:
+    """Free what a Replace dropped: the Strava rows and Strava split tails the
+    trip *held* before it that no trip references now (issue #509).
+
+    As a trip deletion frees its own: a Replace is the owner's, so the rows
+    go whoever imported them, and ids the file kept are referenced again and
+    stay. Another trip showing a surviving split root renumbered gets its
+    cached payloads busted.
+
+    Runs last, once the import, its photo moves and its cache busts are done,
+    and never fails the import: the trip *name* is replaced whatever happens
+    here. A failure is logged and the rows stay, for the owner's disconnect
+    to free (review F2-R1-1).
+    """
+    if not held:
+        return
+    try:
+        with get_session() as sess:
+            renamed = _repo.delete_unreferenced_strava_activities(
+                sess, user_info_id,
+                ids=[aid for aid in held if aid > 0],
+                tail_ids=[aid for aid in held if aid < 0],
+            )
+            others = sess.exec(select(DBProject.user_info_id, DBProject.name).where(
+                DBProject.id.in_(renamed))).all() if renamed else []
+    except Exception as exc:  # noqa: BLE001 — the import has committed
+        _log.warning(
+            "import: replaced trip %r (user=%s) but could not free the activities it "
+            "dropped %s: %s: %s", name, user_info_id, sorted(held),
+            type(exc).__name__, exc)
+        return
+    for owner_id, trip_name in others:
+        bust_geo_cache(owner_id, trip_name)
+
+
 def _ingest_zip(
     user_info_id: int, name: str, project: Project, staged: StagedPhotos,
-    on_conflict: Optional[str],
+    on_conflict: Optional[str], held: Optional[List[int]] = None,
 ) -> Tuple[Optional[str], Optional[List[PhotoRemoval]], List[Placement]]:
     """Check the storage quota and write the trip; place no file.
 
@@ -502,7 +543,7 @@ def _ingest_zip(
             _ensure_room(sess, user_info_id, staged_total(staged, skip))
             removals = _repo.replace_project(
                 sess, user_info_id, name, project, data_dir=data_dir,
-                staged=staged, placements=placements)
+                staged=staged, placements=placements, held_activities=held)
         if removals is not None:
             return name, removals, placements
         # A new trip, or the trip to replace went meanwhile.
@@ -595,8 +636,9 @@ async def import_project_zip(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from None
 
+        held: List[int] = []
         imported, removals, placements = await run_in_threadpool(
-            _ingest_zip, user_info_id, name, project, staged, on_conflict)
+            _ingest_zip, user_info_id, name, project, staged, on_conflict, held)
         if imported is None:
             # A concurrent request took the name after the check above.
             return _name_conflict(name)
@@ -621,6 +663,9 @@ async def import_project_zip(
     # Cached payloads of this name are now wrong: the replaced trip's, or a
     # deleted trip's of the same name (issue #178).
     bust_geo_cache(user_info_id, imported)
+    if removals is not None:
+        # Last: the import is done and its caches busted whatever happens here.
+        await run_in_threadpool(_free_dropped_activities, user_info_id, imported, held)
 
     if removals is not None:
         outcome = "replaced"

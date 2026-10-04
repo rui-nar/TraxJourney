@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Dict, List, Optional
@@ -34,11 +33,11 @@ from api.deps import get_current_user
 from api.geo import bust_geo_cache, warm_geo_cache
 from api.project_access import OwnerParam, resolve_project
 from api.project_shared import _refresh_share_tiles, _refresh_stats_background, _repo, queue_share_tiles_refresh, queue_stats_refresh, warm_meta_cache
+from api.strava import _strava_client_for_token
 from models.project_db import DBActivity, DBProject, DBProjectItem
 from models.user import StravaToken
 from src.api.strava_client import RateLimiter, StravaAPI
 from src.billing.entitlements import ensure_trip_days_quota
-from src.config.settings import Config
 from src.exceptions.errors import RateLimitError
 from src.gpx.importer import (
     GPXImportError,
@@ -67,11 +66,6 @@ from src.project.repo_activities import store_prepared_geometry
 from src.utils.logging import get_logger
 
 _log = get_logger(__name__)
-_cfg = Config("config/config.json")
-if os.environ.get("STRAVA_CLIENT_ID"):
-    _cfg.set("strava.client_id", os.environ["STRAVA_CLIENT_ID"])
-if os.environ.get("STRAVA_CLIENT_SECRET"):
-    _cfg.set("strava.client_secret", os.environ["STRAVA_CLIENT_SECRET"])
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -158,20 +152,19 @@ class GPXImportOut(BaseModel):
 # ── Strava stream enrichment ───────────────────────────────────────────────────
 
 def _strava_client_for_user(user_info_id: int) -> Optional[StravaAPI]:
-    """Return a StravaAPI instance for the given user, or None if not connected."""
+    """Return a StravaAPI instance for the given user, or None if not connected.
+
+    Built by :func:`api.strava._strava_client_for_token`, so a token rotation
+    during enrichment is stored — or revoked after a disconnect — the moment
+    Strava issues it (issue #512).
+    """
     with get_session() as sess:
         token_row = sess.exec(
             select(StravaToken).where(StravaToken.user_info_id == user_info_id)
         ).first()
         if not token_row:
             return None
-    client = StravaAPI(_cfg)
-    client.token_data = {
-        "access_token":  token_row.access_token,
-        "refresh_token": token_row.refresh_token,
-        "expires_at":    token_row.expires_at,
-    }
-    return client
+    return _strava_client_for_token(token_row)
 
 
 def _enrich_activities(
@@ -1432,17 +1425,53 @@ def delete_local_activity(
 
     Only local activities may be deleted (Strava activities are shared). This is
     the undo path for a split — deleting the tail leaves the head in place.
+
+    A tail of a Strava activity (issue #509) follows the timeline path's rule
+    in ``api/project_items.py`` instead of the trip-rewrite gate: its own
+    account may delete it, and so may the trip's owner when the trip holds
+    it — a companion who has since left included. Any other companion is
+    refused with a 403 (owner decision, review F1-R1-1). Once such a tail
+    goes, its root is reconsidered, since the tail kept it.
     """
     user_info_id = int(current_user["sub"])
     with get_session() as sess:
         row = resolve_project(sess, user_info_id, name, owner, min_role="editor")
         owner_id = row.user_info_id
-        _require_rewritable_by_trip(sess, row, activity_id)
+        # Read before the delete: the row is gone afterwards.
+        tail = sess.exec(
+            select(DBActivity.user_info_id, DBActivity.split_root_id, DBActivity.source)
+            .where(DBActivity.id == activity_id)
+        ).first()
+        strava_root = (
+            tail.split_root_id
+            if tail is not None
+            and (tail.split_root_id or 0) > 0
+            and tail.source in (None, "", "strava")
+            else None
+        )
+        if strava_root is None:
+            _require_rewritable_by_trip(sess, row, activity_id)
+        elif user_info_id != tail.user_info_id:
+            held = sess.exec(select(DBProjectItem.id).where(
+                DBProjectItem.project_id == row.id,
+                DBProjectItem.item_type == "activity",
+                DBProjectItem.activity_id == activity_id,
+            )).first() is not None
+            if not held:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="Activity not in project")
+            if user_info_id != owner_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Only the activity's owner or the trip owner can delete this piece",
+                )
         if not _repo.delete_local_activity(sess, row.id, activity_id):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Local activity not found",
             )
+        if strava_root is not None:
+            _repo.delete_unreferenced_strava_activities(sess, owner_id, ids=[strava_root])
     bust_geo_cache(owner_id, name)
     queue_stats_refresh(background_tasks, owner_id, name)
     queue_share_tiles_refresh(background_tasks, owner_id, name)

@@ -101,3 +101,160 @@ Owner decisions 2026-10-03: patch the four findings rather than revert R2-1, whi
 - Outcome: fixed (plan amended; passage tagged R4-1)
 
 Owner decision 2026-10-03: apply R4-1 and stop plan reviews; U6's code review after delivery covers it. The plan is approved for delivery.
+
+## Unit U4 review — round 1, 2026-10-03, reviewed at d6e00db3 (DELIVERY.md §5 point 3)
+
+### U4-R1-1 — Two concurrent avatar uploads for one person leave the losing upload's files on disk, charged to the owner
+- Trigger: Two editors (or a client retry) upload the same person's avatar at once → both write and charge the owner, both read the same old avatar, the second commit wins → the first upload's files stay, referenced by nothing, counted in the owner's storage.
+- Scores: trigger=plausible, impact=degraded-ux, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Guard (D9)
+- Guard: after the old-avatar cleanup, list the person's avatar folder and log a WARNING naming any file that isn't the new avatar's pair.
+- Override: —
+- Outcome: guard added (62be0639; warning names stray files in the avatar folder; tested)
+
+### U4-R1-2 — A non-HTTP failure after the files are written leaves them on disk, charged to the owner
+- Trigger: The row update fails with e.g. "database is locked" → 500, the written files stay counted; a retry doubles the cost.
+- Scores: trigger=plausible, impact=degraded-ux, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: A non-HTTP exception from upload_avatar shows up in val or prod logs, the U4-R1-1 warning fires, or a user reports storage usage that doesn't match their content.
+- Override: —
+- Outcome: open
+
+## Unit U2 review — round 1, 2026-10-03, reviewed at 7b8ae342 (DELIVERY.md §5 point 3)
+
+### U2-R1-1 — A rotation whose DB write fails mid-enrichment keeps running on the new tokens while the row keeps the retired refresh token
+- Trigger: An import's enrichment refreshes an expired token while SQLite stays locked past busy_timeout → _persist_rotated_token raises, enrichment logs and continues → the row keeps the retired token; the next Strava action asks to re-authenticate, and a disconnect revokes the retired token while the app stays authorised.
+- Scores: trigger=plausible, impact=wrong-visible, detect=logged, later=cheap, fix=S/shared, confidence=verified
+- Decision: Defer (D10). The real fix is _persist_rotated_token retrying or failing loudly for every caller (api/strava.py), outside U2's Scope.
+- Revisit when: A log shows _persist_rotated_token / _claim_token_row failing ("database is locked") in val or prod; a user reports Strava still listing the app after disconnecting; a user is asked to reconnect soon after an import.
+- Override: —
+- Outcome: open
+
+## Unit U6 review — round 1, 2026-10-03, reviewed at 22999e85 (DELIVERY.md §5 point 3)
+
+### U6-R1-1 — A Strava re-fetch job in flight recreates the row U6 just deleted
+- Trigger: A user starts a re-fetch, then removes the activity from its only trip, deletes the trip or disconnects → U6 deletes the row → force_update_activity finds no row and inserts a fresh one no item references.
+- Scores: trigger=plausible, impact=maintainability, detect=silent, later=cheap, fix=S/shared, confidence=verified
+- Decision: Guard (D9)
+- Guard: WARNING in force_update_activity's insert branch ("row deleted while the re-fetch was in flight"); its only production caller runs on a row marked pending, so it fires only on this race.
+- Override: —
+- Outcome: guard added (fb4c0e04). Delivery found the insert branch never commits (_upsert_activity only sess.add, the refresh session closes without commit), so the row is not actually recreated today; the warning logs the attempt.
+
+Envelope question from the reviewer, owner answer 2026-10-03: removal (and the R4-1 tail rule) deletes a row only when the caller owns that activity or is the trip owner. An editor removing someone else's activity only unlinks it; the owner's later disconnect or own removal cleans it up. Trip deletion is done by the trip owner, so it keeps the any-owner rule (R1-4, R3-4).
+
+Owner approval 2026-10-03: U4-R1-1 Guard, U4-R1-2 Defer, U6-R1-1 Guard, as triaged.
+
+## Unit U5 review — round 1, 2026-10-04, reviewed at df28a0b8 (DELIVERY.md §5 point 3)
+
+### U5-R1-1 — A member's thumbnail is deleted uncopied when the owner-side thumb path is refused by photo_file
+- Trigger: The owner's thumb path resolves outside its folder (a hand-placed link) or resolve() raises → the pair is skipped without copying → the member's thumb is still deleted and its bytes moved to the owner's count.
+- Scores: trigger=theoretical, impact=data-loss, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Guard (D4, F2), flagged to the owner. Guard: raise in the verify loop when src exists and dst is None, so nothing is handed over and the person counts as failed.
+- Override: —
+- Outcome: guard added (34ff79e9)
+
+### U5-R1-2 — An avatar whose move failed is stranded in the member's folder once the user replaces or removes it
+- Trigger: The sweep hits an OSError → the avatar stays in the member's folder → it 404s → the user re-uploads or deletes → U4 deletes the old name from the owner's folder only → the member's files stay forever, counted against the member.
+- Scores: trigger=plausible, impact=degraded-ux, detect=silent, later=cheap, fix=M/shared, confidence=verified
+- Decision: Guard (D9). Guard: in api/people.py, before deleting an old avatar (replace, avatar delete, person delete), warn when the owner's folder doesn't hold its full-size file.
+- Override: —
+- Outcome: guard added (34ff79e9)
+
+Envelope question from the reviewer, owner answer 2026-10-04: pre-U4 leftovers (photo files in current members' people/<id>/ folders that no person references) are IN scope: the U5 sweep also deletes them and gives back their usage. U5 gets a round-2 review for it.
+
+Owner approval 2026-10-04: U5-R1-1 Guard (flagged, accepted as a guard), U5-R1-2 Guard (U5 Scope widened to api/people.py for it, X3).
+
+## Unit U5 review — round 2, 2026-10-04, reviewed at 34ff79e9
+
+### U5-R2-1 — The leftover cleanup only visits folders of persons that still exist
+- Trigger: A companion uploaded a person's avatar before this release, then the owner deleted that person (or the trip) → the companion's pair under users/<companion>/people/<old id>/ is never scanned → charged to the companion for good.
+- Scores: trigger=concrete, impact=degraded-ux, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7), under the owner's reading of the leftover decision.
+- Override: user (envelope, 2026-10-04): the cleanup also covers folders of deleted people, never a living person's owner folder. CORRECTION (2026-10-04): person ids CAN be reused (the person table has no AUTOINCREMENT); the cleanup is safe because it never deletes a name that is any person's current avatar_photo (the keep set), not because ids are unique over time.
+- Outcome: fixed (5d5e218c)
+
+## Delivery note — U3 scope widened (X3), 2026-10-04
+U3's implementer found five more places that show another user's raw display_name (public share owner_name, comment and like authors, signed-in visitor names), which is the email for legacy auto-created profiles. The Definition of done for #507 covers every response, so U3's Scope is widened to api/share.py, api/memories.py and api/project_shares.py at those sites only. No other unit touches those files in wave 2.
+
+## Unit U5 review — round 3, 2026-10-04, reviewed at 5d5e218c (the cap)
+
+### U5-R3-1 — The orphan pass skips a living person's folder in an ex-member's tree, so a companion who left keeps paying for a replaced avatar
+- Trigger: A companion uploaded a person's avatar before this release, then left the trip; the owner later replaced or removed it → U4 deletes from the owner's folder only, the member pass doesn't visit ex-members, and the orphan pass skips living persons' folders → the pair stays charged to the ex-member for good.
+- Scores: trigger=plausible, impact=degraded-ux, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7/D9) under the owner reading: ex-member folders of living persons are in scope.
+- Override: user 2026-10-04: fix it; no round-4 unit review (verifier plus the integrated review instead)
+- Outcome: fixed (8ef7675b)
+
+## Unit U7 (added in delivery) review — round 1, 2026-10-04, reviewed at 7db03621
+
+U7: Alembic data migration 87200bcb9342 rewriting stored comment/like author names that are blank or the author's sign-in address to "Traveller" (owner decision 2026-10-04). No findings. Review stops (§6).
+
+## Integrated review — round 1, 2026-10-04, reviewed at 0ede6b62 (feature branch with origin/main 8b647ae8 merged)
+
+### I-R1-1 — The client deletes a split tail through DELETE /activities/{id}/local, which never re-checks the Strava root
+- Trigger: A user removes the head piece of a split Strava activity, then taps "Delete local activity" on the tail → the route only runs delete_local_activity → the root and its prepared geometry stay until a disconnect.
+- Scores: trigger=concrete, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7). R1-6's fix missed the route the client actually uses.
+- Override: —
+- Outcome: fixed (F1: 53559629, 2cd9c979)
+
+### I-R1-2 — A replace import (.traxj or ZIP) drops the trip's items without pruning the Strava rows it no longer carries
+- Trigger: A user re-imports an older export over a trip with on_conflict=replace → activities added since the export are in no trip → their rows stay until a disconnect.
+- Scores: trigger=concrete, impact=maintainability, detect=silent, later=cheap, fix=M/shared, confidence=verified
+- Decision: Defer (D8). The fix goes into the shared import code and must respect the split-family and ownership rules.
+- Revisit when: replace_project or the import routes are touched again; a user reports orphan Strava activities or storage that doesn't add up after a replace import; or the owner overrides to Fix now.
+- Override: user 2026-10-04: Fix now
+- Outcome: fixed (F2: 1c691af2)
+
+Owner decisions 2026-10-04 on the integrated review: I-R1-1 Fix now; I-R1-2 overridden to Fix now; envelope 1, the leftover cleanup also covers a living person's OWNER folder under the keep-set rule (never a current avatar name); envelope 2, rows imported from a .traxj/ZIP file are treated like Strava rows (removal from their last trip deletes them; re-importing the file restores them), accepted.
+Fix wave: F1 (I-R1-1, api/activities.py), F2 (I-R1-2, src/project/repo_transfer.py + api/project_transfer.py), F3 (owner-folder cleanup, src/people/avatar_move.py), all Opus (S4).
+
+## Fix unit F1 review — round 1, 2026-10-04, reviewed at 53559629
+
+### F1-R1-1 — DELETE .../local still refuses the owner a former member's split tail (rewritable gate before the R4-1 rule)
+- Trigger: A companion imports and splits a Strava activity, then leaves → the owner deletes the tail from the panel → 404; the item reappears on reload; tail and root stay forever.
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6)
+- Override: —
+- Outcome: fixed (2cd9c979)
+
+Envelope question from the reviewer, owner answer 2026-10-04: yes. On DELETE .../local a Strava split tail may be deleted only by its owner or the trip owner; anyone else gets a clear refusal, and the app shows the error instead of silently restoring the item. F1 Scope widened (X3) to the Flutter deleteLocalActivity error path.
+
+## Fix unit F3 review — round 1, 2026-10-04, reviewed at ebf93f53
+
+### F3-R1-1 — A crash-left "<name>.jpg.moving" temp file in an owner folder is never cleaned
+- Trigger: The API is hard-killed mid-copy on the first start, and the avatar is replaced before the next start → the temp file stays, counted against the owner.
+- Scores: trigger=theoretical (triager corrected from plausible: the sweep runs before any request, the member source is kept until verified, so the next start reuses and replaces the same temp file), impact=degraded-ux, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Reject (D11)
+- Override: —
+- Outcome: —
+
+Owner answer 2026-10-04 (F3 envelope question): a replace re-import keeps the current avatar instead of switching back to an old one whose file the cleanup removed; leftovers are never relied on. Accepted.
+
+## Fix unit F2 review — round 1, 2026-10-04, reviewed at 1c691af2
+
+### F2-R1-1 — A failure in the post-commit prune turns an already-done replace import into a 500 and skips the cache bust
+- Trigger: A replace import hits SQLite's write lock past busy_timeout in the new prune step → the trip is replaced, but the user gets an error and the trip's caches serve the old content for up to 15 min.
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Override: user 2026-10-04: Fix now (F2 introduced the window; the fix is small)
+- Outcome: fixed (ab71cf98)
+
+## Delivery
+
+Feature branch: feat/privacy-followups-a (worktree E:/Dev/TraxJourney-pkgA), from origin/main 1f1e2bd6; origin/main merged in twice (8b647ae8 with #553 ZIP import, then 3df3bef8). Waves were re-cut at split time (W1 shared files, W3 cap): wave 1 = U1, U2, U4, U6; wave 2 = U3, U5; added in delivery: U7 (owner decision on stored comment names); fix wave after the integrated review: F1, F2, F3. Unit worktrees were created by hand because the agent worktree isolation refused the e:/E: drive-letter path.
+
+| Unit | Goal | Route | Rule | Attempts | Escalated | Verified first time | Findings traced |
+|---|---|---|---|---|---|---|---|
+| U1 | Google sign-in failures log no token (#510) | Opus | S5 | 1 | — | yes | R1-5 |
+| U2 | Enrichment saves Strava token rotations (#512) | Opus | S5 | 1 | — (test file moved by orchestrator for W1) | yes | U2-R1-1 |
+| U3 | No email as a name fallback; blank names refused (#507) | Opus | S3 | 2 | X3 (share, memories, project_shares name sites) | yes | R1-1 |
+| U4 | Avatars live in the trip owner's folder (#470) | Opus | S4 | 2 | — | yes | U4-R1-1, U4-R1-2 |
+| U5 | Move companion-uploaded avatars; clean leftovers (#470) | Opus | S4 | 4 | X3 (api/people.py guard, src/people/__init__.py) | yes | R1-2, U5-R1-1, U5-R1-2, U5-R2-1, U5-R3-1 |
+| U6 | Orphan Strava activity rows are deleted (#509) | Opus | S4 | 2 | — | yes | R1-3, R1-4, R1-6, R2-1, R3-2, R3-3, R3-4, R4-1, U6-R1-1 |
+| U7 | Stored comment/like names no longer show an email (#507) | Opus | S4 | 1 | — | yes | — |
+| F1 | Local delete frees the Strava root; owner rule on that route | Opus | S4 | 2 | X3 (Flutter delete error path) | yes | I-R1-1, F1-R1-1 |
+| F2 | Replace import prunes the Strava rows it drops | Opus | S4 | 2 | — | yes | I-R1-2, F2-R1-1 |
+| F3 | Leftover cleanup covers a living person's owner folder | Opus | S4 | 1 | — | yes | F3-R1-1 |
+
+Notes for §7 calibration: every unit routed to Opus (S3–S5); no X1/X2. Per-unit reviews (§5 point 3) found real issues in U4, U5 (three rounds), U6, F1 and F2; most were Guard/Defer or owner-scope questions rather than defects in the unit's own goal. Owner decisions taken during delivery widened scope several times (removal rule, leftover-cleanup reach, stored comment names, replace-import pruning); recorded above where each was taken.

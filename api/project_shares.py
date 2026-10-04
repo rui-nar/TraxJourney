@@ -23,10 +23,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from api.deps import get_current_user, jwt_secret
+from api.members import public_name_given_username
 from api.memories import _utc_now
 from api.project_access import OwnerParam, resolve_project
 from models.project_db import DBMemory, DBShareMemoryContent, DBShareVisit
-from models.user import UserInfo
+from models.user import LocalUser, UserInfo
 from src.utils.encryption_check import is_encrypted_envelope
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -303,10 +304,20 @@ def get_share_visitors(
             users = sess.exec(
                 select(UserInfo).where(UserInfo.id.in_(ids))
             ).all()
+            # Sign-in names, batched, so a name that is the visitor's address
+            # shows as "Traveller" (#507).
+            local_ids = {u.local_auth_id for u in users
+                         if u.local_auth_id is not None}
+            usernames = {
+                lu.id: lu.username for lu in sess.exec(
+                    select(LocalUser).where(LocalUser.id.in_(local_ids))
+                ).all()
+            } if local_ids else {}
             result[bucket]["registered"] = [
                 {
                     "visitor_key": _visitor_key(owner_id, u.id),
-                    "display_name": u.display_name,
+                    "display_name": public_name_given_username(
+                        u, usernames.get(u.local_auth_id)),
                     "avatar_url": u.avatar_url,
                     "last_seen_at": last_seen[bucket].get(u.id, 0.0),
                 }
