@@ -878,12 +878,15 @@ def _preview_polyline(points) -> Optional[str]:
 
 def _gpx_activity(gpx, candidate, filename, *, date=None, start_time=None,
                   end_time=None, activity_type=None, activity_name=None,
-                  times_local=False, metrics=None):
+                  times_local=False, activity_type_is_exact=False,
+                  metrics=None):
     """The activity one candidate becomes, and its fingerprint, unsaved and
     without an id: what ``import-gpx`` and ``import-gpx-tracks`` both store.
 
     Raises a 422 for times or geometry the app cannot store. *metrics* are
     the track's, when the caller has already measured them.
+    *activity_type_is_exact* says *activity_type* is the user's own pick,
+    stored as sent (PIR1-1).
     """
     first = candidate.points[0] if candidate.points else None
     zone = zone_at(first.lat if first else None, first.lng if first else None)
@@ -940,10 +943,12 @@ def _gpx_activity(gpx, candidate, filename, *, date=None, start_time=None,
     resolved_name = (activity_name
                      or gpx_suggested_name(gpx, candidate, filename)
                      or "GPX Import")
-    if (activity_type is not None
+    if (activity_type is not None and not activity_type_is_exact
             and activity_type == _installed_client_type(candidate.activity_type)):
         # Sent back as inspect suggested it: an installed client offers no
         # Kayaking, so it suggests and sends Workout for one (Decision 3, E5).
+        # The new client marks its pick as exact, so its "Other" on a kayak
+        # stays Workout (PIR1-1).
         activity_type = candidate.activity_type
     resolved_type = activity_type or candidate.activity_type or "Workout"
 
@@ -985,6 +990,11 @@ def _gpx_activity(gpx, candidate, filename, *, date=None, start_time=None,
     return activity, fingerprint
 
 
+#: Why import-gpx refuses a connection track (Q2).
+_CONNECTION_REFUSAL = ("This track is a connecting segment between activities, "
+                       "not an activity.")
+
+
 @router.post("/{name}/activities/import-gpx", response_model=GPXImportOut,
              summary="Import a single activity from a GPX file")
 async def import_gpx_activity(
@@ -999,6 +1009,7 @@ async def import_gpx_activity(
     track_index: Annotated[Optional[int], Form()] = None,
     activity_name: Annotated[Optional[str], Form()] = None,
     times_local: Annotated[bool, Form()] = False,
+    activity_type_is_exact: Annotated[bool, Form()] = False,
     owner: OwnerParam = None,
 ):
     """Import a GPX track as a new local activity — no Strava involved.
@@ -1017,6 +1028,14 @@ async def import_gpx_activity(
     ``start_date`` is the true UTC instant, ``start_date_local`` the wall
     clock there. ``times_local=true`` says typed times are wall clock in that
     zone; see :func:`_resolve_times` for how they are read without it.
+
+    ``activity_type_is_exact=true`` stores ``activity_type`` as sent. Without
+    it, the type inspect suggested to installed clients, sent back unchanged,
+    is stored as the file's precise type (Decision 3, PIR1-1).
+
+    A connecting segment's track is refused with a 400: it is a train or a
+    flight drawn as an arc, not an activity, and installed clients do not
+    read ``is_connection`` to leave it out (Q2, PIR1-3).
     """
     user_info_id = int(current_user["sub"])
 
@@ -1035,11 +1054,16 @@ async def import_gpx_activity(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                              detail={"errors": problems})
     candidate = found[track_index or 0]
+    if candidate.is_connection:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"errors": [_CONNECTION_REFUSAL]})
 
     activity, fingerprint = _gpx_activity(
         gpx, candidate, file.filename, date=date, start_time=start_time,
         end_time=end_time, activity_type=activity_type,
-        activity_name=activity_name, times_local=times_local)
+        activity_name=activity_name, times_local=times_local,
+        activity_type_is_exact=activity_type_is_exact)
 
     with get_session() as sess:
         # Refuse a file this trip already holds. The same track legitimately
