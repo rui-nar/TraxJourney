@@ -60,15 +60,15 @@ def _set_everything(client, name="Trip"):
                         "train": {"color": "#16A34A"}})
     assert client.put(f"/api/projects/{name}/languages",
                       json={"languages": ["fr", "de"]}).status_code == 204
-    assert client.put(f"/api/projects/{name}/day-meta", json={
-        "day_meta": {"2024-06-02": {"journal": "Big day", "tags": ["alps"],
+    assert client.patch(f"/api/projects/{name}/day-meta", json={
+        "days": {"2024-06-02": {"journal": "Big day", "tags": ["alps"],
                                     "sleeping": "Hut",
                                     "counters": [{"name": "Coffee", "value": 2},
                                                  {"name": "Coffee", "value": 1.5}]}},
         "sleeping_options": ["Hut", "Tent", "Barn"],
         "sleeping_option_groups": {"Hut": "Indoors", "Tent": "Outdoors", "Barn": "Other"},
         "counters": [{"name": "Coffee", "start": 5}, {"name": "Punctures", "start": 0}],
-    }).status_code == 204
+    }).status_code == 200
 
 
 def _export(client, name="Trip") -> bytes:

@@ -122,9 +122,9 @@ def test_a_write_invalidates_the_cached_payload(env):
     assert _meta(client).headers["x-cache"] == "MISS"
     assert _meta(client).headers["x-cache"] == "HIT"
 
-    resp = client.put("/api/projects/Trip/day-meta",
-                      json={"day_meta": {"2026-06-01": {"sleeping": "Hotel"}}})
-    assert resp.status_code == 204, resp.text
+    resp = client.patch("/api/projects/Trip/day-meta",
+                        json={"days": {"2026-06-01": {"sleeping": "Hotel"}}})
+    assert resp.status_code == 200, resp.text
 
     fresh = _meta(client)
     assert fresh.headers["x-cache"] == "MISS", "a day-meta write left a stale payload cached"
