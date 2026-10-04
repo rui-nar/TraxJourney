@@ -204,7 +204,7 @@ U7: Alembic data migration 87200bcb9342 rewriting stored comment/like author nam
 - Decision: Defer (D8). The fix goes into the shared import code and must respect the split-family and ownership rules.
 - Revisit when: replace_project or the import routes are touched again; a user reports orphan Strava activities or storage that doesn't add up after a replace import; or the owner overrides to Fix now.
 - Override: user 2026-10-04: Fix now
-- Outcome: open
+- Outcome: fixed (F2: 1c691af2)
 
 Owner decisions 2026-10-04 on the integrated review: I-R1-1 Fix now; I-R1-2 overridden to Fix now; envelope 1, the leftover cleanup also covers a living person's OWNER folder under the keep-set rule (never a current avatar name); envelope 2, rows imported from a .traxj/ZIP file are treated like Strava rows (removal from their last trip deletes them; re-importing the file restores them), accepted.
 Fix wave: F1 (I-R1-1, api/activities.py), F2 (I-R1-2, src/project/repo_transfer.py + api/project_transfer.py), F3 (owner-folder cleanup, src/people/avatar_move.py), all Opus (S4).
@@ -238,4 +238,4 @@ Owner answer 2026-10-04 (F3 envelope question): a replace re-import keeps the cu
 - Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
 - Decision: Defer (D10)
 - Override: user 2026-10-04: Fix now (F2 introduced the window; the fix is small)
-- Outcome: open
+- Outcome: fixed (ab71cf98)
