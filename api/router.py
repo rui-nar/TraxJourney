@@ -98,6 +98,12 @@ _IS_API_PROCESS = _ROLE != "worker"
 # "dev" locally. Used for both the OpenAPI `version` and the /api/version probe.
 _APP_VERSION = os.environ.get("APP_VERSION", "dev")
 
+# The oldest client build the server still talks to, served on /api/version.
+# A client below it stops (Android: "Update required" screen; web: a reload bar
+# it cannot dismiss). "0.0.0" is off. Raise it only for a contract change that
+# older builds would break on — see docs/RELEASING.md.
+_MIN_CLIENT_VERSION = os.environ.get("MIN_CLIENT_VERSION", "0.0.0")
+
 # Logged at import — this module IS the process entry point, so the line lands at
 # the top of every log, before migrations or any request. Without it there is no
 # way to tell from a log file which build produced it (issue #179).
@@ -399,8 +405,11 @@ async def app_version():
     reload when they differ, so a returning user never stays stuck on a stale
     cached bundle. Defaults to "dev" locally (matching the client default) so the
     check never fires outside a real deployment.
+
+    ``min_client_version`` is the oldest client build still supported; a client
+    below it blocks itself until updated.
     """
-    return {"version": _APP_VERSION}
+    return {"version": _APP_VERSION, "min_client_version": _MIN_CLIENT_VERSION}
 
 
 # ── Android App Links ─────────────────────────────────────────────────────────
