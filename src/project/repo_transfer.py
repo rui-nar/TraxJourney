@@ -12,7 +12,7 @@ import re
 import time
 import uuid
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Set, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from sqlalchemy import delete
 from sqlalchemy.exc import IntegrityError
@@ -31,6 +31,7 @@ from models.project_db import (
     DBProjectItem,
     DBShareMemoryContent,
 )
+from src.billing.entitlements import trip_days_used
 from src.models.activity import is_activity_id
 from src.models.person import polarsteps_from_socials
 from src.models.project import DEFAULT_SLEEPING_GROUPS, Project, day_counters_to_json
@@ -57,6 +58,11 @@ _COUNTER = re.compile(r"^(?P<base>.+) \((?P<n>[1-9][0-9]*)\)$")
 #: memory public_id to a concurrent request. Each loss means another request
 #: committed in between; five in a row is not a race, it is a bug.
 _ATTEMPTS = 5
+
+#: Checks a trip's length just before an import commits (#492): called with
+#: the session, the trip's span in days before the import (0 for a new trip)
+#: and its span on the written rows. Raises to refuse.
+SpanCheck = Callable[[Session, int, int], None]
 
 
 def copy_name(name: str, taken: Set[str]) -> str:
@@ -153,6 +159,7 @@ class ImportExportMixin:
         self, sess: Session, user_info_id: int, name: str, project: Project,
         *, copy: bool = False, staged: Optional[StagedPhotos] = None,
         placements: Optional[List["Placement"]] = None,
+        span_check: Optional[SpanCheck] = None,
     ) -> str:
         """Write a parsed ``.traxj`` project as a new trip; return its name.
 
@@ -171,6 +178,10 @@ class ImportExportMixin:
         staged files to move into place once this has returned, from the
         attempt that committed only, since each attempt names its own rows.
         No file is moved here, so a retry finds every staged file where it was.
+
+        *span_check*, when given, is passed to :meth:`ingest_project`. Every
+        attempt writes the same content to a new trip, so it gets the same
+        answer; a refusal is not retried.
         """
         for attempt in range(_ATTEMPTS):
             taken = self._taken_names(sess, user_info_id)
@@ -178,7 +189,9 @@ class ImportExportMixin:
             if target in taken:
                 raise ProjectNameTaken(name)
             try:
-                found = self.ingest_project(sess, user_info_id, target, project, staged=staged)
+                found = self.ingest_project(
+                    sess, user_info_id, target, project, staged=staged,
+                    span_check=span_check)
                 if placements is not None:
                     placements.extend(found)
                 return target
@@ -192,6 +205,7 @@ class ImportExportMixin:
     def ingest_project(
         self, sess: Session, user_info_id: int, db_name: str, project: Project,
         *, staged: Optional[StagedPhotos] = None,
+        span_check: Optional[SpanCheck] = None,
     ) -> List["Placement"]:
         """Write a parsed ``.traxj`` project into the DB under ``db_name``.
 
@@ -210,6 +224,9 @@ class ImportExportMixin:
         Every row is new, so its folder holds nothing yet: a memory or journal
         entry stores only the photo names *staged* for it. Returns the staged
         files to move into place after the commit.
+
+        *span_check*, when given, runs just before the commit, with a span
+        before of 0: the trip is new. If it raises, nothing is committed.
         """
         project = self._as_importers_activities(sess, user_info_id, project)
 
@@ -222,6 +239,8 @@ class ImportExportMixin:
 
         _removals, placements = self._write_content(
             sess, user_info_id, row.id, project, staged=staged)
+        if span_check is not None:
+            _check_span(sess, row.id, 0, span_check)
         sess.commit()
         return placements
 
@@ -230,6 +249,7 @@ class ImportExportMixin:
         *, data_dir: Optional[str] = None, staged: Optional[StagedPhotos] = None,
         placements: Optional[List["Placement"]] = None,
         held_activities: Optional[List[int]] = None,
+        span_check: Optional[SpanCheck] = None,
     ) -> Optional[List["PhotoRemoval"]]:
         """Overwrite the content of the owner's trip *name* with *project*.
 
@@ -275,6 +295,10 @@ class ImportExportMixin:
         Raises ValueError when *data_dir* is None: without it no kept row's
         photo is found on disk, and every kept row would lose its names
         while their files stay, counted.
+
+        *span_check*, when given, runs just before the commit, with the
+        trip's span as it was before this wrote anything. If it raises,
+        nothing is committed.
         """
         if data_dir is None:
             raise ValueError("replace_project needs data_dir to keep the photos already on disk")
@@ -282,6 +306,7 @@ class ImportExportMixin:
         if row is None:
             return None
         project_id = row.id
+        used = trip_days_used(sess, project_id) if span_check is not None else 0
         bump_lock_version(sess, project_id)
         removals: List[PhotoRemoval] = []
 
@@ -365,6 +390,8 @@ class ImportExportMixin:
             companion_journals=companion_journals, data_dir=data_dir, staged=staged,
         )
         removals += written
+        if span_check is not None:
+            _check_span(sess, project_id, used, span_check)
         sess.commit()
         if placements is not None:
             placements.extend(found)
@@ -611,6 +638,21 @@ class ImportExportMixin:
             db_item.position = pos
             sess.add(db_item)
         return removals, placements
+
+
+def _check_span(sess: Session, project_id: int, used: int, span_check: SpanCheck) -> None:
+    """Run *span_check* on the written, uncommitted rows (#492).
+
+    The span is measured from the rows as written, so what a Replace keeps
+    (an activity's stored date, a setting the file lacks) counts as it will
+    be. A refusal rolls back everything this import wrote.
+    """
+    sess.flush()
+    try:
+        span_check(sess, used, trip_days_used(sess, project_id))
+    except Exception:
+        sess.rollback()
+        raise
 
 
 @dataclasses.dataclass

@@ -4,6 +4,7 @@ Routes:
     POST   /api/projects/{name}/activities                          — add activities to project
     POST   /api/projects/{name}/activities/gpx/inspect               — read a GPX file without importing it
     POST   /api/projects/{name}/activities/import-gpx                — import a single activity from a GPX file
+    POST   /api/projects/{name}/activities/import-gpx-tracks         — import every track of a GPX file
     POST   /api/projects/{name}/activities/{activity_id}/refresh    — trigger async activity refresh from Strava
     GET    /api/projects/{name}/activities/{activity_id}/track      — get editable track geometry
     PUT    /api/projects/{name}/activities/{activity_id}/track      — replace track geometry
@@ -39,6 +40,7 @@ from models.user import StravaToken
 from src.api.strava_client import RateLimiter, StravaAPI
 from src.billing.entitlements import ensure_trip_days_quota
 from src.exceptions.errors import RateLimitError
+from src.gpx.export_format import SOURCE_GPX, SOURCE_LOCAL, SOURCE_STRAVA
 from src.gpx.importer import (
     GPXImportError,
     candidates as gpx_candidates,
@@ -50,6 +52,7 @@ from src.gpx.importer import (
     validate_candidate,
     validate_for_import,
 )
+from src.gpx.timezone import local_to_utc, to_local, zone_at
 from src.models.activity import (
     ACTIVITY_ID_MAX, ACTIVITY_ID_MIN, Activity, parse_activities_or_log,
 )
@@ -94,14 +97,36 @@ class GPXCandidateOut(BaseModel):
     index: int = Field(description="Position to pass back as track_index")
     name: Optional[str] = Field(description="The track's own name, if it has one")
     activity_type: Optional[str] = Field(
-        description="Mapped from the file's <type>; null when unrecognised")
+        description="Mapped from the file's <type>, in the types installed "
+                    "clients offer (run, ride, hike, walk, Workout): any other "
+                    "type is Workout here. Null when unrecognised")
+    activity_type_exact: Optional[str] = Field(
+        default=None,
+        description="The type the file's <type> maps to, which may be one "
+                    "installed clients do not offer, such as Kayaking")
+    is_connection: bool = Field(
+        default=False,
+        description="True for a track a TraxJourney export drew for a "
+                    "connecting segment, which import-gpx-tracks leaves out")
     point_count: int
     distance_m: float
     is_route: bool = Field(
         description="True for a planned <rte> rather than a recorded <trk>")
     has_times: bool = Field(description="False for a route, which has no clock")
-    started_at: Optional[str] = None
-    ended_at: Optional[str] = None
+    started_at: Optional[str] = Field(
+        default=None, description="The file's first stamp, a UTC instant")
+    ended_at: Optional[str] = Field(
+        default=None, description="The file's last stamp, a UTC instant")
+    timezone: str = Field(
+        default="Etc/UTC",
+        description="IANA zone at the track's first point; the zone the import "
+                    "stores and reads typed times in")
+    start_local: Optional[str] = Field(
+        default=None,
+        description="started_at as a naive ISO-8601 wall clock in `timezone`")
+    end_local: Optional[str] = Field(
+        default=None,
+        description="ended_at as the naive wall clock in `timezone`")
     elapsed_seconds: Optional[int] = None
     moving_seconds: Optional[int] = None
     elevation_gain_m: Optional[float] = Field(
@@ -147,6 +172,25 @@ class GPXInspectOut(BaseModel):
 class GPXImportOut(BaseModel):
     activity_id: int = Field(description="ID assigned to the newly imported activity")
     total: int = Field(description="Total activities in the project after import")
+
+
+class GPXImportedTrackOut(BaseModel):
+    activity_id: int
+    name: str
+
+
+class GPXSkippedTrackOut(BaseModel):
+    track_index: int = Field(description="The track's position, as inspect gives it")
+    name: str
+    duplicate_of: GPXDuplicateOut = Field(
+        description="The activity already holding this track: in the trip, "
+                    "or imported from an earlier track of the same file")
+
+
+class GPXImportTracksOut(BaseModel):
+    imported: List[GPXImportedTrackOut]
+    skipped: List[GPXSkippedTrackOut] = Field(
+        description="Tracks left out because the trip already holds them")
 
 
 # ── Strava stream enrichment ───────────────────────────────────────────────────
@@ -503,13 +547,28 @@ def _import_fingerprint(candidate, start_dt):
                              basis.isoformat())
 
 
-def _resolve_times(candidate, date, start_time, end_time):
+def _resolve_times(candidate, date, start_time, end_time, zone, times_local):
     """The activity's start and end, from the form where given, else the file.
 
     A form value always wins: the file may be wrong, and the user is the one
     looking at it. What changed in unit 4 is that omitting them is allowed —
     before, a recorded track that knew exactly when it happened still made the
     user type it in.
+
+    Returns ``(start, end, typed_start)``: start and end as instants, and the
+    typed start as a naive wall clock in *zone* when the track has no clock of
+    its own, else None (issue #365). Typed times are read:
+
+    - for an untimed track, as wall clock in *zone*, whatever the client says:
+      installed clients prefill nothing there and send the clock the user
+      picked, the same bytes the new client sends;
+    - for a stamped track, as wall clock in *zone* only with *times_local*,
+      and as UTC without it, because that is what installed clients show and
+      send.
+
+    A typed time equal to the file's own, to the minute, keeps the file's
+    exact instant, so a start in a repeated DST hour is not re-read as its
+    other occurrence.
     """
     supplied = (date, start_time, end_time)
     span = candidate.time_span
@@ -517,7 +576,7 @@ def _resolve_times(candidate, date, start_time, end_time):
         if span is not None:
             # Same accessor the preview reported from, so a file the preview
             # said had a clock cannot be refused here for not having one.
-            return span
+            return span[0], span[1], None
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={"errors": ["This file has no timestamps, so it needs a "
@@ -540,18 +599,93 @@ def _resolve_times(candidate, date, start_time, end_time):
             detail={"errors": ["date must be YYYY-MM-DD and start_time/"
                                "end_time must be HH:MM."]},
         )
-    start_dt = datetime.combine(day, start_clock, tzinfo=timezone.utc)
-    end_dt = datetime.combine(day, end_clock, tzinfo=timezone.utc)
-    if end_dt < start_dt:
+    start_wall = datetime.combine(day, start_clock)
+    end_wall = datetime.combine(day, end_clock)
+    if end_wall < start_wall:
         # An end before the start means the activity ran past midnight: a
         # night ride leaving at 23:30 and back at 00:30. Refusing it made
         # every such ride unimportable, since the form carries one date.
-        end_dt += timedelta(days=1)
-    if end_dt == start_dt:
+        end_wall += timedelta(days=1)
+    if end_wall == start_wall:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={"errors": ["Start and end cannot be the same time."]})
-    return start_dt, end_dt
+
+    # The frame the typed clocks are in: the track's zone, or UTC for an
+    # installed client typing over a stamped track.
+    frame = zone if (span is None or times_local) else "Etc/UTC"
+
+    def own_wall(own):
+        # A stamp at the calendar's edge has no wall clock: the user is
+        # typing times precisely to replace it, so it matches nothing.
+        try:
+            return to_local(own, frame).replace(second=0, microsecond=0)
+        except (OverflowError, ValueError):
+            return None
+
+    def instant(wall, own, fold=0):
+        if own is not None and own_wall(own) == wall:
+            # A stamp without an offset is UTC, as to_local reads it.
+            return own if own.tzinfo else own.replace(tzinfo=timezone.utc)
+        return local_to_utc(wall, frame, fold=fold)
+
+    try:
+        start_dt = instant(start_wall, span[0] if span else None)
+        end_dt = instant(end_wall, span[1] if span else None)
+        if end_dt <= start_dt:
+            # Clocks went back inside the activity: the end is the repeated
+            # hour's second occurrence.
+            end_dt = instant(end_wall, None, fold=1)
+    except (OverflowError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"errors": ["This date is outside the calendar the app can "
+                               "store."]})
+    if end_dt <= start_dt:
+        # Only a start and end either side of a clock change get here.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"errors": ["The end must come after the start."]})
+    return start_dt, end_dt, (start_wall if span is None else None)
+
+
+#: The types installed clients' type dropdown offers (Decision 3, E5). They
+#: show nothing for a suggested type outside it.
+_INSTALLED_CLIENT_TYPES = frozenset({"run", "ride", "hike", "walk", "Workout"})
+
+
+def _installed_client_type(exact: Optional[str]) -> Optional[str]:
+    """*exact* in the vocabulary installed clients know: any type beyond it
+    is ``Workout``, their "Other". None stays None, so they still ask."""
+    if exact is None or exact in _INSTALLED_CLIENT_TYPES:
+        return exact
+    return "Workout"
+
+
+def _gpx_distance(candidate, metrics) -> float:
+    """The distance a TraxJourney export carried, else the track's measured
+    one: a Strava polyline is simplified, so its length falls short (#367)."""
+    if candidate.carried_distance_m is not None:
+        return candidate.carried_distance_m
+    return metrics.distance
+
+
+def _gpx_moving_seconds(candidate) -> Optional[int]:
+    """The moving time a TraxJourney export carried, else the one measured
+    from the file's clock; None when there is neither."""
+    if candidate.carried_moving_seconds is not None:
+        return candidate.carried_moving_seconds
+    return candidate.moving_seconds
+
+
+def _inspected_moving_seconds(candidate) -> Optional[int]:
+    """What the import stores from the file's own times, for the preview:
+    never longer than the track's span, as the import clamps it."""
+    moving = _gpx_moving_seconds(candidate)
+    elapsed = candidate.elapsed_seconds
+    if moving is not None and elapsed is not None:
+        moving = min(moving, elapsed)
+    return moving
 
 
 def _existing_import(sess, project_row_id: int, fingerprint: str):
@@ -562,6 +696,40 @@ def _existing_import(sess, project_row_id: int, fingerprint: str):
         .where(DBProjectItem.project_id == project_row_id)
         .where(DBActivity.source_id == fingerprint)
     ).first()
+
+
+def _existing_identity(sess, project_row_id: int, identity):
+    """The activity in this trip a TraxJourney export says the track is (Q1):
+    the GPX import with that fingerprint, the Strava activity with that id,
+    or the local activity with that id (a split tail, an early GPX import;
+    PIR2-1). Only this trip's timeline is searched, so a file naming an
+    activity elsewhere matches nothing, and says nothing about it."""
+    if identity is None:
+        return None
+    source, source_id = identity
+    query = (select(DBActivity)
+             .join(DBProjectItem, DBProjectItem.activity_id == DBActivity.id)
+             .where(DBProjectItem.project_id == project_row_id))
+    if source == SOURCE_GPX:
+        query = (query.where(DBActivity.source == SOURCE_GPX)
+                 .where(DBActivity.source_id == source_id))
+    elif source == SOURCE_STRAVA:
+        query = (query.where(DBActivity.id == int(source_id))
+                 .where(DBActivity.source.is_(None)))
+    elif source == SOURCE_LOCAL:
+        query = query.where(DBActivity.id == int(source_id))
+    else:
+        return None
+    return sess.exec(query).first()
+
+
+def _existing_activity(sess, project_row_id: int, candidate, fingerprint):
+    """The activity in this trip already holding *candidate*: by the track's
+    fingerprint, as before, else by the identity its export carried."""
+    return ((_existing_import(sess, project_row_id, fingerprint)
+             if fingerprint is not None else None)
+            or _existing_identity(sess, project_row_id,
+                                  candidate.carried_identity))
 
 
 @router.post("/{name}/activities/gpx/inspect", response_model=GPXInspectOut,
@@ -594,13 +762,35 @@ async def inspect_gpx_file(
         return {"candidates": [], "errors": validate_for_import(gpx)}
 
     out = await run_in_threadpool(_describe_candidates, found)
+    for summary, candidate in zip(out, found):
+        # The zone at the track's start, and its span as wall clocks there
+        # (issue #365). started_at/ended_at stay UTC instants: installed
+        # clients read them so. The server converts because Dart has no zone
+        # database. A candidate that failed validation is not looked up: its
+        # coordinates are not trusted, and it cannot be imported anyway.
+        if summary["errors"]:
+            continue
+        first = candidate.points[0] if candidate.points else None
+        zone = zone_at(first.lat if first else None,
+                       first.lng if first else None)
+        summary["timezone"] = zone
+        span = candidate.time_span
+        if span is not None:
+            try:
+                summary["start_local"] = to_local(span[0], zone).isoformat()
+                summary["end_local"] = to_local(span[1], zone).isoformat()
+            except (OverflowError, ValueError):
+                # A clock at the calendar's edge; the review step asks for
+                # times, as for any clock it flags as wrong.
+                summary["start_local"] = summary["end_local"] = None
 
     duplicate = None
     if len(found) == 1 and not out[0]["errors"]:
         fingerprint = _import_fingerprint(found[0], None)
-        if fingerprint is not None:
+        if fingerprint is not None or found[0].carried_identity is not None:
             with get_session() as sess:
-                existing = _existing_import(sess, project_row_id, fingerprint)
+                existing = _existing_activity(sess, project_row_id, found[0],
+                                              fingerprint)
             if existing is not None:
                 duplicate = {"activity_id": existing.id,
                              "name": existing.name}
@@ -632,16 +822,21 @@ def _describe_candidates(found):
         out.append({
             "index": candidate.index,
             "name": candidate.name,
-            "activity_type": candidate.activity_type,
+            "activity_type": _installed_client_type(candidate.activity_type),
+            "activity_type_exact": candidate.activity_type,
+            "is_connection": candidate.is_connection,
             "point_count": candidate.point_count,
-            "distance_m": metrics.distance if metrics else 0.0,
+            # The figures the import stores: carried by a TraxJourney export
+            # when present (#367), else measured from the track.
+            "distance_m": (_gpx_distance(candidate, metrics) if metrics
+                           else 0.0),
             "is_route": candidate.is_route,
             "has_times": candidate.has_times,
             "started_at": (span[0].isoformat() if span else None),
             "ended_at": (span[1].isoformat() if span else None),
             "elapsed_seconds": candidate.elapsed_seconds,
-            "moving_seconds": (candidate.moving_seconds if not errors
-                               else None),
+            "moving_seconds": (_inspected_moving_seconds(candidate)
+                               if not errors else None),
             "elevation_gain_m": (metrics.total_elevation_gain if metrics
                                  else None),
             "elevation_gain_estimated": True,
@@ -710,6 +905,125 @@ def _preview_polyline(points) -> Optional[str]:
 
 
 
+def _gpx_activity(gpx, candidate, filename, *, date=None, start_time=None,
+                  end_time=None, activity_type=None, activity_name=None,
+                  times_local=False, activity_type_is_exact=False,
+                  metrics=None):
+    """The activity one candidate becomes, and its fingerprint, unsaved and
+    without an id: what ``import-gpx`` and ``import-gpx-tracks`` both store.
+
+    Raises a 422 for times or geometry the app cannot store. *metrics* are
+    the track's, when the caller has already measured them.
+    *activity_type_is_exact* says *activity_type* is the user's own pick,
+    stored as sent (PIR1-1).
+    """
+    first = candidate.points[0] if candidate.points else None
+    zone = zone_at(first.lat if first else None, first.lng if first else None)
+    start_dt, end_dt, typed_start = _resolve_times(
+        candidate, date, start_time, end_time, zone, times_local)
+    # start_date is documented as ISO-8601 UTC, and a file may carry any
+    # offset it likes. Normalising here keeps the column honest and keeps two
+    # exports of one ride — 05:33Z and 07:33+02:00 — the same instant.
+    try:
+        start_dt = start_dt.astimezone(timezone.utc)
+        end_dt = end_dt.astimezone(timezone.utc)
+        # start_date_local is stored as Strava sync stores it: the wall clock
+        # labelled UTC. An untimed track keeps the clock the user typed.
+        start_local = (typed_start if typed_start is not None
+                       else to_local(start_dt, zone)).replace(
+                           tzinfo=timezone.utc)
+    except (OverflowError, ValueError):
+        # An offset can push a stamp near year 1 or 9999 past what a date holds.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"errors": ["This track's clock is outside the calendar the app can "
+                               "store. Set the date and times in review."]},
+        )
+    elapsed_time = int((end_dt - start_dt).total_seconds())
+    moving_time = _gpx_moving_seconds(candidate)
+    if moving_time is None:
+        # No clock in the file — a planned route — so there is nothing to
+        # distinguish moving from stopped and the whole window is moving time.
+        moving_time = elapsed_time
+    else:
+        # Clamped, not replaced. A track that genuinely never moved has zero
+        # moving time and should say so; replacing a zero with the elapsed time
+        # is the very thing unit 3 stopped doing.
+        moving_time = min(moving_time, elapsed_time)
+
+    if all(v is None for v in (date, start_time, end_time)):
+        # The file's own clock: one wrong stamp can make it decades long.
+        # Repaired as a stored or imported one is; times the user set win.
+        elapsed_time = repair_elapsed(elapsed_time, moving_time)
+
+    points = candidate.points
+    if metrics is None:
+        metrics = recompute_track_metrics(points)
+    implausible = implausible_track(metrics)
+    if implausible is not None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            detail={"errors": [implausible]})
+    distance = _gpx_distance(candidate, metrics)
+    # Not start_dt: an untimed track has been fingerprinted on its typed wall
+    # clock labelled UTC since before #365, which start_local still is, so a
+    # re-import across the release is still recognised.
+    fingerprint = _import_fingerprint(candidate, start_local)
+
+    resolved_name = (activity_name
+                     or gpx_suggested_name(gpx, candidate, filename)
+                     or "GPX Import")
+    if (activity_type is not None and not activity_type_is_exact
+            and activity_type == _installed_client_type(candidate.activity_type)):
+        # Sent back as inspect suggested it: an installed client offers no
+        # Kayaking, so it suggests and sends Workout for one (Decision 3, E5).
+        # The new client marks its pick as exact, so its "Other" on a kayak
+        # stays Workout (PIR1-1).
+        activity_type = candidate.activity_type
+    resolved_type = activity_type or candidate.activity_type or "Workout"
+
+    activity = Activity(
+        id=None,
+        name=resolved_name,
+        type=resolved_type,
+        distance=distance,
+        moving_time=moving_time,
+        elapsed_time=elapsed_time,
+        total_elevation_gain=metrics.total_elevation_gain,
+        start_date=start_dt,
+        start_date_local=start_local,
+        timezone=zone,
+        achievement_count=0,
+        kudos_count=0,
+        comment_count=0,
+        athlete_count=0,
+        photo_count=0,
+        trainer=False,
+        commute=False,
+        manual=True,
+        private=False,
+        flagged=False,
+        average_speed=distance / moving_time if moving_time > 0 else 0.0,
+        max_speed=0.0,
+        pr_count=0,
+        total_photo_count=0,
+        has_kudoed=False,
+        elev_high=metrics.elev_high,
+        elev_low=metrics.elev_low,
+        start_latlng=metrics.start_latlng,
+        end_latlng=metrics.end_latlng,
+        summary_polyline=points_to_polyline(points),
+        elevation_profile=points_to_elevation_profile(points),
+        source="gpx",
+        source_id=fingerprint,
+    )
+    return activity, fingerprint
+
+
+#: Why import-gpx refuses a connection track (Q2).
+_CONNECTION_REFUSAL = ("This track is a connecting segment between activities, "
+                       "not an activity.")
+
+
 @router.post("/{name}/activities/import-gpx", response_model=GPXImportOut,
              summary="Import a single activity from a GPX file")
 async def import_gpx_activity(
@@ -723,6 +1037,8 @@ async def import_gpx_activity(
     activity_type: Annotated[Optional[str], Form()] = None,
     track_index: Annotated[Optional[int], Form()] = None,
     activity_name: Annotated[Optional[str], Form()] = None,
+    times_local: Annotated[bool, Form()] = False,
+    activity_type_is_exact: Annotated[bool, Form()] = False,
     owner: OwnerParam = None,
 ):
     """Import a GPX track as a new local activity — no Strava involved.
@@ -736,6 +1052,19 @@ async def import_gpx_activity(
     always have them — a planned route carries no clock — and because the user
     is entitled to correct what it does say. ``track_index`` chooses between
     several tracks in one file; the positions are the ones ``inspect`` returned.
+
+    The activity's zone is the one at the track's first point (issue #365):
+    ``start_date`` is the true UTC instant, ``start_date_local`` the wall
+    clock there. ``times_local=true`` says typed times are wall clock in that
+    zone; see :func:`_resolve_times` for how they are read without it.
+
+    ``activity_type_is_exact=true`` stores ``activity_type`` as sent. Without
+    it, the type inspect suggested to installed clients, sent back unchanged,
+    is stored as the file's precise type (Decision 3, PIR1-1).
+
+    A connecting segment's track is refused with a 400: it is a train or a
+    flight drawn as an arc, not an activity, and installed clients do not
+    read ``is_connection`` to leave it out (Q2, PIR1-3).
     """
     user_info_id = int(current_user["sub"])
 
@@ -754,93 +1083,23 @@ async def import_gpx_activity(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                              detail={"errors": problems})
     candidate = found[track_index or 0]
-
-    start_dt, end_dt = _resolve_times(candidate, date, start_time, end_time)
-    # start_date is documented as ISO-8601 UTC, and a file may carry any
-    # offset it likes. Normalising here keeps the column honest and keeps two
-    # exports of one ride — 05:33Z and 07:33+02:00 — the same instant.
-    try:
-        start_dt = start_dt.astimezone(timezone.utc)
-        end_dt = end_dt.astimezone(timezone.utc)
-    except (OverflowError, ValueError):
-        # An offset can push a stamp near year 1 or 9999 past what a date holds.
+    if candidate.is_connection:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail={"errors": ["This track's clock is outside the calendar the app can "
-                               "store. Set the date and times in review."]},
-        )
-    elapsed_time = int((end_dt - start_dt).total_seconds())
-    moving_time = candidate.moving_seconds
-    if moving_time is None:
-        # No clock in the file — a planned route — so there is nothing to
-        # distinguish moving from stopped and the whole window is moving time.
-        moving_time = elapsed_time
-    else:
-        # Clamped, not replaced. A track that genuinely never moved has zero
-        # moving time and should say so; replacing a zero with the elapsed time
-        # is the very thing unit 3 stopped doing.
-        moving_time = min(moving_time, elapsed_time)
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"errors": [_CONNECTION_REFUSAL]})
 
-    if all(v is None for v in (date, start_time, end_time)):
-        # The file's own clock: one wrong stamp can make it decades long.
-        # Repaired as a stored or imported one is; times the user set win.
-        elapsed_time = repair_elapsed(elapsed_time, moving_time)
-
-    points = candidate.points
-    metrics = recompute_track_metrics(points)
-    implausible = implausible_track(metrics)
-    if implausible is not None:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                            detail={"errors": [implausible]})
-    fingerprint = _import_fingerprint(candidate, start_dt)
-
-    resolved_name = (activity_name
-                     or gpx_suggested_name(gpx, candidate, file.filename)
-                     or "GPX Import")
-    resolved_type = activity_type or candidate.activity_type or "Workout"
-
-    activity = Activity(
-        id=None,
-        name=resolved_name,
-        type=resolved_type,
-        distance=metrics.distance,
-        moving_time=moving_time,
-        elapsed_time=elapsed_time,
-        total_elevation_gain=metrics.total_elevation_gain,
-        start_date=start_dt,
-        start_date_local=start_dt,
-        timezone="UTC",
-        achievement_count=0,
-        kudos_count=0,
-        comment_count=0,
-        athlete_count=0,
-        photo_count=0,
-        trainer=False,
-        commute=False,
-        manual=True,
-        private=False,
-        flagged=False,
-        average_speed=metrics.distance / moving_time if moving_time > 0 else 0.0,
-        max_speed=0.0,
-        pr_count=0,
-        total_photo_count=0,
-        has_kudoed=False,
-        elev_high=metrics.elev_high,
-        elev_low=metrics.elev_low,
-        start_latlng=metrics.start_latlng,
-        end_latlng=metrics.end_latlng,
-        summary_polyline=points_to_polyline(points),
-        elevation_profile=points_to_elevation_profile(points),
-        source="gpx",
-        source_id=fingerprint,
-    )
+    activity, fingerprint = _gpx_activity(
+        gpx, candidate, file.filename, date=date, start_time=start_time,
+        end_time=end_time, activity_type=activity_type,
+        activity_name=activity_name, times_local=times_local,
+        activity_type_is_exact=activity_type_is_exact)
 
     with get_session() as sess:
         # Refuse a file this trip already holds. The same track legitimately
         # belongs to two different trips, so the check is scoped to this one's
         # timeline rather than to the global activity table.
-        duplicate = (_existing_import(sess, project_row_id, fingerprint)
-                     if fingerprint is not None else None)
+        duplicate = _existing_activity(sess, project_row_id, candidate,
+                                       fingerprint)
         if duplicate is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -893,6 +1152,182 @@ async def import_gpx_activity(
     queue_share_tiles_refresh(background_tasks, owner_id, name)
 
     return {"activity_id": activity.id, "total": len(project.activities)}
+
+
+def _track_label(candidate) -> str:
+    """How a refusal names a track: its own name, else its position."""
+    return (f'"{candidate.name}"' if candidate.name
+            else f"track {candidate.index + 1}")
+
+
+def _importable_tracks(found):
+    """``(candidate, metrics)`` for each track import-all takes, in file order.
+
+    Connection tracks are left out, as are tracks inspect reports errors for
+    (too few points, coordinates off the globe, an implausible track): the
+    user saw those refused in review. The metrics are kept for the import.
+    """
+    kept = []
+    for candidate in found:
+        if candidate.is_connection or validate_candidate(candidate):
+            continue
+        metrics = recompute_track_metrics(candidate.points)
+        if implausible_track(metrics) is None:
+            kept.append((candidate, metrics))
+    return kept
+
+
+def _prepare_tracks(gpx, found, filename):
+    """Each importable track as an unsaved activity, with its fingerprint.
+
+    Synchronous and O(points), so the route hands it to a worker thread.
+    Every field comes from the file. Raises a 400 naming the tracks without a
+    clock, which need their times typed one at a time; and a 422 naming the
+    track for anything else the app cannot store.
+    """
+    tracks = _importable_tracks(found)
+    if not tracks:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"errors": ["This file has no track that can be imported."]})
+    untimed = [c for c, _ in tracks if c.time_span is None]
+    if untimed:
+        names = ", ".join(_track_label(c) for c in untimed)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"errors": [
+                f"These tracks have no times: {names}. Import them one at a "
+                f"time to set their date and times."
+                if len(untimed) > 1 else
+                f"This track has no times: {names}. Import it on its own to "
+                f"set its date and times."]})
+    prepared = []
+    for candidate, metrics in tracks:
+        try:
+            activity, fingerprint = _gpx_activity(
+                gpx, candidate, filename, metrics=metrics)
+        except HTTPException as exc:
+            errors = (exc.detail or {}).get("errors", [])
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail={"errors": [f"{_track_label(candidate)}: {e}"
+                                   for e in errors]})
+        prepared.append((candidate, activity, fingerprint))
+    return prepared
+
+
+@router.post("/{name}/activities/import-gpx-tracks",
+             response_model=GPXImportTracksOut,
+             summary="Import every track of a GPX file")
+async def import_gpx_tracks(
+    name: str,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    background_tasks: BackgroundTasks,
+    file: Annotated[UploadFile, File()],
+    owner: OwnerParam = None,
+):
+    """Import every importable track of a GPX file as its own activity (#367).
+
+    A TraxJourney GPX export holds one track per activity, so a trip exported
+    and imported back comes back as its activities. Connection tracks are
+    left out, and so are tracks review shows as refused.
+
+    Names, types and times all come from the file, as ``import-gpx`` takes
+    them when no field is sent: there is no form to correct them. A track
+    without times would need them typed, so a file holding one is refused
+    with a 400 naming it, for the user to import it alone.
+
+    All or nothing: every new activity is written in one transaction, after
+    one trip-days check over all their dates. A track this trip already holds
+    (or an earlier track of the same file) is skipped and listed, not refused.
+    """
+    user_info_id = int(current_user["sub"])
+
+    with get_session() as sess:
+        row = resolve_project(sess, user_info_id, name, owner, min_role="editor")
+        owner_id = row.user_info_id
+        project_row_id = row.id
+
+    gpx, found = await _read_gpx_upload(file)
+    if not found:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            detail={"errors": validate_for_import(gpx)})
+    prepared = await run_in_threadpool(_prepare_tracks, gpx, found, file.filename)
+
+    with get_session() as sess:
+        allocated = set()
+        for _, activity, _ in prepared:
+            try:
+                while activity.id is None or activity.id in allocated:
+                    activity.id = allocate_local_activity_id(sess)
+            except LocalIdExhausted:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Could not allocate a unique activity id.")
+            allocated.add(activity.id)
+
+    imported: List[dict] = []
+    skipped: List[dict] = []
+
+    def _sort(qsess):
+        # Which tracks are new, against the trip as it is now. An earlier
+        # track of the same file counts too: a file holding one track twice
+        # imports it once.
+        imported.clear()
+        skipped.clear()
+        new = []
+        seen: Dict[Any, Activity] = {}
+        for candidate, activity, fingerprint in prepared:
+            identity = candidate.carried_identity
+            existing = (seen.get(fingerprint)
+                        or (seen.get(identity) if identity else None)
+                        or _existing_activity(qsess, project_row_id, candidate,
+                                              fingerprint))
+            if existing is not None:
+                skipped.append({
+                    "track_index": candidate.index, "name": activity.name,
+                    "duplicate_of": {"activity_id": existing.id,
+                                     "name": existing.name}})
+                continue
+            seen[fingerprint] = activity
+            if identity is not None:
+                seen[identity] = activity
+            new.append(activity)
+            imported.append({"activity_id": activity.id, "name": activity.name})
+        return new
+
+    with get_session() as sess:
+        if not _sort(sess):
+            # Every track is already in the trip: nothing to write.
+            return {"imported": imported, "skipped": skipped}
+
+    def _add(project) -> None:
+        # Re-sorted and re-checked on every retry attempt, against current DB
+        # state, as import-gpx does: one trip-days check over every date.
+        with get_session() as qsess:
+            new = _sort(qsess)
+            if new:
+                ensure_trip_days_quota(
+                    qsess, project_row_id, owner_id,
+                    *(a.start_date_local for a in new))
+        project.add_activities(new)
+
+    # One save, so one transaction: all of the tracks or none. In a
+    # threadpool for the same reason as import-gpx.
+    project = await run_in_threadpool(
+        _repo.save_project_with_retry,
+        owner_id, name, _add,
+        activity_user_id=user_info_id,
+    )
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    if imported:
+        bust_geo_cache(owner_id, name)
+        queue_stats_refresh(background_tasks, owner_id, name)
+        queue_share_tiles_refresh(background_tasks, owner_id, name)
+
+    return {"imported": imported, "skipped": skipped}
 
 
 # ── Single-activity refresh ────────────────────────────────────────────────────
