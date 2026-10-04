@@ -1420,7 +1420,9 @@ class ProjectNotifier extends ChangeNotifier
     final box = viewport == null ? null : fetchBoxFor(viewport, bucket);
     final token = _loadTrack.token;
     try {
-      final next = await _service.getSimplifiedGeo(r, _mapZoom, bbox: box);
+      final fetched = await fetchServerGeo(
+          () => _service.getSimplifiedGeo(r, _mapZoom, bbox: box));
+      final next = fetched.geo;
       if (!_refetchIsCurrent(token, r)) return;
       // See the load path: a response with no feature list is not an empty
       // trip. Keep what is on screen rather than blanking it.
@@ -1435,7 +1437,7 @@ class ProjectNotifier extends ChangeNotifier
       // has left the box, the pan events that took it there have already
       // scheduled the next refetch.
       if (_bucketOf(_mapZoom) != bucket) return;
-      reconcileSegmentOverlay(next);
+      reconcileSegmentOverlay(next, requestedAt: fetched.requestedAt);
       geo = {
         'type': 'FeatureCollection',
         'features': mergePendingSegmentPatches(
@@ -1560,7 +1562,9 @@ class ProjectNotifier extends ChangeNotifier
       // stamp a level that was never fetched — and then never refetch it.
       final requestedZoom = _mapZoom;
       final requestedBucket = _bucketOf(requestedZoom);
-      final lod = await _service.getSimplifiedGeo(ref, requestedZoom);
+      final fetched = await fetchServerGeo(
+          () => _service.getSimplifiedGeo(ref, requestedZoom));
+      final lod = fetched.geo;
       if (!_isCurrent(token, ref)) return;
       // A 200 carrying no feature list is not an empty trip, it is a response
       // this code did not ask for — an older server answering some catch-all,
@@ -1570,7 +1574,7 @@ class ProjectNotifier extends ChangeNotifier
       if (lod['features'] is! List) {
         throw StateError('simplified geo response carried no features');
       }
-      reconcileSegmentOverlay(lod);
+      reconcileSegmentOverlay(lod, requestedAt: fetched.requestedAt);
       final lodFeatures = mergePendingSegmentPatches(
           List<dynamic>.from(lod['features'] as List? ?? []));
       await _waitForCameraIdle();
@@ -1612,7 +1616,8 @@ class ProjectNotifier extends ChangeNotifier
     if (cachedFullGeo != null) {
       if (!_isCurrent(token, ref)) return;
       try {
-        reconcileSegmentOverlay(cachedFullGeo);
+        // Older than every patch, however recently it was read.
+        reconcileSegmentOverlay(cachedFullGeo, requestedAt: 0);
         final features = mergePendingSegmentPatches(
             List<dynamic>.from(cachedFullGeo['features'] as List? ?? []));
         geo = {'type': 'FeatureCollection', 'features': features};
@@ -1636,9 +1641,12 @@ class ProjectNotifier extends ChangeNotifier
     // warm cache. A persistent failure is surfaced (not swallowed) so the user
     // isn't left silently looking at low-res straight lines.
     Map<String, dynamic>? fullGeo;
+    var fullGeoRequestedAt = 0;
     for (int attempt = 0; attempt < 2; attempt++) {
       try {
-        fullGeo = await _service.getGeo(ref);
+        final fetched = await fetchServerGeo(() => _service.getGeo(ref));
+        fullGeo = fetched.geo;
+        fullGeoRequestedAt = fetched.requestedAt;
         break;
       } on Object catch (e) {
         // Catch Object (not just Exception): a decode failure can throw an
@@ -1660,7 +1668,7 @@ class ProjectNotifier extends ChangeNotifier
     try {
       // Drop overlay entries the server geo already reflects, so the durable
       // overlay self-cleans once the backend has caught up.
-      reconcileSegmentOverlay(fullGeo);
+      reconcileSegmentOverlay(fullGeo, requestedAt: fullGeoRequestedAt);
 
       if (!_isCurrent(token, ref)) return;
       // One atomic swap: rebuild authoritatively from the server geo
@@ -3028,9 +3036,21 @@ class ProjectNotifier extends ChangeNotifier
     await _buildFullTrack();
     if (!_reloadTrack.isCurrent(token, ref)) return;
     // Refresh GeoJSON so the map polylines reflect the updated track.
-    geo = encryption.isUnlocked
-        ? client_geo.buildFullGeo(items, client_geo.activitiesById(activities))
-        : await _service.getGeo(ref, bypassCache: true);
+    if (encryption.isUnlocked) {
+      geo = client_geo.buildFullGeo(items, client_geo.activitiesById(activities));
+    } else {
+      final fetched = await fetchServerGeo(
+          () => _service.getGeo(ref, bypassCache: true));
+      if (!_reloadTrack.isCurrent(token, ref)) return;
+      // Through the overlay like every other server geo, so a patch this
+      // answer supersedes cannot come back at the next rebuild (I1-R2-2).
+      reconcileSegmentOverlay(fetched.geo, requestedAt: fetched.requestedAt);
+      geo = {
+        'type': 'FeatureCollection',
+        'features': mergePendingSegmentPatches(
+            List<dynamic>.from(fetched.geo['features'] as List? ?? [])),
+      };
+    }
     if (!_reloadTrack.isCurrent(token, ref)) return;
     notifyListeners();
   }
@@ -3235,8 +3255,9 @@ class ProjectNotifier extends ChangeNotifier
       } on ApiException catch (e) {
         if (e.statusCode != 405) rethrow;
         // A server that predates the PATCH (the tag publishes the APK before
-        // the server is deployed): its PUT still takes the whole map.
-        if (this.ref != ref) return;
+        // the server is deployed): its PUT still takes the whole map. No trip
+        // check here: [merged] and [ref] are this trip's, captured before the
+        // await, so a trip opened since must not cost this save (I1-R2-1).
         await api.put(ref.path('/day-meta'), {
           'day_meta': merged,
           if (newSleepingOptions != null) 'sleeping_options': newSleepingOptions,
@@ -3372,14 +3393,28 @@ class ProjectNotifier extends ChangeNotifier
         _autoFillDaysToToday();
         geo = client_geo.buildFullGeo(items, client_geo.activitiesById(activities));
       } else {
-        final results = await Future.wait([
+        final results = await Future.wait<Object>([
           _service.getDetailsMeta(ref),
-          _service.getGeo(ref, bypassCache: true),
+          fetchServerGeo(() => _service.getGeo(ref, bypassCache: true)),
         ]);
-        final details = results[0];
+        final details = results[0] as Map<String, dynamic>;
+        final fetched =
+            results[1] as ({Map<String, dynamic> geo, int requestedAt});
         await _applyDetails(details, ref);
         _autoFillDaysToToday();
-        geo = results[1];
+        if (stale()) {
+          notify = false;
+          return;
+        }
+        // Through the overlay like every other server geo: assigned as is, it
+        // showed the server's route but left a patch it supersedes to come
+        // back at the next rebuild (I1-R2-2).
+        reconcileSegmentOverlay(fetched.geo, requestedAt: fetched.requestedAt);
+        geo = {
+          'type': 'FeatureCollection',
+          'features': mergePendingSegmentPatches(
+              List<dynamic>.from(fetched.geo['features'] as List? ?? [])),
+        };
       }
       _updateStats();
       await _buildFullTrack();

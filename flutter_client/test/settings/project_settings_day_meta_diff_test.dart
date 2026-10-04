@@ -22,8 +22,10 @@ import 'package:traxjourney_client/src/projects/project_notifier.dart';
 import 'package:traxjourney_client/src/projects/project_service.dart';
 import 'package:traxjourney_client/src/projects/project_settings_screen.dart';
 
-/// Every day-meta write during a test: the method and the decoded body.
-late List<({String method, Map<String, dynamic> body})> dayMetaWrites;
+/// Every day-meta write during a test: the method, the path and the decoded
+/// body.
+late List<({String method, String path, Map<String, dynamic> body})>
+    dayMetaWrites;
 
 /// When set, the PATCH answers this status instead of 200.
 late int? patchStatus;
@@ -43,6 +45,7 @@ ApiClient _recordingApi() => ApiClient(
             (req.method == 'PATCH' || req.method == 'PUT')) {
           dayMetaWrites.add((
             method: req.method,
+            path: req.url.path,
             body: jsonDecode(req.body) as Map<String, dynamic>,
           ));
           if (req.method == 'PATCH' && patchGate != null) {
@@ -335,8 +338,9 @@ void main() {
       expect(n.error, isNull);
     });
 
-    test('a 405 after another trip loaded never sends its days (I1-R1-2)',
-        () async {
+    test(
+        "a 405 after another trip loaded sends A's save to A, never B's "
+        'days (I1-R1-2, I1-R2-1)', () async {
       final n = _notifier(_days({'2026-06-13': []}));
       patchStatus = 405;
       patchGate = Completer<void>();
@@ -351,11 +355,18 @@ void main() {
       patchGate!.complete();
       await save;
 
-      for (final w in dayMetaWrites.where((w) => w.method == 'PUT')) {
-        final sent = w.body['day_meta'] as Map<String, dynamic>;
-        expect(sent.keys, isNot(contains('2026-07-01')));
-        expect(sent.keys, isNot(contains('2026-07-02')));
-      }
+      // The trip switch must not discard A's save: the PUT carries the map
+      // captured before the await, to A's path.
+      final puts = dayMetaWrites.where((w) => w.method == 'PUT').toList();
+      expect(puts, hasLength(1));
+      expect(puts.single.path, endsWith('/projects/Trip/day-meta'));
+      final sent = puts.single.body['day_meta'] as Map<String, dynamic>;
+      expect(sent['2026-06-13'], {'note': 'trip A'});
+      expect(sent.keys, isNot(contains('2026-07-01')));
+      expect(sent.keys, isNot(contains('2026-07-02')));
+      // B's state is left alone.
+      expect(n.dayMeta.keys, containsAll(['2026-07-01', '2026-07-02']));
+      expect(n.dayMeta.keys, isNot(contains('2026-06-13')));
     });
   });
 }

@@ -1,7 +1,10 @@
 // Unit tests for the durable segment geo-patch overlay in
 // ProjectSegmentCrudMixin. These cover the logic that fixes lost patches (when
 // geo is null during load) and ghost segments (delete-then-create races with a
-// stale background geo snapshot).
+// stale background geo snapshot), and the request ordering that decides which
+// server answers may drop a patch (I1-R2-2).
+
+import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -62,6 +65,26 @@ Map<String, dynamic> _serverSeg(String id, {String? status, int? hash}) =>
 int _drawnPoints(List<dynamic> merged) =>
     ((merged.single as Map)['geometry']['coordinates'] as List).length;
 
+/// The overlay-clock reading of a geo request started now: what a request in
+/// flight across whatever the test does next is reconciled with.
+Future<int> _requestStartedNow(_Host h) async =>
+    (await h.fetchServerGeo(() async => <String, dynamic>{})).requestedAt;
+
+Map<String, dynamic> _collection(List<dynamic> features) =>
+    {'type': 'FeatureCollection', 'features': features};
+
+/// A server feature for [id] drawing [_routeB].
+Map<String, dynamic> _serverRouteB(String id) =>
+    _serverSeg(id, status: 'resolved', hash: _hashB)
+      ..['geometry'] = {
+        'type': 'LineString',
+        'coordinates': [
+          [0, 0],
+          [0.4, 0.9],
+          [1, 1],
+        ],
+      };
+
 List<String> _segIds(List<dynamic> features) => [
       for (final f in features)
         if (f is Map && (f['properties'] as Map?)?['segment_id'] != null)
@@ -112,8 +135,11 @@ void main() {
       expect(_segIds(merged), ['new']);
     });
 
-    test('reconcile clears overlay entries the server already reflects', () {
+    test('reconcile clears overlay entries the server already reflects',
+        () async {
       final h = _Host()..geo = {'type': 'FeatureCollection', 'features': []};
+      // Started before both: only the content can clear them.
+      final before = await _requestStartedNow(h);
       h.upsertSegmentInGeo('s1', _segFeature('s1')); // pending patch
       h.removeSegmentFromGeo('s2'); // tombstone
 
@@ -122,7 +148,7 @@ void main() {
       h.reconcileSegmentOverlay({
         'type': 'FeatureCollection',
         'features': [_segFeature('s1')],
-      });
+      }, requestedAt: before);
 
       // With the overlay cleared, a later merge is a pure pass-through.
       final merged = h.mergePendingSegmentPatches([_segFeature('s1'), _segFeature('s2')]);
@@ -130,8 +156,9 @@ void main() {
     });
 
     test('a refetch carrying the pre-resolve feature does not replace the '
-        'resolved line (issue #278)', () {
+        'resolved line (issue #278)', () async {
       final h = _Host()..geo = {'type': 'FeatureCollection', 'features': []};
+      final before = await _requestStartedNow(h);
       h.items = [
         {'item_type': 'segment', 'segment': {'id': 's1', 'route_status': 'pending'}},
       ];
@@ -145,39 +172,43 @@ void main() {
       // tagged 'rail' too — only route_status says it is not the route.
       final stale = _serverSeg('s1', status: 'pending');
       final staleGeo = {'type': 'FeatureCollection', 'features': [stale]};
-      h.reconcileSegmentOverlay(staleGeo);
+      h.reconcileSegmentOverlay(staleGeo, requestedAt: before);
       final merged = h.mergePendingSegmentPatches(
           List<dynamic>.from(staleGeo['features'] as List));
       expect(_drawnPoints(merged), 3, reason: 'the resolved route, not the arc');
 
       // Once the server has the route too, the patch is no longer needed.
       // The hash is Python's zlib.crc32 of the same string, so this also pins
-      // the client's CRC-32 to the server's.
+      // the client's CRC-32 to the server's. Started before the resolve too,
+      // so only the content can drop the patch.
       h.reconcileSegmentOverlay({
         'type': 'FeatureCollection',
         'features': [_serverSeg('s1', status: 'resolved', hash: _hashA)],
-      });
+      }, requestedAt: before);
       expect(_drawnPoints(h.mergePendingSegmentPatches([stale])), 2,
           reason: 'the patch was dropped, so the snapshot is drawn as is');
     });
 
     test('a server feature without route_status cannot drop a resolved '
-        'route', () {
+        'route', () async {
       // An older server: route_mode only, which the pre-resolve arc shares.
       final h = _Host()..geo = {'type': 'FeatureCollection', 'features': []};
+      final before = await _requestStartedNow(h);
       h.applyResolvedSegment('s1', {
         'route_mode': 'rail',
         'route_polyline': _routeA,
       });
 
       final old = _serverSeg('s1');
-      h.reconcileSegmentOverlay({'type': 'FeatureCollection', 'features': [old]});
+      h.reconcileSegmentOverlay({'type': 'FeatureCollection', 'features': [old]},
+          requestedAt: before);
       expect(_drawnPoints(h.mergePendingSegmentPatches([old])), 3);
     });
 
     test('a refetch carrying the previous route does not replace a '
-        're-resolved one', () {
+        're-resolved one', () async {
       final h = _Host()..geo = {'type': 'FeatureCollection', 'features': []};
+      final before = await _requestStartedNow(h);
       h.applyResolvedSegment('s1', {
         'route_mode': 'rail',
         'route_polyline': _routeB,
@@ -185,7 +216,8 @@ void main() {
 
       // Fetched before the re-resolve began: resolved, but route A.
       final stale = _serverSeg('s1', status: 'resolved', hash: _hashA);
-      h.reconcileSegmentOverlay({'type': 'FeatureCollection', 'features': [stale]});
+      h.reconcileSegmentOverlay({'type': 'FeatureCollection', 'features': [stale]},
+          requestedAt: before);
       final merged = h.mergePendingSegmentPatches([stale]);
       expect(((merged.single as Map)['geometry']['coordinates'] as List)[1],
           [0.4, 0.9], reason: 'route B, not the stale route A');
@@ -193,14 +225,15 @@ void main() {
       h.reconcileSegmentOverlay({
         'type': 'FeatureCollection',
         'features': [_serverSeg('s1', status: 'resolved', hash: _hashB)],
-      });
+      }, requestedAt: before);
       expect(_drawnPoints(h.mergePendingSegmentPatches([stale])), 2,
           reason: 'the server caught up with route B, so the patch went');
     });
 
     test('a stale low-res snapshot of a degraded route does not replace a '
-        'real one', () {
+        'real one', () async {
       final h = _Host()..geo = {'type': 'FeatureCollection', 'features': []};
+      final before = await _requestStartedNow(h);
       h.applyResolvedSegment('s1', {
         'route_mode': 'rail',
         'route_degraded': false,
@@ -214,7 +247,8 @@ void main() {
           'route_mode': 'rail',
           'route_degraded': true,
         };
-      h.reconcileSegmentOverlay({'type': 'FeatureCollection', 'features': [stale]});
+      h.reconcileSegmentOverlay({'type': 'FeatureCollection', 'features': [stale]},
+          requestedAt: before);
 
       final merged = h.mergePendingSegmentPatches([stale]);
       expect((merged.single as Map)['properties']['route_degraded'], isFalse);
@@ -228,6 +262,104 @@ void main() {
 
       final merged = h.mergePendingSegmentPatches([_segFeature('s2')]);
       expect(_segIds(merged), ['s2']); // s2 no longer tombstoned, s1 not added
+    });
+  });
+
+  group('request ordering (I1-R2-2)', () {
+    Future<_Host> resolvedHost() async {
+      final h = _Host()..geo = _collection([]);
+      h.applyResolvedSegment('s1', {
+        'route_mode': 'rail',
+        'route_polyline': _routeA,
+      });
+      return h;
+    }
+
+    test('a refetch started after the resolve shows another writer\'s '
+        'route', () async {
+      final h = await resolvedHost();
+
+      // The hourly sweep or another device re-routed the segment since.
+      final after = await _requestStartedNow(h);
+      final server = _serverRouteB('s1');
+      h.reconcileSegmentOverlay(_collection([server]), requestedAt: after);
+
+      final merged = h.mergePendingSegmentPatches([server]);
+      expect(((merged.single as Map)['geometry']['coordinates'] as List)[1],
+          [0.4, 0.9], reason: "the server's route B, not the patch's route A");
+    });
+
+    test('a refetch started after the resolve stands whatever its route '
+        'state', () async {
+      final h = await resolvedHost();
+
+      // Re-resolving elsewhere: the server draws the arc again for now.
+      final after = await _requestStartedNow(h);
+      final arc = _serverSeg('s1', status: 'pending');
+      h.reconcileSegmentOverlay(_collection([arc]), requestedAt: after);
+
+      expect(_drawnPoints(h.mergePendingSegmentPatches([arc])), 2);
+    });
+
+    test('a refetch started before the resolve keeps it against another '
+        'route', () async {
+      final h = _Host()..geo = _collection([]);
+      final before = await _requestStartedNow(h);
+      h.applyResolvedSegment('s1', {
+        'route_mode': 'rail',
+        'route_polyline': _routeA,
+      });
+
+      // Only content can drop it, and route B is not route A.
+      final server = _serverRouteB('s1');
+      h.reconcileSegmentOverlay(_collection([server]), requestedAt: before);
+      expect(_drawnPoints(h.mergePendingSegmentPatches([server])), 3);
+      expect(((h.mergePendingSegmentPatches([server]).single as Map)['geometry']
+              ['coordinates'] as List)[1],
+          [0.5, 0.7], reason: 'route A, the patch');
+    });
+
+    test('a request joining one in flight from before the resolve is judged '
+        'by that one\'s start', () async {
+      final h = _Host()..geo = _collection([]);
+      final answer = Completer<Map<String, dynamic>>();
+      final first = h.fetchServerGeo(() => answer.future);
+      h.applyResolvedSegment('s1', {
+        'route_mode': 'rail',
+        'route_polyline': _routeA,
+      });
+      // The service hands the same in-flight request to a later caller.
+      final joined = h.fetchServerGeo(() => answer.future);
+      final stale = _serverSeg('s1', status: 'pending');
+      answer.complete(_collection([stale]));
+      await first;
+      final fetched = await joined;
+
+      h.reconcileSegmentOverlay(fetched.geo, requestedAt: fetched.requestedAt);
+      expect(_drawnPoints(h.mergePendingSegmentPatches([stale])), 3,
+          reason: 'the stale arc must not replace the resolved route');
+    });
+
+    test('a request after one in flight settled is judged by its own start',
+        () async {
+      final h = await resolvedHost();
+      await h.fetchServerGeo(() async => _collection([]));
+      final fetched =
+          await h.fetchServerGeo(() async => _collection([]));
+      h.reconcileSegmentOverlay(fetched.geo, requestedAt: fetched.requestedAt);
+      expect(h.mergePendingSegmentPatches([]), isEmpty,
+          reason: 'nothing older in flight, so its answer stands');
+    });
+
+    test('a tombstone outlives a later request that still has the segment',
+        () async {
+      // The DELETE is only sent once the undo window closes.
+      final h = _Host()..geo = _collection([]);
+      h.removeSegmentFromGeo('s1');
+      final after = await _requestStartedNow(h);
+      h.reconcileSegmentOverlay(_collection([_segFeature('s1')]),
+          requestedAt: after);
+      expect(h.mergePendingSegmentPatches([_segFeature('s1')]), isEmpty);
     });
   });
 
