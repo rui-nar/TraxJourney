@@ -198,3 +198,38 @@ def test_replace_keeps_a_root_another_trip_holds_and_renumbers_it(env, route):
     with Session(engine) as sess:
         assert sess.get(DBActivity, 111).name == "Ride"
         assert sess.get(DBProject, other).lock_version > version_before
+
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_a_failed_prune_does_not_fail_the_import(env, route, monkeypatch, caplog):
+    """Review F2-R1-1: the import has committed by the time the prune runs,
+    so a prune failure is logged, the rows stay for a later disconnect, and
+    the caller still gets the replaced trip — its caches busted first."""
+    import logging
+
+    client, engine, uid = env
+    _activity(engine, 1, uid)
+    _activity(engine, 2, uid)
+    trip = _trip(engine, uid, "Alps", [1])
+
+    def _fail(*_args, **_kwargs):
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(transfer_mod._repo, "delete_unreferenced_strava_activities", _fail)
+    busted = []
+    real_bust = transfer_mod.bust_geo_cache
+
+    def _bust(owner_id, name):
+        busted.append((owner_id, name))
+        real_bust(owner_id, name)
+    monkeypatch.setattr(transfer_mod, "bust_geo_cache", _bust)
+
+    with caplog.at_level(logging.WARNING, logger="api.project_transfer"):
+        _replace(client, route, "Alps", [2])
+
+    with Session(engine) as sess:
+        assert sess.exec(select(DBProjectItem.activity_id).where(
+            DBProjectItem.project_id == trip)).all() == [2]
+    assert _rows(engine) == {1, 2}
+    assert (uid, "Alps") in busted
+    assert ("import: replaced trip 'Alps' (user=%s) but could not free the activities "
+            "it dropped [1]: RuntimeError: database is locked" % uid) in caplog.text

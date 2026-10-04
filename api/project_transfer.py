@@ -395,12 +395,14 @@ async def import_project(
             imported = name
     if removals is not None:
         _remove_photos(removals)
-        _free_dropped_activities(user_info_id, held)
         queue_stats_refresh(background_tasks, user_info_id, imported)
         queue_share_tiles_refresh(background_tasks, user_info_id, imported)
     # Cached payloads of this name are now wrong: the replaced trip's, or a
     # deleted trip's of the same name (issue #178).
     bust_geo_cache(user_info_id, imported)
+    if removals is not None:
+        # Last: the import is done and its caches busted whatever happens here.
+        _free_dropped_activities(user_info_id, imported, held)
 
     if removals is not None:
         outcome = "replaced"
@@ -482,26 +484,37 @@ def _ensure_room(sess, user_info_id: int, incoming: int) -> None:
         ensure_storage_quota(sess, user_info_id, incoming)
 
 
-def _free_dropped_activities(user_info_id: int, held: List[int]) -> None:
+def _free_dropped_activities(user_info_id: int, name: str, held: List[int]) -> None:
     """Free what a Replace dropped: the Strava rows and Strava split tails the
     trip *held* before it that no trip references now (issue #509).
 
     As a trip deletion frees its own: a Replace is the owner's, so the rows
     go whoever imported them, and ids the file kept are referenced again and
-    stay. Runs once the import and its photo moves are done, so a failure
-    here cannot cost a photo. Another trip showing a surviving split root
-    renumbered gets its cached payloads busted.
+    stay. Another trip showing a surviving split root renumbered gets its
+    cached payloads busted.
+
+    Runs last, once the import, its photo moves and its cache busts are done,
+    and never fails the import: the trip *name* is replaced whatever happens
+    here. A failure is logged and the rows stay, for the owner's disconnect
+    to free (review F2-R1-1).
     """
     if not held:
         return
-    with get_session() as sess:
-        renamed = _repo.delete_unreferenced_strava_activities(
-            sess, user_info_id,
-            ids=[aid for aid in held if aid > 0],
-            tail_ids=[aid for aid in held if aid < 0],
-        )
-        others = sess.exec(select(DBProject.user_info_id, DBProject.name).where(
-            DBProject.id.in_(renamed))).all() if renamed else []
+    try:
+        with get_session() as sess:
+            renamed = _repo.delete_unreferenced_strava_activities(
+                sess, user_info_id,
+                ids=[aid for aid in held if aid > 0],
+                tail_ids=[aid for aid in held if aid < 0],
+            )
+            others = sess.exec(select(DBProject.user_info_id, DBProject.name).where(
+                DBProject.id.in_(renamed))).all() if renamed else []
+    except Exception as exc:  # noqa: BLE001 — the import has committed
+        _log.warning(
+            "import: replaced trip %r (user=%s) but could not free the activities it "
+            "dropped %s: %s: %s", name, user_info_id, sorted(held),
+            type(exc).__name__, exc)
+        return
     for owner_id, trip_name in others:
         bust_geo_cache(owner_id, trip_name)
 
@@ -645,12 +658,14 @@ async def import_project_zip(
             await run_in_threadpool(shutil.rmtree, staging, ignore_errors=True)
 
     if removals is not None:
-        await run_in_threadpool(_free_dropped_activities, user_info_id, held)
         queue_stats_refresh(background_tasks, user_info_id, imported)
         queue_share_tiles_refresh(background_tasks, user_info_id, imported)
     # Cached payloads of this name are now wrong: the replaced trip's, or a
     # deleted trip's of the same name (issue #178).
     bust_geo_cache(user_info_id, imported)
+    if removals is not None:
+        # Last: the import is done and its caches busted whatever happens here.
+        await run_in_threadpool(_free_dropped_activities, user_info_id, imported, held)
 
     if removals is not None:
         outcome = "replaced"
