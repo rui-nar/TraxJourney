@@ -927,6 +927,13 @@ class ProjectNotifier extends ChangeNotifier
     final loadRef = _loadTrack.ref;
     if (loadRef == null) return;
     final token = _loadTrack.token;
+    // Cleared first, as load() does: the restore applies only what was saved,
+    // so a selection this notifier made would survive beside the one view
+    // mode saved since (U5-R1-4).
+    selectedDay = null;
+    selectedActivityId = null;
+    selectedSegmentId = null;
+    selectedMemoryId = null;
     await _restoreUiState(token, loadRef);
     if (_isCurrent(token, loadRef)) notifyListeners();
   }
@@ -1100,17 +1107,23 @@ class ProjectNotifier extends ChangeNotifier
       lowResFuture?.ignore();
 
       if (lowResFuture != null) {
+        Map<String, dynamic>? lowRes;
         try {
-          geo = await lowResFuture;
+          lowRes = await lowResFuture;
         } on Object catch (_) {
           // Non-fatal: fall back to whatever low-res geo is on file (may be
           // null, e.g. a project never opened on this device before) and let
           // the /meta fallback below decide whether this load can proceed at
           // all — a bare map with no track is still better than an error
           // screen when offline and a fuller cache entry exists.
-          geo = await projectDataCache.readLowResGeo(ref);
+          lowRes = await projectDataCache.readLowResGeo(ref);
         }
-        if (_isCurrent(token, ref)) notifyListeners(); // map visible at ~2.2s
+        // Checked before assigning: a load superseded or cleared meanwhile —
+        // an account change among them — must not put its geometry back
+        // (U5-R1-3).
+        if (!_isCurrent(token, ref)) return;
+        geo = lowRes;
+        notifyListeners(); // map visible at ~2.2s
       }
 
       Map<String, dynamic> details;

@@ -114,8 +114,15 @@ class EncryptionService {
   /// True once the CMK is held in memory (this device can read/write ciphertext).
   bool get isUnlocked => _cmk != null;
 
+  /// Bumped by every [lock], so an [unlock] still in flight when the session
+  /// ends cannot put the key back afterwards (U5-R1-2, issue #418).
+  int _lockGeneration = 0;
+
   /// Drop the in-memory CMK (e.g. on logout).
-  void lock() => _cmk = null;
+  void lock() {
+    _cmk = null;
+    _lockGeneration++;
+  }
 
   /// Enable encryption for the account: generate a CMK, wrap it to this device
   /// and to the chosen recovery method, push the wraps to the server, and hold
@@ -175,6 +182,7 @@ class EncryptionService {
   /// stored key, encryption is off, or this device is not yet approved — those
   /// cases fall through to device-approval (Phase 5) or recovery (Phase 6).
   Future<bool> unlock() async {
+    final generation = _lockGeneration;
     final keyPair = await _store.load();
     if (keyPair == null) return false;
 
@@ -187,7 +195,10 @@ class EncryptionService {
       base64.decode(status.wrappedCmkB64!),
       ephemeralPublicKey: base64.decode(status.ephemeralPublicKeyB64!),
     );
-    _cmk = await unwrapCmkWithDeviceKeyPair(wrapped, keyPair);
+    final cmk = await unwrapCmkWithDeviceKeyPair(wrapped, keyPair);
+    // Locked while this was waiting — a logout, or a 401 ending the session.
+    if (generation != _lockGeneration) return false;
+    _cmk = cmk;
     return true;
   }
 

@@ -111,6 +111,8 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     FlutterSecureStorage.setMockInitialValues({});
     projectDataCache.resetForTest();
+    // A test that leaves a fetch held open must not hand it to the next.
+    resetInFlightFetches();
     api = ApiClient();
   });
 
@@ -306,6 +308,79 @@ void main() {
       expect(prefs.containsKey('last_opened_project_'), isFalse);
       expect(prefs.getString('last_opened_project_7'), '{"name":"Peru"}');
     });
+  });
+
+  group('a response that lands after the account changed (U5-R1-1)', () {
+    const ref = ProjectRef(name: 'Japan');
+    // Answers every fetch below: a trip's meta, and a geometry.
+    final body = jsonEncode({
+      'name': 'Japan',
+      'lock_version': 1,
+      'type': 'FeatureCollection',
+      'features': <dynamic>[],
+    });
+
+    for (final (label, fetch, read) in <(
+      String,
+      Future<Object?> Function(ProjectService),
+      Future<Object?> Function(),
+    )>[
+      ('details', (s) => s.getDetails(ref),
+          () => projectDataCache.readFullDetails(ref)),
+      ('meta', (s) => s.getDetailsMeta(ref),
+          () => projectDataCache.readMetaForOfflineFallback(ref)),
+      ('low-res geometry', (s) => s.getLowResGeo(ref),
+          () => projectDataCache.readLowResGeo(ref)),
+      ('full geometry', (s) => s.getGeo(ref),
+          () => projectDataCache.readFullGeo(ref)),
+    ]) {
+      test("$label is not cached as the next account's", () async {
+        final held = Completer<http.Response>();
+        api = ApiClient(httpClient: MockClient((_) => held.future))
+          ..setToken(_jwt(7));
+        projectDataCache.setCurrentUser(7);
+        final pending = fetch(ProjectService());
+        await pumpEventQueue();
+
+        // Account 7's session ends, as _endSession() ends it, and 8 signs in.
+        projectDataCache.setCurrentUser(null);
+        resetInFlightFetches();
+        projectDataCache.setCurrentUser(8);
+        final writes = projectDataCache.storeWrites;
+
+        held.complete(http.Response(body, 200));
+        await pending;
+
+        expect(await read(), isNull, reason: "in account 8's memory");
+        expect(projectDataCache.storeWrites, writes, reason: 'on disk');
+      });
+    }
+  });
+
+  test(
+      'a restore blocking on /api/auth/me scopes the cache to the token from '
+      'the start (U5-R1-5)', () async {
+    final me = Completer<Map<String, dynamic>>();
+    final auth = AuthNotifier(_RestoringService(
+        _jwt(7, life: const Duration(minutes: 1)),
+        me: me.future));
+    final restoring = auth.init();
+    await pumpEventQueue();
+    expect(auth.isRestoring, isTrue, reason: 'still waiting on /me');
+    expect(auth.user, isNull);
+
+    // A trip opened under the splash caches its /meta meanwhile.
+    const ref = ProjectRef(name: 'Japan');
+    final scope = projectDataCache.scope;
+    projectDataCache.onMetaFetched(ref, {'lock_version': 1, 'name': 'Japan'});
+
+    me.complete(_me(7));
+    await restoring;
+
+    expect(auth.user?.id, '7');
+    expect(projectDataCache.scope, scope,
+        reason: 'already scoped to account 7; /me must not re-scope it');
+    expect(await projectDataCache.readMetaForOfflineFallback(ref), isNotNull);
   });
 
   group("the on-device cache's user-0 entries", () {

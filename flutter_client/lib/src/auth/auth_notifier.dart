@@ -87,10 +87,20 @@ class AuthNotifier extends ChangeNotifier {
   /// the user hasn't actually changed.
   @override
   void notifyListeners() {
-    final idStr = _user?.id;
-    projectDataCache.setCurrentUser(
-        (idStr == null || idStr.isEmpty) ? null : int.tryParse(idStr));
+    _scopeCache();
     super.notifyListeners();
+  }
+
+  /// Scopes [projectDataCache] to the account whose token the session holds
+  /// (U5-R1-5, issue #418). The token, not [_user]: a restore that blocks on
+  /// /api/auth/me has the token set and no user yet, and a cache scoped to no
+  /// one meanwhile keyed that load to user 0, then re-scoped mid-load. While
+  /// restoring the token is the session's; otherwise no user is no account.
+  void _scopeCache() {
+    final signedIn = _user != null || _isRestoring;
+    projectDataCache.setCurrentUser(signedIn
+        ? api.tokenUserId ?? int.tryParse(_user?.id ?? '')
+        : null);
   }
 
   /// True only while [init] restores a persisted session at app start.
@@ -118,6 +128,8 @@ class AuthNotifier extends ChangeNotifier {
     try {
       final restored = await _service.restoreSession();
       if (restored) {
+        _scopeCache(); // the token is set; the cache follows it now
+
         final token = api.tokenForUpload;
         final expiry = token == null ? null : _jwtExpiry(token);
         final comfortablyValid = expiry != null &&

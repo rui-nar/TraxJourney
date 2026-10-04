@@ -140,6 +140,15 @@ class _Service extends ProjectService {
       {};
 }
 
+/// [_Service] whose low-res geometry answers when [gate] completes.
+class _HeldLowResService extends _Service {
+  _HeldLowResService(this.gate);
+  final Completer<Map<String, dynamic>> gate;
+
+  @override
+  Future<Map<String, dynamic>> getLowResGeo(ProjectRef ref) => gate.future;
+}
+
 http.Response _json(Object body) => http.Response(jsonEncode(body), 200);
 
 /// Every public getter that holds state, by name.
@@ -336,6 +345,24 @@ void main() {
     }
     expect(timers.where((t) => t.isActive), isEmpty,
         reason: 'a timer started for the cleared trip is still running');
+  });
+
+  test('low-res geometry landing after clear() is not applied (U5-R1-3)',
+      () async {
+    final gate = Completer<Map<String, dynamic>>();
+    final n = ProjectNotifier(_HeldLowResService(gate))
+      ..loadRetryBackoff = const [];
+    final loading = n.load(_ref);
+    await pumpEventQueue();
+
+    n.clear(); // the account changed while the load waited
+    gate.complete({
+      'type': 'FeatureCollection',
+      'features': [_segmentFeature('s1')],
+    });
+    await loading;
+
+    expect(n.geo, isNull);
   });
 }
 

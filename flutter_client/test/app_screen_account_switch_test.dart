@@ -42,8 +42,12 @@ class _Service extends ProjectService {
   @override
   Future<Map<String, dynamic>> getDetailsMeta(ProjectRef ref) async => {
         'name': ref.name,
-        'activities': <dynamic>[],
-        'items': <dynamic>[],
+        'activities': [
+          {'id': 5, 'type': 'Hike', 'start_date_local': '${_day1}T08:00:00'},
+        ],
+        'items': [
+          {'item_type': 'activity', 'activity_id': 5},
+        ],
         'people': <dynamic>[],
         'groups': <dynamic>[],
         'trip_end': _day2,
@@ -299,5 +303,32 @@ void main() {
         as Map<String, dynamic>;
     expect(saved['sleeping'], ['Hotel'],
         reason: "the tap must not save the edit notifier's stale filter");
+  });
+
+  testWidgets(
+      'returning to the reused edit notifier keeps only the selection view '
+      'mode saved (U5-R1-4)', (tester) async {
+    final auth = AuthNotifier(_AuthService());
+    final h = _Harness(tester, auth);
+    await h.pump();
+    await tester.runAsync(() => auth.loginWithPassword('1', 'pw'));
+    await h.go(_japan());
+    h.notifier.selectDay(_day1);
+    await h.settle();
+
+    // View mode selects an activity, which saves no day.
+    await h.go('/other');
+    final view = ProjectNotifier(_Service());
+    await tester.runAsync(() async {
+      await view.load(const ProjectRef(name: 'Japan'));
+      view.selectActivity(5);
+      await pumpEventQueue();
+    });
+
+    await h.go(_japan());
+    await h.settle();
+    expect(h.notifier.loadCallCount, 1, reason: 'still reused, not reloaded');
+    expect(h.notifier.selectedActivityId, '5');
+    expect(h.notifier.selectedDay, isNull);
   });
 }

@@ -99,7 +99,29 @@ class ProjectDataCache {
   void setCurrentUser(int? userId) {
     if (_currentUserId == userId) return;
     _currentUserId = userId;
+    _scope++;
     _mem.clear(); // a fresh session starts with no assumptions in memory
+  }
+
+  /// Bumped whenever the user changes (U5-R1-1, issue #418). A fetch reads it
+  /// before its request and hands it to the write that stores the response:
+  /// a write is keyed by whoever is signed in when the response *lands*, so a
+  /// response for the last account landing after the next one signed in
+  /// would otherwise be cached as the next account's.
+  int get scope => _scope;
+  int _scope = 0;
+
+  /// True when [scope] was read under a user that is no longer current.
+  bool _stale(int? scope) => scope != null && scope != _scope;
+
+  /// Every disk write, counted so a test can see that a dropped one never
+  /// reached the store.
+  @visibleForTesting
+  int storeWrites = 0;
+
+  void _storeWrite(String key, Map<String, dynamic> row) {
+    storeWrites++;
+    store.cacheStoreWrite(key, row);
   }
 
   /// Drops every cached entry, in memory and on disk — call on sign-out, and
@@ -127,7 +149,11 @@ class ProjectDataCache {
   /// it is the only place staleness is ever detected, since every other
   /// method here just answers "what do we have on file", it never itself
   /// checks whether that's still current.
-  void onMetaFetched(ProjectRef ref, Map<String, dynamic> meta) {
+  ///
+  /// [scope] is [scope] as read before the request; the write is dropped if
+  /// the user changed since. Writes taking it treat it the same way.
+  void onMetaFetched(ProjectRef ref, Map<String, dynamic> meta, {int? scope}) {
+    if (_stale(scope)) return;
     final lockVersion = (meta['lock_version'] as num?)?.toInt();
     if (lockVersion == null) return; // older server build — no freshness signal, caching stays off for this project
     final key = _key(ref);
@@ -137,7 +163,7 @@ class ProjectDataCache {
     entry.meta = meta;
     // Fire-and-forget: disk persistence must never add latency to the
     // request the whole app blocks on loading.
-    store.cacheStoreWrite(key, {
+    _storeWrite(key, {
       'lockVersion': lockVersion,
       'schemaVersion': _kSchemaVersion,
       'meta': meta,
@@ -185,7 +211,8 @@ class ProjectDataCache {
   /// Records [data] in L1 only — for a caller that just decoded bytes this
   /// cache handed it, so rewriting the identical blob to disk would be pure
   /// churn.
-  void promoteFullGeo(ProjectRef ref, Map<String, dynamic> data) {
+  void promoteFullGeo(ProjectRef ref, Map<String, dynamic> data, {int? scope}) {
+    if (_stale(scope)) return;
     final key = _key(ref);
     (_mem[key] ??= _Entry(0)).fullGeo = data;
   }
@@ -201,12 +228,12 @@ class ProjectDataCache {
   Future<bool> hasFullGeoOnDisk(ProjectRef ref) =>
       store.cacheStoreHasFullGeo(_key(ref));
 
-  void writeLowResGeo(ProjectRef ref, Map<String, dynamic> data) =>
-      _writeHeavy(ref, 'lowResGeo', data);
-  void writeFullGeo(ProjectRef ref, Map<String, dynamic> data) =>
-      _writeHeavy(ref, 'fullGeo', data);
-  void writeFullDetails(ProjectRef ref, Map<String, dynamic> data) =>
-      _writeHeavy(ref, 'fullDetails', data);
+  void writeLowResGeo(ProjectRef ref, Map<String, dynamic> data, {int? scope}) =>
+      _writeHeavy(ref, 'lowResGeo', data, scope);
+  void writeFullGeo(ProjectRef ref, Map<String, dynamic> data, {int? scope}) =>
+      _writeHeavy(ref, 'fullGeo', data, scope);
+  void writeFullDetails(ProjectRef ref, Map<String, dynamic> data, {int? scope}) =>
+      _writeHeavy(ref, 'fullDetails', data, scope);
 
   /// Records [data] as the offline full-res geo for [ref] on disk **only**,
   /// deliberately not in L1 (issue #317).
@@ -224,7 +251,7 @@ class ProjectDataCache {
     final key = _key(ref);
     final entry = _mem[key];
     if (entry == null) return;
-    store.cacheStoreWrite(key, {
+    _storeWrite(key, {
       'lockVersion': entry.lockVersion,
       'schemaVersion': _kSchemaVersion,
       'fullGeo': data,
@@ -245,7 +272,9 @@ class ProjectDataCache {
     return disk == null ? null : pick(disk);
   }
 
-  void _writeHeavy(ProjectRef ref, String field, Map<String, dynamic> data) {
+  void _writeHeavy(
+      ProjectRef ref, String field, Map<String, dynamic> data, int? scope) {
+    if (_stale(scope)) return;
     final key = _key(ref);
     final entry = _mem.putIfAbsent(key, () => _Entry(0));
     switch (field) {
@@ -259,7 +288,7 @@ class ProjectDataCache {
         entry.fullDetails = data;
         break;
     }
-    store.cacheStoreWrite(key, {
+    _storeWrite(key, {
       'lockVersion': entry.lockVersion,
       'schemaVersion': _kSchemaVersion,
       field: data,
@@ -267,8 +296,12 @@ class ProjectDataCache {
   }
 
   Future<_Entry?> _readDisk(String key) async {
+    final scope = _scope;
     final row = await store.cacheStoreRead(key);
     if (row == null || row['schemaVersion'] != _kSchemaVersion) return null;
+    // [key] is the user's who asked; promoting it after a switch would put
+    // their row in the next user's memory.
+    if (_stale(scope)) return null;
     // fullGeo is deliberately absent: [cacheStoreRead] no longer decodes that
     // column, because the Map it produced was never usable. Its coordinate
     // lists are fresh objects that none of map_geometry_memo.dart's
