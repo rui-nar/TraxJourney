@@ -9,6 +9,7 @@ import gzip as gzip_lib
 import json
 import math
 import time
+import zlib
 from array import array
 from itertools import chain
 from threading import Lock
@@ -776,17 +777,31 @@ def _activity_feature(activity, summary_polyline: str | None,
 
 
 def _segment_feature(seg) -> Dict[str, Any] | None:
-    """*seg*'s feature: its resolved route, else a great-circle arc."""
+    """*seg*'s feature: its resolved route, else a great-circle arc.
+
+    ``route_status`` and ``route_hash`` let the client tell a resolved route
+    from the arc a stale fetch still carries (issue #278). ``route_mode`` alone
+    cannot: the segment PUT stores ``rail`` before the resolve runs, so the
+    pre-resolve arc already says ``rail``. ``route_hash`` — the CRC-32 of the
+    stored ``route_polyline`` string, present only when the feature is drawn
+    from it — tells a re-resolved route from the one it replaced; the client
+    computes the same hash from the ``route_polyline`` it reads off ``/meta``.
+    """
     coords = feature_coords(seg)
     if coords is None:
         return None
-    return _linestring(coords, {
+    properties = {
         "type": "segment",
         "segment_id": seg.id,
         "segment_type": seg.segment_type,
         "label": seg.label,
         "route_mode": seg.route_mode,
-    })
+        "route_status": seg.route_status,
+    }
+    # The same condition feature_coords draws the stored route on.
+    if seg.route_mode in ("rail", "ferry", "bus") and seg.route_polyline:
+        properties["route_hash"] = zlib.crc32(seg.route_polyline.encode("utf-8"))
+    return _linestring(coords, properties)
 
 
 def _build_full_geo_features(project: Project, encoded: bool = False) -> List[Dict[str, Any]]:
