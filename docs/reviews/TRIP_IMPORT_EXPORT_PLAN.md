@@ -208,7 +208,7 @@ Reviewer: adversarial-reviewer (Fable). Triager: review-triager (Opus). 1 findin
 ### PIR2-1 — Re-importing an export into its own trip still duplicates split tails and rows without a stored fingerprint
 - Trigger: a user splits a ride, exports the trip as GPX, and runs Import all back into the same trip → the tail has no identity (fresh negative id, no source_id) → it is imported again and appears twice. The same applies to Strava split tails and to GPX imports made before #462 (source NULL).
 - Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=expensive (export format), fix=S/local, confidence=verified
-- Decision: Fix now (D5). Rows with neither a fingerprint nor a Strava id export a third identity ("local", id). On read, accept only a negative integer with |id| < 2^53. Match it by DBActivity.id, joined to this trip only, with no source filter. The fingerprint branch stays first. Triager: no realistic wrongful suppression (random 53-bit ids, trip-scoped).
+- Decision: Fix now (D5), approved by the owner 2026-10-04. Rows with neither a fingerprint nor a Strava id export a third identity ("local", id). On read, accept only a negative integer with |id| < 2^53. Match it by DBActivity.id, joined to this trip only, with no source filter. The fingerprint branch stays first. Triager: no realistic wrongful suppression (random 53-bit ids, trip-scoped).
 - Revisit when: —
 - Guard: —
 - Override: —
@@ -223,5 +223,5 @@ Reviewer: adversarial-reviewer (Fable), rerun after a session limit. Decision by
 - Decision: Defer (D10). Fix if wanted: also list the non-connection candidates' errors (the same shape as the existing branch).
 - Revisit when: a user reports the misleading message, or gpx_import_dialog's pick-step errors are touched again.
 - Guard: —
-- Override: —
+- Override: user: Fix now (2026-10-04)
 - Outcome: open
