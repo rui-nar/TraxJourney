@@ -6,6 +6,7 @@
 // the response, the reload on failure, and the 405 fallback to the whole-map
 // PUT for a server that predates the PATCH.
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -33,6 +34,9 @@ late Map<String, dynamic> patchResponse;
 /// What GET /meta answers for day-meta.
 late Map<String, dynamic> metaDayMeta;
 
+/// When set, a PATCH is answered only once this completes.
+Completer<void>? patchGate;
+
 ApiClient _recordingApi() => ApiClient(
       httpClient: MockClient((req) async {
         if (req.url.path.endsWith('/day-meta') &&
@@ -41,6 +45,9 @@ ApiClient _recordingApi() => ApiClient(
             method: req.method,
             body: jsonDecode(req.body) as Map<String, dynamic>,
           ));
+          if (req.method == 'PATCH' && patchGate != null) {
+            await patchGate!.future;
+          }
           if (req.method == 'PATCH' && patchStatus != null) {
             return http.Response('{"detail":"nope"}', patchStatus!);
           }
@@ -127,6 +134,7 @@ void main() {
   setUp(() {
     dayMetaWrites = [];
     patchStatus = null;
+    patchGate = null;
     patchResponse = {};
     metaDayMeta = {};
     realApi = api;
@@ -325,6 +333,29 @@ void main() {
       expect(sent.keys, isNot(contains('2026-06-14')));
       expect(n.dayMeta['2026-06-13']?['note'], 'kept');
       expect(n.error, isNull);
+    });
+
+    test('a 405 after another trip loaded never sends its days (I1-R1-2)',
+        () async {
+      final n = _notifier(_days({'2026-06-13': []}));
+      patchStatus = 405;
+      patchGate = Completer<void>();
+      final save = n.saveDayMeta(days: {
+        '2026-06-13': {'note': 'trip A'}
+      });
+      await Future<void>.delayed(Duration.zero);
+      // What load() does synchronously, then trip B's /meta lands.
+      n
+        ..ref = const ProjectRef(name: 'Other')
+        ..dayMeta = _days({'2026-07-01': [], '2026-07-02': []});
+      patchGate!.complete();
+      await save;
+
+      for (final w in dayMetaWrites.where((w) => w.method == 'PUT')) {
+        final sent = w.body['day_meta'] as Map<String, dynamic>;
+        expect(sent.keys, isNot(contains('2026-07-01')));
+        expect(sent.keys, isNot(contains('2026-07-02')));
+      }
     });
   });
 }

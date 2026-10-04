@@ -3209,11 +3209,14 @@ class ProjectNotifier extends ChangeNotifier
         newCounters == null) {
       return;
     }
-    dayMeta = {
+    // The whole map, built now: the 405 fallback below runs after an await,
+    // by which time another trip may have replaced dayMeta.
+    final merged = {
       for (final e in dayMeta.entries)
         if (!delete.contains(e.key)) e.key: e.value,
       ...days,
     };
+    dayMeta = {...merged};
     _autoFillDaysToToday();
     if (newSleepingOptions != null) sleepingOptions = newSleepingOptions;
     if (newSleepingOptionGroups != null) sleepingOptionGroups = newSleepingOptionGroups;
@@ -3233,12 +3236,9 @@ class ProjectNotifier extends ChangeNotifier
         if (e.statusCode != 405) rethrow;
         // A server that predates the PATCH (the tag publishes the APK before
         // the server is deployed): its PUT still takes the whole map.
+        if (this.ref != ref) return;
         await api.put(ref.path('/day-meta'), {
-          'day_meta': {
-            for (final e in dayMeta.entries)
-              if (!delete.contains(e.key)) e.key: e.value,
-            ...days,
-          },
+          'day_meta': merged,
           if (newSleepingOptions != null) 'sleeping_options': newSleepingOptions,
           if (newSleepingOptionGroups != null) 'sleeping_option_groups': newSleepingOptionGroups,
           if (newCounters != null) 'counters': newCounters,
