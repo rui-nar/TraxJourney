@@ -517,6 +517,10 @@ question arises. The operational procedure is in `docs/DEPLOYMENT_VPS.md`, §9.
 
 ## Phase 4 — Comparison and cutover
 
+> **Superseded (2026-10-04)** for phases 4–6 by `docs/LOCAL_TRANSPORT_DATA_PLAN.md`:
+> the cutover happened, ferry and bus still depend on Overpass, and what follows
+> was written before either was known.
+
 Do not switch on faith. For a period, resolve through both sources and record where
 they differ — strategy chosen, point count, path length, degraded flag.
 
