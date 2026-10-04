@@ -25,9 +25,11 @@ Once the moves are done it also deletes the photo files left in a current
 member's folder for a person of that trip that no person references any more
 (owner decision, pre-U4 leftovers), giving the usage back to the member. A
 name any person still holds is never deleted, and the owner's folder is never
-touched. A ``people/<id>/`` folder whose person no longer exists at all
-(person or trip deleted) is cleaned the same way in every user's tree, and
-removed once empty (review U5-R2-1).
+touched. Every other ``people/<id>/`` folder in any user's tree is cleaned the
+same way and removed once empty: one whose person no longer exists at all
+(person or trip deleted, review U5-R2-1), or one of a living person in a user
+who is neither the trip's owner nor a current member, such as an ex-member
+(review U5-R3-1).
 """
 from __future__ import annotations
 
@@ -120,7 +122,9 @@ def _move_all() -> int:
             except Exception:  # noqa: BLE001 — one bad folder must not stop the rest
                 _log.exception("stale avatar cleanup failed person_id=%s member=%s",
                                person_id, member)
-    orphaned = _delete_orphaned(person_ids, keep)
+    protected = {pid: {owner_dir, *member_dirs}
+                 for pid, _, owner_dir, member_dirs in people}
+    orphaned = _delete_orphaned(person_ids, protected, keep)
     _log.info("avatar move sweep: moved=%d already_in_place=%d not_found=%d "
               "conflict=%d failed=%d stale_deleted=%d orphan_deleted=%d",
               counts["moved"], counts["present"], counts["missing"],
@@ -128,14 +132,19 @@ def _move_all() -> int:
     return counts["moved"]
 
 
-def _delete_orphaned(person_ids: set[int], keep: set[str]) -> int:
-    """Clean every user's ``people/<id>/`` folder whose person row is gone
-    (review U5-R2-1), and remove it once empty. Returns how many files were
-    deleted.
+def _delete_orphaned(person_ids: set[int], protected: dict[int, set[str]],
+                     keep: set[str]) -> int:
+    """Clean every user's ``people/<id>/`` folder that neither the owner nor a
+    current member of the person's trip holds, and remove it once empty.
+    Returns how many files were deleted.
 
-    A folder whose person still exists is left to the member-only rule above;
-    here, with no row, nothing can point at the files — and the name check
-    against *keep* holds even if SQLite later hands the id to a new person.
+    That is a folder whose person row is gone (review U5-R2-1), or a living
+    person's folder in any other user's tree, such as an ex-member's (review
+    U5-R3-1). The owner's folder is never cleaned and current members' are left
+    to the member pass above. A living person whose trip is gone has no known
+    owner, so all their folders are left alone. Nothing in *keep* is deleted,
+    so an ex-member's copy of a current avatar (review R1-2) stays, and the
+    name check holds even if SQLite later hands a deleted id to a new person.
     """
     from api import people as people_mod
 
@@ -148,11 +157,14 @@ def _delete_orphaned(person_ids: set[int], keep: set[str]) -> int:
         if not _is_id(user.name) or not people_dir.is_dir():
             continue
         for folder in sorted(people_dir.iterdir()):
-            if not _is_id(folder.name) or int(folder.name) in person_ids \
-                    or not folder.is_dir():
+            if not _is_id(folder.name) or not folder.is_dir():
+                continue
+            person_id = int(folder.name)
+            if person_id in person_ids and (person_id not in protected
+                                            or user.name in protected[person_id]):
                 continue
             try:
-                deleted += _delete_stale(int(folder.name), user.name, keep)
+                deleted += _delete_stale(person_id, user.name, keep)
                 if not any(folder.iterdir()):
                     folder.rmdir()
             except Exception:  # noqa: BLE001 — one bad folder must not stop the rest

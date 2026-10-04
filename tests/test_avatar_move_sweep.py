@@ -538,20 +538,82 @@ def test_living_persons_owner_folder_untouched_by_orphan_pass(env):
     assert _usage(engine, ids["owner"]) == 10_000
 
 
-def test_living_persons_non_member_folder_untouched_by_orphan_pass(env):
-    """A living person's folder in a user who is not a member of the trip is
-    outside both rules: left alone."""
-    engine, ids, data_dir = env
+def _ex_member(engine):
+    """A user who was once a member of the trip: no membership row now."""
     with Session(engine) as sess:
-        stranger = UserInfo(display_name="stranger", email="s@e.com")
-        sess.add(stranger); sess.commit(); sess.refresh(stranger)
-        stranger_id = stranger.id
+        ex = UserInfo(display_name="ex", email="ex@e.com")
+        sess.add(ex); sess.commit(); sess.refresh(ex)
+        return ex.id
+
+
+def test_ex_members_stale_pair_for_living_person_is_deleted(env, caplog):
+    engine, ids, data_dir = env
+    ex_id = _ex_member(engine)
     _put(data_dir, ids["owner"], ids["person"], ids["name"])
-    _put(data_dir, stranger_id, ids["person"], str(uuid_lib.uuid4()))
+    _put(data_dir, ex_id, ids["person"], str(uuid_lib.uuid4()))
+    _set_usage(engine, ex_id, 10_000)
+    _set_usage(engine, ids["owner"], 500)
+
+    with caplog.at_level(logging.INFO, logger=avatar_move.__name__):
+        avatar_move.move_companion_avatars()
+
+    assert _files(data_dir) == _owner_files(ids)
+    assert not _folder(data_dir, ex_id, ids["person"]).exists()
+    assert _usage(engine, ex_id) == 10_000 - len(FULL) - len(THUMB)
+    assert _usage(engine, ids["owner"]) == 500
+    assert caplog.text.count("stale avatar file deleted") == 2
+    assert "orphan_deleted=2" in caplog.text
+
+
+def test_ex_members_copy_of_current_avatar_is_kept(env, caplog):
+    """The deferred R1-2 case: the sweep can't move it, and must not delete it."""
+    engine, ids, data_dir = env
+    ex_id = _ex_member(engine)
+    _put(data_dir, ex_id, ids["person"], ids["name"])
+    _set_usage(engine, ex_id, 10_000)
+
+    with caplog.at_level(logging.INFO, logger=avatar_move.__name__):
+        avatar_move.move_companion_avatars()
+
+    assert sorted(p.name for p in _folder(data_dir, ex_id, ids["person"]).iterdir()) == \
+        [f"{ids['name']}.jpg", f"{ids['name']}_thumb.jpg"]
+    assert _usage(engine, ex_id) == 10_000
+    assert "not_found=1" in caplog.text
+
+
+def test_ex_member_cleanup_second_run_is_a_no_op(env, caplog):
+    engine, ids, data_dir = env
+    ex_id = _ex_member(engine)
+    _put(data_dir, ids["owner"], ids["person"], ids["name"])
+    _put(data_dir, ex_id, ids["person"], str(uuid_lib.uuid4()))
+    _set_usage(engine, ex_id, 10_000)
+    avatar_move.move_companion_avatars()
+    assert not _folder(data_dir, ex_id, ids["person"]).exists()
+    files, ex_usage = _files(data_dir), _usage(engine, ex_id)
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger=avatar_move.__name__):
+        avatar_move.move_companion_avatars()
+
+    assert _files(data_dir) == files
+    assert _usage(engine, ex_id) == ex_usage
+    assert "stale_deleted=0 orphan_deleted=0" in caplog.text
+
+
+def test_trip_less_living_persons_folders_are_left_alone(env):
+    """A person row whose trip is gone has no known owner: none of their
+    folders are touched."""
+    engine, ids, data_dir = env
+    ex_id = _ex_member(engine)
+    with Session(engine) as sess:
+        stray = DBPerson(project_id=987_654, name="Stray")
+        sess.add(stray); sess.commit(); sess.refresh(stray)
+        stray_id = stray.id
+    _put(data_dir, ex_id, stray_id, str(uuid_lib.uuid4()))
 
     avatar_move.move_companion_avatars()
 
-    assert len(list(_folder(data_dir, stranger_id, ids["person"]).iterdir())) == 2
+    assert len(list(_folder(data_dir, ex_id, stray_id).iterdir())) == 2
 
 
 def test_living_persons_member_folder_keeps_member_rules(env, caplog):
