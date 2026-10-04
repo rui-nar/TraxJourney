@@ -1,6 +1,7 @@
 library;
 
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/scheduler.dart' show FrameTiming;
 import 'package:flutter/widgets.dart';
@@ -93,6 +94,35 @@ String perfSummaryLine(List<double> buildMs, List<double> rasterMs) {
       'raster p50=${f(perfPercentile(r, 50))} p90=${f(perfPercentile(r, 90))} '
       'p99=${f(perfPercentile(r, 99))} max=${f(r.last)}ms  |  '
       'janky(>${kFrameBudgetMs.toStringAsFixed(1)}ms)=$janky/$n';
+}
+
+/// The `total;dur=` value, in ms, of a `Server-Timing` header; null when the
+/// header is absent (an older server) or carries no readable total. Pure +
+/// testable. Never throws: a malformed header must cost a sample, not a load.
+double? perfServerTimingTotalMs(String? header) {
+  if (header == null) return null;
+  for (final metric in header.split(',')) {
+    final parts = metric.split(';').map((p) => p.trim()).toList();
+    if (parts.first != 'total') continue;
+    for (final p in parts.skip(1)) {
+      if (!p.startsWith('dur=')) continue;
+      final v = double.tryParse(p.substring(4));
+      if (v != null && v.isFinite && v >= 0) return v;
+    }
+  }
+  return null;
+}
+
+/// Payload-size distribution and HIT count of the simplified-geometry
+/// fetches, one line. Empty when there were none. Pure + testable.
+String perfGeoLodLine(List<double> bytes, int hits) {
+  if (bytes.isEmpty) return '';
+  final sorted = [...bytes]..sort();
+  String kb(double b) => (b / 1024).toStringAsFixed(1);
+  return '[perf] geo_lod payload  n=${bytes.length}  '
+      'p50=${kb(perfPercentile(sorted, 50))}KB  '
+      'p90=${kb(perfPercentile(sorted, 90))}KB  '
+      'worst=${kb(sorted.last)}KB  hits=$hits';
 }
 
 class PerfTiming {
@@ -232,6 +262,8 @@ class PerfSpans {
   final Map<String, List<double>> _stage = {};
   final Map<String, String> _notes = {};
   final Map<String, List<String>> _failures = {};
+  final List<double> _geoLodBytes = [];
+  int _geoLodHits = 0;
 
   // ── Frames during map gestures ─────────────────────────────────────────
   // Every span above measures *loading*. The ANR on issue #276 happens while
@@ -545,6 +577,39 @@ class PerfSpans {
     }
   }
 
+  /// A simplified-geometry fetch (issue #401): the whole fetch is the
+  /// `fetch_geo_lod` stage; the server's own `Server-Timing` total goes to
+  /// `geo_lod_server` and the rest (network, queueing, download) to
+  /// `geo_lod_wait`, never negative. The payload size is a sample, and an
+  /// `X-Cache: HIT` is counted. A response without the header (an older
+  /// server) records no server or wait sample.
+  Future<Uint8List> geoLodFetch(
+      Future<({Uint8List bytes, Map<String, String> headers})> Function()
+          body) async {
+    if (!enabled) return (await body()).bytes;
+    final sw = Stopwatch();
+    final res = await stage('fetch_geo_lod', () {
+      sw.start();
+      return body();
+    });
+    final fetchMs = sw.elapsedMicroseconds / 1000.0;
+    final server = perfServerTimingTotalMs(res.headers['server-timing']);
+    if (server != null) {
+      (_stage['geo_lod_server'] ??= []).add(server);
+      (_stage['geo_lod_wait'] ??= [])
+          .add(fetchMs > server ? fetchMs - server : 0);
+    }
+    _geoLodBytes.add(res.bytes.length.toDouble());
+    if ((res.headers['x-cache'] ?? '').toUpperCase() == 'HIT') _geoLodHits++;
+    return res.bytes;
+  }
+
+  /// Snapshot of the simplified-geometry payload sizes, in bytes.
+  List<double> get geoLodBytes => List.unmodifiable(_geoLodBytes);
+
+  /// Fetches the server answered from its cache.
+  int get geoLodHits => _geoLodHits;
+
   /// Snapshot of recorded UI-isolate stalls, keyed by span name.
   Map<String, List<double>> get blockingSpans =>
       {for (final e in _blocking.entries) e.key: List.unmodifiable(e.value)};
@@ -579,6 +644,8 @@ class PerfSpans {
     _stage.clear();
     _notes.clear();
     _failures.clear();
+    _geoLodBytes.clear();
+    _geoLodHits = 0;
   }
 
   /// Clears everything, including session-level state. For tests.
@@ -637,7 +704,9 @@ class PerfSpans {
         worstGestureStallMs: _maxGestureStallMs,
         gestures: _gestures,
         gestureBuild: _gestureBuild,
-        gestureRaster: _gestureRaster);
+        gestureRaster: _gestureRaster,
+        geoLodBytes: _geoLodBytes,
+        geoLodHits: _geoLodHits);
   }
 
   /// The most recently completed load's report, or null if none has finished
@@ -721,6 +790,8 @@ String perfFullReport(
   int gestures = 0,
   List<double> gestureBuild = const [],
   List<double> gestureRaster = const [],
+  List<double> geoLodBytes = const [],
+  int geoLodHits = 0,
 }) {
   final buf = StringBuffer()
     ..writeln(perfSpanReport('blocking (UI isolate)', blocking))
@@ -773,6 +844,8 @@ String perfFullReport(
       buf.writeln('  $n  x${errs.length}  ${errs.last}');
     }
   }
+  final geoLod = perfGeoLodLine(geoLodBytes, geoLodHits);
+  if (geoLod.isNotEmpty) buf.writeln(geoLod);
   if (notes.isNotEmpty) {
     buf.writeln('[perf] payloads');
     final names = notes.keys.toList()..sort();
