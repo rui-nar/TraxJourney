@@ -84,3 +84,26 @@ Answer (user, 2026-10-04): keep (b) with the wording corrected to the real behav
 - Guard: —
 - Override: —
 - Outcome: open
+
+## Round 3 — 2026-10-04, reviewed at 91908266 (fixes since a63b8d45)
+
+Envelope question raised: Android ships only as a sideloaded APK on the GitHub release (docs/ANDROID.md), with no Play Store and no iOS build, so publishing a release updates no installed device and a pre-gate build is never told to update. Does the owner's acceptance of the silent old-build loss (R2-1) stand on that basis, or should Decision 12 add a lever that reaches installed builds?
+Answer (user, 2026-10-04): the acceptance stands, with an `Upgrade-Note:` on the release page (the recommended option). Table approved as triaged.
+
+### R3-1 — The release-order note relies on store builds that do not exist
+- Trigger: U21's implementer writes "publish native store builds before or with the deploy" → there is no store (sideload APK attached by the same v* tag; no iOS) → the 426 window lasts until each user installs the APK by hand; Decision 15's store link from ANDROID_PACKAGE_NAME points to a Play listing that does not exist
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed
+
+### R3-2 — A new APK published before the server deploy sends PATCH to a server without it
+- Trigger: the v* tag attaches the new APK at once while the server deploy is a separate manual step → a user installs it and saves a note → PATCH gets 405 → U7 reloads day-meta → the note vanishes with no message
+- Scores (corrected by triage): trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed

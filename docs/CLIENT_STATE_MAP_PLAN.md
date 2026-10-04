@@ -338,9 +338,28 @@ Package C groups client-side defects and debt around the app-wide
       - Old builds' other settings still save, because the day-meta request
         is separate from them.
       - Stale web tabs are already prompted to reload by `VersionGate`.
-      - **Release order.** `docs/RELEASING.md` says this release's native
-        store builds are published before, or together with, the server
-        deploy, to keep that window short (U21).
+      - **How old builds learn about it (R3-1).**
+        - There is no app store. Android ships as a signed APK, attached to
+          the GitHub release by the same `v*` tag that builds the server
+          image, and installed by hand (`docs/ANDROID.md`). There is no iOS
+          build.
+        - A release therefore updates no installed device, and a pre-gate
+          build is never prompted. The loss window on each phone lasts until
+          its user installs the new APK. The owner accepts this (round-3
+          envelope question, 2026-10-04).
+        - U2's commit carries an `Upgrade-Note:` trailer, so the release page
+          tells Android users to install the new APK before editing day
+          notes. It also carries a `Release-Note:` trailer for the day-notes
+          change.
+      - **A new build talking to an old server (R3-2).**
+        - The tag publishes the APK at once, while the server deploy is a
+          separate manual step.
+        - In that gap, a new build's PATCH gets 405 from the old server. The
+          client then falls back to the whole-map PUT (U7), which on a server
+          that predates this change still has its old meaning.
+        - On an updated server the PATCH exists, so the fallback never fires.
+        - `docs/RELEASING.md` also says to deploy the server right after
+          tagging (U21).
     - **Accepted.** When two devices edit the **same** day, the last writer
       wins on that day.
     - Rules out: (B) a version column, which detects a conflict but cannot
@@ -381,8 +400,10 @@ Package C groups client-side defects and debt around the app-wide
       env override is allowed, like `_APP_VERSION`).
     - `VersionGate` compares `kClientVersion` with it on start and on resume,
       on every platform.
-      - Below the minimum, a native build shows a blocking "Update required"
-        screen with a link to its store page.
+      - Below the minimum, an Android build shows a blocking "Update
+        required" screen. It links to the latest GitHub release
+        (`https://github.com/rui-nar/TraxJourney/releases/latest`), where the
+        APK is (R3-1). There is no iOS build to gate.
       - Below the minimum, a web build shows the existing reload bar, made
         non-dismissable.
       - `dev` and empty versions never trigger it, as `isClientStale` already
@@ -482,8 +503,6 @@ What this plan adds to REVIEW.md §2's defaults:
 - **When to raise `min_client_version`.** Off (`0.0.0`) in this plan. The
   owner raises it on a later release, following the note U21 adds to
   `docs/RELEASING.md`.
-- **iOS store link.** U21 needs an App Store URL; if none exists yet, the
-  update screen ships without a link on iOS.
 - **Resolve backoff steps.** Proposed 3 s, then 15 s after 2 minutes, then
   60 s after 10 minutes. Decided when U8 is routed.
 - **What #401 does next.** Decided by the owner from the device session once
@@ -555,6 +574,11 @@ What this plan adds to REVIEW.md §2's defaults:
      the stats refresh. Return 200 `{"day_meta": <merged map>}`.
   4. Editor role and above, as for the PUT.
   5. The PUT answers 426 with Decision 12's detail and writes nothing.
+  6. The commit that retires the PUT carries:
+     - `Upgrade-Note: Android: install this release's APK before editing day
+       notes. Older app versions can no longer save day notes, tags or
+       counters, and their edits are lost on reload.`
+     - a `Release-Note:` for the day-notes change (`docs/RELEASING.md`).
 - **Acceptance:** new tests show:
   - two PATCHes to different days, one injected between the other's read
     and its write, both persist;
@@ -805,7 +829,10 @@ What this plan adds to REVIEW.md §2's defaults:
      - on 200, merge the response into `dayMeta` per Decision 12 (adopt
        returned days, keep empty gap-fill days, re-run
        `_autoFillDaysToToday`);
-     - on error, reload day-meta from `/meta` and set `error`.
+     - on 405 (a server that predates the PATCH), send today's whole-map
+       PUT instead: the current `dayMeta` with `days` applied and `delete`
+       removed (Decision 12, R3-2);
+     - on any other error, reload day-meta from `/meta` and set `error`.
   2. The day editor sends its one day, or puts it in `delete` when it is
      emptied.
   3. Bulk tags send the selected days.
@@ -820,6 +847,8 @@ What this plan adds to REVIEW.md §2's defaults:
     - trip-end pruning sends the pruned days in `delete`;
     - the editor sends one day;
     - a failed PATCH reloads day-meta;
+    - a 405 on the PATCH sends one PUT with the whole merged map, and the
+      note stays (R3-2);
     - on a trip whose last activity was two days ago, saving a note keeps
       the carousel's tiles up to today (R1-2);
     - a day another device added arrives in `dayMeta` from the response.
@@ -844,8 +873,9 @@ What this plan adds to REVIEW.md §2's defaults:
 - **Context:**
   - `isClientStale` and `_check` in `version_gate.dart` are the code to
     extend.
-  - The Android package name is in `api/router.py` (`ANDROID_PACKAGE_NAME`)
-    for the store link.
+  - Distribution is in `docs/ANDROID.md`: a sideloaded APK on the GitHub
+    release, no Play Store, no iOS build. The update link is
+    `https://github.com/rui-nar/TraxJourney/releases/latest`.
 - **Do:**
   - Add a pure `isBelowMinimum(client, minimum)` using numeric x.y.z
     comparison. `dev`, empty and unparsable values return false.
@@ -853,9 +883,11 @@ What this plan adds to REVIEW.md §2's defaults:
   - Re-check on resume.
   - In `docs/RELEASING.md`:
     - when and how to raise `MIN_CLIENT_VERSION`;
-    - for this release, publish the native store builds before, or
-      together with, the server deploy, because the server stops accepting
-      old builds' day-meta saves (Decision 12).
+    - deploy the server right after tagging, because the tag publishes the
+      APK at once (Decision 12, R3-2);
+    - a breaking change for installed APKs needs an `Upgrade-Note:` on its
+      commit, because the release page is the only notice a pre-gate build
+      gets.
 - **Acceptance:**
   - Unit tests for `isBelowMinimum`, including `dev`, `0.0.0`, equal
     versions, and `0.10.0` greater than `0.9.0`.
@@ -864,8 +896,7 @@ What this plan adds to REVIEW.md §2's defaults:
   - `flutter analyze` and `flutter test` pass.
 - **Out of scope:** in-app update APIs; per-endpoint gating.
 - **Latitude:** local design.
-- **Escalate if:** no store URL exists for a platform (show the screen
-  without a link and report it); X3.
+- **Escalate if:** X3.
 - **Depends on:** U20 (its contract).
 
 ### Wave 4 — #278
@@ -1240,8 +1271,10 @@ because its listener inventory can reach any file (R1-3).
   - A settings save no longer sends day-meta it didn't change.
   - An old build's `PUT` gets 426, with the "please update" detail in the
     body, and changes nothing.
-  - `docs/RELEASING.md` tells the owner to publish the native builds before,
-    or together with, the server deploy.
+  - The release page carries an `Upgrade-Note:` telling Android users to
+    install the new APK before editing day notes.
+  - A new build talking to a not-yet-deployed server falls back to the PUT
+    and keeps the note.
   - Saving a note keeps the carousel's days up to today.
 - **Minimum version:** `/api/version` serves `min_client_version`. A build
   that ships the gate and later falls below the minimum is stopped with an
