@@ -39,6 +39,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from api.deps import get_current_user
+from api.members import public_name_given_username
 from api.geo import (
     bust_project_cache,
     project_cache_generation,
@@ -68,7 +69,7 @@ from models.project_db import (
     DBProjectMember,
     DBProjectSyncMeta,
 )
-from models.user import UserInfo, PolarstepsToken, StravaToken
+from models.user import LocalUser, UserInfo, PolarstepsToken, StravaToken
 from src.api.polarsteps_client import PolarstepsClient, format_step
 from src.billing.entitlements import ensure_project_quota, ensure_trip_days_quota
 from src.models.activity import parse_activities_or_log
@@ -150,6 +151,7 @@ def list_projects(current_user: Annotated[dict, Depends(get_current_user)]):
         project_ids = [m.project_id for m in memberships]
         projects_by_id: Dict[int, DBProject] = {}
         owners_by_id: Dict[int, UserInfo] = {}
+        usernames_by_local_id: Dict[int, str] = {}
         if project_ids:
             projects_by_id = {
                 p.id: p for p in sess.exec(
@@ -163,6 +165,16 @@ def list_projects(current_user: Annotated[dict, Depends(get_current_user)]):
                         select(UserInfo).where(UserInfo.id.in_(owner_ids))
                     ).all()
                 }
+            # Sign-in names, so an owner whose display name is their address
+            # is not shown by it (#507) — batched like the owners above.
+            local_ids = {u.local_auth_id for u in owners_by_id.values()
+                         if u.local_auth_id is not None}
+            if local_ids:
+                usernames_by_local_id = {
+                    lu.id: lu.username for lu in sess.exec(
+                        select(LocalUser).where(LocalUser.id.in_(local_ids))
+                    ).all()
+                }
 
         for m in memberships:
             proj = projects_by_id.get(m.project_id)
@@ -173,7 +185,10 @@ def list_projects(current_user: Annotated[dict, Depends(get_current_user)]):
                 "name": proj.name,
                 "filename": proj.name + ProjectIO.EXTENSION,
                 "owner_id": proj.user_info_id,
-                "owner_name": (owner_user.display_name or owner_user.email) if owner_user else "",
+                "owner_name": public_name_given_username(
+                    owner_user,
+                    usernames_by_local_id.get(owner_user.local_auth_id)
+                    if owner_user else None),
                 "role": m.role,
             })
         shared.sort(key=lambda e: e["name"])
@@ -1038,7 +1053,27 @@ def delete_project(
     with get_session() as sess:
         row = resolve_project(sess, user_info_id, name, owner, min_role="owner")
         owner_id = row.user_info_id
+        # The trip's activities, to free those no other trip holds once it is
+        # gone (issue #509): its Strava rows, and its split tails whoever cut
+        # them — a tail belongs to one trip, so this one's are its own to
+        # delete. The repo keeps only Strava-family tails among the latter.
+        held = sess.exec(select(DBProjectItem.activity_id).where(
+            DBProjectItem.project_id == row.id,
+            DBProjectItem.activity_id.is_not(None),
+        )).all()
         found = _repo.delete_project(sess, owner_id, name)
+        renamed = []
+        if found:
+            renamed_ids = _repo.delete_unreferenced_strava_activities(
+                sess, owner_id,
+                ids=[a for a in held if a > 0],
+                tail_ids=[a for a in held if a < 0],
+            )
+            renamed = sess.exec(select(DBProject.user_info_id, DBProject.name).where(
+                DBProject.id.in_(renamed_ids))).all() if renamed_ids else []
     bust_project_cache(owner_id, name)
+    # Another trip holding the surviving pieces shows them renumbered.
+    for other_owner, other_name in renamed:
+        bust_project_cache(other_owner, other_name)
     if not found:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")

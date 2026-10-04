@@ -1746,8 +1746,16 @@ class _ActivityPanelState extends State<ActivityPanel> {
                                                 label: 'Deleted "$name"',
                                                 onOptimistic: () =>
                                                     notifier.removeItemLocally(i),
-                                                onConfirm: () => notifier
-                                                    .deleteLocalActivity(localActId),
+                                                onConfirm: () async {
+                                                  try {
+                                                    await notifier
+                                                        .deleteLocalActivity(localActId);
+                                                  } on Exception {
+                                                    // A refusal has restored the item
+                                                    // and set notifier.error, which
+                                                    // _dismissWithUndo then shows.
+                                                  }
+                                                },
                                               ),
                                     )
                                   else

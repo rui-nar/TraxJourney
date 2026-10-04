@@ -248,6 +248,7 @@ class ImportExportMixin:
         self, sess: Session, user_info_id: int, name: str, project: Project,
         *, data_dir: Optional[str] = None, staged: Optional[StagedPhotos] = None,
         placements: Optional[List["Placement"]] = None,
+        held_activities: Optional[List[int]] = None,
         span_check: Optional[SpanCheck] = None,
     ) -> Optional[List["PhotoRemoval"]]:
         """Overwrite the content of the owner's trip *name* with *project*.
@@ -278,6 +279,11 @@ class ImportExportMixin:
         and those *staged* for it. *placements*, when given, receives the
         staged files to move into place once this has committed, less those
         already in place.
+
+        *held_activities*, when given, receives the activity ids the trip
+        held before the replace, read under its lock, once this has
+        committed: the caller frees those the file dropped and no other trip
+        holds (issue #509).
 
         Returns the photo files the caller must delete once this has
         committed, or None if the trip does not exist (any more). The caller
@@ -389,6 +395,8 @@ class ImportExportMixin:
         sess.commit()
         if placements is not None:
             placements.extend(found)
+        if held_activities is not None:
+            held_activities.extend(aid for aid in held if aid is not None)
         return removals
 
     def _write_content(
