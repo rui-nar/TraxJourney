@@ -58,10 +58,7 @@ SOURCE_LOCAL = "local"
 
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
 _STRAVA_ID = re.compile(r"[1-9][0-9]{0,18}")
-_LOCAL_ID = re.compile(r"-[1-9][0-9]{0,15}")
-
-#: Local ids are drawn from 53 bits (``allocate_local_activity_id``).
-_LOCAL_ID_LIMIT = 2 ** 53
+_LOCAL_ID = re.compile(r"-[1-9][0-9]{0,18}")
 
 #: An activity's original identity: ``(source, source_id)``.
 Identity = Tuple[str, str]
@@ -165,10 +162,11 @@ def read_activity_extensions(
 def read_activity_identity(elements: Sequence[ET.Element]) -> Optional[Identity]:
     """``(source, source_id)`` carried by a track, or None.
 
-    Untrusted like the figures: a source other than ``gpx`` or ``strava``, or
-    a source_id not shaped as that source's ids are (a 64-character lowercase
-    hex fingerprint; a positive Strava id within the id column; a negative
-    local id of at most 53 bits), counts as absent. The importer matches it only within its own trip.
+    Untrusted like the figures: a source other than ``gpx``, ``strava`` or
+    ``local``, or a source_id not shaped as that source's ids are (a
+    64-character lowercase hex fingerprint; a positive Strava id, or a
+    negative local id, within the id column), counts as absent. The importer
+    matches it only within its own trip.
     """
     source = source_id = None
     for element in elements or ():
@@ -191,7 +189,7 @@ def _valid_identity(source, source_id) -> Optional[Identity]:
             and int(source_id) <= ACTIVITY_ID_MAX):
         return source, source_id
     if (source == SOURCE_LOCAL and _LOCAL_ID.fullmatch(source_id)
-            and -int(source_id) < _LOCAL_ID_LIMIT):
+            and -int(source_id) <= ACTIVITY_ID_MAX):
         return source, source_id
     return None
 

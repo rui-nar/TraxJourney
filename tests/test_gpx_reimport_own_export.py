@@ -191,8 +191,9 @@ def test_an_activity_without_a_fingerprint_or_strava_id_carries_its_local_id():
     assert activity_identity(None, None, -5) == ("local", "-5")
     assert activity_identity("gpx", None, -6) == ("local", "-6")
     assert activity_identity("gpx", "xyz", -6) == ("local", "-6")
-    # An old 62-bit GPX id is beyond the 53 bits a local id is drawn from.
-    assert activity_identity(None, None, -(2 ** 53)) is None
+    # Old GPX imports drew 62-bit ids; the whole id column is accepted.
+    assert activity_identity(None, None, -(2 ** 62)) ==         ("local", str(-(2 ** 62)))
+    assert activity_identity(None, None, -(2 ** 63)) is None
 
 
 def test_an_activity_without_an_identity_carries_none():
@@ -302,6 +303,26 @@ def test_a_gpx_import_from_before_fingerprints_is_skipped(env):
     assert _inspect(client, content, "Early")["duplicate_of"] == {
         "activity_id": -300, "name": "Early import"}
     assert len(_rows(engine, "Early")) == 1
+
+
+def test_a_gpx_import_with_a_62_bit_id_is_skipped(env):
+    """GPX import drew 62-bit ids before local ids were capped at 53 bits."""
+    client, engine, _ = env
+    old_id = -(2 ** 62 - 12345)
+    early = dict(_HIKE, id=old_id, name="Wide id", source=None,
+                 source_id=None)
+    _create_trip(client, "Wide", [early])
+    content = _export(client, "Wide")
+    (candidate,) = candidates(parse_gpx_bytes(content))
+    assert candidate.carried_identity == ("local", str(old_id))
+
+    r = _import_all(client, content, "Wide")
+
+    assert r.status_code == 200, r.text
+    assert r.json()["imported"] == []
+    assert r.json()["skipped"][0]["duplicate_of"] == {
+        "activity_id": old_id, "name": "Wide id"}
+    assert len(_rows(engine, "Wide")) == 1
 
 
 def test_split_pieces_import_into_an_empty_trip(env):
@@ -422,7 +443,8 @@ def _identity_elements(source, source_id):
     ("gpx", "AB" * 32), ("gpx", "ab" * 31), ("gpx", "ab" * 33),
     ("gpx", "zz" * 32), ("gpx", "x" * 10_000),
     ("local", "101"), ("local", "0"), ("local", "-0"), ("local", "-05"),
-    ("local", str(-(2 ** 53))), ("local", "-" + "9" * 40), ("local", "-1.5"),
+    ("local", str(-(2 ** 63))), ("local", "-" + "9" * 40), ("local", "-1.5"),
+    ("local", "--5"), ("local", "+5"), ("local", "-+5"), ("local", "-5.0"),
     ("local", " -5x"), ("other", "-5"), ("", "101"),
     ("strava", None), (None, "101"),
 ])
@@ -433,6 +455,7 @@ def test_a_malformed_identity_counts_as_absent(source, source_id):
 @pytest.mark.parametrize("source,source_id", [
     ("strava", "1"), ("strava", str(2 ** 63 - 1)), ("gpx", "0f" * 32),
     ("local", "-1"), ("local", str(-(2 ** 53 - 1))),
+    ("local", str(-(2 ** 62))), ("local", str(-(2 ** 63 - 1))),
 ])
 def test_a_well_formed_identity_is_read(source, source_id):
     assert read_activity_identity(_identity_elements(source, source_id)) == \
