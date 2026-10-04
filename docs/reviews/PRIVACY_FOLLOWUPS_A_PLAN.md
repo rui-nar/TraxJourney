@@ -184,3 +184,7 @@ U3's implementer found five more places that show another user's raw display_nam
 - Decision: Fix now (D7/D9) under the owner reading: ex-member folders of living persons are in scope.
 - Override: user 2026-10-04: fix it; no round-4 unit review (verifier plus the integrated review instead)
 - Outcome: fixed (8ef7675b)
+
+## Unit U7 (added in delivery) review — round 1, 2026-10-04, reviewed at 7db03621
+
+U7: Alembic data migration 87200bcb9342 rewriting stored comment/like author names that are blank or the author's sign-in address to "Traveller" (owner decision 2026-10-04). No findings. Review stops (§6).
