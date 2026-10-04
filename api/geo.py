@@ -977,6 +977,8 @@ def serve_simplified_geo(
     zoom: float,
     bbox: str | None,
     load_project: Callable[[], Project | None],
+    *,
+    started: float,
 ) -> Response:
     """Serve *name*'s geometry simplified to roughly one pixel at *zoom*.
 
@@ -1019,6 +1021,11 @@ def serve_simplified_geo(
     client cannot mint an entry per pan pixel. Both layers are generation
     checked, so one bust per mutation still covers every level and every box —
     and, since the keys are the owner's, one bust covers the share route too.
+
+    Every answer carries ``Server-Timing`` (issue #401), so the client can split
+    a slow fetch into server time and wait. ``started`` is the caller's
+    ``time.perf_counter()`` at the top of its route, so ``total`` also covers
+    its own auth or token resolution.
     """
     if not (0 <= zoom <= 22):
         raise HTTPException(
@@ -1048,14 +1055,15 @@ def serve_simplified_geo(
         return Response(
             content=cached_bytes,
             media_type="application/json",
-            headers={"Content-Encoding": "gzip", "X-Cache": "HIT"},
+            headers={"Content-Encoding": "gzip", "X-Cache": "HIT",
+                     **_server_timing(cache="hit", total=time.perf_counter() - started)},
         )
     gen_for_bytes = _geo_generation(owner_id, name)
     track_key = (owner_id, name)
     track = _track_cache_get(track_key)
 
     cache_state = "HIT"
-    t0 = time.time()
+    t0 = time.perf_counter()
     if track is None:
         # Reported from the state the request *arrived* in, so a waiter still
         # reads MISS: the trip was not prepared when it asked, which is what
@@ -1082,10 +1090,11 @@ def serve_simplified_geo(
                 track = _PreparedTrack(_prepared_lines(project))
                 _track_cache_store(track_key, track, gen)
 
-    t1 = time.time()
+    t1 = time.perf_counter()
     features = _features_for(track, level, box)
-    t2 = time.time()
+    t2 = time.perf_counter()
     gz_bytes = _gzip_geo(features)
+    t3 = time.perf_counter()
     # Serialising is not free, and reusing a prepared trip does not avoid it:
     # gzipping a large level measured ~0.5 s, which on a single-process server
     # is still enough GIL-holding CPU to time out someone else's request. So
@@ -1103,12 +1112,29 @@ def serve_simplified_geo(
     # the VPS without a harness: load is the trip (zero on a track HIT), build
     # the filter, gzip the serialisation.
     _log.info("geo_simplified name=%s level=%d box=%s load=%.3fs build=%.3fs gzip=%.3fs cache=%s",
-              name, level, box_key, t1 - t0, t2 - t1, time.time() - t2, cache_state)
+              name, level, box_key, t1 - t0, t2 - t1, t3 - t2, cache_state)
     return Response(
         content=gz_bytes,
         media_type="application/json",
-        headers={"Content-Encoding": "gzip", "X-Cache": cache_state},
+        headers={"Content-Encoding": "gzip", "X-Cache": cache_state,
+                 **_server_timing(load=t1 - t0, build=t2 - t1, gzip=t3 - t2,
+                                  total=time.perf_counter() - started)},
     )
+
+
+def _server_timing(*, cache: str | None = None, **phases: float) -> dict[str, str]:
+    """``Server-Timing`` for a simplified-geometry answer, phases in seconds.
+
+    Durations go out in milliseconds, numbers only, as the header's syntax
+    wants. The web client is served from the API's own origin, where every
+    header is readable; the expose header is for a dev client on another
+    origin, which CORS would otherwise hide it from (the poster preview does
+    the same for its warning).
+    """
+    parts = [f"cache;desc={cache}"] if cache else []
+    parts += [f"{k};dur={v * 1000:.1f}" for k, v in phases.items()]
+    return {"Server-Timing": ", ".join(parts),
+            "Access-Control-Expose-Headers": "Server-Timing"}
 
 
 def load_project_for_geo(owner_id: int, name: str) -> Project | None:
@@ -1164,11 +1190,13 @@ def project_geo_simplified(
     token-scoped share one (issue #321) share every entry — is described on
     :func:`serve_simplified_geo`, which is where the work happens.
     """
+    started = time.perf_counter()
     user_info_id = int(current_user["sub"])
     with get_session() as sess:
         owner_id = resolve_project(sess, user_info_id, name, owner).user_info_id
     return serve_simplified_geo(
-        owner_id, name, zoom, bbox, lambda: load_project_for_geo(owner_id, name))
+        owner_id, name, zoom, bbox, lambda: load_project_for_geo(owner_id, name),
+        started=started)
 
 
 @router.get("/project", summary="Full-resolution GeoJSON (gzip)")
