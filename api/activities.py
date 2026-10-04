@@ -51,6 +51,7 @@ from src.gpx.importer import (
     validate_candidate,
     validate_for_import,
 )
+from src.gpx.timezone import local_to_utc, to_local, zone_at
 from src.models.activity import (
     ACTIVITY_ID_MAX, ACTIVITY_ID_MIN, Activity, parse_activities_or_log,
 )
@@ -106,8 +107,20 @@ class GPXCandidateOut(BaseModel):
     is_route: bool = Field(
         description="True for a planned <rte> rather than a recorded <trk>")
     has_times: bool = Field(description="False for a route, which has no clock")
-    started_at: Optional[str] = None
-    ended_at: Optional[str] = None
+    started_at: Optional[str] = Field(
+        default=None, description="The file's first stamp, a UTC instant")
+    ended_at: Optional[str] = Field(
+        default=None, description="The file's last stamp, a UTC instant")
+    timezone: str = Field(
+        default="Etc/UTC",
+        description="IANA zone at the track's first point; the zone the import "
+                    "stores and reads typed times in")
+    start_local: Optional[str] = Field(
+        default=None,
+        description="started_at as a naive ISO-8601 wall clock in `timezone`")
+    end_local: Optional[str] = Field(
+        default=None,
+        description="ended_at as the naive wall clock in `timezone`")
     elapsed_seconds: Optional[int] = None
     moving_seconds: Optional[int] = None
     elevation_gain_m: Optional[float] = Field(
@@ -510,13 +523,28 @@ def _import_fingerprint(candidate, start_dt):
                              basis.isoformat())
 
 
-def _resolve_times(candidate, date, start_time, end_time):
+def _resolve_times(candidate, date, start_time, end_time, zone, times_local):
     """The activity's start and end, from the form where given, else the file.
 
     A form value always wins: the file may be wrong, and the user is the one
     looking at it. What changed in unit 4 is that omitting them is allowed —
     before, a recorded track that knew exactly when it happened still made the
     user type it in.
+
+    Returns ``(start, end, typed_start)``: start and end as instants, and the
+    typed start as a naive wall clock in *zone* when the track has no clock of
+    its own, else None (issue #365). Typed times are read:
+
+    - for an untimed track, as wall clock in *zone*, whatever the client says:
+      installed clients prefill nothing there and send the clock the user
+      picked, the same bytes the new client sends;
+    - for a stamped track, as wall clock in *zone* only with *times_local*,
+      and as UTC without it, because that is what installed clients show and
+      send.
+
+    A typed time equal to the file's own, to the minute, keeps the file's
+    exact instant, so a start in a repeated DST hour is not re-read as its
+    other occurrence.
     """
     supplied = (date, start_time, end_time)
     span = candidate.time_span
@@ -524,7 +552,7 @@ def _resolve_times(candidate, date, start_time, end_time):
         if span is not None:
             # Same accessor the preview reported from, so a file the preview
             # said had a clock cannot be refused here for not having one.
-            return span
+            return span[0], span[1], None
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={"errors": ["This file has no timestamps, so it needs a "
@@ -547,18 +575,54 @@ def _resolve_times(candidate, date, start_time, end_time):
             detail={"errors": ["date must be YYYY-MM-DD and start_time/"
                                "end_time must be HH:MM."]},
         )
-    start_dt = datetime.combine(day, start_clock, tzinfo=timezone.utc)
-    end_dt = datetime.combine(day, end_clock, tzinfo=timezone.utc)
-    if end_dt < start_dt:
+    start_wall = datetime.combine(day, start_clock)
+    end_wall = datetime.combine(day, end_clock)
+    if end_wall < start_wall:
         # An end before the start means the activity ran past midnight: a
         # night ride leaving at 23:30 and back at 00:30. Refusing it made
         # every such ride unimportable, since the form carries one date.
-        end_dt += timedelta(days=1)
-    if end_dt == start_dt:
+        end_wall += timedelta(days=1)
+    if end_wall == start_wall:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={"errors": ["Start and end cannot be the same time."]})
-    return start_dt, end_dt
+
+    # The frame the typed clocks are in: the track's zone, or UTC for an
+    # installed client typing over a stamped track.
+    frame = zone if (span is None or times_local) else "Etc/UTC"
+
+    def own_wall(own):
+        # A stamp at the calendar's edge has no wall clock: the user is
+        # typing times precisely to replace it, so it matches nothing.
+        try:
+            return to_local(own, frame).replace(second=0, microsecond=0)
+        except (OverflowError, ValueError):
+            return None
+
+    def instant(wall, own, fold=0):
+        if own is not None and own_wall(own) == wall:
+            # A stamp without an offset is UTC, as to_local reads it.
+            return own if own.tzinfo else own.replace(tzinfo=timezone.utc)
+        return local_to_utc(wall, frame, fold=fold)
+
+    try:
+        start_dt = instant(start_wall, span[0] if span else None)
+        end_dt = instant(end_wall, span[1] if span else None)
+        if end_dt <= start_dt:
+            # Clocks went back inside the activity: the end is the repeated
+            # hour's second occurrence.
+            end_dt = instant(end_wall, None, fold=1)
+    except (OverflowError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"errors": ["This date is outside the calendar the app can "
+                               "store."]})
+    if end_dt <= start_dt:
+        # Only a start and end either side of a clock change get here.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"errors": ["The end must come after the start."]})
+    return start_dt, end_dt, (start_wall if span is None else None)
 
 
 def _existing_import(sess, project_row_id: int, fingerprint: str):
@@ -601,6 +665,24 @@ async def inspect_gpx_file(
         return {"candidates": [], "errors": validate_for_import(gpx)}
 
     out = await run_in_threadpool(_describe_candidates, found)
+    for summary, candidate in zip(out, found):
+        # The zone at the track's start, and its span as wall clocks there
+        # (issue #365). started_at/ended_at stay UTC instants: installed
+        # clients read them so. The server converts because Dart has no zone
+        # database.
+        first = candidate.points[0] if candidate.points else None
+        zone = zone_at(first.lat if first else None,
+                       first.lng if first else None)
+        summary["timezone"] = zone
+        span = candidate.time_span
+        if span is not None:
+            try:
+                summary["start_local"] = to_local(span[0], zone).isoformat()
+                summary["end_local"] = to_local(span[1], zone).isoformat()
+            except (OverflowError, ValueError):
+                # A clock at the calendar's edge; the review step asks for
+                # times, as for any clock it flags as wrong.
+                summary["start_local"] = summary["end_local"] = None
 
     duplicate = None
     if len(found) == 1 and not out[0]["errors"]:
@@ -730,6 +812,7 @@ async def import_gpx_activity(
     activity_type: Annotated[Optional[str], Form()] = None,
     track_index: Annotated[Optional[int], Form()] = None,
     activity_name: Annotated[Optional[str], Form()] = None,
+    times_local: Annotated[bool, Form()] = False,
     owner: OwnerParam = None,
 ):
     """Import a GPX track as a new local activity — no Strava involved.
@@ -743,6 +826,11 @@ async def import_gpx_activity(
     always have them — a planned route carries no clock — and because the user
     is entitled to correct what it does say. ``track_index`` chooses between
     several tracks in one file; the positions are the ones ``inspect`` returned.
+
+    The activity's zone is the one at the track's first point (issue #365):
+    ``start_date`` is the true UTC instant, ``start_date_local`` the wall
+    clock there. ``times_local=true`` says typed times are wall clock in that
+    zone; see :func:`_resolve_times` for how they are read without it.
     """
     user_info_id = int(current_user["sub"])
 
@@ -762,13 +850,21 @@ async def import_gpx_activity(
                              detail={"errors": problems})
     candidate = found[track_index or 0]
 
-    start_dt, end_dt = _resolve_times(candidate, date, start_time, end_time)
+    first = candidate.points[0] if candidate.points else None
+    zone = zone_at(first.lat if first else None, first.lng if first else None)
+    start_dt, end_dt, typed_start = _resolve_times(
+        candidate, date, start_time, end_time, zone, times_local)
     # start_date is documented as ISO-8601 UTC, and a file may carry any
     # offset it likes. Normalising here keeps the column honest and keeps two
     # exports of one ride — 05:33Z and 07:33+02:00 — the same instant.
     try:
         start_dt = start_dt.astimezone(timezone.utc)
         end_dt = end_dt.astimezone(timezone.utc)
+        # start_date_local is stored as Strava sync stores it: the wall clock
+        # labelled UTC. An untimed track keeps the clock the user typed.
+        start_local = (typed_start if typed_start is not None
+                       else to_local(start_dt, zone)).replace(
+                           tzinfo=timezone.utc)
     except (OverflowError, ValueError):
         # An offset can push a stamp near year 1 or 9999 past what a date holds.
         raise HTTPException(
@@ -799,7 +895,10 @@ async def import_gpx_activity(
     if implausible is not None:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                             detail={"errors": [implausible]})
-    fingerprint = _import_fingerprint(candidate, start_dt)
+    # Not start_dt: an untimed track has been fingerprinted on its typed wall
+    # clock labelled UTC since before #365, which start_local still is, so a
+    # re-import across the release is still recognised.
+    fingerprint = _import_fingerprint(candidate, start_local)
 
     resolved_name = (activity_name
                      or gpx_suggested_name(gpx, candidate, file.filename)
@@ -815,8 +914,8 @@ async def import_gpx_activity(
         elapsed_time=elapsed_time,
         total_elevation_gain=metrics.total_elevation_gain,
         start_date=start_dt,
-        start_date_local=start_dt,
-        timezone="UTC",
+        start_date_local=start_local,
+        timezone=zone,
         achievement_count=0,
         kudos_count=0,
         comment_count=0,
