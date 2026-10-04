@@ -261,6 +261,50 @@ def test_owner_removes_a_departed_companions_split_tail_then_its_head(engine):
     assert _prepared(engine) == set()
 
 
+# ── Deleting a split tail directly ────────────────────────────────────────────
+#
+# The Flutter panel deletes every negative-id item through
+# DELETE .../activities/{id}/local, not the timeline route, so that route must
+# reconsider the root too, under the same rule (review I-R1-1).
+
+def _delete_local(uid: int, trip: str, act_id: int, owner: int | None = None) -> None:
+    url = f"/api/projects/{trip}/activities/{act_id}/local"
+    resp = _as(uid).delete(url, params={"owner": owner} if owner else None)
+    assert resp.status_code == 204, resp.text
+
+
+def test_removing_the_head_then_deleting_the_last_tail_locally_deletes_the_root(engine):
+    uid = _user(engine, "owner")
+    _activity(engine, 111, uid, name="Ride (1/2)", split_base_name="Ride", is_edited=True)
+    _activity(engine, -5, uid, name="Ride (2/2)", split_root_id=111, split_parent_id=111,
+              start_date="2026-06-10T10:00:00Z")
+    _trip(engine, uid, "Trip", [111, -5])
+
+    _remove(uid, "Trip", 0)
+    assert _rows(engine) == {111, -5}
+
+    _delete_local(uid, "Trip", -5)
+    assert _rows(engine) == set()
+    assert _prepared(engine) == set()
+
+
+def test_an_editor_deleting_a_tail_of_the_owners_split_locally_keeps_the_root(engine):
+    owner = _user(engine, "owner")
+    companion = _user(engine, "companion")
+    _activity(engine, 111, owner, name="Ride (1/2)", split_base_name="Ride", is_edited=True)
+    _activity(engine, -5, owner, name="Ride (2/2)", split_root_id=111, split_parent_id=111,
+              start_date="2026-06-10T10:00:00Z")
+    _trip(engine, owner, "Trip", [111, -5], members=[companion])
+
+    # The owner drops the head; the tail still holds the root.
+    _remove(owner, "Trip", 0)
+    assert _rows(engine) == {111, -5}
+
+    _delete_local(companion, "Trip", -5, owner=owner)
+    assert _rows(engine) == {111}
+    assert _prepared(engine) == {111}
+
+
 # ── Deleting a trip ────────────────────────────────────────────────────────────
 
 def test_deleting_a_trip_deletes_rows_no_other_trip_holds(engine):
