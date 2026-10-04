@@ -277,7 +277,8 @@ What this plan adds to REVIEW.md §2's defaults:
   - Existing GPX rows are untouched (Decision 5).
 - **Schema:** none. No migration.
 - **Dependencies:** `tzfpy` is added to `requirements.txt`, which grows the
-  image by about 3 MB. It has to pass the licence scan (it is MIT).
+  image by about 3 MB. Its licence is permissive and compatible with the
+  project's.
 - **Platform manifests:** new Android intent filters; new iOS document-type
   and UTI declarations.
 
