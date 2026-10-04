@@ -52,8 +52,10 @@ void main() async {
   if (customServerUrl != null) api = ApiClient(baseUrl: customServerUrl);
   final hasSeenOnboarding = await readHasSeenOnboarding();
   await projectDataCache.init();
-  // Before runApp, so before the router's first redirect can read it.
+  // State the empty user id wrote before ids were real (issue #418). Before
+  // runApp, so before the router's first redirect or any load can read it.
   await purgeSharedLastOpenedProject();
+  await projectDataCache.purgeUserZero();
   await photoThumbCache.init();
   runApp(
     // MultiProvider lives here — above TraxJourneyApp — so its providers are

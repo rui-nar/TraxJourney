@@ -26,6 +26,8 @@ import 'package:traxjourney_client/src/core/last_opened_project.dart';
 import 'package:traxjourney_client/src/core/project_ref.dart';
 import 'package:traxjourney_client/src/crypto/encryption.dart';
 import 'package:traxjourney_client/src/crypto/encryption_service.dart';
+import 'package:traxjourney_client/src/projects/project_cache_store_native.dart'
+    show keyPrefixRange;
 import 'package:traxjourney_client/src/projects/project_data_cache.dart';
 import 'package:traxjourney_client/src/projects/project_notifier.dart';
 import 'package:traxjourney_client/src/projects/project_service.dart';
@@ -305,4 +307,65 @@ void main() {
       expect(prefs.getString('last_opened_project_7'), '{"name":"Peru"}');
     });
   });
+
+  group("the on-device cache's user-0 entries", () {
+    // Keys are "<user>:<owner>:<name>", and user 0 was every restored session.
+    const ref = ProjectRef(name: 'Japan');
+    const meta = {'lock_version': 1, 'name': 'Japan'};
+
+    test('are purged at startup', () async {
+      projectDataCache.setCurrentUser(null); // keyed to user 0
+      projectDataCache.onMetaFetched(ref, meta);
+      expect(await projectDataCache.readMetaForOfflineFallback(ref), isNotNull);
+
+      await projectDataCache.purgeUserZero();
+
+      expect(await projectDataCache.readMetaForOfflineFallback(ref), isNull);
+    });
+
+    test("and another account's survive", () async {
+      projectDataCache.setCurrentUser(7);
+      projectDataCache.onMetaFetched(ref, meta);
+
+      await projectDataCache.purgeUserZero();
+
+      expect(await projectDataCache.readMetaForOfflineFallback(ref), isNotNull);
+    });
+
+    test('on disk: the deleted key range holds user 0 and nothing else', () {
+      // No sqflite backend runs under flutter test, so this checks the range
+      // the store deletes, compared the way SQLite compares TEXT by default:
+      // byte by byte, as UTF-8.
+      final (lower, upper) = keyPrefixRange('0:');
+      bool deleted(String key) =>
+          _compareBinary(key, lower) >= 0 && _compareBinary(key, upper) < 0;
+
+      for (final key in ['0:0:Japan', '0:7:Japan', '0:0:', '0:0:日本']) {
+        expect(deleted(key), isTrue, reason: key);
+      }
+      for (final key in [
+        '7:0:Japan', '7:0:0:Japan', '10:0:Japan', '01:0:Japan', '0;0:Japan',
+        '0', '00:0:Japan', '7:0:日本',
+      ]) {
+        expect(deleted(key), isFalse, reason: key);
+      }
+    });
+
+    test('a prefix is never a pattern', () {
+      // LIKE would read these as wildcards; the range reads them literally.
+      expect(keyPrefixRange('0_'), ('0_', '0`'));
+      expect(keyPrefixRange('0%'), ('0%', '0&'));
+      expect(() => keyPrefixRange(''), throwsArgumentError);
+      expect(() => keyPrefixRange('日'), throwsArgumentError);
+    });
+  });
+}
+
+/// SQLite's default BINARY collation: memcmp of the UTF-8 bytes.
+int _compareBinary(String a, String b) {
+  final x = utf8.encode(a), y = utf8.encode(b);
+  for (var i = 0; i < x.length && i < y.length; i++) {
+    if (x[i] != y[i]) return x[i] - y[i];
+  }
+  return x.length - y.length;
 }

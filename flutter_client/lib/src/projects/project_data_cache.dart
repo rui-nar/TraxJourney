@@ -109,6 +109,17 @@ class ProjectDataCache {
     await store.cacheStoreClearAll();
   }
 
+  /// Drops every entry kept for user 0, in memory and on disk (issue #418).
+  ///
+  /// User 0 is what [_key] falls back to with no user, and every restored
+  /// session had none until user ids were real — so those entries can be any
+  /// account's trips, and nobody can claim them. Run at startup, before the
+  /// first load could read one.
+  Future<void> purgeUserZero() async {
+    _mem.removeWhere((key, _) => key.startsWith('0:'));
+    await store.cacheStoreDeleteKeyPrefix('0:');
+  }
+
   String _key(ProjectRef ref) => '${_currentUserId ?? 0}:${ref.ownerId ?? 0}:${ref.name}';
 
   /// Records a just-fetched `/meta` (or full-details) response. Always call
