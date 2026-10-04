@@ -152,6 +152,16 @@ other five issues and starts once #469 is on main.
      picker stays.
    - **Third-party files** with one track of several segments are still one
      candidate, as today (#367 acceptance criterion 3).
+   - **Types and installed clients (E5)** (added at delivery, after U3 found
+     the gap):
+     - `inspect`'s existing `activity_type` stays in the vocabulary installed
+       clients' type dropdown knows (run, ride, hike, walk, Workout). Any
+       other type is reported there as `Workout`.
+     - The precise type goes in a new additive field, `activity_type_exact`.
+     - `import-gpx` stores the precise type when the client sends back the
+       compatible value unchanged. A type the user actually picked is
+       stored as picked.
+     - The new client (U7) shows and sends the precise type.
    - Rules out: recognising our own creator string, which preserves a broken
      shape and helps only our own files.
 4. **#365: a per-activity zone from the track's start coordinate, looked up
@@ -583,8 +593,14 @@ branches from that main.
   2. The new route takes the file and nothing else. Every importable
      non-connection candidate needs times; if any lacks them, answer 400
      naming the tracks, so the user imports them one at a time.
+  0. Types for installed clients (Decision 3, added at delivery):
+     - `inspect` reports `activity_type` in the old vocabulary and adds
+       `activity_type_exact`;
+     - `import-gpx` stores the exact type when the sent `activity_type`
+       equals the compatible value for that track;
+     - test both with an installed-client request.
   3. For each track:
-     - names, types and times come from the file;
+     - names, types (exact) and times come from the file;
      - distance and moving time come from the carried values when present,
        as in `import-gpx`, and average speed is computed from them;
      - its zone comes from U1's helper;
@@ -642,6 +658,10 @@ branches from that main.
      clocks, never converted through the device zone. Show `timezone` beside
      the times.
   2. Send `times_local=true` with every import that sends typed times.
+  2b. Show and send the precise type (`activity_type_exact`, Decision 3).
+      The type picker accepts any type the server suggests, not only the
+      five built-in ones, so a suggested type never leaves the dropdown
+      empty.
   3. Fall back to today's behaviour when the server gives no `start_local`.
   4. Show connection candidates labelled as connections, not in the
      import-all count.
