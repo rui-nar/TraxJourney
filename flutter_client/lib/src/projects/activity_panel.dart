@@ -2260,14 +2260,14 @@ class _BulkTagDialogState extends State<_BulkTagDialog> {
       Navigator.of(context).pop();
       return;
     }
-    final updated = Map<String, Map<String, dynamic>>.from(widget.notifier.dayMeta);
+    final updated = <String, Map<String, dynamic>>{};
     for (final dateKey in widget.selectedDays) {
-      final existing = Map<String, dynamic>.from(updated[dateKey] ?? {});
+      final existing = Map<String, dynamic>.from(widget.notifier.dayMeta[dateKey] ?? {});
       final existingTags = (existing['tags'] as List?)?.cast<String>().toSet() ?? <String>{};
       existing['tags'] = (existingTags..addAll(_chosenTags)).toList()..sort();
       updated[dateKey] = existing;
     }
-    widget.notifier.saveDayMeta(newDayMeta: updated);
+    widget.notifier.saveDayMeta(days: updated);
     Navigator.of(context).pop();
   }
 

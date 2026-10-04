@@ -3181,33 +3181,113 @@ class ProjectNotifier extends ChangeNotifier
 
   // ── Internal helpers ───────────────────────────────────────────────────────
 
-  /// Reloads project data from the API without clearing existing state first.
+  /// Saves only the day-meta that changed (issue #397): [days] are set,
+  /// [delete] are removed, every other day is left to the server's copy.
+  /// Sleeping options, groups and counters go along only when given.
+  ///
+  /// The edit shows at once. On 200 the server's merged map is adopted, so days
+  /// another device changed arrive here; on failure day-meta is reloaded
+  /// instead of keeping a copy the server never accepted.
   Future<void> saveDayMeta({
-    required Map<String, Map<String, dynamic>> newDayMeta,
+    Map<String, Map<String, dynamic>> days = const {},
+    List<String> delete = const [],
     List<String>? newSleepingOptions,
     Map<String, String>? newSleepingOptionGroups,
     List<Map<String, dynamic>>? newCounters,
   }) async {
     final ref = this.ref;
     if (ref == null) return;
-    dayMeta = newDayMeta;
+    if (days.isEmpty &&
+        delete.isEmpty &&
+        newSleepingOptions == null &&
+        newSleepingOptionGroups == null &&
+        newCounters == null) {
+      return;
+    }
+    dayMeta = {
+      for (final e in dayMeta.entries)
+        if (!delete.contains(e.key)) e.key: e.value,
+      ...days,
+    };
+    _autoFillDaysToToday();
     if (newSleepingOptions != null) sleepingOptions = newSleepingOptions;
     if (newSleepingOptionGroups != null) sleepingOptionGroups = newSleepingOptionGroups;
     if (newCounters != null) counters = newCounters;
     notifyListeners();
     try {
-      await api.put(
-        ref.path('/day-meta'),
-        {
-          'day_meta': newDayMeta,
+      Object? res;
+      try {
+        res = await api.patch(ref.path('/day-meta'), {
+          'days': days,
+          'delete': delete,
           if (newSleepingOptions != null) 'sleeping_options': newSleepingOptions,
           if (newSleepingOptionGroups != null) 'sleeping_option_groups': newSleepingOptionGroups,
           if (newCounters != null) 'counters': newCounters,
-        },
-      );
+        });
+      } on ApiException catch (e) {
+        if (e.statusCode != 405) rethrow;
+        // A server that predates the PATCH (the tag publishes the APK before
+        // the server is deployed): its PUT still takes the whole map.
+        await api.put(ref.path('/day-meta'), {
+          'day_meta': {
+            for (final e in dayMeta.entries)
+              if (!delete.contains(e.key)) e.key: e.value,
+            ...days,
+          },
+          if (newSleepingOptions != null) 'sleeping_options': newSleepingOptions,
+          if (newSleepingOptionGroups != null) 'sleeping_option_groups': newSleepingOptionGroups,
+          if (newCounters != null) 'counters': newCounters,
+        });
+        return;
+      }
+      if (this.ref != ref) return;
+      final raw = res is Map ? res['day_meta'] : null;
+      if (raw is Map) {
+        final server = raw.map(
+            (k, v) => MapEntry(k as String, Map<String, dynamic>.from(v as Map)));
+        // The server's value wins for every day it returns. A day it no longer
+        // has stays only when it is an empty gap-fill day, which exists in
+        // memory alone.
+        dayMeta = {
+          for (final e in dayMeta.entries)
+            if (!server.containsKey(e.key) && e.value.isEmpty) e.key: e.value,
+          ...server,
+        };
+        _autoFillDaysToToday();
+        notifyListeners();
+      }
     } on Exception catch (e) {
+      await _reloadDayMeta(ref);
+      if (this.ref != ref) return;
       error = _msg(e);
       notifyListeners();
+    }
+  }
+
+  /// Restores what a rejected [saveDayMeta] had applied optimistically.
+  Future<void> _reloadDayMeta(ProjectRef ref) async {
+    try {
+      final details = await _service.getDetailsMeta(ref);
+      if (this.ref != ref) return;
+      final rawDm = details['day_meta'];
+      dayMeta = rawDm is Map
+          ? rawDm.map((k, v) => MapEntry(k as String, Map<String, dynamic>.from(v as Map)))
+          : {};
+      final rawOpts = details['sleeping_options'];
+      final optList = rawOpts is List ? List<String>.from(rawOpts) : <String>[];
+      sleepingOptions = optList.isNotEmpty ? optList : List<String>.from(_defaultSleepingOptions);
+      final rawGroups = details['sleeping_option_groups'];
+      sleepingOptionGroups = rawGroups is Map
+          ? Map<String, String>.from(rawGroups.cast<String, String>())
+          : { for (final n in sleepingOptions) n: _defaultSleepingGroups[n] ?? 'Other' };
+      final rawCounters = details['counters'];
+      counters = rawCounters is List
+          ? rawCounters.map((c) => Map<String, dynamic>.from(c as Map)).toList()
+          : [];
+      _autoFillDaysToToday();
+    } on Exception {
+      // The caller reports the save failure; a failed reload leaves the
+      // optimistic copy, as before.
     }
   }
 

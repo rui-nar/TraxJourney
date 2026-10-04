@@ -1,10 +1,18 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 
+import 'package:traxjourney_client/src/api/client.dart';
 import 'package:traxjourney_client/src/core/design_tokens.dart';
+import 'package:traxjourney_client/src/core/project_ref.dart';
 import 'package:traxjourney_client/src/projects/day_meta_editor.dart';
-import 'package:traxjourney_client/src/projects/project_notifier.dart' show dayTripNumbering;
+import 'package:traxjourney_client/src/projects/project_notifier.dart'
+    show ProjectNotifier, dayTripNumbering;
+import 'package:traxjourney_client/src/projects/project_service.dart';
 
 /// Pumps a bare [DayMetaEditor] and returns the meta captured by the most
 /// recent onSave. Edits make the editor dirty, which enables "Save day".
@@ -395,6 +403,76 @@ void main() {
       await _pump(tester, counters: const [], countersOnly: true);
       expect(find.textContaining('no counters yet'), findsOneWidget);
       expect(find.text('DIFFICULTY'), findsNothing);
+    });
+  });
+
+  group('saving a day sends only that day (issue #397)', () {
+    late ApiClient realApi;
+    late List<Map<String, dynamic>> patches;
+
+    setUp(() {
+      patches = [];
+      realApi = api;
+      api = ApiClient(
+        httpClient: MockClient((req) async {
+          if (req.method == 'PATCH' && req.url.path.endsWith('/day-meta')) {
+            patches.add(jsonDecode(req.body) as Map<String, dynamic>);
+            return http.Response(jsonEncode({'day_meta': {}}), 200);
+          }
+          return http.Response('{}', 200);
+        }),
+      );
+    });
+    tearDown(() => api = realApi);
+
+    Future<void> openEditor(WidgetTester tester, ProjectNotifier n) async {
+      await tester.pumpWidget(MaterialApp(
+        home: Builder(
+          builder: (ctx) => Scaffold(
+            body: TextButton(
+              onPressed: () => showDayMetaDialog(ctx, n, '2026-06-14'),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ));
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+    }
+
+    ProjectNotifier notifier() => ProjectNotifier(ProjectService())
+      ..ref = const ProjectRef(name: 'Trip')
+      ..tripStart = '2026-06-01'
+      ..tripEnd = '2026-06-20'
+      ..dayMeta = {
+        '2026-06-13': {'note': 'untouched'},
+        '2026-06-14': {'difficulty': 'hard'},
+      };
+
+    testWidgets('an edit sends its one day', (tester) async {
+      final n = notifier();
+      await openEditor(tester, n);
+      await tester.tap(find.text('Easy'));
+      await tester.pump();
+      await _tapSave(tester);
+      await tester.pumpAndSettle();
+
+      expect(patches, hasLength(1));
+      expect((patches.single['days'] as Map).keys, ['2026-06-14']);
+      expect(patches.single['delete'], isEmpty);
+    });
+
+    testWidgets('an emptied day goes in delete', (tester) async {
+      final n = notifier();
+      await openEditor(tester, n);
+      await tester.tap(find.text('Not set').first);
+      await tester.pump();
+      await _tapSave(tester);
+      await tester.pumpAndSettle();
+
+      expect(patches, hasLength(1));
+      expect(patches.single['days'], isEmpty);
+      expect(patches.single['delete'], ['2026-06-14']);
     });
   });
 }
