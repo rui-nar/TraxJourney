@@ -219,3 +219,14 @@ Fix wave: F1 (I-R1-1, api/activities.py), F2 (I-R1-2, src/project/repo_transfer.
 - Outcome: open
 
 Envelope question from the reviewer, owner answer 2026-10-04: yes. On DELETE .../local a Strava split tail may be deleted only by its owner or the trip owner; anyone else gets a clear refusal, and the app shows the error instead of silently restoring the item. F1 Scope widened (X3) to the Flutter deleteLocalActivity error path.
+
+## Fix unit F3 review — round 1, 2026-10-04, reviewed at ebf93f53
+
+### F3-R1-1 — A crash-left "<name>.jpg.moving" temp file in an owner folder is never cleaned
+- Trigger: The API is hard-killed mid-copy on the first start, and the avatar is replaced before the next start → the temp file stays, counted against the owner.
+- Scores: trigger=theoretical (triager corrected from plausible: the sweep runs before any request, the member source is kept until verified, so the next start reuses and replaces the same temp file), impact=degraded-ux, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Reject (D11)
+- Override: —
+- Outcome: —
+
+Owner answer 2026-10-04 (F3 envelope question): a replace re-import keeps the current avatar instead of switching back to an old one whose file the cleanup removed; leftovers are never relied on. Accepted.
