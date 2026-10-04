@@ -230,3 +230,12 @@ Envelope question from the reviewer, owner answer 2026-10-04: yes. On DELETE ...
 - Outcome: —
 
 Owner answer 2026-10-04 (F3 envelope question): a replace re-import keeps the current avatar instead of switching back to an old one whose file the cleanup removed; leftovers are never relied on. Accepted.
+
+## Fix unit F2 review — round 1, 2026-10-04, reviewed at 1c691af2
+
+### F2-R1-1 — A failure in the post-commit prune turns an already-done replace import into a 500 and skips the cache bust
+- Trigger: A replace import hits SQLite's write lock past busy_timeout in the new prune step → the trip is replaced, but the user gets an error and the trip's caches serve the old content for up to 15 min.
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Override: user 2026-10-04: Fix now (F2 introduced the window; the fix is small)
+- Outcome: open
