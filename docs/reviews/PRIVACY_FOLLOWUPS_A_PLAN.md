@@ -196,7 +196,7 @@ U7: Alembic data migration 87200bcb9342 rewriting stored comment/like author nam
 - Scores: trigger=concrete, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
 - Decision: Fix now (D7). R1-6's fix missed the route the client actually uses.
 - Override: —
-- Outcome: open
+- Outcome: fixed (F1: 53559629, 2cd9c979)
 
 ### I-R1-2 — A replace import (.traxj or ZIP) drops the trip's items without pruning the Strava rows it no longer carries
 - Trigger: A user re-imports an older export over a trip with on_conflict=replace → activities added since the export are in no trip → their rows stay until a disconnect.
@@ -216,7 +216,7 @@ Fix wave: F1 (I-R1-1, api/activities.py), F2 (I-R1-2, src/project/repo_transfer.
 - Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
 - Decision: Fix now (D6)
 - Override: —
-- Outcome: open
+- Outcome: fixed (2cd9c979)
 
 Envelope question from the reviewer, owner answer 2026-10-04: yes. On DELETE .../local a Strava split tail may be deleted only by its owner or the trip owner; anyone else gets a clear refusal, and the app shows the error instead of silently restoring the item. F1 Scope widened (X3) to the Flutter deleteLocalActivity error path.
 
