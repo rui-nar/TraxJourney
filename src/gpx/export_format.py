@@ -14,17 +14,22 @@ Three things here are part of the file format, and both sides use them:
   Strava activity's polyline is simplified, so a distance recomputed from it
   falls short, and a moving time cannot be recomputed from spread times at
   all. The import reads the stored values back instead;
-* :func:`spread_times`, the per-point times written along an activity.
+* :func:`spread_times`, the per-point times written along an activity;
+* the activity's original identity (:func:`activity_identity`): its GPX
+  fingerprint or its Strava id, so importing an export back into the trip
+  it came from recognises the activities already there (Q1).
 
 Pure: no HTTP, no database, no clock.
 """
 from __future__ import annotations
 
 import math
+import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from typing import List, Optional, Sequence, Tuple
 
+from src.models.activity import ACTIVITY_ID_MAX
 from src.models.great_circle import haversine_km
 from src.models.value_bounds import DISTANCE_MAX_M, DURATION_MAX_S
 
@@ -37,6 +42,21 @@ EXTENSION_PREFIX = "traxj"
 
 _MOVING_TIME_TAG = f"{{{EXTENSION_NAMESPACE}}}moving_time"
 _DISTANCE_TAG = f"{{{EXTENSION_NAMESPACE}}}distance"
+_SOURCE_TAG = f"{{{EXTENSION_NAMESPACE}}}source"
+_SOURCE_ID_TAG = f"{{{EXTENSION_NAMESPACE}}}source_id"
+
+#: ``traxj:source`` of a GPX import, whose ``traxj:source_id`` is its stored
+#: fingerprint (a SHA-256 hex digest, see ``track_fingerprint``).
+SOURCE_GPX = "gpx"
+#: ``traxj:source`` of a Strava activity, whose ``traxj:source_id`` is its
+#: Strava id: a Strava row's id IS its Strava id, always positive.
+SOURCE_STRAVA = "strava"
+
+_FINGERPRINT = re.compile(r"[0-9a-f]{64}")
+_STRAVA_ID = re.compile(r"[1-9][0-9]{0,18}")
+
+#: An activity's original identity: ``(source, source_id)``.
+Identity = Tuple[str, str]
 
 
 def spread_times(points: Sequence[Tuple[float, float]], start: datetime,
@@ -67,8 +87,24 @@ def spread_times(points: Sequence[Tuple[float, float]], start: datetime,
     return times
 
 
-def activity_extensions(moving_time, distance) -> List[ET.Element]:
-    """The ``<extensions>`` children carrying an activity's stored figures.
+def activity_identity(source, source_id, activity_id) -> Optional[Identity]:
+    """The identity an export writes for a stored activity, or None.
+
+    A GPX import is known by its fingerprint, a Strava activity (no
+    ``source``, positive id) by its id. Anything else, such as a split tail,
+    has no identity to carry.
+    """
+    if source == SOURCE_GPX:
+        return _valid_identity(SOURCE_GPX, source_id)
+    if source is None and type(activity_id) is int and activity_id > 0:
+        return _valid_identity(SOURCE_STRAVA, str(activity_id))
+    return None
+
+
+def activity_extensions(moving_time, distance,
+                        identity: Optional[Identity] = None) -> List[ET.Element]:
+    """The ``<extensions>`` children carrying an activity's stored figures,
+    and its identity when it has one.
 
     A figure that is missing or not a finite number is left out, and the
     import then measures it from the track as it would for any other file.
@@ -84,6 +120,11 @@ def activity_extensions(moving_time, distance) -> List[ET.Element]:
         element = ET.Element(_DISTANCE_TAG)
         element.text = repr(float(metres))
         elements.append(element)
+    if identity is not None:
+        for tag, text in zip((_SOURCE_TAG, _SOURCE_ID_TAG), identity):
+            element = ET.Element(tag)
+            element.text = text
+            elements.append(element)
     return elements
 
 
@@ -106,6 +147,37 @@ def read_activity_extensions(
             value = _bounded(_number(element.text), DISTANCE_MAX_M)
             distance = float(value) if value is not None else None
     return moving, distance
+
+
+def read_activity_identity(elements: Sequence[ET.Element]) -> Optional[Identity]:
+    """``(source, source_id)`` carried by a track, or None.
+
+    Untrusted like the figures: a source other than ``gpx`` or ``strava``, or
+    a source_id not shaped as that source's ids are (a 64-character lowercase
+    hex fingerprint; a positive Strava id within the id column), counts as
+    absent. The importer matches it only within its own trip.
+    """
+    source = source_id = None
+    for element in elements or ():
+        tag = getattr(element, "tag", None)
+        if tag == _SOURCE_TAG and source is None:
+            source = (element.text or "").strip()
+        elif tag == _SOURCE_ID_TAG and source_id is None:
+            source_id = (element.text or "").strip()
+    if source is None or source_id is None:
+        return None
+    return _valid_identity(source, source_id)
+
+
+def _valid_identity(source, source_id) -> Optional[Identity]:
+    if not isinstance(source_id, str):
+        return None
+    if source == SOURCE_GPX and _FINGERPRINT.fullmatch(source_id):
+        return source, source_id
+    if (source == SOURCE_STRAVA and _STRAVA_ID.fullmatch(source_id)
+            and int(source_id) <= ACTIVITY_ID_MAX):
+        return source, source_id
+    return None
 
 
 def _number(text: Optional[str]) -> Optional[float]:

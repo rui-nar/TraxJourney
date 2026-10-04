@@ -356,9 +356,12 @@ def test_the_extension_is_in_its_own_namespace(exported):
     root = ET.fromstring(exported)
     extensions = root.find(f"{_GPX_NS}trk/{_GPX_NS}extensions")
 
+    # The Strava run also carries its original identity (Q1).
     assert [e.tag for e in extensions] == [
         f"{{{EXTENSION_NAMESPACE}}}moving_time",
-        f"{{{EXTENSION_NAMESPACE}}}distance"]
+        f"{{{EXTENSION_NAMESPACE}}}distance",
+        f"{{{EXTENSION_NAMESPACE}}}source",
+        f"{{{EXTENSION_NAMESPACE}}}source_id"]
 
 
 @pytest.mark.parametrize("moving,distance", [
