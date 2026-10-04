@@ -512,6 +512,22 @@ def test_bbox_ignores_nodes_that_are_not_on_track(tmp_path):
     assert selection.bbox == [8.0, 49.0, 8.1, 49.1]
 
 
+def test_bbox_is_not_the_starting_sentinel_when_no_rail_node_is_located(tmp_path):
+    """#350: a rail way whose nodes are absent from the file used to publish
+    ``[180.0, 180.0, -180.0, -180.0]`` as the region's extent — an inverted
+    box, emitted because the gate was on ``ways`` rather than on nodes seen."""
+    source = tmp_path / "src.osm.pbf"
+    writer = osmium.SimpleWriter(str(source))
+    writer.add_way(osmium.osm.mutable.Way(
+        id=10, nodes=[1, 2], tags={"railway": "rail"}))
+    writer.close()
+
+    selection = rail.select(source, tmp_path / "out.osm.pbf")
+
+    assert selection.ways == 1
+    assert selection.bbox == []
+
+
 def test_bbox_agrees_with_the_store_phase_2_builds_from_it(filtered, tmp_path):
     """The same box, computed independently by both phases.
 
@@ -774,6 +790,35 @@ def test_the_manifest_command_refuses_an_incomplete_run(entry, filtered, tmp_pat
     assert rail.main(argv + ["--force"]) == 0
 
 
+def test_a_requested_region_that_failed_is_not_republished_from_the_base(
+        entry, filtered, tmp_path, capsys):
+    """#350: dispatch `europe/denmark europe/germany`, Germany's build fails.
+
+    `--expect` is the subset, and the base still holds last month's Germany,
+    so the region counts as covered and the release went out claiming a
+    rebuild that never happened. A region asked for must be one rebuilt.
+    """
+    path, _ = filtered
+    (tmp_path / path.name).write_bytes(path.read_bytes())
+    _entry_file(tmp_path, "denmark", {**entry, "region": "europe/denmark"})
+    base = tmp_path / "released.json"
+    base.write_text(json.dumps(rail.merge_manifest([
+        {**entry, "region": "europe/germany", "source_date": "2026-08-02"},
+        {**entry, "region": "europe/france", "source_date": "2026-08-02"},
+    ])))
+    argv = ["build_rail_extract.py", "manifest", "--out-dir", str(tmp_path),
+            "--base", str(base),
+            "--expect", json.dumps(["europe/denmark", "europe/germany"])]
+
+    assert rail.main(argv) == 1
+    out = capsys.readouterr().out
+    assert "europe/germany" in out
+    # France was not asked for: carrying it is the merge doing its job.
+    assert "europe/france" not in out
+
+    assert rail.main(argv + ["--force"]) == 0
+
+
 def test_the_manifest_command_merges_the_released_manifest(entry, filtered, tmp_path):
     path, _ = filtered
     (tmp_path / path.name).write_bytes(path.read_bytes())
@@ -917,8 +962,12 @@ def test_build_of_a_region_with_no_rail_publishes_nothing_and_succeeds(
 # ---------------------------------------------------------------------------
 
 class _Response:
-    def __init__(self, body: bytes = b"", text: str = "", status: int = 200):
+    def __init__(self, body: bytes = b"", text: str = "", status: int = 200,
+                 url: str | None = None):
         self.body, self.text, self.status = body, text, status
+        # What requests reports after following redirects; the transport fills
+        # in the requested URL when a test does not stage a redirect.
+        self.url = url
 
     def raise_for_status(self):
         if self.status >= 400:
@@ -940,8 +989,10 @@ def _transport(pairs):
 
     def get(url, **kwargs):
         calls.append(url)
-        queue = pairs[url]
-        return queue.pop(0) if len(queue) > 1 else queue[0]
+        queue = pairs.get(url, [_Response(status=404)])
+        response = queue.pop(0) if len(queue) > 1 else queue[0]
+        response.url = response.url or url
+        return response
     return get, calls
 
 
@@ -963,6 +1014,41 @@ def test_the_download_is_checked_against_geofabriks_md5(tmp_path):
 
     assert dest.read_bytes() == PAYLOAD
     assert f"{url}.md5" in calls
+
+
+def test_the_md5_comes_from_the_mirror_that_served_the_file(tmp_path):
+    """The October 2026 scheduled run lost Germany this way: Geofabrik 307s its
+    largest extracts to a mirror and has no ``-latest`` .md5 of its own for
+    them, so asking the original host 404s four times and the region fails."""
+    import hashlib
+    digest = hashlib.md5(PAYLOAD).hexdigest()
+    url = "https://download.geofabrik.de/europe/germany-latest.osm.pbf"
+    mirror = ("https://ftp5.gwdg.de/pub/misc/openstreetmap/"
+              "download.geofabrik.de/germany-latest.osm.pbf")
+    get, calls = _transport({
+        url: [_Response(body=PAYLOAD, url=mirror)],
+        f"{mirror}.md5": [_Response(text=f"{digest}  germany-latest.osm.pbf")],
+    })
+    dest = tmp_path / "germany.osm.pbf"
+
+    rail.download(url, dest, get=get, attempts=1, sleep=lambda s: None)
+
+    assert dest.read_bytes() == PAYLOAD
+    assert f"{url}.md5" not in calls
+
+
+def test_a_mirror_checksum_still_refuses_a_bad_file(tmp_path):
+    """Following the redirect must not turn the check into a formality."""
+    url = "https://download.geofabrik.de/europe/germany-latest.osm.pbf"
+    mirror = "https://mirror.example/germany-latest.osm.pbf"
+    get, _ = _transport({
+        url: [_Response(body=PAYLOAD[:10], url=mirror)],
+        f"{mirror}.md5": [_Response(text=f"{PAYLOAD_MD5}  germany-latest.osm.pbf")],
+    })
+
+    with pytest.raises(RuntimeError, match="md5 mismatch"):
+        rail.download(url, tmp_path / "germany.osm.pbf", get=get,
+                      attempts=1, sleep=lambda s: None)
 
 
 def test_a_truncated_download_is_refused(tmp_path):
