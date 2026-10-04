@@ -28,6 +28,7 @@ from typing import List, Optional, Sequence, Tuple
 import gpxpy
 import gpxpy.gpx
 
+from src.gpx.export_format import read_activity_extensions
 from src.models.great_circle import haversine_km
 from src.models.track_edit import TrackPoint
 
@@ -85,7 +86,26 @@ _TYPE_ALIASES = {
     "hike": "hike", "hiking": "hike", "trekking": "hike",
     "mountaineering": "hike",
     "walk": "walk", "walking": "walk", "stroll": "walk",
+    "workout": "Workout",
 }
+
+#: Strava's activity types beyond the four above, each read back as Strava
+#: spells it (#367). A GPX export writes an activity's stored type, and
+#: without these a kayak or a ski day came back untyped, for the user to pick
+#: again. Run, ride, hike and walk keep the app's own spelling above, and
+#: Strava's sub-types already listed there keep collapsing into them.
+_STRAVA_TYPES = (
+    "AlpineSki", "Badminton", "BackcountrySki", "Canoeing", "Crossfit",
+    "EMountainBikeRide", "Elliptical", "Golf", "GravelRide", "Handcycle",
+    "HighIntensityIntervalTraining", "IceSkate", "InlineSkate", "Kayaking",
+    "Kitesurf", "MountainBikeRide", "NordicSki", "Pickleball", "Pilates",
+    "Racquetball", "RockClimbing", "RollerSki", "Rowing", "Sail",
+    "Skateboard", "Snowboard", "Snowshoe", "Soccer", "Squash",
+    "StairStepper", "StandUpPaddling", "Surfing", "Swim", "TableTennis",
+    "Tennis", "TrailRun", "Velomobile", "VirtualRow", "WeightTraining",
+    "Wheelchair", "Windsurf", "Yoga",
+)
+_TYPE_ALIASES.update({name.lower(): name for name in _STRAVA_TYPES})
 
 
 class GPXImportError(Exception):
@@ -110,6 +130,11 @@ class GpxCandidate:
     points: List[TrackPoint]
     times: List[Optional[datetime]]
     is_route: bool
+    #: Moving time and distance a TraxJourney export carried for the
+    #: activity (#367), None when the file does not say. Measured values
+    #: (:attr:`moving_seconds`, :attr:`distance_m`) are left as they are.
+    carried_moving_seconds: Optional[int] = None
+    carried_distance_m: Optional[float] = None
 
     @property
     def point_count(self) -> int:
@@ -280,10 +305,12 @@ def candidates(gpx: gpxpy.gpx.GPX) -> List[GpxCandidate]:
     found: List[GpxCandidate] = []
     for index, track in enumerate(gpx.tracks):
         points, times = _flatten([p for seg in track.segments for p in seg.points])
+        moving, distance = read_activity_extensions(track.extensions)
         found.append(GpxCandidate(
             index=index, name=_clean(track.name),
             activity_type=map_activity_type(track.type),
             points=points, times=times, is_route=False,
+            carried_moving_seconds=moving, carried_distance_m=distance,
         ))
     # An element carrying no points is not a candidate. Some tools write an
     # empty <trk> as a placeholder alongside the real <rte>, and treating it
@@ -308,7 +335,9 @@ def _renumbered(found: List[GpxCandidate]) -> List[GpxCandidate]:
     return [
         GpxCandidate(index=position, name=c.name,
                      activity_type=c.activity_type, points=c.points,
-                     times=c.times, is_route=c.is_route)
+                     times=c.times, is_route=c.is_route,
+                     carried_moving_seconds=c.carried_moving_seconds,
+                     carried_distance_m=c.carried_distance_m)
         for position, c in enumerate(found)
     ]
 

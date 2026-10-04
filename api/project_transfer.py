@@ -18,7 +18,7 @@ import threading
 import time
 import uuid
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Annotated, Any, Dict, Iterator, List, Literal, Optional, Tuple
 
@@ -50,6 +50,10 @@ from models.project_db import DBJournalEntry, DBMemory
 from src.billing.entitlements import ensure_project_quota, ensure_storage_quota
 from src.billing.usage import unlink_and_record
 from src.brand import APP_NAME
+from src.gpx.export_format import (
+    CONNECTION_TRACK_TYPE, EXTENSION_NAMESPACE, EXTENSION_PREFIX,
+    activity_extensions, spread_times,
+)
 from src.models.great_circle import great_circle_points
 from src.models.project import Project
 from src.project.photo_placement import already_present, place_photos
@@ -692,37 +696,19 @@ def export_project_gpx(
     gpx = gpxpy.gpx.GPX()
     gpx.name = project.name
     gpx.creator = APP_NAME
+    gpx.nsmap[EXTENSION_PREFIX] = EXTENSION_NAMESPACE
 
-    track = gpxpy.gpx.GPXTrack(name=project.name)
-    gpx.tracks.append(track)
-
+    # One <trk> per activity and per connecting segment (#367): the importer
+    # makes one candidate of each <trk>, so a single track of segments read
+    # back as one activity covering the whole trip and the gaps between.
     for item in project.items:
         if item.item_type == "activity":
             act = project.activity_by_id(item.activity_id) if item.activity_id else None
             if act is None:
                 continue
-
-            seg = gpxpy.gpx.GPXTrackSegment()
-
-            if act.summary_polyline:
-                decoded = polyline_lib.decode(act.summary_polyline)
-                for idx, (lat, lon) in enumerate(decoded):
-                    pt = gpxpy.gpx.GPXTrackPoint(lat, lon)
-                    if idx == 0 and act.start_date_local:
-                        pt.time = act.start_date_local
-                    seg.points.append(pt)
-            elif act.start_latlng and act.end_latlng:
-                pt_start = gpxpy.gpx.GPXTrackPoint(act.start_latlng[0], act.start_latlng[1])
-                if act.start_date_local:
-                    pt_start.time = act.start_date_local
-                pt_end = gpxpy.gpx.GPXTrackPoint(act.end_latlng[0], act.end_latlng[1])
-                seg.points.append(pt_start)
-                seg.points.append(pt_end)
-            else:
-                continue
-
-            if seg.points:
-                track.segments.append(seg)
+            track = _activity_track(act)
+            if track is not None:
+                gpx.tracks.append(track)
 
         elif item.item_type == "segment" and item.segment:
             cs = item.segment
@@ -731,10 +717,13 @@ def export_project_gpx(
                 cs.end.lat,   cs.end.lon,
                 n_points=_SEGMENT_GPX_POINTS,
             )
+            track = gpxpy.gpx.GPXTrack(name=cs.label or None)
+            track.type = CONNECTION_TRACK_TYPE
             seg = gpxpy.gpx.GPXTrackSegment()
             for lat, lon in arc:
                 seg.points.append(gpxpy.gpx.GPXTrackPoint(lat, lon))
             track.segments.append(seg)
+            gpx.tracks.append(track)
 
         elif item.item_type == "memory" and item.memory:
             mem = item.memory
@@ -795,6 +784,44 @@ def export_project_gpx(
         media_type="application/gpx+xml",
         headers={"Content-Disposition": f'attachment; filename="{safe}.gpx"'},
     )
+
+
+def _activity_track(act) -> Optional[gpxpy.gpx.GPXTrack]:
+    """One activity as its own ``<trk>``, or None when it has no geometry.
+
+    Named and typed as stored, with the stored moving time and distance in
+    the TraxJourney extension. Every point is timed, from ``start_date``,
+    the true UTC instant, to ``start_date + elapsed_time``, spread by
+    distance. A GPX row labelled ``"UTC"`` was imported before its instant
+    was known (#365), so it is written with no times at all rather than with
+    ones the export cannot vouch for.
+    """
+    if act.summary_polyline:
+        latlngs = polyline_lib.decode(act.summary_polyline)
+    elif act.start_latlng and act.end_latlng:
+        latlngs = [tuple(act.start_latlng[:2]), tuple(act.end_latlng[:2])]
+    else:
+        return None
+    if not latlngs:
+        return None
+
+    times: List[Optional[datetime]] = [None] * len(latlngs)
+    unknown_instant = act.source == "gpx" and act.timezone == "UTC"
+    if act.start_date and not unknown_instant:
+        start = act.start_date
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)   # the column is UTC
+        times = spread_times(latlngs, start.astimezone(timezone.utc),
+                             act.elapsed_time)
+
+    track = gpxpy.gpx.GPXTrack(name=act.name or None)
+    track.type = act.type or None
+    track.extensions.extend(activity_extensions(act.moving_time, act.distance))
+    seg = gpxpy.gpx.GPXTrackSegment()
+    for (lat, lon), stamp in zip(latlngs, times):
+        seg.points.append(gpxpy.gpx.GPXTrackPoint(lat, lon, time=stamp))
+    track.segments.append(seg)
+    return track
 
 
 # ── .traxj export ─────────────────────────────────────────────────────────────
