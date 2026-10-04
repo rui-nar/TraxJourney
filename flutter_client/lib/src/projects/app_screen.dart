@@ -264,10 +264,14 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
       // one that failed all still need a real load() — mirrors (with the
       // extra loading/error guards) ProjectStatsScreen's identical singleton
       // reuse check (see project_stats_screen.dart).
+      //
+      // Reused, it still re-reads the saved selection and filters first (issue
+      // #418): view mode may have changed them since, and the next tap here
+      // would save this notifier's stale copy over that change.
       if (notifier.ref == projectRef &&
           !notifier.isLoading &&
           notifier.error == null) {
-        afterLoad();
+        notifier.restoreSavedUiState().then((_) => afterLoad());
       } else {
         // Seed the zoom before loading, so the first geometry fetch is for
         // the level about to be shown rather than a hard-coded default that

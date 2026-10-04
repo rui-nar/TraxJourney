@@ -164,17 +164,25 @@ class _EnableEncryptionScreenState extends State<EnableEncryptionScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Encrypt your data')),
-      body: SafeArea(
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 520),
-            child: switch (_step) {
-              _Step.choose => _buildChoose(context),
-              _Step.showRecoveryKey => _buildRecoveryKey(context),
-              _Step.done => _buildDone(context),
-            },
+    // No leaving while the request is out (U5-R3-1): a screen popped mid-way
+    // is not there to show the recovery key the server was just given.
+    return PopScope(
+      canPop: !_busy,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Encrypt your data'),
+          automaticallyImplyLeading: !_busy,
+        ),
+        body: SafeArea(
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 520),
+              child: switch (_step) {
+                _Step.choose => _buildChoose(context),
+                _Step.showRecoveryKey => _buildRecoveryKey(context),
+                _Step.done => _buildDone(context),
+              },
+            ),
           ),
         ),
       ),

@@ -608,6 +608,15 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
     _segmentTombstones.clear();
   }
 
+  /// Drops all of this mixin's state: the overlay, and the segments held to
+  /// put back if their DELETE fails. For `ProjectNotifier.clear()` (issue
+  /// #418): a DELETE that fails after it must not restore a segment into
+  /// whatever is loaded next.
+  void resetSegmentState() {
+    clearSegmentOverlay();
+    _removedSegments.clear();
+  }
+
   // ── Geometry (SLERP great-circle, mirrors src/models/great_circle.py) ─────
 
   static List<List<double>> _greatCircleCoords(

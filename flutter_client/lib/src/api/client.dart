@@ -35,10 +35,9 @@ class ApiClient {
   /// with no token or one that does not parse. Not verified — the server does
   /// that on every request; this only says whose session the device holds.
   ///
-  /// Read from the token rather than the profile because it is there the
-  /// moment a session is restored, offline included, while the profile's id
-  /// is not: a restored session starts as `User.restored` (id ''), and
-  /// /api/auth/me echoes the JWT payload, which has no `id` claim either.
+  /// Read from the token because it is there the moment a session is
+  /// restored, offline included — which is also where `User.restored` takes
+  /// its id from until /api/auth/me answers (issue #418).
   int? get tokenUserId {
     final parts = _token?.split('.');
     if (parts == null || parts.length != 3) return null;

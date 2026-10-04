@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cryptography_plus/cryptography_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -28,6 +30,13 @@ class _FakeApi implements EncryptionApi {
   Future<void> approveDevice(String a, String b, String c) async {}
   @override
   Future<RecoveryWrapData?> fetchRecoveryWrap(String method) async => null;
+}
+
+/// Holds the enable request until [gate] completes.
+class _HeldApi extends _FakeApi {
+  final gate = Completer<void>();
+  @override
+  Future<void> enable(Map<String, dynamic> payload) => gate.future;
 }
 
 Widget _wrap() => MaterialApp(
@@ -117,5 +126,45 @@ void main() {
       find.ancestor(of: find.text('Done'), matching: find.byType(FilledButton)),
     );
     expect(doneBtn2.onPressed, isNotNull);
+  });
+
+  testWidgets('the screen cannot be left while the request is out (U5-R3-1)',
+      (tester) async {
+    tester.view.physicalSize = const Size(1080, 2600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final api = _HeldApi();
+    final navigator = GlobalKey<NavigatorState>();
+    await tester.pumpWidget(MaterialApp(
+      navigatorKey: navigator,
+      home: const Text('home'),
+    ));
+    navigator.currentState!.push(MaterialPageRoute<void>(
+      builder: (_) => EnableEncryptionScreen(
+        service: EncryptionService(_FakeStore(), api),
+        onEnabled: (_) async {},
+      ),
+    ));
+    await tester.pumpAndSettle();
+    expect(find.byType(BackButton), findsOneWidget);
+
+    await tester.tap(find.text('Recovery key'));
+    await tester.pump();
+    await tester.tap(find.text('Turn on encryption'));
+    // Key generation runs real async work; let it reach the held request.
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 200)));
+    await tester.pump();
+
+    expect(find.byType(BackButton), findsNothing, reason: 'no back button');
+    await navigator.currentState!.maybePop();
+    // The busy spinner never settles; a route transition would be done here.
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.byType(EnableEncryptionScreen), findsOneWidget,
+        reason: 'a system back does not pop it either');
+
+    api.gate.complete();
+    await tester.pumpAndSettle();
+    expect(find.text('Save your recovery key'), findsOneWidget);
   });
 }
