@@ -150,3 +150,18 @@ Owner (2026-10-03): approved; no fifth round. Review closed.
 - Guard: —
 - Override: —
 - Outcome: fixed
+## Unit review U1 — 2026-10-04, pkgd/u1 da669833 against 253fba16 (DELIVERY §5 point 3, stored data)
+
+Reviewer: adversarial-reviewer (Fable). Triager: review-triager (Opus). 1 finding, well-formed.
+
+Envelope question (to the owner): the envelope says tzfpy's coordinates are "already range-checked by the GPX parse layer". On the inspect path, zone_at runs on every candidate's first point even when validation failed (the import path is range-checked). tzfpy tolerates bad values (Rust float casts saturate), so no defect is claimed. Correct the envelope sentence, or have inspect skip the zone lookup for candidates with errors?
+Answer (owner, 2026-10-04): skip the lookup for candidates with errors (option a). Table approved as is.
+
+### PU1R1-1 — zone_at silently stores Etc/UTC when tzfpy names a zone the image's tz database lacks
+- Trigger: a user imports a stamped track in a region whose IANA zone is newer than the image's Debian tzdata but known to tzfpy → ZoneInfoNotFoundError → "Etc/UTC" is stored, and start_date_local equals the UTC instant → shown hours off, nothing logged.
+- Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=inferred. Checked 2026-10-04: python:3.14-slim ships /usr/share/zoneinfo, including America/Coyhaique (2025b).
+- Decision: Fix now (D3). Add the pip `tzdata` package (zoneinfo falls back to it when the system lacks a name), plus a warning log in zone_at's fallback, plus a test with a patched unknown name.
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
