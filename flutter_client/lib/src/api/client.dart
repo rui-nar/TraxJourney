@@ -75,11 +75,21 @@ class ApiClient {
   /// Error bodies deliberately stay on the string path: they are small, and
   /// [ApiException] carries the text.
   Future<Uint8List> getBytes(String path,
+          {Duration timeout = _kDefaultTimeout}) async =>
+      (await getBytesWithHeaders(path, timeout: timeout)).bytes;
+
+  /// [getBytes], also returning the response headers (lower-cased keys, as
+  /// `package:http` gives them). The simplified-geometry fetches read
+  /// `Server-Timing` and `X-Cache` from them (issue #401).
+  Future<({Uint8List bytes, Map<String, String> headers})> getBytesWithHeaders(
+      String path,
       {Duration timeout = _kDefaultTimeout}) async {
     final res = await _client
         .get(Uri.parse('$baseUrl$path'), headers: _headers)
         .timeout(timeout);
-    if (res.statusCode >= 200 && res.statusCode < 300) return res.bodyBytes;
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      return (bytes: res.bodyBytes, headers: res.headers);
+    }
     throw ApiException(res.statusCode, res.body,
         location: res.headers['location']);
   }

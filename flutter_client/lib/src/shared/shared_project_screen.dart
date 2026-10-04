@@ -136,10 +136,9 @@ class _SharedProjectService extends ProjectService {
   Future<Map<String, dynamic>> fetchSimplifiedGeo(
       ProjectRef _, double zoom, GeoBox? bbox) async {
     final box = bbox == null ? '' : '&bbox=${bbox.param}';
-    final bytes = await perfSpans.stage(
-        'fetch_geo_lod',
-        () => api.getBytes('/api/share/$token/geo/simplified?zoom=$zoom$box',
-            timeout: const Duration(seconds: 90)));
+    final bytes = await perfSpans.geoLodFetch(() => api.getBytesWithHeaders(
+        '/api/share/$token/geo/simplified?zoom=$zoom$box',
+        timeout: const Duration(seconds: 90)));
     perfSpans.note('geo_lod', perfSizeLabel(bytes.length));
     // Same off-isolate hop the owner path uses, so the geometry caches are
     // seeded and the map's first build after the swap does no O(points) work.

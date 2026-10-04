@@ -36,6 +36,29 @@ void main() {
     });
   });
 
+  group('ApiClient.getBytesWithHeaders', () {
+    test('returns the body and the response headers', () async {
+      final client = ApiClient(
+        baseUrl: '',
+        httpClient: MockClient((_) async => http.Response('abc', 200,
+            headers: {'server-timing': 'total;dur=1.0', 'x-cache': 'HIT'})),
+      );
+      final r = await client.getBytesWithHeaders('/x');
+      expect(r.bytes, [97, 98, 99]);
+      expect(r.headers['server-timing'], 'total;dur=1.0');
+      expect(r.headers['x-cache'], 'HIT');
+    });
+
+    test('throws ApiException on a non-2xx', () async {
+      final client = ApiClient(
+        baseUrl: '',
+        httpClient: MockClient((_) async => http.Response('nope', 500)),
+      );
+      await expectLater(client.getBytesWithHeaders('/x'),
+          throwsA(isA<ApiException>()));
+    });
+  });
+
   group('ApiClient.getRaw timeout', () {
     // getRaw() used to have no .timeout() at all (unlike get/post/put/delete),
     // so a stalled binary download could hang forever.

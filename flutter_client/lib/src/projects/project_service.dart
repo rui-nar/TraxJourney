@@ -293,12 +293,10 @@ class ProjectService {
       ProjectRef ref, double zoom, GeoBox? bbox) async {
     final encoded = Uri.encodeComponent(ref.name);
     final box = bbox == null ? '' : '&bbox=${bbox.param}';
-    final bytes = await perfSpans.stage(
-        'fetch_geo_lod',
-        () => api.getBytes(
-            ref.withOwner(
-                '/api/geo/project/simplified?name=$encoded&zoom=$zoom$box'),
-            timeout: const Duration(seconds: 90)));
+    final bytes = await perfSpans.geoLodFetch(() => api.getBytesWithHeaders(
+        ref.withOwner(
+            '/api/geo/project/simplified?name=$encoded&zoom=$zoom$box'),
+        timeout: const Duration(seconds: 90)));
     perfSpans.note('geo_lod', perfSizeLabel(bytes.length));
     // Same hop as the full-res path, so the geometry caches are seeded and
     // the map's first build after the swap does no O(points) work.
