@@ -197,14 +197,14 @@ class TestJournalCreate:
 # ── 2. Update ─────────────────────────────────────────────────────────────────
 
 class TestJournalUpdate:
-    def test_update_description_returns_204(self, created_journal):
+    def test_update_description_returns_200(self, created_journal):
         client, journal_id, *_ = created_journal
         resp = client.put(f"/api/journal/{journal_id}", json={
             "date": "2025-06-01",
             "geo_mode": "custom",
             "description": "Updated text.",
         })
-        assert resp.status_code == 204
+        assert resp.status_code == 200
 
     def test_update_persists_new_description(self, created_journal):
         client, journal_id, _, __, engine = created_journal
