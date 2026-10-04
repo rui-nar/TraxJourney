@@ -151,14 +151,14 @@ Owner approval 2026-10-03: U4-R1-1 Guard, U4-R1-2 Defer, U6-R1-1 Guard, as triag
 - Scores: trigger=theoretical, impact=data-loss, detect=silent, later=cheap, fix=S/local, confidence=verified
 - Decision: Guard (D4, F2), flagged to the owner. Guard: raise in the verify loop when src exists and dst is None, so nothing is handed over and the person counts as failed.
 - Override: —
-- Outcome: open
+- Outcome: guard added (34ff79e9)
 
 ### U5-R1-2 — An avatar whose move failed is stranded in the member's folder once the user replaces or removes it
 - Trigger: The sweep hits an OSError → the avatar stays in the member's folder → it 404s → the user re-uploads or deletes → U4 deletes the old name from the owner's folder only → the member's files stay forever, counted against the member.
 - Scores: trigger=plausible, impact=degraded-ux, detect=silent, later=cheap, fix=M/shared, confidence=verified
 - Decision: Guard (D9). Guard: in api/people.py, before deleting an old avatar (replace, avatar delete, person delete), warn when the owner's folder doesn't hold its full-size file.
 - Override: —
-- Outcome: open
+- Outcome: guard added (34ff79e9)
 
 Envelope question from the reviewer, owner answer 2026-10-04: pre-U4 leftovers (photo files in current members' people/<id>/ folders that no person references) are IN scope: the U5 sweep also deletes them and gives back their usage. U5 gets a round-2 review for it.
 
@@ -181,6 +181,6 @@ U3's implementer found five more places that show another user's raw display_nam
 ### U5-R3-1 — The orphan pass skips a living person's folder in an ex-member's tree, so a companion who left keeps paying for a replaced avatar
 - Trigger: A companion uploaded a person's avatar before this release, then left the trip; the owner later replaced or removed it → U4 deletes from the owner's folder only, the member pass doesn't visit ex-members, and the orphan pass skips living persons' folders → the pair stays charged to the ex-member for good.
 - Scores: trigger=plausible, impact=degraded-ux, detect=silent, later=cheap, fix=S/local, confidence=verified
-- Decision: owner to decide (envelope reading): D9/D7 fix if ex-member folders of living persons are in scope, D1 if not.
-- Override: —
-- Outcome: open
+- Decision: Fix now (D7/D9) under the owner reading: ex-member folders of living persons are in scope.
+- Override: user 2026-10-04: fix it; no round-4 unit review (verifier plus the integrated review instead)
+- Outcome: fixed (8ef7675b)
