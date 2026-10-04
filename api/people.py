@@ -149,6 +149,20 @@ def _delete_avatar_files(owner_dir: str, person_id: int, uuid_str: str) -> None:
     unlink_and_record(owner_dir, photo_files(_avatar_folder(owner_dir, person_id), [uuid_str]))
 
 
+def _delete_old_avatar(owner_dir: str, person_id: int, uuid_str: str) -> None:
+    """Delete a replaced or removed avatar from the owner's folder.
+
+    Guard (review U5-R1-2): an avatar a companion uploaded before #470 sits in
+    that companion's folder until the startup sweep moves it; deleting it from
+    here leaves their copy behind. Only reported.
+    """
+    full = photo_file(_avatar_folder(owner_dir, person_id), uuid_str)
+    if full is None or not full.is_file():
+        _log.warning("old avatar not in owner folder; a member's copy may be stranded "
+                     "person_id=%s owner_dir=%s name=%s", person_id, owner_dir, uuid_str)
+    _delete_avatar_files(owner_dir, person_id, uuid_str)
+
+
 def _parse_ps_username(raw: str | None) -> str | None:
     """Extract a Polarsteps username from a stored handle or profile URL.
 
@@ -334,7 +348,7 @@ def delete_person(
             sess.delete(e)
 
         if row.avatar_photo:
-            _delete_avatar_files(person_owner_dir_id(sess, row), person_id, row.avatar_photo)
+            _delete_old_avatar(person_owner_dir_id(sess, row), person_id, row.avatar_photo)
 
         # Make this delete visible to the optimistic lock too: a structural
         # rewrite that loaded before it would otherwise pass the CAS and
@@ -393,7 +407,7 @@ async def upload_avatar(
         _delete_avatar_files(owner_dir, person_id, new_uuid)
         raise
     if old:
-        _delete_avatar_files(owner_dir, person_id, old)
+        _delete_old_avatar(owner_dir, person_id, old)
     # Guard (review U4-R1-1): two simultaneous uploads for one person can
     # leave the losing upload's files behind, charged to the owner. Only
     # reported for now; the folder should hold just the new pair.
@@ -420,7 +434,7 @@ def delete_avatar(
     with get_session() as sess:
         row = _get_owned_person(sess, person_id, user_info_id)
         if row.avatar_photo:
-            _delete_avatar_files(person_owner_dir_id(sess, row), person_id, row.avatar_photo)
+            _delete_old_avatar(person_owner_dir_id(sess, row), person_id, row.avatar_photo)
             row.avatar_photo = None
             sess.add(row)
             cache_ref = project_cache_ref(sess, row.project_id)
