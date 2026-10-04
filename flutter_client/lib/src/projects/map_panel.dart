@@ -1333,6 +1333,9 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
   // Points to auto-zoom to after the next full-track fit (issue #34). Set when
   // the selection changes and autoZoom is on; consumed once in build().
   List<LatLng>? _pendingAutoZoomPts;
+  // Set when autoZoom flips off -> on (issue #478); the next build treats it as
+  // a selection change so the current selection is fitted.
+  bool _autoZoomJustEnabled = false;
   // Polyline + bounds cache — only rebuilt when geo, selection, or style changes.
   Map<String, dynamic>? _lastGeo;
   dynamic _lastSelectedId = _sentinel;
@@ -1455,6 +1458,7 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
     if (oldWidget.notifier != widget.notifier) {
       _fittedBounds = false;
     }
+    if (!oldWidget.autoZoom && widget.autoZoom) _autoZoomJustEnabled = true;
   }
 
   // Bumped on every _onMapTap call; guards a stale async hit-test result
@@ -1589,6 +1593,8 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
         !ManageMapPanelState.setEquals(selDays, _lastSelectedDays) ||
         selMemId?.toString() != _lastSelectedMemId?.toString() ||
         selJournalId?.toString() != _lastSelectedJournalId?.toString();
+    final refitSelection = _autoZoomJustEnabled;
+    _autoZoomJustEnabled = false;
     final styleChanged = trackColor != _lastTrackColor ||
         trackWidth != _lastTrackWidth || alternating != _lastAlternating ||
         notifier.colorByType != _lastColorByType ||
@@ -1600,7 +1606,7 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
     // doc comment for why this split exists.
     final geoOrStyleChanged = !identical(geo, _lastGeo) || styleChanged ||
         !identical(items, _lastItems) || showJournals != _lastShowJournals;
-    if (geoOrStyleChanged || selectionChanged) {
+    if (geoOrStyleChanged || selectionChanged || refitSelection) {
       _lastGeo = geo;
       _lastSelectedId = selActId;
       _lastSelectedSegId = selSegId;
@@ -1685,7 +1691,7 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
       // instead of zooming to the picked item. Now: only when auto-zoom is on
       // and something is selected do we queue a zoom to that item; with
       // auto-zoom off, selection leaves the viewport untouched.
-      if (selectionChanged && widget.autoZoom && geo != null &&
+      if ((selectionChanged || refitSelection) && widget.autoZoom && geo != null &&
           (effectiveDays.isNotEmpty || selActId != null || selSegId != null)) {
         _pendingAutoZoomPts = ManageMapPanelState.extractSelectedPoints(
             geo, selActId, selSegId, dayActIds, daySegIds);
@@ -2329,6 +2335,9 @@ class ManageMapPanelState extends State<ManageMapPanel>
   bool _showMemories = true;
   // Points queued for auto-zoom on the next frame; null = nothing pending.
   List<LatLng>? _pendingAutoZoomPts;
+  // Set when autoZoom flips off -> on (issue #478); the next build treats it as
+  // a selection change so the current selection is fitted.
+  bool _autoZoomJustEnabled = false;
   // Track-style cache fields.
   Color? _lastTrackColor;
   double? _lastTrackWidth;
@@ -2369,6 +2378,12 @@ class ManageMapPanelState extends State<ManageMapPanel>
     _lastSelectedDay = widget.notifier.selectedDay;
     _lastSelectedDays = Set.from(widget.notifier.selectedDays);
     _lastSelectedMemId = widget.notifier.selectedMemoryId;
+  }
+
+  @override
+  void didUpdateWidget(ManageMapPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!oldWidget.autoZoom && widget.autoZoom) _autoZoomJustEnabled = true;
   }
 
   @override
@@ -2571,6 +2586,8 @@ class ManageMapPanelState extends State<ManageMapPanel>
         !setEquals(selDays, _lastSelectedDays) ||
         selMemId?.toString() != (_lastSelectedMemId as dynamic)?.toString() ||
         selJournalId2?.toString() != _lastSelectedJournalId?.toString();
+    final refitSelection2 = _autoZoomJustEnabled;
+    _autoZoomJustEnabled = false;
     final styleChanged2 = trackColor != _lastTrackColor ||
         trackWidth != _lastTrackWidth || alternating != _lastAlternating ||
         notifier.colorByType != _lastColorByType ||
@@ -2584,7 +2601,7 @@ class ManageMapPanelState extends State<ManageMapPanel>
     // comment for why this split exists.
     final geoOrStyleChanged2 =
         perfGeoChg || perfItemsChg || styleChanged2 || perfJournalsChg;
-    if (geoOrStyleChanged2 || selectionChanged2) {
+    if (geoOrStyleChanged2 || selectionChanged2 || refitSelection2) {
       perfRebuiltLayers = true;
       if (selectionChanged2 && widget.autoZoom) widget.fittedNotifier.value = false;
       _lastGeo = geo;
@@ -2663,7 +2680,7 @@ class ManageMapPanelState extends State<ManageMapPanel>
 
       // Queue auto-zoom only when selection genuinely changed (not on geo updates
       // from progressive loading) so it doesn't fight _fitBoundsOnce mid-load.
-      if (selectionChanged2 && widget.autoZoom && geo != null &&
+      if ((selectionChanged2 || refitSelection2) && widget.autoZoom && geo != null &&
           (effectiveDays.isNotEmpty || selActId != null || selSegId != null)) {
         _pendingAutoZoomPts = extractSelectedPoints(
             geo, selActId, selSegId, dayActIds, daySegIds);
