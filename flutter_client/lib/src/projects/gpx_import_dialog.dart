@@ -67,9 +67,14 @@ class GpxImportDialog extends StatefulWidget {
     this.httpClient,
     this.tripStart,
     this.tripEnd,
+    this.initialFile,
   });
 
   final ProjectRef projectRef;
+
+  /// A file already in hand (one opened from another app, issue #368): the
+  /// dialog skips the pick step and inspects it straight away.
+  final ({String name, Uint8List bytes})? initialFile;
 
   /// Injectable so tests can supply one backed by a MockClient — mirrors
   /// ApiClient's own constructor-injection pattern. `http.MultipartRequest`'s
@@ -134,6 +139,20 @@ class _GpxImportDialogState extends State<GpxImportDialog> {
     return hours > 0
         ? '${hours}h${minutes.toString().padLeft(2, '0')}'
         : '${minutes}m';
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    final initial = widget.initialFile;
+    if (initial != null) {
+      _fileBytes = initial.bytes;
+      _fileName = initial.name;
+      _stage = _Stage.reading;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _inspect();
+      });
+    }
   }
 
   @override

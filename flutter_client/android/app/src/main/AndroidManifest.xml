@@ -50,6 +50,28 @@
                 <data android:scheme="https" android:host="traxjourney.com" android:pathPrefix="/join"/>
                 <data android:scheme="https" android:host="traxjourney.com" android:pathPrefix="/verify-email"/>
             </intent-filter>
+            <!-- A .gpx opened ("Open with") or shared from another app (issue
+                 #368): Gmail, Files, a Chrome download, Komoot. MainActivity
+                 holds the file for lib/src/projects/incoming_gpx.dart and keeps
+                 its content:// address away from the router. Only GPX's own
+                 types for now: application/octet-stream would list the app for
+                 every binary file (see docs/TRIP_IMPORT_EXPORT_PLAN.md, Open
+                 decisions). No scheme is given, so these match content: and
+                 file: only, never an https link. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="application/gpx+xml"/>
+                <data android:mimeType="application/gpx"/>
+                <data android:mimeType="text/xml"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="application/gpx+xml"/>
+                <data android:mimeType="application/gpx"/>
+                <data android:mimeType="text/xml"/>
+            </intent-filter>
         </activity>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
