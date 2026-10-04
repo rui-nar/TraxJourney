@@ -120,6 +120,17 @@ class ApiClient {
     return _handle(res);
   }
 
+  Future<dynamic> patch(String path, Map<String, dynamic> body, {Duration timeout = _kDefaultTimeout}) async {
+    final res = await _client
+        .patch(
+          Uri.parse('$baseUrl$path'),
+          headers: _headers,
+          body: jsonEncode(body),
+        )
+        .timeout(timeout);
+    return _handle(res);
+  }
+
   Future<dynamic> delete(String path, {Duration timeout = _kDefaultTimeout}) async {
     final res = await _client
         .delete(Uri.parse('$baseUrl$path'), headers: _headers)
