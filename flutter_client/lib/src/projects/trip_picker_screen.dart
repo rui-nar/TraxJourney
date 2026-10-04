@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import '../auth/auth_notifier.dart';
 import '../core/project_ref.dart';
 import 'incoming_gpx.dart';
 import 'projects_notifier.dart';
@@ -55,6 +56,10 @@ class TripPickerScreen extends StatelessWidget {
       );
     }
     final projects = context.watch<ProjectsNotifier>();
+    // A cold start from a share lands here while the session is still being
+    // restored; the trip list is only requested once it is, so until then an
+    // empty list means "not known yet", not "no trips".
+    final restoring = context.watch<AuthNotifier>().isRestoring;
     // A viewer can't add activities, so their trips aren't offered.
     final trips =
         projects.projects.where((p) => !p.ref.isViewer).toList();
@@ -65,7 +70,7 @@ class TripPickerScreen extends StatelessWidget {
             key: const ValueKey('trip_picker_prompt'),
             style: theme.textTheme.bodyLarge),
         const SizedBox(height: 12),
-        if (projects.isLoading && trips.isEmpty)
+        if ((restoring || projects.isLoading) && trips.isEmpty)
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 24),
             child: Center(child: CircularProgressIndicator()),

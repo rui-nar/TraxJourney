@@ -1,12 +1,15 @@
 /// The trip picker a .gpx opened from another app leads to (issue #368).
 library;
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
+import 'package:traxjourney_client/src/auth/auth_notifier.dart';
+import 'package:traxjourney_client/src/auth/auth_service.dart';
 import 'package:traxjourney_client/src/core/project_ref.dart';
 import 'package:traxjourney_client/src/projects/incoming_gpx.dart';
 import 'package:traxjourney_client/src/projects/projects_notifier.dart';
@@ -22,12 +25,45 @@ class _FakeProjectsService extends ProjectsService {
       ];
 }
 
+class _EmptyProjectsService extends ProjectsService {
+  @override
+  Future<List<Map<String, dynamic>>> list() async => [];
+}
+
+class _GatedProjectsService extends ProjectsService {
+  _GatedProjectsService(this._gate);
+  final Future<List<Map<String, dynamic>>> _gate;
+
+  @override
+  Future<List<Map<String, dynamic>>> list() => _gate;
+}
+
+/// A session restore that stays pending until [finish] is called.
+class _PendingAuthService extends AuthService {
+  final _restore = Completer<bool>();
+
+  void finish() => _restore.complete(false);
+
+  @override
+  Future<bool> restoreSession() => _restore.future;
+
+  @override
+  Future<void> appOpened(String sessionState) async {}
+}
+
 Future<({IncomingGpx holder, GoRouter router})> _pump(
-    WidgetTester tester, IncomingFileRead read) async {
+  WidgetTester tester,
+  IncomingFileRead read, {
+  AuthNotifier? auth,
+  ProjectsNotifier? projects,
+}) async {
   final holder = IncomingGpx();
   await holder.receive(Future.value(read));
-  final projects = ProjectsNotifier(_FakeProjectsService());
-  await projects.load();
+  auth ??= AuthNotifier(AuthService());
+  if (projects == null) {
+    projects = ProjectsNotifier(_FakeProjectsService());
+    await projects.load();
+  }
   final router = GoRouter(initialLocation: kIncomingGpxRoute, routes: [
     GoRoute(
         path: kIncomingGpxRoute,
@@ -37,11 +73,16 @@ Future<({IncomingGpx holder, GoRouter router})> _pump(
         builder: (_, state) => Text('trip ${state.uri.query}')),
     GoRoute(path: '/projects', builder: (_, __) => const Text('trips')),
   ]);
-  await tester.pumpWidget(ChangeNotifierProvider.value(
-    value: projects,
+  await tester.pumpWidget(MultiProvider(
+    providers: [
+      ChangeNotifierProvider<AuthNotifier>.value(value: auth),
+      ChangeNotifierProvider<ProjectsNotifier>.value(value: projects),
+    ],
     child: MaterialApp.router(routerConfig: router),
   ));
-  await tester.pumpAndSettle();
+  // pump, not pumpAndSettle: a loading indicator never settles.
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 500));
   return (holder: holder, router: router);
 }
 
@@ -58,6 +99,54 @@ void main() {
     expect(find.text('Lisbon'), findsOneWidget);
     expect(find.text('Shared by Bea'), findsOneWidget);
     expect(find.text('Peeked'), findsNothing);
+  });
+
+  testWidgets('while the session is being restored it loads, not "no trip"',
+      (tester) async {
+    final service = _PendingAuthService();
+    final auth = AuthNotifier(service);
+    unawaited(auth.init());
+    final projects = ProjectsNotifier(_EmptyProjectsService());
+
+    await _pump(tester, _ride, auth: auth, projects: projects);
+
+    expect(auth.isRestoring, isTrue);
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(find.textContaining('no trip'), findsNothing);
+
+    service.finish();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(auth.isRestoring, isFalse);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.textContaining('no trip'), findsOneWidget);
+  });
+
+  testWidgets('while the trips are loading it shows progress', (tester) async {
+    final gate = Completer<List<Map<String, dynamic>>>();
+    final projects = ProjectsNotifier(_GatedProjectsService(gate.future));
+    unawaited(projects.load());
+
+    await _pump(tester, _ride, projects: projects);
+
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(find.textContaining('no trip'), findsNothing);
+
+    gate.complete([]);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.textContaining('no trip'), findsOneWidget);
+  });
+
+  testWidgets('loaded with no trips, it says there is none', (tester) async {
+    final projects = ProjectsNotifier(_EmptyProjectsService());
+    await projects.load();
+
+    await _pump(tester, _ride, projects: projects);
+
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.textContaining('no trip'), findsOneWidget);
   });
 
   testWidgets('choosing a trip opens it, and the file is waiting for it',
