@@ -225,3 +225,33 @@ Answer (user, 2026-10-04): accept the risk (recorded in the envelope); U5b-R1-1 
 - Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
 - Decision: Fix now (D7)
 - Outcome: fixed in plan
+
+Owner (2026-10-04): R2-1, R2-2, R2-4 approved; R2-3 overridden to Fix now; merge origin/main before U5b.
+
+## Plan amendment U5b, round 2 — 2026-10-04, reviewed at 2cb8093a (fixes since 1a496f08)
+
+### U5b-R2-1 — Replace "returns the stored wrap" invites a re-read that hands back the other device's wrap
+- Trigger: two devices replace within milliseconds → A re-reads after commit and gets B's wrap → A shows K1 but confirms K2 → the saved K1 does not unwrap
+- Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=expensive, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Outcome: fixed in plan
+
+### U5b-R2-2 — The migration would chain from a parent main has already used
+- Trigger: the migration is generated in the worktree on e3a91c5d7f20 → main already has 87200bcb9342 on that parent → two heads, the API will not start
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6)
+- Outcome: fixed in plan
+
+### U5b-R2-3 — An older server answers the confirm POST with 405, not 404
+- Trigger: new APK before the server deploy → confirm gets 405 → the planned 404 handling never runs
+- Scores (corrected by triage): trigger=plausible, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: a confirm against an older server shows anything other than the "couldn't record" message, or the tag-to-deploy gap stops being short
+- Override: user: Fix now — same deploy-order trap as U5b-R1-2
+- Outcome: fixed in plan
+
+### U5b-R2-4 — The 409 confirm message promises a second chance that never comes
+- Trigger: A shows K1, B confirms K2, A taps Done → 409 → "you'll be asked again" → no banner ever → the user keeps K1
+- Scores (corrected by triage): trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Outcome: fixed in plan

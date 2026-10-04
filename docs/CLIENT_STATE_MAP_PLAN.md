@@ -456,7 +456,9 @@ Package C groups client-side defects and debt around the app-wide
         `UPDATE ... WHERE user = ? AND method = 'recovery_key' AND
         confirmed = 0` and leaves it unconfirmed. No row matched → 409, so a
         stolen session cannot overwrite a recovery key the user has saved.
-        It returns the stored `wrapped_cmk`, which the client sends back to
+        It returns the `wrapped_cmk` **this request wrote** (the request
+        body's value), never a value read back after the commit, which could
+        be another device's (U5b-R2-1). The client sends that value back to
         confirm. Rotating a confirmed key is out of scope.
       - `POST /enable`'s response also carries the stored recovery
         `wrapped_cmk` for the same purpose (additive).
@@ -467,13 +469,18 @@ Package C groups client-side defects and debt around the app-wide
         wrap it was shown. If that call fails, the key stays unconfirmed on
         the server and the next sign-in offers a replacement. The message
         must not suggest the key is unusable ("Couldn't record that you
-        saved it; you'll be asked again"). A 409 from confirm or replace
-        refetches the status, so the banner reflects the server.
+        saved it; you'll be asked again"). **A 409 from confirm is
+        different (U5b-R2-4):** the key shown is no longer the one on the
+        server, so the screen says "This key is no longer your recovery key.
+        Discard it." and does not promise a second chance. A 409 from
+        confirm or replace refetches the status, so the banner reflects the
+        server.
       - **Tolerant of an older server (U5b-R1-2).** A status body without
         `unconfirmed_recovery_methods` reads as nothing unconfirmed, and
-        `EncryptionStatus`'s new field defaults to empty. A 404 from the
-        confirm route (a server without it) is treated like a failed
-        confirm, never as a broken key.
+        `EncryptionStatus`'s new field defaults to empty. A 404 or 405 from
+        the confirm route (a server without it answers 405, because
+        `GET /recovery/{method}` matches the path; U5b-R2-3) is treated like
+        a failed confirm, never as a broken key.
       - After an unlock, when the status lists `recovery_key` as
         unconfirmed and the CMK is held, the projects screen shows a banner
         (shaped like `VerifyEmailBanner`): "Your recovery key was never
@@ -990,7 +997,10 @@ merged. Kept here for the record.*
 **U5b-1 — Server: confirmed recovery wraps, confirm and replace**
 - **Goal:** the server half of Decision 16.
 - **Scope:** `models/project_db.py` (`DBRecoveryWrap` only); one new
-  migration under `alembic/versions/` on the single head; `api/encryption.py`;
+  migration under `alembic/versions/`, chained from **main's head at the
+  time of the merge** (`origin/main` is merged into the feature branch
+  before this unit starts; check `alembic heads` shows one head after any
+  later merge of main; U5b-R2-2); `api/encryption.py`;
   `docs/ENCRYPTION.md` (the recovery section: unconfirmed keys and the
   replacement); `tests/test_encryption.py`; `tests/test_alembic_migrations.py`
   for a new test that upgrades to `e3a91c5d7f20`, inserts a `recovery_wrap`
@@ -1009,7 +1019,9 @@ merged. Kept here for the record.*
   it and is idempotent; confirm with any other wrap gets 409 and confirms
   nothing; two replaces then a confirm of the first wrap gets 409 (the
   U5b-R1-1 interleaving); replace works only while unconfirmed (409 after
-  confirm), leaves exactly one row and leaves it unconfirmed; another
+  confirm), leaves exactly one row and leaves it unconfirmed; the replace
+  response equals the request's wrap even when a second replace commits
+  between the first's write and its response (U5b-R2-1); another
   user's call cannot touch the wrap; existing rows migrate to confirmed
   (the new test in `test_alembic_migrations.py`);
   `alembic heads` shows one head; the pytest CI command passes.
@@ -1046,9 +1058,10 @@ merged. Kept here for the record.*
   `prepareForSession` and exposes `needsRecoveryKeyReplacement` (true only
   while unlocked and `recovery_key` is unconfirmed); `lock()` clears it.
 - **Acceptance:** tests: Done on the setup screen calls confirm with the
-  wrap it was shown; a failed confirm (409, 404 or network) leaves the key
-  shown and a message that does not call the key unusable; a 409 refetches
-  status; a status body without `unconfirmed_recovery_methods` parses as
+  wrap it was shown; a failed confirm (404, 405 or network) leaves the key
+  shown and a message that does not call the key unusable; a 409 on
+  confirm shows the "discard it" message and refetches status (U5b-R2-4);
+  the older-server test uses 405 (U5b-R2-3); a status body without `unconfirmed_recovery_methods` parses as
   empty and unlock still works; the banner shows only while
   unlocked with an unconfirmed `recovery_key` and not after `lock()`; the
   replace screen sends one replacement, shows the new key and confirms; a
