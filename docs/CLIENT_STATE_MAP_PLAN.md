@@ -444,20 +444,36 @@ Package C groups client-side defects and debt around the app-wide
         `confirmed = false`; every other method is stored confirmed.
       - `GET /status` gains `unconfirmed_recovery_methods: List[str]`
         (additive).
-      - `POST /api/encryption/recovery/confirm` with `{method}` marks that
-        wrap confirmed. Idempotent; 404 if the method has no wrap.
+      - **Confirm is bound to the exact wrap the user was shown (U5b-R1-1).**
+        `POST /api/encryption/recovery/confirm` takes
+        `{method, wrapped_cmk}` and confirms with a compare-and-set:
+        `UPDATE ... SET confirmed = 1 WHERE user = ? AND method = ? AND
+        wrapped_cmk = :sent`. No row matched → 409 (the key on the server is
+        not the one shown). Confirming an already-confirmed identical wrap
+        is a success (idempotent). 404 if the method has no wrap.
       - `PUT /api/encryption/recovery/recovery_key` with
-        `{wrapped_cmk, salt}` replaces the wrap in place and leaves it
-        unconfirmed. It is allowed **only while the current wrap is
-        unconfirmed** (409 otherwise), so a stolen session cannot overwrite
-        a recovery key the user has saved. Rotating a confirmed key is out
-        of scope.
+        `{wrapped_cmk, salt}` replaces the wrap with a compare-and-set
+        `UPDATE ... WHERE user = ? AND method = 'recovery_key' AND
+        confirmed = 0` and leaves it unconfirmed. No row matched → 409, so a
+        stolen session cannot overwrite a recovery key the user has saved.
+        It returns the stored `wrapped_cmk`, which the client sends back to
+        confirm. Rotating a confirmed key is out of scope.
+      - `POST /enable`'s response also carries the stored recovery
+        `wrapped_cmk` for the same purpose (additive).
       - The row count per method stays one: replace updates the existing
-        row inside one session.
+        row.
     - **Client.**
-      - The setup screen's "I've saved it" Done calls `confirm`. If that
-        call fails, the key stays unconfirmed on the server and the next
-        sign-in offers a replacement; nothing else changes on screen.
+      - The setup screen's "I've saved it" Done calls `confirm` with the
+        wrap it was shown. If that call fails, the key stays unconfirmed on
+        the server and the next sign-in offers a replacement. The message
+        must not suggest the key is unusable ("Couldn't record that you
+        saved it; you'll be asked again"). A 409 from confirm or replace
+        refetches the status, so the banner reflects the server.
+      - **Tolerant of an older server (U5b-R1-2).** A status body without
+        `unconfirmed_recovery_methods` reads as nothing unconfirmed, and
+        `EncryptionStatus`'s new field defaults to empty. A 404 from the
+        confirm route (a server without it) is treated like a failed
+        confirm, never as a broken key.
       - After an unlock, when the status lists `recovery_key` as
         unconfirmed and the CMK is held, the projects screen shows a banner
         (shaped like `VerifyEmailBanner`): "Your recovery key was never
@@ -501,6 +517,12 @@ What this plan adds to REVIEW.md §2's defaults:
   authority the replace and confirm endpoints check, as for the existing
   device approval. A stolen session can confirm or replace only an
   unconfirmed recovery key; a confirmed one cannot be overwritten.
+  - **Accepted (owner, 2026-10-04, U5b envelope question):** a stolen
+    session can replace an unconfirmed recovery key with garbage and
+    confirm it, leaving that user without a working recovery key and no
+    repair path. The legitimate user's own confirm then fails with 409,
+    which shows the tampering. A rotate path for a confirmed key is out of
+    scope.
 - **Old builds (E5).**
   - They gain `min_client_version` on `/api/version`, which they ignore.
     `/me` is unchanged (Decision 3).
@@ -971,7 +993,8 @@ merged. Kept here for the record.*
   migration under `alembic/versions/` on the single head; `api/encryption.py`;
   `docs/ENCRYPTION.md` (the recovery section: unconfirmed keys and the
   replacement); `tests/test_encryption.py`; `tests/test_alembic_migrations.py`
-  only if a migration test there must name the new revision.
+  for a new test that upgrades to `e3a91c5d7f20`, inserts a `recovery_wrap`
+  row with raw SQL, upgrades to head and asserts it is confirmed (U5b-R1-3).
 - **Context:** `POST /enable` and `GET /status` (`api/encryption.py:94-190`)
   and `GET /recovery/{method}` (`:230`); the boolean add-column style of
   `1604d06d464d` (`sa.Boolean(), nullable=False,
@@ -980,12 +1003,15 @@ merged. Kept here for the record.*
 - **Do:** as Decision 16's Server list. Confirm and replace require
   encryption enabled (409 otherwise). Replace validates the body shape like
   `RecoveryWrapIn` and keeps `method`, bumps nothing else.
-- **Acceptance:** tests: enable with `recovery_key` stores it unconfirmed
-  and status lists it; enable with `passphrase` stores it confirmed;
-  confirm marks it and is idempotent; replace works only while
-  unconfirmed (409 after confirm), leaves exactly one row and leaves it
-  unconfirmed; another user's call cannot touch the wrap; existing rows
-  migrate to confirmed (`alembic upgrade` on a database with a wrap row);
+- **Acceptance:** tests: enable with `recovery_key` stores it unconfirmed,
+  status lists it and the enable response carries the stored wrap; enable
+  with `passphrase` stores it confirmed; confirm with the stored wrap marks
+  it and is idempotent; confirm with any other wrap gets 409 and confirms
+  nothing; two replaces then a confirm of the first wrap gets 409 (the
+  U5b-R1-1 interleaving); replace works only while unconfirmed (409 after
+  confirm), leaves exactly one row and leaves it unconfirmed; another
+  user's call cannot touch the wrap; existing rows migrate to confirmed
+  (the new test in `test_alembic_migrations.py`);
   `alembic heads` shows one head; the pytest CI command passes.
 - **Out of scope:** rotating a confirmed key; deleting wraps; disabling
   encryption; the admin tier stub.
@@ -1015,11 +1041,15 @@ merged. Kept here for the record.*
   (`lib/src/auth/verify_email_banner.dart`) and its placement at
   `projects_screen.dart:177`.
 - **Do:** as Decision 16's Client list. `EncryptionStatus` gains
-  `unconfirmedRecoveryMethods`; the service keeps the last status from
+  `unconfirmedRecoveryMethods` (optional, default empty, parsed with a
+  fallback); the service keeps the last status from
   `prepareForSession` and exposes `needsRecoveryKeyReplacement` (true only
   while unlocked and `recovery_key` is unconfirmed); `lock()` clears it.
-- **Acceptance:** tests: Done on the setup screen calls confirm; a failed
-  confirm leaves the key shown and a message; the banner shows only while
+- **Acceptance:** tests: Done on the setup screen calls confirm with the
+  wrap it was shown; a failed confirm (409, 404 or network) leaves the key
+  shown and a message that does not call the key unusable; a 409 refetches
+  status; a status body without `unconfirmed_recovery_methods` parses as
+  empty and unlock still works; the banner shows only while
   unlocked with an unconfirmed `recovery_key` and not after `lock()`; the
   replace screen sends one replacement, shows the new key and confirms; a
   `lock()` before the replacement is sent sends nothing; the http client

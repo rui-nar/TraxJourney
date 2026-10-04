@@ -200,3 +200,28 @@ Answer (user, 2026-10-04): leave `id` off `/me`. U1 is dropped (not merged); new
 - Decision: Guard (D9): warn when a resolved patch is kept against a resolved server feature with a different hash
 - Override: user: Fix now — request ordering: a refetch started after the patch was applied shows the server's route; one started before it keeps the patch
 - Outcome: open
+
+## Plan amendment U5b (Decision 16), round 1 — 2026-10-04, reviewed at 1a496f08
+
+Envelope question raised: a stolen session may replace then confirm an unconfirmed recovery key, turning it into garbage that the 409 rule then locks in, with no repair path (rotate/delete/disable out of scope). Accept, or add confirm-bound-to-wrap (U5b-R1-1) and/or a rotate path for a confirmed key?
+Answer (user, 2026-10-04): accept the risk (recorded in the envelope); U5b-R1-1 and U5b-R1-3 approved; U5b-R1-2 overridden to Fix now.
+
+### U5b-R1-1 — Confirm is keyed by method, not by wrap
+- Trigger: two unlocked devices, key unconfirmed → replace on A (K1 shown) → replace on B (K2) → Done on A confirms K2 → the saved K1 does not unwrap the CMK; seen only when every device is lost
+- Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=expensive, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Outcome: fixed in plan
+
+### U5b-R1-2 — A new APK against a not-yet-deployed server fails to parse /status and cannot unlock
+- Trigger: APK installed between tag and server deploy → the status parser throws on the missing field → unlock fails silently → encrypted content stays locked until the deploy
+- Scores (corrected by triage): trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: the tag-to-deploy gap stops being short, or a user reports encrypted content locked right after an update
+- Override: user: Fix now — a few lines, removes the deploy-order trap
+- Outcome: fixed in plan
+
+### U5b-R1-3 — U5b-1's migration test has no file in Scope
+- Trigger: the implementer writes the "existing rows migrate to confirmed" test → test_encryption.py cannot run Alembic and test_alembic_migrations.py is not in Scope for it → X3 stop or a dropped acceptance
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Outcome: fixed in plan
