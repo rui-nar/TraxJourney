@@ -11,7 +11,8 @@ Routes:
     GET    /api/projects/{name}/stats    — get project statistics
     PUT    /api/projects/{name}          — update project name or dates
     DELETE /api/projects/{name}          — delete a project
-    PUT    /api/projects/{name}/day-meta      — update day metadata
+    PATCH  /api/projects/{name}/day-meta      — set or delete individual days' metadata
+    PUT    /api/projects/{name}/day-meta      — retired, answers 426 (issue #397)
     GET    /api/projects/{name}/sync-meta     — get sync configuration
     PUT    /api/projects/{name}/sync-meta     — update sync configuration
     PUT    /api/projects/{name}/track-style   — update track style
@@ -72,10 +73,22 @@ from models.user import UserInfo, PolarstepsToken, StravaToken
 from src.api.polarsteps_client import PolarstepsClient, format_step
 from src.billing.entitlements import ensure_project_quota, ensure_trip_days_quota
 from src.models.activity import parse_activities_or_log
-from src.models.project import DEFAULT_SLEEPING_GROUPS, tag_options_with_untagged
+from src.models.project import (
+    DEFAULT_SLEEPING_GROUPS,
+    DayMeta,
+    Project,
+    day_counters_from_json,
+    tag_options_with_untagged,
+)
 from src.project.project_io import ProjectIO
 from src.project.traxj_schema import day_meta_fault
-from src.project.repo_core import _parse_day_meta_json, bump_lock_version
+from src.project.repo_core import (
+    StaleWriteError,
+    _parse_day_meta_json,
+    bump_lock_version,
+    check_and_bump_lock_version,
+)
+from src.project.repo_retry import DEFAULT_ATTEMPTS, _backoff
 from src.project.repo_transfer import _is_name_clash
 from src.project.project_repo import _compute_stats
 from src.utils.logging import get_logger
@@ -613,8 +626,12 @@ def update_project(
     return {"name": result_name, "trip_start": result_trip_start}
 
 
-class DayMetaUpdateRequest(BaseModel):
-    day_meta: Dict[str, Dict[str, Any]]
+class DayMetaPatchRequest(BaseModel):
+    # The days to set, each replacing that day's stored entry whole. Keys are
+    # not validated: the whole-map PUT never validated them either.
+    days: Dict[str, Dict[str, Any]] = {}
+    # The days to remove. Removing a day that is not stored is a no-op.
+    delete: List[str] = []
     sleeping_options: Optional[List[str]] = None
     sleeping_option_groups: Optional[Dict[str, str]] = None  # name → "Outdoors"|"Indoors"|"Other"
     counters: Optional[List[Dict[str, Any]]] = None  # [{name, start}]
@@ -662,9 +679,10 @@ def _keep_days_the_caller_cannot_see(
     """Put back any non-empty day-meta entry the caller dropped for a day whose
     content they cannot see (issue #387).
 
-    ``PUT /day-meta`` replaces the whole map, so "the user cleared this day's
-    notes" and "the trip-end prune dropped a day it should not have" arrive as
-    the same payload: a key that is simply absent. Client-side, #372 settled
+    *incoming* is the whole map after the write, so "the user cleared this
+    day's notes" and "the trip-end prune dropped a day it should not have"
+    arrive as the same thing: a key that is simply absent (a day in
+    ``PATCH /day-meta``'s ``delete``). Client-side, #372 settled
     which days may go — but only a current client asks. A stale build, another
     client, or a future bug computing the pruned map wrongly would still wipe
     the *shared* notes of a day that only another member's journal keeps on
@@ -742,46 +760,132 @@ def _check_written_day_notes(incoming: dict, existing_json: str | None) -> None:
                             detail=f"These day notes cannot be stored: {fault}.")
 
 
-@router.put("/{name}/day-meta", status_code=status.HTTP_204_NO_CONTENT,
-            summary="Update day metadata")
-def update_day_meta(
+def _served_day_meta(day_meta: dict) -> dict:
+    """*day_meta* as ``/meta`` serves it: the same fields, the same nulls
+    dropped, counters in their list form.
+
+    Built through the loader's ``DayMeta`` reading (``_row_to_project``) and
+    ``ProjectIO.to_dict``, so a client adopting the PATCH response holds exactly
+    what its next ``/meta`` would give it.
+    """
+    project = Project(name="", day_meta={
+        dk: DayMeta(
+            difficulty=v.get("difficulty"),
+            sleeping=v.get("sleeping"),
+            weather=v.get("weather"),
+            journal=v.get("journal"),
+            tags=v.get("tags"),
+            counters=day_counters_from_json(v.get("counters")),
+        )
+        for dk, v in day_meta.items()
+    })
+    return ProjectIO.to_dict(project)["day_meta"]
+
+
+@router.patch("/{name}/day-meta", summary="Set or delete individual days' metadata")
+def patch_day_meta(
     name: str,
-    body: DayMetaUpdateRequest,
+    body: DayMetaPatchRequest,
     background_tasks: BackgroundTasks,
     current_user: Annotated[dict, Depends(get_current_user)],
     owner: OwnerParam = None,
 ):
-    """Replace day metadata (and optionally sleeping options) for a project."""
-    user_info_id = int(current_user["sub"])
-    with get_session() as sess:
-        row = resolve_project(sess, user_info_id, name, owner, min_role="editor")
-        owner_id = row.user_info_id
-        _check_written_day_notes(body.day_meta, row.day_meta_json)
-        row.day_meta_json = json.dumps(
-            _merge_day_meta_preserve_counters(
-                _keep_days_the_caller_cannot_see(
-                    sess, row, body.day_meta, row.day_meta_json, user_info_id
-                ),
-                row.day_meta_json,
-            )
+    """Merge day metadata per day (issue #397) and return the merged map.
+
+    Each day in ``days`` replaces that day, keeping its stored counters when
+    the entry omits ``counters``. Each day in ``delete`` is removed, unless
+    #387's guard keeps it. Every other day is left as stored, so two devices
+    editing different days both land; the same day edited twice is
+    last-writer-wins.
+
+    The read-merge-write runs under the ``lock_version`` compare-and-set and
+    is retried on a fresh read when another writer committed in between, as
+    ``save_project_with_retry`` does for structural saves. A merge on a stale
+    read would otherwise write that writer's days back to what they were.
+    """
+    overlap = set(body.days).intersection(body.delete)
+    if overlap:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"A day cannot be both set and deleted: {', '.join(sorted(overlap))}.",
         )
-        if body.sleeping_options:  # ignore empty list — never wipe sleeping options
-            groups = body.sleeping_option_groups or {}
-            row.sleeping_options_json = json.dumps([
-                {"name": n, "group": groups.get(n, DEFAULT_SLEEPING_GROUPS.get(n, 'Other'))}
-                for n in body.sleeping_options
-            ])
-        if body.counters is not None:
-            row.counters_json = json.dumps([
-                {"name": c["name"], "start": float(c.get("start", 0))}
-                for c in body.counters
-            ])
-        row.updated_at = time.time()
-        bump_lock_version(sess, row.id)
-        sess.add(row)
-        sess.commit()
+    user_info_id = int(current_user["sub"])
+    delete = set(body.delete)
+    for attempt in range(DEFAULT_ATTEMPTS):
+        with get_session() as sess:
+            row = resolve_project(sess, user_info_id, name, owner, min_role="editor")
+            owner_id = row.user_info_id
+            expected = row.lock_version
+            stored_json = row.day_meta_json
+            # A fresh copy per attempt: the counter merge writes the stored
+            # counters into the day dicts, and a retry must judge the request
+            # as sent, not as a lost attempt left it.
+            days = {day: dict(fields) for day, fields in body.days.items()}
+            _check_written_day_notes(days, stored_json)
+            # The readable days only, as /meta and save_project read them: an
+            # unreadable entry goes on the first write, as it did with the PUT.
+            whole = {
+                day: fields
+                for day, fields in _parse_day_meta_json(stored_json)[0].items()
+                if day not in delete
+            }
+            whole.update(days)
+            # The guard sees exactly the deleted days as dropped.
+            merged = _merge_day_meta_preserve_counters(
+                _keep_days_the_caller_cannot_see(
+                    sess, row, whole, stored_json, user_info_id
+                ),
+                stored_json,
+            )
+            # No query from here to the compare-and-set: one would autoflush
+            # this write ahead of it, holding the write lock for longer.
+            row.day_meta_json = json.dumps(merged)
+            if body.sleeping_options:  # ignore empty list — never wipe sleeping options
+                groups = body.sleeping_option_groups or {}
+                row.sleeping_options_json = json.dumps([
+                    {"name": n, "group": groups.get(n, DEFAULT_SLEEPING_GROUPS.get(n, 'Other'))}
+                    for n in body.sleeping_options
+                ])
+            if body.counters is not None:
+                row.counters_json = json.dumps([
+                    {"name": c["name"], "start": float(c.get("start", 0))}
+                    for c in body.counters
+                ])
+            row.updated_at = time.time()
+            try:
+                # Same transaction as the column writes: a lost compare-and-set
+                # rolls them back with it.
+                check_and_bump_lock_version(sess, row.id, expected)
+            except StaleWriteError:
+                if attempt == DEFAULT_ATTEMPTS - 1:
+                    _log.warning("patch_day_meta gave up on project=%r after %d attempts",
+                                 name, DEFAULT_ATTEMPTS)
+                    raise
+            else:
+                sess.add(row)
+                sess.commit()
+                break
+        time.sleep(_backoff(attempt))
     bust_project_cache(owner_id, name)
     queue_stats_refresh(background_tasks, owner_id, name)
+    return {"day_meta": _served_day_meta(merged)}
+
+
+@router.put("/{name}/day-meta", summary="Retired: answers 426 Upgrade Required")
+def update_day_meta(
+    name: str,
+    current_user: Annotated[dict, Depends(get_current_user)],
+):
+    """The whole-map write, retired for ``PATCH /day-meta`` (issue #397).
+
+    A build that still sends this holds a map that may be stale, and no check
+    here can tell a stale day from an intended edit, so honouring it could
+    revert a day another device changed. It writes nothing.
+    """
+    raise HTTPException(
+        status_code=status.HTTP_426_UPGRADE_REQUIRED,
+        detail="This version of the app can no longer save day notes. Please update the app.",
+    )
 
 
 # ── Sync-meta (auto-sync config per project) ─────────────────────────────────
