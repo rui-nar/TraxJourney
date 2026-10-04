@@ -80,6 +80,31 @@ class FakeEncryptionApi implements EncryptionApi {
   }
 }
 
+/// Holds the enable call until [gate] completes; [called] completes when it
+/// arrives.
+class _SlowEnableApi extends FakeEncryptionApi {
+  final called = Completer<void>();
+  final gate = Completer<void>();
+
+  @override
+  Future<void> enable(Map<String, dynamic> payload) async {
+    called.complete();
+    await gate.future;
+    return super.enable(payload);
+  }
+}
+
+/// Holds every recovery-wrap answer until [gate] completes.
+class _SlowRecoveryApi extends FakeEncryptionApi {
+  final gate = Completer<void>();
+
+  @override
+  Future<RecoveryWrapData?> fetchRecoveryWrap(String method) async {
+    await gate.future;
+    return super.fetchRecoveryWrap(method);
+  }
+}
+
 /// Holds every status answer until [gate] completes.
 class _SlowStatusApi extends FakeEncryptionApi {
   final gate = Completer<void>();
@@ -166,6 +191,38 @@ void main() {
       final api = FakeEncryptionApi()..enablePayload = null;
       final svc = EncryptionService(FakeDeviceKeyStore(), api);
       expect(await svc.unlock(), isFalse);
+    });
+
+    test('a lock() while enable() is waiting is not undone (U5-R2-1)',
+        () async {
+      final api = _SlowEnableApi();
+      final svc = EncryptionService(FakeDeviceKeyStore(), api);
+      final enabling = svc.enable(const RecoveryKeyChoice());
+      await api.called.future; // now waiting on the server
+      svc.lock(); // the session ends meanwhile
+      api.gate.complete();
+
+      final result = await enabling;
+      expect(svc.isUnlocked, isFalse);
+      expect(result.recoverySecret, isNotNull,
+          reason: 'the server is enabled; its only recovery secret is kept');
+    });
+
+    test('a lock() while recovery is waiting is not undone (U5-R2-1)',
+        () async {
+      final api = _SlowRecoveryApi();
+      final secret = (await EncryptionService(FakeDeviceKeyStore(), api)
+              .enable(const RecoveryKeyChoice()))
+          .recoverySecret!;
+
+      final svc = EncryptionService(FakeDeviceKeyStore(), api);
+      final recovering = svc.recoverWithRecoveryKey(secret);
+      await pumpEventQueue(); // now waiting on the server
+      svc.lock(); // the session ends meanwhile
+      api.gate.complete();
+
+      expect(await recovering, isFalse);
+      expect(svc.isUnlocked, isFalse);
     });
 
     test('a lock() while unlock() is waiting is not undone (U5-R1-2)',

@@ -358,6 +358,28 @@ void main() {
   });
 
   test(
+      'a disk row read for one account and landing after the switch is not '
+      "put in the next account's memory (U5-R1-1)", () async {
+    const ref = ProjectRef(name: 'Japan');
+    final row = Completer<Map<String, dynamic>?>();
+    projectDataCache.diskRead = (_) => row.future;
+    projectDataCache.setCurrentUser(7);
+    final reading = projectDataCache.readMetaForOfflineFallback(ref);
+    await pumpEventQueue();
+
+    projectDataCache.setCurrentUser(null);
+    projectDataCache.setCurrentUser(8);
+    row.complete({
+      'lockVersion': 1,
+      'schemaVersion': 1,
+      'meta': {'name': 'Japan'},
+    });
+
+    expect(await reading, isNull);
+    expect(projectDataCache.memoryKeys, isEmpty);
+  });
+
+  test(
       'a restore blocking on /api/auth/me scopes the cache to the token from '
       'the start (U5-R1-5)', () async {
     final me = Completer<Map<String, dynamic>>();

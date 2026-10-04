@@ -90,7 +90,18 @@ class ProjectDataCache {
   void resetForTest() {
     _mem.clear();
     _currentUserId = null;
+    diskRead = store.cacheStoreRead;
   }
+
+  /// The disk read [_readDisk] makes — a seam, since no sqflite backend runs
+  /// under `flutter test` to hand back a row.
+  @visibleForTesting
+  Future<Map<String, dynamic>?> Function(String key) diskRead =
+      store.cacheStoreRead;
+
+  /// The keys held in memory, for a test to see what a read promoted.
+  @visibleForTesting
+  Iterable<String> get memoryKeys => _mem.keys;
 
   /// Scopes the cache to the signed-in user — call on sign-in/session-restore
   /// (mirrors `ApiClient.setToken`). Own-project entries are keyed by name
@@ -297,7 +308,7 @@ class ProjectDataCache {
 
   Future<_Entry?> _readDisk(String key) async {
     final scope = _scope;
-    final row = await store.cacheStoreRead(key);
+    final row = await diskRead(key);
     if (row == null || row['schemaVersion'] != _kSchemaVersion) return null;
     // [key] is the user's who asked; promoting it after a switch would put
     // their row in the next user's memory.

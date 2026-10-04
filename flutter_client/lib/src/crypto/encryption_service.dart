@@ -114,8 +114,10 @@ class EncryptionService {
   /// True once the CMK is held in memory (this device can read/write ciphertext).
   bool get isUnlocked => _cmk != null;
 
-  /// Bumped by every [lock], so an [unlock] still in flight when the session
-  /// ends cannot put the key back afterwards (U5-R1-2, issue #418).
+  /// Bumped by every [lock], so an [unlock], [enable] or recovery still in
+  /// flight when the session ends cannot put the key back afterwards
+  /// (U5-R1-2, U5-R2-1, issue #418). Every assignment of [_cmk] after an
+  /// await checks it.
   int _lockGeneration = 0;
 
   /// Drop the in-memory CMK (e.g. on logout).
@@ -127,7 +129,12 @@ class EncryptionService {
   /// Enable encryption for the account: generate a CMK, wrap it to this device
   /// and to the chosen recovery method, push the wraps to the server, and hold
   /// the CMK unlocked. Returns the one-time recovery secret for Option A.
+  ///
+  /// Locked while it was waiting, the server is enabled but the key is not
+  /// held: the session it was for has ended. The recovery secret is still
+  /// returned — it exists nowhere else.
   Future<EnableResult> enable(RecoveryChoice choice) async {
+    final generation = _lockGeneration;
     final cmk = await generateCmk();
 
     final keyPair = await _store.load() ?? await generateDeviceKeyPair();
@@ -173,7 +180,7 @@ class EncryptionService {
       },
     });
 
-    _cmk = cmk;
+    if (generation == _lockGeneration) _cmk = cmk;
     return EnableResult(recoverySecret);
   }
 
@@ -286,6 +293,7 @@ class EncryptionService {
 
   Future<bool> _recover(
       String method, Future<SecretKey> Function(RecoveryWrapData) unwrap) async {
+    final generation = _lockGeneration;
     final wrap = await _api.fetchRecoveryWrap(method);
     if (wrap == null) return false;
     final SecretKey cmk;
@@ -294,6 +302,9 @@ class EncryptionService {
     } catch (_) {
       return false; // wrong secret / corrupt wrap
     }
+    // Locked meanwhile: the session ended, so neither hold the key nor
+    // re-trust this device with it.
+    if (generation != _lockGeneration) return false;
     _cmk = cmk;
     await _retrustThisDevice();
     return true;
