@@ -182,7 +182,7 @@ Envelope questions (to the owner):
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (PF1 55a29dfb, PF2 4479d252)
 
 ### PIR1-2 — Cold start via Share shows "You have no trip" before the session restore finishes
 - Trigger: a signed-in user cold-starts the app by sharing a .gpx → /import-gpx renders while AuthNotifier is still restoring → the trips list hasn't loaded yet → the empty-list message shows until load() completes.
@@ -191,7 +191,7 @@ Envelope questions (to the owner):
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (PF2 4479d252)
 
 ### PIR1-3 — A file whose only error-free track is a connection opens review on the connection
 - Trigger: a user picks an export whose activity tracks all have errors but a connection track doesn't → the review opens on the arc → it can be imported as an activity.
@@ -200,7 +200,7 @@ Envelope questions (to the owner):
 - Revisit when: the owner rules Q2 a defect (then fix together with a server-side refusal of is_connection), or a user reports an imported arc.
 - Guard: —
 - Override: revisit condition met (owner Q2 answer); fixed in PF1/PF2
-- Outcome: open
+- Outcome: fixed (PF1 55a29dfb, PF2 4479d252)
 ## Integrated review — round 2 (server fixes PF1), 2026-10-04, pkgd/pf1 (55a29dfb, 32a68c80) against 925317ca
 
 Reviewer: adversarial-reviewer (Fable). Triager: review-triager (Opus). 1 finding, well-formed. No envelope questions. The PF2 half of round 2 was cut off by a session limit and is being rerun.
@@ -212,7 +212,7 @@ Reviewer: adversarial-reviewer (Fable). Triager: review-triager (Opus). 1 findin
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (PF3 7765fba4, 8a2f8148)
 ## Integrated review — round 2 (client fixes PF2), 2026-10-04, pkgd/pf2 (4479d252) against 925317ca
 
 Reviewer: adversarial-reviewer (Fable), rerun after a session limit. Decision by the orchestrator under the D table; scores taken as given (D10 needs no floor verification). 1 finding.
@@ -224,4 +224,31 @@ Reviewer: adversarial-reviewer (Fable), rerun after a session limit. Decision by
 - Revisit when: a user reports the misleading message, or gpx_import_dialog's pick-step errors are touched again.
 - Guard: —
 - Override: user: Fix now (2026-10-04)
-- Outcome: open
+- Outcome: fixed (PF4 4d04e2e9)
+## Integrated review — round 3, 2026-10-04, PF3 (7765fba4, 8a2f8148) and PF4 (4d04e2e9) against 788ce264
+
+Reviewer: adversarial-reviewer (Fable). No findings, no envelope questions. Review closed: the round came back clean (REVIEW.md §6).
+
+## Delivery
+
+Plan reviewed in 4 rounds (2026-10-03). Delivery started 2026-10-04 after #469/#484 merged (PR #553). Feature branch: feat/import-export-d, with worktrees created by hand (E:/Dev/TraxJourney-pkgD-*).
+
+| Unit | Goal | Route | Rule | Attempts | Escalated | Verified first time | Findings traced |
+|---|---|---|---|---|---|---|---|
+| U1 | Per-activity timezone for GPX imports (#365) | Opus | S4 | 1 (interrupted by a session restart, resumed) | — | yes | PU1R1-1 |
+| U2 | Spoken order of an imported activity row (#408) | Sonnet | — | 1 | — | yes | — |
+| U3 | GPX export: one track per activity (#367) | Opus | S4 | 1 (interrupted, resumed) | — (flagged the installed-client type gap → plan amended, Decision 3 E5) | yes | — |
+| U4 | Open a shared .gpx in the app (#368) | Opus | S2 | 1 (+ scope widening) | X3: MainActivity.kt platform channel instead of a plugin | yes | PIR1-2 |
+| U5 | Import every track of a GPX file (#367) | Opus | S4 | 1 | — | yes | PIR1-1, PIR1-3, PIR2-1 |
+| U7 | Client: local times + Import all (#365, #367) | Sonnet | — | 1 | — | yes | PIR1-1, PIR1-3, PIR2C-1 |
+| U8 | Trip import checks the trip-length quota (#492) | Opus | S5 | 1 | — | yes | — |
+| FU1 | U1 unit-review fix (tzdata fallback + warning; skip zone lookup for invalid candidates) | Opus | S4 | 1 | — | yes | PU1R1-1 |
+| PF1 | Integrated round-1 server fixes (Q1 identity, Q2 refusal, PIR1-1) | Opus | S4 | 1 | stopped once on an assertion encoding the old extension; option A approved | yes | PIR1-1, PIR1-3 |
+| PF2 | Integrated round-1 client fixes (PIR1-1/2/3) | Sonnet | — | 1 | — | yes (the first verifier run was cut off by a session limit and rerun) | PIR1-1, PIR1-2, PIR1-3 |
+| PF3 | PIR2-1: "local" identity for split tails and early rows | Opus | S4 | 2 (orchestrator addendum widened the 2^53 bound to the id range) | — | yes | PIR2-1 |
+| PF4 | PIR2C-1 (owner override): show activity tracks' refusals | Sonnet | — | 1 | — | yes | PIR2C-1 |
+
+Delivery notes:
+- U6 was dropped at plan review (R1-4).
+- The plan's text named another project's licence and broke tests/test_license.py. Fixed in 859b0b07.
+- Owed by the owner, on a device: U4's share-sheet checklist (Gmail, Files, Chrome × open/share, cold/warm start, App Links still working); this also decides application/octet-stream.
