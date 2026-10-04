@@ -178,10 +178,25 @@ Answer (user, 2026-10-04): leave `id` off `/me`. U1 is dropped (not merged); new
 - Decision: Defer (D10) — flagged: the plan's #278 goal "a stale refetch never puts the placeholder back" is not met under this decision
 - Revisit when: the owner wants the #278 goal met in Part 1, or a resolved segment is seen drawn as an arc after a refetch
 - Override: user: Fix now — the #278 goal must be met in Part 1
-- Outcome: open
+- Outcome: fixed
 
 ### I1-R1-2 — The 405 fallback PUT reads dayMeta after the await, with no trip check
 - Trigger: new APK against a not-yet-deployed server → save a note on trip A, open trip B → B's /meta lands before A's 405 → the whole-map PUT sends B's days to A's path → the old server replaces all of A's days
 - Scores: trigger=plausible, impact=data-loss, detect=silent, later=cheap, fix=S/local, confidence=verified
 - Decision: Fix now (D3)
+- Outcome: fixed
+
+## Integrated review Part 1, round 2 — 2026-10-04, reviewed at 8f04e53f (fixes since eeedd614)
+
+### I1-R2-1 — The 405 fallback's trip check throws away a valid save
+- Trigger: new APK against a not-yet-deployed server → save a note on trip A, open trip B before the 405 → the check returns before the PUT → A's note is never stored, no error
+- Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3) — introduced by the I1-R1-2 fix
+- Outcome: open
+
+### I1-R2-2 — A resolved patch pins its route after another writer re-routes the segment
+- Trigger: a resolve lands (hash H1) → the hourly degraded sweep or another device writes H2 → refetches carry H2, the hash differs, the patch is kept → the old route is drawn until a full load
+- Scores: trigger=plausible, impact=wrong-visible, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Guard (D9): warn when a resolved patch is kept against a resolved server feature with a different hash
+- Override: user: Fix now — request ordering: a refetch started after the patch was applied shows the server's route; one started before it keeps the patch
 - Outcome: open
