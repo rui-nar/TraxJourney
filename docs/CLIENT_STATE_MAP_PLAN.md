@@ -188,9 +188,18 @@ Package C groups client-side defects and debt around the app-wide
      one-line reason. A field added later and missing from both fails the
      suite. Flutter has no reflection, so this is the only check that can
      see a new field. (R1-4)
-3. **#418: fix the empty id at the root, on both sides.**
-   - `/me` adds `"id": int(sub)` (additive). Installed builds already read
-     `map['id']`.
+3. **#418: fix the empty id at the root, in the client.**
+   - `/me` is left unchanged. (Owner decision, 2026-10-04, unit review
+     U1-R1-1.)
+     - Installed builds key `last_opened_project_` and `projectDataCache` on
+       `map['id']`.
+     - Adding `id` to `/me` would make an un-updated APK read those under the
+       empty id at launch but write them under the real one. It would then
+       stop reopening the last trip and miss its offline copies until the
+       user installs the new APK.
+     - New builds do not need it: `/me` already carries `sub`.
+     - Accepted: installed old builds keep today's shared empty-id key until
+       they update.
    - `User.fromMap` falls back to `sub`, and `User.restored` takes its id
      from `api.tokenUserId`, so an offline restore has a real id before
      `/me` answers.
@@ -442,8 +451,8 @@ What this plan adds to REVIEW.md §2's defaults:
   existing supersession guard (`isCurrent(token, ref)`) in front of facet
   writes, exactly where the field writes were.
 - **Old builds (E5).**
-  - They gain `id` on `/me` and `min_client_version` on `/api/version`. They
-    ignore both.
+  - They gain `min_client_version` on `/api/version`, which they ignore.
+    `/me` is unchanged (Decision 3).
   - Their `PUT /day-meta` gets a 426 and writes nothing, by decision: they
     cannot save day notes until they update.
   - They show no message for that 426. The edit looks saved until the next
@@ -459,8 +468,6 @@ What this plan adds to REVIEW.md §2's defaults:
 ## Boundaries crossed
 
 - **API**
-  - `GET /api/auth/me` gains `id` (int). It is additive, and old builds
-    already read it.
   - New `PATCH /api/projects/{name}/day-meta`.
   - **`PUT /api/projects/{name}/day-meta` now answers 426 and writes
     nothing.** This is a deliberate contract break for installed builds
@@ -518,7 +525,9 @@ What this plan adds to REVIEW.md §2's defaults:
 
 ### Wave 1 — server sides and the auto-zoom fix (disjoint)
 
-**U1 — `/me` returns the account id (#418)**
+**U1 — `/me` returns the account id (#418)** — *dropped at delivery
+(owner, 2026-10-04, U1-R1-1): implemented and verified on `pkgc/u1`, not
+merged. Kept here for the record.*
 - **Goal:** `GET /api/auth/me` includes `"id": <int>`, equal to the JWT `sub`.
 - **Scope:** `api/auth.py` (`me()` only); `tests/test_auth_me_id.py` (new).
 - **Context:** `_token_response` (`api/auth.py:152-167`) is the shape to
@@ -727,8 +736,7 @@ What this plan adds to REVIEW.md §2's defaults:
     same account is opening;
   - the purge cannot run before the first redirect;
   - X3.
-- **Depends on:** U1 (the server half; the client fallback works without
-  it).
+- **Depends on:** — (U1 dropped; `User.fromMap` reads `sub` from `/me`).
 
 **U20 — `min_client_version`, and a warning for stuck route jobs (Decision
 15, R1-5)**

@@ -107,3 +107,17 @@ Answer (user, 2026-10-04): the acceptance stands, with an `Upgrade-Note:` on the
 - Guard: —
 - Override: —
 - Outcome: fixed
+
+## Unit review U1 — 2026-10-04, reviewed at fcd5630f (pkgc/u1)
+
+Envelope question raised: the envelope says old builds "ignore" `id` on `/me`; they do not (the shipped client keys `last_opened_project_` and `projectDataCache` on it). Accept the old-build regression for the window, or hold `id` off `/me`?
+Answer (user, 2026-10-04): leave `id` off `/me`. U1 is dropped (not merged); new builds read `sub` (Decision 3 amended).
+
+### U1-R1-1 — Installed old APKs lose last-trip reopen and offline cache hits once /me carries id
+- Trigger: user on an un-updated APK relaunches after the deploy → the redirect reads under '' / cache under 0 while later writes go under the real id → the last trip is not reopened and an offline launch misses the trip cached online
+- Scores: trigger=concrete, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7) — becomes D1 if the owner accepts the regression
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (U1 dropped)
