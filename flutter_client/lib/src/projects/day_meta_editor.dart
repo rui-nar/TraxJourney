@@ -363,13 +363,11 @@ void _persist(
   String dateKey,
   Map<String, dynamic> meta,
 ) {
-  final updated = Map<String, Map<String, dynamic>>.from(notifier.dayMeta);
   if (meta.isEmpty) {
-    updated.remove(dateKey);
+    notifier.saveDayMeta(delete: [dateKey]);
   } else {
-    updated[dateKey] = meta;
+    notifier.saveDayMeta(days: {dateKey: meta});
   }
-  notifier.saveDayMeta(newDayMeta: updated);
 }
 
 // ── Editor widget ──────────────────────────────────────────────────────────

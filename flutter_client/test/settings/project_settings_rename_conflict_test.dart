@@ -22,8 +22,11 @@ import 'package:traxjourney_client/src/projects/project_settings_screen.dart';
 /// Every request other than the rename that changes something on the server.
 late List<String> otherWrites;
 
-/// Every day-meta map PUT during a test, in order.
+/// Every day-meta PATCH body during a test, in order.
 late List<Map<String, dynamic>> putDayMeta;
+
+/// The days the server holds, as the PATCHes merged them (issue #397).
+late Map<String, Map<String, dynamic>> storedDayMeta;
 
 /// Names the server refuses as taken.
 const _taken = 'Taken';
@@ -41,11 +44,17 @@ ApiClient _api() => ApiClient(
           return http.Response(
               jsonEncode({'name': newName ?? 'Trip', 'trip_start': null}), 200);
         }
-        if (req.method == 'PUT' && req.url.path.endsWith('/day-meta')) {
+        if (req.method == 'PATCH' && req.url.path.endsWith('/day-meta')) {
           final body = jsonDecode(req.body) as Map<String, dynamic>;
-          putDayMeta.add(body['day_meta'] as Map<String, dynamic>);
+          putDayMeta.add(body);
+          for (final d in (body['delete'] as List).cast<String>()) {
+            storedDayMeta.remove(d);
+          }
+          for (final e in (body['days'] as Map<String, dynamic>).entries) {
+            storedDayMeta[e.key] = Map<String, dynamic>.from(e.value as Map);
+          }
           otherWrites.add('${req.method} ${req.url.path}');
-          return http.Response('', 204);
+          return http.Response(jsonEncode({'day_meta': storedDayMeta}), 200);
         }
         if (req.method == 'GET' && req.url.path.endsWith('/content-days')) {
           return http.Response(jsonEncode({'days': <String>[]}), 200);
@@ -122,6 +131,7 @@ void main() {
   setUp(() {
     otherWrites = [];
     putDayMeta = [];
+    storedDayMeta = {};
     realApi = api;
     api = _api();
   });
@@ -159,6 +169,9 @@ void main() {
         for (final k in ['2026-06-13', '2026-06-14', '2026-06-15', '2026-06-16'])
           k: <String, dynamic>{'note': 'note for $k'},
       };
+    storedDayMeta = {
+      for (final e in n.dayMeta.entries) e.key: Map<String, dynamic>.from(e.value)
+    };
     await _pumpSettings(tester, n);
 
     await tester.enterText(_nameField(), _taken);
@@ -181,8 +194,8 @@ void main() {
     await _frames(tester);
 
     expect(find.text('home'), findsOneWidget);
-    expect(putDayMeta, isNotEmpty);
-    expect(putDayMeta.last.keys.toSet(),
+    expect(putDayMeta, isEmpty);
+    expect(storedDayMeta.keys.toSet(),
         {'2026-06-13', '2026-06-14', '2026-06-15', '2026-06-16'});
     expect(n.dayMeta['2026-06-15']?['note'], 'note for 2026-06-15');
   });
