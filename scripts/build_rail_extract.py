@@ -237,8 +237,9 @@ def _fetch_md5(get: Callable, url: str) -> str:
     return response.text.split()[0].lower()
 
 
-def _stream_to_file(get: Callable, url: str, dest: Path) -> str:
-    """Write *url* to *dest*, returning the md5 of what was written."""
+def _stream_to_file(get: Callable, url: str, dest: Path) -> tuple[str, str]:
+    """Write *url* to *dest*, returning the md5 of what was written and the URL
+    that actually served it, after redirects."""
     digest = hashlib.md5()
     with get(url, stream=True, timeout=60) as response:
         response.raise_for_status()
@@ -246,7 +247,8 @@ def _stream_to_file(get: Callable, url: str, dest: Path) -> str:
             for chunk in response.iter_content(chunk_size=1 << 20):
                 digest.update(chunk)
                 handle.write(chunk)
-    return digest.hexdigest()
+        served_by = response.url
+    return digest.hexdigest(), served_by
 
 
 def download(
@@ -267,6 +269,14 @@ def download(
     download is detectable rather than something that shows up as a filter that
     quietly selected half a country.
 
+    The ``.md5`` is fetched from beside the URL that *served* the file, not the
+    one asked for. Geofabrik offloads its largest extracts to mirrors with a
+    307, and for those the ``-latest`` checksum exists only on the mirror: the
+    October 2026 scheduled run lost Germany to a 404 on
+    ``download.geofabrik.de/europe/germany-latest.osm.pbf.md5`` while
+    ``ftp5.gwdg.de/.../germany-latest.osm.pbf.md5`` answered. Asking the host
+    that sent the bytes is also the only checksum that describes those bytes.
+
     Geofabrik runs on donated bandwidth and this workflow asks it for 49 files
     an hour, six at a time, so a transient failure is expected rather than
     exceptional: retry with a linear backoff, and only give up after that.
@@ -278,11 +288,12 @@ def download(
     dest.parent.mkdir(parents=True, exist_ok=True)
     for attempt in range(1, attempts + 1):
         try:
-            expected = _fetch_md5(get, f"{url}.md5")
-            digest = _stream_to_file(get, url, dest)
+            digest, served_by = _stream_to_file(get, url, dest)
+            expected = _fetch_md5(get, f"{served_by}.md5")
             if digest != expected:
                 raise RuntimeError(
-                    f"{url}: md5 mismatch — got {digest}, {url}.md5 says {expected}"
+                    f"{url}: md5 mismatch — got {digest}, "
+                    f"{served_by}.md5 says {expected}"
                 )
             return dest
         except Exception as exc:  # noqa: BLE001 — every failure here is retryable
@@ -386,6 +397,7 @@ def select(source: Path, dest: Path) -> Selection:
 
     min_lon = min_lat = 180.0
     max_lon = max_lat = -180.0
+    located = False
     writer = osmium.SimpleWriter(
         osmium.io.File(str(dest), "pbf,add_metadata=false"), overwrite=True
     )
@@ -402,6 +414,7 @@ def select(source: Path, dest: Path) -> Selection:
                     lon, lat = obj.location.lon, obj.location.lat
                     min_lon, max_lon = min(min_lon, lon), max(max_lon, lon)
                     min_lat, max_lat = min(min_lat, lat), max(max_lat, lat)
+                    located = True
             elif obj.is_way():
                 rail_way = is_rail_way(obj.tags)
                 station_way = is_station(obj.tags)
@@ -440,7 +453,10 @@ def select(source: Path, dest: Path) -> Selection:
         member_slots=sum(member_slot_counts.values()),
         bbox=(
             [round(v, 5) for v in (min_lon, min_lat, max_lon, max_lat)]
-            if ways else []
+            # Gated on a rail node actually seen, not on `ways`: a rail way
+            # whose nodes are all absent from the file would otherwise publish
+            # the inverted starting values as the region's extent (#350).
+            if located else []
         ),
     )
 
@@ -615,6 +631,14 @@ def build(
     return entry
 
 
+def _read_entries(out_dir: Path) -> list[dict]:
+    """The entry files the build jobs of this run wrote into ``out_dir``."""
+    return [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(out_dir.glob(f"*{ENTRY_SUFFIX}"))
+    ]
+
+
 def collect_manifest(out_dir: Path, base: dict | None = None) -> dict:
     """Merge the entry files in ``out_dir`` into a verified manifest.
 
@@ -630,10 +654,7 @@ def collect_manifest(out_dir: Path, base: dict | None = None) -> dict:
     Only the rebuilt entries are verified against ``out_dir``: the carried ones
     describe files that are already release assets and were never downloaded.
     """
-    entries = [
-        json.loads(path.read_text(encoding="utf-8"))
-        for path in sorted(out_dir.glob(f"*{ENTRY_SUFFIX}"))
-    ]
+    entries = _read_entries(out_dir)
     if not entries:
         raise RuntimeError(f"no {ENTRY_SUFFIX} files in {out_dir}")
     verify_manifest(merge_manifest(entries), out_dir)
@@ -660,6 +681,20 @@ def missing_regions(manifest: dict, expected: Iterable[str]) -> list[str]:
     """
     covered = {entry["region"] for entry in manifest["regions"]}
     return sorted(set(expected) - covered)
+
+
+def carried_regions(manifest: dict, expected: Iterable[str], out_dir: Path) -> list[str]:
+    """Expected regions the manifest holds only because the base carried them.
+
+    On a subset dispatch ``expected`` is the subset asked for, so a region that
+    failed to build is still "covered" — by last month's entry from the base —
+    and ``missing_regions`` passes it. The release is then republished as
+    current around a ``source_date`` nobody rebuilt, with no message (#350).
+    A region this run was asked to build has to have been built by it.
+    """
+    covered = {entry["region"] for entry in manifest["regions"]}
+    rebuilt = {entry["region"] for entry in _read_entries(out_dir)}
+    return sorted((set(expected) & covered) - rebuilt)
 
 
 def main(argv: list[str]) -> int:
@@ -724,6 +759,7 @@ def main(argv: list[str]) -> int:
     manifest = collect_manifest(args.out_dir, base=base)
     expected = json.loads(args.expect) if args.expect else load_regions()
     missing = missing_regions(manifest, expected)
+    carried = carried_regions(manifest, expected, args.out_dir)
     print(f"{len(manifest['regions'])} regions verified in {args.out_dir}")
     if missing:
         print(
@@ -732,6 +768,14 @@ def main(argv: list[str]) -> int:
             f"{', '.join(missing)}",
             flush=True,
         )
+    if carried:
+        print(
+            f"::error::{len(carried)} region(s) this run was asked to rebuild "
+            f"failed and would be republished from the previous build as if "
+            f"current: {', '.join(carried)}",
+            flush=True,
+        )
+    if missing or carried:
         if not args.force:
             return 1
         print("force requested: publishing an incomplete manifest anyway")
