@@ -1,3 +1,5 @@
+import 'dart:convert' show jsonDecode;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
@@ -62,6 +64,30 @@ String deleteAccountWarning(BillingStatus? billing) {
   return base;
 }
 
+/// Inline message when Save is pressed with a blank display name (#507).
+const kBlankDisplayNameMessage = 'Enter a name. Others on a shared trip see it.';
+
+/// The reason in a FastAPI validation error body (422), or null if [body] is
+/// not one.
+///
+/// A field validator's refusal arrives as a `detail` list whose first item's
+/// `msg` is "Value error, " plus the reason. The service passes that body on
+/// as raw text, since its detail is not a string.
+String? validationErrorMessage(String body) {
+  try {
+    final decoded = jsonDecode(body);
+    if (decoded is Map && decoded['detail'] is List) {
+      final first = (decoded['detail'] as List).firstOrNull;
+      if (first is Map && first['msg'] is String) {
+        return (first['msg'] as String).replaceFirst('Value error, ', '');
+      }
+    }
+  } on FormatException {
+    // Not JSON: not a validation error.
+  }
+  return null;
+}
+
 class SettingsScreen extends StatefulWidget {
   final SettingsService? service; // injectable for tests
   const SettingsScreen({super.key, this.service});
@@ -112,6 +138,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _authProvider = 'local';
   bool _profileSaving = false;
 
+  /// Shown under the display-name field: a blank name, or the server's
+  /// reason for refusing one (issue #507).
+  String? _displayNameError;
+
   // Change-password state
   final _currentPwCtrl = TextEditingController();
   final _newPwCtrl = TextEditingController();
@@ -161,8 +191,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _saveProfile() async {
     final name = _displayNameCtrl.text.trim();
-    if (name.isEmpty) return;
-    setState(() => _profileSaving = true);
+    // Others see a blank name as "Traveller"; the server refuses it (#507).
+    if (name.isEmpty) {
+      setState(() => _displayNameError = kBlankDisplayNameMessage);
+      return;
+    }
+    setState(() {
+      _profileSaving = true;
+      _displayNameError = null;
+    });
     final auth = context.read<AuthNotifier>();
     try {
       final result = await _service.updateProfile(name);
@@ -176,9 +213,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
         );
       }
     } on Exception catch (e) {
-      if (mounted) {
+      final message = e.toString().replaceFirst('Exception: ', '');
+      final refusal = validationErrorMessage(message);
+      if (refusal != null) {
+        if (mounted) setState(() => _displayNameError = refusal);
+      } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Save failed: ${e.toString().replaceFirst('Exception: ', '')}')),
+          SnackBar(content: Text('Save failed: $message')),
         );
       }
     } finally {
@@ -621,9 +662,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     children: [
                       TextField(
                         controller: _displayNameCtrl,
-                        decoration: const InputDecoration(
+                        onChanged: (_) {
+                          if (_displayNameError != null) {
+                            setState(() => _displayNameError = null);
+                          }
+                        },
+                        decoration: InputDecoration(
                           labelText: 'Display name',
-                          border: OutlineInputBorder(),
+                          border: const OutlineInputBorder(),
+                          errorText: _displayNameError,
                         ),
                       ),
                       const SizedBox(height: 12),
