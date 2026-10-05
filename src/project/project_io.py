@@ -188,7 +188,8 @@ class ProjectIO:
         converted from the storage format ``{"distances_km": [...], "elevations_m": [...]}``
         to a list of ``[dist_km, elev_m]`` pairs so the Flutter client can
         iterate over them directly, and an activity loaded from the database
-        carries ``plain_fields``, its E2EE columns still in plaintext.
+        carries ``plain_fields``, its E2EE columns still in plaintext; every
+        activity carries ``has_gain_snapshot``.
         """
         def _ep_pairs(a: Activity) -> Any:
             # Prefer the full profile; fall back to the downsampled low-res copy
@@ -206,6 +207,7 @@ class ProjectIO:
             d["elevation_profile"] = _ep_pairs(a)
             if a.plain_fields is not None:
                 d["plain_fields"] = a.plain_fields
+            d["has_gain_snapshot"] = a.has_gain_snapshot
             activities_out.append(d)
 
         return {
