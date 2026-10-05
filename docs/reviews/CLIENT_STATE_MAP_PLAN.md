@@ -322,3 +322,25 @@ Owner (2026-10-05): I1-R4-1 and I1-R4-2 fixed structurally: a fresh ProjectNotif
 - Scores: trigger=theoretical, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
 - Decision: Reject (D11)
 - Outcome: open
+
+Owner (2026-10-05): fix the class now (F6); verifier only, then close the integrated review.
+
+## Integrated review Part 1, round 5 (owner-requested) — 2026-10-05, reviewed at e42cbbc8 (F5 since 22d6e204)
+
+No account-switch findings: the per-account notifier held.
+
+### I1-R5-1 — A full reload still rebinds the notifier to the trip the user left
+- Trigger: remove an activity on T → open X before the reload lands → load(X) finishes first → T's reload applies and the open trip becomes T under X's title
+- Scores (corrected by triage): trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/shared, confidence=verified
+- Decision: Defer (D10); flagged: same class as I1-R4-3 (owner: Fix now)
+- Revisit when: the owner applies the I1-R4-3 override to this class, or a user reports a trip showing another trip's items
+- Override: user: Fix now — one same-trip check inside _silentReload and _silentReloadDetailsOnly (at begin and after every await), replacing the I1-R4-3 caller check
+- Outcome: open
+
+### I1-R5-2 — A details-only reload begun after a trip switch rebinds the notifier (memory/journal/people CRUD, sort, reorder)
+- Trigger: add a memory on T → open X before the POST returns → the reload for T begins after load(X) and applies → the open trip becomes T
+- Scores (corrected by triage): trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/shared, confidence=verified
+- Decision: Defer (D10); flagged as above
+- Revisit when: as above, or a user reports an item appearing in a trip other than the one they added it to
+- Override: user: Fix now — one same-trip check inside _silentReload and _silentReloadDetailsOnly (at begin and after every await), replacing the I1-R4-3 caller check
+- Outcome: open
