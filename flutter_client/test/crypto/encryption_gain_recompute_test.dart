@@ -211,6 +211,19 @@ class _FakeApi implements EncryptionApi {
   Future<RecoveryWrapData?> fetchRecoveryWrap(String m) async => null;
 }
 
+/// Counts the envelopes it decrypts: a converged row must not be read again.
+class _CountingService extends EncryptionService {
+  _CountingService() : super(_FakeStore(), _FakeApi());
+
+  int decrypts = 0;
+
+  @override
+  Future<String> decryptText(String envelope) {
+    decrypts++;
+    return super.decryptText(envelope);
+  }
+}
+
 /// A session token for [userId], shaped like the server's JWT.
 String _token(int userId) {
   String part(Object json) => base64Url.encode(utf8.encode(jsonEncode(json)));
@@ -218,7 +231,8 @@ String _token(int userId) {
 }
 
 late _Server _server;
-late EncryptionService _enc;
+late ApiClient _api;
+late _CountingService _enc;
 late EncryptionMigration _migration;
 
 /// One catch-up pass over the trip as the server holds it now.
@@ -258,11 +272,12 @@ Future<Map<String, dynamic>> _decryptedProfile(Object? env) async =>
 void main() {
   setUp(() async {
     _server = _Server();
-    final api = ApiClient(baseUrl: '', httpClient: MockClient((r) => _server.handle(r)))
+    _api = ApiClient(baseUrl: '', httpClient: MockClient((r) => _server.handle(r)))
       ..setToken(_token(1));
-    _enc = EncryptionService(_FakeStore(), _FakeApi());
+    _enc = _CountingService();
     await _enc.enable(const RecoveryKeyChoice());
-    _migration = EncryptionMigration(api, _enc);
+    _migration = EncryptionMigration(_api, _enc);
+    EncryptionMigration.resetConvergedForTest();
   });
 
   test('an inflated edited activity gets exactly one gain write, with the vector value',
@@ -489,5 +504,81 @@ void main() {
     expect(result.ended, 1);
     expect(_server.memories[1]!['name'], 'Summit');
     expect(_server.activities[-5]!['total_elevation_gain'], 900.0);
+  });
+
+  group('a converged row is not re-measured on the next load (U8-R1-1)', () {
+    test('a correct gain: the second pass decrypts nothing and sends nothing',
+        () async {
+      final v = _vector('climb_barometric');
+      _server.activities[-5] = await _encryptedActivity(
+          profileJson: _profileJson(v.distances, v.elevations),
+          gain: v.gain,
+          isEdited: true);
+      await _pass();
+      expect(_enc.decrypts, 1);
+
+      _enc.decrypts = 0;
+      _server.log.clear();
+      // A new migration object, as each load builds one.
+      _migration = EncryptionMigration(_api, _enc);
+      await _pass();
+
+      expect(_enc.decrypts, 0);
+      expect(_server.writes, isEmpty);
+    });
+
+    test('after its repair and gain writes, the row is not read again', () async {
+      final stored = _vector('sentinel_dropouts_as_stored_before_374');
+      _server.activities[-7] = await _encryptedActivity(
+          profileJson: _profileJson(stored.distances, stored.elevations),
+          gain: stored.gain,
+          source: 'gpx');
+      await _pass();
+      expect(_server.writes, hasLength(2));
+
+      _enc.decrypts = 0;
+      _server.log.clear();
+      await _pass();
+
+      expect(_enc.decrypts, 0);
+      expect(_server.writes, isEmpty);
+    });
+
+    test('a stored gain changed since (another device) is measured again', () async {
+      final v = _vector('climb_barometric');
+      _server.activities[-5] = await _encryptedActivity(
+          profileJson: _profileJson(v.distances, v.elevations),
+          gain: v.gain,
+          isEdited: true);
+      await _pass();
+      expect(_server.writes, isEmpty);
+
+      _server.activities[-5]!['total_elevation_gain'] = 900.0;
+      _enc.decrypts = 0;
+      await _pass();
+
+      expect(_enc.decrypts, 1);
+      expect(_server.gainWrites, hasLength(1));
+      expect(_server.activities[-5]!['total_elevation_gain'] as double,
+          closeTo(v.gain, 1e-6));
+    });
+
+    test('a changed profile envelope is measured again', () async {
+      final v = _vector('climb_barometric');
+      final profile = _profileJson(v.distances, v.elevations);
+      _server.activities[-5] = await _encryptedActivity(
+          profileJson: profile, gain: v.gain, isEdited: true);
+      await _pass();
+
+      // The same series re-encrypted (an edit, a repair): a new envelope.
+      final env = await _enc.encryptText(profile);
+      _server.activities[-5]!['elevation_profile_json'] = env;
+      _server.activities[-5]!['elevation_profile_low_res_json'] = env;
+      _enc.decrypts = 0;
+      await _pass();
+
+      expect(_enc.decrypts, 1);
+      expect(_server.writes, isEmpty);
+    });
   });
 }

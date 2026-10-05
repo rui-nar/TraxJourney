@@ -537,6 +537,20 @@ class EncryptionMigration {
     return _enc.protect(epJson);
   }
 
+  /// The rows [_recomputeGain] found converged — measured gain within 0.5 m
+  /// of the stored one, nothing to repair — by session user and activity id,
+  /// with the profile envelope and stored gain they were found at (U8-R1-1).
+  /// Static because an [EncryptionMigration] is built per pass: without it
+  /// every load would decrypt and re-measure every legacy profile again. A
+  /// row whose envelope or gain has changed since (an edit, a repair,
+  /// another device) no longer matches and is measured anew; one entry per
+  /// row, so it holds at most one envelope per activity.
+  static final Map<String, ({String envelope, double? gain})> _converged = {};
+
+  /// Forgets every converged row, as a new app session would.
+  @visibleForTesting
+  static void resetConvergedForTest() => _converged.clear();
+
   /// Re-measure one encrypted activity's elevation gain from its full
   /// [envelope] with the `track_metrics/` port (decision 12, #366): the
   /// server cannot read the profile to do it, so legacy encrypted rows still
@@ -546,12 +560,19 @@ class EncryptionMigration {
   /// migration c4a9e1f70b38 repairs plaintext ones and written back, one
   /// envelope to both profile columns (R4-5). The gain is written only when it
   /// differs from the [stored] one by more than 0.5 m, so a second pass writes
-  /// nothing. Both writes carry the pass's lock version.
+  /// nothing. Both writes carry the pass's lock version. A row found
+  /// converged earlier in this app session, at the same envelope and stored
+  /// gain, is not decrypted again.
   Future<int> _recomputeGain(String tripName, Object id, Object? envelope,
       double? stored, int expected, CatchUpResult result) async {
     if (envelope is! String || !EncryptedField.isEnvelope(envelope)) {
       return expected;
     }
+    final memoKey = '$_sessionUser|$id';
+    if (_converged[memoKey] == (envelope: envelope, gain: stored)) {
+      return expected;
+    }
+    var current = envelope;
     final profile = await _decryptProfile(id, envelope);
     if (profile == null) return expected;
     final distances = profile.distances;
@@ -573,15 +594,24 @@ class EncryptionMigration {
       }, expected, result, activity: true);
       // The stored profile is still the sentinel one: its gain would not match.
       if (result.written == written) return expected;
+      current = repaired;
     }
 
     final gain = elevationGain(elevations, distances);
-    if (stored != null && (gain - stored).abs() <= 0.5) return expected;
-    return _write('/api/activities/$id/elevation-gain', {
+    if (stored != null && (gain - stored).abs() <= 0.5) {
+      _converged[memoKey] = (envelope: current, gain: stored);
+      return expected;
+    }
+    final written = result.written;
+    expected = await _write('/api/activities/$id/elevation-gain', {
       'total_elevation_gain': gain,
       'project': tripName,
       'lock_version': expected,
     }, expected, result, activity: true);
+    if (result.written > written) {
+      _converged[memoKey] = (envelope: current, gain: gain);
+    }
+    return expected;
   }
 
   /// The series of a profile [envelope], or null — logged — when it is not
