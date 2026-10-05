@@ -292,3 +292,33 @@ Clean: no findings. Compare-and-set atomicity, races, cross-user scoping, the SQ
 - Decision: Defer (D10)
 - Revisit when: the tag-to-deploy gap grows beyond a short same-day window, or a user reports being stuck on the recovery-key screen
 - Outcome: open
+
+Owner (2026-10-05): I1-R4-1 and I1-R4-2 fixed structurally: a fresh ProjectNotifier per signed-in account, the old one discarded, so late responses write into an orphaned instance (closes the class). I1-R4-3 overridden to Fix now. Round 5 requested on the fix.
+
+## Integrated review Part 1, round 4 (owner-requested) — 2026-10-05, reviewed at 31105328 (since 4d7d2f5f: F4, U5b-1, U5b-2)
+
+### I1-R4-1 — The day-meta PATCH 200 path adopts the signed-out account's map into the next account's same-named trip
+- Trigger: A saves a note → A signs out, B opens B's own same-named trip while the PATCH is in flight → 200 lands, the trip check passes → B's carousel shows A's notes
+- Scores: trigger=plausible, impact=security, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Outcome: open
+
+### I1-R4-2 — Segment add/update success paths draw the signed-out account's segment on the next account's map
+- Trigger: A saves a segment edit → A signs out, B opens any trip while the request is in flight → 200 → A's segment drawn on B's map and kept as a patch
+- Scores: trigger=plausible, impact=security, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3). Pre-existing on main
+- Outcome: open
+
+### I1-R4-3 — The 409 resync's details reload rebinds the notifier to the trip the user left
+- Trigger: segment edit on T gets 409 → the user opens X first → the reload for T applies and sets the open trip back to T
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10). Pre-existing on main
+- Revisit when: the owner fixes it with R4-1/R4-2, or a user reports a trip switch showing the previous trip
+- Override: user: Fix now
+- Outcome: open
+
+### I1-R4-4 — The full-res fallback can time a cached answer as fresh
+- Trigger: needs four independent conditions together; no current actor
+- Scores: trigger=theoretical, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Reject (D11)
+- Outcome: open
