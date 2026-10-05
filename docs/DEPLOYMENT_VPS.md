@@ -963,18 +963,45 @@ installs and older images do not have — `docker compose pull` first if
 
 ### Refresh
 
-The same command. It re-reads the newest release, skips every region whose
-store it already holds at that release's checksum, and fetches only what
-changed:
+**The box does this on its own, monthly.** Once `RAIL_SOURCE=local` is set,
+the API queues a refresh at 04:10 UTC on day `RAIL_AUTO_REFRESH_DAY` of each
+month (default the 5th) and a `default`-queue worker runs the same command as
+below — the workflow rebuilds on the 2nd, so that installs the newest release a
+few days after it is published. **Val sets the 4th** in its `.env`, so a bad
+release reaches val a day before prod and the two stacks never build at once on
+this shared host:
+
+```bash
+echo 'RAIL_AUTO_REFRESH_DAY=4' >> /opt/traxjourney-val/.env   # val only
+cd /opt/traxjourney-val && docker compose up -d
+```
+
+It needs the job queue (`REDIS_URL` and a worker, see §3). Without one it does
+not run in the API process — 49 store builds inside the API's memory limit is
+what it exists to avoid — and logs a `WARNING` that the refresh is manual on
+this deployment, every month, until it is. `RAIL_AUTO_REFRESH=0` turns it off.
+The worker's log carries the step's per-region lines; a refused region fails
+the RQ job, and `traxjourney_rail_data_age_days` is re-checked as soon as it
+finishes, so the gauge moves that same day.
+
+By hand it is the same command — the recovery path when a scheduled run
+failed, and the way to refresh outside the schedule. It re-reads the newest
+release, skips every region whose store it already holds at that release's
+checksum, and fetches only what changed:
 
 ```bash
 docker compose run --rm --entrypoint python traxjourney \
     scripts/fetch_rail_data.py --dest /app/data/rail
 ```
 
-Monthly is ample — rail alignments change over years, and the workflow rebuilds
-on the 2nd of each month. There is deliberately no timer installed: scheduling
-and data-age alerting are Phase 5 of `docs/LOCAL_RAIL_DATA_PLAN.md`.
+A manual run during a scheduled one is harmless (the lock above). Monthly is
+ample — rail alignments change over years.
+
+A line starting `WARNING: [<region>] is installed but <tag> does not publish
+it` means the new release left a country out: it drops out of the installed
+manifest, its routes go back to Overpass, and nothing else reports it — the age
+gauge only sees the regions still listed. Find out why that release lacks it,
+and roll back (below) if it should not have.
 
 **A release that bumps the store schema also needs one of these runs**, and the
 step notices on its own: the sidecar beside each store records the schema it
@@ -1019,9 +1046,11 @@ A count of ok regions that is lower than the manifest's is the failure that
 looks like success: those countries silently fall back to Overpass. Re-run the
 step; it retries only them.
 
-`docker compose run` inherits the API service's memory limit (768 MB), and
-`build_store` peaks around 32 MB on Luxembourg — extrapolating to ~230 MB for
-Germany, so the headroom is real but not enormous. An **OOM kill is the one
+`docker compose run` inherits the API service's memory limit (768 MB); the
+scheduled refresh runs inside a worker's (1 GB), beside that worker's own
+process. A full install of `rail-data-2026-10-05` (45 stores, 4 empty regions)
+measured **361 MB peak RSS**, 162 s and 304 MB on disk on Linux, and a month
+with nothing new 54 MB and 1.5 s — so the headroom is real but not enormous. An **OOM kill is the one
 failure the step cannot clean up after itself**: everything else deletes its
 own extract and part-built store on the way out. It costs nothing —
 `RAIL_DATA_DIR` still holds only whole files, and the next run clears
