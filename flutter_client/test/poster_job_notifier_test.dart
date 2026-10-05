@@ -13,6 +13,7 @@ import 'package:http/testing.dart';
 
 import 'package:traxjourney_client/src/api/client.dart';
 import 'package:traxjourney_client/src/core/project_ref.dart';
+import 'package:traxjourney_client/src/projects/poster_consent_dialog.dart';
 import 'package:traxjourney_client/src/projects/poster_job_notifier.dart';
 
 http.Response _json(int status, Object body) => http.Response(
@@ -351,6 +352,147 @@ void main() {
         ),
         throwsA(isA<ApiException>()),
       );
+    });
+  });
+
+  group('poster consent', () {
+    final memories = <Map<String, dynamic>>[
+      {
+        'id': 7,
+        'lat': 1.0,
+        'lon': 2.0,
+        'date': null,
+        'name': 'Sunset',
+        'description': 'Lovely',
+        'photo_uuids': ['p1'],
+      },
+    ];
+    final consent409 = _json(409, {
+      'detail': {
+        'code': 'consent_required',
+        'message': 'This trip is encrypted.',
+        'consent_required': [7],
+      },
+    });
+
+    Future<int?> run(List<Map<String, dynamic>> bodies,
+        List<http.Response> responses, PosterConsentChoice choice,
+        {List<int>? asked}) {
+      var i = 0;
+      final mock = MockClient((req) async {
+        bodies.add(jsonDecode(req.body) as Map<String, dynamic>);
+        return responses[i++];
+      });
+      return createPosterJobWithConsent(
+        ref: const ProjectRef(name: 'Trip'),
+        bounds: {'north': 1, 'south': 0, 'east': 1, 'west': 0},
+        orientation: 'landscape',
+        config: {'distance': true},
+        memories: memories,
+        askConsent: (n) async {
+          asked?.add(n);
+          return choice;
+        },
+        client: ApiClient(httpClient: mock)..setToken('jwt'),
+      );
+    }
+
+    test('PosterConsentRequired parses the 409 and ignores other errors', () {
+      final ok = PosterConsentRequired.fromApiException(ApiException(
+          409,
+          jsonEncode({
+            'detail': {
+              'code': 'consent_required',
+              'message': 'm',
+              'consent_required': [7, 8],
+            }
+          })));
+      expect(ok!.memoryIds, [7, 8]);
+      expect(ok.message, 'm');
+      expect(PosterConsentRequired.fromApiException(ApiException(409, 'x')),
+          isNull);
+      expect(
+          PosterConsentRequired.fromApiException(ApiException(
+              409, jsonEncode({'detail': 'Project is locked'}))),
+          isNull);
+      expect(
+          PosterConsentRequired.fromApiException(ApiException(500, '{}')),
+          isNull);
+    });
+
+    test('createPosterJob sends plaintext_consent only when true', () async {
+      final bodies = <Map<String, dynamic>>[];
+      final mock = MockClient((req) async {
+        bodies.add(jsonDecode(req.body) as Map<String, dynamic>);
+        return _json(201, {'job_id': 1});
+      });
+      final client = ApiClient(httpClient: mock)..setToken('jwt');
+      for (final consent in [false, true]) {
+        await createPosterJob(
+          ref: const ProjectRef(name: 'Trip'),
+          bounds: {'north': 1, 'south': 0, 'east': 1, 'west': 0},
+          orientation: 'landscape',
+          config: {},
+          memories: const [],
+          plaintextConsent: consent,
+          client: client,
+        );
+      }
+      expect(bodies[0].containsKey('plaintext_consent'), isFalse);
+      expect(bodies[1]['plaintext_consent'], isTrue);
+    });
+
+    test('409 asks; agree resends the same memories with consent', () async {
+      final bodies = <Map<String, dynamic>>[];
+      final asked = <int>[];
+      final id = await run(bodies,
+          [consent409, _json(201, {'job_id': 9})], PosterConsentChoice.sendText,
+          asked: asked);
+      expect(id, 9);
+      expect(asked, [1]);
+      expect(bodies, hasLength(2));
+      expect(bodies[0].containsKey('plaintext_consent'), isFalse);
+      expect(bodies[1]['plaintext_consent'], isTrue);
+      expect(bodies[1]['memories'], memories);
+    });
+
+    test('decline to send text resends without name/description and without '
+        'consent, keeping ids and photos', () async {
+      final bodies = <Map<String, dynamic>>[];
+      final id = await run(bodies, [consent409, _json(201, {'job_id': 9})],
+          PosterConsentChoice.withoutText);
+      expect(id, 9);
+      expect(bodies[1].containsKey('plaintext_consent'), isFalse);
+      final m = (bodies[1]['memories'] as List).single as Map;
+      expect(m['id'], 7);
+      expect(m['name'], isNull);
+      expect(m['description'], isNull);
+      expect(m['photo_uuids'], ['p1']);
+    });
+
+    test('cancel sends nothing more and returns null', () async {
+      final bodies = <Map<String, dynamic>>[];
+      final id = await run(bodies, [consent409], PosterConsentChoice.cancel);
+      expect(id, isNull);
+      expect(bodies, hasLength(1));
+    });
+
+    test('a plaintext trip never asks', () async {
+      final bodies = <Map<String, dynamic>>[];
+      final asked = <int>[];
+      final id = await run(bodies, [_json(201, {'job_id': 3})],
+          PosterConsentChoice.cancel,
+          asked: asked);
+      expect(id, 3);
+      expect(asked, isEmpty);
+      expect(bodies, hasLength(1));
+    });
+
+    test('a non-consent failure rethrows', () async {
+      final bodies = <Map<String, dynamic>>[];
+      expect(
+          run(bodies, [http.Response('boom', 500)], PosterConsentChoice.cancel),
+          throwsA(isA<ApiException>()));
     });
   });
 }
