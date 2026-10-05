@@ -223,9 +223,36 @@ def test_relation_uic_is_unchanged_by_the_new_table(store):
 # Reading a schema 1 file
 # ---------------------------------------------------------------------------
 
+def _downgrade_to_schema_2(src, dst):
+    """The same store as it was written before schema 3: `way.rail`, not `way.cls`.
+
+    The flag is bit 0 and only bit 0 — what the schema 2 builder wrote — and
+    the meta keys schema 3 added are dropped, so the file is what the box
+    actually holds rather than a schema 3 file with its version number changed.
+    """
+    shutil.copy(src, dst)
+    conn = sqlite3.connect(dst)
+    conn.executescript("""
+        CREATE TABLE way_v2 (
+            id   INTEGER PRIMARY KEY,
+            rail INTEGER NOT NULL,
+            geom BLOB NOT NULL
+        );
+        INSERT INTO way_v2 SELECT id, cls & 1, geom FROM way;
+        DROP TABLE way;
+        ALTER TABLE way_v2 RENAME TO way;
+        DELETE FROM meta WHERE key IN ('layer', 'routable_ways');
+        UPDATE meta SET value = '2' WHERE key = 'schema';
+        PRAGMA user_version = 2;
+    """)
+    conn.commit()
+    conn.close()
+    return dst
+
+
 def _downgrade_to_schema_1(src, dst):
     """The same store as it was written before #359: no role, no relation_node."""
-    shutil.copy(src, dst)
+    _downgrade_to_schema_2(src, dst)
     conn = sqlite3.connect(dst)
     conn.executescript("""
         CREATE TABLE relation_way_v1 (
@@ -237,6 +264,7 @@ def _downgrade_to_schema_1(src, dst):
         DROP TABLE relation_way;
         ALTER TABLE relation_way_v1 RENAME TO relation_way;
         DROP TABLE relation_node;
+        UPDATE meta SET value = '1' WHERE key = 'schema';
         PRAGMA user_version = 1;
     """)
     conn.commit()

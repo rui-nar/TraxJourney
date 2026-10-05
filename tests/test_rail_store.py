@@ -215,9 +215,9 @@ def test_ways_carried_only_for_a_relation_stay_out_of_rail_results(store):
     track: it must never be snapped to or returned by a bbox query — while
     still being visible to the relation lookups that need it."""
     conn = sqlite3.connect(store.path)
-    member_only = conn.execute("SELECT COUNT(*) FROM way WHERE rail = 0").fetchone()[0]
+    member_only = conn.execute("SELECT COUNT(*) FROM way WHERE cls & 1 = 0").fetchone()[0]
     indexed = conn.execute("SELECT COUNT(*) FROM way_bbox").fetchone()[0]
-    rail = conn.execute("SELECT COUNT(*) FROM way WHERE rail = 1").fetchone()[0]
+    rail = conn.execute("SELECT COUNT(*) FROM way WHERE cls & 1 = 1").fetchone()[0]
     conn.close()
     assert member_only > 0
     assert indexed == rail + member_only        # the R-tree holds every way
@@ -309,7 +309,7 @@ def test_relations_near_finds_a_relation_from_its_own_track(store):
     conn = sqlite3.connect(store.path)
     rel_id, geom = conn.execute(
         "SELECT rw.rel_id, w.geom FROM relation_way rw JOIN way w ON w.id = rw.way_id "
-        "WHERE w.rail = 1 LIMIT 1").fetchone()
+        "WHERE w.cls & 1 LIMIT 1").fetchone()
     conn.close()
     pt = decode_geometry(geom)[0]
     assert rel_id in store.relations_near(pt["lat"], pt["lon"], radius_m=1000)

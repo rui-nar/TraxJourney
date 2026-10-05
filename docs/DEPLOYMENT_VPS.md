@@ -998,10 +998,23 @@ A manual run during a scheduled one is harmless (the lock above). Monthly is
 ample — rail alignments change over years.
 
 A line starting `WARNING: [<region>] is installed but <tag> does not publish
-it` means the new release left a country out: it drops out of the installed
-manifest, its routes go back to Overpass, and nothing else reports it — the age
-gauge only sees the regions still listed. Find out why that release lacks it,
-and roll back (below) if it should not have.
+it` means the new release left a country — or one of its layers, named
+`[<region> ferry]` / `[<region> bus]` — out. What happens next is in the line:
+
+- **carried** — its store is on disk, so it stays in the installed manifest for
+  this one release, marked `"carried": true`, and keeps routing; the age gauge
+  keeps seeing it age. A layer that failed to build in CI one month is back the
+  next.
+- **retired** — a later release left it out *again*, so it leaves the installed
+  manifest and its routes go to Overpass. This is what removing a region or
+  layer from `config/rail_regions.yml` looks like on the box; nothing has to be
+  done by hand.
+- **leaves the installed manifest** — there was no store on disk to keep
+  (an `empty` entry, or a store someone deleted), so it goes at once.
+
+Re-running the same release does not count as "again". If a carried or retired
+entry should not have been left out, find out why that release lacks it, and
+roll back (below).
 
 **A release that bumps the store schema also needs one of these runs**, and the
 step notices on its own: the sidecar beside each store records the schema it
@@ -1010,8 +1023,12 @@ though the published extract has not changed. Expect `49 installed, 0 up to
 date` rather than the usual near-total skip, and roughly the time of a first
 install. It is not urgent and there is no window to plan around — the reader
 accepts the previous schema as well as the current one, so the box keeps
-serving the stores it already has until each is replaced. Issue #359 is the
-first such bump: schema 1 → 2, adding member roles and stop sequences.
+serving the stores it already has until each is replaced. Issue #359 was the
+first such bump (schema 1 → 2, member roles and stop sequences); the image that
+taught the stores layers is the second (schema 2 → 3, `way.rail` becomes the
+`way.cls` class mask), and its first scheduled or manual refresh rebuilds every
+rail store this way. Rolling the image back past it afterwards needs the
+recovery under *Rollback*.
 
 **No restart is needed and none is wanted.** Every file is built elsewhere and
 moved into place with an atomic rename, so a worker mid-resolve keeps reading
@@ -1024,11 +1041,13 @@ rebuilds its view of the directory at most every five minutes
 The step exits non-zero if any region was refused, and names them. Otherwise:
 
 ```bash
-# 1. Every ok region in the manifest has a store beside it.
+# 1. Every ok rail region in the manifest has a store beside it (entries with
+#    no "layer" are rail; ferry and bus stores are *.ferry.sqlite, *.bus.sqlite).
 ls /opt/traxjourney/data/rail/*.rail.sqlite | wc -l
 python3 -c "import json;m=json.load(open('/opt/traxjourney/data/rail/manifest.json'));\
-print(sum(1 for e in m['regions'] if e['status']=='ok'), 'ok', \
-      sum(1 for e in m['regions'] if e['status']=='empty'), 'empty')"
+r=[e for e in m['regions'] if e.get('layer','rail')=='rail'];\
+print(sum(1 for e in r if e['status']=='ok'), 'ok', \
+      sum(1 for e in r if e['status']=='empty'), 'empty')"
 
 # 2. How old the data is — per region, which is the number that matters.
 python3 -c "import json;m=json.load(open('/opt/traxjourney/data/rail/manifest.json'));\
@@ -1080,6 +1099,36 @@ The other rollback, when the data itself is suspect rather than one region's:
 sed -i 's/^RAIL_SOURCE=local/RAIL_SOURCE=overpass/' /opt/traxjourney/.env
 docker compose up -d
 ```
+
+**Rolling the image back past the store schema 3 change** (the image that taught
+the stores layers) is the one rollback that needs a data step. Once that image
+has run a refresh, every store on the box is schema 3, which an older image's
+reader refuses — so after the rollback **every train resolve goes to Overpass**
+until the stores are rebuilt. The rolled-back image rebuilds them itself: its
+sidecar check sees schema 3 where it expects 2 and rebuilds every region at its
+own schema. Run, with the rolled-back image:
+
+```bash
+docker compose run --rm --entrypoint python traxjourney \
+    scripts/fetch_rail_data.py --dest /app/data/rail
+```
+
+Expect `N installed, 0 up to date`. Once the workflow publishes releases with
+ferry and bus layers (manifest schema 3), the older image refuses those
+manifests outright (`manifest schema 3, expected 2`) and installs nothing — add
+`--tag <the last release whose manifest is schema 2>` to the command. To find
+it, newest first:
+
+```bash
+for t in $(gh release list --repo rui-nar/TraxJourney --limit 100 \
+           --json tagName -q '.[].tagName' | grep '^rail-data-'); do
+  echo "$t $(gh release download "$t" --repo rui-nar/TraxJourney \
+              -p manifest.json -O - | python3 -c 'import json,sys;print(json.load(sys.stdin)["schema"])')"
+done
+```
+
+The ferry and bus stores stay on disk, unread by the older image, as a dropped
+region's do (below).
 
 Note that a region dropped from a newer manifest keeps its old store file on
 disk, unreferenced and unread — and so does a region that goes from `ok` to

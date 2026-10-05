@@ -12,6 +12,10 @@ is Phase 2's decision and this is the step that implements it)::
     python -m src.rail.builder germany-rail.osm.pbf europe-germany.rail.sqlite \\
         --region europe/germany --source-date 2026-09-05
 
+``--layer ferry`` or ``--layer bus`` builds the same store format from that
+layer's filtered file (docs/LOCAL_TRANSPORT_DATA_PLAN.md, Decision 7): only
+which ways carry which ``cls`` bit, and which relations are kept, differ.
+
 ``osmium`` (pyosmium) is imported lazily: only the builder needs it, and the
 builder does not run on the server.
 """
@@ -22,9 +26,21 @@ import os
 import sqlite3
 import sys
 import time
+from array import array
 from datetime import datetime, timezone
 
-from src.rail.store import SCHEMA_VERSION, encode_geometry
+from src.rail.store import (
+    _I32,
+    _COORD_SCALE,
+    CLS_FERRY_YES,
+    CLS_MEMBER,
+    CLS_ROUTE,
+    DEFAULT_LAYER,
+    LAYERS,
+    ROUTABLE,
+    SCHEMA_VERSION,
+    encode_geometry,
+)
 
 # The strategy-C way selection, repeated here only to tell track from a way that
 # is in the file because something references it — a route relation's member, or
@@ -34,22 +50,36 @@ _RAIL_VALUES = {"rail", "narrow_gauge", "light_rail"}
 _ROUTE_VALUES = {"train", "railway", "light_rail"}
 _STATION_VALUES = {"station", "halt"}
 
+# Which route relations each layer keeps: the `route=` values its strategy A
+# asks Overpass for. Their member ways get `cls` bit 2.
+_LAYER_ROUTES = {"rail": _ROUTE_VALUES, "ferry": {"ferry"}, "bus": {"bus"}}
+
+
+def _route_class(layer: str, tags) -> bool:
+    """Is a way in *layer*'s bit-0 selection — what strategy B asks for?"""
+    if layer == "rail":
+        return tags.get("railway") in _RAIL_VALUES and "service" not in tags
+    return tags.get("route") == layer
+
 _SCHEMA = """
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
 -- One row per way, geometry packed as int32 lat/lon pairs (see store.py).
--- rail=0 marks a way that is not track: a route relation's platform or service
--- member, or a station polygon. It keeps its geometry because the relation's
--- `out geom` includes it, but no rail query may return it.
+-- `cls` is the class bitmask (store.py, CLS_*): bit 0 the layer's routable
+-- class — track, on a rail store — bit 1 `ferry=yes`, bit 2 a member of one of
+-- the layer's route relations. A rail way without bit 0 is not track: a route
+-- relation's platform or service member, or a station polygon. It keeps its
+-- geometry because the relation's `out geom` includes it, but no bit-0 query
+-- may return it.
 CREATE TABLE way (
     id   INTEGER PRIMARY KEY,
-    rail INTEGER NOT NULL,
+    cls  INTEGER NOT NULL,
     geom BLOB NOT NULL
 );
 
 -- Indexes every way, not just track: `relations_near` has to see a relation
 -- whose nearby members are all platforms, exactly as Overpass's around: does.
--- Rail-only queries join `way` and filter on rail = 1.
+-- Class queries join `way` and filter on `cls & mask`.
 CREATE VIRTUAL TABLE way_bbox USING rtree(id, min_lon, max_lon, min_lat, max_lat);
 
 -- Stations mapped as nodes, ways or relations alike (Overpass's `out center`
@@ -140,12 +170,25 @@ def build_store(
     out_path: str | os.PathLike,
     region: str = "",
     source_date: str = "",
+    layer: str = DEFAULT_LAYER,
 ) -> dict:
-    """Build the store for one region. Returns the stats written to ``meta``.
+    """Build the store for one region's *layer*. Returns the stats written to ``meta``.
 
     Overwrites *out_path*: a store is a derived artifact, never edited in place.
+
+    The layer decides three things and nothing else: which ways get ``cls``
+    bit 0, which route relations are kept (and so whose members get bit 2), and
+    the **routable set** — ``ROUTABLE[layer]`` — that the store is refused on
+    when empty and whose extent becomes the store's bbox. For rail that set is
+    bit 0, exactly the track schema 2 measured, so a rail store's extent and
+    refusal are what they were.
     """
     import osmium  # noqa: PLC0415 — build-time only, see module docstring
+
+    if layer not in LAYERS:
+        raise RailBuildError(f"unknown layer {layer!r}, expected one of {', '.join(LAYERS)}")
+    routable = ROUTABLE[layer]
+    routes = _LAYER_ROUTES[layer]
 
     t0 = time.monotonic()
     out_path = str(out_path)
@@ -186,7 +229,11 @@ def build_store(
     # and Overpass's rel[railway][uic_ref] + `out center` returns those.
     node_loc: dict[int, tuple[float, float]] = {}
     counts = {
-        "ways": 0, "member_ways": 0, "nodes": 0, "stations": 0, "relations": 0,
+        # `ways` holds bit 0 (track, on rail) and `member_ways` the rest, as
+        # before layers; `routable_ways` is the layer's routable set, which for
+        # rail is `ways` again and for bus is mostly relation members.
+        "ways": 0, "member_ways": 0, "routable_ways": 0,
+        "nodes": 0, "stations": 0, "relations": 0,
         "relation_ways": 0, "relation_ways_held": 0,
         # Node members of route relations, and how many of them the extract can
         # place. Most cannot be: Phase 1 keeps nodes carrying a uic_ref, so an
@@ -242,16 +289,19 @@ def build_store(
             if len(pts) < 2:
                 counts["ways_dropped"] += 1
                 continue
-            is_rail = int(tags.get("railway") in _RAIL_VALUES and "service" not in tags)
-            ways.append((obj.id, is_rail, encode_geometry(pts)))
+            # Bit 2 is not known yet — relations come after ways in a PBF — and
+            # is added in one UPDATE once they have been read.
+            cls = ((CLS_ROUTE if _route_class(layer, tags) else 0)
+                   | (CLS_FERRY_YES if tags.get("ferry") == "yes" else 0))
+            ways.append((obj.id, cls, encode_geometry(pts)))
             way_ids.add(obj.id)
             counts["nodes"] += len(pts)
-            counts["ways" if is_rail else "member_ways"] += 1
+            counts["ways" if cls & CLS_ROUTE else "member_ways"] += 1
             lats = [p[0] for p in pts]
             lons = [p[1] for p in pts]
             box = (obj.id, min(lons), max(lons), min(lats), max(lats))
             boxes.append(box)
-            if is_rail:
+            if cls & routable:
                 extent[0] = min(extent[0], box[3])
                 extent[1] = min(extent[1], box[1])
                 extent[2] = max(extent[2], box[4])
@@ -270,7 +320,7 @@ def build_store(
                     [m.ref for m in obj.members if m.type == "n"],
                     sum(1 for m in obj.members if m.type == "r"),
                 ))
-            if tags.get("route") not in _ROUTE_VALUES:
+            if tags.get("route") not in routes:
                 continue
             relations.append((obj.id, tags["route"], tags.get("name")))
             counts["relations"] += 1
@@ -327,17 +377,36 @@ def build_store(
     counts["relation_nodes"] = len(rel_nodes)
     conn.executemany("INSERT INTO relation_uic VALUES (?, ?)", rel_uics)
 
+    # Bit 2: every held way a kept route relation names, whatever its role.
+    conn.execute("UPDATE way SET cls = cls | ? WHERE id IN "
+                 "(SELECT way_id FROM relation_way)", (CLS_MEMBER,))
+    # The way pass measured the extent of what it could classify on its own;
+    # a layer whose routable set includes relation members — bus, ferry — also
+    # reaches as far as the members that carry no other routable bit. Rail's
+    # set is bit 0 alone, so this adds nothing to a rail store's extent.
+    if routable & CLS_MEMBER:
+        for (geom,) in conn.execute(
+                "SELECT geom FROM way WHERE (cls & ?) != 0 AND (cls & ?) = 0",
+                (CLS_MEMBER, routable & ~CLS_MEMBER)):
+            _grow_extent(extent, geom)
+    counts["routable_ways"] = conn.execute(
+        "SELECT COUNT(*) FROM way WHERE (cls & ?) != 0", (routable,)).fetchone()[0]
+
     def refuse(why: str) -> None:
         conn.close()
         os.remove(out_path)
         raise RailBuildError(f"{pbf_path}: {why}")
 
-    # The region's extent comes from its track, and Phase 3 picks regions by
-    # extent. A store built from a damaged extract does not fail on the way in;
-    # it answers None for most of the country it claims, which is indistinguish-
-    # able from "no route exists". Both checks exist to make that loud.
-    if not counts["ways"]:
-        refuse("no railway ways — not a rail extract")
+    # The region's extent comes from its routable set, and Phase 3 picks regions
+    # by extent. A store built from a damaged extract does not fail on the way
+    # in; it answers None for most of the country it claims, which is
+    # indistinguishable from "no route exists". Both checks exist to make that
+    # loud. Refusing on the routable set rather than on bit 0 alone is what
+    # lets a ferry layer of only `ferry=yes` ways, or a bus layer of only
+    # relation members, be a store — Decision 9's table.
+    if not counts["routable_ways"]:
+        refuse("no railway ways — not a rail extract" if layer == "rail" else
+               f"no {layer} ways in the layer's routable set — not a {layer} extract")
     missing_ratio = counts["missing_nodes"] / referenced_nodes if referenced_nodes else 0.0
     if missing_ratio > _MAX_MISSING_NODE_RATIO:
         refuse(
@@ -351,6 +420,7 @@ def build_store(
     meta = {
         "schema": str(SCHEMA_VERSION),
         "region": region,
+        "layer": layer,
         "source_file": os.path.basename(str(pbf_path)),
         "source_date": source_date,
         "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -368,6 +438,24 @@ def build_store(
 
     stats["bytes"] = os.path.getsize(out_path)
     return stats
+
+
+def _grow_extent(extent: list[float], blob: bytes) -> None:
+    """Widen *extent* (min_lat, min_lon, max_lat, max_lon) to a stored geometry.
+
+    From the blob rather than the R-tree, whose float32 boxes are rounded
+    outward: the extent the way pass measures is exact, and this half of it
+    has to be too.
+    """
+    vals = array(_I32)
+    vals.frombytes(blob)
+    if sys.byteorder != "little":
+        vals.byteswap()
+    lats, lons = vals[0::2], vals[1::2]
+    extent[0] = min(extent[0], min(lats) / _COORD_SCALE)
+    extent[1] = min(extent[1], min(lons) / _COORD_SCALE)
+    extent[2] = max(extent[2], max(lats) / _COORD_SCALE)
+    extent[3] = max(extent[3], max(lons) / _COORD_SCALE)
 
 
 def _members_extent(
@@ -406,8 +494,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("out")
     ap.add_argument("--region", default="", help='e.g. "europe/germany"')
     ap.add_argument("--source-date", default="", help="date of the source extract")
+    ap.add_argument("--layer", default=DEFAULT_LAYER, choices=LAYERS,
+                    help="which layer the filtered file holds (default: rail)")
     args = ap.parse_args(argv)
-    stats = build_store(args.pbf, args.out, args.region, args.source_date)
+    stats = build_store(args.pbf, args.out, args.region, args.source_date, args.layer)
     print(" ".join(f"{k}={v}" for k, v in stats.items()))
     return 0
 

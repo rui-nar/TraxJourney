@@ -46,6 +46,8 @@ from typing import Iterable, Optional, Sequence
 from src.rail.store import (
     _MAX_BBOX_VERTICES,
     _box,
+    DEFAULT_LAYER,
+    LAYERS,
     RailStore,
     RailStoreCache,
     RailStoreError,
@@ -59,10 +61,22 @@ _log = get_logger(__name__)
 # rail ways, the same extent src/rail/builder.py records in the store).
 MANIFEST_NAME = "manifest.json"
 # Schema 2 added `status`, and with it entries that describe a region holding no
-# rail rather than a published file. A schema we do not recognise is refused
-# outright: a manifest read with the wrong shape would silently claim coverage
-# it does not have, which is the failure mode that looks exactly like success.
+# rail rather than a published file. Schema 3 adds `layer` to each entry (`rail`,
+# `ferry`, `bus`), so one region can have one entry per layer. A schema we do not
+# recognise is refused outright: a manifest read with the wrong shape would
+# silently claim coverage it does not have, which is the failure mode that looks
+# exactly like success.
+#
+# MANIFEST_SCHEMA is what ``scripts/fetch_rail_data.py`` writes for the
+# *installed* manifest, and stays 2 after schema 3 releases exist: the age check
+# (``src/jobs/rail_data_jobs.py``) reads that file against this constant, and a
+# box upgraded to this code holds a schema 2 installed manifest until its next
+# refresh. An installed entry may carry `layer` either way — every reader here
+# reads a missing `layer` as rail, whatever the schema — so 2 describes the file
+# truthfully. MANIFEST_SCHEMAS is what this reader accepts: a release manifest
+# copied in by hand is schema 3 once ferry and bus are published.
 MANIFEST_SCHEMA = 2
+MANIFEST_SCHEMAS = (2, 3)
 _STATUS_OK = "ok"
 
 # How far beyond a segment's endpoints to look for regions that may hold a
@@ -161,8 +175,18 @@ class RailSource(ABC):
 # Coverage — which regions the local data directory holds
 # ---------------------------------------------------------------------------
 
-def load_coverage(directory: str) -> list[tuple[str, tuple[float, float, float, float]]]:
-    """Regions this directory covers, as (region, (min_lat, min_lon, max_lat, max_lon)).
+def load_coverage(
+    directory: str, layer: str = DEFAULT_LAYER,
+) -> list[tuple[str, tuple[float, float, float, float]]]:
+    """Regions this directory covers for *layer*, as (region, (min_lat, min_lon, max_lat, max_lon)).
+
+    Coverage is **per layer**: only entries whose `layer` is *layer* count, an
+    entry with no `layer` is rail, and a layer this version does not know is
+    skipped with a warning. So rail coverage is exactly what it was before
+    layers existed however many ferry and bus entries a manifest gains, and a
+    ferry or bus entry can never make the rail source open a region whose rail
+    store does not exist. The ferry and bus sources ask for their own layer and
+    open their stores through a ``RailStoreCache`` of the same layer.
 
     Empty means "covered nowhere", which is a legitimate answer and not an
     error: a deployment that has not fetched the data yet, or a manifest whose
@@ -187,12 +211,20 @@ def load_coverage(directory: str) -> list[tuple[str, tuple[float, float, float, 
     except (OSError, ValueError) as exc:
         raise RailSourceError(f"{path}: {exc}") from exc
     schema = manifest.get("schema")
-    if schema != MANIFEST_SCHEMA:
+    if schema not in MANIFEST_SCHEMAS:
         raise RailSourceError(
-            f"{path}: manifest schema {schema!r}, expected {MANIFEST_SCHEMA}")
+            f"{path}: manifest schema {schema!r}, expected one of "
+            f"{', '.join(str(s) for s in MANIFEST_SCHEMAS)}")
 
     coverage = []
     for entry in manifest.get("regions", []):
+        entry_layer = entry.get("layer", DEFAULT_LAYER)
+        if entry_layer not in LAYERS:
+            _log.warning("rail manifest entry %r has unknown layer %r — skipped",
+                         entry.get("region"), entry_layer)
+            continue
+        if entry_layer != layer:
+            continue
         # `empty` is Phase 1 saying "this region has no rail at all" (Andorra,
         # Malta, the Azores, Liechtenstein). It is an answer, not a gap — but it
         # is still not coverage, because there is no file and nothing to route on.

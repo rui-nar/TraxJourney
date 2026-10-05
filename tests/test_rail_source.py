@@ -30,6 +30,7 @@ from src.services.rail_source import (
     LocalRailSource,
     MANIFEST_NAME,
     MANIFEST_SCHEMA,
+    MANIFEST_SCHEMAS,
     RailSourceError,
     RailSourceOverload,
     load_coverage,
@@ -238,7 +239,7 @@ class FixtureOverpass:
     def _ways(self, min_lat, min_lon, max_lat, max_lon):
         out = []
         for way_id, geom in self.conn.execute(
-                "SELECT id, geom FROM way WHERE rail = 1 ORDER BY id"):
+                "SELECT id, geom FROM way WHERE cls & 1 ORDER BY id"):
             points = decode_geometry(geom)
             if any(min_lat <= p["lat"] <= max_lat and min_lon <= p["lon"] <= max_lon
                    for p in points):
@@ -513,7 +514,7 @@ class TestCoverage:
 
     def test_unknown_schema_is_refused_rather_than_read(self, tmp_path):
         write_manifest(str(tmp_path), [ok_entry(REGION, (49.0, 5.0, 51.0, 7.0))],
-                       schema=MANIFEST_SCHEMA + 1)
+                       schema=max(MANIFEST_SCHEMAS) + 1)
         with pytest.raises(RailSourceError, match="schema"):
             LocalRailSource(str(tmp_path))
 
@@ -570,6 +571,114 @@ class TestCoverage:
         assert local.nearest_station(60.172097, 24.941249) is None
         assert local.relations_near(60.172097, 24.941249) == set()
         assert local.ways_in_bbox(60.0, 24.8, 60.3, 25.1) == []
+
+
+# ---------------------------------------------------------------------------
+# Layers — a manifest with ferry and bus entries leaves rail exactly as it was
+# ---------------------------------------------------------------------------
+
+def _layer_entry(region, bbox, layer):
+    entry = ok_entry(region, bbox)
+    entry["layer"] = layer
+    entry["file"] = f"x-{layer}.osm.pbf"
+    return entry
+
+
+@pytest.fixture
+def layered_dir(lux_dir, tmp_path):
+    """The Luxembourg rail store beside ferry and bus stores, under a schema 3
+    manifest — the directory a box holds once ferry and bus are published.
+
+    The bus entry is for a region with **no rail store** and a box over the
+    same stops, and its own bus store is on disk: if a bus entry were read as
+    rail coverage, the rail source would ask for Belgium's rail and log its
+    absence; if it opened files by region alone, it would open a bus store.
+    """
+    from tests.test_rail_store_schema3 import (
+        write_bus_members_only_extract,
+        write_ferry_extract,
+    )
+
+    directory = str(tmp_path / "layered")
+    os.makedirs(directory)
+    rail = os.path.join(lux_dir, store_filename(REGION))
+    with open(rail, "rb") as src, open(
+            os.path.join(directory, store_filename(REGION)), "wb") as dst:
+        dst.write(src.read())
+    with RailStore(rail) as store:
+        rail_bbox = store.bbox
+    build_store(write_ferry_extract(tmp_path / "f.osm.pbf"),
+                os.path.join(directory, store_filename(REGION, "ferry")),
+                region=REGION, layer="ferry")
+    build_store(write_bus_members_only_extract(tmp_path / "b.osm.pbf"),
+                os.path.join(directory, store_filename("europe/belgium", "bus")),
+                region="europe/belgium", layer="bus")
+    wide = (48.0, 4.0, 52.0, 8.0)
+    write_manifest(directory, [
+        _layer_entry("europe/belgium", wide, "bus"),
+        _layer_entry(REGION, wide, "ferry"),
+        _layer_entry(REGION, rail_bbox, "rail"),
+    ], schema=3)
+    return directory
+
+
+class TestLayers:
+    def test_a_schema_2_manifest_is_rail(self, lux_dir):
+        """No `layer` anywhere, which is every manifest on the box today."""
+        assert [r for r, _ in load_coverage(lux_dir)] == [REGION]
+        assert load_coverage(lux_dir, "ferry") == []
+
+    def test_a_schema_3_manifest_leaves_rail_coverage_unchanged(
+            self, lux_dir, layered_dir):
+        assert load_coverage(layered_dir) == load_coverage(lux_dir)
+        assert load_coverage(layered_dir, "rail") == load_coverage(lux_dir)
+        # Each layer's coverage is its own entries, for U9's sources to read.
+        assert [r for r, _ in load_coverage(layered_dir, "ferry")] == [REGION]
+        assert [r for r, _ in load_coverage(layered_dir, "bus")] == ["europe/belgium"]
+
+    def test_a_ferry_or_bus_entry_never_opens_as_rail(self, layered_dir, caplog):
+        source = LocalRailSource(layered_dir)
+        everywhere = (48.0, 4.0, 52.0, 8.0)
+        assert source.regions_for(everywhere) == [REGION]
+        with caplog.at_level(logging.WARNING, logger="src.services.rail_source"):
+            stores = list(source._stores_for(everywhere))
+        assert [s.path for s in stores] == [
+            os.path.join(layered_dir, store_filename(REGION))]
+        assert all(s.layer == "rail" for s in stores)
+        assert "europe/belgium" not in caplog.text
+
+    def test_a_schema_3_directory_routes_rail_exactly_as_before(
+            self, lux_dir, layered_dir, monkeypatch):
+        """Both ship orders end here: code first, then a schema 3 release."""
+        stops = [dict(LUX_GARE), dict(KLEINBETTINGEN)]
+        monkeypatch.setenv("RAIL_SOURCE", "local")
+        transport = Mock(name="_overpass")
+        results = []
+        for directory in (lux_dir, layered_dir):
+            ov._local_source = None
+            monkeypatch.setenv("RAIL_DATA_DIR", directory)
+            with patch.object(ov, "_overpass", transport):
+                results.append(ov.get_rail_geometry(stops))
+        assert not results[0].degraded
+        assert (results[1].polyline, results[1].strategy) == (
+            results[0].polyline, results[0].strategy)
+        assert transport.call_count == 0
+
+    def test_an_unknown_layer_is_skipped_with_a_warning(self, lux_dir, tmp_path, caplog):
+        rail = load_coverage(lux_dir)
+        write_manifest(str(tmp_path), [
+            ok_entry(REGION, rail[0][1]),
+            _layer_entry("europe/belgium", (48.0, 4.0, 52.0, 8.0), "tram"),
+        ], schema=3)
+        with caplog.at_level(logging.WARNING, logger="src.services.rail_source"):
+            assert load_coverage(str(tmp_path)) == rail
+        assert "unknown layer 'tram'" in caplog.text
+
+    def test_the_installed_manifest_schema_is_one_the_box_reads(self):
+        """The age check reads the installed manifest against MANIFEST_SCHEMA;
+        the fetch step writes it at that schema whatever the release was."""
+        assert MANIFEST_SCHEMA == 2
+        assert MANIFEST_SCHEMAS == (2, 3)
 
 
 # ---------------------------------------------------------------------------
