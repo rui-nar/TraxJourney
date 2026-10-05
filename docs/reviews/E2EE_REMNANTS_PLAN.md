@@ -450,7 +450,7 @@ Owner approved (2026-10-06): U14 table (R1-1 fix now, R1-2 deferred) and U8 tabl
 - Scores: trigger=concrete, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
 - Decision: Fix now (D7)
 - Override: —
-- Outcome: open
+- Outcome: fixed (21354552)
 
 Envelope question for the owner: three Definition-of-done bullets no longer hold literally after owner decisions recorded here (trip editors may write encrypted geometry; ENCRYPTION.md lists the legacy companion-memory case; #366 gain recompute is legacy rows only). Amend the plan's DoD to match, or keep the ledger as the record?
 
