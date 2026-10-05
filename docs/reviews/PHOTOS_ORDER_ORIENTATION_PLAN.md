@@ -134,7 +134,7 @@ No findings. Reviewer traced alembic 1.20 batch ordering: only the pre-INSERT DD
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (b7ffb411)
 
 ### U7R1-2 — Script connection keeps sqlite3's 5 s busy timeout
 - Trigger: Admin runs `--apply` with the API live during a parallel import → the per-memory UPDATE waits past 5 s (app uses 30 s, models/db.py:93) → uncaught `database is locked`, run dies with a traceback; committed memories kept, re-run needed.
@@ -179,3 +179,25 @@ Envelope question (U7 round 1): the script selects every memory with a polarstep
 - Outcome: open
 
 No Fix now in this round: U6 review stops (REVIEW.md §6).
+
+## Unit U7 review — Round 2 — 2026-10-05, reviewed at b7ffb411 (244c9e75..b7ffb411, fixes only)
+
+### U7R2-1 — A memory none of whose photos match the source is reported "already in correct order"
+- Trigger: Admin runs the reorder on a selected pre-#239 memory whose source bytes no longer match what was stored (Polarsteps re-encoded or changed the photos, or the user replaced them all) → `matched` is empty, the "too few matched" guard is gated on `if matched and ...` (scripts/reorder_polarsteps_memory_photos.py:147-156) → new order == current → "already in correct order", which the runbook (docs/RELEASING.md:214-216, 247-250) presents as success → a scrambled memory is signed off.
+- Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
+
+### U7R2-2 — Runbook commands hard-code the tag date the prose says not to rely on
+- Trigger: Admin copies the documented commands (`--imported-before 2026-08-27`, the v0.48.0 tag date; also the script's usage examples) while v0.48.0 reached prod later → memories imported between tag and deploy are not selected and stay scrambled (only counted as "not selected").
+- Scores: trigger=concrete, impact=wrong-visible, detect=logged, later=cheap, fix=S/local, confidence=inferred (deploy date not in repo; contradiction verified)
+- Decision: Fix now (D6)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
+
+Envelope question (U7 round 2): old installed mobile builds that predate the client sending `order` may still append scrambled photos after the cutoff; accept as residual, or note in the runbook that the run can be repeated with a later date once the min-version gate (Package C) refuses those builds? User: (b) accepted silently as a residual. Round 2 table approved.
