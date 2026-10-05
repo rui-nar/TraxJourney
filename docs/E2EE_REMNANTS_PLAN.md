@@ -347,8 +347,12 @@ investigation for this plan found three more.
       refresh like the existing PUT. `PUT /api/activities/{id}` is not
       widened.
     - With that port, the client recomputes, during the
-      decision-6 pass, for encrypted activities with `is_edited` or
-      `source == 'gpx'` (the backfill's selection), writes the repaired
+      decision-6 pass, for encrypted **legacy** activities only:
+      `source == 'gpx'`, or `is_edited` with no gain snapshot
+      (`has_gain_snapshot` false — the edit predates #386, so its gain is
+      the old raw sum). Edits made since #386, on-device edits included,
+      keep their Strava-scaled gain, as on plaintext accounts (owner
+      decision during delivery, 2026-10-05). It writes the repaired
       profile back (re-encrypted, through the existing PUT) when the sentinel
       was present, and posts the gain only when it differs by more than
       0.5 m (idempotent, no marker column).
@@ -363,10 +367,12 @@ investigation for this plan found three more.
       both (the server image does not ship `flutter_client/`) and a server
       config endpoint (an extra request for six constants).
     - The value written is the absolute smoothed gain of the current
-      profile, as the plaintext backfill wrote. For edited Strava activities
-      that differs from #386's apportioned figure; for encrypted rows the
-      original Strava figure is not recoverable from the profile, so absolute
-      is the only consistent choice.
+      profile, as the plaintext backfill wrote for the same legacy rows; the
+      original Strava figure of a pre-#386 edit is not recoverable from the
+      profile, so absolute is the only consistent choice there.
+    - The trip payload carries `has_gain_snapshot` per activity
+      (`original_total_elevation_gain` is not null), emitted by
+      `ProjectIO.to_dict`, not `to_strava_dict` (unit U15).
 13. **Catch-up writes are compare-and-swap on the trip's lock version
     (R1-2).** `PUT /api/activities/{id}`, `PUT /api/memories/{id}`,
     `PUT /api/journal/{id}`, `PUT /api/activities/{id}/elevation-gain` and
@@ -1057,8 +1063,9 @@ REVIEW.md defaults apply, with:
   `flutter_client/test/crypto/encryption_gain_recompute_test.dart` (new).
 - **Context:** decision 12; `track_metrics/` from U13; the per-trip step and
   its `lock_version` handling from U7; endpoint from U12.
-- **Do:** for each activity with an enveloped stored profile and `is_edited`
-  or `source == 'gpx'`: decrypt the full profile (from `GET …/track` when
+- **Do:** for each activity with an enveloped stored profile and either
+  `source == 'gpx'` or (`is_edited` and `has_gain_snapshot` is false — U15;
+  an absent flag counts as false): decrypt the full profile (from `GET …/track` when
   the pass already fetched it, else the payload's `elevation_profile_enc`,
   which for encrypted rows is the full envelope); apply the sentinel repair;
   if repaired, re-encrypt and `PUT` the profile (same envelope to both
@@ -1124,6 +1131,30 @@ REVIEW.md defaults apply, with:
   way `align_points` does without changes outside Scope; a file outside
   Scope is needed.
 - **Depends on:** U6, U7, U12, U13.
+
+#### U15 — `has_gain_snapshot` in the trip payload
+
+- **Goal:** the client can tell an edit made before #386 (no gain snapshot)
+  from a later one.
+- **Scope:** `src/models/activity.py`, `src/project/repo_activities.py`
+  (`_row_to_activity` only), `src/project/project_io.py` (`to_dict` only),
+  `tests/test_has_gain_snapshot.py` (new).
+- **Context:** decision 12; `plain_fields` (U12) is the precedent: an
+  `Activity` field set by `_row_to_activity`, emitted by `ProjectIO.to_dict`
+  and absent from `to_strava_dict` (the `.traxj` export).
+- **Do:** add `has_gain_snapshot: bool`, true when the row's
+  `original_total_elevation_gain` is not null; set it on the heavy and the
+  light load path (the column is not deferred); emit it from
+  `ProjectIO.to_dict` only.
+- **Acceptance:** tests: an edited row with a gain snapshot → true on
+  `/meta` and the full payload; an edited row without one → false; an
+  unedited row → false; the key is absent from a `.traxj` export; no extra
+  query on the light path.
+- **Out of scope:** client changes (U8).
+- **Latitude:** none.
+- **Escalate if:** the light path does not select the column; a file
+  outside Scope is needed.
+- **Depends on:** U12.
 
 ### Wave 5 — docs
 
