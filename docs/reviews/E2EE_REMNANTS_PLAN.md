@@ -382,3 +382,5 @@ Envelope decision (owner, 2026-10-05): **no** — trip editors are trusted to ed
 - Outcome: open
 
 Envelope question for the owner: with U7-R1-2 deferred, is "a #505 memory on a trip whose owner is now encrypted stays under the companion's key, unreadable to the owner, until #108 key sharing" accepted for this package?
+
+Owner decisions (2026-10-05): U7 table approved as is. Envelope: a companion's #505 memories on a trip whose owner has since enabled encryption (legacy state only) stay under the companion's key, unreadable to the owner, until #108 key sharing — accepted; ENCRYPTION.md (U10) lists it as a remaining case.
