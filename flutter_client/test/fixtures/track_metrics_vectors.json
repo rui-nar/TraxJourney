@@ -13,6 +13,7 @@
     "elevation_gain: input {elevations, distances_km|null} -> expected double; 'diagnostics' {sigma, stride, window, threshold} are the helper values on the way (null for fewer than 2 elevations), for debugging a mismatch.",
     "recompute_track_metrics: input {points, original_distance_m: double, original_moving_time: int, original_elapsed_time: int} (0.0/0/0 are the Python defaults, i.e. 'no originals') -> {distance (m), total_elevation_gain, elev_high, elev_low, start_latlng, end_latlng, average_speed, moving_time: int, elapsed_time: int}.",
     "apportion_gain: input {stored: double|null, before, after} -> double.",
+    "sentinel_mask: input {elevations, distances_km} -> list of booleans, true where an exact 0.0 is the pre-#374 'no reading' sentinel (_sentinel_mask in alembic/versions/c4a9e1f70b38_repair_elevation_dropout_sentinel.py). Each maximal run of 0.0 is judged by its neighbour on each side that exists: step = |neighbour|, skipped when step < _SENTINEL_MIN_STEP_M; grade = step / (|distance between the neighbour and the run's nearest sample| * 1000), infinity when that distance is 0. The run is a dropout when the largest grade is strictly > _SENTINEL_MIN_GRADE; no grade (all-zero series, or steps too small) means real. Every sample false when the two lists differ in length. The repair then maps true samples to null and calls interpolate_elevation_gaps.",
     "Python semantics to mirror: (1) recompute_track_metrics times are int(round(x)) with Python's round, i.e. HALF TO EVEN (2.5 -> 2, 3.5 -> 4), unlike Dart's round; the polyline encoder alone rounds half away from zero. (2) a median is the element at index len // 2 of the sorted list (the upper middle for an even length). (3) noise_estimate differences pair element i with i + stride; it stops as soon as an order has fewer than _NOISE_MIN_DIFFERENCES differences (even below order 3), samples every step-th difference with step = 1 + len // _NOISE_MEDIAN_SAMPLE_CAP, and keeps the smallest sigma over orders 3..5, 0.0 if none. (4) _NOISE_DIFFERENCE_SCALE[k] = 1.4826 / sqrt(C(2k, k)). (5) smoothing widens its window while d[i] - d[lo] > half_km and while d[hi+1] - d[i] <= half_km; it is skipped (window 1.0) for fewer than 3 samples or distances null / of another length. (6) gain books a rise when value - ref >= threshold and follows a fall when ref - value >= threshold. (7) recompute_track_metrics accumulates distance over every point but records elevation (with its cumulative distance) only for points that have one; elev_high/low are null when none has."
   ],
   "align_points": [
@@ -220,7 +221,9 @@
     },
     "_NOISE_MAX_RUN_STRIDE": 16,
     "_NOISE_MEDIAN_SAMPLE_CAP": 20000,
-    "_NOISE_MIN_DIFFERENCES": 8
+    "_NOISE_MIN_DIFFERENCES": 8,
+    "_SENTINEL_MIN_GRADE": 1.0,
+    "_SENTINEL_MIN_STEP_M": 5.0
   },
   "elevation_gain": [
     {
@@ -1324,6 +1327,144 @@
         "elevations": [10.0,10.0,11.0,12.0,12.0,13.0,14.0,15.0,15.0,16.0]
       },
       "name": "quantised_altitude_pairs_stay_at_one"
+    }
+  ],
+  "sentinel_mask": [
+    {
+      "expected": [],
+      "input": {
+        "distances_km": [],
+        "elevations": []
+      },
+      "name": "empty"
+    },
+    {
+      "expected": [false,false,false,false],
+      "input": {
+        "distances_km": [0.0,0.01,0.02,0.03],
+        "elevations": [500.0,501.0,502.0,503.0]
+      },
+      "name": "no_zeros"
+    },
+    {
+      "expected": [false,false,false,false,false],
+      "input": {
+        "distances_km": [0.0,0.01,0.02,0.03,0.04],
+        "elevations": [0.0,0.0,0.0,0.0,0.0]
+      },
+      "name": "all_zero_has_no_neighbour_to_judge_by"
+    },
+    {
+      "expected": [false,false,true,true,true,false,false,false],
+      "input": {
+        "distances_km": [0.0,0.01,0.02,0.03,0.04,0.05,0.06,0.07],
+        "elevations": [500.0,501.0,0.0,0.0,0.0,504.0,505.0,506.0]
+      },
+      "name": "interior_dropout_in_the_mountains"
+    },
+    {
+      "expected": [false,false,false,true,false],
+      "input": {
+        "distances_km": [0.0,0.01,0.02,0.03,0.04],
+        "elevations": [500.0,501.0,502.0,0.0,504.0]
+      },
+      "name": "single_sample_dropout"
+    },
+    {
+      "expected": [true,true,false,false,false],
+      "input": {
+        "distances_km": [0.0,0.01,0.02,0.03,0.04],
+        "elevations": [0.0,0.0,480.0,481.0,482.0]
+      },
+      "name": "leading_dropout_run"
+    },
+    {
+      "expected": [false,false,false,true,true],
+      "input": {
+        "distances_km": [0.0,0.01,0.02,0.03,0.04],
+        "elevations": [480.0,481.0,482.0,0.0,0.0]
+      },
+      "name": "trailing_dropout_run"
+    },
+    {
+      "expected": [false,false,true,false,false],
+      "input": {
+        "distances_km": [0.0,0.01,0.02,0.03,0.04],
+        "elevations": [30.0,30.5,0.0,31.0,31.5]
+      },
+      "name": "dropout_at_30_m_near_sea_level_is_still_a_cliff"
+    },
+    {
+      "expected": [false,false,false,false,false,false,false,false],
+      "input": {
+        "distances_km": [0.0,0.01,0.02,0.03,0.04,0.05,0.06,0.07],
+        "elevations": [6.0,4.0,2.0,0.0,0.0,0.0,1.5,3.0]
+      },
+      "name": "real_beach_at_0_m_approached_gently"
+    },
+    {
+      "expected": [false,false,false,false],
+      "input": {
+        "distances_km": [0.0,0.1,0.2,0.3],
+        "elevations": [60.0,0.0,0.0,0.0]
+      },
+      "name": "real_beach_below_a_steep_but_real_coastal_cliff"
+    },
+    {
+      "expected": [false,false,false],
+      "input": {
+        "distances_km": [0.0,0.001,0.002],
+        "elevations": [4.5,0.0,4.9]
+      },
+      "name": "step_below_5_m_is_never_judged"
+    },
+    {
+      "expected": [false,false,false],
+      "input": {
+        "distances_km": [0.0,0.01,0.02],
+        "elevations": [10.0,0.0,10.0]
+      },
+      "name": "grade_of_exactly_one_is_not_a_dropout"
+    },
+    {
+      "expected": [false,true,true,false],
+      "input": {
+        "distances_km": [0.0,0.05,0.06,0.07],
+        "elevations": [3.0,0.0,0.0,300.0]
+      },
+      "name": "one_steep_side_is_enough"
+    },
+    {
+      "expected": [false,true,false],
+      "input": {
+        "distances_km": [0.0,0.0,0.5],
+        "elevations": [100.0,0.0,101.0]
+      },
+      "name": "zero_distance_step_is_infinitely_steep"
+    },
+    {
+      "expected": [false,true,false],
+      "input": {
+        "distances_km": [0.0,0.01,0.02],
+        "elevations": [-30.0,0.0,-31.0]
+      },
+      "name": "below_sea_level_neighbour_counts_by_magnitude"
+    },
+    {
+      "expected": [false,true,false,false,false,false,true,false],
+      "input": {
+        "distances_km": [0.0,0.01,0.02,0.03,0.04,0.05,0.06,0.07],
+        "elevations": [500.0,0.0,501.0,2.0,0.0,1.0,0.0,600.0]
+      },
+      "name": "two_separate_runs_judged_separately"
+    },
+    {
+      "expected": [false,false,false],
+      "input": {
+        "distances_km": [0.0,0.01],
+        "elevations": [500.0,0.0,501.0]
+      },
+      "name": "distance_length_mismatch_marks_nothing"
     }
   ],
   "smooth_elevations": [

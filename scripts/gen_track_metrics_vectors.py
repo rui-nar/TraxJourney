@@ -90,6 +90,16 @@ _SCHEMA = [
     "defaults, i.e. 'no originals') -> {distance (m), total_elevation_gain, elev_high, "
     "elev_low, start_latlng, end_latlng, average_speed, moving_time: int, elapsed_time: int}.",
     "apportion_gain: input {stored: double|null, before, after} -> double.",
+    "sentinel_mask: input {elevations, distances_km} -> list of booleans, true where an "
+    "exact 0.0 is the pre-#374 'no reading' sentinel (_sentinel_mask in "
+    "alembic/versions/c4a9e1f70b38_repair_elevation_dropout_sentinel.py). Each maximal "
+    "run of 0.0 is judged by its neighbour on each side that exists: step = |neighbour|, "
+    "skipped when step < _SENTINEL_MIN_STEP_M; grade = step / (|distance between the "
+    "neighbour and the run's nearest sample| * 1000), infinity when that distance is 0. "
+    "The run is a dropout when the largest grade is strictly > _SENTINEL_MIN_GRADE; no "
+    "grade (all-zero series, or steps too small) means real. Every sample false when "
+    "the two lists differ in length. The repair then maps true samples to null and calls "
+    "interpolate_elevation_gaps.",
     "Python semantics to mirror: (1) recompute_track_metrics times are int(round(x)) "
     "with Python's round, i.e. HALF TO EVEN (2.5 -> 2, 3.5 -> 4), unlike Dart's round; "
     "the polyline encoder alone rounds half away from zero. (2) a median is the element "
@@ -522,6 +532,55 @@ def _apportion() -> List[dict]:
              "expected": _apportion_gain(s, b, a)} for n, s, b, a in cases]
 
 
+def _sentinel_migration():
+    """The #374 dropout repair migration, loaded from its file as
+    tests/test_migration_elevation_non_finite_repair.py loads its own: the
+    revision id makes it no importable module name."""
+    import importlib.util
+
+    path = _ROOT / "alembic" / "versions" / "c4a9e1f70b38_repair_elevation_dropout_sentinel.py"
+    spec = importlib.util.spec_from_file_location("dropout_sentinel_migration", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _sentinel_mask() -> List[dict]:
+    mask = _sentinel_migration()._sentinel_mask
+    d10 = [round(i * 0.01, 6) for i in range(8)]  # a sample every 10 m
+    cases = [
+        ("empty", [], []),
+        ("no_zeros", [500.0, 501.0, 502.0, 503.0], d10[:4]),
+        ("all_zero_has_no_neighbour_to_judge_by", [0.0] * 5, d10[:5]),
+        ("interior_dropout_in_the_mountains",
+         [500.0, 501.0, 0.0, 0.0, 0.0, 504.0, 505.0, 506.0], d10),
+        ("single_sample_dropout", [500.0, 501.0, 502.0, 0.0, 504.0], d10[:5]),
+        ("leading_dropout_run", [0.0, 0.0, 480.0, 481.0, 482.0], d10[:5]),
+        ("trailing_dropout_run", [480.0, 481.0, 482.0, 0.0, 0.0], d10[:5]),
+        ("dropout_at_30_m_near_sea_level_is_still_a_cliff",
+         [30.0, 30.5, 0.0, 31.0, 31.5], d10[:5]),
+        ("real_beach_at_0_m_approached_gently",
+         [6.0, 4.0, 2.0, 0.0, 0.0, 0.0, 1.5, 3.0], d10),
+        ("real_beach_below_a_steep_but_real_coastal_cliff",
+         [60.0, 0.0, 0.0, 0.0], [0.0, 0.1, 0.2, 0.3]),
+        ("step_below_5_m_is_never_judged", [4.5, 0.0, 4.9], [0.0, 0.001, 0.002]),
+        ("grade_of_exactly_one_is_not_a_dropout",
+         [10.0, 0.0, 10.0], [0.0, 0.01, 0.02]),
+        ("one_steep_side_is_enough",
+         [3.0, 0.0, 0.0, 300.0], [0.0, 0.05, 0.06, 0.07]),
+        ("zero_distance_step_is_infinitely_steep",
+         [100.0, 0.0, 101.0], [0.0, 0.0, 0.5]),
+        ("below_sea_level_neighbour_counts_by_magnitude",
+         [-30.0, 0.0, -31.0], [0.0, 0.01, 0.02]),
+        ("two_separate_runs_judged_separately",
+         [500.0, 0.0, 501.0, 2.0, 0.0, 1.0, 0.0, 600.0], d10),
+        ("distance_length_mismatch_marks_nothing",
+         [500.0, 0.0, 501.0], [0.0, 0.01]),
+    ]
+    return [{"name": n, "input": {"elevations": e, "distances_km": d},
+             "expected": mask(e, d)} for n, e, d in cases]
+
+
 def python_constants() -> Dict[str, Any]:
     """The constants the Dart port must declare, by their Python names."""
     return {
@@ -551,6 +610,7 @@ _SECTIONS: Dict[str, Callable[[], List[dict]]] = {
     "elevation_gain": _gain,
     "recompute_track_metrics": _recompute,
     "apportion_gain": _apportion,
+    "sentinel_mask": _sentinel_mask,
 }
 
 
@@ -560,6 +620,10 @@ def build_vectors() -> Dict[str, Any]:
     # Derived, written so a mismatch in the port's formula shows on its own.
     constants["_NOISE_DIFFERENCE_SCALE"] = {
         str(k): v for k, v in te._NOISE_DIFFERENCE_SCALE.items()}
+    # The dropout rule's, from the migration; not in elevation_gain.dart.
+    migration = _sentinel_migration()
+    constants["_SENTINEL_MIN_GRADE"] = migration._SENTINEL_MIN_GRADE
+    constants["_SENTINEL_MIN_STEP_M"] = migration._SENTINEL_MIN_STEP_M
     data: Dict[str, Any] = {"_schema": _SCHEMA, "constants": constants}
     for section, build in _SECTIONS.items():
         cases = build()
