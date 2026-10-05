@@ -312,6 +312,38 @@ class TestDeletedEntry:
         assert _photos(engine, journal_id) is None
         _assert_nothing_left(engine, ids, journal_id)
 
+    def test_a_placement_during_the_delete_lands_before_it_or_not_at_all(self, env, monkeypatch):
+        _, engine, ids = env
+        journal_id = ids["journal"]
+        author = str(ids["author"])
+        _land(ids, journal_id, order=0)
+        # A photo whose files are written (and counted) before the delete starts.
+        racer = str(uuid_lib.uuid4())
+        journal_mod._save_photo_files(author, journal_id, racer, _jpeg_bytes())
+
+        original_bump = journal_mod.bump_lock_version
+        racers = []
+
+        def place_mid_delete(sess, project_id):
+            # The delete has read its photo list and unlinked it, and has not
+            # committed: the racer tries to place now. Without the delete
+            # holding the photo lock it would land in the row about to go,
+            # and its files would never be deleted.
+            t = threading.Thread(target=journal_mod._write_journal_photo,
+                                 args=(journal_id, racer), kwargs={"owner_dir": author})
+            t.start()
+            racers.append(t)
+            t.join(timeout=0.5)
+            original_bump(sess, project_id)
+
+        monkeypatch.setattr(journal_mod, "bump_lock_version", place_mid_delete)
+        _delete_entry(ids, journal_id)
+        for t in racers:
+            t.join()
+
+        assert _photos(engine, journal_id) is None
+        _assert_nothing_left(engine, ids, journal_id)
+
 
 # ── The from-url route ──────────────────────────────────────────────────────
 

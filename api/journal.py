@@ -414,7 +414,10 @@ def delete_journal(
 ):
     """Delete a journal entry and all its photos from disk."""
     user_info_id = int(current_user["sub"])
-    with get_session() as sess:
+    # Under the photo lock from before the list is read until after the
+    # commit, so no placement lands in between (it lands before, and goes
+    # with the entry, or finds it gone and removes its own files).
+    with photo_lock("journal", journal_id), get_session() as sess:
         row = _get_owned_journal(sess, journal_id, user_info_id)
 
         photos: List[str] = json.loads(row.photos_json or "[]")
