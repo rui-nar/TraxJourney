@@ -17,7 +17,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import event
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 import models.db as db_module
 from api.activities import router as activities_router
@@ -156,3 +156,40 @@ def test_reads_no_other_activitys_heavy_columns(env):
     for statement, params in heavy:
         flat = list(params) if isinstance(params, (list, tuple)) else list(params.values())
         assert 222 not in flat and 333 not in flat, statement
+
+
+def test_originals_withheld_once_the_rows_owner_has_left_the_trip(env):
+    """A companion's edited ride stays in the trip after he leaves, but the
+    trip may no longer rewrite it (reset is refused), so its snapshots are
+    not handed out either."""
+    client, engine, ids, caller = env
+    with Session(engine) as sess:
+        proj = sess.exec(select(DBProject)).first()
+        sess.add(DBActivity(
+            id=555, user_info_id=ids["ed"], name="Eds ride", type="Ride",
+            summary_polyline=_POLY, elevation_profile_json=_EP, is_edited=True,
+            original_polyline=_POLY, original_elevation_profile_json=_EP,
+        ))
+        sess.add(DBProjectItem(project_id=proj.id, position=3,
+                               item_type="activity", activity_id=555))
+        sess.commit()
+
+    for who in ("owner", "co"):
+        caller["id"] = ids[who]
+        body = _get(client, ids, 555, as_member=who != "owner").json()
+        assert body["original_polyline"] == _POLY, who
+
+    with Session(engine) as sess:
+        m = sess.exec(select(DBProjectMember).where(
+            DBProjectMember.user_info_id == ids["ed"])).one()
+        sess.delete(m)
+        sess.commit()
+
+    for who in ("owner", "co"):
+        caller["id"] = ids[who]
+        resp = _get(client, ids, 555, as_member=who != "owner")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["map"]["summary_polyline"] == _POLY
+        assert "original_polyline" not in body, who
+        assert "original_elevation_profile_json" not in body, who

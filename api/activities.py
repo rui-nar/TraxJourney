@@ -1640,11 +1640,15 @@ def get_activity_track(
         if act_row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not in project")
         activity = _repo._row_to_activity(act_row)
-        is_editor = _role_satisfies(effective_role(sess, row, user_info_id), "editor")
+        # The snapshots go only where reset could use them: an editor of a trip
+        # that may still rewrite this row (its owner has not left the trip).
+        gets_originals = _role_satisfies(effective_role(sess, row, user_info_id), "editor") and (
+            _repo.activity_rewritable_by_trip(sess, row.id, activity_id)
+            or _repo.activity_e2ee_writable_by(sess, activity_id, user_info_id))
         d = activity.to_strava_dict()
         ep = activity.elevation_profile or getattr(activity, "elevation_profile_low_res", None)
         d["elevation_profile"] = [list(pair) for pair in zip(ep[0], ep[1])] if ep else None
-        if act_row.is_edited and is_editor:
+        if act_row.is_edited and gets_originals:
             d["original_polyline"] = act_row.original_polyline
             d["original_elevation_profile_json"] = act_row.original_elevation_profile_json
         # So the editor can send it back on save/split — see TrackEditRequest.lock_version.

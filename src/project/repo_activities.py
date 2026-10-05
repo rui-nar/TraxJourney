@@ -420,6 +420,13 @@ class ActivityMixin:
             return False
         if not row.original_polyline:
             raise NothingToRestore(activity_id)
+        if (is_encrypted_envelope(row.original_polyline)
+                or is_encrypted_envelope(row.original_elevation_profile_json)):
+            # The server cannot measure ciphertext, and decoding it below would
+            # raise or restore garbage. Refused until the scalar snapshot lets
+            # reset restore an enveloped original verbatim.
+            _log.error("reset refused: activity %s has an enveloped original", activity_id)
+            raise NothingToRestore(activity_id)
 
         # Advance the project's lock_version (issue #173) so a native client's
         # on-disk cache — which only ever checks that counter — notices the
