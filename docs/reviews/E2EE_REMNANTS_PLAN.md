@@ -344,3 +344,7 @@ No findings. Backfill traced against reset_activity_track branch by branch; SQLi
 Notes:
 - Wave 1 interrupted once by an API session limit; all four implementers resumed from their worktrees with no work lost.
 - Local Windows full-suite runs hung (U1); full checks run in the `traxjourney-py314-citest` container instead. Wave 1 without U2: 6131 passed, 39 skipped. Full wave 1 (a01ecf3c): 6175 passed, 39 skipped.
+
+## Unit U12, round 1 — 2026-10-05, reviewed ae7469f7..ffad0cbe (worktree-agent-a52415c6772734e32)
+
+No findings. One envelope question raised for the owner: should the encrypted track routes also require `activity_e2ee_writable_by` for the head row, so a trip editor can never put another user's (positive-id) Strava row under a key that user cannot use (the reverse direction of the Trust bullet; R2-2's reasoning applied to the edit routes)?
