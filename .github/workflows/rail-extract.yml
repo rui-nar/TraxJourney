@@ -155,7 +155,10 @@ jobs:
         with:
           python-version: "3.14"
 
-      - run: pip install osmium requests PyYAML
+      # Everything, not the builder's three: the corpus gate below resolves
+      # legs with the server's own resolver, which imports what the server
+      # imports, and a hand-picked list breaks on its next new import.
+      - run: pip install -r requirements.txt
 
       - uses: actions/download-artifact@v4
         with:
@@ -238,6 +241,63 @@ jobs:
             --out-dir dist/rail \
             --base released/manifest.json \
             --expect "$EXPECTED" $force
+
+      - name: Check the route corpus
+        # A manifest can be complete and checksummed and still describe data
+        # that routes Toulouse to Paris through Bordeaux. So before anything is
+        # uploaded, every corpus region the manifest holds is built into a
+        # store exactly as the box will build it, and config/route_corpus.yml
+        # is resolved against them; a FAIL or a known-bad leg that moved
+        # stops the job here.
+        #
+        # The whole release is gated, not just what this run rebuilt: a
+        # subset run fetches the regions it carries from the release it is
+        # patching, because that release, as a whole, is what the box
+        # installs — and the resolver may have changed since they were last
+        # checked. A full run passes --require-all, since every corpus region
+        # was just built; a subset run lets a leg skip only when the release
+        # does not hold its region at all (seeding coverage a country at a
+        # time).
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          REQUESTED: ${{ inputs.regions }}
+          FORCE: ${{ inputs.force_publish }}
+        run: |
+          if [ "$FORCE" = "true" ]; then
+            echo "::warning::force_publish: the route corpus gate was skipped"
+            exit 0
+          fi
+          stores="$RUNNER_TEMP/rail-stores"
+          carried="$RUNNER_TEMP/rail-carried"
+          mkdir -p "$stores" "$carried"
+          cp dist/rail/manifest.json "$stores/"
+          # region, file, sha256, store name: each corpus region the manifest
+          # lists as ok. A file, not a pipe, so `-e` sees a failure in it.
+          python -c '
+          import json, yaml
+          from src.rail.store import store_filename
+          legs = yaml.safe_load(open("config/route_corpus.yml", encoding="utf-8"))["legs"]
+          named = {region for leg in legs for region in leg["regions"]}
+          for e in json.load(open("dist/rail/manifest.json", encoding="utf-8"))["regions"]:
+              if e["region"] in named and e.get("status", "ok") == "ok":
+                  print(e["region"], e["file"], e["sha256"], store_filename(e["region"]), sep="\t")
+          ' > "$RUNNER_TEMP/corpus-regions.tsv"
+          while IFS=$'\t' read -r region file sha store; do
+            pbf="dist/rail/$file"
+            if [ ! -f "$pbf" ]; then
+              gh release download "$TAG" --pattern "$file" --dir "$carried" --clobber
+              pbf="$carried/$file"
+              echo "$sha  $pbf" | sha256sum -c -
+            fi
+            echo "building $region from $pbf"
+            python -m src.rail.builder "$pbf" "$stores/$store" --region "$region"
+          done < "$RUNNER_TEMP/corpus-regions.tsv"
+          require_all=""
+          if [ -z "$REQUESTED" ]; then
+            require_all="--require-all"
+          fi
+          python scripts/route_corpus.py "$stores" $require_all
 
       - name: Publish the release
         # A release asset, not a Docker layer: baking the data into the image
