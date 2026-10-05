@@ -575,9 +575,10 @@ async def replace_photo(
         cache_ref = project_cache_ref(sess, row.project_id)
         sess.commit()
         bust_project_payloads(cache_ref)
-
-    unlink_and_record(current_user["sub"], photo_files(
-        photo_folder(_DATA_DIR, current_user["sub"], "journal", journal_id), [old_uuid]))
+        # Under the lock, as in api/memories.py, where a delete's folder
+        # sweep would otherwise uncount these same files a second time.
+        unlink_and_record(current_user["sub"], photo_files(
+            photo_folder(_DATA_DIR, current_user["sub"], "journal", journal_id), [old_uuid]))
 
     return {"uuid": new_uuid}
 

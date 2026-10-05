@@ -775,8 +775,9 @@ async def replace_photo(
         cache_ref = project_cache_ref(sess, mem_row.project_id)
         sess.commit()
         bust_project_payloads(cache_ref)
-
-    _delete_photo_files(owner_dir, memory_id, [old_uuid])
+        # Still under the lock: a delete_memory's folder sweep would otherwise
+        # size these same files and uncount them a second time.
+        _delete_photo_files(owner_dir, memory_id, [old_uuid])
     return {"uuid": new_uuid}
 
 

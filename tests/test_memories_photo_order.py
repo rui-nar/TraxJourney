@@ -47,6 +47,7 @@ from sqlmodel import Session, SQLModel, select
 import api.journal as journal_mod
 import api.memories as mem_mod
 import models.db as db_module
+import src.billing.usage as usage_mod
 from api.deps import get_current_user
 from api.journal import router as journal_router
 from api.memories import router as memories_router
@@ -485,6 +486,36 @@ class TestReplaceRacingDelete:
 
         assert _photos(engine, memory_id) is None
         assert _files(user_id, memory_id) == []
+        assert _usage(engine, user_id) == _BASELINE_USAGE
+
+    def test_a_delete_during_the_old_photos_cleanup_does_not_uncount_it_twice(self, env, monkeypatch):
+        client, engine, user_id, memory_id, _ = env
+        old = _land(user_id, memory_id, order=0)
+        original_bytes_of = usage_mod.bytes_of
+        deleters = []
+
+        def bytes_of_then_delete(*paths):
+            size = original_bytes_of(*paths)
+            if not deleters and any(Path(p).stem == old for p in paths):
+                # The replace has committed and sized the old photo's files,
+                # not yet unlinked them: the delete runs now. Its folder
+                # sweep must not size and uncount the same files again.
+                t = threading.Thread(target=mem_mod.delete_memory, args=(memory_id, _user(user_id)))
+                t.start()
+                deleters.append(t)
+                t.join(timeout=0.5)
+            return size
+
+        monkeypatch.setattr(usage_mod, "bytes_of", bytes_of_then_delete)
+        resp = client.put(f"/api/memories/{memory_id}/photos/{old}/replace",
+                          files={"file": ("n.jpg", _jpeg_bytes(), "image/jpeg")})
+        for t in deleters:
+            t.join()
+
+        assert resp.status_code == 200 and len(deleters) == 1
+        assert _photos(engine, memory_id) is None
+        assert _files(user_id, memory_id) == []
+        # Counted storage is what is on disk: nothing, over the baseline.
         assert _usage(engine, user_id) == _BASELINE_USAGE
 
 
