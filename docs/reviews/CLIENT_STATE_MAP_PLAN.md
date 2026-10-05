@@ -279,3 +279,7 @@ Owner (2026-10-04): I1-R3-1 and I1-R3-2 approved; I1-R3-3 overridden to Fix now;
 - Revisit when: the owner applies the I1-R1-1 override here, or a resolved segment is seen as an arc after a view/manage switch
 - Override: user: Fix now — the #278 goal holds across notifiers
 - Outcome: open
+
+## Unit review U5b-1 — 2026-10-05, reviewed at 4cd43f11 (pkgc/u5b1)
+
+Clean: no findings. Compare-and-set atomicity, races, cross-user scoping, the SQLite migration and downgrade, old APKs (E5) and E6 traced end to end.
