@@ -1200,8 +1200,12 @@ REVIEW.md defaults apply, with:
 - An encrypted companion's new memory in a plaintext trip is readable by the
   owner; their earlier encrypted ones become readable after their next
   unlocked load of that trip.
-- No user can write the E2EE fields of an activity row they neither own
-  nor hold every trip of; Strava rows of another user are never written.
+- Through `PUT /api/activities/{id}` and the elevation-gain route, no user
+  can write the E2EE fields of an activity row they neither own nor hold
+  every trip of; Strava rows of another user are never written there. The
+  encrypted track edit/split routes keep today's edit permission: any trip
+  editor may edit any track in the trip (owner envelope decision,
+  2026-10-05).
 - Memory and journal updates advance the trip's lock version.
 - An invite to an owner who enabled encryption after creating it cannot be
   accepted.
@@ -1214,11 +1218,17 @@ REVIEW.md defaults apply, with:
   A split tail shows the head's title.
 - Poster jobs on encrypted trips with memory text require consent; finished
   jobs hold no memory text; jobs older than 30 days are gone with their files.
-- Encrypted edited/GPX activities show the same smoothed gain as the server
-  would compute for the same profile, written through
+- Encrypted legacy activities — GPX imports, and edits with no gain
+  snapshot (`has_gain_snapshot` false, the edit predates #386) — show the
+  same smoothed gain as the server would compute for the same profile;
+  later edits keep their Strava-scaled gain, as on plaintext accounts
+  (owner decision during delivery, 2026-10-05). The gain is written through
   `PUT /api/activities/{id}/elevation-gain`; `PUT /api/activities/{id}` is
   unchanged; parity tests fail if either side's constants or algorithm drift.
-- `docs/ENCRYPTION.md` lists only remnants 6 (backups) and 7 (on-device
-  cache) and activity rows imported by another user (shown in the app as
-  "stay unencrypted").
+- `docs/ENCRYPTION.md` lists as remaining cases only: database backups; the
+  on-device cache; activity rows the owner may not encrypt (shown in the app
+  as "stay unencrypted"); a companion's legacy #505 memories on a trip whose
+  owner later enabled encryption, until #108 (owner decision, 2026-10-05);
+  and a user's own activity rows that live only in another user's plaintext
+  trip (I1-4).
 - Full `pytest` and `flutter test` pass; `alembic heads` shows one head.
