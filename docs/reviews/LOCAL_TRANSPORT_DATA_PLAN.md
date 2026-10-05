@@ -205,8 +205,14 @@ Branch `feat/345-local-transport-data`, base cc52978b (plan + origin/main e96f86
 | U1 | Failed Rail extract run opens a rail-data issue | Opus | S3 | 1 | — | yes | R1-5 |
 | U3 | Count Overpass requests by purpose, resolves by source | Sonnet | — | 2 | X3 (scope +3 test files) | yes | R1-8 |
 | U4 | Route corpus and runner | Opus | S2 | 1 | owner question (Hamburg → Munich) | yes | — |
+| U2 | Daily rail-data age check | Opus | S5 | 1 | — | yes | R1-6 |
+| U5 | Corpus gates the Rail extract publish | Opus | S3 | 1 | — | yes | — |
 
 Notes:
 - U1: the `rail-data` label did not exist; owner approved creating it (created 2026-10-05). `_working_bash()` in the workflow test now prefers Git Bash on Windows (a bare `bash` is the WSL launcher and drops env vars); no change on Linux.
 - U3: `_overpass(query, purpose)` broke one-argument mocks in test_rail_source.py, test_vr_hafas.py and test_resolve_route_async.py; Scope widened to them (no assertion changed). Orchestrator decision: count every `_overpass` outcome — added `no_slot`, `client_error`, `bad_body`. Verifier note: a ferry/bus/rail resolve that raises is not counted in `traxjourney_route_resolves_total` (no answering source); accepted, the request counter still counts its Overpass traffic.
 - U4: Hamburg → Munich resolves via Berlin–Leipzig–Erfurt (934 km) rather than Hannover–Würzburg (~790 km); owner: known_bad, the direct line is the expected answer. Corpus passes unchanged on rail-data-2026-09-08 and rail-data-2026-10-05. The gate (U5) must build seven regions the legs name: France, Spain, Germany, Denmark, Austria, Netherlands, Sweden.
+- Wave 1 integration (45220d04): full suite 6112 passed, 39 skipped (py3.14 CI container).
+- U2: also runs once at start-up (`next_run_time=now`, API process only) so the gauge exists right after a deploy; the age gauge is NaN when the manifest is unusable.
+- U5: the gate builds every corpus region the merged manifest holds (carried ones fetched from the patched release and sha256-checked), `--require-all` on full runs only; publish installs requirements.txt. Live check (owner-approved): dispatch 37278688216, `europe/france` subset on d39d9d6a — all jobs green, corpus 11 pass / 1 known-bad-unchanged / 0 skip, publish job 1 m 19 s; it patched France in rail-data-2026-10-05.
+- Wave 2 integration (d39d9d6a): full suite 6140 passed, 39 skipped.
