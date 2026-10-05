@@ -19,6 +19,10 @@ import '../crypto/undecrypted_fields.dart';
 import '../map/geo_point.dart';
 import '../map/polyline_decoder.dart';
 import '../share/share_content_generator.dart';
+import '../track_metrics/align.dart';
+import '../track_metrics/elevation_profile.dart';
+import '../track_metrics/polyline_encoder.dart';
+import '../track_metrics/track_metrics.dart';
 import 'client_geo_builder.dart' as client_geo;
 import 'geo_viewport.dart';
 import 'map_geometry_memo.dart';
@@ -32,6 +36,7 @@ import 'project_people_crud_mixin.dart';
 import 'project_quota_mixin.dart';
 import 'project_segment_crud_mixin.dart';
 import 'project_service.dart';
+import 'track_edit_model.dart' show EditPoint;
 import 'trip_end_days.dart';
 
 /// Waits between the automatic retries of a failed project fetch.
@@ -402,6 +407,134 @@ class _SupersessionTrack {
   /// not just once at the top — since anything can supersede this call
   /// during any of those awaits.
   bool isCurrent(int token, ProjectRef ref) => token == _token && _ref == ref;
+}
+
+/// An encrypted activity opened for editing on this device (E2EE remnants
+/// decision 7): the stored track and figures `GET …/track` returned,
+/// decrypted. Save and split measure every piece against this geometry and
+/// these times, as the server's `_write_track_geometry` measures against the
+/// row it overwrites.
+class EncryptedTrackEdit {
+  const EncryptedTrackEdit({
+    required this.polyline,
+    required this.profile,
+    required this.name,
+    required this.movingTime,
+    required this.elapsedTime,
+    required this.totalElevationGain,
+    required this.lockVersion,
+  });
+
+  /// The stored polyline, decrypted.
+  final String polyline;
+
+  /// The stored full profile, decrypted; null when the row has none.
+  final ElevationProfile? profile;
+
+  /// The activity's name, decrypted.
+  final String? name;
+  final int movingTime;
+  final int elapsedTime;
+  final double? totalElevationGain;
+
+  /// The trip's lock_version from the same `GET …/track`.
+  final int lockVersion;
+
+  /// Decrypts [track], a `GET …/track` response whose polyline is an
+  /// envelope. Throws when this device cannot: locked, or another key.
+  static Future<EncryptedTrackEdit> open(Map<String, dynamic> track) async {
+    final poly = (track['map'] as Map?)?['summary_polyline'] as String;
+    final name = track['name'] as String?;
+    final epEnc = track['elevation_profile_enc'];
+    final ElevationProfile? profile;
+    if (epEnc is String) {
+      profile = _parseProfile(await encryption.decryptText(epEnc));
+    } else {
+      // A row whose profile the catch-up has not encrypted yet.
+      final pairs = track['elevation_profile'];
+      profile = pairs is List
+          ? ElevationProfile(
+              [for (final p in pairs) ((p as List)[0] as num).toDouble()],
+              [for (final p in pairs) ((p as List)[1] as num).toDouble()])
+          : null;
+    }
+    return EncryptedTrackEdit(
+      polyline: await encryption.decryptText(poly),
+      profile: profile,
+      name: name != null && EncryptedField.isEnvelope(name)
+          ? await encryption.decryptText(name)
+          : name,
+      movingTime: (track['moving_time'] as num?)?.toInt() ?? 0,
+      elapsedTime: (track['elapsed_time'] as num?)?.toInt() ?? 0,
+      totalElevationGain: (track['total_elevation_gain'] as num?)?.toDouble(),
+      lockVersion: (track['lock_version'] as num).toInt(),
+    );
+  }
+
+  /// Mirrors `_parse_ep`: the stored profile JSON as its two lists (a missing
+  /// list reads as empty), or null when it does not parse.
+  static ElevationProfile? _parseProfile(String json) {
+    try {
+      final ep = jsonDecode(json) as Map<String, dynamic>;
+      List<double> list(Object? v) =>
+          [for (final x in (v as List?) ?? const []) (x as num).toDouble()];
+      return ElevationProfile(list(ep['distances_km']), list(ep['elevations_m']));
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+/// What `_write_track_geometry` stores for [points] edited from, or cut out
+/// of, [opened], in plaintext: the figures with times apportioned against the
+/// opened geometry and gain by `_apportion_gain` from the stored gain, the
+/// polyline and the profile. Keyed by column name, geometry not yet encrypted.
+@visibleForTesting
+Map<String, dynamic> measureTrackPiece(
+    List<TrackPoint> points, EncryptedTrackEdit opened) {
+  final before =
+      recomputeTrackMetrics(alignPoints(opened.polyline, opened.profile));
+  final m = recomputeTrackMetrics(
+    points,
+    originalDistanceM: before.distance,
+    originalMovingTime: opened.movingTime,
+    originalElapsedTime: opened.elapsedTime,
+  );
+  final ep = pointsToElevationProfile(points);
+  return {
+    'summary_polyline': encodePolyline([for (final p in points) (p.lat, p.lng)]),
+    'elevation_profile_json': ep == null
+        ? null
+        : jsonEncode(
+            {'distances_km': ep.distancesKm, 'elevations_m': ep.elevationsM}),
+    'start_latlng_json': jsonEncode(m.startLatLng),
+    'end_latlng_json': jsonEncode(m.endLatLng),
+    'distance': m.distance,
+    'moving_time': m.movingTime,
+    'elapsed_time': m.elapsedTime,
+    'average_speed': m.averageSpeed,
+    'total_elevation_gain': apportionGain(opened.totalElevationGain,
+        before.totalElevationGain, m.totalElevationGain),
+    'elev_high': m.elevHigh,
+    'elev_low': m.elevLow,
+  };
+}
+
+/// [measureTrackPiece] with its four geometry values encrypted: the body of
+/// one piece for the encrypted track routes.
+Future<Map<String, dynamic>> _encryptedTrackPiece(
+    List<TrackPoint> points, EncryptedTrackEdit opened) async {
+  final piece = measureTrackPiece(points, opened);
+  for (final key in const [
+    'summary_polyline',
+    'elevation_profile_json',
+    'start_latlng_json',
+    'end_latlng_json',
+  ]) {
+    final plain = piece[key] as String?;
+    piece[key] = plain == null ? null : await encryption.encryptText(plain);
+  }
+  return piece;
 }
 
 class ProjectNotifier extends ChangeNotifier
@@ -3067,6 +3200,66 @@ class ProjectNotifier extends ChangeNotifier
         dropBoundary: dropBoundary, payload: payload, lockVersion: lockVersion);
     await _silentReload(ref);
   }
+
+  /// [resetActivityTrack] as a compare-and-swap on [lockVersion], the
+  /// project's lock_version the editor last saw: a 409 `stale_write` means the
+  /// trip changed elsewhere since, and 409 `nothing_to_restore` that the
+  /// original track was not kept. Rethrows both for the editor to explain.
+  Future<void> resetActivityTrackIfUnchanged(
+      int activityId, int lockVersion) async {
+    final ref = this.ref;
+    if (ref == null) return;
+    await _service.resetActivityTrackIfUnchanged(ref, activityId, lockVersion);
+    await _silentReload(ref);
+  }
+
+  /// Save the edited [points] of an encrypted activity (E2EE remnants
+  /// decision 7): measured on this device against [opened], encrypted, and
+  /// sent with the figures, so the server never sees the track. Reloads on
+  /// success; rethrows, a 409 meaning the trip changed since [opened].
+  Future<void> saveEncryptedActivityTrack(int activityId,
+      EncryptedTrackEdit opened, List<EditPoint> points) async {
+    final ref = this.ref;
+    if (ref == null) return;
+    final piece = await _encryptedTrackPiece(_trackPoints(points), opened);
+    await _service.saveEncryptedActivityTrack(ref, activityId, piece,
+        lockVersion: opened.lockVersion);
+    await _silentReload(ref);
+  }
+
+  /// Split an encrypted activity at [splitIndex] of [points] on this device,
+  /// cutting as the server's `split_activity` does: the head keeps
+  /// `points[..splitIndex]`, the tail starts at [splitIndex] (one later with
+  /// [dropBoundary], #104), and both pieces are apportioned against [opened],
+  /// so their times and gain sum to the edited track's share. The tail's name
+  /// is the server's placeholder for it, `"<head name> (2)"`, encrypted: the
+  /// server cannot number a family whose names it cannot read.
+  Future<void> splitEncryptedActivity(
+    int activityId,
+    EncryptedTrackEdit opened,
+    List<EditPoint> points,
+    int splitIndex, {
+    bool dropBoundary = false,
+  }) async {
+    final ref = this.ref;
+    if (ref == null) return;
+    final all = _trackPoints(points);
+    final tailStart = dropBoundary ? splitIndex + 1 : splitIndex;
+    if (splitIndex < 1 || all.length - tailStart < 2) {
+      throw RangeError(
+          'split index $splitIndex out of range for a ${all.length}-point track');
+    }
+    final head = await _encryptedTrackPiece(all.sublist(0, splitIndex + 1), opened);
+    final tail = await _encryptedTrackPiece(all.sublist(tailStart), opened);
+    final tailName =
+        await encryption.encryptText('${opened.name ?? 'Activity'} (2)');
+    await _service.splitEncryptedActivity(ref, activityId,
+        head: head, tail: tail, tailName: tailName, lockVersion: opened.lockVersion);
+    await _silentReload(ref);
+  }
+
+  static List<TrackPoint> _trackPoints(List<EditPoint> points) =>
+      [for (final p in points) TrackPoint(p.lat, p.lng, p.elev)];
 
   /// Delete a local (split-tail, negative-id) [activityId].
   ///

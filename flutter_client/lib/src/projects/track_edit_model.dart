@@ -9,8 +9,8 @@
 /// and lets the page stay a thin rendering + gesture layer on top.
 library;
 
-import '../map/polyline_decoder.dart';
 import '../map/geo_point.dart';
+import '../track_metrics/align.dart';
 
 /// One editable track vertex: position plus optional elevation (metres).
 class EditPoint {
@@ -58,27 +58,24 @@ class TrackEditModel {
   factory TrackEditModel.fromEncoded(
     String? polyline,
     List<List<double>>? elevationPairs,
-  ) {
-    final decoded = (polyline == null || polyline.isEmpty)
-        ? const <GeoPoint>[]
-        : decodePolyline(polyline);
-    if (decoded.isEmpty) return TrackEditModel._(<EditPoint>[]);
-
-    if (elevationPairs == null || elevationPairs.isEmpty) {
-      return TrackEditModel._(
-        [for (final p in decoded) EditPoint(p.lat, p.lon)],
+  ) =>
+      TrackEditModel.aligned(
+        polyline,
+        elevationPairs == null
+            ? null
+            : ElevationProfile([for (final e in elevationPairs) e[0]],
+                [for (final e in elevationPairs) e[1]]),
       );
-    }
 
-    // Cumulative distance along the decoded polyline, then interpolate elevation.
-    final track = buildTrackFromPolyline(decoded);
-    final dist = [for (final e in elevationPairs) e[0]];
-    final elev = [for (final e in elevationPairs) e[1]];
-    return TrackEditModel._([
-      for (final entry in track)
-        EditPoint(entry.$2.lat, entry.$2.lon, _interp(entry.$1, dist, elev)),
-    ]);
-  }
+  /// Build from a Google-encoded [polyline] and a stored [profile], aligned by
+  /// the server's own `align_points` (the `track_metrics/` port), so the
+  /// editor starts from exactly the points the server measures the stored
+  /// track by. An implausible elevation becomes a missing one, as there.
+  factory TrackEditModel.aligned(String? polyline, ElevationProfile? profile) =>
+      TrackEditModel._([
+        for (final p in alignPoints(polyline, profile))
+          EditPoint(p.lat, p.lng, p.elev),
+      ]);
 
   /// Test/seam constructor from an explicit point list.
   factory TrackEditModel.fromPoints(List<EditPoint> points) =>
@@ -168,19 +165,4 @@ class TrackEditModel {
   Map<String, dynamic> toSavePayload() => {
         'points': [for (final p in _points) p.toJson()],
       };
-
-  static double _interp(double d, List<double> dist, List<double> elev) {
-    if (dist.isEmpty) return 0;
-    if (d <= dist.first) return elev.first;
-    if (d >= dist.last) return elev.last;
-    for (var i = 1; i < dist.length; i++) {
-      if (d <= dist[i]) {
-        final d0 = dist[i - 1], d1 = dist[i];
-        if (d1 == d0) return elev[i - 1];
-        final t = (d - d0) / (d1 - d0);
-        return elev[i - 1] + t * (elev[i] - elev[i - 1]);
-      }
-    }
-    return elev.last;
-  }
 }
