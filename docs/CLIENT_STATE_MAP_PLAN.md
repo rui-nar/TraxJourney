@@ -1189,9 +1189,19 @@ answers still in flight are handled by Decision 24. They keep Part
 instead of `_loadedZoomBucket == null`.
 
 **24. Geometry answers are ordered by request start (P2-R1-1, owner
-override).** `GeoFacet.replace(geo, lod, requestedAt)` records the
-`requestedAt` (from the library clock `fetchServerGeo` already returns) of the
-geometry on screen and ignores an answer requested earlier. That covers a
+override).** `GeoFacet.replace(geo, lod, servedFrom)` records the
+`servedFrom` stamp of the geometry on screen and ignores an answer whose stamp
+is not newer.
+- **The stamp is the start of the request that produced the answer
+  (P2-R2-1).** Each request takes its own `++_overlayClock` value when it is
+  sent. A caller that joins an identical request already in flight (the
+  service's dedup) gets that request's stamp, because that is the answer it
+  receives. `fetchServerGeo` returns `servedFrom` alongside the existing
+  "oldest in flight" reading, which stays the value
+  `reconcileSegmentOverlay(requestedAt:)` uses for patches (F3).
+- So a post-mutation fetch (fresh, never joined) is stamped after any zoom or
+  LOD request already in flight, and the older answer is ignored whichever
+  lands first. That covers a
 zoom refetch or a phase-2 LOD request in flight across a mutation: the older
 answer can no longer overwrite the post-mutation one. Writers with no request
 (clear, local patches via `replaceKeepingLod`, the offline cache) pass no time
@@ -1237,17 +1247,25 @@ does not either, P2-R1-4); the encounter-marker key uses `listVersion` and
 - **U10:** Decisions 20, 21 and 24. Scope adds `view_screen.dart` and
   `shared_project_screen.dart` (the `resetProgressiveFlags()` call only) and
   the test fakes that must override `getSimplifiedGeoFresh`. Acceptance adds:
-  an older zoom or LOD answer landing after a post-mutation answer is ignored. Acceptance adds: a post-mutation fetch issued
+  an older zoom or LOD answer landing after a post-mutation answer is ignored,
+  with the zoom request still in flight when the post-mutation request starts
+  and in both landing orders (P2-R2-1); a caller that joins a shared request
+  is stamped with that request's start. Acceptance adds: a post-mutation fetch issued
   while a same-key zoom refetch is in flight sends its own request; the
   export path uses `lod`. Cite also `shared_geo_zoom_lod_test.dart` and
   `segment_overlay_request_order_test.dart` (must pass unchanged).
 - **U11:** Decision 22; locations: debounce 1334, `_bucketOf` 1336,
   `_geoIsStaleForCamera` 1342-1351, `setMapZoom` 1356-1372, refetch
   1379-1401, disarm 1470-1473. Acceptance adds the wobble-during-fetch case.
-- **U12:** the derived filter getters on the root (`hasActiveFilter`,
-  `activeFilterCount`, `tagFilter`, `hasFilterableContent`, filter mixin
-  38-50) move to `SelectionFacet` with the field, so the compiler finds every
-  reader, including the filter badge's `Consumer` (P2-R1-2). Fields 475-493; setters 644-714; `restoreSavedUiState` (930-943)
+- **U12:** the derived filter getters that read only selection state
+  (`hasActiveFilter`, `activeFilterCount`, `tagFilter`) move to
+  `SelectionFacet` with the field. Those that read items or day-meta
+  (`hasFilterableContent`, `availableTags`, `availableSleepingModes`,
+  `availableActivityTypes`, `availableTransportationMeans`,
+  `effectiveTagsFor`, filter mixin 48-130) move to `ItemsFacet` in U14
+  (P2-R2-2). Until U14 they stay on the root. The filter button's `Consumer`
+  (`app_screen.dart:849-867`) and `view_screen.dart:418-441` listen to both
+  facets after U18 (P2-R1-2, P2-R2-2). Fields 475-493; setters 644-714; `restoreSavedUiState` (930-943)
   writes four fields then notifies once (stays one notify); `load()` nulls
   selection at 1079-1083; the filter mixin writes `selectedDays` at 157, 210,
   270. Test path `test/projects/stale_filter_restore_test.dart`.

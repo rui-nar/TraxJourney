@@ -425,3 +425,21 @@ Process notes:
 - Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
 - Decision: Fix now (D7): a separate non-dedup service method; U10's Scope lists the fakes that must override it
 - Outcome: open
+
+Owner (2026-10-06): both approved (P2-R2-1 overridden to Fix now); round 3 requested.
+
+## Part 2 amendment, round 2 — 2026-10-06, reviewed at 9dec4cdd (fixes since 491c5459)
+
+### P2-R2-1 — Decision 24 stamps geometry with the oldest in-flight start, so the race it targets stays open
+- Trigger: zoom refetch R1 in flight → delete an activity → the post-mutation fetch R2 is stamped with R1's start → R2 lands first, R1 lands with an equal stamp and is applied → the deleted activity is drawn again
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=M/shared, confidence=verified
+- Decision: Defer (D10); flagged: defect in the owner's Decision 24 override; U10's acceptance cannot pass as written
+- Revisit when: the owner applies the P2-R1-1 override here, or U10 cannot pass its Decision 24 test
+- Override: user: Fix now — stamp each answer with the start of the request that produced it
+- Outcome: fixed in plan
+
+### P2-R2-2 — hasFilterableContent and the available* getters derive from items, not selection
+- Trigger: first activity added to an empty trip → only ItemsFacet bumps → the filter button, now on SelectionFacet, stays greyed out until a selection change
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6); introduced by the P2-R1-2 fix
+- Outcome: fixed in plan
