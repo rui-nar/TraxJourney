@@ -12,7 +12,7 @@ import time
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import func, update
+from sqlalchemy import and_, case, func, not_, update
 from sqlalchemy.orm import defer as _sa_defer
 from sqlmodel import Session, select
 
@@ -118,6 +118,50 @@ def check_and_bump_lock_version(
             f"Project {project_id} was modified concurrently "
             f"(expected lock_version {expected_version})"
         )
+
+
+#: The activity columns the client encrypts (E2EE remnants decision 6), in the
+#: order ``plain_fields`` lists them.
+_E2EE_ACTIVITY_COLUMNS = (
+    "name", "summary_polyline", "start_latlng_json", "end_latlng_json",
+    "elevation_profile_json", "elevation_profile_low_res_json",
+    "original_polyline", "original_elevation_profile_json",
+    "original_start_latlng_json", "original_end_latlng_json",
+)
+
+
+def _holds_plaintext(col):
+    """SQL truth of "*col* holds text that is not an E2EE envelope".
+
+    The envelope test is ``is_encrypted_envelope``'s — "v1", then exactly two
+    more dot-separated parts — written with ``substr``/``instr``, which compare
+    case-sensitively. ``LIKE 'v1.%'`` would not: SQLite matches it
+    case-insensitively, so a name such as "V1.0.1 ride" would pass for
+    ciphertext and never be encrypted (R5-5). Empty text has nothing to
+    encrypt.
+    """
+    rest = func.substr(col, 4)
+    second_dot = func.instr(rest, ".")
+    envelope = and_(
+        func.substr(col, 1, 3) == "v1.",
+        second_dot > 0,
+        func.instr(func.substr(col, 4 + second_dot), ".") == 0,
+    )
+    return and_(col.is_not(None), col != "", not_(envelope))
+
+
+def _plain_fields_mask():
+    """One integer per activity row, bit *i* set when column *i* of
+    ``_E2EE_ACTIVITY_COLUMNS`` holds plaintext. Computed by SQLite, so the
+    load never brings the deferred heavy columns into Python (R4-6)."""
+    return sum(
+        case((_holds_plaintext(getattr(DBActivity, c)), 1 << i), else_=0)
+        for i, c in enumerate(_E2EE_ACTIVITY_COLUMNS)
+    ).label("plain_fields_mask")
+
+
+def _plain_fields(mask: int) -> List[str]:
+    return [c for i, c in enumerate(_E2EE_ACTIVITY_COLUMNS) if mask & (1 << i)]
 
 
 class ProjectCoreMixin:
@@ -527,7 +571,8 @@ class ProjectCoreMixin:
             r.activity_id for r in item_rows
             if r.item_type == "activity" and r.activity_id is not None
         ]
-        _act_query = select(DBActivity).where(DBActivity.id.in_(activity_ids))
+        _act_query = select(DBActivity, _plain_fields_mask()).where(
+            DBActivity.id.in_(activity_ids))
         if not include_heavy:
             _act_query = _act_query.options(
                 _sa_defer(DBActivity.summary_polyline),
@@ -538,11 +583,12 @@ class ProjectCoreMixin:
                 _sa_defer(DBActivity.elevation_profile_json),
             )
         act_rows = sess.exec(_act_query).all() if activity_ids else []
-        act_by_id = {
-            r.id: self._row_to_activity(
+        act_by_id = {}
+        for r, plain_mask in act_rows:
+            act = self._row_to_activity(
                 r, include_heavy=include_heavy, include_elevation=include_elevation)
-            for r in act_rows
-        }
+            act.plain_fields = _plain_fields(plain_mask)
+            act_by_id[r.id] = act
 
         # Load memory rows for this project
         memory_rows = sess.exec(

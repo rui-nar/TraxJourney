@@ -94,6 +94,12 @@ class Activity:
     start_latlng_enc: Optional[str] = None
     end_latlng_enc: Optional[str] = None
     elevation_profile_enc: Optional[str] = None
+    # The E2EE columns still holding plaintext (E2EE remnants decision 6), by
+    # their PUT /api/activities/{id} field names: the encryption catch-up
+    # fetches and encrypts these. Set by the project-load query only, so None
+    # on an activity built from anything else. Sent to the client by
+    # ProjectIO.to_dict, never written to a .traxj file (to_strava_dict).
+    plain_fields: Optional[List[str]] = None
 
     def to_strava_dict(self) -> dict:
         """Serialise to a dict that can be round-tripped via from_strava_api()."""
