@@ -255,3 +255,27 @@ Owner (2026-10-04): R2-1, R2-2, R2-4 approved; R2-3 overridden to Fix now; merge
 - Scores (corrected by triage): trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
 - Decision: Fix now (D3)
 - Outcome: fixed in plan
+
+Owner (2026-10-04): I1-R3-1 and I1-R3-2 approved; I1-R3-3 overridden to Fix now; round 4 requested on the fix commit.
+
+## Integrated review Part 1, round 3 — 2026-10-04, reviewed at 5166190b (fixes since 8f04e53f)
+
+### I1-R3-1 — The 409 resync's trip check lets a signed-out account's geometry land on the next account's same-named trip
+- Trigger: A's segment edit gets 409 → the resync's full-res fetch is in flight → A signs out, B opens B's own trip of the same name → A's geometry is assigned as B's
+- Scores: trigger=plausible, impact=security, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3). Pre-existing on main (no check at all); this branch narrowed but did not close it
+- Outcome: open
+
+### I1-R3-2 — The 405 fallback PUT has no account check
+- Trigger: new APK against a not-yet-deployed server → A saves a note on T → A signs out, B signs in while the 405 is in flight → the PUT goes out under B's token → B's trip T day-meta replaced by A's
+- Scores: trigger=plausible, impact=security, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3). Introduced by this branch (I1-R2-1's fix removed the only post-await check)
+- Outcome: open
+
+### I1-R3-3 — A request joining another notifier's in-flight request is judged by its own start
+- Trigger: view-mode request in flight → switch to manage mode → resolve lands → manage refetch joins the view request → judged newer → stale arc replaces the patch until the next refetch
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10); flagged: the #278 goal the owner held to in I1-R1-1 is not met across notifiers
+- Revisit when: the owner applies the I1-R1-1 override here, or a resolved segment is seen as an arc after a view/manage switch
+- Override: user: Fix now — the #278 goal holds across notifiers
+- Outcome: open
