@@ -370,6 +370,42 @@ def test_partial_failure_keeps_the_other_regions_usable(tmp_path):
     assert written["generated_at"] == "2026-10-06T18:00:00Z"
 
 
+def test_a_region_the_new_release_drops_is_named_in_a_warning(tmp_path, capsys):
+    """Review finding R1-6: a region leaving coverage must say so.
+
+    The installed manifest is rewritten from the release alone, so the dropped
+    region goes back to Overpass while the age check sees nothing wrong.
+    """
+    lux, de = _lux(), _de()
+    bodies, _ = _world([lux, de, _empty()])
+    _with_asset(bodies, lux, LUXEMBOURG)
+    _with_asset(bodies, de, MANNHEIM)
+    get, _ = _transport(bodies)
+    assert fetch.refresh(tmp_path, get=get) == 0
+    assert "WARNING" not in capsys.readouterr().out
+
+    lux2 = _lux("2026-10-05")
+    bodies2, _ = _world([lux2], tag="rail-data-2026-10-06")
+    _with_asset(bodies2, lux2, LUXEMBOURG, tag="rail-data-2026-10-06")
+    get, _ = _transport(bodies2)
+    assert fetch.refresh(tmp_path, get=get) == 0
+
+    warnings = [line for line in capsys.readouterr().out.splitlines()
+                if line.startswith("WARNING")]
+    # Both: an empty entry dropped is as much a coverage change as an ok one.
+    assert len(warnings) == 2
+    assert "[europe/andorra]" in warnings[0] and "rail-data-2026-10-06" in warnings[0]
+    assert "[europe/germany]" in warnings[1]
+    regions = [e["region"] for e in
+               json.loads((tmp_path / "manifest.json").read_text())["regions"]]
+    assert regions == ["europe/luxembourg"]
+
+    # Said once, when it happens — not on every later run.
+    get, _ = _transport(bodies2)
+    fetch.refresh(tmp_path, get=get)
+    assert "WARNING" not in capsys.readouterr().out
+
+
 def test_an_unknown_manifest_schema_is_refused(tmp_path):
     lux = _lux()
     bodies, _ = _world([lux])

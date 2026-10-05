@@ -358,6 +358,24 @@ def _existing_manifest(dest: Path) -> dict:
     return manifest if isinstance(manifest, dict) else {}
 
 
+def _warn_dropped_regions(dest: Path, release_manifest: dict, tag: str) -> None:
+    """Name each region the installed manifest lists and *release_manifest* does not.
+
+    :func:`_installed_manifest` writes only the release's regions, so such a
+    region silently leaves coverage — its routes go back to Overpass — while
+    the age check, which reads the same manifest, keeps reporting fresh data
+    (review finding R1-6). This line is the only trace that it happened.
+    """
+    published = {e.get("region") for e in release_manifest["regions"]
+                 if isinstance(e, dict)}
+    installed = _existing_manifest(dest).get("regions")
+    previous = {e.get("region") for e in (installed if isinstance(installed, list) else [])
+                if isinstance(e, dict) and e.get("region")}
+    for region in sorted(previous - published):
+        _log(f"WARNING: [{region}] is installed but {tag} does not publish it — it "
+             f"leaves the installed manifest and its routes go to Overpass")
+
+
 def _installed_manifest(dest: Path, release_manifest: dict, complete: bool) -> dict:
     """The manifest describing what *dest* actually holds.
 
@@ -436,6 +454,7 @@ def refresh(
         manifest = read_manifest(get, urls[MANIFEST_NAME])
         _log(f"{release['tag_name']}: {len(manifest['regions'])} regions, "
              f"generated {manifest.get('generated_at', '?')}")
+        _warn_dropped_regions(dest, manifest, release["tag_name"])
 
         installed = skipped = empty = 0
         failed: list[str] = []

@@ -1,4 +1,8 @@
-"""How old the installed local rail data is — issue #345, plan Decision 2.
+"""Refreshing the local rail data, and how old it is — issue #345.
+
+Two jobs. The monthly refresh (plan Decision 5) installs the newest published
+release on its own; the daily age check (Decision 2) says when that stopped
+working.
 
 The rail stores under ``RAIL_DATA_DIR`` are refreshed monthly, and a refresh
 that stops working fails quietly: the old stores keep answering, every route
@@ -9,14 +13,23 @@ This check is what makes that visible — a gauge Grafana can alert on, and a
 Cheap on purpose (one small JSON read, no store opened), so the refresh job can
 call it straight after installing new data rather than leave the gauge a day
 behind.
+
+The refresh is ``scripts/fetch_rail_data.py`` — the exact command the runbook
+documents (docs/DEPLOYMENT_VPS.md §9) — run as a subprocess of an RQ job on the
+``default`` queue. A subprocess, so the store builds' memory belongs to a
+process that exits; RQ, so it never runs in the API process.
 """
 from __future__ import annotations
 
 import json
 import math
 import os
+import subprocess
+import sys
 from datetime import date, datetime, timezone
+from pathlib import Path
 
+from src.jobs.queue import QUEUE_DEFAULT, enqueue, queue_available
 from src.services.overpass_service import _RAIL_DATA_DIR_ENV, _RAIL_SOURCE_ENV
 from src.services.rail_source import MANIFEST_NAME, MANIFEST_SCHEMA
 from src.utils.logging import get_logger
@@ -27,6 +40,28 @@ _log = get_logger(__name__)
 # One monthly build cycle plus a missed retry, for val (refreshes on the 4th)
 # and prod (the 5th) alike — docs/LOCAL_TRANSPORT_DATA_PLAN.md, Decision 2.
 RAIL_DATA_MAX_AGE_DAYS = 40
+
+# The monthly refresh. Off with RAIL_AUTO_REFRESH=0; the day of the month it
+# runs is RAIL_AUTO_REFRESH_DAY — val sets 4, so a bad release reaches val a day
+# before prod and the two stacks never build at once on the shared host.
+_AUTO_REFRESH_ENV = "RAIL_AUTO_REFRESH"
+_AUTO_REFRESH_DAY_ENV = "RAIL_AUTO_REFRESH_DAY"
+RAIL_REFRESH_DEFAULT_DAY = 5
+# 28, not 31: a cron day every month has.
+_REFRESH_DAY_MAX = 28
+
+# The subprocess is killed at 55 minutes, before RQ's own limit at 60 kills the
+# work-horse: a timeout this module raises says what timed out, a killed horse
+# does not. A full refresh of rail-data-2026-10-05 measured 162 s and 361 MB
+# peak RSS (Linux, 49 regions), a month with nothing new 1.5 s: this is for a
+# hang, not for a slow month.
+RAIL_REFRESH_JOB_TIMEOUT_S = 3600
+RAIL_REFRESH_SCRIPT_TIMEOUT_S = 3300
+
+# Resolved from this file, not the working directory: the image puts scripts/
+# beside src/ (.dockerignore keeps fetch_rail_data.py), whatever a worker's cwd.
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+_FETCH_SCRIPT = _REPO_ROOT / "scripts" / "fetch_rail_data.py"
 
 _STATUS_OK = "ok"
 _STATUS_EMPTY = "empty"
@@ -136,3 +171,84 @@ def check_rail_data_age(directory: str | None = None) -> float | None:
     except Exception:  # noqa: BLE001 — a broken check must not take the scheduler down
         _log.exception("rail data age check failed")
         return None
+
+
+# ---------------------------------------------------------------------------
+# The monthly refresh
+# ---------------------------------------------------------------------------
+
+def rail_refresh_day() -> int:
+    """The day of the month the refresh is scheduled on, from the environment.
+
+    A bad value falls back to the default with a ``WARNING`` rather than raise:
+    this is read while the API starts, and a typo in an optional setting must
+    not take the scheduler — the backup, every sweep — down with it.
+    """
+    raw = os.environ.get(_AUTO_REFRESH_DAY_ENV, "").strip()
+    if not raw:
+        return RAIL_REFRESH_DEFAULT_DAY
+    try:
+        day = int(raw)
+    except ValueError:
+        day = 0
+    if not 1 <= day <= _REFRESH_DAY_MAX:
+        _log.warning("%s=%r is not a day from 1 to %d — refreshing rail data on "
+                     "the %d instead", _AUTO_REFRESH_DAY_ENV, raw,
+                     _REFRESH_DAY_MAX, RAIL_REFRESH_DEFAULT_DAY)
+        return RAIL_REFRESH_DEFAULT_DAY
+    return day
+
+
+def enqueue_rail_data_refresh() -> bool:
+    """Queue this month's rail data refresh. Returns whether it was queued.
+
+    Nothing unless ``RAIL_SOURCE=local`` with a ``RAIL_DATA_DIR``, and
+    ``RAIL_AUTO_REFRESH`` is not ``0``. Never runs the refresh here: this is
+    the API process, and 49 store builds inside its memory limit is the failure
+    review finding R1-4 rules out. With no broker it says the refresh is manual
+    on this deployment and returns; with a broker that refuses the job it
+    raises, so the scheduler's job metrics record the month as failed.
+    """
+    if os.environ.get(_RAIL_SOURCE_ENV, "").strip().lower() != "local":
+        return False
+    if os.environ.get(_AUTO_REFRESH_ENV, "").strip() == "0":
+        _log.info("%s=0 — monthly rail data refresh skipped", _AUTO_REFRESH_ENV)
+        return False
+    if not os.environ.get(_RAIL_DATA_DIR_ENV, "").strip():
+        _log.warning("%s=local but %s is unset — no rail data to refresh",
+                     _RAIL_SOURCE_ENV, _RAIL_DATA_DIR_ENV)
+        return False
+    if not queue_available():
+        _log.warning(
+            "monthly rail data refresh not run: no job queue (REDIS_URL unset), "
+            "and it never runs in the API process — refresh is manual on this "
+            "deployment, see docs/DEPLOYMENT_VPS.md, \"Rail data\"")
+        return False
+    # No retry: a refused region is rarely transient, a missed month still
+    # leaves the data under the 40-day alert, and the manual run is the retry.
+    if not enqueue(QUEUE_DEFAULT, run_rail_data_refresh,
+                   job_timeout=RAIL_REFRESH_JOB_TIMEOUT_S, allow_inline=False,
+                   max_retries=0):
+        raise RuntimeError("monthly rail data refresh could not be queued")
+    _log.info("monthly rail data refresh queued")
+    return True
+
+
+def run_rail_data_refresh() -> None:
+    """Install the newest rail data release into ``RAIL_DATA_DIR``. RQ job.
+
+    Raises when the script exits non-zero — a region refused, the release
+    unusable — or runs past its timeout, so RQ records the job as failed. The
+    age check runs either way: a partial install changes what is on disk too.
+    """
+    directory = os.environ.get(_RAIL_DATA_DIR_ENV, "").strip()
+    if not directory:
+        raise RuntimeError(f"{_RAIL_DATA_DIR_ENV} is unset — nothing to refresh")
+    try:
+        # Output is inherited, not captured: the script's per-region lines land
+        # in the worker's log as they happen, where the runbook says to look.
+        subprocess.run(
+            [sys.executable, str(_FETCH_SCRIPT), "--dest", directory],
+            cwd=_REPO_ROOT, timeout=RAIL_REFRESH_SCRIPT_TIMEOUT_S, check=True)
+    finally:
+        check_rail_data_age(directory)
