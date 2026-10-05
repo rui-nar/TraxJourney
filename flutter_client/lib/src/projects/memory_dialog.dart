@@ -7,6 +7,8 @@ import '../core/picked_file_bytes.dart';
 import 'location_picker_dialog.dart';
 import 'project_notifier.dart';
 import '../crypto/encrypted_display.dart';
+import '../crypto/encryption.dart';
+import '../crypto/encryption_locked_banner.dart' show EncryptionBlockedNote;
 
 /// Dialog to create or edit a memory.
 ///
@@ -70,6 +72,7 @@ class _MemoryDialogState extends State<MemoryDialog> {
   @override
   void initState() {
     super.initState();
+    encryption.state.addListener(_onEncryptionState);
     final mem = widget.editMemory;
     // From the record made when the items were revealed, never from the
     // value's shape: typed text such as "v1.2.3" looks like an envelope.
@@ -126,8 +129,15 @@ class _MemoryDialogState extends State<MemoryDialog> {
     }
   }
 
+  // Save follows the encryption state: unlocking (a recovery, an approval)
+  // while the editor is open enables it.
+  void _onEncryptionState() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
+    encryption.state.removeListener(_onEncryptionState);
     _nameCtrl.dispose();
     _descCtrl.dispose();
     super.dispose();
@@ -197,7 +207,7 @@ class _MemoryDialogState extends State<MemoryDialog> {
           await widget.notifier.deleteMemoryPhoto(memId, uuid, reload: false);
         }
 
-        await widget.notifier.updateMemory(
+        final ok = await widget.notifier.updateMemory(
           memId,
           date: dateStr,
           geoMode: _geoMode,
@@ -209,6 +219,11 @@ class _MemoryDialogState extends State<MemoryDialog> {
           keepStoredName: _nameEnvelope != null,
           keepStoredDescription: _descEnvelope != null,
         );
+        if (!ok) {
+          setState(() =>
+              _saveError = widget.notifier.error ?? 'Failed to save memory');
+          return;
+        }
 
         // Upload new photos
         for (final p in _pendingPhotos) {
@@ -287,6 +302,9 @@ class _MemoryDialogState extends State<MemoryDialog> {
     final theme = Theme.of(context);
     final isEdit = widget.editMemory != null;
     final memId = widget.editMemory?['id']?.toString();
+    // Encrypted account, key not unlocked, own trip (#506): nothing can be
+    // saved, so Save is off and the editor says why.
+    final blocked = widget.notifier.memoryWriteBlockedMessage;
 
     return AlertDialog(
       title: Text(isEdit ? 'Edit Memory' : 'Add Memory'),
@@ -535,6 +553,10 @@ class _MemoryDialogState extends State<MemoryDialog> {
                 label: const Text('Add photos'),
                 onPressed: _pickPhotos,
               ),
+              if (blocked != null) ...[
+                const SizedBox(height: 12),
+                EncryptionBlockedNote(message: blocked),
+              ],
               if (_saveError != null) ...[
                 const SizedBox(height: 12),
                 Container(
@@ -571,7 +593,7 @@ class _MemoryDialogState extends State<MemoryDialog> {
         ),
         ElevatedButton(
           style: ElevatedButton.styleFrom(minimumSize: const Size(80, 44)),
-          onPressed: _saving ? null : _save,
+          onPressed: _saving || blocked != null ? null : _save,
           child: _saving
               ? const SizedBox(
                   width: 18, height: 18,

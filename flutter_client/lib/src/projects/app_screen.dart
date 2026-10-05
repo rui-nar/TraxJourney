@@ -27,6 +27,7 @@ import '../core/last_opened_project.dart';
 import '../core/perf_timing.dart' show kPerfNoMap, perfSpans;
 import '../core/project_ref.dart';
 import '../core/stale_shared_ref.dart';
+import '../crypto/encryption_locked_banner.dart';
 import 'project_notifier.dart';
 import 'activity_panel.dart';
 import 'panel_resize.dart';
@@ -1081,6 +1082,10 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
               );
             },
           ),
+          // ── Encryption locked / awaiting approval (#506) ─────────────────
+          // Always mounted: the banner decides from the encryption state
+          // whether it shows.
+          const EncryptionLockedBanner(),
           // ── Degraded-route upgrade banner (issue #207) ───────────────────
           Selector<ProjectNotifier, bool>(
             selector: (_, n) => n.degradedRouteUpgradeAvailable,
