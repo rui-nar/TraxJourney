@@ -195,3 +195,24 @@ def test_the_api_schedules_the_check_daily(monkeypatch):
     assert func is check_rail_data_age and trigger == "cron"
     assert (kwargs["hour"], kwargs["minute"]) == (5, 15)
     assert kwargs["next_run_time"] is not None
+
+
+def test_a_stale_ferry_layer_is_named_with_its_region(local, caplog):
+    stale_age = RAIL_DATA_MAX_AGE_DAYS + 5
+    ferry = _ok("europe/denmark", stale_age)
+    ferry.update({"layer": "ferry", "carried": True})
+    _write(local, [_ok("europe/denmark", 3), ferry])
+    with caplog.at_level(logging.DEBUG, logger=_LOGGER):
+        assert check_rail_data_age() == float(stale_age)
+    [message] = _warnings(caplog)
+    assert "europe/denmark ferry" in message and _days_ago(stale_age) in message
+
+
+def test_a_stale_rail_entry_message_is_unchanged(local, caplog):
+    stale_age = RAIL_DATA_MAX_AGE_DAYS + 5
+    _write(local, [_ok("europe/france", stale_age)])
+    with caplog.at_level(logging.DEBUG, logger=_LOGGER):
+        check_rail_data_age()
+    assert _warnings(caplog) == [
+        "rail data is %d days old (over %d): oldest region europe/france, "
+        "source date %s" % (stale_age, RAIL_DATA_MAX_AGE_DAYS, _days_ago(stale_age))]
