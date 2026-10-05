@@ -318,7 +318,7 @@ Review stopped after round 5 with user approval (2026-10-04): round-5 fixes are 
 - Scores: trigger=plausible, impact=security, detect=silent, later=cheap, fix=S/local, confidence=verified
 - Decision: Fix now (D3)
 - Override: —
-- Outcome: open
+- Outcome: fixed (29ba80d4)
 
 ### U2-R1-2 — Reset still decodes enveloped originals
 - Trigger: (once U7 encrypts originals) owner resets a row with an enveloped original_polyline and null original profile → ciphertext decoded and committed as geometry
@@ -326,7 +326,7 @@ Review stopped after round 5 with user approval (2026-10-04): round-5 fixes are 
 - Decision: Guard (D4) — flagged to the user; U12 item 4 owns the real handling
 - Guard: before decoding originals in reset_activity_track, an envelope in either original → log error with activity_id and raise NothingToRestore; one test
 - Override: —
-- Outcome: open
+- Outcome: guard added (29ba80d4, log asserted 83d76ba9)
 
 ## Unit U4, round 1 — 2026-10-05, reviewed 0d42da0d..45bdd8d5 (worktree-agent-a0177b37de6faff2f)
 
