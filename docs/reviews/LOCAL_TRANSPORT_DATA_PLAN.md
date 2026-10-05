@@ -173,3 +173,23 @@ Triager flag (not a round-2 finding, outside the fixes reviewed): Wave 1 (U2 and
 - Guard: —
 - Override: —
 - Outcome: fixed (in plan)
+
+## Round 3 — 2026-10-05, reviewed at f2f2e301 (fixes only; last round under the cap)
+
+### R3-1 — A retired (region, layer) is carried forever and pins the data-age gauge
+- Trigger: owner removes a region or layer from config/rail_regions.yml → later releases omit it → the R2-2 carry rule keeps it with no end → its source_date never advances, the age gauge sits above 40 days naming it, a genuinely stale region hides behind it, and the old store keeps answering
+- Scores: trigger=plausible, impact=degraded-ux, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10) — not a D2 duplicate of R2-2: the carry rule's missing end condition is new
+- Revisit when: a commit removes a region or layer from config/rail_regions.yml, Open decision 3 withdraws bus, or U2's WARNING names an entry absent from the config — give the carry rule an end and add a retire step to §9
+- Guard: —
+- Override: —
+- Outcome: open
+
+### R3-2 — The checkpoint's stated consequence is wrong
+- Trigger: the orchestrator or owner reads "a schema-3 release reaching a schema-2 reader sends every train back to Overpass" → acts on an outage that cannot happen; in fact a pre-U8 box refuses the refresh (read_manifest raises before writing) and keeps routing on its installed stores while its data ages
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7) — also correct the same sentence in Boundaries crossed so the two agree
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
