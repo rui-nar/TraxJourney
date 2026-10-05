@@ -12,6 +12,7 @@ leaves the row alone.
 from __future__ import annotations
 
 import json
+import logging
 
 import polyline as polyline_lib
 import pytest
@@ -157,13 +158,18 @@ def test_reset_of_unedited_row_is_still_the_old_conflict(make_env):
     dict(original_polyline=_ORIG_POLY, original_elevation_profile_json=_ENC_EP),
     dict(original_polyline=_ENC_POLY, original_elevation_profile_json=_ORIG_EP),
 ], ids=["both-enveloped", "profile-enveloped", "polyline-enveloped"])
-def test_reset_with_enveloped_originals_is_refused_and_keeps_the_row(make_env, originals):
+def test_reset_with_enveloped_originals_is_refused_and_keeps_the_row(
+        make_env, originals, caplog):
     """The server cannot measure an enveloped original; until the scalar
-    snapshot restore exists it refuses rather than decode ciphertext."""
+    snapshot restore exists it refuses rather than decode ciphertext, and
+    logs that the guard fired."""
     client, engine = make_env(summary_polyline=_ENC_POLY, elevation_profile_json=_ENC_EP,
                               **originals)
     before = _state(engine)
-    resp = client.post(_URL)
+    with caplog.at_level(logging.ERROR, logger="src.project.repo_activities"):
+        resp = client.post(_URL)
     assert resp.status_code == 409, resp.text
     assert resp.json()["detail"]["code"] == "nothing_to_restore"
     assert _state(engine) == before
+    assert any(r.levelno == logging.ERROR and "111" in r.getMessage()
+               for r in caplog.records), caplog.records
