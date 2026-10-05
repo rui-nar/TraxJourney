@@ -331,3 +331,16 @@ Review stopped after round 5 with user approval (2026-10-04): round-5 fixes are 
 ## Unit U4, round 1 — 2026-10-05, reviewed 0d42da0d..45bdd8d5 (worktree-agent-a0177b37de6faff2f)
 
 No findings. Backfill traced against reset_activity_track branch by branch; SQLite upgrade runs in one transaction; no remaining reader of low_res_geo_json in code.
+
+## Delivery
+
+| Unit | Goal | Route | Rule | Attempts | Escalated | Verified first time | Findings traced |
+|---|---|---|---|---|---|---|---|
+| U1 | Memory/journal key guards, invite refusal, CAS on updates | Opus | S4 | 1 | X3 → Scope widened (3 test files; PUT memory/journal 204 → 200 with `{lock_version}`) | yes | — |
+| U2 | Old edit routes refuse envelopes, reset fixes, CAS, ownership helper, single-row /track | Opus | S4 | 3 (fix round for U2-R1-1/-2; log assertion added after verifier fail) | — | yes | U2-R1-1, U2-R1-2 |
+| U4 | Strava cache in memory for encrypted users, drop low_res_geo_json, snapshot columns + backfill | Opus | S4 | 1 | — | yes | — |
+| U5 | Poster consent, scrub, 30-day sweep | Opus | S4 | 1 | — | yes | — |
+
+Notes:
+- Wave 1 interrupted once by an API session limit; all four implementers resumed from their worktrees with no work lost.
+- Local Windows full-suite runs hung (U1); full checks run in the `traxjourney-py314-citest` container instead. Wave 1 without U2: 6131 passed, 39 skipped.
