@@ -407,3 +407,12 @@ Owner decision during wave 4 (2026-10-05): the #366 gain recompute (U8) corrects
 - Revisit when: a user reports "changed elsewhere" on an encrypted activity right after enabling or importing; the catch-up starts writing with no plaintext left; or R4-8/U7-R1-2 refusals get retried while a trip is open
 - Override: —
 - Outcome: open
+
+## Unit U8, round 1 — 2026-10-05, reviewed 3d27ea98..90d7cb93 (worktree-agent-a0d75663b3bd19211)
+
+### U8-R1-1 — Every load re-decrypts and re-measures every legacy encrypted profile, with no memo
+- Trigger: encrypted owner with GPX imports (up to 50 000 samples each) opens a trip → each converged profile is decrypted, parsed and measured again on the main isolate on every load/refresh → a hitch per row after every open
+- Scores: trigger=concrete, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local (triage-corrected from M), confidence=verified (triage-corrected; cost estimated, not measured)
+- Decision: Fix now (D7)
+- Override: —
+- Outcome: open
