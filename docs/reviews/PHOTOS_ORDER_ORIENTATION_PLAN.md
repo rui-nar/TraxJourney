@@ -124,3 +124,45 @@ Envelope question (round 4): the reorder script writes photos_json/photo_order_j
 ## Unit U2 review — Round 2 — 2026-10-05, reviewed at 5ba6669e (b5abb3e9..5ba6669e, fixes only)
 
 No findings. Reviewer traced alembic 1.20 batch ordering: only the pre-INSERT DDL autocommits; both table rebuilds, the compaction and the alembic_version update share one transaction, so the only reachable leftovers (index dropped, empty `_alembic_tmp_<t>`) are the ones the fix handles. U2R1-1 outcome: fixed (5ba6669e).
+
+## Unit U7 review — Round 1 — 2026-10-05, reviewed at 244c9e75 (worktree branch, c551c757..244c9e75; DELIVERY §5 point 3)
+
+### U7R1-1 — One failed or non-200 source download makes --apply scramble a correctly ordered memory
+- Trigger: Admin runs the reorder `--apply` on prod; for one photo of an already correctly ordered memory (the SELECT takes every memory with a polarsteps_step_id, post-#239 ones too) Polarsteps answers 403/404 (hashed without `raise_for_status`) or times out → the photo is unmatched, `matched + unmatched` moves it to the end, the guards (`failures > attempted/2`, `unmatched > len/2`) pass, the order is written and ranks reset (scripts/reorder_polarsteps_memory_photos.py:119-147, 200, 274). Runbook's "re-running is harmless" (docs/RELEASING.md:69-72) does not hold.
+- Scores: trigger=plausible, impact=silent-wrong, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
+
+### U7R1-2 — Script connection keeps sqlite3's 5 s busy timeout
+- Trigger: Admin runs `--apply` with the API live during a parallel import → the per-memory UPDATE waits past 5 s (app uses 30 s, models/db.py:93) → uncaught `database is locked`, run dies with a traceback; committed memories kept, re-run needed.
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: an owner run of the reorder script dies with "database is locked", or the runbook changes to run it unattended or during import-heavy windows.
+- Guard: —
+- Override: —
+- Outcome: open
+
+Envelope question (U7 round 1): the script selects every memory with a polarsteps_step_id, not just pre-#239 ones; restrict it (e.g. id/date ceiling or --project filter) or accept? User: (a) restrict — memories created before #239 shipped (v0.48.0, 2026-08-27), optional --project filter. Tables for U6/U7 round 1 approved as presented (no overrides).
+
+## Unit U6 review — Round 1 — 2026-10-05, reviewed at 5c01cff5 (worktree branch, c551c757..5c01cff5; DELIVERY §5 point 3)
+
+### U6R1-1 — Idempotency threshold leaves a sideways thumbnail alone when a small subject sits on a flat field
+- Trigger: Admin runs `--apply --api-stopped` over an orientation-3 (or square 6/8) photo whose subject is small on a near-uniform background → old and upright thumbnails have the same size and mean per-channel difference ≤ 2.0 (`UPRIGHT_MAX_DIFFERENCE`, scripts/backfill_thumbnail_orientation.py:63, 88-92) → counted "already upright", never rewritten; user keeps seeing it upside down.
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible (corrected from silent by triager), later=cheap, fix=S/local, confidence=inferred
+- Decision: Defer (D10)
+- Revisit when: a user reports a thumbnail still sideways/upside down after the prod backfill, or a prod backfill run reports far fewer rewrites than orientation-3/6/8 candidates.
+- Guard: —
+- Override: —
+- Outcome: open
+
+### U6R1-2 — A hard kill mid-write leaves a counted temp file the next run never sees
+- Trigger: Admin's `--apply` run is SIGKILLed/OOM-killed/SIGTERMed between `mkstemp` and `os.replace` → `.<uuid>_thumb.<rand>.tmp` stays; `_photos` globs `*.jpg` only; nightly reconcile (src/admin/storage.py:43-53) counts it to the owner.
+- Scores: trigger=plausible, impact=cosmetic, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Guard (D9)
+- Revisit when: —
+- Guard: (to add) per walked folder, print "leftover temp file: <path>" for each `.*_thumb.*.tmp` and count them in the summary line, deleting nothing.
+- Override: —
+- Outcome: open
