@@ -418,3 +418,38 @@ Owner decision during wave 4 (2026-10-05): the #366 gain recompute (U8) corrects
 - Outcome: fixed (00d735a1)
 
 Owner approved (2026-10-06): U14 table (R1-1 fix now, R1-2 deferred) and U8 table (R1-1 fix now).
+
+## Integrated diff, round 1 — 2026-10-06, reviewed e96f8613..5edeba4b (feat/e2ee-remnants)
+
+### I1-1 — Encrypted Polarsteps re-import can't adopt legacy pre-step-id memories (duplicates)
+- Trigger: encrypted owner re-imports a Polarsteps trip first imported before step ids → name sent as envelope → server name+date adoption never matches → duplicate memory per step
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=M/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: an encrypted user reports duplicates after a Polarsteps re-import, or a query finds Polarsteps memories with NULL step id on encrypted owners' trips
+- Override: —
+- Outcome: open
+
+### I1-2 — A plaintext owner can't change date/place of a legacy companion-key memory (encryption_not_shared)
+- Trigger: owner without encryption edits a #505 memory written under a companion's key → stored envelope resent → 409
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: a plaintext owner reports encryption_not_shared on a date/place edit; companion repair found not to run (companion left); or #108 lands
+- Override: —
+- Outcome: open
+
+### I1-3 — encryption_locked tells a plaintext-account legacy companion to "unlock encryption"
+- Trigger: legacy member without encryption saves a memory on a now-encrypted owner's trip → misleading unlock message
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: a companion reports it; U7-R1-2 / R4-8 refusals reworked; or #108 lands
+- Override: —
+- Outcome: open
+
+### I1-4 — ENCRYPTION.md's remaining-plaintext list omits your own activity rows that live only in another user's trip
+- Trigger: encrypted companion imports their ride into a friend's plaintext trip only → row stays plaintext; doc claims the list is complete
+- Scores: trigger=concrete, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Override: —
+- Outcome: open
+
+Envelope question for the owner: three Definition-of-done bullets no longer hold literally after owner decisions recorded here (trip editors may write encrypted geometry; ENCRYPTION.md lists the legacy companion-memory case; #366 gain recompute is legacy rows only). Amend the plan's DoD to match, or keep the ledger as the record?
