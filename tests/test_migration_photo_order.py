@@ -202,6 +202,157 @@ def test_downgrade_drops_the_column_and_autoincrement_and_keeps_rows(cfg):
         assert _photos(conn, "journalentry") == [(7, ["b"])]
 
 
+# ── A first run that died half-way (review U2R1-1) ───────────────────────────
+# Under pysqlite's legacy transaction mode DDL autocommits until the first
+# INSERT opens a transaction: a run killed after the batch copy began leaves
+# the partial unique index dropped and ``_alembic_tmp_<table>`` behind, with
+# alembic_version unchanged. The next start must still migrate.
+
+_PARTIAL_INDEX = {
+    "memory": "uq_memory_project_polarsteps_step_id",
+    "journalentry": "uq_journalentry_project_client_token",
+}
+
+
+def _use(db_path: Path, monkeypatch) -> Config:
+    """A config for *db_path*; env.py resolves the URL from DATABASE_URL."""
+    url = f"sqlite:///{db_path.as_posix()}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    config = Config(str(_PROJECT_ROOT / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", url)
+    config.attributes["db_path"] = db_path
+    return config
+
+
+def _seed(conn) -> None:
+    for memory_id, photos in ((2, ["a", None, "b"]), (6, ["c"])):
+        conn.execute(
+            "INSERT INTO memory (id, project_id, date, photos_json, geo_mode, public_id) "
+            "VALUES (?, 1, '2026-01-01', ?, 'start_of_day', ?)",
+            (memory_id, json.dumps(photos), f"p{memory_id}"),
+        )
+    for entry_id, photos in ((3, [None]), (4, ["d"])):
+        _insert_entry(conn, entry_id, photos)
+    conn.commit()
+
+
+def _state(conn) -> dict:
+    """Both tables' definitions, indexes and rows, and no leftover tmp table."""
+    objects = sorted(conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master "
+        "WHERE tbl_name IN ('memory', 'journalentry') OR name LIKE '_alembic_tmp_%'"
+    ).fetchall())
+    rows = {t: conn.execute(f"SELECT * FROM {t} ORDER BY id").fetchall() for t in _TABLES}
+    return {"objects": objects, "rows": rows}
+
+
+def _half_finished(conn, table: str) -> None:
+    conn.execute(f"DROP INDEX {_PARTIAL_INDEX[table]}")
+    conn.execute(
+        f"CREATE TABLE _alembic_tmp_{table} "
+        "(id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, photo_order_json VARCHAR)"
+    )
+    conn.commit()
+
+
+@pytest.mark.parametrize("table", _TABLES)
+def test_an_upgrade_rerun_after_a_half_finished_one_matches_a_clean_run(
+        tmp_path, monkeypatch, table):
+    clean = _use(tmp_path / "clean.db", monkeypatch)
+    command.upgrade(clean, _BEFORE)
+    with _connect(clean) as conn:
+        _seed(conn)
+    command.upgrade(clean, _REVISION)
+    with _connect(clean) as conn:
+        expected = _state(conn)
+
+    broken = _use(tmp_path / "broken.db", monkeypatch)
+    command.upgrade(broken, _BEFORE)
+    with _connect(broken) as conn:
+        _seed(conn)
+        _half_finished(conn, table)
+
+    command.upgrade(broken, _REVISION)
+
+    with _connect(broken) as conn:
+        assert _state(conn) == expected
+        assert _photos(conn, "memory") == [(2, ["a", "b"]), (6, ["c"])]
+        assert _photos(conn, "journalentry") == [(3, []), (4, ["d"])]
+    sql = dict((o[1], o[3]) for o in expected["objects"])
+    assert "IS NOT NULL" in sql[_PARTIAL_INDEX[table]]
+    assert "AUTOINCREMENT" in sql[table].upper()
+
+
+def test_a_run_that_fails_at_its_last_step_leaves_the_tables_intact_and_reruns(
+        tmp_path, monkeypatch):
+    """A real failure, not a hand-made leftover: the alembic_version update
+    aborts, so everything in the transaction rolls back."""
+    clean = _use(tmp_path / "clean.db", monkeypatch)
+    command.upgrade(clean, _BEFORE)
+    with _connect(clean) as conn:
+        _seed(conn)
+    command.upgrade(clean, _REVISION)
+    with _connect(clean) as conn:
+        expected = _state(conn)
+
+    broken = _use(tmp_path / "broken.db", monkeypatch)
+    command.upgrade(broken, _BEFORE)
+    with _connect(broken) as conn:
+        _seed(conn)
+        conn.execute(
+            "CREATE TRIGGER boom BEFORE UPDATE ON alembic_version "
+            "BEGIN SELECT RAISE(ABORT, 'boom'); END"
+        )
+        conn.commit()
+
+    with pytest.raises(Exception, match="boom"):
+        command.upgrade(broken, _REVISION)
+
+    with _connect(broken) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchall() == [(_BEFORE,)]
+        for table in _TABLES:
+            columns = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+            assert "photo_order_json" not in columns
+            assert "AUTOINCREMENT" not in _table_sql(conn, table).upper()
+        assert _photos(conn, "memory") == [(2, ["a", None, "b"]), (6, ["c"])]
+        conn.execute("DROP TRIGGER boom")
+        conn.commit()
+
+    command.upgrade(broken, _REVISION)
+
+    with _connect(broken) as conn:
+        assert _state(conn) == expected
+
+
+@pytest.mark.parametrize("table", _TABLES)
+def test_a_downgrade_rerun_after_a_half_finished_one_matches_a_clean_run(
+        tmp_path, monkeypatch, table):
+    clean = _use(tmp_path / "clean.db", monkeypatch)
+    command.upgrade(clean, _BEFORE)
+    with _connect(clean) as conn:
+        _seed(conn)
+    command.upgrade(clean, _REVISION)
+    command.downgrade(clean, _BEFORE)
+    with _connect(clean) as conn:
+        expected = _state(conn)
+
+    broken = _use(tmp_path / "broken.db", monkeypatch)
+    command.upgrade(broken, _BEFORE)
+    with _connect(broken) as conn:
+        _seed(conn)
+    command.upgrade(broken, _REVISION)
+    with _connect(broken) as conn:
+        _half_finished(conn, table)
+
+    command.downgrade(broken, _BEFORE)
+
+    with _connect(broken) as conn:
+        assert _state(conn) == expected
+    sql = dict((o[1], o[3]) for o in expected["objects"])
+    assert "IS NOT NULL" in sql[_PARTIAL_INDEX[table]]
+    assert "AUTOINCREMENT" not in sql[table].upper()
+
+
 def test_the_models_themselves_never_reuse_an_id():
     """Tables built from metadata (tests, a fresh install) behave the same."""
     engine = create_engine(

@@ -66,7 +66,13 @@ def _alter(table: str, autoincrement: bool, add: bool) -> None:
     sqlite = op.get_bind().dialect.name == "sqlite"
     index, columns, partial_on = _PARTIAL_UNIQUE[table]
     if sqlite:
-        op.drop_index(index, table_name=table)
+        # Re-runnable after a run that died half-way (review U2R1-1): pysqlite
+        # autocommits DDL until the batch copy's INSERT opens the transaction,
+        # so the index drop and the empty _alembic_tmp_ table can outlive a
+        # rollback that leaves alembic_version unchanged. The original table
+        # is only touched inside that transaction, so it is always intact.
+        op.execute(sa.text(f"DROP TABLE IF EXISTS _alembic_tmp_{table}"))
+        op.drop_index(index, table_name=table, if_exists=True)
     with op.batch_alter_table(
         table,
         recreate="always" if sqlite else "auto",
@@ -78,7 +84,8 @@ def _alter(table: str, autoincrement: bool, add: bool) -> None:
             batch.drop_column("photo_order_json")
     if sqlite:
         where = sa.text(f"{partial_on} IS NOT NULL")
-        op.create_index(index, table, columns, unique=True, sqlite_where=where)
+        op.create_index(
+            index, table, columns, unique=True, sqlite_where=where, if_not_exists=True)
 
 
 def _compact_photos(table: str) -> None:
