@@ -39,7 +39,7 @@ from collections import OrderedDict
 from typing import Iterable, Optional
 
 # Bump when the schema changes shape. What the *builder* writes.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # What the reader accepts. An explicit set, never a `>=` comparison: the point
 # of refusing a version is that a file we only half understand returns wrong
@@ -58,8 +58,45 @@ SCHEMA_VERSION = 2
 #
 #   1  no `relation_way.role` (members read back with role ""), no
 #      `relation_node`, so `relation_stops` is empty. Written before #359.
-#   2  current.
-_SUPPORTED_SCHEMAS = (1, 2)
+#   2  `way.rail`, a 0/1 track flag, where 3 has `way.cls`. Read as `cls` bit 0
+#      and nothing else, which is exactly what the flag meant: a v1/v2 file is
+#      a rail store, it answers a bit-0 query as it always did, and any other
+#      bit with nothing.
+#   3  current: `way.cls`, the class bitmask below, so one store format serves
+#      the rail, ferry and bus layers (docs/LOCAL_TRANSPORT_DATA_PLAN.md,
+#      Decision 9).
+_SUPPORTED_SCHEMAS = (1, 2, 3)
+
+# The layers a region can publish a store for, one file each — never one graph:
+# bus ways are roads, and a joint graph would let a rail Dijkstra walk down a
+# high street.
+LAYERS = ("rail", "ferry", "bus")
+DEFAULT_LAYER = "rail"
+
+# `way.cls` bits. Each says which of the resolver's selections a way is in, so
+# a store answers each strategy's own question, and a way in two selections is
+# in both answers — what the two Overpass queries return.
+#
+#   bit 0  the layer's routable class: `railway` without `service` for rail
+#          (what schema 2 called `rail = 1`), `route=ferry` / `route=bus` on
+#          the way itself for ferry and bus. Strategy B asks for this one.
+#   bit 1  `ferry=yes`. Strategy C (ferry) asks for this one.
+#   bit 2  member of one of the layer's route relations. Strategy A reads those
+#          through the relation, so no query asks for the bit; it is what gives
+#          a bus layer — routes mapped as relations over ordinary roads — a
+#          routable set at all.
+CLS_ROUTE = 1
+CLS_FERRY_YES = 2
+CLS_MEMBER = 4
+
+# The ways that decide whether a layer's store is refused as empty, and which
+# its extent is measured over: the builder's side of Decision 9's table, which
+# the CI filter applies to the same layers to decide `empty`.
+ROUTABLE = {
+    "rail": CLS_ROUTE,                                # unchanged from schema 2
+    "ferry": CLS_ROUTE | CLS_FERRY_YES | CLS_MEMBER,  # B, C and A each answer
+    "bus": CLS_ROUTE | CLS_MEMBER,                    # route=bus ways are rare
+}
 
 # Fixed-point scale for stored coordinates. 1e-7 degrees is OSM's own storage
 # precision, so encode/decode loses nothing, and 180e7 still fits in an int32.
@@ -107,12 +144,21 @@ class RailStoreError(Exception):
     pass
 
 
-def store_filename(region: str) -> str:
-    """File name for *region* ("europe/germany" -> "europe-germany.rail.sqlite").
+def store_filename(region: str, layer: str = DEFAULT_LAYER) -> str:
+    """File name for *region*'s *layer* store.
 
-    Shared with the builder so a store written for a region is found by it.
+    ``("europe/germany")`` -> ``europe-germany.rail.sqlite``,
+    ``("europe/germany", "bus")`` -> ``europe-germany.bus.sqlite``. Rail keeps
+    the name it had before layers existed, so no installed store, sidecar or
+    runbook command changes name.
+
+    Shared with the builder so a store written for a region is found by it. An
+    unknown layer raises rather than naming a file: the layer comes from a
+    manifest, and this is where it becomes part of a path.
     """
-    return region.strip("/").replace("/", "-") + ".rail.sqlite"
+    if layer not in LAYERS:
+        raise ValueError(f"unknown layer {layer!r}, expected one of {', '.join(LAYERS)}")
+    return region.strip("/").replace("/", "-") + f".{layer}.sqlite"
 
 
 def encode_geometry(points: Iterable[tuple[float, float]]) -> bytes:
@@ -191,6 +237,9 @@ class RailStore:
         # Which columns the queries below may name. A file older than the
         # builder is read for what it holds, not refused — see _SUPPORTED_SCHEMAS.
         self.schema = version
+        # A v1/v2 `rail` flag is 0 or 1, so `rail & mask` is `cls & mask` with
+        # only bit 0 ever set — the reading _SUPPORTED_SCHEMAS promises.
+        self._cls = "w.cls" if version >= 3 else "w.rail"
         self.meta = {
             k: v for k, v in self._conn.execute("SELECT key, value FROM meta")
         }
@@ -204,8 +253,13 @@ class RailStore:
         return self.meta.get("region", "")
 
     @property
+    def layer(self) -> str:
+        """Which layer this store holds. Before schema 3 there was only rail."""
+        return self.meta.get("layer", DEFAULT_LAYER)
+
+    @property
     def bbox(self) -> tuple[float, float, float, float]:
-        """(min_lat, min_lon, max_lat, max_lon) actually covered by the data."""
+        """(min_lat, min_lon, max_lat, max_lon) the layer's routable set covers."""
         return (
             float(self.meta["min_lat"]),
             float(self.meta["min_lon"]),
@@ -283,7 +337,8 @@ class RailStore:
         holds, not only track: a relation whose members near the point are all
         platforms or service tracks is one Overpass's ``around:`` returns, and
         filtering to ``rail = 1`` here lost 12.6% of the candidate set at
-        Luxembourg Gare — 83 relations found against 95 matched.
+        Luxembourg Gare — 83 relations found against 95 matched. (``rail = 1``
+        is ``cls`` bit 0 since schema 3.)
 
         Overpass also matches on member *nodes*. A relation with a station
         inside the radius but no member way at all inside it does not occur in
@@ -430,12 +485,19 @@ class RailStore:
     # Lookup 3 — railway ways in a bounding box  (strategy C)
     # ------------------------------------------------------------------
 
-    # Track only: the R-tree indexes every way so relations_near can see
-    # platforms, so each rail query says so for itself.
-    _RAIL_IN_BOX = (
-        "FROM way_bbox b JOIN way w ON w.id = b.id WHERE w.rail = 1 "
-        "AND b.max_lon >= ? AND b.min_lon <= ? AND b.max_lat >= ? AND b.min_lat <= ?"
-    )
+    def _in_box(self) -> str:
+        """``FROM … WHERE`` for the ways of a class mask overlapping a box.
+
+        The R-tree indexes every way so relations_near can see platforms, so
+        each class query says which classes it wants for itself. Parameters:
+        (mask, min_lon, max_lon, min_lat, max_lat). A way is selected when it
+        has *any* bit of the mask, so a mask of several bits is the union of
+        those selections.
+        """
+        return (
+            f"FROM way_bbox b JOIN way w ON w.id = b.id WHERE ({self._cls} & ?) != 0 "
+            "AND b.max_lon >= ? AND b.min_lon <= ? AND b.max_lat >= ? AND b.min_lat <= ?"
+        )
 
     def ways_in_bbox(
         self,
@@ -444,8 +506,12 @@ class RailStore:
         max_lat: float,
         max_lon: float,
         max_vertices: int = _MAX_BBOX_VERTICES,
+        cls_mask: int = CLS_ROUTE,
     ) -> list[dict]:
-        """Track whose extent overlaps the box, in ``_build_rail_graph``'s shape.
+        """Ways of *cls_mask* whose extent overlaps the box, in ``_build_rail_graph``'s shape.
+
+        The default mask, bit 0, is the layer's routable class: track, on a
+        rail store — and the only class a schema 1 or 2 file holds.
 
         Selection is by bounding box overlap, so a way that merely *spans* the
         box is included where Overpass would need a node inside it. That is a
@@ -459,17 +525,17 @@ class RailStore:
         caller that hits this wants a smaller box or an honest straight line,
         not a bigger worker.
         """
-        params = (min_lon, max_lon, min_lat, max_lat)
+        params = (cls_mask, min_lon, max_lon, min_lat, max_lat)
         # 8 bytes per vertex on disk — two int32s. Counted, not estimated.
         vertices = self._query(
-            f"SELECT COALESCE(SUM(LENGTH(w.geom)), 0) / 8 {self._RAIL_IN_BOX}", params
+            f"SELECT COALESCE(SUM(LENGTH(w.geom)), 0) / 8 {self._in_box()}", params
         )[0][0]
         if vertices > max_vertices:
             raise RailStoreError(
                 f"bbox ({min_lat}, {min_lon}, {max_lat}, {max_lon}) holds {vertices} "
                 f"vertices, over the {max_vertices} ceiling"
             )
-        rows = self._query(f"SELECT w.id, w.geom {self._RAIL_IN_BOX}", params)
+        rows = self._query(f"SELECT w.id, w.geom {self._in_box()}", params)
         return [
             {"type": "way", "id": way_id, "geometry": decode_geometry(geom)}
             for way_id, geom in rows
@@ -481,6 +547,7 @@ class RailStore:
         min_lon: float,
         max_lat: float,
         max_lon: float,
+        cls_mask: int = CLS_ROUTE,
     ) -> dict[int, int]:
         """``{way id: vertex count}`` for exactly what ``ways_in_bbox`` returns.
 
@@ -493,13 +560,14 @@ class RailStore:
         failure that degrades the effective ceiling towards ``ceiling / N``
         exactly where merging is the point.
 
-        Same predicate and same parameters as ``ways_in_bbox``, so the ids and
+        Same predicate, class mask included, and same parameters as
+        ``ways_in_bbox``, so the ids and
         the counts describe that call's result and not an approximation of it.
         Counted from the blob lengths: 8 bytes per vertex, two int32s.
         """
         return dict(self._query(
-            f"SELECT w.id, LENGTH(w.geom) / 8 {self._RAIL_IN_BOX}",
-            (min_lon, max_lon, min_lat, max_lat),
+            f"SELECT w.id, LENGTH(w.geom) / 8 {self._in_box()}",
+            (cls_mask, min_lon, max_lon, min_lat, max_lat),
         ))
 
     # ------------------------------------------------------------------
@@ -547,8 +615,8 @@ class RailStore:
         """
         cap = max_radius_m / _M_PER_DEG_LAT
         for h in [d for d in _SEARCH_STEPS_DEG if d < cap] + [cap]:
-            rows = self._query(f"SELECT w.id, w.geom {self._RAIL_IN_BOX}",
-                               (lon - h, lon + h, lat - h, lat + h))
+            rows = self._query(f"SELECT w.id, w.geom {self._in_box()}",
+                               (CLS_ROUTE, lon - h, lon + h, lat - h, lat + h))
             best = None
             best_sq = h * h
             for way_id, geom in rows:
@@ -586,9 +654,12 @@ class RailStoreCache:
     crossing a border (Phase 3).
     """
 
-    def __init__(self, directory: str | os.PathLike, max_open: int = 2) -> None:
+    def __init__(self, directory: str | os.PathLike, max_open: int = 2,
+                 layer: str = DEFAULT_LAYER) -> None:
         self.directory = str(directory)
         self.max_open = max_open
+        # One cache per layer: a region name alone does not say which file.
+        self.layer = layer
         self._open: "OrderedDict[str, RailStore]" = OrderedDict()
         self._lock = threading.Lock()
 
@@ -603,7 +674,7 @@ class RailStoreCache:
             if store is not None:
                 self._open.move_to_end(region)
                 return store
-            path = os.path.join(self.directory, store_filename(region))
+            path = os.path.join(self.directory, store_filename(region, self.layer))
             if not os.path.exists(path):
                 return None
             store = RailStore(path)
