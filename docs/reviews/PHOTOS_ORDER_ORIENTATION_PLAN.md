@@ -189,7 +189,7 @@ No Fix now in this round: U6 review stops (REVIEW.md §6).
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (019e9ce0)
 
 ### U7R2-2 — Runbook commands hard-code the tag date the prose says not to rely on
 - Trigger: Admin copies the documented commands (`--imported-before 2026-08-27`, the v0.48.0 tag date; also the script's usage examples) while v0.48.0 reached prod later → memories imported between tag and deploy are not selected and stay scrambled (only counted as "not selected").
@@ -198,6 +198,20 @@ No Fix now in this round: U6 review stops (REVIEW.md §6).
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (019e9ce0)
 
 Envelope question (U7 round 2): old installed mobile builds that predate the client sending `order` may still append scrambled photos after the cutoff; accept as residual, or note in the runbook that the run can be repeated with a later date once the min-version gate (Package C) refuses those builds? User: (b) accepted silently as a residual. Round 2 table approved.
+
+## Unit U7 review — Round 3 — 2026-10-05, reviewed at 019e9ce0 (b7ffb411..019e9ce0, fixes only; last round under the cap)
+
+### U7R3-1 — Runbook's remedy for flagged memories does not exist
+- Trigger: Admin follows docs/RELEASING.md:255-261 for a "flagged for manual review" memory and tells the owner to re-import the trip from Polarsteps → every flagged memory has a polarsteps_step_id, so the import UI greys the step "Already imported" (polarsteps_import_screen.dart:476-484) and `create_memory` returns the existing row untouched by step id (api/memories.py:334-336); the clear (`_adopt_and_refresh`) only runs for memories without a step id → nothing happens, or (if a POST gets through) duplicate ranked copies land in front (residual O1). The only real path, delete + re-import, loses the whole memory, which the runbook does not say.
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (584dc437)
+
+Envelope question (U7 round 3): is a real remedy for flagged memories in this plan's scope, or does the runbook state that a flagged memory stays as is, with a follow-up issue for a per-memory re-sync/reorder? User: (a) runbook states a flagged memory stays as is; follow-up #565 filed for a per-memory re-sync; no fourth round (docs-only fix, verified). O1 filed as #566.
+Round cap reached for U7 (§6): a fourth round needs the user to ask for it.
