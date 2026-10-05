@@ -310,3 +310,24 @@ User decision: track edit, split and reset of encrypted activities move to the d
 - Outcome: fixed (in plan)
 
 Review stopped after round 5 with user approval (2026-10-04): round-5 fixes are wording-level; the integrated diff gets its own review after delivery (DELIVERY.md §5.2).
+
+## Unit U2, round 1 — 2026-10-05, reviewed 0d42da0d..1f516f18 (worktree-agent-a40897001ce2efa82)
+
+### U2-R1-1 — GET …/track gives a departed companion's pre-edit originals to every editor
+- Trigger: companion trims his ride in the owner's trip, then leaves → any editor of the trip (incl. later joiners) reads his untrimmed original via GET …/track, while reset of that row is refused
+- Scores: trigger=plausible, impact=security, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Override: —
+- Outcome: open
+
+### U2-R1-2 — Reset still decodes enveloped originals
+- Trigger: (once U7 encrypts originals) owner resets a row with an enveloped original_polyline and null original profile → ciphertext decoded and committed as geometry
+- Scores: trigger=theoretical, impact=data-loss, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Guard (D4) — flagged to the user; U12 item 4 owns the real handling
+- Guard: before decoding originals in reset_activity_track, an envelope in either original → log error with activity_id and raise NothingToRestore; one test
+- Override: —
+- Outcome: open
+
+## Unit U4, round 1 — 2026-10-05, reviewed 0d42da0d..45bdd8d5 (worktree-agent-a0177b37de6faff2f)
+
+No findings. Backfill traced against reset_activity_track branch by branch; SQLite upgrade runs in one transaction; no remaining reader of low_res_geo_json in code.
