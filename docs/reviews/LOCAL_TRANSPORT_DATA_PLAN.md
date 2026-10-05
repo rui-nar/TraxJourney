@@ -195,3 +195,18 @@ Triager flag (not a round-2 finding, outside the fixes reviewed): Wave 1 (U2 and
 - Outcome: fixed (in plan)
 
 Review closed after round 3 (cap). Open deferrals: R1-2, R1-11, R2-4 — each with its revisit trigger above.
+
+## Delivery
+
+Branch `feat/345-local-transport-data`, base cc52978b (plan + origin/main e96f8613). Unit worktrees made by hand from the feature branch.
+
+| Unit | Goal | Route | Rule | Attempts | Escalated | Verified first time | Findings traced |
+|---|---|---|---|---|---|---|---|
+| U1 | Failed Rail extract run opens a rail-data issue | Opus | S3 | 1 | — | yes | R1-5 |
+| U3 | Count Overpass requests by purpose, resolves by source | Sonnet | — | 2 | X3 (scope +3 test files) | yes | R1-8 |
+| U4 | Route corpus and runner | Opus | S2 | 1 | owner question (Hamburg → Munich) | yes | — |
+
+Notes:
+- U1: the `rail-data` label did not exist; owner approved creating it (created 2026-10-05). `_working_bash()` in the workflow test now prefers Git Bash on Windows (a bare `bash` is the WSL launcher and drops env vars); no change on Linux.
+- U3: `_overpass(query, purpose)` broke one-argument mocks in test_rail_source.py, test_vr_hafas.py and test_resolve_route_async.py; Scope widened to them (no assertion changed). Orchestrator decision: count every `_overpass` outcome — added `no_slot`, `client_error`, `bad_body`. Verifier note: a ferry/bus/rail resolve that raises is not counted in `traxjourney_route_resolves_total` (no answering source); accepted, the request counter still counts its Overpass traffic.
+- U4: Hamburg → Munich resolves via Berlin–Leipzig–Erfurt (934 km) rather than Hannover–Würzburg (~790 km); owner: known_bad, the direct line is the expected answer. Corpus passes unchanged on rail-data-2026-09-08 and rail-data-2026-10-05. The gate (U5) must build seven regions the legs name: France, Spain, Germany, Denmark, Austria, Netherlands, Sweden.
