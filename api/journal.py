@@ -31,6 +31,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
 from api.deps import get_current_user
+from api.memories import LockVersionOut, advance_lock_version, raise_if_encryption_mismatch
 from api.project_access import (
     OwnerParam,
     assert_project_access,
@@ -42,6 +43,7 @@ from api.project_access import (
 from api.photo_locks import photo_lock
 from api.project_shared import bust_project_payloads, project_cache_ref
 from models.project_db import DBJournalEntry, DBProject, DBProjectItem
+from models.user import UserInfo
 from src.models.value_bounds import Lat, Lon
 from src.project.project_repo import bump_lock_version
 from src.billing.entitlements import ensure_storage_quota, ensure_trip_days_quota
@@ -80,6 +82,13 @@ class QueuedOut(BaseModel):
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _raise_if_author_mismatch(sess, user_info_id: int, description: Optional[str]) -> None:
+    """Journal entries are author-private, so their text belongs under the
+    author's key (decision 3 of docs/E2EE_REMNANTS_PLAN.md)."""
+    author = sess.get(UserInfo, user_info_id)
+    raise_if_encryption_mismatch(bool(author is not None and author.encryption_enabled), description)
+
 
 def _get_owned_journal(
     sess, journal_id: int, user_info_id: int, min_role: str = "editor"
@@ -240,6 +249,10 @@ class JournalUpdateBody(BaseModel):
     description: Optional[str] = Field(None, description="Journal entry text")
     lat: Optional[Lat] = Field(None, description="Latitude (required when geo_mode='custom')")
     lon: Optional[Lon] = Field(None, description="Longitude (required when geo_mode='custom')")
+    lock_version: Optional[int] = Field(
+        None, description="The trip's lock_version last seen by the caller. When given, the "
+                          "update is refused with 409 stale_write if the trip changed since. "
+                          "Omit to update unconditionally.")
 
 
 class PhotoFromUrlIn(BaseModel):
@@ -273,6 +286,8 @@ def create_journal(
             existing = _find_by_client_token(sess, project_id, body.client_token)
             if existing is not None:
                 return {"id": existing.id}
+
+        _raise_if_author_mismatch(sess, user_info_id, body.description)
 
         # Plan limit on trip length (issue #121) — an entry dated outside the
         # trip's current span stretches it.
@@ -352,17 +367,18 @@ def create_journal(
     return {"id": journal_id}
 
 
-@router.put("/{journal_id}", status_code=status.HTTP_204_NO_CONTENT,
-            summary="Update a journal entry")
+@router.put("/{journal_id}", response_model=LockVersionOut, summary="Update a journal entry")
 def update_journal(
     journal_id: int,
     body: JournalUpdateBody,
     current_user: Annotated[dict, Depends(get_current_user)],
 ):
-    """Update the text and metadata of an existing journal entry."""
+    """Update the text and metadata of an existing journal entry. Returns the
+    trip's new lock_version."""
     user_info_id = int(current_user["sub"])
     with get_session() as sess:
         row = _get_owned_journal(sess, journal_id, user_info_id)
+        _raise_if_author_mismatch(sess, user_info_id, body.description)
         project = sess.get(DBProject, row.project_id)
         ensure_trip_days_quota(
             sess, row.project_id, project.user_info_id if project else 0, body.date
@@ -372,6 +388,7 @@ def update_journal(
         if body.geo_mode != "custom":
             lat, lon = _resolve_geo(sess, row.project_id, body.date, body.geo_mode)
 
+        lock_version = advance_lock_version(sess, row.project_id, body.lock_version)
         row.date = body.date
         row.time = body.time
         row.description = body.description
@@ -382,6 +399,7 @@ def update_journal(
         cache_ref = project_cache_ref(sess, row.project_id)
         sess.commit()
         bust_project_payloads(cache_ref)
+    return {"lock_version": lock_version}
 
 
 @router.delete("/{journal_id}", status_code=status.HTTP_204_NO_CONTENT,

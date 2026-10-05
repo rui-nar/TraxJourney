@@ -237,6 +237,16 @@ def _verified_email(sess, user_info_id: int) -> str:
     return normalize_email(user.email)
 
 
+def _refuse_if_owner_encrypted(owner_user: Optional[UserInfo]) -> None:
+    """409 while the trip owner has E2EE enabled — see the module docstring."""
+    if owner_user is not None and owner_user.encryption_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Travel companions are not available on encrypted accounts — "
+                   "companions could not read or write encrypted trip content.",
+        )
+
+
 # ── Member management (owner + members) ───────────────────────────────────────
 
 @router.post("/{name}/members/invite", response_model=InviteTokenOut,
@@ -271,12 +281,7 @@ def create_invite(
         if role == "co-owner":
             require_role(sess, row, user_info_id, "owner")
         owner_user = sess.get(UserInfo, row.user_info_id)
-        if owner_user is not None and owner_user.encryption_enabled:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Travel companions are not available on encrypted accounts — "
-                       "companions could not read or write encrypted trip content.",
-            )
+        _refuse_if_owner_encrypted(owner_user)
         invite = sess.exec(
             select(DBProjectInvite).where(DBProjectInvite.project_id == row.id)
         ).first()
@@ -591,6 +596,10 @@ def accept_invite(
                 detail=f"This invite was sent to {invite.email}. Sign in with "
                        "that address and confirm it to accept.",
             )
+        # An invite created before the owner enabled encryption must not let
+        # anyone join afterwards (#505). Checked after the addressee check so a
+        # forwarded pending link does not reveal the owner's encryption state.
+        _refuse_if_owner_encrypted(sess.get(UserInfo, project.user_info_id))
         existing = sess.exec(
             select(DBProjectMember).where(
                 DBProjectMember.project_id == project.id,

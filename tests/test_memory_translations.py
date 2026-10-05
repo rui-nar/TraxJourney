@@ -305,12 +305,18 @@ class TestUpdateMemoryPurgesTranslationCache:
         client, engine, project_id = env
         mem_id = _insert_memory(engine, project_id, name="A place", description="Some notes")
         _insert_cached_translation(engine, mem_id)
+        # Envelopes are only accepted on an encrypted owner's trip (#505).
+        with Session(engine) as sess:
+            owner = sess.get(UserInfo, sess.get(DBProject, project_id).user_info_id)
+            owner.encryption_enabled = True
+            sess.add(owner)
+            sess.commit()
 
         r = client.put(f"/api/memories/{mem_id}", json={
             "date": "2025-06-01", "geo_mode": "custom",
             "name": "v1.YWJj.ZGVm", "description": "v1.eGl6.enp6",
         })
-        assert r.status_code == 204
+        assert r.status_code == 200
 
         with Session(engine) as sess:
             from sqlmodel import select
@@ -328,7 +334,7 @@ class TestUpdateMemoryPurgesTranslationCache:
             "date": "2025-06-01", "geo_mode": "custom",
             "name": "A renamed place", "description": "Updated notes",
         })
-        assert r.status_code == 204
+        assert r.status_code == 200
 
         with Session(engine) as sess:
             from sqlmodel import select
