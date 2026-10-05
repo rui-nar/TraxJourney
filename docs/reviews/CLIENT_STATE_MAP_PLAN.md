@@ -283,3 +283,12 @@ Owner (2026-10-04): I1-R3-1 and I1-R3-2 approved; I1-R3-3 overridden to Fix now;
 ## Unit review U5b-1 — 2026-10-05, reviewed at 4cd43f11 (pkgc/u5b1)
 
 Clean: no findings. Compare-and-set atomicity, races, cross-user scoping, the SQLite migration and downgrade, old APKs (E5) and E6 traced end to end.
+
+## Unit review U5b-2 — 2026-10-05, reviewed at 90c5ede8 (pkgc/u5b2)
+
+### U5b2-R1-1 — Against a not-yet-deployed server, the failed-confirm message promises a second chance that never comes
+- Trigger: new APK before the server deploy → enable with a recovery key, Done → confirm 405 → "you'll be asked again", Done never succeeds → after the deploy the migration marks the key confirmed → no banner; the user's key works, only the message was wrong
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: the tag-to-deploy gap grows beyond a short same-day window, or a user reports being stuck on the recovery-key screen
+- Outcome: open
