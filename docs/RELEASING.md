@@ -246,22 +246,33 @@ matched by content. What each memory line means:
 - `already in correct order`: compared against the source, and in order.
   Nothing written. It never stands for "could not compare".
 - `flagged for manual review: source download failed (...)`: a Polarsteps
-  photo could not be downloaded. Nothing written, ranks included. Usually
-  transient: re-run later.
+  photo could not be downloaded. Nothing written, ranks included. Often
+  transient, so re-run later. If it keeps failing (the photo was removed from
+  Polarsteps, for instance), handle it as a flagged memory, below.
 - `flagged for manual review: no photo matched the source; not compared`:
   every download worked but none of them is byte-identical to a stored photo,
-  so the order could not be checked. Typically the step's photos were
-  replaced on Polarsteps, or the memory's photos were replaced here. Nothing
-  written, and the script cannot do more for it. Note the memory id and look
-  at it in the app next to the Polarsteps step. There is no reorder UI: if
-  the order is wrong and matters, the owner re-imports that trip from
-  Polarsteps, which clears the memory's photos and downloads them again in
-  order (a photo they added to it by hand is lost, so say so first).
+  so the order could not be checked. Typically the files Polarsteps serves
+  for the step are no longer the ones downloaded at import, or the memory's
+  photos were replaced in the app. Nothing written, ranks included.
 - `flagged for manual review: only N/M local photos matched ...`: too few
-  matched to trust a reorder. Same handling.
+  matched to trust a reorder. Nothing written, ranks included.
+- `step <id> not found on Polarsteps, skipping`: the step is gone from the
+  trip. Nothing written.
 - `changed or deleted during the run, left untouched`: someone edited the
   memory after the run read it. Each rewrite is committed on its own, and only
   if the memory is unchanged since the read. Re-run to pick it up.
+
+**A flagged memory stays as it is.** Record its memory id and project id in
+the follow-up issue for this release (or its release notes). There is
+currently no in-app way to re-sync one memory's photos from Polarsteps: a
+re-import does not touch it, because the import screen marks its step
+"Already imported", and the server returns an existing memory with that
+step id unchanged. A per-memory "re-sync from Polarsteps" is tracked in
+follow-up issue #565. The only workaround is for the memory's owner to
+delete the memory and import that step again. That loses the whole memory:
+any text edited in the app, its place in the trip if it was moved,
+its comments and likes, and every photo added to it by hand. So it is the
+owner's call, never a default step of this runbook.
 
 Re-running is safe. A memory is never partially reordered, so a second run
 over the same Polarsteps data reports every corrected memory as "already in
