@@ -13,6 +13,7 @@ import 'package:flutter/foundation.dart';
 
 import '../api/client.dart';
 import '../core/project_ref.dart';
+import 'project_data_cache.dart';
 import 'project_service.dart';
 
 mixin ProjectSegmentCrudMixin on ChangeNotifier {
@@ -40,12 +41,16 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
   /// message. Returns true when the conflict was handled.
   Future<bool> _resyncOnConflict(Object e, ProjectRef ref) async {
     if (e is! ApiException || e.statusCode != 409) return false;
+    // The account this conflict belongs to (I1-R3-1, issue #418). The trip
+    // check below compares name and owner, and an own trip has no owner, so
+    // after a sign-out the next account's trip of the same name passes it.
+    final scope = projectDataCache.scope;
     try {
       await reloadDetailsOnly(ref);
       final fetched =
           await fetchServerGeo(() => service.getGeo(ref, bypassCache: true));
-      // The overlay belongs to whatever trip is open now.
-      if (_sameTrip(projectRef, ref)) {
+      // The overlay belongs to whatever trip is open now, under this account.
+      if (projectDataCache.scope == scope && _sameTrip(projectRef, ref)) {
         reconcileSegmentOverlay(fetched.geo, requestedAt: fetched.requestedAt);
         geo = {
           'type': 'FeatureCollection',
@@ -56,6 +61,8 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
     } catch (_) {
       // Best-effort resync; the next load will reconcile regardless.
     }
+    // Signed out meanwhile: the message is not the open trip's either.
+    if (projectDataCache.scope != scope) return true;
     error = 'This trip changed elsewhere — refreshed from server, please retry';
     notifyListeners();
     return true;
