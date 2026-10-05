@@ -390,3 +390,20 @@ Envelope question for the owner: with U7-R1-2 deferred, is "a #505 memory on a t
 Owner decisions (2026-10-05): U7 table approved as is. Envelope: a companion's #505 memories on a trip whose owner has since enabled encryption (legacy state only) stay under the companion's key, unreadable to the owner, until #108 key sharing — accepted; ENCRYPTION.md (U10) lists it as a remaining case.
 
 Owner decision during wave 4 (2026-10-05): the #366 gain recompute (U8) corrects **legacy rows only** — GPX imports, and edited activities with no gain snapshot (edit predates #386). Later edits, on-device ones included, keep the Strava-scaled gain as on plaintext accounts. New unit U15 exposes `has_gain_snapshot` in the payload; U8 narrows its selection (second attempt).
+
+## Unit U14, round 1 — 2026-10-05, reviewed 3d27ea98..80424bc2 (worktree-agent-a70bf5b31fe711da1)
+
+### U14-R1-1 — A user without encryption is told to "unlock encryption" for someone else's ciphertext
+- Trigger: owner without encryption has an encrypted companion's Strava ride in the trip (encrypted by the companion's catch-up) → taps Edit track → "Unlock encryption on this device…", which they cannot do
+- Scores: trigger=concrete (triage-corrected), impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Override: —
+- Outcome: open
+
+### U14-R1-2 — Encrypted save/split CAS against a version the catch-up pass is advancing; stale_write drops the edits
+- Trigger: owner edits an encrypted activity while a catch-up pass writes other rows → Save → 409 stale_write → editor closes, unsaved edits lost
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=M/local, confidence=verified (triage-corrected)
+- Decision: Defer (D10)
+- Revisit when: a user reports "changed elsewhere" on an encrypted activity right after enabling or importing; the catch-up starts writing with no plaintext left; or R4-8/U7-R1-2 refusals get retried while a trip is open
+- Override: —
+- Outcome: open
