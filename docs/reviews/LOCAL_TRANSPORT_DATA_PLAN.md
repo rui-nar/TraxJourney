@@ -219,3 +219,25 @@ Notes:
 - Wave 2 integration (d39d9d6a): full suite 6140 passed, 39 skipped.
 - U6: distinguishes "no broker" (one WARNING a month, returns) from "broker refused the job" (raises, so the job metrics record the month as failed) — this resolves deferred finding R2-4 inside the unit's latitude. Peak RSS of a full 49-region refresh of rail-data-2026-10-05, Linux container: 361 MB, 162 s, 304 MB on disk; an up-to-date re-run 54 MB / 1.5 s. Val measurement owed by the owner at the U8 checkpoint.
 - Wave 3 integration (75505d64): full suite 6166 passed, 39 skipped, 1 failed — tests/test_video_camera.py::test_ninety_seconds_of_a_long_trip_is_fast, a timing test under machine load; passed 3/3 alone; the branch does not touch src/video.
+
+## Unit review U8 — Round 1 — 2026-10-05, reviewed at 2a8e9cd4 (t345/u8, DELIVERY.md §5 point 3)
+
+Reviewer hand-off note: `.github/workflows/rail-extract.yml:284` (U5's gate) calls `store_filename(e["region"])` with no layer — U7 must pass the layer before it publishes a schema-3 manifest.
+
+### U8R1-1 — Sort-order comment says pre-layer readers key the installed manifest by region; only the old fetch does
+- Trigger: a maintainer relies on the comment at fetch_rail_data.py:500-502 → after a rollback the old load_coverage lists every entry (a bus-only region as rail coverage, deduped, logged) → the stated property is false for two of three old readers
+- Scores: trigger=plausible, impact=maintainability, detect=logged (triager: corrected from silent), later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: an image rollback past U8 happens, or the manifest sort is next touched — reword the comment to name only the old fetch's region-keyed lookup
+- Guard: —
+- Override: —
+- Outcome: open
+
+### U8R1-2 — Age-gauge warning names a carried ferry/bus layer by region only
+- Trigger: once U7 publishes layers, a ferry layer fails in CI and is carried with an old source_date → the age WARNING names "europe/denmark" → the operator checks Denmark's rail, finds it current; the stale layer is not named
+- Scores: trigger=plausible, impact=degraded-ux, detect=logged, later=cheap, fix=S/shared, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: U7 publishes the first release with ferry or bus layers, or the age warning names a region whose rail entry is current — add the layer to the oldest tuple and message in src/jobs/rail_data_jobs.py
+- Guard: —
+- Override: —
+- Outcome: open
