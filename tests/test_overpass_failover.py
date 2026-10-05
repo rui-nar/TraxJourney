@@ -90,7 +90,7 @@ class TestBackOffRatherThanRetry:
         transport.script[_PRIMARY] = [_Resp(429)]
         transport.script[_FALLBACK] = [_Resp(200, payload={"elements": ["fb"]})]
 
-        assert _overpass(_QUERY) == {"elements": ["fb"]}
+        assert _overpass(_QUERY, "rail") == {"elements": ["fb"]}
         assert transport.calls.count(_PRIMARY) == 1, "one attempt per host, never more"
         assert transport.sleeps == [], "waiting in-band is what got us banned"
 
@@ -101,8 +101,8 @@ class TestBackOffRatherThanRetry:
         transport.script[_PRIMARY] = [_Resp(429)]
         transport.script[_FALLBACK] = [_Resp(200, payload={}), _Resp(200, payload={})]
 
-        _overpass("query one")
-        _overpass("query two")
+        _overpass("query one", "rail")
+        _overpass("query two", "rail")
         assert transport.calls.count(_PRIMARY) == 1, "the second query must skip it"
 
     def test_the_cooldown_meets_the_documented_minimum(self):
@@ -116,7 +116,7 @@ class TestBackOffRatherThanRetry:
         transport.script[_PRIMARY] = [_Resp(status)]
         transport.script[_FALLBACK] = [_Resp(200, payload={})]
 
-        _overpass(_QUERY)
+        _overpass(_QUERY, "rail")
         assert ov.is_cooling(ov._slot_name(_PRIMARY))
 
     def test_an_unreachable_host_backs_off_far_harder(self, transport):
@@ -125,7 +125,7 @@ class TestBackOffRatherThanRetry:
         transport.script[_PRIMARY] = [OSError("connection refused")]
         transport.script[_FALLBACK] = [_Resp(200, payload={})]
 
-        _overpass(_QUERY)
+        _overpass(_QUERY, "rail")
         assert ov._COOLDOWN_UNREACHABLE_S >= 10 * ov._COOLDOWN_RATE_LIMITED_S
 
     def test_no_dead_parsing_of_headers_overpass_never_sends(self):
@@ -162,7 +162,7 @@ class TestBrokenHostsFailOverImmediately:
         transport.script[_PRIMARY] = [OSError("connection refused")]
         transport.script[_FALLBACK] = [_Resp(200, payload={"elements": ["fb"]})]
 
-        assert _overpass(_QUERY) == {"elements": ["fb"]}
+        assert _overpass(_QUERY, "rail") == {"elements": ["fb"]}
         assert transport.sleeps == [], "a broken host must not be waited on"
 
     @pytest.mark.parametrize("status", [400, 404])
@@ -172,7 +172,7 @@ class TestBrokenHostsFailOverImmediately:
         transport.script[_PRIMARY] = [_Resp(status)]
         transport.script[_FALLBACK] = [_Resp(200, payload={"elements": []})]
 
-        _overpass(_QUERY)
+        _overpass(_QUERY, "rail")
         assert transport.calls == [_PRIMARY, _FALLBACK]
 
     def test_unparseable_body_moves_on(self, transport):
@@ -181,7 +181,7 @@ class TestBrokenHostsFailOverImmediately:
         transport.script[_PRIMARY] = [_Resp(200, payload=None, text="<html>error")]
         transport.script[_FALLBACK] = [_Resp(200, payload={"elements": []})]
 
-        _overpass(_QUERY)
+        _overpass(_QUERY, "rail")
         assert transport.calls == [_PRIMARY, _FALLBACK]
 
 
@@ -195,7 +195,7 @@ class TestFailureReporting:
         transport.script[_FALLBACK] = [TimeoutError("read timed out")]
 
         with pytest.raises(OverpassError) as err:
-            _overpass(_QUERY)
+            _overpass(_QUERY, "rail")
 
         message = str(err.value)
         assert _PRIMARY in message and _FALLBACK in message
@@ -207,7 +207,7 @@ class TestFailureReporting:
         transport.script[_FALLBACK] = [TimeoutError("read timed out")]
 
         with pytest.raises(OverpassError) as err:
-            _overpass(_QUERY)
+            _overpass(_QUERY, "rail")
 
         assert str(err.value).count("TimeoutError") == 2
         assert transport.sleeps == []
@@ -224,7 +224,7 @@ class TestPacing:
         monkeypatch.setattr(ov, "slot", _denied)
         transport.script[_FALLBACK] = [_Resp(200, payload={"elements": []})]
 
-        _overpass(_QUERY)
+        _overpass(_QUERY, "rail")
         assert transport.calls == [_FALLBACK]
 
     def test_dead_mirror_is_not_in_the_rotation(self):
@@ -280,8 +280,8 @@ class TestResponseCaching:
         transport.script[_PRIMARY] = [_Resp(200, payload={"elements": [1]},
                                            text='{"elements": [1]}')]
 
-        first = _overpass(_QUERY)
-        second = _overpass(_QUERY)
+        first = _overpass(_QUERY, "rail")
+        second = _overpass(_QUERY, "rail")
 
         assert first == second == {"elements": [1]}
         assert transport.calls == [_PRIMARY], "the second call must be served from cache"
@@ -292,13 +292,13 @@ class TestResponseCaching:
         concurrency limit to answer from memory would be absurd."""
         transport.script[_PRIMARY] = [_Resp(200, payload={"elements": []},
                                            text='{"elements": []}')]
-        _overpass(_QUERY)
+        _overpass(_QUERY, "rail")
 
         def _must_not_acquire(*_a, **_kw):
             raise AssertionError("a cache hit must not take a slot")
 
         monkeypatch.setattr(ov, "slot", _must_not_acquire)
-        assert _overpass(_QUERY) == {"elements": []}
+        assert _overpass(_QUERY, "rail") == {"elements": []}
 
     def test_a_different_query_still_goes_to_the_network(self, transport, cached):
         transport.script[_PRIMARY] = [
@@ -306,8 +306,8 @@ class TestResponseCaching:
             _Resp(200, payload={"elements": ["b"]}, text='{"elements": ["b"]}'),
         ]
 
-        assert _overpass("query one") == {"elements": ["a"]}
-        assert _overpass("query two") == {"elements": ["b"]}
+        assert _overpass("query one", "rail") == {"elements": ["a"]}
+        assert _overpass("query two", "rail") == {"elements": ["b"]}
         assert transport.calls == [_PRIMARY, _PRIMARY]
 
     def test_failures_are_not_cached(self, transport, cached):
@@ -318,7 +318,7 @@ class TestResponseCaching:
         transport.script[_FALLBACK] = [TimeoutError("nope")]
 
         with pytest.raises(OverpassError):
-            _overpass(_QUERY)
+            _overpass(_QUERY, "rail")
 
         assert list(cached.scan_iter("cache:overpass:*")) == []
 
@@ -329,3 +329,78 @@ class TestPolitenessBound:
         constantly — and a rejection costs 10-14s, because the dispatcher queues
         you before refusing. One is deliberate, not a typo."""
         assert ov._OVERPASS_CONCURRENCY == 1
+
+
+class TestRequestCounter:
+    """traxjourney_overpass_requests_total: one increment per attempt, labelled
+    by what the query was for and what became of it."""
+
+    _NAME = "traxjourney_overpass_requests_total"
+
+    def _count(self, metric, purpose, outcome):
+        return metric(self._NAME, purpose=purpose, outcome=outcome)
+
+    def test_ok(self, transport, metric):
+        transport.script[_PRIMARY] = [_Resp(200, payload={"elements": []})]
+        before = self._count(metric, "ferry", "ok")
+        _overpass(_QUERY, "ferry")
+        assert self._count(metric, "ferry", "ok") == before + 1
+
+    def test_back_off(self, transport, metric):
+        transport.script[_PRIMARY] = [_Resp(429)]
+        transport.script[_FALLBACK] = [_Resp(200, payload={})]
+        before = self._count(metric, "bus", "back_off")
+        _overpass(_QUERY, "bus")
+        assert self._count(metric, "bus", "back_off") == before + 1
+
+    def test_unreachable(self, transport, metric):
+        transport.script[_PRIMARY] = [OSError("refused")]
+        transport.script[_FALLBACK] = [_Resp(200, payload={})]
+        before = self._count(metric, "rail", "unreachable")
+        _overpass(_QUERY, "rail")
+        assert self._count(metric, "rail", "unreachable") == before + 1
+
+    def test_cooling(self, transport, metric):
+        ov.mark_cooling(ov._slot_name(_PRIMARY), 60)
+        transport.script[_FALLBACK] = [_Resp(200, payload={})]
+        before = self._count(metric, "rail_station", "cooling")
+        _overpass(_QUERY, "rail_station")
+        assert self._count(metric, "rail_station", "cooling") == before + 1
+
+    def test_no_slot(self, monkeypatch, transport, metric):
+        @contextmanager
+        def _denied(name, _limit, **_kw):
+            yield name != ov._slot_name(_PRIMARY)
+
+        monkeypatch.setattr(ov, "slot", _denied)
+        transport.script[_FALLBACK] = [_Resp(200, payload={})]
+        before = self._count(metric, "bus", "no_slot")
+        _overpass(_QUERY, "bus")
+        assert self._count(metric, "bus", "no_slot") == before + 1
+
+    def test_client_error(self, transport, metric):
+        transport.script[_PRIMARY] = [_Resp(400)]
+        transport.script[_FALLBACK] = [_Resp(200, payload={})]
+        before = self._count(metric, "ferry", "client_error")
+        _overpass(_QUERY, "ferry")
+        assert self._count(metric, "ferry", "client_error") == before + 1
+
+    def test_bad_body(self, transport, metric):
+        transport.script[_PRIMARY] = [_Resp(200, payload=None, text="<html>")]
+        transport.script[_FALLBACK] = [_Resp(200, payload={})]
+        before = self._count(metric, "rail", "bad_body")
+        _overpass(_QUERY, "rail")
+        assert self._count(metric, "rail", "bad_body") == before + 1
+
+    def test_cache_hit(self, transport, metric, monkeypatch):
+        import fakeredis
+
+        from src.jobs import upstream_cache
+        client = fakeredis.FakeRedis()
+        monkeypatch.setattr(upstream_cache, "get_redis", lambda: client)
+        transport.script[_PRIMARY] = [_Resp(200, payload={"elements": []},
+                                           text='{"elements": []}')]
+        _overpass(_QUERY, "rail")
+        before = self._count(metric, "rail", "cache_hit")
+        _overpass(_QUERY, "rail")
+        assert self._count(metric, "rail", "cache_hit") == before + 1

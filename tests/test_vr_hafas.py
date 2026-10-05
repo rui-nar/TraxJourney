@@ -60,7 +60,7 @@ class TestTrainRelationsEndpoints:
         good_rel["id"] = 42
 
         # Both endpoint queries return the same relation ID.
-        def _overpass_side_effect(query):
+        def _overpass_side_effect(query, purpose):
             if "out ids" in query:
                 return {"elements": [{"id": 42}]}
             # Geometry fetch
@@ -81,7 +81,7 @@ class TestTrainRelationsEndpoints:
         """No intersection → OverpassError, not a 2-point chord."""
         call_count = [0]
 
-        def _overpass_side_effect(query):
+        def _overpass_side_effect(query, purpose):
             call_count[0] += 1
             if "out ids" in query:
                 # First query returns id=1, second returns id=2 — no overlap.
@@ -100,7 +100,7 @@ class TestTrainRelationsEndpoints:
         wrong_rel = _make_relation(18.0, 59.0, 18.5, 59.5, mid_count=2)
         wrong_rel["id"] = 99
 
-        def _overpass_side_effect(query):
+        def _overpass_side_effect(query, purpose):
             if "out ids" in query:
                 return {"elements": [{"id": 99}]}
             return {"elements": [wrong_rel]}
@@ -117,7 +117,7 @@ class TestTrainRelationsEndpoints:
         good_rel = _make_relation(_LON1, _LAT1, _LON2, _LAT2, mid_count=3)
         good_rel["id"] = 42
 
-        def _overpass_side_effect(query):
+        def _overpass_side_effect(query, purpose):
             # UIC enrichment queries return empty (no stations found).
             if "railway" in query and "uic_ref" in query:
                 return {"elements": []}
@@ -146,7 +146,7 @@ class TestTrainRelationsEndpoints:
         good_rel["id"] = 42
         enrich_calls: list[str] = []
 
-        def _overpass_side_effect(query):
+        def _overpass_side_effect(query, purpose):
             if "railway" in query and "uic_ref" in query:
                 enrich_calls.append(query)
                 return {"elements": []}  # no UIC found → falls through to B
@@ -197,7 +197,7 @@ class TestCoordinateFallbackBoundedCalls:
         }
         calls = {"enrich": 0, "ids": 0, "rail": 0, "total": 0}
 
-        def _overpass_side_effect(query):
+        def _overpass_side_effect(query, purpose):
             calls["total"] += 1
             if "uic_ref" in query:        # endpoint UIC enrichment
                 calls["enrich"] += 1
@@ -236,7 +236,7 @@ class TestCoordinateFallbackBoundedCalls:
         stops = [{"lat": a[0], "lon": a[1]}, {"lat": b[0], "lon": b[1]}]
         calls = {"rail": 0}
 
-        def _overpass_side_effect(query):
+        def _overpass_side_effect(query, purpose):
             if "uic_ref" in query:
                 return {"elements": []}
             if "out ids" in query:
@@ -269,7 +269,7 @@ class TestCoordinateFallbackBoundedCalls:
         stops = [{"lat": a[0], "lon": a[1]}, {"lat": b[0], "lon": b[1]}]
         calls = {"rail": 0}
 
-        def _overpass_side_effect(query):
+        def _overpass_side_effect(query, purpose):
             if "uic_ref" in query or "out ids" in query:
                 return {"elements": []}
             calls["rail"] += 1
@@ -453,7 +453,7 @@ class TestRailDegradedReporting:
         all fail → straight chord, flagged degraded (not a silent 'resolved')."""
         calls = {"rail": 0}
 
-        def _boom(query):
+        def _boom(query, purpose):
             if _is_strategy_c(query):
                 calls["rail"] += 1
             raise OverpassError("Overpass timeout")
@@ -476,7 +476,7 @@ class TestRailDegradedReporting:
         chord, flagged degraded."""
         calls = {"rail": 0}
 
-        def _empty(query):
+        def _empty(query, purpose):
             if _is_strategy_c(query):
                 calls["rail"] += 1
             return {"elements": []}
@@ -493,7 +493,7 @@ class TestRailDegradedReporting:
         good_rel = _make_relation(_LON1, _LAT1, _LON2, _LAT2, mid_count=3)
         good_rel["id"] = 7
 
-        def _side_effect(query):
+        def _side_effect(query, purpose):
             if "uic_ref" in query:
                 return {"elements": []}           # skip Strategy A
             if "out ids" in query:
@@ -571,7 +571,7 @@ class TestOverpassMirrorFallback:
 
         with patch("src.services.overpass_service.requests.post", side_effect=fake_post), \
              patch("time.sleep", lambda *_: None):
-            data = ov._overpass("[out:json];")
+            data = ov._overpass("[out:json];", "rail")
 
         assert data == {"elements": [{"ok": 1}]}
         # Exactly one attempt on the primary: it is marked as cooling and this
@@ -587,4 +587,4 @@ class TestOverpassMirrorFallback:
                    side_effect=lambda url, **k: self._Resp(429)), \
              patch("time.sleep", lambda *_: None):
             with pytest.raises(OverpassError):
-                ov._overpass("[out:json];")
+                ov._overpass("[out:json];", "rail")
