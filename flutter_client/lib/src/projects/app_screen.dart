@@ -38,6 +38,7 @@ import 'project_file.dart';
 import 'image_export.dart';
 import 'image_download.dart';
 import 'poster_config_dialog.dart';
+import 'poster_consent_dialog.dart';
 import 'poster_job_notifier.dart';
 import 'poster_status_card.dart';
 import 'poster_title_dialog.dart';
@@ -598,7 +599,7 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
     if (!mounted) return;
     final messenger = ScaffoldMessenger.of(context);
     try {
-      final jobId = await createPosterJob(
+      final jobId = await createPosterJobWithConsent(
         ref: widget.projectRef,
         bounds: posterBoundsFromLatLngBounds(bounds),
         orientation: orientation,
@@ -608,7 +609,13 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
         titlePosition: {'x': titleOpts.positionX, 'y': titleOpts.positionY},
         titleText: titleOpts.titleText,
         titleScale: titleOpts.titleScale,
+        // An encrypted trip's memory text reaches the server only with the
+        // user's consent (E2EE remnants D11).
+        askConsent: (n) async => mounted
+            ? await showPosterConsentDialog(context, memoryCount: n)
+            : PosterConsentChoice.cancel,
       );
+      if (jobId == null) return;
       // Ambient status card (issue #14, unit G) picks up from here — the
       // SnackBar below is a one-off confirmation, the card is what actually
       // reflects real server state (generating/done/failed) afterwards.
