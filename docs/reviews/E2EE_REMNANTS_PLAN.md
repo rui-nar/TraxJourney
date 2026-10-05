@@ -455,3 +455,21 @@ Owner approved (2026-10-06): U14 table (R1-1 fix now, R1-2 deferred) and U8 tabl
 Envelope question for the owner: three Definition-of-done bullets no longer hold literally after owner decisions recorded here (trip editors may write encrypted geometry; ENCRYPTION.md lists the legacy companion-memory case; #366 gain recompute is legacy rows only). Amend the plan's DoD to match, or keep the ledger as the record?
 
 Owner decisions (2026-10-06): integrated-review table approved as is; the plan's Definition of done amended to match the delivery-time owner decisions.
+
+## Integrated diff, round 2 — 2026-10-06, reviewed 217a5f83..55271f51 (fixes only)
+
+### I2-1a — ENCRYPTION.md case 5 and the completeness claim are false for an own row also in a friend's trip
+- Trigger: reader relies on case 5 ("intended… friend must still read the track") while the code envelopes the row when it is also in the user's own trip
+- Scores: trigger=concrete, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Override: —
+- Outcome: open
+
+### I2-1b — An encrypted user's own ride shared into a friend's plaintext trip is enveloped by their catch-up
+- Trigger: encrypted companion's own Strava/GPX row is in their trip and a friend's → owner-branch pass PUTs envelopes (activity_e2ee_writable_by short-circuits on row owner) → friend's trip loses track/name/endpoints; pre-existing once at enable time, now repeated every load
+- Scores: trigger=concrete, impact=wrong-visible (triage-corrected), detect=user-visible (triage-corrected), later=expensive (triage-corrected), fix=M/shared (triage-corrected), confidence=verified
+- Decision: Fix now (D5)
+- Override: —
+- Outcome: open
+
+Owner decision (2026-10-06): keep shared rides readable — decision 15 added (server refuses envelopes on rows another user's trip references; client skips and repairs). Units U16 (wave 6), U17 + U10 second fix (wave 7).

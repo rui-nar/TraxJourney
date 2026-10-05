@@ -404,6 +404,22 @@ investigation for this plan found three more.
     deleting or detaching them on companion removal (a data change outside
     this package's intent).
 
+15. **A row another user's trip uses stays readable (owner decision after
+    integrated review round 2, I2-1b).** The server refuses any write that
+    stores an envelope in an activity's E2EE fields while a trip owned by
+    another user references the row — even when the caller owns the row —
+    with 409 `shared_with_other_trip`: on `PUT /api/activities/{id}`, the
+    encrypted track/split routes and the elevation-gain route. Plaintext
+    values from a caller who may write the row stay accepted, so the row's
+    owner can decrypt it back. The trip payload carries `shared_with_others`
+    per activity (computed in the load query). The client's catch-up skips
+    such rows (counted in the "stays unencrypted" notice, reworded to cover
+    both cases) and repairs rows the shipped migration or an earlier pass
+    already encrypted: for a shared row with envelopes it can decrypt, it
+    writes the plaintext back (all E2EE fields, originals included), with
+    the pass's lock-version chain and session checks. Rules out letting the
+    owner's key win (the friend's trip loses the ride until #108).
+
 ## Review envelope
 
 REVIEW.md defaults apply, with:
@@ -1181,6 +1197,75 @@ REVIEW.md defaults apply, with:
 - **Escalate if:** a statement cannot be verified against the merged code.
 - **Depends on:** U1–U9, U12–U14.
 
+### Wave 6 — shared rides (decision 15)
+
+#### U16 — Server: refuse envelopes on rows another user's trip uses; `shared_with_others`
+
+- **Goal:** no envelope is stored on an activity row that a trip owned by
+  another user references, and the client can see which rows are shared.
+- **Scope:** `api/activities.py` (`update_activity_fields`, the encrypted
+  track/split handlers, the elevation-gain handler, and a shared helper
+  only), `src/project/repo_activities.py` (helper, `_row_to_activity`),
+  `src/project/repo_core.py` (the project-load query only),
+  `src/models/activity.py`, `src/project/project_io.py` (`to_dict` only),
+  `tests/test_activity_shared_rows.py` (new).
+- **Context:** decision 15; `activity_e2ee_writable_by`
+  (`repo_activities.py`), `plain_fields` (U12) and `has_gain_snapshot` (U15)
+  as precedents for a payload flag computed in the load query and emitted
+  by `to_dict` only.
+- **Do:** helper "row referenced by a project whose owner is not the
+  caller"; on the four write paths, if the body stores any envelope (strict
+  check) on such a row → 409 `{"code": "shared_with_other_trip"}`, nothing
+  written, lock version unchanged; plaintext writes keep today's rules;
+  `shared_with_others` on the payload, computed without loading heavy
+  columns.
+- **Acceptance:** tests: owner encrypting their own row also in another
+  user's trip → 409 on each of the four routes, row unchanged; same row
+  only in owner's trips → 200; owner writing plaintext back to a shared
+  enveloped row → 200; `shared_with_others` true/false on `/meta` and full
+  payloads, absent from `.traxj`, no extra light-path query; existing
+  `tests/test_activity_*` pass.
+- **Latitude:** local design. **Escalate if:** a file outside Scope is
+  needed. **Depends on:** —
+
+### Wave 7 — client and doc for shared rides
+
+#### U17 — Client: skip and repair shared rows in the catch-up
+
+- **Goal:** the catch-up never encrypts a shared row, and decrypts back
+  shared rows it can decrypt.
+- **Scope:** `flutter_client/lib/src/crypto/encryption_migration.dart`,
+  `flutter_client/lib/src/crypto/encryption_locked_banner.dart` (notice
+  wording only), `flutter_client/test/crypto/encryption_shared_rows_test.dart`
+  (new), `flutter_client/test/crypto/encryption_locked_banner_test.dart`.
+- **Context:** decision 15; U7's pass (`encryptTrip`, `_write`, session
+  checks), U8's recompute (shared rows must be skipped there too), U14's
+  notice.
+- **Do:** owner branch: rows with `shared_with_others` are not encrypted
+  and are counted; for such rows whose stored fields include envelopes,
+  fetch `GET …/track`, decrypt every envelope field (originals included)
+  with the user's key, and write the plaintext back; envelopes under
+  another key are left alone; a 409 `shared_with_other_trip` counts the
+  row. Notice: "N activities are used by another traveller's trip and stay
+  unencrypted" (or equivalent covering both decision-14 and decision-15
+  rows).
+- **Acceptance:** tests: shared plaintext row → no write, counted; shared
+  enveloped own-key row → plaintext written back, CAS chain respected;
+  foreign-key envelope → untouched; recompute skips shared rows; notice
+  wording; existing `test/crypto/` pass.
+- **Latitude:** local design. **Escalate if:** a file outside Scope is
+  needed. **Depends on:** U16.
+
+#### U10 (second fix) — ENCRYPTION.md for shared rows (I2-1a)
+
+- **Goal / Do:** correct case 5 and the completeness claim: a user's own
+  row used by another user's trip stays (or is made) plaintext and readable
+  (decision 15); list it as a remaining plaintext case with code locations.
+- **Scope:** `docs/ENCRYPTION.md`. **Acceptance:**
+  `tests/test_encryption_doc_coverage.py` passes; every cited location
+  exists. **Latitude:** none. **Depends on:** U16 (merged), U17 in the same
+  wave (cite the names U17's report gives; escalate if unsure).
+
 ## Definition of done
 
 - On an encrypted account, after one load of each owned trip on an unlocked
@@ -1229,6 +1314,9 @@ REVIEW.md defaults apply, with:
   on-device cache; activity rows the owner may not encrypt (shown in the app
   as "stay unencrypted"); a companion's legacy #505 memories on a trip whose
   owner later enabled encryption, until #108 (owner decision, 2026-10-05);
-  and a user's own activity rows that live only in another user's plaintext
-  trip (I1-4).
+  and a user's own activity rows that another user's trip uses, which stay
+  plaintext so that trip can read them (I1-4, decision 15).
+- No envelope is stored on an activity row a trip owned by another user
+  references; rows already encrypted that way are decrypted back by the
+  owner's next unlocked load (decision 15).
 - Full `pytest` and `flutter test` pass; `alembic heads` shows one head.
