@@ -386,3 +386,42 @@ Process notes:
 - Automatic agent worktrees start from `main`; worktrees were created by hand from the feature branch, and orchestration ran from a separate worktree because the main checkout is shared.
 - Test runs used per-unit folders inside the persistent Flutter and Python containers. A Docker Desktop engine hang lost the Python container mid-delivery; it was rebuilt from `python:3.14-slim` (plus `libexpat1`, `git`).
 - Three API session-limit interruptions; every interrupted agent was resumed from its transcript without losing work.
+
+## Part 2 amendment, round 1 — 2026-10-06, reviewed at 491c5459
+
+### P2-R1-1 — The post-mutation fetch is not ordered against geo requests already in flight
+- Trigger: zoom refetch or LOD request in flight → user deletes an activity → the post-mutation fetch lands first → the older response lands and is assigned → the deleted activity is drawn again until the next bucket crossing
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10); flagged: same request-ordering class the owner overrode in I1-R1-1/I1-R3-3; pre-existing on main
+- Revisit when: the owner applies that override to geo writers, or a deleted activity is seen drawn after an in-flight zoom
+- Outcome: open
+
+### P2-R1-2 — Derived root getters (hasActiveFilter …) hide facet reads from U18's audit
+- Trigger: after U19, ticking a tag does not rebuild the filter badge's Consumer
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6): U12 removes or moves the derived getters with the field
+- Outcome: open
+
+### P2-R1-3 — U19's root dirty flag has no completeness mechanism
+- Trigger: a root field written without marking dirty → its Consumer never updates (banner, spinner)
+- Scores (corrected by triage): trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6): private root fields behind marking setters + a completeness scan test
+- Outcome: open
+
+### P2-R1-4 — listVersion bumps on day-meta/people/groups and rebuilds the specs
+- Trigger: a day-note save re-runs every spec builder although items and geo did not change
+- Scores: trigger=concrete, impact=degraded-ux, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7): day-meta, people, groups out of the spec key; people/groups in the encounter key
+- Outcome: open
+
+### P2-R1-5 — The two subclass isGeoLoaded writers break the mutator convention
+- Trigger: U10 moves view_screen.dart:68 / shared_project_screen.dart:216 into the facet → the restriction rejects both → X3
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Outcome: open
+
+### P2-R1-6 — joinInFlight breaks seven test fakes outside U10's Scope
+- Trigger: the new named parameter makes every getSimplifiedGeo override fail to compile → X3
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7): a separate non-dedup service method; U10's Scope lists the fakes that must override it
+- Outcome: open
