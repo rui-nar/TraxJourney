@@ -226,3 +226,23 @@ Round cap reached for U7 (§6): a fourth round needs the user to ask for it.
 - Guard: —
 - Override: —
 - Outcome: open
+
+## Integrated diff review — Round 2 — 2026-10-06, reviewed at b667fcd8 (974abd37..b667fcd8, fix for IR1-1)
+
+### IR2-1 — Memory replace's post-lock cleanup can double-subtract with the delete's folder sweep
+- Trigger: User replaces a memory photo on one device while deleting the memory on another → replace commits under the lock, then unlinks the old photo outside it (api/memories.py:779); the delete's sweep (:492-493) finds the old files still on disk → both run `unlink_and_record`, which stats before unlinking (src/billing/usage.py:110-114) → bytes subtracted twice; counter under until the nightly reconcile. Introduced by the IR1-1 sweep.
+- Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
+
+### IR2-2 — The sweep uncounts files a writer has written but not yet counted
+- Trigger: User deletes a memory while an upload/download to it is between writing its files and `record_written` (src/utils/photo_store.py:102-111, 125-126) → the delete's sweep subtracts their size, `record_written` then adds 0 for files that are gone → counter under by one photo until the nightly reconcile.
+- Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=M, fix_risk=shared (photo_store.save_photo_files, also used by the archive import), confidence=verified
+- Decision: Fix now (D3)
+- Revisit when: a storage reconcile reports drift on a memory that was deleted during an upload, or uploads move to a path where the counter is not reconciled nightly.
+- Guard: —
+- Override: user: Defer — self-correcting at the nightly reconcile, millisecond window; not worth changing shared photo_store code now.
+- Outcome: open
