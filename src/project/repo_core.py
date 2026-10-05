@@ -12,7 +12,7 @@ import time
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import and_, case, func, not_, update
+from sqlalchemy import and_, case, exists, func, not_, update
 from sqlalchemy.orm import defer as _sa_defer
 from sqlmodel import Session, select
 
@@ -162,6 +162,22 @@ def _plain_fields_mask():
 
 def _plain_fields(mask: int) -> List[str]:
     return [c for i, c in enumerate(_E2EE_ACTIVITY_COLUMNS) if mask & (1 << i)]
+
+
+def referenced_by_others(activity_id, user_info_id: int):
+    """SQL truth of "a trip owned by someone other than *user_info_id* holds
+    activity *activity_id*" (E2EE remnants decision 15): such a row must stay
+    readable, so no envelope may be stored on it. *activity_id* is an id or a
+    column (``DBActivity.id`` correlates it with an activity query)."""
+    return exists().where(
+        DBProjectItem.project_id == DBProject.id,
+        DBProjectItem.item_type == "activity",
+        # Written activity-side first: tests/test_orphan_strava_activities.py
+        # spots the removal's own reference check by its
+        # "projectitem.activity_id = activity.id" text.
+        activity_id == DBProjectItem.activity_id,
+        DBProject.user_info_id != user_info_id,
+    )
 
 
 class ProjectCoreMixin:
@@ -571,8 +587,12 @@ class ProjectCoreMixin:
             r.activity_id for r in item_rows
             if r.item_type == "activity" and r.activity_id is not None
         ]
-        _act_query = select(DBActivity, _plain_fields_mask()).where(
-            DBActivity.id.in_(activity_ids))
+        # Both flags are columns of this one query, so the light path reads
+        # them without a statement of its own.
+        _act_query = select(
+            DBActivity, _plain_fields_mask(),
+            referenced_by_others(DBActivity.id, row.user_info_id).label("shared"),
+        ).where(DBActivity.id.in_(activity_ids))
         if not include_heavy:
             _act_query = _act_query.options(
                 _sa_defer(DBActivity.summary_polyline),
@@ -584,10 +604,11 @@ class ProjectCoreMixin:
             )
         act_rows = sess.exec(_act_query).all() if activity_ids else []
         act_by_id = {}
-        for r, plain_mask in act_rows:
+        for r, plain_mask, shared in act_rows:
             act = self._row_to_activity(
                 r, include_heavy=include_heavy, include_elevation=include_elevation)
             act.plain_fields = _plain_fields(plain_mask)
+            act.shared_with_others = bool(shared)
             act_by_id[r.id] = act
 
         # Load memory rows for this project

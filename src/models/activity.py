@@ -105,6 +105,13 @@ class Activity:
     # Set by _row_to_activity, sent by ProjectIO.to_dict, never written to a
     # .traxj file (to_strava_dict).
     has_gain_snapshot: bool = False
+    # Whether a trip owned by someone other than the loaded trip's owner also
+    # holds the row (E2EE remnants decision 15): it must stay readable, so the
+    # catch-up leaves it plaintext and PUT /api/activities/{id} refuses an
+    # envelope on it. Set by the project-load query only, so None on an
+    # activity built from anything else. Sent by ProjectIO.to_dict, never
+    # written to a .traxj file (to_strava_dict).
+    shared_with_others: Optional[bool] = None
 
     def to_strava_dict(self) -> dict:
         """Serialise to a dict that can be round-tripped via from_strava_api()."""

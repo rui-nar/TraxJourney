@@ -1609,6 +1609,24 @@ def _require_e2ee_writable(sess, activity_id: int, caller_id: int) -> None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not found")
 
 
+def _refuse_shared(sess, activity_id: int, key_owner_id: int, *, rollback: bool = False) -> None:
+    """409 ``shared_with_other_trip`` when a trip owned by someone other than
+    *key_owner_id* holds this activity (E2EE remnants decision 15): its owner
+    could not read an envelope stored on the row. *key_owner_id* is the caller
+    on the row-scoped routes, the trip's owner on the trip-scoped ones (the
+    owner of the trip ``shared_with_others`` is computed for). Called by every
+    write that stores an envelope, before it writes; with *rollback*, once more
+    after the lock-version bump holds the write lock, undoing the bump, so a
+    trip that took the row in between is seen."""
+    if _repo.activity_shared_with_others(sess, activity_id, key_owner_id):
+        if rollback:
+            sess.rollback()
+        raise _conflict(
+            "shared_with_other_trip",
+            "This activity is also in another traveller's trip, so it stays unencrypted.",
+            activity_id=activity_id)
+
+
 def _project_contains_activity(project, activity_id: int) -> bool:
     return any(
         it.item_type == "activity" and it.activity_id == activity_id
@@ -2085,7 +2103,8 @@ def edit_activity_track_encrypted(
     Same permission checks as ``PUT …/track``; ``lock_version`` is required.
     The first edit snapshots the previous track and figures for reset. 409
     ``not_encrypted`` when the stored polyline is not an envelope, 409
-    ``stale_write`` on a lock_version mismatch, 422 on any value that is not a
+    ``stale_write`` on a lock_version mismatch, 409 ``shared_with_other_trip``
+    when another user's trip holds the row, 422 on any value that is not a
     well-formed envelope or a figure out of bounds. Returns the trip's new
     ``lock_version``.
     """
@@ -2095,6 +2114,7 @@ def edit_activity_track_encrypted(
         owner_id = row.user_info_id
         _require_rewritable_by_trip(sess, row, activity_id)
         _require_held(sess, row, activity_id)
+        _refuse_shared(sess, activity_id, owner_id)
         try:
             edited = _repo.edit_activity_track_encrypted(
                 sess, row.id, activity_id, body.stored(),
@@ -2136,6 +2156,8 @@ def split_activity_encrypted(
         owner_id = row.user_info_id
         _require_rewritable_by_trip(sess, row, activity_id)
         _require_held(sess, row, activity_id)
+        # The tail is a new row only this trip holds: the head decides.
+        _refuse_shared(sess, activity_id, owner_id)
         try:
             tail_id = _repo.split_activity_encrypted(
                 sess, row.id, activity_id, body.head.stored(), body.tail.stored(),
@@ -2290,6 +2312,9 @@ def update_activity_fields(
     409 ``stale_write`` (nothing written) on a mismatch, and the response
     carries the trip's new ``lock_version``. An envelope ``name`` also clears
     ``split_base_name``, the plaintext name the row had before it was split.
+    A body storing any envelope on a row another user's trip holds is refused
+    with 409 ``shared_with_other_trip``, nothing written (decision 15);
+    plaintext is not.
     """
     user_info_id = int(current_user["sub"])
     data = body.model_dump(exclude_unset=True)
@@ -2300,8 +2325,11 @@ def update_activity_fields(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="project and lock_version are given together or not at all",
         )
+    stores_envelope = any(is_well_formed_envelope(v) for v in data.values())
     with get_session() as sess:
         _require_e2ee_writable(sess, activity_id, user_info_id)
+        if stores_envelope:
+            _refuse_shared(sess, activity_id, user_info_id)
         row = sess.get(DBActivity, activity_id)
 
         # Every project this activity appears in — needed both to bust the geo
@@ -2329,6 +2357,8 @@ def update_activity_fields(
         for project_id in project_ids:
             if project_id != cas_project_id:
                 bump_lock_version(sess, project_id)
+        if stores_envelope:
+            _refuse_shared(sess, activity_id, user_info_id, rollback=True)
 
         for field, value in data.items():
             setattr(row, field, value)
@@ -2391,7 +2421,8 @@ def update_activity_elevation_gain(
 
     Who may call it is who may call ``PUT /api/activities/{id}``. 409
     ``not_encrypted`` unless the stored ``elevation_profile_json`` is an
-    envelope; 422 unless the value is finite and within 0..50 000 m. The
+    envelope, 409 ``shared_with_other_trip`` when another user's trip holds
+    the row; 422 unless the value is finite and within 0..50 000 m. The
     compare-and-swap (``project`` + ``lock_version``) and the lock_version
     advance of every trip holding the row are those of
     ``PUT /api/activities/{id}``, which itself still never writes the gain.
@@ -2406,6 +2437,9 @@ def update_activity_elevation_gain(
         )
     with get_session() as sess:
         _require_e2ee_writable(sess, activity_id, user_info_id)
+        # The gain is the device's measure of an enveloped profile, which a
+        # shared row must not keep: refused like the envelope itself.
+        _refuse_shared(sess, activity_id, user_info_id)
         row = sess.get(DBActivity, activity_id)
         if not is_encrypted_envelope(row.elevation_profile_json):
             raise _not_encrypted(activity_id)
@@ -2439,6 +2473,7 @@ def update_activity_elevation_gain(
         if not is_encrypted_envelope(row.elevation_profile_json):
             sess.rollback()
             raise _not_encrypted(activity_id)
+        _refuse_shared(sess, activity_id, user_info_id, rollback=True)
 
         row.total_elevation_gain = body.total_elevation_gain
         sess.add(row)
