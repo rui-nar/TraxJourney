@@ -10,6 +10,8 @@
 /// [ProjectNotifier].
 library;
 
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
 
@@ -47,10 +49,17 @@ class ActivityEditorPage extends StatefulWidget {
   final ProjectNotifier notifier;
   final Map<String, dynamic> activity;
 
+  /// Set for an activity whose stored track is encrypted: [activity] is then
+  /// the `GET …/track` response as stored, and this its decrypted track. Edits
+  /// and splits are measured and encrypted on this device and sent to the
+  /// encrypted routes (E2EE remnants decision 7).
+  final EncryptedTrackEdit? encrypted;
+
   const ActivityEditorPage({
     super.key,
     required this.notifier,
     required this.activity,
+    this.encrypted,
   });
 
   @override
@@ -127,7 +136,10 @@ class _ActivityEditorPageState extends State<ActivityEditorPage> {
   @override
   void initState() {
     super.initState();
-    _c = TrackEditorController(modelForActivity(widget.activity));
+    final encrypted = widget.encrypted;
+    _c = TrackEditorController(encrypted == null
+        ? modelForActivity(widget.activity)
+        : TrackEditModel.aligned(encrypted.polyline, encrypted.profile));
     _c.addListener(_onChange);
   }
 
@@ -186,8 +198,21 @@ class _ActivityEditorPageState extends State<ActivityEditorPage> {
 
   /// True for the 409 the server returns when this activity's project changed
   /// elsewhere since the editor loaded it (issue #31) — TrackEditRequest /
-  /// SplitRequest.lock_version mismatched.
+  /// SplitRequest.lock_version mismatched. Also any other 409 on a save or
+  /// split: the activity was encrypted, or decrypted, since the editor opened,
+  /// which reopening it is equally the way to see.
   bool _isStaleVersionConflict(Object e) => e is ApiException && e.statusCode == 409;
+
+  /// The `detail.code` of a 409, e.g. `nothing_to_restore`; null otherwise.
+  static String? _conflictCode(Object e) {
+    if (e is! ApiException || e.statusCode != 409) return null;
+    try {
+      final detail = (jsonDecode(e.body) as Map)['detail'];
+      return detail is Map ? detail['code'] as String? : null;
+    } catch (_) {
+      return null;
+    }
+  }
 
   /// Close this editor with [result], whatever has been opened over it since
   /// the write started.
@@ -231,8 +256,14 @@ class _ActivityEditorPageState extends State<ActivityEditorPage> {
     final navigator = Navigator.of(context);
     final route = ModalRoute.of(context);
     try {
-      await widget.notifier.saveActivityTrack(
-          _activityId, _c.toSavePayload(), lockVersion: _lockVersion);
+      final encrypted = widget.encrypted;
+      if (encrypted == null) {
+        await widget.notifier.saveActivityTrack(
+            _activityId, _c.toSavePayload(), lockVersion: _lockVersion);
+      } else {
+        await widget.notifier
+            .saveEncryptedActivityTrack(_activityId, encrypted, _c.points);
+      }
       if (!mounted) return;
       _closeEditor(navigator, route, true);
     } catch (e) {
@@ -290,13 +321,29 @@ class _ActivityEditorPageState extends State<ActivityEditorPage> {
     final navigator = Navigator.of(context);
     final route = ModalRoute.of(context);
     try {
-      await widget.notifier.resetActivityTrack(_activityId);
+      final lockVersion = _lockVersion;
+      if (lockVersion == null) {
+        await widget.notifier.resetActivityTrack(_activityId);
+      } else {
+        await widget.notifier
+            .resetActivityTrackIfUnchanged(_activityId, lockVersion);
+      }
       if (!mounted) return;
       _closeEditor(navigator, route, true);
     } catch (e) {
       if (!mounted) return;
       setState(() => _saving = false);
-      messenger.showSnackBar(SnackBar(content: Text('Reset failed: $e')));
+      switch (_conflictCode(e)) {
+        case 'stale_write':
+          _handleStaleVersionConflict(messenger, navigator, route);
+        case 'nothing_to_restore':
+          messenger.showSnackBar(const SnackBar(
+            content: Text("This activity's original track was not kept, so it "
+                "can't be reset."),
+          ));
+        default:
+          messenger.showSnackBar(SnackBar(content: Text('Reset failed: $e')));
+      }
     }
   }
 
@@ -382,8 +429,7 @@ class _ActivityEditorPageState extends State<ActivityEditorPage> {
     final navigator = Navigator.of(context);
     final route = ModalRoute.of(context);
     try {
-      await widget.notifier.splitActivity(_activityId, index,
-          payload: _c.toSavePayload(), lockVersion: _lockVersion);
+      await _split(index, dropBoundary: false);
       if (!mounted) return;
       _closeEditor(navigator, route, true);
     } catch (e) {
@@ -395,6 +441,21 @@ class _ActivityEditorPageState extends State<ActivityEditorPage> {
       }
       messenger.showSnackBar(SnackBar(content: Text('Split failed: $e')));
     }
+  }
+
+  /// Split at [index] of the editor's points, on the device for an encrypted
+  /// track, by the server otherwise.
+  Future<void> _split(int index, {required bool dropBoundary}) {
+    final encrypted = widget.encrypted;
+    if (encrypted != null) {
+      return widget.notifier.splitEncryptedActivity(
+          _activityId, encrypted, _c.points, index,
+          dropBoundary: dropBoundary);
+    }
+    return widget.notifier.splitActivity(_activityId, index,
+        dropBoundary: dropBoundary,
+        payload: _c.toSavePayload(),
+        lockVersion: _lockVersion);
   }
 
   /// Cut the track at [index] and drop the shared boundary point from the new
@@ -437,10 +498,7 @@ class _ActivityEditorPageState extends State<ActivityEditorPage> {
     final navigator = Navigator.of(context);
     final route = ModalRoute.of(context);
     try {
-      await widget.notifier.splitActivity(_activityId, index,
-          dropBoundary: true,
-          payload: _c.toSavePayload(),
-          lockVersion: _lockVersion);
+      await _split(index, dropBoundary: true);
       if (!mounted) return;
       _closeEditor(navigator, route, {'openSegmentFor': _activityId});
     } catch (e) {
@@ -465,7 +523,9 @@ class _ActivityEditorPageState extends State<ActivityEditorPage> {
     return Scaffold(
       appBar: AppBar(
         title: LayoutBuilder(builder: (context, constraints) {
-          final name = shownText(widget.activity['name'] as String?) ?? 'Activity';
+          final name = widget.encrypted?.name ??
+              shownText(widget.activity['name'] as String?) ??
+              'Activity';
           final title = Text(
             // On a phone "Edit — " took 49 of the title's 120 px at 360 px
             // (measured in Roboto) to say what Save, the point handles and the

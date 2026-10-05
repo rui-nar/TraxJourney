@@ -459,6 +459,64 @@ class ProjectService {
     return data as Map<String, dynamic>;
   }
 
+  /// [resetActivityTrack] as a compare-and-swap: [lockVersion] is the
+  /// project's lock_version the editor last saw (from getActivityTrack), and
+  /// the server answers 409 `stale_write` if the project changed since.
+  Future<Map<String, dynamic>> resetActivityTrackIfUnchanged(
+    ProjectRef ref,
+    int activityId,
+    int lockVersion,
+  ) async {
+    final data = await api.post(
+      ref.path('/activities/$activityId/reset'),
+      {'lock_version': lockVersion},
+      timeout: const Duration(minutes: 2),
+    );
+    return data as Map<String, dynamic>;
+  }
+
+  /// Store an encrypted activity's track as edited on the device (E2EE
+  /// remnants decision 7). [piece] holds the geometry envelopes and the
+  /// figures computed from them, keyed by column name; [lockVersion] is
+  /// required, from getActivityTrack. Returns `{id, lock_version}`.
+  /// PUT /api/projects/{name}/activities/{id}/track/encrypted
+  Future<Map<String, dynamic>> saveEncryptedActivityTrack(
+    ProjectRef ref,
+    int activityId,
+    Map<String, dynamic> piece, {
+    required int lockVersion,
+  }) async {
+    final data = await api.put(
+      ref.path('/activities/$activityId/track/encrypted'),
+      {...piece, 'lock_version': lockVersion},
+    );
+    return data as Map<String, dynamic>;
+  }
+
+  /// Store an encrypted activity's split as cut on the device: both pieces
+  /// as [saveEncryptedActivityTrack] sends one, and the tail's encrypted
+  /// name. Returns `{id, tail_id, lock_version}`.
+  /// POST /api/projects/{name}/activities/{id}/split/encrypted
+  Future<Map<String, dynamic>> splitEncryptedActivity(
+    ProjectRef ref,
+    int activityId, {
+    required Map<String, dynamic> head,
+    required Map<String, dynamic> tail,
+    required String tailName,
+    required int lockVersion,
+  }) async {
+    final data = await api.post(
+      ref.path('/activities/$activityId/split/encrypted'),
+      {
+        'head': head,
+        'tail': tail,
+        'tail_name': tailName,
+        'lock_version': lockVersion,
+      },
+    );
+    return data as Map<String, dynamic>;
+  }
+
   /// Split an activity at [splitIndex]; the tail becomes a new local activity.
   /// When [dropBoundary] is true, the tail excludes the shared boundary point
   /// (#104 — used when a transportation segment will bridge the cut).
