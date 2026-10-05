@@ -1,0 +1,286 @@
+# The route corpus: real legs and the shape their route is known to have
+# (issue #345, docs/LOCAL_TRANSPORT_DATA_PLAN.md Decisions 3-4).
+#
+#     python scripts/route_corpus.py <store dir> [--require-all]
+#
+# Each leg is resolved as production resolves it under RAIL_SOURCE=local, with
+# no Overpass fallback, against only the regions it names. `regions` is every
+# region whose rail box reaches within 25 km of either endpoint (what the
+# station and relation lookups ask) plus any the route itself runs through, so
+# the answer here is the answer production's merged stores give.
+#
+# Leg format:
+#   name, mode: rail, from/to: {label, lat, lon}, regions: [...]
+#   expect:
+#     max_endpoint_km    both ends of the line within this of the stations
+#     length_km          [min, max]
+#     via                [{label, lat, lon, within_km}]  must pass this close
+#     avoid              [{label, lat, lon, within_km}]  must not pass this close
+#     strategy_not       [straight, ...]
+#     degraded           false
+#   known_bad: <reason>  the leg is wrong today; `expect` says what right looks
+#   current: {...}       like and `current` (same keys) pins today's wrong
+#                        outcome. Either one moving fails the run, so a fix
+#                        flips the entry in its own diff.
+#
+# Measured 2026-10-05 against stores built locally with `python -m
+# src.rail.builder` from the `rail-data-2026-09-08` extracts (france, germany,
+# denmark, spain, sweden, austria, netherlands), current resolver, no fallback;
+# every route was read against the map by hand. The same stores built from
+# `rail-data-2026-10-05`, one monthly refresh later, gave identical numbers on
+# every leg to 0.01 km, which is the evidence the bands below survive a refresh.
+#
+# How the bands were chosen:
+#   max_endpoint_km  1 everywhere. Every end measured within 0.21 km; the two
+#                    endpoint regressions this corpus exists for were 3.5 km
+#                    (#363) and 13.9 km (#359).
+#   length_km        the measured length +-5 %, rounded outward to 5 km. Wide
+#                    enough for a remapped junction or a relation gaining a
+#                    member; narrow enough that the nearest wrong corridor falls
+#                    out (Toulouse -> Austerlitz through Bordeaux is ~800 km
+#                    against a 750 km ceiling; Paris Est -> Strasbourg on the
+#                    classic line through Nancy ~500 against 460).
+#   via              towns the line was measured passing, at about 3x the
+#                    measured distance with a 2 km floor (Poitiers, 2.6 km off
+#                    the LGV, gets 5). A via names the corridor, so a route that
+#                    keeps its length but changes line still fails.
+#   avoid            the wrong corridor's landmark, at roughly half the
+#                    distance the right line keeps from it.
+legs:
+  # -- France: the legs of the plan's *Current state* ------------------------
+  - name: Toulouse -> Paris Austerlitz
+    mode: rail
+    from: {label: Toulouse Matabiau, lat: 43.6113, lon: 1.4536}
+    to: {label: Paris Austerlitz, lat: 48.8420, lon: 2.3650}
+    regions: [europe/france, europe/spain]
+    # measured: relation_uic, 712 km, ends 0.05/0.14 km; Limoges 0.0, Brive 0.8,
+    # Les Aubrais 0.1, Bordeaux 150.1
+    expect:
+      max_endpoint_km: 1
+      length_km: [675, 750]
+      via:
+        - {label: Brive-la-Gaillarde, lat: 45.1593, lon: 1.5323, within_km: 3}
+        - {label: Limoges-Benedictins, lat: 45.8364, lon: 1.2678, within_km: 2}
+        - {label: Les Aubrais, lat: 47.9265, lon: 1.9073, within_km: 2}
+      avoid:
+        - {label: Bordeaux Saint-Jean, lat: 44.8259, lon: -0.5560, within_km: 75}
+      strategy_not: [straight]
+      degraded: false
+
+  - name: Toulouse -> Paris Montparnasse
+    mode: rail
+    from: {label: Toulouse Matabiau, lat: 43.6113, lon: 1.4536}
+    to: {label: Paris Montparnasse, lat: 48.8412, lon: 2.3203}
+    regions: [europe/france, europe/spain]
+    # measured: relation_uic, 792 km, ends 0.05/0.21 km; Agen 0.1, Bordeaux 0.0,
+    # Poitiers 2.6, Limoges 88.4
+    expect:
+      max_endpoint_km: 1
+      length_km: [750, 835]
+      via:
+        - {label: Agen, lat: 44.2075, lon: 0.6207, within_km: 2}
+        - {label: Bordeaux Saint-Jean, lat: 44.8259, lon: -0.5560, within_km: 2}
+        - {label: Poitiers, lat: 46.5823, lon: 0.3335, within_km: 5}
+      avoid:
+        - {label: Limoges-Benedictins, lat: 45.8364, lon: 1.2678, within_km: 45}
+      strategy_not: [straight]
+      degraded: false
+
+  - name: Paris Montparnasse -> Bordeaux
+    mode: rail
+    from: {label: Paris Montparnasse, lat: 48.8412, lon: 2.3203}
+    to: {label: Bordeaux Saint-Jean, lat: 44.8259, lon: -0.5560}
+    regions: [europe/france]
+    # measured: relation_uic, 536 km, ends 0.21/0.03 km; Poitiers 2.6,
+    # Limoges 88.4. The #363 station-throat gap (3.5 km) does not reproduce.
+    expect:
+      max_endpoint_km: 1
+      length_km: [510, 565]
+      via:
+        - {label: Poitiers, lat: 46.5823, lon: 0.3335, within_km: 5}
+      avoid:
+        - {label: Limoges-Benedictins, lat: 45.8364, lon: 1.2678, within_km: 45}
+      strategy_not: [straight]
+      degraded: false
+
+  - name: Bordeaux -> Paris Montparnasse
+    mode: rail
+    from: {label: Bordeaux Saint-Jean, lat: 44.8259, lon: -0.5560}
+    to: {label: Paris Montparnasse, lat: 48.8412, lon: 2.3203}
+    regions: [europe/france]
+    # measured: relation_uic, 536 km, ends 0.03/0.21 km; Poitiers 2.6
+    expect:
+      max_endpoint_km: 1
+      length_km: [510, 565]
+      via:
+        - {label: Poitiers, lat: 46.5823, lon: 0.3335, within_km: 5}
+      avoid:
+        - {label: Limoges-Benedictins, lat: 45.8364, lon: 1.2678, within_km: 45}
+      strategy_not: [straight]
+      degraded: false
+
+  # -- France ----------------------------------------------------------------
+  - name: Paris Est -> Strasbourg
+    mode: rail
+    from: {label: Paris Est, lat: 48.8768, lon: 2.3592}
+    to: {label: Strasbourg, lat: 48.5850, lon: 7.7350}
+    regions: [europe/france, europe/germany]
+    # #359: resolved 13.9 km south of Paris Est before the platform fix.
+    # measured: relation_uic, 438 km, ends 0.09/0.06 km; Champagne-Ardenne TGV
+    # 0.1, Lorraine TGV 0.0, Nancy 28.1
+    expect:
+      max_endpoint_km: 1
+      length_km: [415, 460]
+      via:
+        - {label: Champagne-Ardenne TGV, lat: 49.2136, lon: 3.9944, within_km: 2}
+        - {label: Lorraine TGV, lat: 48.9474, lon: 6.1697, within_km: 2}
+      avoid:
+        - {label: Nancy, lat: 48.6898, lon: 6.1744, within_km: 14}
+      strategy_not: [straight]
+      degraded: false
+
+  - name: Lyon -> Marseille
+    mode: rail
+    from: {label: Lyon Part-Dieu, lat: 45.7606, lon: 4.8594}
+    to: {label: Marseille Saint-Charles, lat: 43.3028, lon: 5.3806}
+    regions: [europe/france]
+    # measured: relation_uic, 325 km, ends 0.06/0.06 km, on the LGV
+    # Mediterranee; Valence TGV, Avignon TGV, Aix TGV all 0.0, Grenoble 58.4
+    expect:
+      max_endpoint_km: 1
+      length_km: [310, 345]
+      via:
+        - {label: Valence TGV, lat: 44.9914, lon: 4.9783, within_km: 2}
+        - {label: Avignon TGV, lat: 43.9216, lon: 4.7861, within_km: 2}
+        - {label: Aix-en-Provence TGV, lat: 43.4553, lon: 5.3172, within_km: 2}
+      avoid:
+        - {label: Grenoble, lat: 45.1913, lon: 5.7146, within_km: 30}
+      strategy_not: [straight]
+      degraded: false
+
+  - name: Nantes -> Rennes
+    mode: rail
+    from: {label: Nantes, lat: 47.2172, lon: -1.5420}
+    to: {label: Rennes, lat: 48.1035, lon: -1.6722}
+    regions: [europe/france]
+    # measured: relation_uic, 149 km, ends 0.07/0.05 km; Redon 1.2,
+    # Chateaubriant 33.2
+    expect:
+      max_endpoint_km: 1
+      length_km: [140, 160]
+      via:
+        - {label: Redon, lat: 47.6514, lon: -2.0839, within_km: 4}
+      avoid:
+        - {label: Chateaubriant, lat: 47.7185, lon: -1.3746, within_km: 15}
+      strategy_not: [straight]
+      degraded: false
+
+  # -- Germany ---------------------------------------------------------------
+  - name: Hamburg -> Flensburg
+    mode: rail
+    from: {label: Hamburg Hbf, lat: 53.5530, lon: 10.0069}
+    to: {label: Flensburg, lat: 54.7744, lon: 9.4366}
+    regions: [europe/germany, europe/denmark]
+    # measured: relation_endpoints, 179 km, ends 0.04/0.04 km; Neumuenster 0.1,
+    # Rendsburg 0.2, Schleswig 1.0, Kiel 23.0
+    expect:
+      max_endpoint_km: 1
+      length_km: [170, 190]
+      via:
+        - {label: Neumuenster, lat: 54.0754, lon: 9.9817, within_km: 2}
+        - {label: Rendsburg, lat: 54.3026, lon: 9.6667, within_km: 2}
+        - {label: Schleswig, lat: 54.5094, lon: 9.5403, within_km: 3}
+      avoid:
+        - {label: Kiel Hbf, lat: 54.3147, lon: 10.1320, within_km: 10}
+      strategy_not: [straight]
+      degraded: false
+
+  - name: Hamburg -> Munich
+    mode: rail
+    from: {label: Hamburg Hbf, lat: 53.5530, lon: 10.0069}
+    to: {label: Muenchen Hbf, lat: 48.1402, lon: 11.5600}
+    regions: [europe/germany, europe/austria]
+    known_bad: >-
+      strategy B keeps the relation whose ends sit closest to the stations,
+      never the shortest, and picks the ICE line through Berlin, Leipzig and
+      Erfurt (934 km) over the direct Hannover - Wuerzburg line (~790 km)
+    # measured: relation_endpoints, 934 km, ends 0.02/0.19 km; Berlin Hbf 0.0,
+    # Erfurt 0.0, Nuernberg 0.0, Hannover 126.8, Wuerzburg 69.2
+    expect:
+      max_endpoint_km: 1
+      length_km: [750, 840]
+      via:
+        - {label: Hannover Hbf, lat: 52.3766, lon: 9.7410, within_km: 2}
+        - {label: Wuerzburg Hbf, lat: 49.8017, lon: 9.9358, within_km: 2}
+        - {label: Nuernberg Hbf, lat: 49.4458, lon: 11.0823, within_km: 2}
+      avoid:
+        - {label: Berlin Hbf, lat: 52.5251, lon: 13.3694, within_km: 30}
+      strategy_not: [straight]
+      degraded: false
+    current:
+      max_endpoint_km: 1
+      length_km: [890, 980]
+      via:
+        - {label: Berlin Hbf, lat: 52.5251, lon: 13.3694, within_km: 2}
+        - {label: Erfurt Hbf, lat: 50.9725, lon: 11.0383, within_km: 2}
+        - {label: Nuernberg Hbf, lat: 49.4458, lon: 11.0823, within_km: 2}
+      degraded: false
+
+  - name: Berlin -> Cologne
+    mode: rail
+    from: {label: Berlin Hbf, lat: 52.5251, lon: 13.3694}
+    to: {label: Koeln Hbf, lat: 50.9430, lon: 6.9589}
+    regions: [europe/germany, europe/france, europe/netherlands]
+    # measured: relation_endpoints, 585 km, ends 0.04/0.03 km; Wolfsburg 0.0,
+    # Hannover 0.1, Hamm 0.0, Magdeburg 44.1
+    expect:
+      max_endpoint_km: 1
+      length_km: [555, 615]
+      via:
+        - {label: Wolfsburg, lat: 52.4295, lon: 10.7878, within_km: 2}
+        - {label: Hannover Hbf, lat: 52.3766, lon: 9.7410, within_km: 2}
+        - {label: Hamm (Westf) Hbf, lat: 51.6780, lon: 7.8077, within_km: 2}
+      avoid:
+        - {label: Magdeburg Hbf, lat: 52.1305, lon: 11.6275, within_km: 20}
+      strategy_not: [straight]
+      degraded: false
+
+  # -- Denmark ---------------------------------------------------------------
+  - name: Copenhagen -> Aarhus
+    mode: rail
+    from: {label: Koebenhavn H, lat: 55.6727, lon: 12.5647}
+    to: {label: Aarhus H, lat: 56.1503, lon: 10.2045}
+    regions: [europe/denmark, europe/sweden]
+    # measured: relation_endpoints, 328 km, ends 0.05/0.07 km, over the Great
+    # Belt; Roskilde 0.0, Odense 0.0, Fredericia 1.0, Vejle 0.0, Kalundborg 34.0
+    expect:
+      max_endpoint_km: 1
+      length_km: [310, 345]
+      via:
+        - {label: Roskilde, lat: 55.6392, lon: 12.0890, within_km: 2}
+        - {label: Odense, lat: 55.4017, lon: 10.3870, within_km: 2}
+        - {label: Fredericia, lat: 55.5654, lon: 9.7550, within_km: 3}
+        - {label: Vejle, lat: 55.7068, lon: 9.5373, within_km: 2}
+      avoid:
+        - {label: Kalundborg, lat: 55.6820, lon: 11.0884, within_km: 15}
+      strategy_not: [straight]
+      degraded: false
+
+  - name: Copenhagen -> Odense
+    mode: rail
+    from: {label: Koebenhavn H, lat: 55.6727, lon: 12.5647}
+    to: {label: Odense, lat: 55.4017, lon: 10.3870}
+    regions: [europe/denmark, europe/sweden]
+    # measured: relation_endpoints, 160 km, ends 0.01/0.03 km; Roskilde 0.0,
+    # Ringsted 0.5, Nyborg 0.3, Kalundborg 34.0
+    expect:
+      max_endpoint_km: 1
+      length_km: [150, 170]
+      via:
+        - {label: Roskilde, lat: 55.6392, lon: 12.0890, within_km: 2}
+        - {label: Ringsted, lat: 55.4425, lon: 11.7899, within_km: 2}
+        - {label: Nyborg, lat: 55.3137, lon: 10.7962, within_km: 2}
+      avoid:
+        - {label: Kalundborg, lat: 55.6820, lon: 11.0884, within_km: 15}
+      strategy_not: [straight]
+      degraded: false
