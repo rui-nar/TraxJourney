@@ -73,18 +73,26 @@ class _Service extends ProjectService {
 }
 
 class _CountingProjectNotifier extends ProjectNotifier {
-  _CountingProjectNotifier(super.service);
+  _CountingProjectNotifier(super.service, this._loads);
 
-  int loadCallCount = 0;
+  /// Shared by every notifier one harness creates: an account change hands
+  /// out a new one, and the count is of loads in the app, not per instance.
+  final _LoadCount _loads;
+
+  int get loadCallCount => _loads.value;
 
   @override
   bool get loadOwnerExtras => false;
 
   @override
   Future<void> load(ProjectRef ref) {
-    loadCallCount++;
+    _loads.value++;
     return super.load(ref);
   }
+}
+
+class _LoadCount {
+  int value = 0;
 }
 
 /// Signs in the account [loginWithPassword] is given the id of as its email;
@@ -137,7 +145,10 @@ class _Harness {
 
   final WidgetTester tester;
   final AuthNotifier auth;
-  late final _CountingProjectNotifier notifier;
+  final _loads = _LoadCount();
+
+  /// The notifier the provider holds now: a new one per account.
+  late _CountingProjectNotifier notifier;
   late final GoRouter router;
 
   Future<void> pump() async {
@@ -158,7 +169,7 @@ class _Harness {
       providers: [
         ChangeNotifierProvider<AuthNotifier>.value(value: auth),
         accountScopedProjectNotifier(
-            () => notifier = _CountingProjectNotifier(_Service())),
+            () => notifier = _CountingProjectNotifier(_Service(), _loads)),
       ],
       child: MaterialApp.router(routerConfig: router),
     ));

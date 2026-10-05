@@ -38,6 +38,8 @@ const _allowlist = {
   '_mapCameraActive': "the mounted map's gesture state, reported by the map",
   '_cameraIdleWaiter': 'holds no data; completes on the next camera idle or '
       'times out, and only loads clear() has invalidated wait on it',
+  '_cameraIdleTimeouts': 'holds no data; each wait removes its own timeout, '
+      'and dispose() cancels any left',
   '_refetchInFlight': "single-flight latch the running refetch releases in its "
       'own finally; clearing it would start a second refetch beside it',
   '_geoRefetchCount': 'session-wide perf diagnostic counter',

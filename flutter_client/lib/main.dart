@@ -84,18 +84,32 @@ void main() async {
   );
 }
 
-/// The app-wide [ProjectNotifier], owned by the signed-in account (issue
-/// #418): [ProjectNotifier.onAuthChanged] clears it whenever the account
-/// changes. Not lazy, so every auth change reaches it — a lazy proxy updates
-/// only when read, and would miss a logout followed by the same account
-/// signing back in before anything read it.
+/// The app-wide [ProjectNotifier], one per signed-in account (issue #418).
+///
+/// Whenever [ProjectNotifier.onAuthChanged] reports an account change —
+/// including to or from no account — this hands out a fresh notifier, and
+/// the provider disposes the one it replaces. A response the old account
+/// started can only land in that discarded instance: trip checks compare name
+/// and owner, and an own trip has no owner, so in a shared instance it passed
+/// them on the next account's trip of the same name (I1-R4-1, I1-R4-2).
+///
+/// Not lazy, so every auth change reaches it — a lazy proxy updates only when
+/// read, and would miss a logout followed by the same account signing back in
+/// before anything read it.
 ChangeNotifierProxyProvider<AuthNotifier, ProjectNotifier>
     accountScopedProjectNotifier(ProjectNotifier Function() create) =>
         ChangeNotifierProxyProvider<AuthNotifier, ProjectNotifier>(
           lazy: false,
           create: (_) => create(),
-          update: (_, auth, previous) => previous!
-            ..onAuthChanged(auth.user?.id, restoring: auth.isRestoring),
+          update: (_, auth, previous) {
+            final userId = auth.user?.id;
+            if (!previous!
+                .onAuthChanged(userId, restoring: auth.isRestoring)) {
+              return previous;
+            }
+            // The new account is the first this notifier sees, not a change.
+            return create()..onAuthChanged(userId);
+          },
         );
 
 class TraxJourneyApp extends StatefulWidget {

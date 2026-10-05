@@ -36,6 +36,9 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
   /// Format an Exception into a user-readable string — delegates to _msg.
   String errorMessage(Exception e);
 
+  /// False once the notifier is disposed — satisfied by ProjectNotifier.
+  bool get isAlive;
+
   /// If [e] is a 409 optimistic-lock conflict, resync items + geo from the
   /// server (discarding the optimistic change) and surface a soft retry
   /// message. Returns true when the conflict was handled.
@@ -45,6 +48,10 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
     // check below compares name and owner, and an own trip has no owner, so
     // after a sign-out the next account's trip of the same name passes it.
     final scope = projectDataCache.scope;
+    // Another trip opened before the conflict came back: reloading this one's
+    // details would make it the open trip again (I1-R4-3), and the message
+    // below is not the other trip's.
+    if (!_sameTrip(projectRef, ref)) return true;
     try {
       await reloadDetailsOnly(ref);
       final fetched =
@@ -61,8 +68,11 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
     } catch (_) {
       // Best-effort resync; the next load will reconcile regardless.
     }
-    // Signed out meanwhile: the message is not the open trip's either.
-    if (projectDataCache.scope != scope) return true;
+    // Signed out or another trip opened meanwhile: the message is not the
+    // open trip's either.
+    if (projectDataCache.scope != scope || !_sameTrip(projectRef, ref)) {
+      return true;
+    }
     error = 'This trip changed elsewhere — refreshed from server, please retry';
     notifyListeners();
     return true;
@@ -329,7 +339,9 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
   /// deleted first.
   Future<Map<String, dynamic>> pollSegmentResolution(String segId) {
     final ref = projectRef;
-    if (ref == null) return Future.value(const {'route_status': 'cancelled'});
+    if (ref == null || !isAlive) {
+      return Future.value(const {'route_status': 'cancelled'});
+    }
     final poll = _joinResolvePoll(ref, segId);
     return poll.waiters.putIfAbsent(segId, Completer.new).future;
   }
@@ -397,6 +409,12 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
   }
 
   void _scheduleResolvePoll(_ResolvePoll poll) {
+    // A disposed notifier — discarded at an account change (issue #418) —
+    // keeps no poller: its waiters get `cancelled`, as on leaving the trip.
+    if (!isAlive) {
+      stopSegmentResolvePolling();
+      return;
+    }
     poll.timer?.cancel();
     final delay = _resolvePollDelay(poll.elapsed);
     poll.timer = Timer(delay, () {
