@@ -100,6 +100,11 @@ class Activity:
     # on an activity built from anything else. Sent to the client by
     # ProjectIO.to_dict, never written to a .traxj file (to_strava_dict).
     plain_fields: Optional[List[str]] = None
+    # Whether the row holds a gain snapshot (original_total_elevation_gain not
+    # null; E2EE remnants decision 12): an edit without one predates #386.
+    # Set by _row_to_activity, sent by ProjectIO.to_dict, never written to a
+    # .traxj file (to_strava_dict).
+    has_gain_snapshot: bool = False
 
     def to_strava_dict(self) -> dict:
         """Serialise to a dict that can be round-tripped via from_strava_api()."""

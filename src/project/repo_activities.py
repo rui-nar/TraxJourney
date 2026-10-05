@@ -1510,4 +1510,6 @@ class ActivityMixin:
             # ciphertext when the full profile is deferred/unavailable — mirrors
             # ProjectIO.to_dict()'s _ep_pairs() fallback for the plaintext case.
             elevation_profile_enc=elevation_profile_enc or elevation_profile_low_res_enc,
+            # Never deferred, so the light path reads it with no extra query.
+            has_gain_snapshot=getattr(row, "original_total_elevation_gain", None) is not None,
         )
