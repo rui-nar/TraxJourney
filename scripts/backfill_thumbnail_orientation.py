@@ -70,6 +70,7 @@ class Report:
     already_upright: int = 0
     rewritten: List[Path] = field(default_factory=list)
     skipped: List[Tuple[Path, str]] = field(default_factory=list)
+    leftover_temps: List[Path] = field(default_factory=list)
 
 
 def _encode(img: Image.Image) -> bytes:
@@ -103,9 +104,12 @@ def _write_atomically(path: Path, data: bytes) -> None:
         raise
 
 
-def _photos(data_dir: Path):
-    """(user id, original, thumbnail) of every memory and journal photo that
-    has both files."""
+#: What :func:`_write_atomically` names its temp file next to a thumbnail.
+_TEMP_PATTERN = ".*_thumb.*.tmp"
+
+
+def _entry_folders(data_dir: Path):
+    """(user id, folder) of every memory and journal entry folder."""
     users = data_dir / "users"
     if not users.is_dir():
         return
@@ -117,12 +121,17 @@ def _photos(data_dir: Path):
             if not kind_dir.is_dir():
                 continue
             for folder in sorted(p for p in kind_dir.iterdir() if p.is_dir()):
-                for original in sorted(folder.glob("*.jpg")):
-                    if not is_photo_name(original.stem):
-                        continue
-                    thumb = photo_file(folder, original.stem, "_thumb")
-                    if thumb is not None and thumb.is_file():
-                        yield int(user_dir.name), original, thumb
+                yield int(user_dir.name), folder
+
+
+def _photos(folder: Path):
+    """(original, thumbnail) of every photo in *folder* that has both files."""
+    for original in sorted(folder.glob("*.jpg")):
+        if not is_photo_name(original.stem):
+            continue
+        thumb = photo_file(folder, original.stem, "_thumb")
+        if thumb is not None and thumb.is_file():
+            yield original, thumb
 
 
 def _orientation(original: Path) -> Optional[int]:
@@ -133,35 +142,46 @@ def _orientation(original: Path) -> Optional[int]:
 
 def backfill(data_dir: Path, apply: bool) -> Report:
     report = Report()
-    for user_id, original, thumb in _photos(data_dir):
-        report.scanned += 1
-        try:
-            orientation = _orientation(original)
-        except Exception as exc:  # any unreadable original: list it, go on
-            report.skipped.append((original, f"original unreadable ({exc})"))
-            continue
-        if orientation in (None, 1):
-            continue
-        report.candidates += 1
-        try:
-            new_jpeg = _encode(_thumbnail(original.read_bytes()))
-        except (InvalidPhoto, OSError) as exc:
-            report.skipped.append((original, f"original unreadable ({exc})"))
-            continue
-        try:
-            same = _is_same_picture(new_jpeg, thumb)
-        except Exception as exc:  # a broken thumbnail is not ours to guess at
-            report.skipped.append((thumb, f"thumbnail unreadable ({exc})"))
-            continue
-        if same:
-            report.already_upright += 1
-            continue
-        if apply:
-            old_size = thumb.stat().st_size
-            _write_atomically(thumb, new_jpeg)
-            record_delta(user_id, len(new_jpeg) - old_size)
-        report.rewritten.append(thumb)
+    for user_id, folder in _entry_folders(data_dir):
+        # A run killed between writing a temp file and renaming it leaves the
+        # temp file behind, counted against the owner by the nightly
+        # reconcile. Reported for the operator; never deleted here.
+        report.leftover_temps.extend(sorted(folder.glob(_TEMP_PATTERN)))
+        for original, thumb in _photos(folder):
+            _backfill_photo(report, user_id, original, thumb, apply)
     return report
+
+
+def _backfill_photo(report: Report, user_id: int, original: Path, thumb: Path,
+                    apply: bool) -> None:
+    """Check one photo's thumbnail, and with *apply* rewrite it upright."""
+    report.scanned += 1
+    try:
+        orientation = _orientation(original)
+    except Exception as exc:  # any unreadable original: list it, go on
+        report.skipped.append((original, f"original unreadable ({exc})"))
+        return
+    if orientation in (None, 1):
+        return
+    report.candidates += 1
+    try:
+        new_jpeg = _encode(_thumbnail(original.read_bytes()))
+    except (InvalidPhoto, OSError) as exc:
+        report.skipped.append((original, f"original unreadable ({exc})"))
+        return
+    try:
+        same = _is_same_picture(new_jpeg, thumb)
+    except Exception as exc:  # a broken thumbnail is not ours to guess at
+        report.skipped.append((thumb, f"thumbnail unreadable ({exc})"))
+        return
+    if same:
+        report.already_upright += 1
+        return
+    if apply:
+        old_size = thumb.stat().st_size
+        _write_atomically(thumb, new_jpeg)
+        record_delta(user_id, len(new_jpeg) - old_size)
+    report.rewritten.append(thumb)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -191,9 +211,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"{verb}: {path}")
     for path, reason in report.skipped:
         print(f"skipped: {path}: {reason}")
+    for path in report.leftover_temps:
+        print(f"leftover temp file: {path}")
     print(f"scanned {report.scanned} / candidates {report.candidates} / "
           f"already upright {report.already_upright} / {verb} {len(report.rewritten)} / "
-          f"skipped {len(report.skipped)}")
+          f"skipped {len(report.skipped)} / leftover temp files {len(report.leftover_temps)}")
     if not args.apply and report.rewritten:
         print("Dry run: nothing written. Stop the API, then re-run with --apply --api-stopped.")
     return 0

@@ -192,6 +192,34 @@ def test_apply_without_api_stopped_refuses_and_writes_nothing(data_dir, engine, 
     assert (_usage(engine, 1), _usage(engine, 2)) == (_on_disk(data_dir, 1), _on_disk(data_dir, 2))
 
 
+def test_a_leftover_temp_file_is_reported_and_kept(data_dir, engine, capsys):
+    """A run killed between writing a temp file and renaming it leaves the file
+    behind, where the nightly reconcile counts it against the owner. It is
+    reported, never deleted, and the rest of the run goes on as usual."""
+    leftover = data_dir / "users" / "2" / "journal" / "5" / f".{ROTATED_JOURNAL}_thumb.k3x9q_.tmp"
+    leftover.write_bytes(b"half a thumbnail")
+    assert _run("--data-dir", str(data_dir), "--apply", "--api-stopped") == 0
+    out = capsys.readouterr().out
+    assert f"leftover temp file: {leftover}" in out
+    assert ("scanned 4 / candidates 2 / already upright 0 / rewritten 2 / skipped 1"
+            " / leftover temp files 1") in out
+    assert leftover.read_bytes() == b"half a thumbnail"
+    journal = _thumb(data_dir, 2, "journal", 5, ROTATED_JOURNAL)
+    assert _is_upright(journal, journal.with_name(f"{ROTATED_JOURNAL}.jpg"))
+
+
+def test_the_temp_file_a_killed_rewrite_leaves_is_the_one_reported(data_dir, engine, capsys,
+                                                                    monkeypatch):
+    """The guard's pattern matches the name the script really gives its temp
+    files: a rewrite stopped before its rename is found by the next run."""
+    monkeypatch.setattr(backfill.os, "replace", lambda src, dst: None)
+    assert _run("--data-dir", str(data_dir), "--apply", "--api-stopped") == 0
+    monkeypatch.undo()
+    capsys.readouterr()
+    assert _run("--data-dir", str(data_dir)) == 0
+    assert "leftover temp files 2" in capsys.readouterr().out
+
+
 @pytest.mark.parametrize("script", ["scripts/backfill_thumbnail_orientation.py",
                                     "scripts/reorder_polarsteps_memory_photos.py"])
 def test_the_photo_repair_scripts_are_in_the_image(script):
