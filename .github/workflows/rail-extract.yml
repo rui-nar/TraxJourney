@@ -1,6 +1,7 @@
 name: Rail extract
 
-# Builds the rail-only OSM artifacts route resolution runs on (issue #345).
+# Builds the OSM artifacts route resolution runs on (issue #345): per region, a
+# rail, a ferry and a bus extract, filtered from one download.
 #
 # This is on a runner and not on the VPS because of one number: the raw Europe
 # extract is 34.9 GB and the box has 40 GB in total, prod and val included.
@@ -103,13 +104,40 @@ jobs:
 
       - name: Guard — nothing raw leaves this job
         # The script deletes the source extract as soon as it has been filtered,
-        # so this is a tripwire on that promise rather than the mechanism: a
-        # filtered country is single-digit megabytes, and the biggest raw one is
-        # 4.83 GB. Anything over 100 MB in the published directory is a raw or
-        # half-filtered extract about to be uploaded.
+        # so this is a tripwire on that promise rather than the mechanism: the
+        # biggest raw country is 4.83 GB, and each layer has a ceiling well
+        # under it and well over what it holds — rail single-digit megabytes
+        # (100 MB), ferry well under one (20 MB), bus ~125 MB for Germany
+        # (300 MB). A file over its layer's ceiling is a raw or half-filtered
+        # extract about to be uploaded.
+        #
+        # Rail, or any file that is not a ferry or bus extract, over 100 MB
+        # stops the job. A ferry or bus extract over its ceiling is deleted
+        # with its entry instead: nothing raw leaves either way, and a broken
+        # bus layer must not cost the region its rail — the manifest step then
+        # warns that the layer is missing, and that mode keeps going to
+        # Overpass.
         run: |
-          if find dist/rail -size +100M | grep .; then
-            echo "::error::an unfiltered extract reached the publish directory"
+          shopt -s nullglob
+          failed=0
+          for file in dist/rail/*; do
+            case "$file" in
+              *-ferry.osm.pbf) layer=ferry limit=20 ;;
+              *-bus.osm.pbf) layer=bus limit=300 ;;
+              *) layer="" limit=100 ;;
+            esac
+            if [ -z "$(find "$file" -size +"$limit"M)" ]; then
+              continue
+            fi
+            if [ -n "$layer" ]; then
+              echo "::warning::$file is over the $layer layer's $limit MB ceiling — dropped, the region publishes without its $layer layer"
+              rm -f "$file" "${file%.osm.pbf}.entry.json"
+            else
+              echo "::error::$file is over $limit MB — an unfiltered extract reached the publish directory"
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
             exit 1
           fi
           if find "$RUNNER_TEMP/rail-work" -name '*-source.osm.pbf' | grep .; then
@@ -273,15 +301,20 @@ jobs:
           mkdir -p "$stores" "$carried"
           cp dist/rail/manifest.json "$stores/"
           # region, file, sha256, store name: each corpus region the manifest
-          # lists as ok. A file, not a pipe, so `-e` sees a failure in it.
+          # lists as ok, rail entries only — the corpus is rail legs, and a
+          # ferry or bus entry for the same region names another file. An
+          # entry without `layer` is rail. A file, not a pipe, so `-e` sees a
+          # failure in it.
           python -c '
           import json, yaml
           from src.rail.store import store_filename
           legs = yaml.safe_load(open("config/route_corpus.yml", encoding="utf-8"))["legs"]
           named = {region for leg in legs for region in leg["regions"]}
           for e in json.load(open("dist/rail/manifest.json", encoding="utf-8"))["regions"]:
-              if e["region"] in named and e.get("status", "ok") == "ok":
-                  print(e["region"], e["file"], e["sha256"], store_filename(e["region"]), sep="\t")
+              if (e["region"] in named and e.get("layer", "rail") == "rail"
+                      and e.get("status", "ok") == "ok"):
+                  print(e["region"], e["file"], e["sha256"],
+                        store_filename(e["region"], "rail"), sep="\t")
           ' > "$RUNNER_TEMP/corpus-regions.tsv"
           while IFS=$'\t' read -r region file sha store; do
             pbf="dist/rail/$file"
@@ -291,7 +324,7 @@ jobs:
               echo "$sha  $pbf" | sha256sum -c -
             fi
             echo "building $region from $pbf"
-            python -m src.rail.builder "$pbf" "$stores/$store" --region "$region"
+            python -m src.rail.builder "$pbf" "$stores/$store" --region "$region" --layer rail
           done < "$RUNNER_TEMP/corpus-regions.tsv"
           require_all=""
           if [ -z "$REQUESTED" ]; then
@@ -312,11 +345,11 @@ jobs:
             gh release create "$TAG" \
               --prerelease \
               --title "Rail extracts $TAG" \
-              --notes "Rail-only OSM extracts built by .github/workflows/rail-extract.yml from Geofabrik country extracts. Coverage, checksums and per-region source dates are in manifest.json."
+              --notes "Rail, ferry and bus OSM extracts built by .github/workflows/rail-extract.yml from Geofabrik country extracts. Coverage, checksums and per-region, per-layer source dates are in manifest.json."
           fi
-          # A region with no rail publishes no .pbf, so the glob can be empty.
+          # A layer that is empty publishes no .pbf, so a glob can be empty.
           shopt -s nullglob
-          extracts=(dist/rail/*-rail.osm.pbf)
+          extracts=(dist/rail/*-rail.osm.pbf dist/rail/*-ferry.osm.pbf dist/rail/*-bus.osm.pbf)
           gh release upload "$TAG" \
             "${extracts[@]}" dist/rail/manifest.json --clobber
 

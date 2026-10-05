@@ -152,7 +152,9 @@ def test_only_filtered_artifacts_are_uploaded(jobs):
     assert [step["with"]["path"] for step in upload] == ["dist/rail/"]
 
     publish = _steps_text(jobs["publish"])
-    assert "dist/rail/*-rail.osm.pbf" in publish
+    # One file per layer; rail's name is the one every earlier release used.
+    for layer in rail.LAYERS:
+        assert f"dist/rail/*-{layer}.osm.pbf" in publish
     assert "dist/rail/manifest.json" in publish
 
 
@@ -490,6 +492,95 @@ def test_a_success_closes_every_open_issue(jobs, tmp_path, requested, tag, warns
 
 
 # ---------------------------------------------------------------------------
+# The build job's size guard, per layer
+# ---------------------------------------------------------------------------
+
+GUARD_STEP = "Guard — nothing raw leaves this job"
+MB = 1 << 20
+
+
+def _run_guard(tmp_path, jobs, sizes: dict[str, int]):
+    """Run the build job's guard for real over files of *sizes* (in MB).
+
+    The files are sized with ``truncate``, so a 301 MB file costs nothing to
+    make, and ``find -size`` reads the size, not the content. Every extract
+    gets its entry file beside it, as the build writes them.
+    """
+    script = _step(jobs["build"], GUARD_STEP)["run"]
+    dist = tmp_path / "dist" / "rail"
+    dist.mkdir(parents=True)
+    for name, size in sizes.items():
+        with (dist / name).open("wb") as handle:
+            handle.truncate(size)
+        if name.endswith(".osm.pbf"):
+            (dist / name.replace(".osm.pbf", ".entry.json")).write_text("{}")
+    runner_temp = tmp_path / "runner-temp"
+    (runner_temp / "rail-work").mkdir(parents=True)
+    result = subprocess.run(
+        [BASH, "-e", "-o", "pipefail", "-c", script],
+        cwd=tmp_path,
+        env={**os.environ, "RUNNER_TEMP": runner_temp.as_posix()},
+        capture_output=True, text=True,
+    )
+    left = sorted(path.name for path in dist.iterdir())
+    for path in dist.iterdir():
+        path.unlink()
+    return result.returncode, result.stdout + result.stderr, left
+
+
+@pytest.mark.skipif(BASH is None, reason="needs a working POSIX shell")
+@pytest.mark.parametrize("name, size, code, kept", [
+    ("germany-rail.osm.pbf", 99 * MB, 0, True),
+    ("germany-rail.osm.pbf", 101 * MB, 1, True),
+    ("germany-ferry.osm.pbf", 19 * MB, 0, True),
+    ("germany-ferry.osm.pbf", 21 * MB, 0, False),
+    # R1-3: under one 100 MB ceiling, Germany's projected 125 MB bus layer
+    # failed the job, and took the region's rail with it.
+    ("germany-bus.osm.pbf", 125 * MB, 0, True),
+    ("germany-bus.osm.pbf", 299 * MB, 0, True),
+    ("germany-bus.osm.pbf", 301 * MB, 0, False),
+    # Anything that is not a layer's extract keeps rail's ceiling and its stop.
+    ("germany-source.osm.pbf", 101 * MB, 1, True),
+], ids=["rail under", "rail over stops", "ferry under", "ferry over drops",
+        "germany bus passes", "bus under", "bus over drops",
+        "anything else over stops"])
+def test_the_guard_has_a_ceiling_per_layer(jobs, tmp_path, name, size, code, kept):
+    """Rail 100 MB, ferry 20 MB, bus 300 MB (R1-3). Over its ceiling, rail
+    stops the job; ferry or bus is deleted with its entry, so nothing raw
+    leaves and the region's rail still publishes — the manifest step then
+    warns that the layer is missing."""
+    sizes = {name: size}
+    if not name.startswith("germany-rail"):
+        sizes["germany-rail.osm.pbf"] = 5 * MB
+    exit_code, output, left = _run_guard(tmp_path, jobs, sizes)
+
+    assert exit_code == code, output
+    entry = name.replace(".osm.pbf", ".entry.json")
+    assert (name in left and entry in left) is kept, (left, output)
+    assert "germany-rail.osm.pbf" in left
+    if not kept:
+        assert f"::warning::dist/rail/{name} is over" in output
+    if code:
+        assert f"::error::dist/rail/{name} is over 100 MB" in output
+
+
+@pytest.mark.skipif(BASH is None, reason="needs a working POSIX shell")
+def test_the_guard_still_refuses_a_raw_extract_left_behind(jobs, tmp_path):
+    script = _step(jobs["build"], GUARD_STEP)["run"]
+    (tmp_path / "dist" / "rail").mkdir(parents=True)
+    work = tmp_path / "runner-temp" / "rail-work"
+    work.mkdir(parents=True)
+    (work / "germany-source.osm.pbf").write_bytes(b"raw")
+    result = subprocess.run(
+        [BASH, "-e", "-o", "pipefail", "-c", script], cwd=tmp_path,
+        env={**os.environ, "RUNNER_TEMP": (tmp_path / "runner-temp").as_posix()},
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 1
+    assert "the raw extract was not deleted" in result.stdout
+
+
+# ---------------------------------------------------------------------------
 # The route corpus gates the publish
 # ---------------------------------------------------------------------------
 
@@ -538,7 +629,7 @@ CARRIED_BYTES = b"carried sweden\n"
 
 
 def _run_corpus_step(tmp_path, jobs, *, requested="", force="",
-                     corpus_exit=0, carried_sha=None):
+                     corpus_exit=0, carried_sha=None, layered=False):
     """Run the corpus step for real against a fake `gh` and `python`.
 
     The manifest holds Denmark (built by this run, in dist/rail), Sweden (ok
@@ -546,6 +637,9 @@ def _run_corpus_step(tmp_path, jobs, *, requested="", force="",
     Andorra (in the corpus, but `empty`). The real python lists what to build,
     so reading the manifest and the corpus is the step's own code; the builder
     and the runner are faked and log their arguments.
+
+    *layered* makes it a schema 3 manifest: every entry gets `layer: rail`,
+    and Denmark and Sweden gain `ok` ferry and bus entries of their own.
     """
     script = _step(jobs["publish"], CORPUS_STEP)["run"]
     work = tmp_path / "work"
@@ -564,12 +658,19 @@ def _run_corpus_step(tmp_path, jobs, *, requested="", force="",
         return {"region": region, "status": "ok", "file": file,
                 "sha256": digest, "bbox": [0, 0, 1, 1]}
 
+    regions = [ok("europe/denmark", "denmark-rail.osm.pbf"),
+               ok("europe/sweden", "sweden-rail.osm.pbf", sha),
+               ok("europe/france", "france-rail.osm.pbf"),
+               {"region": "europe/andorra", "status": "empty"}]
+    if layered:
+        regions = [{**e, "layer": "rail"} for e in regions]
+        for slug in ("denmark", "sweden"):
+            for layer in ("ferry", "bus"):
+                (work / "dist" / "rail" / f"{slug}-{layer}.osm.pbf").write_bytes(b"x")
+                regions.append({**ok(f"europe/{slug}", f"{slug}-{layer}.osm.pbf"),
+                                "layer": layer})
     (work / "dist" / "rail" / "manifest.json").write_text(json.dumps({
-        "schema": 2,
-        "regions": [ok("europe/denmark", "denmark-rail.osm.pbf"),
-                    ok("europe/sweden", "sweden-rail.osm.pbf", sha),
-                    ok("europe/france", "france-rail.osm.pbf"),
-                    {"region": "europe/andorra", "status": "empty"}],
+        "schema": 3 if layered else 2, "regions": regions,
     }), encoding="utf-8")
 
     fake_bin = tmp_path / "bin"
@@ -640,17 +741,36 @@ def test_the_corpus_runs_on_built_and_carried_stores(jobs, tmp_path,
     stores = f"{temp.as_posix()}/rail-stores"
     carried = f"{temp.as_posix()}/rail-carried"
     assert (f"python -m src.rail.builder dist/rail/denmark-rail.osm.pbf "
-            f"{stores}/europe-denmark.rail.sqlite --region europe/denmark") in calls
+            f"{stores}/europe-denmark.rail.sqlite --region europe/denmark "
+            f"--layer rail") in calls
     assert ("gh release download rail-data-2026-10-05 --pattern "
             f"sweden-rail.osm.pbf --dir {carried}") in calls
     assert (f"python -m src.rail.builder {carried}/sweden-rail.osm.pbf "
-            f"{stores}/europe-sweden.rail.sqlite --region europe/sweden") in calls
+            f"{stores}/europe-sweden.rail.sqlite --region europe/sweden "
+            f"--layer rail") in calls
     assert calls.count("src.rail.builder") == 2
     assert "denmark-rail.osm.pbf --dir" not in calls
     corpus = [line for line in calls.splitlines() if "route_corpus.py" in line]
     assert corpus == [f"python scripts/route_corpus.py {stores}"
                       + (" --require-all" if require_all else "")]
     assert calls.rindex("src.rail.builder") < calls.index("route_corpus.py")
+
+
+@pytest.mark.skipif(BASH is None, reason="needs a working POSIX shell")
+@pytest.mark.parametrize("requested", ["", "europe/denmark"],
+                         ids=["full run", "subset run"])
+def test_the_corpus_builds_only_rail_from_a_layered_manifest(jobs, tmp_path, requested):
+    """The corpus is rail legs. A ferry or bus entry names another file for
+    the same region, and building it as that region's rail store would gate
+    the release on the wrong data — or overwrite the rail store with it."""
+    code, output, calls, temp = _run_corpus_step(tmp_path, jobs, layered=True,
+                                                 requested=requested)
+    assert code == 0, output
+    builds = [line for line in calls.splitlines() if "src.rail.builder" in line]
+    assert len(builds) == 2, builds
+    assert all(line.endswith("--layer rail") for line in builds), builds
+    assert all("-rail.osm.pbf " in line and ".rail.sqlite " in line for line in builds)
+    assert "-ferry.osm.pbf" not in calls and "-bus.osm.pbf" not in calls
 
 
 @pytest.mark.skipif(BASH is None, reason="needs a working POSIX shell")
