@@ -1122,6 +1122,137 @@ merged. Kept here for the record.*
   needs a server field, which is a new unit); X3.
 - **Depends on:** U7 (shares `project_notifier.dart`).
 
+### Part 2 amendment (2026-10-06) — read first; it overrides the units below
+
+Part 1 changed the notifier substantially (per-account instance F5,
+request-ordered segment patches F2-F4, the open-trip check and atomic
+`_applyDetails` F6, the clear-scan test U5, `saveDayMeta` U7). An audit of
+U9-U19 against `feat/package-c-part1` @ 0c803f60 found every line reference
+stale and the following design gaps. Where this section and a unit disagree,
+this section wins. Line numbers below are at 0c803f60.
+
+**Counts now.** `project_notifier.dart` 3,782 lines, 70 `notifyListeners()`;
+mixins 2,427 lines, 50 more; `map_panel.dart` 35 `_last*` fields (14 + 4 in
+`_MapPanelState`, 14 + 3 in `ManageMapPanelState`).
+
+**17. Facet writes mark, the root's notify flushes.** (Replaces the
+"facet change notifies" half of Decisions 7-8.)
+- A facet setter or `replace()` updates the field and marks the facet dirty
+  (bumps `version`, sets a dirty flag). It never calls `notifyListeners()`
+  itself.
+- `ProjectNotifier.notifyListeners()` (overridden) first notifies every dirty
+  facet and clears its flag, then notifies the root as today.
+- So every existing `notifyListeners()` call site keeps its timing: a write
+  followed by a stale-check that skips the notify still skips it, and one
+  operation that writes several facets notifies each once, together. U10-U15
+  are then behaviour-preserving for root listeners and facet listeners alike.
+- U19 ("cut the bubble") becomes: the root's own `notifyListeners()` flushes
+  facets but notifies root listeners only when root state changed (a root
+  dirty flag set by root-field writes).
+- A write made after `dispose()` marks nothing and flushes nothing (F5).
+
+**18. Facets belong to the notifier instance.** The notifier creates its five
+facets and disposes them in `dispose()`; providers never own them.
+`ProjectFacetProviders` derives them from the nearest `ProjectNotifier` (for
+the app-wide one, from the provider `accountScopedProjectNotifier` returns,
+`main.dart:80-113`), so an account change swaps the facets with the notifier.
+Widgets that keep a facet in State rebind in `didUpdateWidget`/
+`didChangeDependencies`, as they do for the notifier today.
+
+**19. The clear-scan test learns the facets.** `project_notifier_clear_scan_test.dart`
+reads the facet files too; its call graph keys methods by `Class.method`, not
+bare name; a notifier field holding a facet counts as reset when `clear()`
+calls `.reset()` on it; the "sees the fields" and mutation cases are updated to
+the fields' new homes (a legitimate test move, no expected value changes).
+`clear_complete_test` reads facet getters instead of root getters. Each state
+unit (U10, U12-U15) updates the scan for the fields it moves.
+
+**20. #379's post-mutation fetch never joins an older request.** The three
+full-res post-mutation paths (`_applyRefreshedProject` 3089-3095,
+`_silentReload` 3471-3485, `_resyncOnConflict` segment mixin 57-62) fetch
+simplified geometry at the current bucket and box with a new
+`getSimplifiedGeo(..., joinInFlight: false)` that skips the dedup map
+(`project_service.dart:281-284`), so the request is sent after the write and
+the server's generation counter guarantees post-write truth. They keep Part
+1's `fetchServerGeo` → `reconcileSegmentOverlay(requestedAt:)` →
+`mergePendingSegmentPatches` chain and F6's open-trip `stale()` checks.
+`fullResGeoForExport` (1829-1845) decides "already full" by `lod == full`
+instead of `_loadedZoomBucket == null`.
+
+**21. Every geo writer goes through `GeoFacet`.** In addition to the plan's
+table: `load` 1077 (null), 1136 (low-res), 1224 (E2EE low-res); progressive
+load 1555 (E2EE full), 1644 (offline cache full), 1715 (full-res fallback);
+`clear()` 2286; and the segment patch writers `upsertSegmentInGeo`
+(segment mixin 764) and `removeSegmentFromGeo` (777), which use a
+`replaceKeepingLod(geo)` that keeps the current `GeoLod`. `isGeoLoaded`
+writers (459, 1563, 1607, 1648, 1679, 1721, 2359, `view_screen.dart:68`,
+`shared_project_screen.dart:216`) move with it. The library-level
+`_overlayClock` and in-flight set (segment mixin 955-968) stay where they are,
+outside the facet.
+
+**22. Hysteresis applies everywhere the bucket is compared.** U11 also changes
+the refetch's result check (`_bucketOf(_mapZoom) != bucket`, 1450) to the
+hysteresis predicate, so a 6.1 → 5.9 wobble during a fetch keeps a result that
+is still fresh. Requests and the dedup key keep `ceil(zoom)`.
+
+**23. Items has two versions.** `ItemsFacet.listVersion` bumps when the item,
+people or group lists or day-meta change; `ItemsFacet.activitiesVersion` bumps
+when activity data changes (including elevation merges at 1913, 1942, 2095).
+The map's spec key uses `listVersion`, so an elevation upgrade does not
+rebuild specs (today's guard does not either). `_applyDetails`' assignments
+(3691-3739) stay in one synchronous block across facets.
+
+**Per-unit amendments.**
+- **U9:** Scope adds `main.dart` (deriving facet providers from the account's
+  notifier), `view_screen.dart` (its `ChangeNotifierProvider(create:)` at 137)
+  and `shared_project_screen.dart` (`.value` at 317). Do: Decisions 17-18;
+  the dirty/flush mechanism and its test are U9's. Acceptance adds: a write
+  then a skipped notify flushes nothing; two facets written then one notify
+  notify each once; an account change yields new facets and disposes the old.
+- **U10:** Decisions 20-21. Acceptance adds: a post-mutation fetch issued
+  while a same-key zoom refetch is in flight sends its own request; the
+  export path uses `lod`. Cite also `shared_geo_zoom_lod_test.dart` and
+  `segment_overlay_request_order_test.dart` (must pass unchanged).
+- **U11:** Decision 22; locations: debounce 1334, `_bucketOf` 1336,
+  `_geoIsStaleForCamera` 1342-1351, `setMapZoom` 1356-1372, refetch
+  1379-1401, disarm 1470-1473. Acceptance adds the wobble-during-fetch case.
+- **U12:** fields 475-493; setters 644-714; `restoreSavedUiState` (930-943)
+  writes four fields then notifies once (stays one notify); `load()` nulls
+  selection at 1079-1083; the filter mixin writes `selectedDays` at 157, 210,
+  270. Test path `test/projects/stale_filter_restore_test.dart`.
+- **U13:** fields 544-570 incl. U5's default constants; writers
+  `setTrackStyle` 572-613, `saveLanguages` 617-628, `load` 1193-1219,
+  `_applyDetails`, `clear()` 2308-2316.
+- **U14:** Decision 23; fields 430-435, 496-520; memos 1975-2058; U7's
+  `saveDayMeta` 3275-3355, `_reloadDayMeta` 3358-3382,
+  `_autoFillDaysToToday` 3388-3431; `undecryptedFields` and
+  `_recordUndecrypted` (3587) move with items.
+- **U15:** fields 2120-2132, `_buildFullTrack` 2140-2187, totals 946-948 via
+  `_updateStats` 1961-1973. A dropped reload's `_buildFullTrack` write marks
+  the facet but, per Decision 17, notifies only if the caller notifies.
+- **U16:** locations: `_MapPanelState` 1324 (`selectionChanged` 1590,
+  `styleChanged` 1598, `geoOrStyleChanged` 1607, auto-zoom 1694-1700,
+  notifier-change reset 1458); `ManageMapPanelState` 2298 (2583, 2591, 2602,
+  2683-2689, seeding 2376-2380). The key includes facet identity, or resets on
+  a notifier change (both panels), because a new account's facets restart
+  their versions. Keep U4's `_autoZoomJustEnabled` refit trigger. Scope adds
+  `test/map_autozoom_toggle_test.dart` (renames only).
+- **U17:** listeners now `activity_panel.dart` 419/435, per-tile Selectors
+  1684/1828/1978/2101, and the `FilterSheet` `ListenableBuilder` 2397-2398;
+  `day_carousel.dart` 111/180. Scope adds `test/crypto/encrypted_display_test.dart`
+  and `test/segment_degraded_route_indicator_test.dart` (closes R2-2). No test
+  builds `ElevationChart`; the side-panels scope test adds one.
+- **U18:** inventory adds `app_screen.dart` `context.select` 757/760,
+  `view_screen.dart` `context.select` 336/339, and `people_screen.dart`
+  59-60 (`AnimatedBuilder`) and 977-978 (`ListenableBuilder`); Scope adds
+  `people_screen.dart`.
+- **U19:** the tests that count root notifies (`crud_mixin_item_identity`,
+  `geo_upgrade_single_swap`, `background_reload_trip_switch`,
+  `project_load_retry`, `project_notifier_members`,
+  `segment_delete_failure_restore`, `project_notifier_camera_idle_*`) move to
+  the facet listener where they count facet changes; every Part 1 test listed
+  in the audit must still pass unchanged.
+
 ### Wave 5 — facet foundation
 
 **U9 — Facet base, bubbling, providers (#294)**
