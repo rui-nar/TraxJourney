@@ -398,7 +398,7 @@ Owner decision during wave 4 (2026-10-05): the #366 gain recompute (U8) corrects
 - Scores: trigger=concrete (triage-corrected), impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
 - Decision: Fix now (D7)
 - Override: —
-- Outcome: open
+- Outcome: fixed (16c7d163)
 
 ### U14-R1-2 — Encrypted save/split CAS against a version the catch-up pass is advancing; stale_write drops the edits
 - Trigger: owner edits an encrypted activity while a catch-up pass writes other rows → Save → 409 stale_write → editor closes, unsaved edits lost
