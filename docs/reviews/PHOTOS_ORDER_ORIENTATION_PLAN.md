@@ -225,7 +225,7 @@ Round cap reached for U7 (§6): a fourth round needs the user to ask for it.
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (b667fcd8)
 
 ## Integrated diff review — Round 2 — 2026-10-06, reviewed at b667fcd8 (974abd37..b667fcd8, fix for IR1-1)
 
@@ -236,7 +236,7 @@ Round cap reached for U7 (§6): a fourth round needs the user to ask for it.
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (db0e287b)
 
 ### IR2-2 — The sweep uncounts files a writer has written but not yet counted
 - Trigger: User deletes a memory while an upload/download to it is between writing its files and `record_written` (src/utils/photo_store.py:102-111, 125-126) → the delete's sweep subtracts their size, `record_written` then adds 0 for files that are gone → counter under by one photo until the nightly reconcile.
@@ -246,3 +246,7 @@ Round cap reached for U7 (§6): a fourth round needs the user to ask for it.
 - Guard: —
 - Override: user: Defer — self-correcting at the nightly reconcile, millisecond window; not worth changing shared photo_store code now.
 - Outcome: open
+
+## Integrated diff review — Round 3 — 2026-10-06, reviewed at db0e287b (b667fcd8..db0e287b, fix for IR2-1)
+
+No findings. Reviewer traced re-entrancy (no helper under the moved cleanup takes photo_lock), the error path (lock released on exception, same 500-after-commit as before), lock hold time (same work delete_photo already does under the lock), the journal change, and the test's forced interleaving. Review loop stops (REVIEW.md §6).
