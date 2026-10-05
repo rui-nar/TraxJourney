@@ -697,27 +697,18 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
   // the state the patch replaced, and only its content can say whether it
   // already reflects the patch ([_sameRouteState]).
 
-  /// Orders geo requests against patches: every request start and every patch
-  /// takes the next value. Never reset, not even by `clear()`: a request
-  /// still in flight from before would then look newer than patches made
-  /// after.
-  int _overlayClock = 0;
-
   /// When each pending patch was applied, on [_overlayClock].
   final Map<String, int> _patchAppliedAt = {};
-
-  /// The server geo requests [fetchServerGeo] has in flight. Each removes
-  /// itself when it settles.
-  final Set<_GeoRequest> _geoRequestsInFlight = {};
 
   /// Fetches server geo with [fetch] and returns it with the [_overlayClock]
   /// reading to pass to [reconcileSegmentOverlay].
   ///
-  /// The reading is the start of the oldest of this notifier's geo requests
-  /// still in flight, not just this one's: the service hands an identical
-  /// request already in flight to a later caller, so this one's answer may be
-  /// that older request's. Erring early only keeps a patch until a later
-  /// request settles it; erring late would let a stale answer drop it.
+  /// The reading is the start of the oldest geo request still in flight, any
+  /// notifier's, not just this one's: the service hands an identical request
+  /// already in flight to a later caller — whichever notifier started it, the
+  /// view-mode and the app-wide one coexisting — so this one's answer may be
+  /// that older request's (I1-R3-3). Erring early only keeps a patch until a
+  /// later request settles it; erring late would let a stale answer drop it.
   Future<({Map<String, dynamic> geo, int requestedAt})> fetchServerGeo(
       Future<Map<String, dynamic>> Function() fetch) async {
     final request = _GeoRequest(++_overlayClock);
@@ -930,6 +921,20 @@ class _RemovedSegment {
   final Map<String, dynamic>? feature;
   const _RemovedSegment(this.index, this.item, this.feature);
 }
+
+/// Orders geo requests against patches: every request start and every patch,
+/// in every notifier, takes the next value. Library-wide, like the service's
+/// in-flight fetches a request may join: a notifier's patch and the request
+/// another notifier started must read the same clock (I1-R3-3). Never reset,
+/// not even by `clear()`: a request still in flight from before would then
+/// look newer than patches made after. Holds no trip data.
+int _overlayClock = 0;
+
+/// The server geo requests [ProjectSegmentCrudMixin.fetchServerGeo] has in
+/// flight, across notifiers. Each removes itself when it settles; emptied
+/// early, a request joining one of them would look newer than the answer it
+/// gets. Holds start readings only.
+final Set<_GeoRequest> _geoRequestsInFlight = {};
 
 /// A server geo request in flight. See [ProjectSegmentCrudMixin.fetchServerGeo].
 /// An object rather than its start value, so each request removes only itself.

@@ -41,12 +41,6 @@ const _allowlist = {
   '_refetchInFlight': "single-flight latch the running refetch releases in its "
       'own finally; clearing it would start a second refetch beside it',
   '_geoRefetchCount': 'session-wide perf diagnostic counter',
-  '_overlayClock': 'orders geo requests against segment patches and holds no '
-      'trip data; reset, a request still in flight from before clear() would '
-      'look newer than patches made after it and drop them',
-  '_geoRequestsInFlight': 'each request removes itself in its own finally; '
-      'emptied early, a request joining one of them would look newer than '
-      'the answer it gets',
   'loadRetryBackoff': 'test seam, configured once',
   'zoomRefetchDebounce': 'test seam, configured once',
   'cameraIdleTimeout': 'test seam, configured once',
