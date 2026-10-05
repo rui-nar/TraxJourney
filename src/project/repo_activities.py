@@ -20,7 +20,9 @@ from src.models.prepared_geo import prepare_polyline
 from src.models.simplify import PREPARED_GEO_VERSION
 from src.project.local_ids import allocate_local_activity_id
 from src.project.elevation_downsample import downsample_elevation
-from src.project.repo_core import bump_lock_version, check_and_bump_lock_version
+from src.project.repo_core import (
+    bump_lock_version, check_and_bump_lock_version, referenced_by_others,
+)
 from src.utils.encryption_check import is_encrypted_envelope
 from src.utils.logging import get_logger
 
@@ -1272,6 +1274,16 @@ class ActivityMixin:
             ).distinct()
         ).all()
         return bool(trip_owners) and all(o == user_info_id for o in trip_owners)
+
+    def activity_shared_with_others(
+        self, sess: Session, activity_id: int, user_info_id: int
+    ) -> bool:
+        """Whether a trip owned by someone other than *user_info_id* holds this
+        activity (E2EE remnants decision 15): that trip's owner cannot read an
+        envelope, so none may be stored on the row, even by its own owner."""
+        return bool(sess.exec(
+            select(referenced_by_others(activity_id, user_info_id))
+        ).one())
 
     def activity_owners(self, sess: Session, activity_ids) -> Dict[int, int]:
         """Owner account of each of *activity_ids* that has a row.

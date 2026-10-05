@@ -188,7 +188,8 @@ class ProjectIO:
         converted from the storage format ``{"distances_km": [...], "elevations_m": [...]}``
         to a list of ``[dist_km, elev_m]`` pairs so the Flutter client can
         iterate over them directly, and an activity loaded from the database
-        carries ``plain_fields``, its E2EE columns still in plaintext; every
+        carries ``plain_fields``, its E2EE columns still in plaintext, and
+        ``shared_with_others``, whether another user's trip holds it; every
         activity carries ``has_gain_snapshot``.
         """
         def _ep_pairs(a: Activity) -> Any:
@@ -208,6 +209,8 @@ class ProjectIO:
             if a.plain_fields is not None:
                 d["plain_fields"] = a.plain_fields
             d["has_gain_snapshot"] = a.has_gain_snapshot
+            if a.shared_with_others is not None:
+                d["shared_with_others"] = a.shared_with_others
             activities_out.append(d)
 
         return {
