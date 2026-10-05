@@ -343,4 +343,4 @@ No findings. Backfill traced against reset_activity_track branch by branch; SQLi
 
 Notes:
 - Wave 1 interrupted once by an API session limit; all four implementers resumed from their worktrees with no work lost.
-- Local Windows full-suite runs hung (U1); full checks run in the `traxjourney-py314-citest` container instead. Wave 1 without U2: 6131 passed, 39 skipped.
+- Local Windows full-suite runs hung (U1); full checks run in the `traxjourney-py314-citest` container instead. Wave 1 without U2: 6131 passed, 39 skipped. Full wave 1 (a01ecf3c): 6175 passed, 39 skipped.
