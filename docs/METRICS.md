@@ -136,6 +136,21 @@ that is not a back-off), `bad_body` (unparseable). It counts per endpoint
 attempt, so one query that fails over counts once per host it tried; only `ok`
 is a request that Overpass answered.
 
+| Metric | Labels |
+|---|---|
+| `traxjourney_rail_data_age_days` | — |
+| `traxjourney_rail_data_regions` | `status` (`ok`\|`empty`\|`invalid`) |
+
+Set by the daily `rail_data_age` job (05:15 UTC, and once at start-up) from
+`RAIL_DATA_DIR/manifest.json`. The age is days since the **oldest** `ok`
+region's `source_date`, not the manifest's `generated_at`, which a partial
+refresh leaves unchanged. It is NaN while the manifest is missing, unreadable
+or lists no usable region. `invalid` counts entries the check could not read
+(an unknown status, or an `ok` region with no usable `source_date`). While
+`RAIL_SOURCE=local` the job also logs a `WARNING` each run that the data is
+over 40 days old (naming the oldest region and its date) or the manifest
+cannot be used; with any other source it logs nothing.
+
 `mode` ∈ `train`, `boat`, `bus`. `source` ∈ `motis` (a matched train), `local`,
 `overpass`. `degraded` is `true` or `false`. One increment per resolve; a rail
 resolve that fell back from the local store to Overpass counts `overpass`.
@@ -199,6 +214,7 @@ between scrapes. The pool-utilisation panel divides `in_use` by capacity
 | Strava quota actually hit | any `traxjourney_strava_throttled_total` (our limiter refused), or `traxjourney_external_requests_total{service="strava",outcome="rate_limited"}` (Strava refused) |
 | Credential stuffing | `rate(traxjourney_logins_total{result="failure"}[5m])` |
 | Write contention | `rate(traxjourney_stale_writes_total[5m])` |
+| Local rail data stale or unusable (with `RAIL_SOURCE=local`) | `traxjourney_rail_data_age_days > 40`, or `traxjourney_rail_data_age_days != traxjourney_rail_data_age_days` (NaN) |
 
 ## Constraints
 
@@ -242,8 +258,8 @@ between scrapes. The pool-utilisation panel divides `in_use` by capacity
   - Gauges written from several processes pick how they combine, so a dead
     process never shows up as its own series: `job_last_success_timestamp_seconds`
     and `strava_rate_limit_capacity` take the `max`, and
-    `prepared_geometry_backlog` the most recent value. None carries a `pid`
-    label.
+    `prepared_geometry_backlog`, `rail_data_age_days` and `rail_data_regions`
+    the most recent value. None carries a `pid` label.
   - The pool, file-size and Strava-usage gauges are computed at scrape time by
     the process serving `/metrics`, the API (issue #455). They write no file,
     carry no `pid` label and hold the live value in both modes. The API's pool
