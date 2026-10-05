@@ -415,6 +415,6 @@ Owner decision during wave 4 (2026-10-05): the #366 gain recompute (U8) corrects
 - Scores: trigger=concrete, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local (triage-corrected from M), confidence=verified (triage-corrected; cost estimated, not measured)
 - Decision: Fix now (D7)
 - Override: —
-- Outcome: open
+- Outcome: fixed (00d735a1)
 
 Owner approved (2026-10-06): U14 table (R1-1 fix now, R1-2 deferred) and U8 table (R1-1 fix now).
