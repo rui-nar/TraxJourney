@@ -230,7 +230,7 @@ Reviewer hand-off note: `.github/workflows/rail-extract.yml:284` (U5's gate) cal
 - Decision: Defer (D10)
 - Revisit when: an image rollback past U8 happens, or the manifest sort is next touched — reword the comment to name only the old fetch's region-keyed lookup
 - Guard: —
-- Override: —
+- Override: user: Fix now — one-line comment fix before U8 merges
 - Outcome: open
 
 ### U8R1-2 — Age-gauge warning names a carried ferry/bus layer by region only
@@ -239,5 +239,5 @@ Reviewer hand-off note: `.github/workflows/rail-extract.yml:284` (U5's gate) cal
 - Decision: Defer (D10)
 - Revisit when: U7 publishes the first release with ferry or bus layers, or the age warning names a region whose rail entry is current — add the layer to the oldest tuple and message in src/jobs/rail_data_jobs.py
 - Guard: —
-- Override: —
+- Override: user: Fix now — U7 is next after the deploy and creates exactly this case; a one-line change
 - Outcome: open
