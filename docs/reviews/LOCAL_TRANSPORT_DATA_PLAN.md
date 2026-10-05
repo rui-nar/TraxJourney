@@ -109,7 +109,7 @@ Answer: not given at approval; the plan applies the recommended stagger (val on 
 
 ## Round 2 — 2026-10-04, reviewed at 6dca31ec (fixes only)
 
-Triager flag (not a round-2 finding, outside the fixes reviewed): Wave 1 (U2 and U3 share src/utils/metrics.py and docs/METRICS.md) and Wave 2 (U5 and U6 share docs/DEPLOYMENT_VPS.md) also break DELIVERY.md W1.
+Triager flag (not a round-2 finding, outside the fixes reviewed): Wave 1 (U2 and U3 share src/utils/metrics.py and docs/METRICS.md) and Wave 2 (U5 and U6 share docs/DEPLOYMENT_VPS.md) also break DELIVERY.md W1. Owner approved fixing them with R2-5.
 
 ### R2-1 — U9 changes the ferry/bus getters' return shape; tests/test_overpass_fallback.py is outside its scope
 - Trigger: U9's implementer returns polyline+source → test_overpass_fallback.py indexes the old list shape → the suite fails on an out-of-scope file and the unit stops
@@ -118,7 +118,7 @@ Triager flag (not a round-2 finding, outside the fixes reviewed): Wave 1 (U2 and
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (in plan)
 
 ### R2-2 — A ferry/bus layer the release omits is dropped from the installed manifest although last month's store is on disk
 - Trigger: CI's bus filter fails for one region → the release publishes without (region, bus) (U7 step 4) → the box's installed manifest drops it → that country's bus goes to Overpass for a month while a valid store sits on disk
@@ -126,8 +126,8 @@ Triager flag (not a round-2 finding, outside the fixes reviewed): Wave 1 (U2 and
 - Decision: Defer (D10) — not a D2 duplicate of R1-6: U7 step 4 makes the omission the designed outcome of a single-layer failure
 - Revisit when: the R1-6 WARNING fires for a ferry/bus layer whose store is still on disk, or two consecutive releases warn of the same missing layer — then carry an omitted (region, layer) whose sidecar and store are present
 - Guard: —
-- Override: —
-- Outcome: open
+- Override: user: Fix now — one plan line; U7 made the omission a designed outcome, so the box keeps last month's store
+- Outcome: fixed (in plan)
 
 ### R2-3 — Ferry and bus "empty", extent and builder refusal are still defined "as for rail" (bit 0)
 - Trigger: a bus layer's routable class is route=bus ways, which OSM rarely uses (bus routes are relations) → U7 marks most bus layers empty or U8's builder refuses them / computes a near-zero extent → no local bus anywhere
@@ -136,7 +136,7 @@ Triager flag (not a round-2 finding, outside the fixes reviewed): Wave 1 (U2 and
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (in plan)
 
 ### R2-4 — "Redis unreachable at refresh time" is logged as "refresh is manual on this deployment"
 - Trigger: prod has a broker; Redis is restarting at 04:10 on the 5th → enqueue returns False as with no broker → the job logs the manual message, records success, no retry until next month
@@ -154,7 +154,7 @@ Triager flag (not a round-2 finding, outside the fixes reviewed): Wave 1 (U2 and
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (in plan)
 
 ### R2-6 — Rolling the API image back across U8 after a refresh refuses every rail store; no recovery named
 - Trigger: owner deploys U8, the refresh rebuilds stores as schema 3, an unrelated defect forces an image rollback → the old reader refuses every store → all trains go to Overpass until fetch is re-run with the old image
@@ -162,8 +162,8 @@ Triager flag (not a round-2 finding, outside the fixes reviewed): Wave 1 (U2 and
 - Decision: Defer (D10)
 - Revisit when: an image rollback past U8 is needed — add the §9 runbook line (re-run fetch with the rolled-back image, --tag of the last manifest-schema-2 release once U7 has published)
 - Guard: —
-- Override: —
-- Outcome: open
+- Override: user: Fix now — one runbook line; it belongs in section 9 before U8 ships, not during an outage
+- Outcome: fixed (in plan)
 
 ### R2-7 — Decision 2 still says the box refreshes on the 4th
 - Trigger: a maintainer re-derives the threshold → Decision 2 says the 4th, Decision 5 says the 5th for prod → inconsistent cross-reference
@@ -172,4 +172,4 @@ Triager flag (not a round-2 finding, outside the fixes reviewed): Wave 1 (U2 and
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (in plan)

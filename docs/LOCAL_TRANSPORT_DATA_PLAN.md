@@ -116,9 +116,9 @@ Rail sizes are the published `rail-data-2026-09-08` assets.
    address and SMTP in the alert path) and Grafana-only (its rules are not
    provisioned and the stack is unverified live).
 2. **Data age is the oldest `source_date` among `ok` regions in the installed
-   `manifest.json`, threshold 40 days.** The workflow builds on the 2nd; the
-   box refreshes on the 4th (Decision 5); 40 days is one cycle plus a missed
-   retry. The oldest region, not `generated_at`, because a partial refresh
+   `manifest.json`, threshold 40 days.** The workflow builds on the 2nd; val
+   refreshes on the 4th and prod on the 5th (Decision 5); 40 days is one
+   cycle plus a missed retry for either. The oldest region, not `generated_at`, because a partial refresh
    keeps `generated_at` and a region that failed three months running would
    otherwise hide behind its neighbours. *Rules out* store-file mtimes (a
    reinstall of the same data resets them).
@@ -190,6 +190,17 @@ Rail sizes are the published `rail-data-2026-09-08` assets.
    way is in C's alone — exactly what the two Overpass queries return (R1-1).
    *Rules out* keeping the rail schema for the new layers: one flag cannot
    tell B's ways from C's.
+
+   Each layer also defines its **routable set** — the ways that decide
+   whether the layer is `empty` in CI (U7), whether the builder refuses the
+   store (U8), and which ways the layer's bbox is measured over (both). One
+   table, used by both units (R2-3):
+
+   | Layer | Routable set | Why |
+   |---|---|---|
+   | rail | bit 0 | unchanged from today |
+   | ferry | bits 0, 1 or 2 | B, C and A each answer from their own class; a region with only `ferry=yes` ways is not empty |
+   | bus | bits 0 or 2 | bus routes are mapped as relations; `route=bus` ways are rare, so bit 0 alone would make almost every bus layer empty |
 10. **Retiring scaffolding is decided from the counters, not in this plan.**
     See Open decision 2.
 
@@ -224,6 +235,12 @@ REVIEW.md defaults apply, with these additions:
   version keeps routing. The fetch sidecar already records the store schema,
   so each box rebuilds its rail stores at the first refresh after U8 deploys,
   with no new release. Same ship order as the manifest: U8 deploys first.
+  **Rolling the image back past U8** once a refresh has run leaves schema-3
+  stores the old reader refuses, and every train goes to Overpass. Recovery is
+  one command, written into §9 by U8 (R2-6): re-run `fetch_rail_data.py` with
+  the rolled-back image — its sidecar check rebuilds every store at the old
+  schema — adding `--tag <last manifest-schema-2 release>` once U7 has
+  published schema-3 releases.
 - **Store files.** `store_filename(region, layer="rail")`: rail stores keep
   their name (`<region>.rail.sqlite`); new `<region>.ferry.sqlite` and
   `<region>.bus.sqlite` beside them. Sidecars and installed-manifest entries
@@ -264,7 +281,11 @@ REVIEW.md defaults apply, with these additions:
 
 ## Execution units
 
-### Wave 1 — watch it, count it (independent)
+Waves are ordered so that no two units in one wave share a file or depend on each other (DELIVERY.md W1); every dependency points to an earlier wave.
+
+### Wave 1 — watch it, count it
+
+U1, U3 and U4 share no file and depend on nothing.
 
 #### U1 — A failed Rail extract run opens an issue
 - **Goal:** a failed run of `rail-extract.yml` opens or updates one `rail-data` issue, and a successful run closes it.
@@ -281,23 +302,6 @@ REVIEW.md defaults apply, with these additions:
 - **Out of scope:** alerting from the box; labels other than `rail-data`.
 - **Latitude:** local design.
 - **Escalate if:** the label has to be created by the job (it needs `issues: write` on labels too — say so rather than widening permissions); a file outside Scope is needed.
-- **Depends on:** —
-
-#### U2 — The server reports how old its rail data is
-- **Goal:** a daily scheduled check exports the installed data's age and logs a `WARNING` while it is over 40 days or unreadable.
-- **Scope:** new `src/jobs/rail_data_jobs.py`, `src/utils/metrics.py`, `api/router.py` (one `add_job`), `docs/METRICS.md`, new `tests/test_rail_data_age.py`.
-- **Context:** `src/jobs/prepared_geo_jobs.py` — `sweep_unprepared_geometry` and its gauge — is the example: a self-contained function, a `try/except` that logs and never raises into the scheduler, a gauge set at the end. Manifest shape: `scripts/fetch_rail_data.py:361-405`.
-- **Do:**
-  1. `check_rail_data_age(directory=None) -> float | None`: reads `RAIL_DATA_DIR/manifest.json`; age in days = today − oldest `source_date` among `status == "ok"` entries.
-  2. Gauges `traxjourney_rail_data_age_days` and `traxjourney_rail_data_regions{status}`; `multiprocess_mode="mostrecent"` as `PREPARED_GEOMETRY_BACKLOG`.
-  3. `WARNING` when age > `RAIL_DATA_MAX_AGE_DAYS = 40`, naming the oldest region and its date; `WARNING` when `RAIL_SOURCE=local` and the manifest is missing or unreadable; nothing when `RAIL_SOURCE` is not local.
-  4. Schedule daily, 05:15 UTC, `id="rail_data_age"`.
-- **Acceptance:**
-  - Tests: fresh manifest → age and no warning; one stale region among fresh ones → warning naming it; `empty` entries ignored; missing manifest under `RAIL_SOURCE=local` → warning, and silence when not local; a malformed manifest does not raise.
-  - `pytest tests/test_rail_data_age.py tests/test_metrics*.py` passes.
-- **Out of scope:** refreshing anything (U6); reading store `meta`.
-- **Latitude:** local design.
-- **Escalate if:** the scheduler test harness cannot see a new job without touching another file; a file outside Scope is needed.
 - **Depends on:** —
 
 #### U3 — Count Overpass requests by purpose and resolves by source
@@ -334,7 +338,26 @@ REVIEW.md defaults apply, with these additions:
 - **Escalate if:** a seed leg cannot be expressed in the format; a seed leg is wrong today in a way not already known (record it `known_bad` and report it).
 - **Depends on:** —
 
-### Wave 2 — gate it, refresh it
+### Wave 2 — the age gauge and the gate
+
+U2 follows U3 (both edit `src/utils/metrics.py` and `docs/METRICS.md`); U5 needs U4's runner. They share no file.
+
+#### U2 — The server reports how old its rail data is
+- **Goal:** a daily scheduled check exports the installed data's age and logs a `WARNING` while it is over 40 days or unreadable.
+- **Scope:** new `src/jobs/rail_data_jobs.py`, `src/utils/metrics.py`, `api/router.py` (one `add_job`), `docs/METRICS.md`, new `tests/test_rail_data_age.py`.
+- **Context:** `src/jobs/prepared_geo_jobs.py` — `sweep_unprepared_geometry` and its gauge — is the example: a self-contained function, a `try/except` that logs and never raises into the scheduler, a gauge set at the end. Manifest shape: `scripts/fetch_rail_data.py:361-405`.
+- **Do:**
+  1. `check_rail_data_age(directory=None) -> float | None`: reads `RAIL_DATA_DIR/manifest.json`; age in days = today − oldest `source_date` among `status == "ok"` entries.
+  2. Gauges `traxjourney_rail_data_age_days` and `traxjourney_rail_data_regions{status}`; `multiprocess_mode="mostrecent"` as `PREPARED_GEOMETRY_BACKLOG`.
+  3. `WARNING` when age > `RAIL_DATA_MAX_AGE_DAYS = 40`, naming the oldest region and its date; `WARNING` when `RAIL_SOURCE=local` and the manifest is missing or unreadable; nothing when `RAIL_SOURCE` is not local.
+  4. Schedule daily, 05:15 UTC, `id="rail_data_age"`.
+- **Acceptance:**
+  - Tests: fresh manifest → age and no warning; one stale region among fresh ones → warning naming it; `empty` entries ignored; missing manifest under `RAIL_SOURCE=local` → warning, and silence when not local; a malformed manifest does not raise.
+  - `pytest tests/test_rail_data_age.py tests/test_metrics*.py` passes.
+- **Out of scope:** refreshing anything (U6); reading store `meta`.
+- **Latitude:** local design.
+- **Escalate if:** the scheduler test harness cannot see a new job without touching another file; a file outside Scope is needed.
+- **Depends on:** —
 
 #### U5 — The corpus gates the Rail extract publish
 - **Goal:** a release is published only if the corpus passes against stores built from this run's extracts.
@@ -350,6 +373,10 @@ REVIEW.md defaults apply, with these additions:
 - **Latitude:** local design.
 - **Escalate if:** building the needed stores pushes the publish job past 30 minutes; a file outside Scope is needed.
 - **Depends on:** U4.
+
+### Wave 3 — the box refreshes itself
+
+U6 needs U2's module and edits `docs/DEPLOYMENT_VPS.md`, as U5 does.
 
 #### U6 — The box refreshes its rail data monthly
 - **Goal:** each box installs the newest published release on its own, once a month, and the job metrics show whether it worked.
@@ -369,27 +396,33 @@ REVIEW.md defaults apply, with these additions:
 - **Escalate if:** peak RSS exceeds 700 MB (the worker limit is 1 GB); a file outside Scope is needed.
 - **Depends on:** U2.
 
-### Wave 3 — ferry and bus data
+### Wave 4 — stores and readers learn layers
 
-Order matters here (*Boundaries crossed*): U8 is merged **and deployed to both
-boxes** before U7 publishes anything in the new formats.
+Ships alone, before any layer data exists (*Boundaries crossed*).
 
 #### U8 — Stores and readers learn layers (ships first)
 - **Goal:** store schema 3 with `way.cls`, layer-aware store names, and a box that reads manifest schemas 2 and 3 — all before any layer data exists.
-- **Scope:** `src/rail/store.py`, `src/rail/builder.py`, `scripts/fetch_rail_data.py`, `src/services/rail_source.py`, `tests/test_rail_store.py`, `tests/test_rail_store_schema2.py`, `tests/test_rail_data_fetch.py`, `tests/test_rail_source.py`, new `tests/test_rail_store_schema3.py`.
+- **Scope:** `src/rail/store.py`, `src/rail/builder.py`, `scripts/fetch_rail_data.py`, `src/services/rail_source.py`, `docs/DEPLOYMENT_VPS.md` (§9), `tests/test_rail_store.py`, `tests/test_rail_store_schema2.py`, `tests/test_rail_data_fetch.py`, `tests/test_rail_source.py`, new `tests/test_rail_store_schema3.py`.
 - **Context:** the schema 1 → 2 bump in PR #361 is the example to follow — `_SUPPORTED_SCHEMAS`, v1 roles read as `""`, the sidecar holding `<digest> <schema>`, and the three traps recorded for it in `docs/LOCAL_RAIL_DATA_PLAN.md`. `store_filename` (`store.py:110-115`) and its users (`fetch_rail_data.py:186-187`, `:264-276`, `:378-389`; `store.py:606`); `load_coverage` (`rail_source.py:164-208`).
 - **Do:**
   1. Store schema 3: `way.cls` bitmask per Decision 9; `_SUPPORTED_SCHEMAS = (1, 2, 3)`, a v1/v2 `rail` flag read as `cls` bit 0. Every query that filters `w.rail = 1` filters `cls & 1`; `ways_in_bbox` / `vertex_counts_in_bbox` take a class mask defaulting to bit 0.
-  2. The builder takes `--layer` (default `rail`) and fills `cls` for that layer's selection.
+  2. The builder takes `--layer` (default `rail`), fills `cls` for that layer's selection, and refuses a store and measures its extent over the layer's **routable set** (Decision 9's table) — not bit 0 alone.
   3. `store_filename(region, layer="rail")`; rail names unchanged (R1-9).
-  4. Manifest schemas `(2, 3)` on the box; entries keyed by `(region, layer)`, a missing `layer` read as `rail`; an unknown layer ignored with a `WARNING`. Fetch installs every layer's store; one sidecar per `(region, layer)`.
+  4. Manifest schemas `(2, 3)` on the box; entries keyed by `(region, layer)`, a missing `layer` read as `rail`; an unknown layer ignored with a `WARNING`. Fetch installs every layer's store; one sidecar per `(region, layer)`. A `(region, layer)` the previously installed manifest held and the new release omits is **carried** when its store and sidecar are on disk — as a failed install already is — and still named in U6's R1-6 `WARNING`, so the age gauge keeps seeing it age instead of losing it (R2-2).
+  5. §9: the rollback-past-U8 recovery from *Boundaries crossed* (R2-6).
 - **Acceptance:**
-  - Tests for both ship orders: a schema-2 manifest still routes rail; a schema-3 manifest with ferry and bus entries leaves rail coverage and rail store names unchanged; v1, v2 and v3 rail stores answer the same rail queries; a way tagged `route=ferry` and `ferry=yes` is returned for bit 0 and bit 1, a `ferry=yes`-only way for bit 1 alone; the store schema bump makes fetch rebuild an existing rail store.
+  - Tests for both ship orders: a schema-2 manifest still routes rail; a schema-3 manifest with ferry and bus entries leaves rail coverage and rail store names unchanged; v1, v2 and v3 rail stores answer the same rail queries; a way tagged `route=ferry` and `ferry=yes` is returned for bit 0 and bit 1, a `ferry=yes`-only way for bit 1 alone; the store schema bump makes fetch rebuild an existing rail store; a ferry store holding only `ferry=yes` ways and a bus store holding only relation members are built, not refused, with a non-empty extent; a layer the release omits is carried when its store is on disk and dropped when it is not.
   - `pytest tests/test_rail_store*.py tests/test_rail_data_fetch.py tests/test_rail_source.py tests/test_rail_issue_359.py tests/test_rail_issue_363.py` passes.
 - **Out of scope:** filtering ferry or bus in CI (U7); resolving from them (U9).
 - **Latitude:** local design.
 - **Escalate if:** a rail query's result changes on any existing store; a file outside Scope is needed.
 - **Depends on:** —
+
+### Checkpoint — owner deploys U8 to val and prod
+
+Not a unit. Nothing in Wave 5 merges until both boxes run U8's reader: a schema-3 release reaching a schema-2 reader sends every train back to Overpass.
+
+### Wave 5 — ferry and bus layers in CI
 
 #### U7 — Filter ferry and bus layers in the extract build
 - **Goal:** each region's build publishes up to three filtered files — rail, ferry, bus — from one download, and a missing ferry or bus layer never blocks the rail release.
@@ -397,22 +430,24 @@ boxes** before U7 publishes anything in the new formats.
 - **Context:** `select()` and its predicates (`is_rail_way`, `is_route_relation`, `is_station`); the Phase 1/Phase 2 contract in `docs/LOCAL_RAIL_DATA_PLAN.md`; the selections in `_via_route_relation_type`, `_via_way_type_fallback`, `_via_ferry_yes_fallback`; the size guard at `rail-extract.yml:110-114`; the base-schema refusal at `build_rail_extract.py:709-721`.
 - **Do:**
   1. Predicates for the ferry layer (`route=ferry` relations and their member ways; `route=ferry` ways; `ferry=yes` ways) and the bus layer (`route=bus` relations and member ways; `route=bus` ways).
-  2. `select()` writes one file per layer in the same passes; an `empty` layer publishes no file, as for rail.
+  2. `select()` writes one file per layer in the same passes. A layer is `empty`, and publishes no file, when its **routable set** (Decision 9's table) is empty — the same set U8's builder refuses on and both measure the bbox over (R2-3).
   3. Entries carry `layer`; manifest schema 3. The `manifest` command accepts a schema-2 `--base` and carries its entries as `layer: rail` (R1-10).
   4. Completeness requires the `rail` layer only; a missing `ferry` or `bus` entry is a `::warning::` naming it, never a refusal — that region's mode keeps going to Overpass, as today.
   5. Size guard per layer: rail 100 MB as now, ferry 20 MB, bus 300 MB (R1-3).
   6. Record per-layer sizes for all 49 regions from one dispatch run, in the PR. In the same run, build Germany's bus store with U8's builder under `/usr/bin/time -v` and record its peak RSS (R1-7).
 - **Acceptance:**
-  - Tests: each layer holds exactly its selection on the fixture (a bus relation's member road is in `bus`, not `rail`; a `ferry=yes` way is in `ferry`); bbox per layer; an empty layer is `empty`; a missing bus entry warns and publishes while a missing rail entry refuses; a schema-2 base merges; the workflow guard's per-layer limits.
+  - Tests: each layer holds exactly its selection on the fixture (a bus relation's member road is in `bus`, not `rail`; a `ferry=yes` way is in `ferry`); bbox per layer over its routable set; an empty layer is `empty`, while a ferry layer of only `ferry=yes` ways and a bus layer of only relation members are not; a missing bus entry warns and publishes while a missing rail entry refuses; a schema-2 base merges; the workflow guard's per-layer limits.
   - The full dispatch run's per-layer sizes and Germany's bus-store peak RSS are in the PR, and Open decision 3 is answered from them.
 - **Out of scope:** readers (U8); resolving (U9).
 - **Latitude:** local design.
 - **Escalate if:** any single region's bus layer exceeds 150 MB filtered; Germany's bus-store build peaks above 700 MB RSS (the box builds it inside a 1 GB worker); a file outside Scope is needed.
 - **Depends on:** U8 merged **and deployed** to both boxes.
 
+### Wave 6 — ferry and bus resolve locally
+
 #### U9 — Ferry and bus resolve from local stores first
 - **Goal:** ferry and bus resolves read local stores through a source interface, falling back to Overpass on any local miss, and the resolve counter says which source answered.
-- **Scope:** `src/services/overpass_service.py` (ferry/bus section), `src/services/rail_source.py` (or a new `src/services/route_source.py`), `api/segments.py`, new `tests/test_route_source_ferry_bus.py`, `tests/test_route_source_metrics.py`.
+- **Scope:** `src/services/overpass_service.py` (ferry/bus section), `src/services/rail_source.py` (or a new `src/services/route_source.py`), `api/segments.py`, new `tests/test_route_source_ferry_bus.py`, `tests/test_route_source_metrics.py`, `tests/test_overpass_fallback.py` (it indexes the getters' return value — R2-1).
 - **Context:** phase 3 of `docs/LOCAL_RAIL_DATA_PLAN.md` and its implementation (`RailSource`, `LocalRailSource`, `OverpassRailSource`, `get_rail_geometry`'s fallback, `overpass_service.py:333-399`) is the example to mirror; U8's class mask; U3's resolve counter in `_compute_segment_geometry` (`api/segments.py:60-139`).
 - **Do:**
   1. `RouteSource` with `relations_in_bbox(mode, bbox)` and `ways_in_bbox(mode, cls_mask, bbox)`; local and Overpass implementations; strategy A reads relations, B asks for bit 0, C for bit 1 — logic unchanged.
@@ -426,6 +461,8 @@ boxes** before U7 publishes anything in the new formats.
 - **Latitude:** local design.
 - **Escalate if:** a strategy cannot be expressed against the interface without changing its result; a file outside Scope is needed.
 - **Depends on:** U3, U7, U8.
+
+### Wave 7 — ferry and bus in the corpus
 
 #### U10 — Ferry and bus legs in the corpus
 - **Goal:** the corpus covers ferry and bus, including one cross-border ferry and one leg that must fall back.
