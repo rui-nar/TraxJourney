@@ -416,3 +416,5 @@ Owner decision during wave 4 (2026-10-05): the #366 gain recompute (U8) corrects
 - Decision: Fix now (D7)
 - Override: —
 - Outcome: open
+
+Owner approved (2026-10-06): U14 table (R1-1 fix now, R1-2 deferred) and U8 table (R1-1 fix now).
