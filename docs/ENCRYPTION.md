@@ -173,6 +173,10 @@ trip you own. The pass:
   retries from fresh data; any other failed write skips that row only. The pass
   also ends as soon as the session it started in is over (signed out, locked,
   another account's token);
+- leaves alone, and counts, any activity a trip owned by another user also
+  holds (the payload's `shared_with_others`, see "Remaining plaintext" case 5);
+  a row of that kind an earlier pass had already encrypted is decrypted back to
+  plaintext when your key opens its envelopes (`encryption_migration.dart`);
 - recomputes elevation gain for legacy encrypted rows (see "Editing an
   encrypted track").
 
@@ -189,7 +193,8 @@ Trips shared **with** you by another user are not touched by the enable-time
 `run()` (issue #106); their journal entries and memory repair are handled by
 the catch-up when you load them. Activities are the exception: on a trip you
 do not own the catch-up leaves your own activity rows alone, and rows you may
-not encrypt stay plaintext too — see "Remaining plaintext".
+not encrypt, or that another user's trip also holds, stay plaintext too — see
+"Remaining plaintext".
 
 ## Editing an encrypted track
 
@@ -395,8 +400,10 @@ days and downloadable with its link token.
 
 The list found while writing this page from the code (issue #433) had nine
 entries; the remnant package for #504, #505, #506 and #366 fixed all but the
-backups and the on-device cache, and added the three cases below. The list is
-complete as far as the code shows; each case names the code to check.
+backups and the on-device cache, and added the cases below. The list is
+complete as far as the code shows; each case names the code to check. Cases 3
+and 5 are the two ways an activity row stays plaintext on an otherwise
+encrypted account, so that every traveller on the trip can read it.
 
 1. **Database backups** — `src/backup/backup_service.py` keeps the last 30
    daily SQLite copies. A backup taken before you enabled encryption holds the
@@ -437,15 +444,31 @@ complete as far as the code shows; each case names the code to check.
    content unavailable"), until key sharing between travellers exists (#108).
    No new case can arise: companions cannot join an encrypted owner's trip, and
    the owner cannot enable encryption while the trip has companions.
-5. **Your own activities that live only in someone else's trip.** An encrypted
-   user's Strava or GPX activity rows that are held only by another user's
-   (plaintext) trip stay plaintext. The catch-up on a trip you do not own
-   encrypts only your journal entries and runs the memory repair (the
-   non-owner branch of `EncryptionMigration.encryptTrip`,
-   `encryption_migration.dart`), and the enable-time `run()` skips trips shared
-   with you (`isSharedWithMe`). This is intended: the trip's owner and
-   travellers must still be able to read the track (issue #106), and a key they
-   do not have would make it unreadable to them.
+5. **An activity row that another user's trip also holds.** A row that a trip
+   owned by another user references is never stored encrypted, even when you
+   own the row and even when it is also in your own trip: an envelope under
+   your key would make the track, name, endpoints and profile unreadable in
+   that traveller's trip (issue #106). The server enforces it. Any write that
+   stores an envelope on such a row — `PUT /api/activities/{id}`, the encrypted
+   track and split routes, the elevation-gain route — is refused with 409
+   `shared_with_other_trip` (`_refuse_shared` in `api/activities.py`, backed by
+   `activity_shared_with_others` in `src/project/repo_activities.py` and the
+   SQL `referenced_by_others` in `src/project/repo_core.py`). A plaintext write
+   from a caller who may write the row is still accepted, so its owner can
+   decrypt it back. The trip payload carries `shared_with_others` per activity
+   (computed in the project-load query by `src/project/repo_core.py`, emitted
+   by `ProjectIO.to_dict`, absent from the `.traxj` export), which tells the
+   app. The owner's catch-up (`encryption_migration.dart`) skips such rows and
+   counts them with the rows of case 3, which the trip screen reports in a
+   notice (`encryption_locked_banner.dart`). A row the earlier migration or
+   catch-up had already encrypted is decrypted back to plaintext, all its
+   encrypted fields included, when the pass can open its envelopes with your
+   key; envelopes under another key are left as they are. The ride therefore
+   stays readable in the other traveller's trip, and stays plaintext on the
+   server for as long as that trip holds it. Once no other user's trip holds
+   the row, the next catch-up encrypts it. The enable-time `run()` skips trips
+   shared with you (`isSharedWithMe`); on those trips the catch-up does not
+   encrypt your own activity rows.
 
 ## What the server checks
 
