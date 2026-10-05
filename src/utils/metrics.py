@@ -342,6 +342,25 @@ PREPARED_GEOMETRY_OUTCOMES = Counter(
     ["outcome"],  # prepared | unpreparable | error
 )
 
+# The installed local rail data (issue #345), set by the daily rail_data_age job.
+# Age is the oldest ``ok`` region's ``source_date``, not the manifest's
+# ``generated_at``: a partial refresh keeps the old ``generated_at``, and one
+# region failing month after month would otherwise hide behind its neighbours.
+# NaN while there is no usable manifest, so a stale value never stands in for one.
+RAIL_DATA_AGE_DAYS = Gauge(
+    "traxjourney_rail_data_age_days",
+    "Days since the oldest installed rail region's source date. NaN when the "
+    "manifest is missing, unreadable or lists no usable region.",
+    multiprocess_mode="mostrecent",
+)
+
+RAIL_DATA_REGIONS = Gauge(
+    "traxjourney_rail_data_regions",
+    "Regions in the installed rail manifest, by status.",
+    ["status"],  # ok | empty | invalid
+    multiprocess_mode="mostrecent",
+)
+
 # ── Database ──────────────────────────────────────────────────────────────────
 
 DB_QUERIES = Counter(
