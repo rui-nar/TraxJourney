@@ -48,6 +48,10 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
     // check below compares name and owner, and an own trip has no owner, so
     // after a sign-out the next account's trip of the same name passes it.
     final scope = projectDataCache.scope;
+    // Another trip opened before the conflict came back: reloading this one's
+    // details would make it the open trip again (I1-R4-3), and the message
+    // below is not the other trip's.
+    if (!_sameTrip(projectRef, ref)) return true;
     try {
       await reloadDetailsOnly(ref);
       final fetched =
@@ -64,8 +68,11 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
     } catch (_) {
       // Best-effort resync; the next load will reconcile regardless.
     }
-    // Signed out meanwhile: the message is not the open trip's either.
-    if (projectDataCache.scope != scope) return true;
+    // Signed out or another trip opened meanwhile: the message is not the
+    // open trip's either.
+    if (projectDataCache.scope != scope || !_sameTrip(projectRef, ref)) {
+      return true;
+    }
     error = 'This trip changed elsewhere — refreshed from server, please retry';
     notifyListeners();
     return true;

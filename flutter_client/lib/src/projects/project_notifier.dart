@@ -1026,6 +1026,11 @@ class ProjectNotifier extends ChangeNotifier
     final name = ref.name;
     _stopPhotoPolling();
     final token = _loadTrack.begin(ref);
+    // A details-only reload still in flight — a segment conflict's resync
+    // among them — sets the open trip when it lands, so one for the trip the
+    // user is leaving would bring it back (I1-R4-3). Dropped for this trip
+    // too: this load fetches its details afresh.
+    _detailsOnlyReloadTrack.invalidate();
     this.ref = ref;
     // Filters are kept only while they belong to the same saved state: the
     // same account's view of the same trip. This notifier is app-wide and
