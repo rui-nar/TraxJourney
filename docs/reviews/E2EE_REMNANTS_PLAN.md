@@ -355,3 +355,30 @@ Notes:
 No findings. One envelope question raised for the owner: should the encrypted track routes also require `activity_e2ee_writable_by` for the head row, so a trip editor can never put another user's (positive-id) Strava row under a key that user cannot use (the reverse direction of the Trust bullet; R2-2's reasoning applied to the edit routes)?
 
 Envelope decision (owner, 2026-10-05): **no** — trip editors are trusted to edit any track in the trip, as on the plaintext routes; the first-edit snapshot keeps the row owner's original. A finding that needs a trip editor to overwrite another member's row on the encrypted routes is outside the envelope (D1).
+
+## Unit U7, round 1 — 2026-10-05, reviewed 3e1cbf15..a51be17b (worktree-agent-abfe5fd3f45f562b1)
+
+### U7-R1-1 — The catch-up pass outlives the session; a following sign-in finishes it under another account's key
+- Trigger: owner's pass running → owner signs out (pass continues with 401s) → a legacy encrypted companion signs in on the same device before the loop ends → owner's remaining memories stored under the companion's key
+- Scores: trigger=plausible, impact=data-loss, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Override: —
+- Outcome: open
+
+### U7-R1-2 — Companion repair on a now-encrypted owner's trip is refused and retried every load
+- Trigger (triage-corrected): only legacy state — an invite accepted after the owner enabled, before U1 — leaves #505 memories under the companion's key on an encrypted owner's trip → repair PUT 409 encryption_locked on every load
+- Scores: trigger=plausible, impact=degraded-ux, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: a DB query finds members on trips of encrypted owners; logs show repeated catch-up encryption_locked on the same memory; or when R4-8 is fixed (mark both refusals non-repairable together)
+- Override: —
+- Outcome: open
+
+### U7-R1-3 — Enable-time notice wrongly says items couldn't be encrypted when the trip screen's pass won the race
+- Trigger: enable → run() in background → user opens a trip → passes collide → run()'s pass ends → misleading snackbar
+- Scores: trigger=plausible (triage-corrected), impact=cosmetic, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: a user reports the notice while trips are fully encrypted, or run() and the trip-screen pass start sharing state
+- Override: —
+- Outcome: open
+
+Envelope question for the owner: with U7-R1-2 deferred, is "a #505 memory on a trip whose owner is now encrypted stays under the companion's key, unreadable to the owner, until #108 key sharing" accepted for this package?
