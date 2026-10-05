@@ -285,7 +285,6 @@ class ProjectCoreMixin:
                 {"name": n, "group": DEFAULT_SLEEPING_GROUPS.get(n, 'Other')}
                 for n in DEFAULT_SLEEPING_OPTIONS
             ]),
-            low_res_geo_json=_compute_low_res_geo(empty_project),
         )
         sess.add(row)
         sess.commit()
@@ -405,7 +404,6 @@ class ProjectCoreMixin:
         row.color_by_type = project.color_by_type
         row.type_styles_json = json.dumps(project.type_styles)
         row.languages_json = json.dumps(project.languages)
-        row.low_res_geo_json = _compute_low_res_geo(project)
         row.updated_at = time.time()
 
         # Upsert all activities in the project's activity pool

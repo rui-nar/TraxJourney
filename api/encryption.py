@@ -19,7 +19,9 @@ from sqlmodel import select
 
 from api.deps import get_current_user
 from models.db import get_session
-from models.project_db import DBDeviceKey, DBProject, DBProjectMember, DBRecoveryWrap
+from models.project_db import (
+    DBDeviceKey, DBProject, DBProjectMember, DBRecoveryWrap, DBStravaCache,
+)
 from models.user import UserInfo
 
 router = APIRouter(prefix="/api/encryption", tags=["encryption"])
@@ -137,6 +139,11 @@ def enable(body: EnableIn, user: dict = Depends(get_current_user)) -> StatusOut:
         ))
         ui.encryption_enabled = True
         sess.add(ui)
+        # The cached raw Strava list holds activity names and tracks in
+        # plaintext; from now on it is kept in memory only (api/strava.py).
+        cache_row = sess.get(DBStravaCache, uid)
+        if cache_row is not None:
+            sess.delete(cache_row)
         sess.commit()
 
     return StatusOut(

@@ -37,7 +37,7 @@ from src.models.person import polarsteps_from_socials
 from src.models.project import DEFAULT_SLEEPING_GROUPS, Project, day_counters_to_json
 from src.project.local_ids import allocate_local_activity_id
 from src.project.project_io import ProjectIO
-from src.project.repo_core import _compute_low_res_geo, bump_lock_version
+from src.project.repo_core import bump_lock_version
 from src.project.staged_photos import StagedPhoto, StagedPhotos
 from src.utils.photo_paths import is_photo_name, photo_file, photo_folder
 
@@ -830,7 +830,6 @@ def _set_content_columns(row: DBProject, project: Project, *, replacing: bool = 
         {"name": n, "group": groups.get(n, DEFAULT_SLEEPING_GROUPS.get(n, "Other"))}
         for n in project.sleeping_options
     ])
-    row.low_res_geo_json = _compute_low_res_geo(project)
 
     if takes("trip_start"):
         row.trip_start = project.trip_start

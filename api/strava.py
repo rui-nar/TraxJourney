@@ -86,17 +86,43 @@ class ActivitiesPageOut(BaseModel):
 
 # ── Activity cache ─────────────────────────────────────────────────────────────
 
-def _load_cache(user_info_id: int) -> Dict[str, Any] | None:
-    """Return the cached payload if it exists and is within TTL, else None."""
+#: The cache of users with end-to-end encryption on, by user id:
+#: ``(fetched_at, activities_json)``, the two columns a ``DBStravaCache`` row
+#: would hold. The raw list carries activity names and tracks in plaintext,
+#: which such an account must not have on disk, so it lives in this process
+#: only (docs/E2EE_REMNANTS_PLAN.md decision 8) — enough with one API process.
+#: Lost on restart, which costs one Strava refetch.
+_memory_cache: Dict[int, tuple[float, str]] = {}
+
+
+def _is_encrypted(sess, user_info_id: int) -> bool:
+    ui = sess.get(UserInfo, user_info_id)
+    return bool(ui is not None and ui.encryption_enabled)
+
+
+def _cached_entry(user_info_id: int) -> tuple[float, str] | None:
+    """The user's cached ``(fetched_at, activities_json)``, whatever its age,
+    from whichever store holds it for this account."""
     with get_session() as sess:
+        if _is_encrypted(sess, user_info_id):
+            return _memory_cache.get(user_info_id)
         row = sess.get(DBStravaCache, user_info_id)
     if row is None:
         return None
-    age = time.time() - row.fetched_at
+    return row.fetched_at, row.activities_json
+
+
+def _load_cache(user_info_id: int) -> Dict[str, Any] | None:
+    """Return the cached payload if it exists and is within TTL, else None."""
+    entry = _cached_entry(user_info_id)
+    if entry is None:
+        return None
+    fetched_at, activities_json = entry
+    age = time.time() - fetched_at
     if age > _CACHE_TTL:
         return None
     try:
-        return {"fetched_at": row.fetched_at, "activities": json.loads(row.activities_json)}
+        return {"fetched_at": fetched_at, "activities": json.loads(activities_json)}
     except Exception:
         return None
 
@@ -133,22 +159,47 @@ def _save_cache(user_info_id: int, raw_activities: List[Dict[str, Any]]) -> None
     ``DELETE /api/strava/disconnect`` ran must not recreate the cache row it
     just removed (issue #440). The token row is claimed first, so the
     disconnect cannot slip in between the check and the write.
+
+    For an account with encryption on, the list goes to ``_memory_cache``
+    instead and any row left in the table is deleted. Encryption is read
+    after the claim, so an ``enable`` that committed first is seen, and one
+    queued behind this transaction deletes the row this writes.
     """
+    activities_json = json.dumps([strip_heartrate(a) for a in raw_activities])
     with get_session() as sess:
         if not _claim_token_row(sess, user_info_id):
             sess.rollback()
             return
         row = sess.get(DBStravaCache, user_info_id)
+        if _is_encrypted(sess, user_info_id):
+            if row is not None:
+                sess.delete(row)
+            _forget_expired_memory_entries()
+            # Stored before the commit, under the claim: a disconnect queued
+            # behind it then removes this entry rather than missing it.
+            _memory_cache[user_info_id] = (time.time(), activities_json)
+            sess.commit()
+            return
         if row is None:
             row = DBStravaCache(user_info_id=user_info_id)
             sess.add(row)
         row.fetched_at = time.time()
-        row.activities_json = json.dumps([strip_heartrate(a) for a in raw_activities])
+        row.activities_json = activities_json
         sess.commit()
+
+
+def _forget_expired_memory_entries() -> None:
+    """Drop in-memory lists past the TTL, which no reader would serve, so the
+    dict holds at most the lists fetched within the last TTL."""
+    cutoff = time.time() - _CACHE_TTL
+    for uid, (fetched_at, _) in list(_memory_cache.items()):
+        if fetched_at < cutoff:
+            _memory_cache.pop(uid, None)
 
 
 def _invalidate_cache(user_info_id: int) -> None:
     """Remove the cached activity row so the next request re-fetches from Strava."""
+    _memory_cache.pop(user_info_id, None)
     with get_session() as sess:
         row = sess.get(DBStravaCache, user_info_id)
         if row is not None:
@@ -361,6 +412,7 @@ def strava_disconnect(current_user: Annotated[dict, Depends(get_current_user)]):
         cache_row = sess.get(DBStravaCache, user_info_id)
         if cache_row is not None:
             sess.delete(cache_row)
+        _memory_cache.pop(user_info_id, None)
         # Strava rows no trip holds any more go too (issue #509); those still
         # in a trip, the user's or a companion's, stay.
         _project_repo.delete_unreferenced_strava_activities(sess, user_info_id)
@@ -489,13 +541,13 @@ def strava_activities(
 def strava_cache_status(current_user: Annotated[dict, Depends(get_current_user)]):
     """Return metadata about the current user's Strava activity cache."""
     user_info_id = int(current_user["sub"])
-    with get_session() as sess:
-        row = sess.get(DBStravaCache, user_info_id)
-    if row is None or not row.activities_json:
+    entry = _cached_entry(user_info_id)
+    if entry is None or not entry[1]:
         return {"cached": False, "count": 0, "age_seconds": None}
     try:
-        age = time.time() - row.fetched_at
-        count = len(json.loads(row.activities_json))
+        fetched_at, activities_json = entry
+        age = time.time() - fetched_at
+        count = len(json.loads(activities_json))
         return {"cached": True, "count": count, "age_seconds": round(age)}
     except Exception:
         return {"cached": False, "count": 0, "age_seconds": None}
