@@ -208,6 +208,9 @@ Branch `feat/345-local-transport-data`, base cc52978b (plan + origin/main e96f86
 | U2 | Daily rail-data age check | Opus | S5 | 1 | — | yes | R1-6 |
 | U5 | Corpus gates the Rail extract publish | Opus | S3 | 1 | — | yes | — |
 | U6 | The box refreshes its rail data monthly | Opus | S5 | 1 | — | yes | R1-4, R1-6, R2-4 |
+| U8 | Stores and readers learn layers (store schema 3) | Opus | S4 | 1 | — | yes | R1-1, R1-9, R2-2, R2-6, R3-1, U8R1-1 |
+| F1 | Correct the manifest sort comment | Sonnet | — | 1 | — | yes | U8R1-1 |
+| F2 | Age warning names a stale ferry/bus layer | Sonnet | — | 1 | — | yes | U8R1-2 |
 
 Notes:
 - U1: the `rail-data` label did not exist; owner approved creating it (created 2026-10-05). `_working_bash()` in the workflow test now prefers Git Bash on Windows (a bare `bash` is the WSL launcher and drops env vars); no change on Linux.
@@ -231,7 +234,7 @@ Reviewer hand-off note: `.github/workflows/rail-extract.yml:284` (U5's gate) cal
 - Revisit when: an image rollback past U8 happens, or the manifest sort is next touched — reword the comment to name only the old fetch's region-keyed lookup
 - Guard: —
 - Override: user: Fix now — one-line comment fix before U8 merges
-- Outcome: open
+- Outcome: fixed (F1)
 
 ### U8R1-2 — Age-gauge warning names a carried ferry/bus layer by region only
 - Trigger: once U7 publishes layers, a ferry layer fails in CI and is carried with an old source_date → the age WARNING names "europe/denmark" → the operator checks Denmark's rail, finds it current; the stale layer is not named
@@ -240,4 +243,7 @@ Reviewer hand-off note: `.github/workflows/rail-extract.yml:284` (U5's gate) cal
 - Revisit when: U7 publishes the first release with ferry or bus layers, or the age warning names a region whose rail entry is current — add the layer to the oldest tuple and message in src/jobs/rail_data_jobs.py
 - Guard: —
 - Override: user: Fix now — U7 is next after the deploy and creates exactly this case; a one-line change
-- Outcome: open
+- Outcome: fixed (F2)
+- U8: the box's installed manifest stays manifest schema 2 (entries may carry layer / carried / omitted_by) so U2's age check reads it unchanged; readers accept manifest schemas (2, 3); coverage is per layer (`load_coverage(dir, layer="rail")`). On real data, 14 stores rebuilt at schema 3 answer every rail query identically to their schema-2 originals; corpus 11 pass / 1 known-bad on both. Verifier: every changed assertion in existing tests traces to the plan. Unit review (§5 point 3): 2 findings, both owner-overridden to Fix now (F1, F2).
+- Wave 4 integration (099a6d3a): full suite 6202 passed, 39 skipped.
+- CHECKPOINT: owner deploys U8 to val and prod before Wave 5 (U7) merges.
