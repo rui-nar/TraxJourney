@@ -1026,10 +1026,12 @@ class ProjectNotifier extends ChangeNotifier
     final name = ref.name;
     _stopPhotoPolling();
     final token = _loadTrack.begin(ref);
-    // A details-only reload still in flight — a segment conflict's resync
-    // among them — sets the open trip when it lands, so one for the trip the
-    // user is leaving would bring it back (I1-R4-3). Dropped for this trip
-    // too: this load fetches its details afresh.
+    // A reload still in flight — full or details-only, a segment conflict's
+    // resync among them — sets the open trip when it lands, so one for the
+    // trip the user is leaving would bring it back (I1-R4-3, I1-R5-1). Dropped
+    // for this trip too: this load fetches its details afresh. One begun after
+    // this line checks the open trip itself.
+    _reloadTrack.invalidate();
     _detailsOnlyReloadTrack.invalidate();
     this.ref = ref;
     // Filters are kept only while they belong to the same saved state: the
@@ -3439,19 +3441,28 @@ class ProjectNotifier extends ChangeNotifier
     // against the ref this call started with (frozen at begin()), not the
     // live `this.ref` field _applyDetails reassigns mid-call — see
     // _SupersessionTrack's doc for why that matters.
+    //
+    // A reload for a trip the user has left would make it the open trip
+    // again (I1-R5-1): not started once another trip is open, and dropped if
+    // one opens during any of its awaits. load() invalidates this track, but
+    // a reload begun after it gets a fresh token, hence the trip check too.
+    if (!isOpenTrip(ref)) return;
     final token = _reloadTrack.begin(ref);
-    bool stale() => !_reloadTrack.isCurrent(token, ref);
-    // Set false only by the staleness check right after _buildFullTrack
-    // below, so a navigation that lands during that now-async call (issue
-    // #276 follow-up) suppresses the notify — every other path (success or
-    // the catch below) keeps notifying exactly as before.
+    bool stale() => !_reloadTrack.isCurrent(token, ref) || !isOpenTrip(ref);
+    // Set false only by the staleness checks below, so a navigation that
+    // lands during an await (issue #276 follow-up) suppresses the notify —
+    // every other path (success or the catch below) keeps notifying exactly
+    // as before.
     var notify = true;
     try {
       if (encryption.isUnlocked) {
         // The server can't build geo for encrypted activities (issue #29) —
         // build it client-side from the just-reloaded, decrypted activities.
         final details = await _service.getDetailsMeta(ref);
-        await _applyDetails(details, ref);
+        if (!await _applyDetails(details, ref, stale)) {
+          notify = false;
+          return;
+        }
         _autoFillDaysToToday();
         geo = client_geo.buildFullGeo(items, client_geo.activitiesById(activities));
       } else {
@@ -3462,12 +3473,11 @@ class ProjectNotifier extends ChangeNotifier
         final details = results[0] as Map<String, dynamic>;
         final fetched =
             results[1] as ({Map<String, dynamic> geo, int requestedAt});
-        await _applyDetails(details, ref);
-        _autoFillDaysToToday();
-        if (stale()) {
+        if (!await _applyDetails(details, ref, stale)) {
           notify = false;
           return;
         }
+        _autoFillDaysToToday();
         // Through the overlay like every other server geo: assigned as is, it
         // showed the server's route but left a patch it supersedes to come
         // back at the next rebuild (I1-R2-2).
@@ -3510,8 +3520,14 @@ class ProjectNotifier extends ChangeNotifier
     // (see its doc above) rather than _loadTrack/_reloadTrack, since this
     // reload has no geo/details of its own to offer in exchange for
     // superseding whoever it cancels.
+    //
+    // The open-trip check is _silentReload's (I1-R5-2): a memory, journal or
+    // people save, a sort or a reorder can return after another trip opened,
+    // and its reload then begins after load() invalidated this track.
+    if (!isOpenTrip(ref)) return;
     final token = _detailsOnlyReloadTrack.begin(ref);
-    bool stale() => !_detailsOnlyReloadTrack.isCurrent(token, ref);
+    bool stale() =>
+        !_detailsOnlyReloadTrack.isCurrent(token, ref) || !isOpenTrip(ref);
     try {
       final details = await _service.getDetailsMeta(ref);
       // Checked before _applyDetails mutates activities/items/dayMeta/ref,
@@ -3521,7 +3537,7 @@ class ProjectNotifier extends ChangeNotifier
       // slower, superseded one (the same bug class applyFullActivities was
       // fixed for — issue #283 review finding).
       if (stale()) return;
-      await _applyDetails(details, ref);
+      if (!await _applyDetails(details, ref, stale)) return;
       _autoFillDaysToToday();
       _updateStats();
     } on Exception catch (e) {
@@ -3537,26 +3553,46 @@ class ProjectNotifier extends ChangeNotifier
   /// or another account's key (#466). It resets that record, so pass the whole
   /// item list. Idempotent: text already revealed is not a well-formed
   /// envelope, so it is neither decrypted nor marked again.
-  Future<void> _revealItems(List<Map<String, dynamic>> list) async {
-    undecryptedFields.reset();
+  Future<void> _revealItems(List<Map<String, dynamic>> list) async =>
+      _recordUndecrypted(await _revealItemText(list));
+
+  /// [_revealItems] without the record: decrypts [list] in place and returns
+  /// the fields it left as ciphertext, touching no notifier state, for a
+  /// caller that may still drop [list] after the awaits (see [_applyDetails]).
+  Future<List<(String, String, String)>> _revealItemText(
+      List<Map<String, dynamic>> list) async {
+    final undecrypted = <(String, String, String)>[];
     for (final item in list) {
       switch (item['item_type']) {
         case 'memory':
           final m = item['memory'];
           if (m is Map) {
-            m['name'] = await _revealField('memory', m, 'name');
-            m['description'] = await _revealField('memory', m, 'description');
+            m['name'] = await _revealField('memory', m, 'name', undecrypted);
+            m['description'] =
+                await _revealField('memory', m, 'description', undecrypted);
           }
         case 'journal':
           final j = item['journal'];
           if (j is Map) {
-            j['description'] = await _revealField('journal', j, 'description');
+            j['description'] =
+                await _revealField('journal', j, 'description', undecrypted);
           }
       }
     }
+    return undecrypted;
   }
 
-  Future<String?> _revealField(String kind, Map entry, String field) async {
+  /// Replaces [undecryptedFields] with [undecrypted], as [_revealItemText]
+  /// returned it.
+  void _recordUndecrypted(List<(String, String, String)> undecrypted) {
+    undecryptedFields.reset();
+    for (final (kind, id, field) in undecrypted) {
+      undecryptedFields.mark(kind, id, field);
+    }
+  }
+
+  Future<String?> _revealField(String kind, Map entry, String field,
+      List<(String, String, String)> undecrypted) async {
     final stored = entry[field] as String?;
     final revealed = await encryption.reveal(stored);
     final id = entry['id']?.toString();
@@ -3564,7 +3600,7 @@ class ProjectNotifier extends ChangeNotifier
         stored != null &&
         revealed == stored &&
         EncryptedField.isWellFormed(stored)) {
-      undecryptedFields.mark(kind, id, field);
+      undecrypted.add((kind, id, field));
     }
     return revealed;
   }
@@ -3631,7 +3667,27 @@ class ProjectNotifier extends ChangeNotifier
     }
   }
 
-  Future<void> _applyDetails(dynamic details, ProjectRef ref) async {
+  /// Adopts [details] for [ref] unless [stale] says it no longer should, and
+  /// returns whether it did. Everything that awaits — the reveals — runs on
+  /// the response's own lists first; [stale] is checked once they are done,
+  /// and the open trip, its items, people and day meta are then all assigned
+  /// with no await between. Assigning `ref` before the reveals left a window
+  /// in which the open trip was the reload's but the items still another
+  /// trip's, so an index-addressed save such as reorderItems or removeItem
+  /// went to the wrong trip (I1-R5-1).
+  Future<bool> _applyDetails(
+      dynamic details, ProjectRef ref, bool Function() stale) async {
+    final rawActivities = details['activities'];
+    final List<Map<String, dynamic>> nextActivities = rawActivities is List
+        ? rawActivities.cast<Map<String, dynamic>>()
+        : [];
+    await _revealActivities(nextActivities);
+    final rawItems = details['items'];
+    final List<Map<String, dynamic>> nextItems = rawItems is List
+        ? rawItems.cast<Map<String, dynamic>>()
+        : [];
+    final undecrypted = await _revealItemText(nextItems);
+    if (stale()) return false;
     this.ref = ref.copyWith(
       name: details['name'] as String? ?? ref.name,
       role: details['caller_role'] as String? ?? ref.role,
@@ -3661,15 +3717,9 @@ class ProjectNotifier extends ChangeNotifier
             MapEntry(k as String, Map<String, dynamic>.from(v as Map)))
         : {};
     tripEnd     = details['trip_end']   as String?;
-    final rawActivities = details['activities'];
-    activities = rawActivities is List
-        ? rawActivities.cast<Map<String, dynamic>>()
-        : [];
-    await _revealActivities(activities);
-    final rawItems = details['items'];
-    items = rawItems is List
-        ? rawItems.cast<Map<String, dynamic>>()
-        : [];
+    activities = nextActivities;
+    items = nextItems;
+    _recordUndecrypted(undecrypted);
     final rawPeople = details['people'];
     people = rawPeople is List
         ? rawPeople.cast<Map<String, dynamic>>()
@@ -3686,7 +3736,7 @@ class ProjectNotifier extends ChangeNotifier
     sleepingOptions = rawOpts is List
         ? List<String>.from(rawOpts)
         : List<String>.from(_defaultSleepingOptions);
-    await _revealItems(items);
+    return true;
   }
 
   // ── Mixin delegates (forward private helpers to ProjectMemoryCrudMixin) ────

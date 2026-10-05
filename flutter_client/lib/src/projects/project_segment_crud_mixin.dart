@@ -48,9 +48,9 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
     // check below compares name and owner, and an own trip has no owner, so
     // after a sign-out the next account's trip of the same name passes it.
     final scope = projectDataCache.scope;
-    // Another trip opened before the conflict came back: reloading this one's
-    // details would make it the open trip again (I1-R4-3), and the message
-    // below is not the other trip's.
+    // Another trip opened before the conflict came back: the reload below
+    // would refuse anyway (I1-R5-1), but the geo fetch would still go out, and
+    // the message below is not the other trip's (I1-R4-3).
     if (!_sameTrip(projectRef, ref)) return true;
     try {
       await reloadDetailsOnly(ref);
@@ -381,6 +381,12 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
   /// corrected from the server mid-session, and [ProjectRef.==] includes it.
   static bool _sameTrip(ProjectRef? a, ProjectRef b) =>
       a != null && a.name == b.name && a.ownerId == b.ownerId;
+
+  /// Whether [ref] is the trip open now, by [_sameTrip]. The notifier's
+  /// background reloads check it so one for a trip the user has left never
+  /// applies (I1-R5-1, I1-R5-2).
+  @protected
+  bool isOpenTrip(ProjectRef ref) => _sameTrip(projectRef, ref);
 
   /// The wait before the next poll, by time spent polling since the last
   /// segment joined: quick while a fresh resolve may land any second, then
