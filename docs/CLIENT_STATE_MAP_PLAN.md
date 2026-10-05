@@ -1149,6 +1149,12 @@ mixins 2,427 lines, 50 more; `map_panel.dart` 35 `_last*` fields (14 + 4 in
 - U19 ("cut the bubble") becomes: the root's own `notifyListeners()` flushes
   facets but notifies root listeners only when root state changed (a root
   dirty flag set by root-field writes).
+- **The root flag is complete by construction (P2-R1-3).** Every public
+  mutable root field becomes private behind a setter that marks the root
+  dirty, so the compiler rejects a direct write from the notifier, the mixins
+  (their abstract `@override` fields become getter/setter pairs) and the two
+  subclasses. A source-scan test, modelled on the clear-scan test, fails on any
+  assignment to a root backing field outside its marking setter.
 - A write made after `dispose()` marks nothing and flushes nothing (F5).
 
 **18. Facets belong to the notifier instance.** The notifier creates its five
@@ -1171,13 +1177,26 @@ unit (U10, U12-U15) updates the scan for the fields it moves.
 full-res post-mutation paths (`_applyRefreshedProject` 3089-3095,
 `_silentReload` 3471-3485, `_resyncOnConflict` segment mixin 57-62) fetch
 simplified geometry at the current bucket and box with a new
-`getSimplifiedGeo(..., joinInFlight: false)` that skips the dedup map
-(`project_service.dart:281-284`), so the request is sent after the write and
-the server's generation counter guarantees post-write truth. They keep Part
+service method `getSimplifiedGeoFresh(...)` that shares the request code but
+never joins the dedup map (`project_service.dart:281-284`), so the request is
+sent after the write. A separate method, not a parameter, so the seven test
+fakes that override `getSimplifiedGeo` keep compiling (P2-R1-6); fakes whose
+test must stub the post-mutation answer also override the new method. Older
+answers still in flight are handled by Decision 24. They keep Part
 1's `fetchServerGeo` → `reconcileSegmentOverlay(requestedAt:)` →
 `mergePendingSegmentPatches` chain and F6's open-trip `stale()` checks.
 `fullResGeoForExport` (1829-1845) decides "already full" by `lod == full`
 instead of `_loadedZoomBucket == null`.
+
+**24. Geometry answers are ordered by request start (P2-R1-1, owner
+override).** `GeoFacet.replace(geo, lod, requestedAt)` records the
+`requestedAt` (from the library clock `fetchServerGeo` already returns) of the
+geometry on screen and ignores an answer requested earlier. That covers a
+zoom refetch or a phase-2 LOD request in flight across a mutation: the older
+answer can no longer overwrite the post-mutation one. Writers with no request
+(clear, local patches via `replaceKeepingLod`, the offline cache) pass no time
+and are always applied; the offline cache counts as older than any request,
+as in F3.
 
 **21. Every geo writer goes through `GeoFacet`.** In addition to the plan's
 table: `load` 1077 (null), 1136 (low-res), 1224 (E2EE low-res); progressive
@@ -1185,8 +1204,11 @@ load 1555 (E2EE full), 1644 (offline cache full), 1715 (full-res fallback);
 `clear()` 2286; and the segment patch writers `upsertSegmentInGeo`
 (segment mixin 764) and `removeSegmentFromGeo` (777), which use a
 `replaceKeepingLod(geo)` that keeps the current `GeoLod`. `isGeoLoaded`
-writers (459, 1563, 1607, 1648, 1679, 1721, 2359, `view_screen.dart:68`,
-`shared_project_screen.dart:216`) move with it. The library-level
+writers (459, 1563, 1607, 1648, 1679, 1721, 2359) move with it. The two
+subclass writers (`view_screen.dart:68`, `shared_project_screen.dart:216`)
+call a new protected `resetProgressiveFlags()` on `ProjectNotifier` instead of
+writing the facet, so the convention (only the notifier and its mixins write
+facets) holds (P2-R1-5). The library-level
 `_overlayClock` and in-flight set (segment mixin 955-968) stay where they are,
 outside the facet.
 
@@ -1195,11 +1217,14 @@ the refetch's result check (`_bucketOf(_mapZoom) != bucket`, 1450) to the
 hysteresis predicate, so a 6.1 → 5.9 wobble during a fetch keeps a result that
 is still fresh. Requests and the dedup key keep `ceil(zoom)`.
 
-**23. Items has two versions.** `ItemsFacet.listVersion` bumps when the item,
-people or group lists or day-meta change; `ItemsFacet.activitiesVersion` bumps
-when activity data changes (including elevation merges at 1913, 1942, 2095).
-The map's spec key uses `listVersion`, so an elevation upgrade does not
-rebuild specs (today's guard does not either). `_applyDetails`' assignments
+**23. Items has separate versions.** `ItemsFacet.listVersion` bumps only
+when the item list changes; `activitiesVersion` when activity data changes
+(including elevation merges at 1913, 1942, 2095); `peopleVersion` when people
+or groups change; `dayMetaVersion` when day-meta, trip dates, sleeping
+options or counters change. The map's spec key uses `listVersion` only, so an
+elevation upgrade or a day-note save does not rebuild specs (today's guard
+does not either, P2-R1-4); the encounter-marker key uses `listVersion` and
+`peopleVersion`. `_applyDetails`' assignments
 (3691-3739) stay in one synchronous block across facets.
 
 **Per-unit amendments.**
@@ -1209,14 +1234,20 @@ rebuild specs (today's guard does not either). `_applyDetails`' assignments
   the dirty/flush mechanism and its test are U9's. Acceptance adds: a write
   then a skipped notify flushes nothing; two facets written then one notify
   notify each once; an account change yields new facets and disposes the old.
-- **U10:** Decisions 20-21. Acceptance adds: a post-mutation fetch issued
+- **U10:** Decisions 20, 21 and 24. Scope adds `view_screen.dart` and
+  `shared_project_screen.dart` (the `resetProgressiveFlags()` call only) and
+  the test fakes that must override `getSimplifiedGeoFresh`. Acceptance adds:
+  an older zoom or LOD answer landing after a post-mutation answer is ignored. Acceptance adds: a post-mutation fetch issued
   while a same-key zoom refetch is in flight sends its own request; the
   export path uses `lod`. Cite also `shared_geo_zoom_lod_test.dart` and
   `segment_overlay_request_order_test.dart` (must pass unchanged).
 - **U11:** Decision 22; locations: debounce 1334, `_bucketOf` 1336,
   `_geoIsStaleForCamera` 1342-1351, `setMapZoom` 1356-1372, refetch
   1379-1401, disarm 1470-1473. Acceptance adds the wobble-during-fetch case.
-- **U12:** fields 475-493; setters 644-714; `restoreSavedUiState` (930-943)
+- **U12:** the derived filter getters on the root (`hasActiveFilter`,
+  `activeFilterCount`, `tagFilter`, `hasFilterableContent`, filter mixin
+  38-50) move to `SelectionFacet` with the field, so the compiler finds every
+  reader, including the filter badge's `Consumer` (P2-R1-2). Fields 475-493; setters 644-714; `restoreSavedUiState` (930-943)
   writes four fields then notifies once (stays one notify); `load()` nulls
   selection at 1079-1083; the filter mixin writes `selectedDays` at 157, 210,
   270. Test path `test/projects/stale_filter_restore_test.dart`.
@@ -1246,7 +1277,9 @@ rebuild specs (today's guard does not either). `_applyDetails`' assignments
   `view_screen.dart` `context.select` 336/339, and `people_screen.dart`
   59-60 (`AnimatedBuilder`) and 977-978 (`ListenableBuilder`); Scope adds
   `people_screen.dart`.
-- **U19:** the tests that count root notifies (`crud_mixin_item_identity`,
+- **U19:** Decision 17's root marking setters and their completeness scan
+  test (P2-R1-3); Scope adds `view_screen.dart`, `shared_project_screen.dart`
+  and the mixins for the setter conversion. The tests that count root notifies (`crud_mixin_item_identity`,
   `geo_upgrade_single_swap`, `background_reload_trip_switch`,
   `project_load_retry`, `project_notifier_members`,
   `segment_delete_failure_restore`, `project_notifier_camera_idle_*`) move to
