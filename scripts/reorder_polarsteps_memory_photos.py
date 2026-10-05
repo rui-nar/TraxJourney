@@ -29,8 +29,20 @@ too many of its source downloads fail or too few of its local photos match
 any source photo by content — that usually means the trip changed on
 Polarsteps since import, not that this script's logic is wrong.
 
+What it writes (issue #237's rank model, see api/photo_order.py): a dense
+``photos_json`` (no ``null`` slots, which the reader below already skips) and
+``photo_order_json`` reset to ``{"epoch": <unchanged>, "ranks": {}}`` — the
+repaired list is the order now, and old ranks would place the next import
+photo against the scrambled one. The epoch is kept so a download queued
+before a re-import is still dropped. A DB not yet migrated to that column is
+refused.
+
+It may run with the API live: each memory is written and committed on its
+own, and only if neither column changed since the run read it; a memory
+edited meanwhile is skipped and reported, never overwritten.
+
 DRY-RUN BY DEFAULT — prints the plan and changes nothing. Pass --apply to write.
-Always run against a copy first.
+Always take a DB copy first (docs/RELEASING.md, post-deploy owner actions).
 
 Usage:
     python scripts/reorder_polarsteps_memory_photos.py --db "traxjourney.db" --data-dir data
@@ -58,6 +70,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.api.polarsteps_client import PolarstepsClient, format_step  # noqa: E402
 from src.auth.credentials_crypto import CredentialDecryptError, decrypt_credential  # noqa: E402
 from src.utils.photo_paths import photo_file, photo_folder  # noqa: E402
+from api.photo_order import dump_state, load_state  # noqa: E402
 
 ClientFactory = Callable[[str], "object"]
 Downloader = Callable[[str], bytes]
@@ -134,6 +147,35 @@ def plan_memory_reorder(
     return new_order, f"{current_uuids} -> {new_order}"
 
 
+def _has_photo_order_column(con: sqlite3.Connection) -> bool:
+    """True once migration 4b9d2e7a1c63 has added ``memory.photo_order_json``."""
+    return any(r[1] == "photo_order_json" for r in con.execute("PRAGMA table_info(memory)"))
+
+
+def _write_reorder(con: sqlite3.Connection, memory, new_order: List[str]) -> bool:
+    """Store *new_order* with ranks reset and the epoch kept; commit at once.
+
+    Compare-and-set against the values the plan was computed from, so a live
+    API edit made since then is never overwritten. Committing per memory holds
+    the write lock for one statement instead of the whole network-bound run.
+    Returns False when the memory changed (or was deleted) and was left alone.
+    """
+    state = load_state(memory["photo_order_json"])
+    cur = con.execute(
+        "UPDATE memory SET photos_json=?, photo_order_json=? "
+        "WHERE id=? AND photos_json IS ? AND photo_order_json IS ?",
+        (
+            json.dumps(new_order),
+            dump_state({"epoch": state["epoch"], "ranks": {}}),
+            memory["id"],
+            memory["photos_json"],
+            memory["photo_order_json"],
+        ),
+    )
+    con.commit()
+    return cur.rowcount == 1
+
+
 def _parse_project_trip_overrides(pairs: List[str]) -> Dict[int, int]:
     overrides: Dict[int, int] = {}
     for pair in pairs:
@@ -158,7 +200,7 @@ def run(
         download = lambda url: _req.get(url, timeout=30).content  # noqa: E731
 
     memories = con.execute(
-        "SELECT id, project_id, photos_json, polarsteps_step_id FROM memory "
+        "SELECT id, project_id, photos_json, photo_order_json, polarsteps_step_id FROM memory "
         "WHERE polarsteps_step_id IS NOT NULL ORDER BY project_id, id"
     ).fetchall()
     if not memories:
@@ -229,15 +271,11 @@ def run(
                 continue
 
             print(f"    memory {m['id']}: {note}")
+            if apply and not _write_reorder(con, m, new_order):
+                print(f"    memory {m['id']}: changed or deleted during the run, left untouched")
+                continue
             changed += 1
-            if apply:
-                con.execute(
-                    "UPDATE memory SET photos_json=? WHERE id=?",
-                    (json.dumps(new_order), m["id"]),
-                )
 
-    if apply:
-        con.commit()
     return changed
 
 
@@ -265,6 +303,15 @@ def main() -> int:
 
     con = sqlite3.connect(str(db_path))
     con.row_factory = sqlite3.Row
+    if not _has_photo_order_column(con):
+        print(
+            "ERROR: memory.photo_order_json is missing: this DB predates migration "
+            "4b9d2e7a1c63. Start the new API image once (it runs `alembic upgrade head`) "
+            "and run this script against the migrated DB.",
+            file=sys.stderr,
+        )
+        con.close()
+        return 2
 
     mode = "APPLY" if args.apply else "DRY-RUN"
     print(f"=== Polarsteps memory photo-order backfill [{mode}] — {db_path} ===")

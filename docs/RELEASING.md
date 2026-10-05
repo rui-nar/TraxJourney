@@ -162,3 +162,87 @@ change to them.
   commit a `Release-Note:` saying what changed. Both pages promise to tell users
   about significant changes before they apply, so an email or an in-app notice
   goes out ahead of such a release.
+
+## Post-deploy owner actions
+
+One-off steps a specific release needs on the servers after its image is
+deployed. They are owner actions: nothing runs them automatically. Do each one
+on **val first, then prod**; once a release's steps are done on prod, its
+subsection can go.
+
+Commands below are for prod (`/opt/traxjourney`). For val, run the same from
+`/opt/traxjourney-val`: the container paths are identical, since each stack
+mounts its own `./db` and `./data` at `/app/db` and `/app/data`.
+
+### Photo order and thumbnail orientation (#237, #511)
+
+Needs the release's image deployed and started once, so its migration has
+added `photo_order_json` (the reorder script refuses a DB without it).
+
+**1. Copy the database.** Through SQLite's online backup, safe with the API
+running. **Never a raw `cp` of a live database**: the app runs WAL with
+`wal_autocheckpoint=0` (`models/db.py`), so recent writes sit in
+`traxjourney.db-wal` and a copied `.db` alone misses them.
+
+```bash
+cd /opt/traxjourney
+docker compose run --rm --entrypoint python traxjourney -c "import sqlite3; s=sqlite3.connect('/app/db/traxjourney.db'); d=sqlite3.connect('/app/db/traxjourney_pre_237.db'); s.backup(d); d.close(); s.close(); print('backup done')"
+```
+
+To restore it (this discards everything written since the copy): stop the
+stack, drop the stale WAL sidecars, put the copy back, start again. The copy is
+self-contained and nothing has the database open, so a plain `cp` is fine
+here:
+
+```bash
+cd /opt/traxjourney
+docker compose down
+rm -f db/traxjourney.db-wal db/traxjourney.db-shm
+cp db/traxjourney_pre_237.db db/traxjourney.db
+docker compose up -d
+```
+
+**2. Repair the photo order of pre-#237 Polarsteps imports**, with the API
+running. It reads each owner's stored Polarsteps token, so the stack's `.env`
+must have the `CREDENTIALS_ENCRYPTION_KEY` that token was encrypted with (on a
+val seeded from prod, a different key shows as "token unreadable" for every
+project), and the tokens must still be valid. Dry run first, and read it:
+
+```bash
+docker compose run --rm --entrypoint python traxjourney \
+    scripts/reorder_polarsteps_memory_photos.py --db /app/db/traxjourney.db --data-dir /app/data
+```
+
+A project imported once and never linked for auto-sync is skipped with "no
+linked Polarsteps trip"; add `--project-trip <project_id>:<trip_id>` (once per
+project) to include it. Then the same command with `--apply`:
+
+```bash
+docker compose run --rm --entrypoint python traxjourney \
+    scripts/reorder_polarsteps_memory_photos.py --db /app/db/traxjourney.db --data-dir /app/data --apply
+```
+
+Each memory is committed on its own and only if nobody edited it since the run
+read it; one edited meanwhile is reported as "changed or deleted during the
+run, left untouched". Re-running is harmless: corrected memories report
+"already in correct order".
+
+**3. Turn existing sideways thumbnails upright, with the API stopped.** The
+backfill is not safe against live requests, and `--apply` refuses to run
+without `--api-stopped`. `down` stops the workers too, so nothing else touches
+the photos meanwhile. Dry run, then apply, then start again:
+
+```bash
+docker compose down
+docker compose run --rm --entrypoint python traxjourney \
+    scripts/backfill_thumbnail_orientation.py --db /app/db/traxjourney.db --data-dir /app/data
+docker compose run --rm --entrypoint python traxjourney \
+    scripts/backfill_thumbnail_orientation.py --db /app/db/traxjourney.db --data-dir /app/data --apply --api-stopped
+docker compose up -d
+```
+
+It only rewrites thumbnails (originals are never touched) and adjusts each
+owner's counted storage by the size difference. A second `--apply` rewrites
+nothing and reports every photo as already upright.
+
+Once prod is done and checked, delete `db/traxjourney_pre_237.db` on each host.
