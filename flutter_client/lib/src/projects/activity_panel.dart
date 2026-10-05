@@ -30,6 +30,16 @@ import '../crypto/encrypted_display.dart';
 const _kTrackLockedMessage = "This activity's track is encrypted. Unlock "
     'encryption on this device (approve it, or recover access) to edit it.';
 
+/// The same for an account without encryption (another traveller's encrypted
+/// track): there is nothing to unlock, so the message doesn't suggest it.
+const _kTrackEncryptedMessage =
+    "This activity is encrypted and its track can't be edited.";
+
+String _trackBlockedMessage() =>
+    encryption.state.value == EncryptionState.disabled
+        ? _kTrackEncryptedMessage
+        : _kTrackLockedMessage;
+
 // ── ActivityPanel ─────────────────────────────────────────────────────────────
 
 class ActivityPanel extends StatefulWidget {
@@ -826,7 +836,7 @@ class _ActivityPanelState extends State<ActivityPanel> {
     if (panelPoly != null &&
         EncryptedField.isEnvelope(panelPoly) &&
         !encryption.isUnlocked) {
-      messenger.showSnackBar(const SnackBar(content: Text(_kTrackLockedMessage)));
+      messenger.showSnackBar(SnackBar(content: Text(_trackBlockedMessage())));
       return;
     }
     Map<String, dynamic>? full = activity;
@@ -862,7 +872,7 @@ class _ActivityPanelState extends State<ActivityPanel> {
     EncryptedTrackEdit? encrypted;
     if (EncryptedField.isEnvelope(poly)) {
       if (!encryption.isUnlocked) {
-        messenger.showSnackBar(const SnackBar(content: Text(_kTrackLockedMessage)));
+        messenger.showSnackBar(SnackBar(content: Text(_trackBlockedMessage())));
         return;
       }
       try {

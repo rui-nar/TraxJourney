@@ -112,6 +112,10 @@ Future<Map<String, dynamic>> _encryptedTrack(EncryptionService svc) async => {
 const _lockedMessage = "This activity's track is encrypted. Unlock encryption "
     'on this device (approve it, or recover access) to edit it.';
 
+/// For an account without encryption there is nothing to unlock (U14-R1-1).
+const _encryptedMessage =
+    "This activity is encrypted and its track can't be edited.";
+
 void main() {
   setUpAll(() {
     api = ApiClient(
@@ -130,7 +134,7 @@ void main() {
     _track = {};
   });
 
-  group('without encryption on this device', () {
+  group('on an account without encryption', () {
     testWidgets(
         'an encrypted track shows a message and does NOT open the editor',
         (tester) async {
@@ -143,7 +147,7 @@ void main() {
       await tester.pump(); // let the SnackBar animation start
 
       expect(find.byType(ActivityEditorPage), findsNothing);
-      expect(find.text(_lockedMessage), findsOneWidget);
+      expect(find.text(_encryptedMessage), findsOneWidget);
       expect(_trackFetches, isEmpty);
     });
 
@@ -174,7 +178,7 @@ void main() {
 
       expect(_trackFetches, hasLength(1));
       expect(find.byType(ActivityEditorPage), findsNothing);
-      expect(find.text(_lockedMessage), findsOneWidget);
+      expect(find.text(_encryptedMessage), findsOneWidget);
     });
   });
 
@@ -246,6 +250,48 @@ void main() {
           find.text("This activity's track is encrypted with a key this "
               "device doesn't have, so it can't be edited here."),
           findsOneWidget);
+    });
+  });
+
+  group('with encryption locked on this device', () {
+    setUp(() async {
+      FlutterSecureStorage.setMockInitialValues({});
+      await encryption.enable(const RecoveryKeyChoice());
+      encryption.lock();
+      expect(encryption.state.value, EncryptionState.locked);
+    });
+
+    testWidgets('an encrypted track says to unlock, without fetching',
+        (tester) async {
+      final notifier = _notifierWithOneActivity({
+        'map': {'summary_polyline': 'v1.d2VsY29tZQ==.Y2lwaGVy'},
+      });
+      await _pumpPanel(tester, notifier);
+
+      await tester.tap(find.byTooltip('Edit track'));
+      await tester.pump();
+
+      expect(find.byType(ActivityEditorPage), findsNothing);
+      expect(find.text(_lockedMessage), findsOneWidget);
+      expect(find.text(_encryptedMessage), findsNothing);
+      expect(_trackFetches, isEmpty);
+    });
+
+    testWidgets('a track fetched as an envelope says to unlock too',
+        (tester) async {
+      final other = EncryptionService(FakeDeviceKeyStore(), FakeEncryptionApi());
+      await tester.runAsync(() async {
+        await other.enable(const RecoveryKeyChoice());
+        _track = await _encryptedTrack(other);
+      });
+      final notifier = _notifierWithOneActivity({});
+      await _pumpPanel(tester, notifier);
+
+      await _editTrack(tester);
+
+      expect(_trackFetches, hasLength(1));
+      expect(find.byType(ActivityEditorPage), findsNothing);
+      expect(find.text(_lockedMessage), findsOneWidget);
     });
   });
 }
