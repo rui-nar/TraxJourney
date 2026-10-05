@@ -38,10 +38,11 @@ down is hand-written from the schema and is not test-pinned.
 | Memory | `name` (title) | `memory.name` | on every create/update (`project_memory_crud_mixin.dart`) and by the enable-time migration |
 | Memory | `description` (notes) | `memory.description` | same |
 | Journal entry | `description` (entry body) | `journalentry.description` | on every create/update (`project_journal_crud_mixin.dart`) and by the migration |
-| Activity | `name` | `activity.name` | **migration only** (see "When it happens") |
-| Activity | `summary_polyline` (the GPS track) | `activity.summary_polyline` | migration only |
-| Activity | `start_latlng_json`, `end_latlng_json` (track endpoints) | `activity.start_latlng_json`, `activity.end_latlng_json` | migration only |
-| Activity | `elevation_profile_json`, `elevation_profile_low_res_json` (elevation profile, full and downsampled) | same-named columns | migration only |
+| Activity | `name` | `activity.name` | **by the migration and the catch-up after each load of an owned trip** (`encryption_migration.dart`, see "When it happens") |
+| Activity | `summary_polyline` (the GPS track) | `activity.summary_polyline` | same |
+| Activity | `start_latlng_json`, `end_latlng_json` (track endpoints) | `activity.start_latlng_json`, `activity.end_latlng_json` | same |
+| Activity | `elevation_profile_json`, `elevation_profile_low_res_json` (elevation profile, full and downsampled — both hold the full profile's envelope) | same-named columns | same |
+| Activity | `original_polyline`, `original_elevation_profile_json`, `original_start_latlng_json`, `original_end_latlng_json` (the edit snapshots Reset restores) | same-named columns | same |
 
 Each value is stored as an opaque `v1.<b64>.<b64>` envelope
 (`EncryptedField` in `e2ee_crypto.dart`). Running raw SQL against the database

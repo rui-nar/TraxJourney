@@ -14,6 +14,7 @@ import '../core/perf_timing.dart';
 import '../core/project_ref.dart';
 import '../crypto/e2ee_crypto.dart' show EncryptedField;
 import '../crypto/encryption.dart';
+import '../crypto/encryption_migration.dart';
 import '../crypto/undecrypted_fields.dart';
 import '../map/geo_point.dart';
 import '../map/polyline_decoder.dart';
@@ -1053,8 +1054,10 @@ class ProjectNotifier extends ChangeNotifier
     pendingInvites = [];
     memberInviteToken = null;
     memberInviteRole = null;
+    _unencryptableActivityCount.value = _unencryptableByTrip[_tripKey(ref)] ?? 0;
     notifyListeners();
 
+    CatchUpPayload? catchUp;
     try {
       // Fire both simultaneously.  /meta omits elevation_profile (~12 MB) so
       // the panel becomes interactive in ~1-2 s instead of ~17 s.  Elevation
@@ -1118,6 +1121,9 @@ class ProjectNotifier extends ChangeNotifier
       );
       tripStart = details['trip_start'] as String?;
       tripEnd = details['trip_end'] as String?;
+      // Before the reveal below decrypts it in place. Not from the offline
+      // copy: the pass would only fail against the live trip.
+      if (!offlineFromCache) catchUp = _catchUpPayload(details);
       final rawActivities = details['activities'];
       activities = rawActivities is List
           ? rawActivities.cast<Map<String, dynamic>>()
@@ -1210,6 +1216,7 @@ class ProjectNotifier extends ChangeNotifier
         notifyListeners();   // map appears here with low-res straight lines
       }
     }
+    if (_isCurrent(token, ref) && error == null) _catchUpAfterLoad(ref, catchUp);
 
     // Phase 2: full-res GeoJSON, then elevation data — chained rather than
     // fired together. Both are whole-project loads server-side (the elevation
@@ -2778,6 +2785,7 @@ class ProjectNotifier extends ChangeNotifier
     previewArcNotifier.dispose();
     elevationCursorNotifier.dispose();
     mapCursorDistNotifier.dispose();
+    _unencryptableActivityCount.dispose();
     super.dispose();
   }
 
@@ -2897,6 +2905,7 @@ class ProjectNotifier extends ChangeNotifier
     }
     if (!_reloadTrack.isCurrent(token, ref)) return;
 
+    final catchUp = _catchUpPayload(details);
     final rawActivities = details['activities'];
     activities = rawActivities is List
         ? rawActivities.cast<Map<String, dynamic>>()
@@ -2915,6 +2924,7 @@ class ProjectNotifier extends ChangeNotifier
         : await _service.getGeo(ref, bypassCache: true);
     if (!_reloadTrack.isCurrent(token, ref)) return;
     notifyListeners();
+    _catchUpAfterLoad(ref, catchUp);
   }
 
   void removeItemLocally(int index) {
@@ -3220,7 +3230,9 @@ class ProjectNotifier extends ChangeNotifier
 
   /// Details-only reload: skips the heavy GeoJSON fetch. Use when a mutation
   /// cannot change map geometry (reorder, trip-start, memory CRUD).
-  Future<void> _silentReloadDetailsOnly(ProjectRef ref) async {
+  /// [catchUp] false is the encryption catch-up's own refresh, which must not
+  /// start another pass.
+  Future<void> _silentReloadDetailsOnly(ProjectRef ref, {bool catchUp = true}) async {
     // issue #283: this reload had no staleness guard at all originally — a
     // second concurrent call (or a navigation away) could clobber the
     // outcome of a later, current one landing first. On _detailsOnlyReloadTrack
@@ -3238,7 +3250,7 @@ class ProjectNotifier extends ChangeNotifier
       // slower, superseded one (the same bug class applyFullActivities was
       // fixed for — issue #283 review finding).
       if (stale()) return;
-      await _applyDetails(details, ref);
+      await _applyDetails(details, ref, catchUp: catchUp);
       _autoFillDaysToToday();
       _updateStats();
     } on Exception catch (e) {
@@ -3348,7 +3360,8 @@ class ProjectNotifier extends ChangeNotifier
     }
   }
 
-  Future<void> _applyDetails(dynamic details, ProjectRef ref) async {
+  Future<void> _applyDetails(dynamic details, ProjectRef ref, {bool catchUp = true}) async {
+    final catchUpPayload = catchUp ? _catchUpPayload(details as Map) : null;
     this.ref = ref.copyWith(
       name: details['name'] as String? ?? ref.name,
       role: details['caller_role'] as String? ?? ref.role,
@@ -3404,6 +3417,76 @@ class ProjectNotifier extends ChangeNotifier
         ? List<String>.from(rawOpts)
         : List<String>.from(_defaultSleepingOptions);
     await _revealItems(items);
+    _catchUpAfterLoad(ref, catchUpPayload);
+  }
+
+  // ── Encryption catch-up (E2EE remnants decision 6) ────────────────────────
+  //
+  // Every place that applies a loaded trip — load(), _applyRefreshedProject
+  // and _applyDetails — copies the payload before revealing it
+  // ([_catchUpPayload]) and hands the copy to [_catchUpAfterLoad] once
+  // applied, so opening a trip is enough to encrypt what arrived in plaintext
+  // since the last pass (R2-7).
+
+  /// Activities the server refused to let this user encrypt in the current
+  /// trip's last complete pass: rows another traveller imported (decision
+  /// 14). The trip screen says they stay unencrypted.
+  ValueListenable<int> get unencryptableActivityCount => _unencryptableActivityCount;
+  final _unencryptableActivityCount = ValueNotifier<int>(0);
+  final Map<String, int> _unencryptableByTrip = {};
+
+  /// The pass in flight per trip: at most one per trip.
+  final Map<String, Future<void>> _catchUpRunning = {};
+
+  /// Completes once every pass in flight, and its refresh, is done.
+  @visibleForTesting
+  Future<void> catchUpSettled() => Future.wait(_catchUpRunning.values.toList());
+
+  String _tripKey(ProjectRef r) => '${r.ownerId ?? 0}/${r.name}';
+
+  /// The pre-reveal copy a pass needs, or null when no pass can run: locked
+  /// or encryption off, or a share-link view that has no account session.
+  CatchUpPayload? _catchUpPayload(Map details) =>
+      encryption.isUnlocked && loadOwnerExtras ? CatchUpPayload.of(details) : null;
+
+  void _catchUpAfterLoad(ProjectRef ref, CatchUpPayload? payload) {
+    final lockVersion = payload?.lockVersion;
+    if (payload == null || lockVersion == null || !encryption.isUnlocked) return;
+    final trip = ref.copyWith(name: payload.name, role: payload.role);
+    final key = _tripKey(trip);
+    if (_catchUpRunning.containsKey(key)) return;
+    // A block body: `=> remove(key)` would return this very future to
+    // whenComplete, which would then wait on itself.
+    _catchUpRunning[key] = _runCatchUp(trip, key, payload, lockVersion)
+        .whenComplete(() {
+      _catchUpRunning.remove(key);
+    });
+  }
+
+  Future<void> _runCatchUp(
+      ProjectRef trip, String key, CatchUpPayload payload, int lockVersion) async {
+    final CatchUpResult result;
+    try {
+      result = await EncryptionMigration(api, encryption)
+          .encryptTrip(trip, payload, role: trip.role, lockVersion: lockVersion);
+    } on Object catch (e) {
+      debugPrint('encryption catch-up for ${trip.name} failed: $e');
+      return;
+    }
+    if (_isDisposed) return;
+    final current = ref;
+    final isCurrent = current != null && _tripKey(current) == key;
+    // A pass that ended early has not reached every activity; the count
+    // stays as the last complete pass found it.
+    if (result.ended == 0) {
+      _unencryptableByTrip[key] = result.unencryptable;
+      if (isCurrent) _unencryptableActivityCount.value = result.unencryptable;
+    }
+    // The in-memory copy already shows the plaintext; refresh it for the new
+    // lock version and cache, without starting another pass.
+    if (result.written > 0 && isCurrent) {
+      await _silentReloadDetailsOnly(current, catchUp: false);
+    }
   }
 
   // ── Mixin delegates (forward private helpers to ProjectMemoryCrudMixin) ────

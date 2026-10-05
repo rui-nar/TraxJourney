@@ -51,10 +51,11 @@ class _FakeApi implements EncryptionApi {
 /// explicitly (not derived) so the doc's "stays plaintext" table has the same
 /// pin as its "encrypted" table.
 const _plaintextFieldsByResource = <String, Set<String>>{
-  'memory': {'date', 'geo_mode', 'time', 'lat', 'lon'},
-  'journal': {'date', 'geo_mode', 'time', 'lat', 'lon'},
-  // The two edit-undo snapshot columns are scrubbed to null, not encrypted.
-  'activity': {'original_polyline', 'original_elevation_profile_json'},
+  // lock_version (and the trip's name for activities) make each write a
+  // compare-and-swap on the trip; they are not stored on the row.
+  'memory': {'date', 'geo_mode', 'time', 'lat', 'lon', 'lock_version'},
+  'journal': {'date', 'geo_mode', 'time', 'lat', 'lon', 'lock_version'},
+  'activity': {'project', 'lock_version'},
 };
 
 /// A project whose one memory, one journal entry and one activity carry every
@@ -110,15 +111,44 @@ const _projectDetails = <String, dynamic>{
       'elev_high': 900.0,
       'elev_low': 400.0,
       'source': 'gpx',
-      'map': {'summary_polyline': 'abc123xyz'},
+      'is_edited': true,
+      // /meta: no polyline, the downsampled profile.
+      'map': {'summary_polyline': null},
       'start_latlng': [48.0, 2.0],
       'end_latlng': [48.5, 2.5],
       'elevation_profile': [
         [0.0, 10.0],
         [1.0, 20.0],
       ],
+      'plain_fields': [
+        'name', 'summary_polyline', 'start_latlng_json', 'end_latlng_json',
+        'elevation_profile_json', 'elevation_profile_low_res_json',
+        'original_polyline', 'original_elevation_profile_json',
+        'original_start_latlng_json', 'original_end_latlng_json',
+      ],
     },
   ],
+};
+
+/// `GET …/track` for the edited activity: full geometry and its snapshots.
+const _activityTrack = <String, dynamic>{
+  'id': 111,
+  'name': 'Morning Ride',
+  'is_edited': true,
+  'map': {'summary_polyline': 'abc123xyz'},
+  'start_latlng': [48.0, 2.0],
+  'end_latlng': [48.5, 2.5],
+  'elevation_profile': [
+    [0.0, 10.0],
+    [0.5, 15.0],
+    [1.0, 20.0],
+  ],
+  'original_polyline': 'abc123xyzorig',
+  'original_elevation_profile_json':
+      '{"distances_km":[0.0,2.0],"elevations_m":[10.0,30.0]}',
+  'original_start_latlng_json': '[47.9, 1.9]',
+  'original_end_latlng_json': '[48.6, 2.6]',
+  'lock_version': 1,
 };
 
 void main() {
@@ -130,12 +160,17 @@ void main() {
       if (req.method == 'GET' && path == '/api/projects/') {
         return http.Response(jsonEncode([{'name': 'Trip1'}]), 200);
       }
-      if (req.method == 'GET' && path == '/api/projects/Trip1') {
-        return http.Response(jsonEncode(_projectDetails), 200);
+      if (req.method == 'GET' && path == '/api/projects/Trip1/meta') {
+        return http.Response(
+            jsonEncode({'name': 'Trip1', 'lock_version': 1, ..._projectDetails}), 200);
+      }
+      if (req.method == 'GET' && path == '/api/projects/Trip1/activities/111/track') {
+        return http.Response(jsonEncode(_activityTrack), 200);
       }
       if (req.method == 'PUT') {
-        puts[path] = jsonDecode(req.body) as Map<String, dynamic>;
-        return http.Response('', 200);
+        final body = puts[path] = jsonDecode(req.body) as Map<String, dynamic>;
+        return http.Response(
+            jsonEncode({'lock_version': (body['lock_version'] as int) + 1}), 200);
       }
       return http.Response('not found', 404);
     });
@@ -143,8 +178,9 @@ void main() {
     final enc = EncryptionService(_FakeStore(), _FakeApi());
     await enc.enable(const RecoveryKeyChoice());
     final migrated =
-        await EncryptionMigration(ApiClient(baseUrl: '', httpClient: mock), enc)
-            .run();
+        (await EncryptionMigration(ApiClient(baseUrl: '', httpClient: mock), enc)
+                .run())
+            .written;
     expect(migrated, 3);
 
     const pathByResource = {
