@@ -215,3 +215,14 @@ Envelope question (U7 round 2): old installed mobile builds that predate the cli
 
 Envelope question (U7 round 3): is a real remedy for flagged memories in this plan's scope, or does the runbook state that a flagged memory stays as is, with a follow-up issue for a per-memory re-sync/reorder? User: (a) runbook states a flagged memory stays as is; follow-up #565 filed for a per-memory re-sync; no fourth round (docs-only fix, verified). O1 filed as #566.
 Round cap reached for U7 (§6): a fourth round needs the user to ask for it.
+
+## Integrated diff review — Round 1 — 2026-10-06, reviewed at 79842a2f (a7b181cf..79842a2f, DELIVERY §5 point 2)
+
+### IR1-1 — delete_memory / delete_journal run outside photo_lock
+- Trigger: User deletes a journal entry (or memory) while an upload or download to it is between writing its files and placing the photo → the writer takes photo_lock, still finds the row, places the photo and commits; the delete (no lock, stale photo list, api/memories.py:474-508, api/journal.py:411-443) then removes the row → journal: the new photo's files stay orphaned and counted forever; memory: rmtree removes the files but their bytes are never subtracted (counter overstated until the nightly reconcile, a no-op without billing). Existing tests only cover the delete-before-write interleaving. New evidence vs R1-2.
+- Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
