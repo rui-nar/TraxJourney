@@ -206,11 +206,25 @@ docker compose up -d
 running. It reads each owner's stored Polarsteps token, so the stack's `.env`
 must have the `CREDENTIALS_ENCRYPTION_KEY` that token was encrypted with (on a
 val seeded from prod, a different key shows as "token unreadable" for every
-project), and the tokens must still be valid. Dry run first, and read it:
+project), and the tokens must still be valid.
+
+`--imported-before` is required: only memories imported before that day
+(00:00 UTC) are considered. Use the date **v0.48.0 (the #239 fix) reached
+prod**; it was tagged on 2026-08-27, so check the deploy date, and when unsure
+pick a day after it rather than before. Including a few memories imported after
+the fix is harmless: they are already in order and are reported as such, left
+alone. `memory` has no creation date, so the script dates a memory by its
+oldest stored photo file (an import writes them all at once; a photo added by
+hand later does not move it). The data copies made so far kept file times
+(`rsync -a`, `cp -a`). `--project <id>` (repeatable) narrows the run to some
+projects.
+
+Dry run first, and read it:
 
 ```bash
 docker compose run --rm --entrypoint python traxjourney \
-    scripts/reorder_polarsteps_memory_photos.py --db /app/db/traxjourney.db --data-dir /app/data
+    scripts/reorder_polarsteps_memory_photos.py --db /app/db/traxjourney.db --data-dir /app/data \
+    --imported-before 2026-08-27
 ```
 
 A project imported once and never linked for auto-sync is skipped with "no
@@ -219,25 +233,36 @@ project) to include it. Then the same command with `--apply`:
 
 ```bash
 docker compose run --rm --entrypoint python traxjourney \
-    scripts/reorder_polarsteps_memory_photos.py --db /app/db/traxjourney.db --data-dir /app/data --apply
+    scripts/reorder_polarsteps_memory_photos.py --db /app/db/traxjourney.db --data-dir /app/data \
+    --imported-before 2026-08-27 --apply
 ```
 
-Each memory is committed on its own and only if nobody edited it since the run
-read it; one edited meanwhile is reported as "changed or deleted during the
-run, left untouched". Re-running is harmless: corrected memories report
-"already in correct order".
+A memory is only rewritten when every one of its source photos downloaded
+(an HTTP error or a timeout counts as a failure) and enough of its photos
+matched by content. Otherwise it is "flagged for manual review" and left
+exactly as it was, ranks included. Each rewrite is committed on its own and
+only if nobody edited the memory since the run read it; one edited meanwhile
+is reported as "changed or deleted during the run, left untouched".
+
+Re-running is safe. A memory is never partially reordered, so a second run
+over the same Polarsteps data reports every corrected memory as "already in
+correct order" and writes nothing. A memory flagged because a download failed
+gets repaired by a later run once its photos download.
 
 **3. Turn existing sideways thumbnails upright, with the API stopped.** The
 backfill is not safe against live requests, and `--apply` refuses to run
 without `--api-stopped`. `down` stops the workers too, so nothing else touches
-the photos meanwhile. Dry run, then apply, then start again:
+the photos meanwhile. It has no `--db`: it opens the database through
+`DATABASE_URL`, which `docker compose run` takes from the same `.env` as the
+API (`env_file: .env` on the `traxjourney` service), so it reaches the same
+database. Dry run, then apply, then start again:
 
 ```bash
 docker compose down
 docker compose run --rm --entrypoint python traxjourney \
-    scripts/backfill_thumbnail_orientation.py --db /app/db/traxjourney.db --data-dir /app/data
+    scripts/backfill_thumbnail_orientation.py --data-dir /app/data
 docker compose run --rm --entrypoint python traxjourney \
-    scripts/backfill_thumbnail_orientation.py --db /app/db/traxjourney.db --data-dir /app/data --apply --api-stopped
+    scripts/backfill_thumbnail_orientation.py --data-dir /app/data --apply --api-stopped
 docker compose up -d
 ```
 

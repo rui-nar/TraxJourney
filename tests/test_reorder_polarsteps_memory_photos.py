@@ -10,14 +10,19 @@ Covers the two layers of the script:
     project with no linked trip and no override is skipped untouched;
   * the rank model's ``photo_order_json`` — ``--apply`` writes a dense list,
     clears ranks and keeps the epoch, an unmigrated DB is refused, and a
-    memory edited by the live API during the run is not overwritten.
+    memory edited by the live API during the run is not overwritten;
+  * a single failed or non-200 source download flags the memory and writes
+    nothing (U7R1-1), and only memories selected by ``--imported-before``
+    (required) and ``--project`` are touched.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
+import pytest
 import requests
 from sqlmodel import Session, SQLModel, create_engine
 
@@ -81,6 +86,38 @@ class TestPlanMemoryReorder:
             raise ConnectionError("boom")
 
         new_order, note = backfill.plan_memory_reorder(current, source_photos, local_hashes, flaky_download)
+        assert new_order is None
+        assert "flagged for manual review" in note
+
+    def test_one_failed_download_of_two_flags_instead_of_partially_reordering(self):
+        # Correctly ordered memory; a's source 404s. Before U7R1-1 the guard
+        # needed a majority of failures, so a counted as "unmatched" and went
+        # to the end: the correct [a, b] was rewritten as [b, a].
+        content = {"b": b"BBB"}
+        current = ["a", "b"]
+        source_photos = [{"url": "http://x/a"}, {"url": "http://x/b"}]
+        local_hashes = {"a": _sha256(b"AAA"), "b": _sha256(b"BBB")}
+
+        def download(url):
+            if url.endswith("/a"):
+                raise requests.HTTPError("404 Client Error")
+            return content[url.rsplit("/", 1)[-1]]
+
+        new_order, note = backfill.plan_memory_reorder(current, source_photos, local_hashes, download)
+        assert new_order is None
+        assert "flagged for manual review" in note
+
+    def test_one_timed_out_download_of_two_flags_for_manual_review(self):
+        current = ["a", "b"]
+        source_photos = [{"url": "http://x/a"}, {"url": "http://x/b"}]
+        local_hashes = {"a": _sha256(b"AAA"), "b": _sha256(b"BBB")}
+
+        def download(url):
+            if url.endswith("/a"):
+                raise requests.Timeout("read timed out")
+            return b"BBB"
+
+        new_order, note = backfill.plan_memory_reorder(current, source_photos, local_hashes, download)
         assert new_order is None
         assert "flagged for manual review" in note
 
@@ -177,15 +214,35 @@ _CONTENT = {"00000000-0000-4000-8000-000000000041": b"AAA-bytes", "00000000-0000
 _URL_CONTENT = {"http://x/a": _CONTENT["00000000-0000-4000-8000-000000000041"], "http://x/b": _CONTENT["00000000-0000-4000-8000-000000000042"], "http://x/c": _CONTENT["00000000-0000-4000-8000-000000000043"]}
 
 
+# Seeded photo files are written "now", so a far-future cutoff selects them.
+_CUTOFF = ["--imported-before", "2999-01-01"]
+
+
 class _FakeResponse:
-    def __init__(self, content: bytes):
+    def __init__(self, content: bytes, status_code: int = 200):
         self.content = content
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"{self.status_code} Client Error")
 
 
-def _patch_requests_get(monkeypatch) -> None:
+def _patch_requests_get(monkeypatch, *, status=None, timeout_on=None) -> None:
     """main() drives run()'s default downloader, which calls requests.get — stub
-    it so these end-to-end tests never touch the network."""
-    monkeypatch.setattr(requests, "get", lambda url, timeout=30: _FakeResponse(_URL_CONTENT[url]))
+    it so these end-to-end tests never touch the network. *status* maps a URL
+    to an HTTP error status (body is an error page); *timeout_on* is a URL
+    whose request times out."""
+    status = status or {}
+
+    def fake_get(url, timeout=30):
+        if url == timeout_on:
+            raise requests.Timeout("read timed out")
+        if url in status:
+            return _FakeResponse(b"<html>Not Found</html>", status[url])
+        return _FakeResponse(_URL_CONTENT[url])
+
+    monkeypatch.setattr(requests, "get", fake_get)
 
 
 class TestBackfillScriptEndToEnd:
@@ -198,7 +255,7 @@ class TestBackfillScriptEndToEnd:
 
         monkeypatch.setattr(backfill, "PolarstepsClient", _FakeClient)
         _patch_requests_get(monkeypatch)
-        monkeypatch.setattr("sys.argv", ["x", "--db", str(db), "--data-dir", str(data_dir)])
+        monkeypatch.setattr("sys.argv", ["x", "--db", str(db), "--data-dir", str(data_dir), *_CUTOFF])
         assert backfill.main() == 0
 
         import sqlite3
@@ -215,7 +272,7 @@ class TestBackfillScriptEndToEnd:
 
         monkeypatch.setattr(backfill, "PolarstepsClient", _FakeClient)
         _patch_requests_get(monkeypatch)
-        monkeypatch.setattr("sys.argv", ["x", "--db", str(db), "--data-dir", str(data_dir), "--apply"])
+        monkeypatch.setattr("sys.argv", ["x", "--db", str(db), "--data-dir", str(data_dir), *_CUTOFF, "--apply"])
         assert backfill.main() == 0
 
         import sqlite3
@@ -232,7 +289,7 @@ class TestBackfillScriptEndToEnd:
 
         monkeypatch.setattr(backfill, "PolarstepsClient", _FakeClient)
         _patch_requests_get(monkeypatch)
-        monkeypatch.setattr("sys.argv", ["x", "--db", str(db), "--data-dir", str(data_dir), "--apply"])
+        monkeypatch.setattr("sys.argv", ["x", "--db", str(db), "--data-dir", str(data_dir), *_CUTOFF, "--apply"])
         assert backfill.main() == 0
 
         import sqlite3
@@ -251,7 +308,7 @@ class TestBackfillScriptEndToEnd:
         _patch_requests_get(monkeypatch)
         monkeypatch.setattr(
             "sys.argv",
-            ["x", "--db", str(db), "--data-dir", str(data_dir), "--apply",
+            ["x", "--db", str(db), "--data-dir", str(data_dir), *_CUTOFF, "--apply",
              "--project-trip", f"{project_id}:555"],
         )
         assert backfill.main() == 0
@@ -291,7 +348,7 @@ class TestPhotoOrderColumn:
 
         monkeypatch.setattr(backfill, "PolarstepsClient", _FakeClient)
         _patch_requests_get(monkeypatch)
-        monkeypatch.setattr("sys.argv", ["x", "--db", str(db), "--data-dir", str(data_dir), "--apply"])
+        monkeypatch.setattr("sys.argv", ["x", "--db", str(db), "--data-dir", str(data_dir), *_CUTOFF, "--apply"])
         assert backfill.main() == 0
 
         photos, state = _read_memory(db, memory_id)
@@ -307,7 +364,7 @@ class TestPhotoOrderColumn:
 
         monkeypatch.setattr(backfill, "PolarstepsClient", _FakeClient)
         _patch_requests_get(monkeypatch)
-        monkeypatch.setattr("sys.argv", ["x", "--db", str(db), "--data-dir", str(data_dir), "--apply"])
+        monkeypatch.setattr("sys.argv", ["x", "--db", str(db), "--data-dir", str(data_dir), *_CUTOFF, "--apply"])
         assert backfill.main() == 0
 
         photos, state = _read_memory(db, memory_id)
@@ -329,7 +386,7 @@ class TestPhotoOrderColumn:
             raise AssertionError("an unmigrated DB must be refused before any Polarsteps call")
 
         monkeypatch.setattr(backfill, "PolarstepsClient", _no_client)
-        monkeypatch.setattr("sys.argv", ["x", "--db", str(db), "--data-dir", str(data_dir), "--apply"])
+        monkeypatch.setattr("sys.argv", ["x", "--db", str(db), "--data-dir", str(data_dir), *_CUTOFF, "--apply"])
         assert backfill.main() == 2
         assert "photo_order_json" in capsys.readouterr().err
 
@@ -360,11 +417,136 @@ class TestPhotoOrderColumn:
 
         con = sqlite3.connect(str(db))
         con.row_factory = sqlite3.Row
-        changed = backfill.run(con, data_dir, True, {}, client_factory=_FakeClient,
-                               download=download_while_the_api_writes)
+        changed = backfill.run(con, data_dir, True, {}, imported_before=backfill._parse_cutoff("2999-01-01"),
+                               client_factory=_FakeClient, download=download_while_the_api_writes)
         con.close()
 
         assert changed == 0
         photos, state = _read_memory(db, memory_id)
         assert photos == live
         assert state is None
+
+
+# ── Failed source downloads (U7R1-1) ────────────────────────────────────────
+
+class TestFailedDownloads:
+    """A memory with any failed source download is flagged and not written,
+    even when the photos that did download would reorder it."""
+
+    _STATE = json.dumps({"epoch": 2, "ranks": {_A: 0, _B: 1, _C: 2}})
+
+    def _run(self, tmp_path, monkeypatch, capsys, stored, **patch):
+        db = tmp_path / "r.db"
+        data_dir = tmp_path / "data"
+        _, memory_id = _seed_db(db, data_dir, link_trip=True, scrambled_photos=stored,
+                                content=_CONTENT, photo_order_json=self._STATE)
+        monkeypatch.setattr(backfill, "PolarstepsClient", _FakeClient)
+        _patch_requests_get(monkeypatch, **patch)
+        monkeypatch.setattr("sys.argv", ["x", "--db", str(db), "--data-dir", str(data_dir), *_CUTOFF, "--apply"])
+        assert backfill.main() == 0
+        return _read_memory(db, memory_id), capsys.readouterr().out
+
+    def test_http_404_leaves_a_correct_memory_untouched_and_flagged(self, tmp_path, monkeypatch, capsys):
+        # Without raise_for_status the 404 page would hash as a non-match and
+        # a would be moved to the end of a correctly ordered memory.
+        (photos, state), out = self._run(tmp_path, monkeypatch, capsys, [_A, _B, _C],
+                                         status={"http://x/a": 404})
+        assert photos == [_A, _B, _C]
+        assert state == json.loads(self._STATE)  # ranks not reset either
+        assert "flagged for manual review" in out
+
+    def test_timeout_leaves_a_correct_memory_untouched_and_flagged(self, tmp_path, monkeypatch, capsys):
+        (photos, state), out = self._run(tmp_path, monkeypatch, capsys, [_A, _B, _C],
+                                         timeout_on="http://x/b")
+        assert photos == [_A, _B, _C]
+        assert state == json.loads(self._STATE)
+        assert "flagged for manual review" in out
+
+    def test_one_failure_also_blocks_a_reorder_the_rest_would_make(self, tmp_path, monkeypatch, capsys):
+        (photos, state), out = self._run(tmp_path, monkeypatch, capsys, [_C, _A, _B],
+                                         status={"http://x/c": 500})
+        assert photos == [_C, _A, _B]
+        assert state == json.loads(self._STATE)
+
+    def test_all_downloads_succeeding_still_reorders(self, tmp_path, monkeypatch, capsys):
+        (photos, state), _ = self._run(tmp_path, monkeypatch, capsys, [_C, _A, _B])
+        assert photos == [_A, _B, _C]
+        assert state == {"epoch": 2, "ranks": {}}
+
+
+# ── Selection: --imported-before and --project ──────────────────────────────
+
+def _set_photo_mtimes(data_dir: Path, day: str) -> None:
+    ts = backfill._parse_cutoff(day) + 12 * 3600
+    for f in data_dir.rglob("*.jpg"):
+        os.utime(f, (ts, ts))
+
+
+class TestSelection:
+    def _seed(self, tmp_path):
+        db = tmp_path / "r.db"
+        data_dir = tmp_path / "data"
+        project_id, memory_id = _seed_db(db, data_dir, link_trip=True,
+                                         scrambled_photos=[_C, _A, _B], content=_CONTENT)
+        return db, data_dir, project_id, memory_id
+
+    def _main(self, monkeypatch, db, data_dir, *extra):
+        monkeypatch.setattr(backfill, "PolarstepsClient", _FakeClient)
+        _patch_requests_get(monkeypatch)
+        monkeypatch.setattr("sys.argv", ["x", "--db", str(db), "--data-dir", str(data_dir), "--apply", *extra])
+        return backfill.main()
+
+    def test_memory_imported_before_the_cutoff_is_reordered(self, tmp_path, monkeypatch):
+        db, data_dir, _, memory_id = self._seed(tmp_path)
+        _set_photo_mtimes(data_dir, "2026-08-01")
+        assert self._main(monkeypatch, db, data_dir, "--imported-before", "2026-08-27") == 0
+        assert _read_memory(db, memory_id)[0] == [_A, _B, _C]
+
+    def test_memory_imported_after_the_cutoff_is_not_touched(self, tmp_path, monkeypatch):
+        db, data_dir, _, memory_id = self._seed(tmp_path)
+        _set_photo_mtimes(data_dir, "2026-09-10")
+
+        def _no_client(_token):
+            raise AssertionError("a project with no selected memory must not reach Polarsteps")
+
+        monkeypatch.setattr(backfill, "PolarstepsClient", _no_client)
+        monkeypatch.setattr("sys.argv", ["x", "--db", str(db), "--data-dir", str(data_dir), "--apply",
+                                         "--imported-before", "2026-08-27"])
+        assert backfill.main() == 0
+        assert _read_memory(db, memory_id) == ([_C, _A, _B], None)
+
+    def test_a_later_manual_photo_does_not_unselect_an_old_import(self, tmp_path, monkeypatch):
+        # Selection uses the oldest file: a photo added by hand after the
+        # cutoff leaves the memory selected.
+        db, data_dir, _, memory_id = self._seed(tmp_path)
+        _set_photo_mtimes(data_dir, "2026-08-01")
+        newest = next(data_dir.rglob(f"{_C}.jpg"))
+        ts = backfill._parse_cutoff("2026-09-10")
+        os.utime(newest, (ts, ts))
+        assert self._main(monkeypatch, db, data_dir, "--imported-before", "2026-08-27") == 0
+        assert _read_memory(db, memory_id)[0] == [_A, _B, _C]
+
+    def test_project_filter_excludes_other_projects(self, tmp_path, monkeypatch):
+        db, data_dir, project_id, memory_id = self._seed(tmp_path)
+        assert self._main(monkeypatch, db, data_dir, *_CUTOFF, "--project", str(project_id + 1)) == 0
+        assert _read_memory(db, memory_id) == ([_C, _A, _B], None)
+
+    def test_project_filter_includes_the_named_project(self, tmp_path, monkeypatch):
+        db, data_dir, project_id, memory_id = self._seed(tmp_path)
+        assert self._main(monkeypatch, db, data_dir, *_CUTOFF, "--project", str(project_id)) == 0
+        assert _read_memory(db, memory_id)[0] == [_A, _B, _C]
+
+    def test_refuses_to_run_without_imported_before(self, tmp_path, monkeypatch, capsys):
+        db, data_dir, _, memory_id = self._seed(tmp_path)
+        with pytest.raises(SystemExit) as exc:
+            self._main(monkeypatch, db, data_dir)
+        assert exc.value.code == 2
+        assert "--imported-before" in capsys.readouterr().err
+        assert _read_memory(db, memory_id) == ([_C, _A, _B], None)
+
+    def test_refuses_a_malformed_cutoff(self, tmp_path, monkeypatch):
+        db, data_dir, _, memory_id = self._seed(tmp_path)
+        with pytest.raises(SystemExit) as exc:
+            self._main(monkeypatch, db, data_dir, "--imported-before", "27/08/2026")
+        assert exc.value.code == 2
+        assert _read_memory(db, memory_id) == ([_C, _A, _B], None)
