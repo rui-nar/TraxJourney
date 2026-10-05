@@ -60,7 +60,7 @@ Answer (user, 2026-10-04): retire it — option (b). The PUT answers 426, and a 
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: rejected
 
 ## Round 2 — 2026-10-04, reviewed at a63b8d45 (fixes since a97701a7)
 
@@ -192,14 +192,14 @@ Answer (user, 2026-10-04): leave `id` off `/me`. U1 is dropped (not merged); new
 - Trigger: new APK against a not-yet-deployed server → save a note on trip A, open trip B before the 405 → the check returns before the PUT → A's note is never stored, no error
 - Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
 - Decision: Fix now (D3) — introduced by the I1-R1-2 fix
-- Outcome: open
+- Outcome: fixed (F3)
 
 ### I1-R2-2 — A resolved patch pins its route after another writer re-routes the segment
 - Trigger: a resolve lands (hash H1) → the hourly degraded sweep or another device writes H2 → refetches carry H2, the hash differs, the patch is kept → the old route is drawn until a full load
 - Scores: trigger=plausible, impact=wrong-visible, detect=silent, later=cheap, fix=S/local, confidence=verified
 - Decision: Guard (D9): warn when a resolved patch is kept against a resolved server feature with a different hash
 - Override: user: Fix now — request ordering: a refetch started after the patch was applied shows the server's route; one started before it keeps the patch
-- Outcome: open
+- Outcome: fixed (F3)
 
 ## Plan amendment U5b (Decision 16), round 1 — 2026-10-04, reviewed at 1a496f08
 
@@ -264,13 +264,13 @@ Owner (2026-10-04): I1-R3-1 and I1-R3-2 approved; I1-R3-3 overridden to Fix now;
 - Trigger: A's segment edit gets 409 → the resync's full-res fetch is in flight → A signs out, B opens B's own trip of the same name → A's geometry is assigned as B's
 - Scores: trigger=plausible, impact=security, detect=user-visible, later=cheap, fix=S/local, confidence=verified
 - Decision: Fix now (D3). Pre-existing on main (no check at all); this branch narrowed but did not close it
-- Outcome: open
+- Outcome: fixed (F4)
 
 ### I1-R3-2 — The 405 fallback PUT has no account check
 - Trigger: new APK against a not-yet-deployed server → A saves a note on T → A signs out, B signs in while the 405 is in flight → the PUT goes out under B's token → B's trip T day-meta replaced by A's
 - Scores: trigger=plausible, impact=security, detect=silent, later=cheap, fix=S/local, confidence=verified
 - Decision: Fix now (D3). Introduced by this branch (I1-R2-1's fix removed the only post-await check)
-- Outcome: open
+- Outcome: fixed (F4)
 
 ### I1-R3-3 — A request joining another notifier's in-flight request is judged by its own start
 - Trigger: view-mode request in flight → switch to manage mode → resolve lands → manage refetch joins the view request → judged newer → stale arc replaces the patch until the next refetch
@@ -278,7 +278,7 @@ Owner (2026-10-04): I1-R3-1 and I1-R3-2 approved; I1-R3-3 overridden to Fix now;
 - Decision: Defer (D10); flagged: the #278 goal the owner held to in I1-R1-1 is not met across notifiers
 - Revisit when: the owner applies the I1-R1-1 override here, or a resolved segment is seen as an arc after a view/manage switch
 - Override: user: Fix now — the #278 goal holds across notifiers
-- Outcome: open
+- Outcome: fixed (F4)
 
 ## Unit review U5b-1 — 2026-10-05, reviewed at 4cd43f11 (pkgc/u5b1)
 
@@ -301,13 +301,13 @@ Owner (2026-10-05): I1-R4-1 and I1-R4-2 fixed structurally: a fresh ProjectNotif
 - Trigger: A saves a note → A signs out, B opens B's own same-named trip while the PATCH is in flight → 200 lands, the trip check passes → B's carousel shows A's notes
 - Scores: trigger=plausible, impact=security, detect=user-visible, later=cheap, fix=S/local, confidence=verified
 - Decision: Fix now (D3)
-- Outcome: open
+- Outcome: fixed
 
 ### I1-R4-2 — Segment add/update success paths draw the signed-out account's segment on the next account's map
 - Trigger: A saves a segment edit → A signs out, B opens any trip while the request is in flight → 200 → A's segment drawn on B's map and kept as a patch
 - Scores: trigger=plausible, impact=security, detect=user-visible, later=cheap, fix=S/local, confidence=verified
 - Decision: Fix now (D3). Pre-existing on main
-- Outcome: open
+- Outcome: fixed
 
 ### I1-R4-3 — The 409 resync's details reload rebinds the notifier to the trip the user left
 - Trigger: segment edit on T gets 409 → the user opens X first → the reload for T applies and sets the open trip back to T
@@ -315,13 +315,13 @@ Owner (2026-10-05): I1-R4-1 and I1-R4-2 fixed structurally: a fresh ProjectNotif
 - Decision: Defer (D10). Pre-existing on main
 - Revisit when: the owner fixes it with R4-1/R4-2, or a user reports a trip switch showing the previous trip
 - Override: user: Fix now
-- Outcome: open
+- Outcome: fixed
 
 ### I1-R4-4 — The full-res fallback can time a cached answer as fresh
 - Trigger: needs four independent conditions together; no current actor
 - Scores: trigger=theoretical, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
 - Decision: Reject (D11)
-- Outcome: open
+- Outcome: rejected
 
 Owner (2026-10-05): fix the class now (F6); verifier only, then close the integrated review.
 
@@ -335,7 +335,7 @@ No account-switch findings: the per-account notifier held.
 - Decision: Defer (D10); flagged: same class as I1-R4-3 (owner: Fix now)
 - Revisit when: the owner applies the I1-R4-3 override to this class, or a user reports a trip showing another trip's items
 - Override: user: Fix now — one same-trip check inside _silentReload and _silentReloadDetailsOnly (at begin and after every await), replacing the I1-R4-3 caller check
-- Outcome: open
+- Outcome: fixed
 
 ### I1-R5-2 — A details-only reload begun after a trip switch rebinds the notifier (memory/journal/people CRUD, sort, reorder)
 - Trigger: add a memory on T → open X before the POST returns → the reload for T begins after load(X) and applies → the open trip becomes T
@@ -343,4 +343,46 @@ No account-switch findings: the per-account notifier held.
 - Decision: Defer (D10); flagged as above
 - Revisit when: as above, or a user reports an item appearing in a trip other than the one they added it to
 - Override: user: Fix now — one same-trip check inside _silentReload and _silentReloadDetailsOnly (at begin and after every await), replacing the I1-R4-3 caller check
-- Outcome: open
+- Outcome: fixed
+
+## Integrated review Part 1 — closed 2026-10-05
+
+Closed by the owner after F6's verification (no round 6). Five rounds (rounds 4 and 5 owner-requested beyond the cap). Rounds 1-3 each found defects in the previous round's fixes; round 4's account-switch findings were closed as a class by a fresh ProjectNotifier per account (F5), and round 5 found no account leaks.
+
+Notes left by the final verifier (not findings):
+- No test pins a trip switch landing during `_applyDetails`' reveal awaits with encryption unlocked; the code handles it (stale check after the reveals).
+- `_buildFullTrack` writes `_fullTrack` after its compute hop guarded only by `_buildFullTrackGen`; a dropped reload can write the old trip's track without a notify. `load(X)` rebuilds it, so it self-heals.
+
+## Delivery
+
+Part 1 (waves 1-4 plus Decision 16) on `feat/package-c-part1`. Part 2 (waves 5-9, #294 facet split) is a separate delivery.
+
+| Unit | Goal | Route | Rule | Attempts | Escalated | Verified first time | Findings traced |
+|---|---|---|---|---|---|---|---|
+| U1 | `/me` returns the account id | Opus | S4 | 1 | — | yes | U1-R1-1 (unit dropped by owner, not merged) |
+| U2 | `PATCH /day-meta`, PUT retired | Opus | S4 | 1 | X3 (cache-bust scan test) | yes | — |
+| U3 | `Server-Timing` on simplified geo | Opus | S4 | 1 | — | yes | — |
+| U4 | Auto-zoom fits the selection when switched on | Sonnet | — | 1 | — | yes | — |
+| U5 | The account owns the client session | Opus | S4 | 4 (unit review rounds 1-3) | X3 (cache store purge) | yes | U5-R1-1..5, U5-R2-1, U5-R3-1 |
+| U20 | `min_client_version`, stuck route-job warning | Opus | S4 | 1 | X3 (version endpoint test) | yes | — |
+| U6 | Per-fetch geo timing (+ `ApiClient.patch`) | Sonnet | — | 1 | — | yes | — |
+| U7 | Client sends only changed days | Sonnet | — | 2 | X3 (no `ApiClient.patch`; rename dialog) | no (rename acceptance) | I1-R1-2, I1-R2-1, I1-R3-2, I1-R4-1 |
+| U21 | Client minimum-version gate | Sonnet | — | 1 | — | yes | — |
+| U8 | One resolve poller per trip | Opus | S5 | 1 | — | yes | I1-R1-1, I1-R2-2, I1-R3-1, I1-R3-3, I1-R4-2, I1-R4-3 |
+| U5b-1 | Recovery wraps confirmed; confirm/replace endpoints | Opus | S4 | 1 | — | yes | — (unit review clean) |
+| U5b-2 | Confirm on setup, replace after sign-in | Opus | S5 | 1 | — | yes | U5b2-R1-1 (deferred) |
+| F1 | 405 fallback never sends another trip's days | Sonnet | — | 1 | — | yes (rerun after Docker outage) | I1-R2-1 |
+| F2 | Segment features carry `route_status`/`route_hash` | Opus | S3 | 1 | — | yes | I1-R2-2 |
+| F3 | 405 trip check; request-ordered patches | Opus | S2 | 1 | — | yes | I1-R3-2, I1-R3-3 |
+| F4 | Account checks on resync and 405 PUT; shared request clock | Opus | S5 | 1 | — | yes | I1-R4-1, I1-R4-2 |
+| F5 | A fresh trip notifier per account; resync stays on the open trip | Opus | S5 | 1 | — | yes | I1-R5-1, I1-R5-2 |
+| F6 | A background refresh never reopens the trip left | Opus | S2 | 1 | — | yes | — |
+
+Owner overrides recorded: U1 dropped; I1-R1-1, I1-R2-2 (request ordering), I1-R3-3, I1-R4-3, I1-R5-1/2 overridden to Fix now; U5b-R1-2, U5b-R2-3 overridden to Fix now; U5b2-R1-1 kept Deferred.
+
+Final checks at aa0cdb69 (2026-10-05): flutter analyze clean; flutter test 2110 passed; pytest CI command 6114 passed, 47 skipped (the two git-dependent tests, test_no_raw_extract_is_tracked_in_the_repo and test_shell_script_line_endings, run natively in the worktree: 10 passed).
+
+Process notes:
+- Automatic agent worktrees start from `main`; worktrees were created by hand from the feature branch, and orchestration ran from a separate worktree because the main checkout is shared.
+- Test runs used per-unit folders inside the persistent Flutter and Python containers. A Docker Desktop engine hang lost the Python container mid-delivery; it was rebuilt from `python:3.14-slim` (plus `libexpat1`, `git`).
+- Three API session-limit interruptions; every interrupted agent was resumed from its transcript without losing work.
