@@ -109,3 +109,18 @@ Round cap reached (§6): a fourth round needs the user to ask for it.
 - Outcome: fixed (plan amended: U7 step 3 backup + restore commands)
 
 Envelope question (round 4): the reorder script writes photos_json/photo_order_json via raw sqlite3 outside photo_lock; run it in the same API-stopped window as the backfill, or accept a live run? User: (b) live run accepted as a residual — recorded in the plan envelope.
+
+## Unit U2 review — Round 1 — 2026-10-05, reviewed at b5abb3e9 (worktree branch, a7b181cf..b5abb3e9; DELIVERY §5 point 3)
+
+### U2R1-1 — An interrupted first run leaves the migration unable to re-run
+- Trigger: Admin deploys; the API container is killed (or a worker write hits the busy timeout) while `4b9d2e7a1c63` runs → the `drop_index` of the partial unique index and `CREATE TABLE _alembic_tmp_<t>` were autocommitted (pysqlite legacy mode, no BEGIN hook in alembic/env.py:94-102) while the copy rolled back and `alembic_version` is unchanged → every restart fails `alembic upgrade head` ("no such index" / "table _alembic_tmp_memory already exists"), API restart loop until a manual schema repair. Rows are safe.
+- Scores: trigger=plausible, impact=wrong-visible, detect=logged, later=expensive (corrected by triager: fix only possible before the migration ships), fix=S/local, confidence=verified (source reading, not reproduced)
+- Decision: Fix now (D5)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (5ba6669e)
+
+## Unit U2 review — Round 2 — 2026-10-05, reviewed at 5ba6669e (b5abb3e9..5ba6669e, fixes only)
+
+No findings. Reviewer traced alembic 1.20 batch ordering: only the pre-INSERT DDL autocommits; both table rebuilds, the compaction and the alembic_version update share one transaction, so the only reachable leftovers (index dropped, empty `_alembic_tmp_<t>`) are the ones the fix handles. U2R1-1 outcome: fixed (5ba6669e).
