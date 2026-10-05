@@ -363,7 +363,7 @@ Envelope decision (owner, 2026-10-05): **no** — trip editors are trusted to ed
 - Scores: trigger=plausible, impact=data-loss, detect=silent, later=cheap, fix=S/local, confidence=verified
 - Decision: Fix now (D3)
 - Override: —
-- Outcome: open
+- Outcome: fixed (6570a572)
 
 ### U7-R1-2 — Companion repair on a now-encrypted owner's trip is refused and retried every load
 - Trigger (triage-corrected): only legacy state — an invite accepted after the owner enabled, before U1 — leaves #505 memories under the companion's key on an encrypted owner's trip → repair PUT 409 encryption_locked on every load
