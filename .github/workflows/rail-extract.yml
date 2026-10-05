@@ -144,6 +144,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      # What this job actually patched, for notify — which has no `contents`
+      # permission to look the release up with, and should not second-guess it.
+      tag: ${{ steps.release.outputs.tag }}
     steps:
       - uses: actions/checkout@v7
 
@@ -255,3 +259,67 @@ jobs:
           extracts=(dist/rail/*-rail.osm.pbf)
           gh release upload "$TAG" \
             "${extracts[@]}" dist/rail/manifest.json --clobber
+
+  # A monthly job nobody watches fails silently, and the box keeps serving last
+  # month's data — or none, for a region that never built — without anyone
+  # knowing. So a failure files one `rail-data` issue (commented on, not
+  # duplicated, by the runs that keep failing) and the next good run closes it.
+  # Issues only: this job never touches the release, so it gets no `contents`.
+  notify:
+    needs: [plan, build, publish]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # No checkout, so gh has no git remote to infer the repository from.
+      GH_REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Report the failure
+        # A cancelled run is someone's decision, not a fault; it reports nothing.
+        if: contains(needs.*.result, 'failure')
+        env:
+          PLAN: ${{ needs.plan.result }}
+          BUILD: ${{ needs.build.result }}
+          PUBLISH: ${{ needs.publish.result }}
+        run: |
+          failed=$(printf '%s\n' "plan=$PLAN" "build=$BUILD" "publish=$PUBLISH" \
+            | sed -n 's/=failure$//p' | paste -sd, - | sed 's/,/, /g')
+          body="Rail extract run $RUN_URL failed in: $failed"
+          number=$(gh issue list --label rail-data --state open \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "Rail extract failed" --label rail-data --body "$body"
+          fi
+
+      - name: Close the failure report
+        if: >-
+          needs.plan.result == 'success' &&
+          needs.build.result == 'success' &&
+          needs.publish.result == 'success'
+        env:
+          TAG: ${{ needs.publish.outputs.tag }}
+          REQUESTED: ${{ inputs.regions }}
+        run: |
+          # A subset rebuild patches the latest release, whatever month it is
+          # from. Green then reads as "this month's data is out" when no
+          # release exists for this month, so say so where it is seen.
+          note=""
+          month=$(date -u +%Y-%m)
+          tag_date=${TAG#rail-data-}
+          if [ -n "$REQUESTED" ] && [ "${tag_date:0:7}" != "$month" ]; then
+            note="subset run patched $TAG; no rail-data release exists for $month"
+            echo "::warning::$note"
+          fi
+          body="Rail extract run $RUN_URL succeeded."
+          if [ -n "$note" ]; then
+            body="$body"$'\n\n'"$note"
+          fi
+          for number in $(gh issue list --label rail-data --state open \
+                            --json number --jq '.[].number'); do
+            gh issue close "$number" --comment "$body"
+          done

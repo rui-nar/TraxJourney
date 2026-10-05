@@ -245,9 +245,55 @@ def test_a_subset_rebuild_updates_the_release_it_patches(jobs):
 
 
 def test_only_the_publish_job_can_write(workflow, jobs):
-    assert workflow["permissions"]["contents"] == "read"
-    assert jobs["publish"]["permissions"]["contents"] == "write"
+    """`publish` writes releases, `notify` writes issues, and no job holds
+    both: the job that runs on every outcome is the last one that should be
+    able to touch the data."""
+    assert workflow["permissions"] == {"contents": "read"}
+    writers = {
+        name: {scope for scope, level in job.get("permissions", {}).items()
+               if level == "write"}
+        for name, job in jobs.items()
+    }
+    assert {name for name, scopes in writers.items() if "contents" in scopes} \
+        == {"publish"}
+    assert {name for name, scopes in writers.items() if "issues" in scopes} \
+        == {"notify"}
+    assert not any({"contents", "issues"} <= scopes for scopes in writers.values())
     assert "permissions" not in jobs["build"]
+
+
+# ---------------------------------------------------------------------------
+# A failed run is reported where someone will see it
+# ---------------------------------------------------------------------------
+
+def test_notify_runs_after_every_job_on_every_outcome(jobs):
+    """It must see the result of every other job, and run when they fail —
+    which is exactly when a plain `needs` would skip it."""
+    notify = jobs["notify"]
+    assert set(notify["needs"]) == set(jobs) - {"notify"}
+    assert notify["if"] == "always()"
+    assert notify["permissions"] == {"issues": "write"}
+    assert not any(step.get("uses", "").startswith("actions/checkout")
+                   for step in notify["steps"])
+
+
+def test_both_branches_use_the_rail_data_label(jobs):
+    notify = jobs["notify"]
+    failure = _step(notify, "Report the failure")
+    success = _step(notify, "Close the failure report")
+    assert "failure" in failure["if"]
+    assert all(f"needs.{job}.result == 'success'" in success["if"]
+               for job in notify["needs"])
+    assert "--label rail-data" in failure["run"]
+    assert "--label rail-data" in success["run"]
+
+
+def test_the_tag_comes_from_the_publish_job(jobs):
+    """Recomputing it in notify would need `contents` and could disagree with
+    the release that was actually patched."""
+    assert jobs["publish"]["outputs"]["tag"] == "${{ steps.release.outputs.tag }}"
+    env = _step(jobs["notify"], "Close the failure report")["env"]
+    assert env["TAG"] == "${{ needs.publish.outputs.tag }}"
 
 
 # ---------------------------------------------------------------------------
@@ -260,8 +306,13 @@ def _working_bash() -> str | None:
     `shutil.which("bash")` is not enough on Windows: WSL installs a `bash` shim
     that fails with `execvpe(/bin/bash) failed` when no distribution is
     installed, which would have let this test "pass" on the wrong exit code.
+
+    Git Bash goes first, because a *working* WSL is no better: Windows
+    resolves a bare `bash` to System32's WSL launcher ahead of PATH, and WSL
+    does not forward the environment (`TAG`, `REQUESTED`, ...) these tests
+    drive the scripts with, so every case ran as if they were unset.
     """
-    for candidate in ("bash", "C:/Program Files/Git/bin/bash.exe"):
+    for candidate in ("C:/Program Files/Git/bin/bash.exe", "bash"):
         if shutil.which(candidate) is None and not Path(candidate).exists():
             continue
         try:
@@ -344,3 +395,94 @@ def test_a_subset_rebuild_stops_only_when_it_would_disown_regions(
     )
 
     assert result.returncode == expected_exit, result.stdout + result.stderr
+
+
+def _run_notify_step(tmp_path, name, jobs, open_issues, env):
+    """Run one notify step for real against a fake `gh` and `date`, and return
+    (exit code, output, every gh invocation)."""
+    script = _step(jobs["notify"], name)["run"]
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    log = tmp_path / "gh.log"
+    # `--jq` is real gh's job; the fake prints what the filter would: the first
+    # open issue for `.[0]`, all of them otherwise.
+    (fake_bin / "gh").write_text(
+        chr(10).join([
+            "#!/bin/sh",
+            f'printf "%s\n" "$*" >> "{log.as_posix()}"',
+            'if [ "$1 $2" = "issue list" ]; then',
+            '  case "$*" in',
+            '    *".[0].number"*) for n in $FAKE_OPEN; do echo "$n"; break; done ;;',
+            '    *) for n in $FAKE_OPEN; do echo "$n"; done ;;',
+            "  esac",
+            "fi",
+            "exit 0",
+            "",
+        ]),
+        # LF on every platform: a CRLF shebang is `/bin/sh\r`, which no shell
+        # can execute.
+        encoding="utf-8", newline="\n",
+    )
+    (fake_bin / "date").write_text("#!/bin/sh\necho 2026-10\n",
+                                   encoding="utf-8", newline="\n")
+    for tool in ("gh", "date"):
+        (fake_bin / tool).chmod(0o755)
+
+    result = subprocess.run(
+        [BASH, "-e", "-c", script],
+        cwd=tmp_path,
+        env={**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+             "RUN_URL": "https://example.test/runs/42",
+             "FAKE_OPEN": " ".join(open_issues), **env},
+        capture_output=True, text=True,
+    )
+    calls = log.read_text(encoding="utf-8") if log.exists() else ""
+    return result.returncode, result.stdout + result.stderr, calls
+
+
+@pytest.mark.skipif(BASH is None, reason="needs a working POSIX shell")
+@pytest.mark.parametrize(
+    "open_issues, expected",
+    [([], "issue create --title Rail extract failed --label rail-data"),
+     (["17", "23"], "issue comment 17 ")],
+    ids=["no open issue creates one", "an open issue is commented on"],
+)
+def test_a_failure_files_one_issue(jobs, tmp_path, open_issues, expected):
+    code, output, calls = _run_notify_step(
+        tmp_path, "Report the failure", jobs, open_issues,
+        {"PLAN": "success", "BUILD": "failure", "PUBLISH": "failure"},
+    )
+    assert code == 0, output
+    assert expected in calls
+    assert calls.count("issue create") + calls.count("issue comment") == 1
+    assert "https://example.test/runs/42 failed in: build, publish" in calls
+
+
+SUBSET_WARNING = "subset run patched rail-data-2026-09-02; no rail-data release exists for 2026-10"
+
+
+@pytest.mark.skipif(BASH is None, reason="needs a working POSIX shell")
+@pytest.mark.parametrize(
+    "requested, tag, warns",
+    [("europe/denmark", "rail-data-2026-09-02", True),
+     ("europe/denmark", "rail-data-2026-10-02", False),
+     ("", "rail-data-2026-09-02", False)],
+    ids=["subset of an old tag warns", "subset of this month's tag is quiet",
+         "full run is quiet"],
+)
+def test_a_success_closes_every_open_issue(jobs, tmp_path, requested, tag, warns):
+    """Guard R1-5: a green subset run that patched last month's release must
+    not read as this month's data being out."""
+    code, output, calls = _run_notify_step(
+        tmp_path, "Close the failure report", jobs, ["17", "23"],
+        {"TAG": tag, "REQUESTED": requested},
+    )
+    assert code == 0, output
+    assert "issue close 17 " in calls and "issue close 23 " in calls
+    assert "https://example.test/runs/42 succeeded." in calls
+    if warns:
+        assert f"::warning::{SUBSET_WARNING}" in output
+        assert SUBSET_WARNING in calls
+    else:
+        assert "::warning::" not in output
+        assert "no rail-data release exists" not in calls
