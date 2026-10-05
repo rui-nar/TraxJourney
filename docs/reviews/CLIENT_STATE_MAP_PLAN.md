@@ -443,3 +443,7 @@ Owner (2026-10-06): both approved (P2-R2-1 overridden to Fix now); round 3 reque
 - Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
 - Decision: Fix now (D6); introduced by the P2-R1-2 fix
 - Outcome: fixed in plan
+
+## Part 2 amendment, round 3 — 2026-10-06, reviewed at 49a74d90 (fixes since 9dec4cdd)
+
+Clean: no findings. Notes (not findings): `_silentReload`'s record cast (project_notifier.dart:3474-3475) must change when `fetchServerGeo` gains `servedFrom` (U10 rewrites that block; background_reload_trip_switch_test covers it). Pre-existing, outside Part 2: a pan during an in-flight same-bucket refetch disarms the viewport-box branch for the session (1386, 1470-1472).
