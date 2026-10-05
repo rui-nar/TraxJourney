@@ -31,13 +31,15 @@ timestamp, and an import writes every photo file at import time, so the
 oldest file's mtime is the import date; photos added by hand later are newer
 and do not move it. A memory with no stored file is not selected (nothing to
 reorder). ``--project ID`` (repeatable) narrows the run to those projects.
+``<deploy-date>`` below is the day the #239 fix (v0.48.0) reached the server.
 
 A memory is left untouched (flagged for manual review, not guessed at) when
 any of its source downloads fails — a photo that could not be compared would
 otherwise be moved to the end, scrambling a memory that may be correct — or
-when too few of its local photos match any source photo by content, which
-usually means the trip changed on Polarsteps since import, not that this
-script's logic is wrong.
+when none or too few of its local photos match any source photo by content,
+which usually means the trip changed on Polarsteps since import, not that
+this script's logic is wrong. "already in correct order" is only reported for
+a memory that was compared and found in order.
 
 What it writes (issue #237's rank model, see api/photo_order.py): a dense
 ``photos_json`` (no ``null`` slots, which the reader below already skips) and
@@ -56,15 +58,15 @@ Always take a DB copy first (docs/RELEASING.md, post-deploy owner actions).
 
 Usage:
     python scripts/reorder_polarsteps_memory_photos.py --db "traxjourney.db" --data-dir data \\
-        --imported-before 2026-08-27
+        --imported-before <deploy-date>
     python scripts/reorder_polarsteps_memory_photos.py --db copy.db --data-dir data \\
-        --imported-before 2026-08-27 --apply
+        --imported-before <deploy-date> --apply
 
     # a project that was imported once and never linked for auto-sync needs
     # an explicit trip id (repeatable, one per project); --project limits the
     # run to the given projects (repeatable):
     python scripts/reorder_polarsteps_memory_photos.py --db copy.db --data-dir data \\
-        --imported-before 2026-08-27 --project 42 --project-trip 42:9876543210
+        --imported-before <deploy-date> --project 42 --project-trip 42:9876543210
 """
 from __future__ import annotations
 
@@ -144,8 +146,13 @@ def plan_memory_reorder(
             matched.append(uuid)
             seen.add(uuid)
 
+    # Nothing matched means nothing was compared: the stored order says
+    # nothing about the source, so this is neither "in order" nor fixable.
+    if not matched:
+        return None, "flagged for manual review: no photo matched the source; not compared"
+
     unmatched = [u for u in current_uuids if u not in seen]
-    if matched and len(unmatched) > len(current_uuids) / 2:
+    if len(unmatched) > len(current_uuids) / 2:
         return None, (
             f"flagged for manual review: only {len(matched)}/{len(current_uuids)} "
             "local photos matched a source photo by content"

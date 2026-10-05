@@ -121,6 +121,20 @@ class TestPlanMemoryReorder:
         assert new_order is None
         assert "flagged for manual review" in note
 
+    def test_no_match_at_all_is_flagged_not_reported_in_order(self):
+        # Every download succeeds but none matches a stored file: the order
+        # was never compared, so it must not read as "already in correct
+        # order" (U7R2-1).
+        current = ["a", "b"]
+        source_photos = [{"url": "http://x/p"}, {"url": "http://x/q"}]
+        local_hashes = {"a": _sha256(b"AAA"), "b": _sha256(b"BBB")}
+        download = lambda url: b"replaced-on-polarsteps-" + url.encode()
+
+        new_order, note = backfill.plan_memory_reorder(current, source_photos, local_hashes, download)
+        assert new_order is None
+        assert note == "flagged for manual review: no photo matched the source; not compared"
+        assert "already" not in note
+
     def test_mostly_unmatched_local_photos_flags_for_manual_review(self):
         # Only one local photo matches a source photo by content — the rest
         # look unrelated (e.g. the trip changed on Polarsteps since import).
@@ -467,6 +481,24 @@ class TestFailedDownloads:
                                          status={"http://x/c": 500})
         assert photos == [_C, _A, _B]
         assert state == json.loads(self._STATE)
+
+    def test_no_stored_file_matching_any_source_is_flagged_and_untouched(self, tmp_path, monkeypatch, capsys):
+        # All downloads succeed, but every source photo was replaced on
+        # Polarsteps: nothing matched, nothing compared (U7R2-1).
+        db = tmp_path / "r.db"
+        data_dir = tmp_path / "data"
+        _, memory_id = _seed_db(db, data_dir, link_trip=True, scrambled_photos=[_C, _A, _B],
+                                content=_CONTENT, photo_order_json=self._STATE)
+        monkeypatch.setattr(backfill, "PolarstepsClient", _FakeClient)
+        monkeypatch.setattr(requests, "get", lambda url, timeout=30: _FakeResponse(b"new-" + url.encode()))
+        monkeypatch.setattr("sys.argv", ["x", "--db", str(db), "--data-dir", str(data_dir), *_CUTOFF, "--apply"])
+        assert backfill.main() == 0
+
+        out = capsys.readouterr().out
+        assert _read_memory(db, memory_id) == ([_C, _A, _B], json.loads(self._STATE))
+        assert "no photo matched the source; not compared" in out
+        assert "already in correct order" not in out
+        assert "corrected 0 memory(ies)" in out
 
     def test_all_downloads_succeeding_still_reorders(self, tmp_path, monkeypatch, capsys):
         (photos, state), _ = self._run(tmp_path, monkeypatch, capsys, [_C, _A, _B])

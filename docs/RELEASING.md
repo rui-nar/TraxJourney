@@ -209,11 +209,12 @@ val seeded from prod, a different key shows as "token unreadable" for every
 project), and the tokens must still be valid.
 
 `--imported-before` is required: only memories imported before that day
-(00:00 UTC) are considered. Use the date **v0.48.0 (the #239 fix) reached
-prod**; it was tagged on 2026-08-27, so check the deploy date, and when unsure
-pick a day after it rather than before. Including a few memories imported after
-the fix is harmless: they are already in order and are reported as such, left
-alone. `memory` has no creation date, so the script dates a memory by its
+(00:00 UTC) are considered. In the commands below, replace `<deploy-date>`
+(`YYYY-MM-DD`) with the date **v0.48.0 (the #239 fix) reached prod**. It was
+tagged on 2026-08-27, but the deploy may have come later, so check. When
+unsure, pick a later day rather than an earlier one. Including a few memories
+imported after the fix is harmless: their order is already right, so they are
+reported "already in correct order" (or flagged, see below) and left alone. `memory` has no creation date, so the script dates a memory by its
 oldest stored photo file (an import writes them all at once; a photo added by
 hand later does not move it). The data copies made so far kept file times
 (`rsync -a`, `cp -a`). `--project <id>` (repeatable) narrows the run to some
@@ -224,7 +225,7 @@ Dry run first, and read it:
 ```bash
 docker compose run --rm --entrypoint python traxjourney \
     scripts/reorder_polarsteps_memory_photos.py --db /app/db/traxjourney.db --data-dir /app/data \
-    --imported-before 2026-08-27
+    --imported-before <deploy-date>
 ```
 
 A project imported once and never linked for auto-sync is skipped with "no
@@ -234,15 +235,33 @@ project) to include it. Then the same command with `--apply`:
 ```bash
 docker compose run --rm --entrypoint python traxjourney \
     scripts/reorder_polarsteps_memory_photos.py --db /app/db/traxjourney.db --data-dir /app/data \
-    --imported-before 2026-08-27 --apply
+    --imported-before <deploy-date> --apply
 ```
 
 A memory is only rewritten when every one of its source photos downloaded
 (an HTTP error or a timeout counts as a failure) and enough of its photos
-matched by content. Otherwise it is "flagged for manual review" and left
-exactly as it was, ranks included. Each rewrite is committed on its own and
-only if nobody edited the memory since the run read it; one edited meanwhile
-is reported as "changed or deleted during the run, left untouched".
+matched by content. What each memory line means:
+
+- `[old] -> [new]`: compared, and reordered (or, in a dry run, would be).
+- `already in correct order`: compared against the source, and in order.
+  Nothing written. It never stands for "could not compare".
+- `flagged for manual review: source download failed (...)`: a Polarsteps
+  photo could not be downloaded. Nothing written, ranks included. Usually
+  transient: re-run later.
+- `flagged for manual review: no photo matched the source; not compared`:
+  every download worked but none of them is byte-identical to a stored photo,
+  so the order could not be checked. Typically the step's photos were
+  replaced on Polarsteps, or the memory's photos were replaced here. Nothing
+  written, and the script cannot do more for it. Note the memory id and look
+  at it in the app next to the Polarsteps step. There is no reorder UI: if
+  the order is wrong and matters, the owner re-imports that trip from
+  Polarsteps, which clears the memory's photos and downloads them again in
+  order (a photo they added to it by hand is lost, so say so first).
+- `flagged for manual review: only N/M local photos matched ...`: too few
+  matched to trust a reorder. Same handling.
+- `changed or deleted during the run, left untouched`: someone edited the
+  memory after the run read it. Each rewrite is committed on its own, and only
+  if the memory is unchanged since the read. Re-run to pick it up.
 
 Re-running is safe. A memory is never partially reordered, so a second run
 over the same Polarsteps data reports every corrected memory as "already in
