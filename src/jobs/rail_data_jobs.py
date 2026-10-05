@@ -121,6 +121,10 @@ def _check(directory: str | None, local: bool) -> float | None:
             counts[_STATUS_INVALID] += 1
             continue
         region = entry.get("region")
+        layer = entry.get("layer", "rail")
+        # Name a ferry/bus layer beside its region, as fetch_rail_data's labels do;
+        # a rail entry keeps the bare region.
+        region = region if layer == "rail" else f"{region} {layer}"
         status = entry.get("status", _STATUS_OK)
         if status == _STATUS_EMPTY:
             counts[_STATUS_EMPTY] += 1
