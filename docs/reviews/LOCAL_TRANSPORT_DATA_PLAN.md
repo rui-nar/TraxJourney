@@ -6,7 +6,7 @@ Envelope: the plan's `## Review envelope` section (E7 GitHub Actions, E8 Geofabr
 ## Round 1 — 2026-10-04, reviewed at 0ce8ab09
 
 Envelope question raised (to owner): both stacks refresh at 04:10 on the 4th — is the host-level sum of two simultaneous refreshes inside E1, or should val and prod be staggered?
-Answer: not given at approval; the plan applies the recommended stagger (val on the 4th, prod on the 5th, via RAIL_AUTO_REFRESH_DAY) pending owner confirmation.
+Answer: not given at approval; the plan applies the recommended stagger (val on the 4th, prod on the 5th, via RAIL_AUTO_REFRESH_DAY) confirmed by the owner on 2026-10-05.
 
 ### R1-1 — Ferry strategies B and C need two way classes the rail store schema cannot express
 - Trigger: a user adds an archipelago ferry leg mapped with both route=ferry and ferry=yes → the single `rail` flag forces B to run over both classes (different line, silently) or C to always miss locally → wrong polyline or permanent Overpass traffic
