@@ -22,6 +22,8 @@ import 'package:traxjourney_client/src/projects/project_notifier.dart';
 import 'package:traxjourney_client/src/projects/project_service.dart';
 import 'package:traxjourney_client/src/projects/project_settings_screen.dart';
 
+import '../helpers/signed_in.dart';
+
 /// Every day-meta write during a test: the method, the path and the decoded
 /// body.
 late List<({String method, String path, Map<String, dynamic> body})>
@@ -341,6 +343,7 @@ void main() {
     test(
         "a 405 after another trip loaded sends A's save to A, never B's "
         'days (I1-R1-2, I1-R2-1)', () async {
+      api.setToken(fakeJwt(sub: 1)); // one account throughout (I1-R3-2)
       final n = _notifier(_days({'2026-06-13': []}));
       patchStatus = 405;
       patchGate = Completer<void>();
@@ -367,6 +370,27 @@ void main() {
       // B's state is left alone.
       expect(n.dayMeta.keys, containsAll(['2026-07-01', '2026-07-02']));
       expect(n.dayMeta.keys, isNot(contains('2026-06-13')));
+    });
+
+    test("a 405 after another account signed in sends no PUT (I1-R3-2)",
+        () async {
+      api.setToken(fakeJwt(sub: 1));
+      final n = _notifier(_days({'2026-06-13': []}));
+      patchStatus = 405;
+      patchGate = Completer<void>();
+      final save = n.saveDayMeta(days: {
+        '2026-06-13': {'note': 'account A'}
+      });
+      await Future<void>.delayed(Duration.zero);
+      // A signs out and B signs in while the PATCH is in flight. B's own
+      // trip is also called "Trip": the same path.
+      api.clearToken();
+      api.setToken(fakeJwt(sub: 2));
+      patchGate!.complete();
+      await save;
+
+      expect(dayMetaWrites.where((w) => w.method == 'PUT'), isEmpty,
+          reason: "A's whole map must not replace B's days under B's token");
     });
   });
 }

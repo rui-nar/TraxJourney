@@ -3242,7 +3242,9 @@ class ProjectNotifier extends ChangeNotifier
       return;
     }
     // The whole map, built now: the 405 fallback below runs after an await,
-    // by which time another trip may have replaced dayMeta.
+    // by which time another trip may have replaced dayMeta. The account too,
+    // for the same fallback: by then another one may hold the token.
+    final account = api.tokenUserId;
     final merged = {
       for (final e in dayMeta.entries)
         if (!delete.contains(e.key)) e.key: e.value,
@@ -3270,6 +3272,9 @@ class ProjectNotifier extends ChangeNotifier
         // the server is deployed): its PUT still takes the whole map. No trip
         // check here: [merged] and [ref] are this trip's, captured before the
         // await, so a trip opened since must not cost this save (I1-R2-1).
+        // An account change does: the PUT would carry the next account's
+        // token to its trip of the same name and replace its days (I1-R3-2).
+        if (api.tokenUserId != account) return;
         await api.put(ref.path('/day-meta'), {
           'day_meta': merged,
           if (newSleepingOptions != null) 'sleeping_options': newSleepingOptions,

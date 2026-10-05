@@ -1,6 +1,7 @@
 // A resolved segment's patch gives way to a geo request started after it was
 // applied, and only to such a request (I1-R2-2 of
-// docs/reviews/CLIENT_STATE_MAP_PLAN.md).
+// docs/reviews/CLIENT_STATE_MAP_PLAN.md) — whichever notifier started it, when
+// a request joins another notifier's (I1-R3-3).
 //
 // The patch used to be kept whenever the server's route_hash differed from
 // its own, so another writer's re-route — the hourly degraded-route sweep,
@@ -63,10 +64,13 @@ Map<String, dynamic> get _routeBFeature => _serverSeg([
     ], status: 'resolved', hash: _hashB);
 
 /// One trip with one train segment. Geo endpoints answer [geo]; a simplified
-/// geo request is held on [heldLod] when a test sets it.
+/// geo request is held on [heldLod] when a test sets it. With [joinHeldLod],
+/// every simplified request while it is held gets that one, the way the real
+/// service hands a request in flight to any later caller.
 class _Server extends ProjectService {
   Map<String, dynamic> geo = _collection([_pendingArc]);
   Completer<Map<String, dynamic>>? heldLod;
+  bool joinHeldLod = false;
   int lodCalls = 0;
 
   Map<String, dynamic> _copy(Map<String, dynamic> m) =>
@@ -100,7 +104,7 @@ class _Server extends ProjectService {
     lodCalls++;
     final held = heldLod;
     if (held != null) {
-      heldLod = null;
+      if (!joinHeldLod) heldLod = null;
       return held.future;
     }
     return Future.value(_copy(geo));
@@ -139,12 +143,17 @@ List<dynamic> _drawnOnMap(ProjectNotifier n) =>
 Future<(_Server, ProjectNotifier)> _loadedWithRouteA(
     WidgetTester tester) async {
   final server = _Server();
+  return (server, await _loaded(tester, server));
+}
+
+/// A notifier with the trip loaded from [server], showing the arc.
+Future<ProjectNotifier> _loaded(WidgetTester tester, _Server server) async {
   final n = _notifier(server);
   await n.load(_trip);
   // The background geo phase, and the sync check load() schedules at 5 s.
   await tester.pump(const Duration(seconds: 6));
   expect(_drawnOnMap(n), hasLength(2), reason: 'the arc before the resolve');
-  return (server, n);
+  return n;
 }
 
 void _applyRouteA(ProjectNotifier n) => n.applyResolvedSegment('s1', {
@@ -179,6 +188,36 @@ void main() {
     expect(_drawnOnMap(n), hasLength(3),
         reason: 'the resolved route, not the arc the refetch carried');
     n.dispose();
+  });
+
+  testWidgets("a refetch joining another notifier's earlier request keeps the "
+      'route (I1-R3-3)', (tester) async {
+    // The view-mode notifier and the app-wide one, on one service.
+    final server = _Server();
+    final view = await _loaded(tester, server);
+    final manage = await _loaded(tester, server);
+    final held = Completer<Map<String, dynamic>>();
+    server
+      ..heldLod = held
+      ..joinHeldLod = true;
+    final calls = server.lodCalls;
+    view.setMapZoom(14);
+    await tester.pump(const Duration(milliseconds: 1));
+    expect(server.lodCalls, calls + 1, reason: "the view's request in flight");
+
+    _applyRouteA(manage);
+    manage.setMapZoom(14);
+    await tester.pump(const Duration(milliseconds: 1));
+    expect(server.lodCalls, calls + 2, reason: 'the manage refetch joins it');
+
+    server.heldLod = null;
+    held.complete(_collection([_pendingArc]));
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(_drawnOnMap(manage), hasLength(3),
+        reason: 'the answer is from before the resolve, so the route stays');
+    view.dispose();
+    manage.dispose();
   });
 
   testWidgets('a zoom refetch started after the resolve shows another '
