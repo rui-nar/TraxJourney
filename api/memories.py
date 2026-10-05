@@ -477,13 +477,20 @@ def delete_memory(
 ):
     """Delete a memory and all its photos from disk."""
     user_info_id = int(current_user["sub"])
-    with get_session() as sess:
+    # Under the photo lock from before the list is read until after the
+    # commit, so no placement lands in between (it lands before, and goes
+    # with the memory, or finds it gone and removes its own files).
+    with photo_lock("memory", memory_id), get_session() as sess:
         mem_row = _get_owned_memory(sess, memory_id, user_info_id)
 
         photos: List[str] = json.loads(mem_row.photos_json or "[]")
         owner_dir = _owner_dir_id(sess, mem_row)
         photo_path = photo_folder(_DATA_DIR, owner_dir, "memories", memory_id)
-        _delete_photo_files(owner_dir, memory_id, photos)
+        # Also the photos on disk the list does not name: those of a
+        # placement waiting on the lock, written and counted. The rmtree below
+        # would take them uncounted, and their own cleanup then finds nothing.
+        on_disk = {p.stem.removesuffix("_thumb") for p in photo_path.glob("*.jpg")}
+        _delete_photo_files(owner_dir, memory_id, photos + [n for n in on_disk if n not in photos])
         # The memory is gone, so its directory goes whatever is left in it: a
         # share copy a concurrent first serve landed after the unlink above,
         # or the temp file of one (issue #430).
@@ -768,8 +775,9 @@ async def replace_photo(
         cache_ref = project_cache_ref(sess, mem_row.project_id)
         sess.commit()
         bust_project_payloads(cache_ref)
-
-    _delete_photo_files(owner_dir, memory_id, [old_uuid])
+        # Still under the lock: a delete_memory's folder sweep would otherwise
+        # size these same files and uncount them a second time.
+        _delete_photo_files(owner_dir, memory_id, [old_uuid])
     return {"uuid": new_uuid}
 
 

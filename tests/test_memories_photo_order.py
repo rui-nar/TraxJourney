@@ -47,6 +47,7 @@ from sqlmodel import Session, SQLModel, select
 import api.journal as journal_mod
 import api.memories as mem_mod
 import models.db as db_module
+import src.billing.usage as usage_mod
 from api.deps import get_current_user
 from api.journal import router as journal_router
 from api.memories import router as memories_router
@@ -405,6 +406,47 @@ class TestDeletedMemory:
         assert _files(user_id, memory_id) == [] and _files(user_id, new_id) == []
         assert _usage(engine, user_id) == _BASELINE_USAGE
 
+    @pytest.mark.parametrize("files_written", ["before_the_delete", "during_the_delete"])
+    def test_a_placement_during_the_delete_lands_before_it_or_not_at_all(
+            self, env, monkeypatch, files_written):
+        _, engine, user_id, memory_id, _ = env
+        owner = str(user_id)
+        _land(user_id, memory_id, order=0)
+        racer = str(uuid_lib.uuid4())
+
+        def write_files():
+            mem_mod._save_photo_files(owner, memory_id, racer, _jpeg_bytes())
+
+        # Files written (and counted) before the delete starts: its rmtree
+        # must not take them uncounted. Written once it has removed the
+        # folder: only the photo lock keeps them out of the row about to go.
+        if files_written == "before_the_delete":
+            write_files()
+
+        original_bump = mem_mod.bump_lock_version
+        racers = []
+
+        def place_mid_delete(sess, project_id):
+            # The delete has read its photo list and removed the folder, and
+            # has not committed: the racer tries to place now.
+            if files_written == "during_the_delete":
+                write_files()
+            t = threading.Thread(target=mem_mod._write_memory_photo,
+                                 args=(memory_id, racer), kwargs={"owner_dir": owner})
+            t.start()
+            racers.append(t)
+            t.join(timeout=0.5)
+            original_bump(sess, project_id)
+
+        monkeypatch.setattr(mem_mod, "bump_lock_version", place_mid_delete)
+        mem_mod.delete_memory(memory_id, _user(user_id))
+        for t in racers:
+            t.join()
+
+        assert _photos(engine, memory_id) is None
+        assert _files(user_id, memory_id) == []
+        assert _usage(engine, user_id) == _BASELINE_USAGE
+
 
 # ── Replace racing a delete ─────────────────────────────────────────────────
 
@@ -444,6 +486,36 @@ class TestReplaceRacingDelete:
 
         assert _photos(engine, memory_id) is None
         assert _files(user_id, memory_id) == []
+        assert _usage(engine, user_id) == _BASELINE_USAGE
+
+    def test_a_delete_during_the_old_photos_cleanup_does_not_uncount_it_twice(self, env, monkeypatch):
+        client, engine, user_id, memory_id, _ = env
+        old = _land(user_id, memory_id, order=0)
+        original_bytes_of = usage_mod.bytes_of
+        deleters = []
+
+        def bytes_of_then_delete(*paths):
+            size = original_bytes_of(*paths)
+            if not deleters and any(Path(p).stem == old for p in paths):
+                # The replace has committed and sized the old photo's files,
+                # not yet unlinked them: the delete runs now. Its folder
+                # sweep must not size and uncount the same files again.
+                t = threading.Thread(target=mem_mod.delete_memory, args=(memory_id, _user(user_id)))
+                t.start()
+                deleters.append(t)
+                t.join(timeout=0.5)
+            return size
+
+        monkeypatch.setattr(usage_mod, "bytes_of", bytes_of_then_delete)
+        resp = client.put(f"/api/memories/{memory_id}/photos/{old}/replace",
+                          files={"file": ("n.jpg", _jpeg_bytes(), "image/jpeg")})
+        for t in deleters:
+            t.join()
+
+        assert resp.status_code == 200 and len(deleters) == 1
+        assert _photos(engine, memory_id) is None
+        assert _files(user_id, memory_id) == []
+        # Counted storage is what is on disk: nothing, over the baseline.
         assert _usage(engine, user_id) == _BASELINE_USAGE
 
 
