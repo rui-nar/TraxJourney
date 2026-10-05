@@ -182,8 +182,8 @@ Triager flag (not a round-2 finding, outside the fixes reviewed): Wave 1 (U2 and
 - Decision: Defer (D10) — not a D2 duplicate of R2-2: the carry rule's missing end condition is new
 - Revisit when: a commit removes a region or layer from config/rail_regions.yml, Open decision 3 withdraws bus, or U2's WARNING names an entry absent from the config — give the carry rule an end and add a retire step to §9
 - Guard: —
-- Override: —
-- Outcome: open
+- Override: user: Fix now — one line in U8: carry for one release, drop with a retirement WARNING on the second omission
+- Outcome: fixed (in plan)
 
 ### R3-2 — The checkpoint's stated consequence is wrong
 - Trigger: the orchestrator or owner reads "a schema-3 release reaching a schema-2 reader sends every train back to Overpass" → acts on an outage that cannot happen; in fact a pre-U8 box refuses the refresh (read_manifest raises before writing) and keeps routing on its installed stores while its data ages
@@ -192,4 +192,6 @@ Triager flag (not a round-2 finding, outside the fixes reviewed): Wave 1 (U2 and
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (in plan)
+
+Review closed after round 3 (cap). Open deferrals: R1-2, R1-11, R2-4 — each with its revisit trigger above.

@@ -226,10 +226,14 @@ REVIEW.md defaults apply, with these additions:
   `ferry`, `bus`). Readers on the box treat a missing `layer` as `rail`.
   **Ship order is the contract:** the reader that accepts schemas 2 and 3
   (`fetch_rail_data.py`, `rail_source.load_coverage`) is deployed to both
-  boxes *before* the workflow publishes a schema-3 release. A schema-2-only
-  reader seeing schema 3 refuses the manifest and every train resolve falls
-  back to Overpass — the trap `docs/LOCAL_RAIL_DATA_PLAN.md` records for the
-  store schema bump. U8 pins both orders with tests.
+  boxes *before* the workflow publishes a schema-3 release. A box without U8
+  that meets a schema-3 release refuses the whole refresh before writing
+  anything (`read_manifest` raises), so it keeps routing on the stores it has
+  while their data ages — every refresh fails until U8 deploys, and U2's age
+  gauge is what eventually says so (R3-2). The Overpass fallback for every
+  train happens only the other way round: an image rolled back past U8 meeting
+  stores already rebuilt as schema 3 (see the next item). U8 pins both orders
+  with tests.
 - **Store schema 2 → 3** (Decision 9). The reader accepts schemas 1, 2 and 3
   and reads a v1/v2 `rail` flag as `cls` bit 0, so a rail store of any
   version keeps routing. The fetch sidecar already records the store schema,
@@ -408,10 +412,10 @@ Ships alone, before any layer data exists (*Boundaries crossed*).
   1. Store schema 3: `way.cls` bitmask per Decision 9; `_SUPPORTED_SCHEMAS = (1, 2, 3)`, a v1/v2 `rail` flag read as `cls` bit 0. Every query that filters `w.rail = 1` filters `cls & 1`; `ways_in_bbox` / `vertex_counts_in_bbox` take a class mask defaulting to bit 0.
   2. The builder takes `--layer` (default `rail`), fills `cls` for that layer's selection, and refuses a store and measures its extent over the layer's **routable set** (Decision 9's table) — not bit 0 alone.
   3. `store_filename(region, layer="rail")`; rail names unchanged (R1-9).
-  4. Manifest schemas `(2, 3)` on the box; entries keyed by `(region, layer)`, a missing `layer` read as `rail`; an unknown layer ignored with a `WARNING`. Fetch installs every layer's store; one sidecar per `(region, layer)`. A `(region, layer)` the previously installed manifest held and the new release omits is **carried** when its store and sidecar are on disk — as a failed install already is — and still named in U6's R1-6 `WARNING`, so the age gauge keeps seeing it age instead of losing it (R2-2).
+  4. Manifest schemas `(2, 3)` on the box; entries keyed by `(region, layer)`, a missing `layer` read as `rail`; an unknown layer ignored with a `WARNING`. Fetch installs every layer's store; one sidecar per `(region, layer)`. A `(region, layer)` the previously installed manifest held and the new release omits is **carried** when its store and sidecar are on disk — as a failed install already is — and still named in U6's R1-6 `WARNING`, so the age gauge keeps seeing it age instead of losing it (R2-2). Carrying lasts **one release**: the carried entry is marked `carried: true`, and when the next release omits it again it is dropped from the installed manifest with a `WARNING` that it is treated as retired — a layer that failed in CI one month comes back, one removed from `config/rail_regions.yml` leaves without a manual step (R3-1).
   5. §9: the rollback-past-U8 recovery from *Boundaries crossed* (R2-6).
 - **Acceptance:**
-  - Tests for both ship orders: a schema-2 manifest still routes rail; a schema-3 manifest with ferry and bus entries leaves rail coverage and rail store names unchanged; v1, v2 and v3 rail stores answer the same rail queries; a way tagged `route=ferry` and `ferry=yes` is returned for bit 0 and bit 1, a `ferry=yes`-only way for bit 1 alone; the store schema bump makes fetch rebuild an existing rail store; a ferry store holding only `ferry=yes` ways and a bus store holding only relation members are built, not refused, with a non-empty extent; a layer the release omits is carried when its store is on disk and dropped when it is not.
+  - Tests for both ship orders: a schema-2 manifest still routes rail; a schema-3 manifest with ferry and bus entries leaves rail coverage and rail store names unchanged; v1, v2 and v3 rail stores answer the same rail queries; a way tagged `route=ferry` and `ferry=yes` is returned for bit 0 and bit 1, a `ferry=yes`-only way for bit 1 alone; the store schema bump makes fetch rebuild an existing rail store; a ferry store holding only `ferry=yes` ways and a bus store holding only relation members are built, not refused, with a non-empty extent; a layer the release omits is carried when its store is on disk and dropped when it is not; a layer omitted by two consecutive releases is dropped on the second with the retirement `WARNING`, and one that reappears is installed normally and loses its `carried` mark.
   - `pytest tests/test_rail_store*.py tests/test_rail_data_fetch.py tests/test_rail_source.py tests/test_rail_issue_359.py tests/test_rail_issue_363.py` passes.
 - **Out of scope:** filtering ferry or bus in CI (U7); resolving from them (U9).
 - **Latitude:** local design.
@@ -420,7 +424,7 @@ Ships alone, before any layer data exists (*Boundaries crossed*).
 
 ### Checkpoint — owner deploys U8 to val and prod
 
-Not a unit. Nothing in Wave 5 merges until both boxes run U8's reader: a schema-3 release reaching a schema-2 reader sends every train back to Overpass.
+Not a unit. Nothing in Wave 5 merges until both boxes run U8's reader: a box without it refuses every refresh once a schema-3 release exists, and keeps routing on data that only gets older (R3-2).
 
 ### Wave 5 — ferry and bus layers in CI
 
