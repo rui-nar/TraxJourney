@@ -497,9 +497,13 @@ def _installed_manifest(dest: Path, release_manifest: dict, complete: bool,
     return {
         "schema": MANIFEST_SCHEMA,
         "generated_at": generated_at,
-        # Rail sorts after bus and ferry within a region, so a reader from
-        # before layers — which keys this file by region alone, last entry
-        # winning — lands on the rail entry after a rollback.
+        # Rail sorts after bus and ferry within a region, so the old fetch's
+        # _installed_manifest — which keys this file by region alone, last
+        # entry winning — lands on the rail entry after a rollback. The old
+        # resolver's load_coverage and the old age check read every entry
+        # whatever its layer; that is harmless after a rollback past U8,
+        # because the old reader refuses schema-3 stores anyway and falls
+        # back to Overpass.
         "regions": sorted(regions, key=lambda e: (e.get("region", ""), entry_layer(e))),
     }
 
