@@ -245,6 +245,8 @@ investigation for this plan found three more.
    - **Port.** The client gets a Dart port of the server's track maths
      (`track_metrics/`): haversine (R = 6371 km), `align_points`,
      `interpolate_elevation_gaps`, `points_to_elevation_profile`,
+     the dropout-sentinel detection rule (`_sentinel_mask` of migration
+     `c4a9e1f70b38`, needed by U8),
      `elevation_gain` with its helpers and constants (decision 12),
      `recompute_track_metrics` with its time apportioning, and
      `_apportion_gain`; the polyline encoder moves out of the video module
@@ -353,7 +355,7 @@ investigation for this plan found three more.
     - Parity ("shared, not duplicated", #366 AC2): the Python constants are
       the source of truth. A pytest parses the Dart constants and fails
       unless they equal `track_edit.py`'s; a Python script writes
-      `flutter_client/test/fixtures/elevation_gain_vectors.json` (series →
+      `flutter_client/test/fixtures/track_metrics_vectors.json` (series →
       expected gain, including noisy, stepped and sentinel cases from
       `tests/elevation_bench/`), a pytest fails when the committed file no
       longer matches Python's output, and a Dart test asserts the port
