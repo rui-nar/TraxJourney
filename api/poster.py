@@ -42,6 +42,7 @@ from sqlmodel import select
 from api.deps import get_current_user
 from api.project_access import OwnerParam, resolve_project
 from models.project_db import DBPosterJob
+from models.user import UserInfo
 from src.poster.poster_job_runner import run_poster_job
 from src.jobs.queue import QUEUE_POSTER, enqueue
 from src.poster.poster_renderer import (
@@ -124,6 +125,10 @@ class PosterRequest(BaseModel):
     title_position: TitlePositionIn = Field(default_factory=TitlePositionIn)
     title_text: Optional[str] = None
     title_scale: float = 1.0
+    # The user agreed to send this trip's memory text in plaintext for this one
+    # poster. Needed only when the trip owner is encrypted and a memory carries
+    # text (``_require_consent``); the preview never asks for it.
+    plaintext_consent: bool = False
 
     @field_validator("title_scale")
     @classmethod
@@ -175,6 +180,31 @@ def _get_job_by_token(sess, token: str) -> DBPosterJob:
     return job
 
 
+def _require_consent(sess, owner_id: int, body: PosterRequest) -> None:
+    """409 ``consent_required`` when an encrypted owner's trip would send memory
+    text without the user having agreed to it.
+
+    The job renders that text into files kept on the server, so an encrypted
+    trip's memory text may reach it only with consent. The detail names memory
+    ids, never their text (same shape as the video consent 409 in
+    ``api/video.py``). The preview does not call this: it stores nothing.
+    """
+    if body.plaintext_consent:
+        return
+    with_text = [m.id for m in body.memories if m.name or m.description]
+    if not with_text:
+        return
+    owner_user = sess.get(UserInfo, owner_id)
+    if owner_user is None or not owner_user.encryption_enabled:
+        return
+    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+        "code": "consent_required",
+        "message": "This trip is encrypted. Its memory text can be printed only "
+                   "if you send it decrypted for this one poster.",
+        "consent_required": with_text,
+    })
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.post("/{name}/poster", status_code=status.HTTP_201_CREATED,
@@ -190,6 +220,7 @@ def create_poster_job(
     user_info_id = int(current_user["sub"])
     with get_session() as sess:
         project = resolve_project(sess, user_info_id, name, owner)
+        _require_consent(sess, project.user_info_id, body)
         job = DBPosterJob(
             project_id=project.id,
             user_info_id=user_info_id,

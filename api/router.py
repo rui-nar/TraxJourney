@@ -23,7 +23,7 @@ from src.jobs.route_jobs import (
     sweep_orphaned_jobs,
     sweep_stale_resolver_segments,
 )
-from src.poster.poster_job_runner import sweep_orphaned_poster_jobs
+from src.poster.poster_job_runner import sweep_orphaned_poster_jobs, sweep_poster_jobs
 from src.people.avatar_move import move_companion_avatars
 from src.project.project_repo import StaleWriteError
 from src.video.job_runner import sweep_video_jobs
@@ -182,6 +182,10 @@ async def lifespan(_app: FastAPI):
     # by a terminal job. On its own minute, away from the other hourly jobs.
     _scheduler.add_job(sweep_video_jobs, "cron", minute=40,
                        id="video_sweep", replace_existing=True)
+    # Finished poster jobs (row and files) are deleted 30 days after they
+    # complete. Hourly, on a minute no other job uses.
+    _scheduler.add_job(sweep_poster_jobs, "cron", minute=50,
+                       id="poster_sweep", replace_existing=True)
     # One listener covers every job — current and future — with run counts,
     # duration and a last-success timestamp (issue #125).
     _scheduler.add_listener(record_job_event, JOB_EVENT_MASK)
