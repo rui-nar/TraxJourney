@@ -145,7 +145,7 @@ Triager flag (not a round-2 finding, outside the fixes reviewed): Wave 1 (U2 and
 - Revisit when: a rail_data_refresh run on a box with REDIS_URL logs queue.py's "not run" ERROR, or the age gauge passes 40 days there — then distinguish with queue_available() and raise or reschedule on a broker failure
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (U6, delivery)
 
 ### R2-5 — Wave 3 holds a deploy gate and intra-wave dependencies DELIVERY.md's wave model cannot express
 - Trigger: deliver-plan runs Wave 3's units in parallel → U7/U9/U10 depend on U8 in the same wave, U8 and U9 share rail_source.py → the orchestrator serialises by hand or integrates U7 before U8 is deployed (the schema-3-before-readers outage)
@@ -207,6 +207,7 @@ Branch `feat/345-local-transport-data`, base cc52978b (plan + origin/main e96f86
 | U4 | Route corpus and runner | Opus | S2 | 1 | owner question (Hamburg → Munich) | yes | — |
 | U2 | Daily rail-data age check | Opus | S5 | 1 | — | yes | R1-6 |
 | U5 | Corpus gates the Rail extract publish | Opus | S3 | 1 | — | yes | — |
+| U6 | The box refreshes its rail data monthly | Opus | S5 | 1 | — | yes | R1-4, R1-6, R2-4 |
 
 Notes:
 - U1: the `rail-data` label did not exist; owner approved creating it (created 2026-10-05). `_working_bash()` in the workflow test now prefers Git Bash on Windows (a bare `bash` is the WSL launcher and drops env vars); no change on Linux.
@@ -216,3 +217,5 @@ Notes:
 - U2: also runs once at start-up (`next_run_time=now`, API process only) so the gauge exists right after a deploy; the age gauge is NaN when the manifest is unusable.
 - U5: the gate builds every corpus region the merged manifest holds (carried ones fetched from the patched release and sha256-checked), `--require-all` on full runs only; publish installs requirements.txt. Live check (owner-approved): dispatch 37278688216, `europe/france` subset on d39d9d6a — all jobs green, corpus 11 pass / 1 known-bad-unchanged / 0 skip, publish job 1 m 19 s; it patched France in rail-data-2026-10-05.
 - Wave 2 integration (d39d9d6a): full suite 6140 passed, 39 skipped.
+- U6: distinguishes "no broker" (one WARNING a month, returns) from "broker refused the job" (raises, so the job metrics record the month as failed) — this resolves deferred finding R2-4 inside the unit's latitude. Peak RSS of a full 49-region refresh of rail-data-2026-10-05, Linux container: 361 MB, 162 s, 304 MB on disk; an up-to-date re-run 54 MB / 1.5 s. Val measurement owed by the owner at the U8 checkpoint.
+- Wave 3 integration (75505d64): full suite 6166 passed, 39 skipped, 1 failed — tests/test_video_camera.py::test_ninety_seconds_of_a_long_trip_is_fast, a timing test under machine load; passed 3/3 alone; the branch does not touch src/video.
