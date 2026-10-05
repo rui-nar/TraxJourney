@@ -635,7 +635,7 @@ def test_hafas_failure_logs_warning_and_falls_back_unchanged(caplog):
                                       "Helsinki on 2026-06-01")), \
          patch("src.services.overpass_service.get_rail_geometry") as mock_rail:
         mock_rail.return_value = type(
-            "R", (), {"polyline": straight, "degraded": True, "strategy": "straight"})()
+            "R", (), {"polyline": straight, "degraded": True, "strategy": "straight", "source": "overpass"})()
 
         with caplog.at_level(logging.WARNING, logger="api.segments"):
             polyline, stop_count, degraded, strategy = _compute_segment_geometry(
@@ -677,7 +677,7 @@ def test_hafas_success_does_not_log_warning(caplog):
                return_value=TrainRoute(hafas_stops, [])), \
          patch("src.services.overpass_service.get_rail_geometry") as mock_rail:
         mock_rail.return_value = type(
-            "R", (), {"polyline": [[1.0, 1.0]], "degraded": False, "strategy": "relation_uic"})()
+            "R", (), {"polyline": [[1.0, 1.0]], "degraded": False, "strategy": "relation_uic", "source": "overpass"})()
 
         with caplog.at_level(logging.WARNING, logger="api.segments"):
             _compute_segment_geometry(
@@ -759,7 +759,7 @@ def test_job_hafas_fallback_flagged_distinctly_from_clean_resolve(env, monkeypat
                                       "Helsinki on 2026-06-01")), \
          patch("src.services.overpass_service.get_rail_geometry") as mock_rail:
         mock_rail.return_value = type(
-            "R", (), {"polyline": real_line, "degraded": False, "strategy": "straight"})()
+            "R", (), {"polyline": real_line, "degraded": False, "strategy": "straight", "source": "overpass"})()
         _resolve_route_job(user_id, "My Trip", "seg-hafas-fail",
                            {"hafas_provider": "vr", "train_number": "273"})
 
@@ -771,7 +771,7 @@ def test_job_hafas_fallback_flagged_distinctly_from_clean_resolve(env, monkeypat
                return_value=TrainRoute(hafas_stops, [])), \
          patch("src.services.overpass_service.get_rail_geometry") as mock_rail:
         mock_rail.return_value = type(
-            "R", (), {"polyline": real_line, "degraded": False, "strategy": "relation_uic"})()
+            "R", (), {"polyline": real_line, "degraded": False, "strategy": "relation_uic", "source": "overpass"})()
         _resolve_route_job(user_id, "My Trip", "seg-clean",
                            {"hafas_provider": "vr", "train_number": "273"})
 
@@ -807,7 +807,7 @@ def test_hafas_failure_reason_is_persisted_on_the_resolved_segment(env, monkeypa
          patch("src.services.overpass_service.get_rail_geometry") as mock_rail:
         mock_rail.return_value = type(
             "R", (), {"polyline": [[24.9414, 60.1719], [25.7294, 66.5039]],
-                      "degraded": True, "strategy": "straight"})()
+                      "degraded": True, "strategy": "straight", "source": "overpass"})()
         _resolve_route_job(user_id, "My Trip", "seg-why",
                            {"hafas_provider": "db", "train_number": "ICE 75"})
 
@@ -837,7 +837,7 @@ def test_a_clean_resolve_leaves_route_error_empty(env, monkeypatch):
          patch("src.services.overpass_service.get_rail_geometry") as mock_rail:
         mock_rail.return_value = type(
             "R", (), {"polyline": [[1.0, 1.0], [2.0, 2.0]],
-                      "degraded": False, "strategy": "relation_uic"})()
+                      "degraded": False, "strategy": "relation_uic", "source": "overpass"})()
         _resolve_route_job(user_id, "My Trip", "seg-ok",
                            {"hafas_provider": "vr", "train_number": "273"})
 
@@ -855,7 +855,7 @@ def test_a_long_hafas_reason_is_truncated_to_200_chars():
                side_effect=HafasError("x" * 500)), \
          patch("src.services.overpass_service.get_rail_geometry") as mock_rail:
         mock_rail.return_value = type(
-            "R", (), {"polyline": [[1.0, 1.0]], "degraded": True, "strategy": "straight"})()
+            "R", (), {"polyline": [[1.0, 1.0]], "degraded": True, "strategy": "straight", "source": "overpass"})()
         _compute_segment_geometry(seg, {"hafas_provider": "db", "train_number": "ICE 75"})
 
     assert len(seg.route_error) == 200

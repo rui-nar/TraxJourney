@@ -86,6 +86,7 @@ def _compute_segment_geometry(
         get_ferry_geometry,
         get_rail_geometry,
     )
+    from src.utils.metrics import ROUTE_RESOLVES
 
     seg.route_hafas_failed = False
     seg.route_error = None
@@ -114,6 +115,7 @@ def _compute_segment_geometry(
                 # The trip carries its own real track, so Overpass is skipped
                 # entirely for a matched train — the whole point of the move.
                 if len(route.polyline) >= 2:
+                    ROUTE_RESOLVES.labels("train", "motis", "false").inc()
                     return route.polyline, len(stops), False, "motis_trip"
             except HafasError as exc:
                 _log.warning(
@@ -124,16 +126,20 @@ def _compute_segment_geometry(
                 seg.route_hafas_failed = True
                 seg.route_error = f"Train lookup failed: {exc}"[:200]
         rail = get_rail_geometry(stops)
+        ROUTE_RESOLVES.labels(
+            "train", rail.source, str(rail.degraded).lower()).inc()
         return rail.polyline, len(stops), rail.degraded, rail.strategy
 
     if seg.segment_type == "boat":
         polyline = get_ferry_geometry(
             seg.start.lat, seg.start.lon, seg.end.lat, seg.end.lon)
+        ROUTE_RESOLVES.labels("boat", "overpass", "false").inc()
         return polyline, 2, False, "ferry"
 
     if seg.segment_type == "bus":
         polyline = get_bus_geometry(
             seg.start.lat, seg.start.lon, seg.end.lat, seg.end.lon)
+        ROUTE_RESOLVES.labels("bus", "overpass", "false").inc()
         return polyline, 2, False, "bus"
 
     raise ValueError("Route resolution only supported for train, boat, and bus segments")

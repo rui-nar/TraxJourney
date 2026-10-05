@@ -34,6 +34,7 @@ from src.services.rail_source import (
     RailSourceOverload,
 )
 from src.utils.logging import get_logger
+from src.utils.metrics import OVERPASS_REQUESTS
 
 _log = get_logger(__name__)
 
@@ -51,6 +52,7 @@ class RailGeometry:
     polyline: list[list[float]]
     strategy: str          # relation_uic | relation_endpoints | coordinate_dijkstra | straight
     degraded: bool
+    source: str = "overpass"   # local | overpass — which source answered
 
 # ÖBB and some HAFAS providers return compound location IDs like
 # "A=1@O=Linz Hbf@X=14280@Y=48290@U=81@L=8100013@…"
@@ -208,7 +210,7 @@ class OverpassRailSource(RailSource):
 );
 out center body;
 """
-        elements = _overpass(query).get("elements", [])
+        elements = _overpass(query, "rail_station").get("elements", [])
         if not elements:
             return None
 
@@ -242,7 +244,7 @@ node["uic_ref"="{uic2}"]->.b;
 )->.r;
 .r out geom;
 """
-        return _overpass(query).get("elements", [])
+        return _overpass(query, "rail").get("elements", [])
 
     def relations_near(
         self, lat: float, lon: float, radius_m: float = 25_000
@@ -252,7 +254,7 @@ node["uic_ref"="{uic2}"]->.b;
 rel[{_ROUTE_TAGS}](around:{radius_m},{lat},{lon});
 out ids;
 """
-        return {e["id"] for e in _overpass(query).get("elements", [])}
+        return {e["id"] for e in _overpass(query, "rail").get("elements", [])}
 
     def relation_geometry(
         self, rel_ids: Sequence[int], near: Sequence[tuple[float, float]]
@@ -263,7 +265,7 @@ out ids;
 rel(id:{ids_str});
 ._ out geom;
 """
-        return _overpass(query).get("elements", [])
+        return _overpass(query, "rail").get("elements", [])
 
     def ways_in_bbox(
         self, min_lat: float, min_lon: float, max_lat: float, max_lon: float
@@ -278,7 +280,7 @@ rel(id:{ids_str});
             f"({min_lat},{min_lon},{max_lat},{max_lon});"
             "out geom;"
         )
-        return _overpass(query).get("elements", [])
+        return _overpass(query, "rail").get("elements", [])
 
 
 # One instance, because it holds nothing: the pacing, caching and cooldowns all
@@ -385,6 +387,7 @@ def get_rail_geometry(stops: list[dict]) -> RailGeometry:
     if local is not None:
         try:
             result = _resolve_rail(stops, local)
+            result.source = "local"
             if result.degraded:
                 _log.info("local rail source found no route — retrying via Overpass")
                 result = None
@@ -394,9 +397,11 @@ def get_rail_geometry(stops: list[dict]) -> RailGeometry:
             # the graph from its answer is the allocation that was just refused.
             # So this is the one local failure that does not fall back.
             _log.warning("rail bounding box refused locally (%s) — straight-lining", exc)
-            result = RailGeometry(_straight(lat1, lon1, lat2, lon2), "straight", True)
+            result = RailGeometry(
+                _straight(lat1, lon1, lat2, lon2), "straight", True, "local")
     if result is None:
         result = _resolve_rail(stops, _OVERPASS_SOURCE)
+        result.source = "overpass"
 
     log = _log.warning if result.degraded else _log.info
     log("rail geometry resolved: strategy=%s points=%d degraded=%s elapsed=%.1fs",
@@ -1266,7 +1271,7 @@ rel["route"="{route_tag}"]({bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]});
 ._;
 out geom;
 """
-    data = _overpass(query)
+    data = _overpass(query, route_tag)
     relations = data.get("elements", [])
 
     # Maximum acceptable endpoint-proximity score (~0.002 ≈ both terminals
@@ -1315,7 +1320,7 @@ def _via_way_type_fallback(
         "out geom;"
     )
     try:
-        data = _overpass(query)
+        data = _overpass(query, route_tag)
     except OverpassError:
         raise
 
@@ -1358,7 +1363,7 @@ def _via_ferry_yes_fallback(
         "out geom;"
     )
     try:
-        data = _overpass(query)
+        data = _overpass(query, "ferry")
     except OverpassError:
         raise
 
@@ -1434,7 +1439,7 @@ def _slot_name(url: str) -> str:
     return "overpass:" + urlsplit(url).netloc
 
 
-def _overpass(query: str) -> dict:
+def _overpass(query: str, purpose: str) -> dict:
     """POST a query to Overpass, backing off a host rather than arguing with it.
 
     A cached answer short-circuits everything below — including the concurrency
@@ -1456,9 +1461,13 @@ def _overpass(query: str) -> dict:
 
     Every attempt is recorded and surfaced on the final error, so a resolve that
     degrades can say which hosts refused it and why.
+
+    *purpose* (``rail``, ``rail_station``, ``ferry`` or ``bus``) only labels the
+    ``traxjourney_overpass_requests_total`` counter.
     """
     cached = cache_get(_CACHE_NAMESPACE, query)
     if cached is not None:
+        OVERPASS_REQUESTS.labels(purpose, "cache_hit").inc()
         _log.info("overpass cache hit (%d bytes)", len(cached))
         return json.loads(cached)
 
@@ -1466,6 +1475,7 @@ def _overpass(query: str) -> dict:
     for url in _OVERPASS_ENDPOINTS:
         host = _slot_name(url)
         if is_cooling(host):
+            OVERPASS_REQUESTS.labels(purpose, "cooling").inc()
             attempts.append(f"{url}: cooling down")
             _log.info("overpass %s: still cooling down, skipped", url)
             continue
@@ -1478,6 +1488,7 @@ def _overpass(query: str) -> dict:
             if not got_slot:
                 # Our own traffic is saturating this host. Another endpoint has
                 # its own quota; queueing behind ourselves does not.
+                OVERPASS_REQUESTS.labels(purpose, "no_slot").inc()
                 attempts.append(
                     f"{url}: no free slot within {_SLOT_ACQUIRE_TIMEOUT_S:.0f}s")
                 _log.info("overpass %s: no free slot, moving on", url)
@@ -1491,6 +1502,7 @@ def _overpass(query: str) -> dict:
             except Exception as exc:  # noqa: BLE001 — cannot even reach it
                 elapsed = time.monotonic() - started
                 mark_cooling(host, _COOLDOWN_UNREACHABLE_S)
+                OVERPASS_REQUESTS.labels(purpose, "unreachable").inc()
                 attempts.append(f"{url}: {type(exc).__name__} after {elapsed:.1f}s")
                 _log.warning(
                     "overpass %s unreachable after %.1fs (%s) — backing off for %ds",
@@ -1500,6 +1512,7 @@ def _overpass(query: str) -> dict:
 
         if resp.status_code in _BACK_OFF_STATUSES:
             mark_cooling(host, _COOLDOWN_RATE_LIMITED_S)
+            OVERPASS_REQUESTS.labels(purpose, "back_off").inc()
             attempts.append(f"{url}: HTTP {resp.status_code} after {elapsed:.1f}s")
             _log.warning(
                 "overpass %s returned %d after %.1fs — backing off for %ds",
@@ -1509,6 +1522,7 @@ def _overpass(query: str) -> dict:
             # A 4xx that is not a rate limit is about this query, not this host,
             # so another endpoint will reject it identically — but do not cool a
             # host over our own malformed request either.
+            OVERPASS_REQUESTS.labels(purpose, "client_error").inc()
             attempts.append(f"{url}: HTTP {resp.status_code} after {elapsed:.1f}s")
             _log.info("overpass %s returned %d after %.1fs",
                       url, resp.status_code, elapsed)
@@ -1518,10 +1532,12 @@ def _overpass(query: str) -> dict:
         except ValueError:
             body = (resp.text or "")[:120].replace(chr(10), " ")
             mark_cooling(host, _COOLDOWN_RATE_LIMITED_S)
+            OVERPASS_REQUESTS.labels(purpose, "bad_body").inc()
             attempts.append(f"{url}: unparseable body after {elapsed:.1f}s")
             _log.warning("overpass %s returned an unparseable body after %.1fs: %r",
                          url, elapsed, body)
             continue
+        OVERPASS_REQUESTS.labels(purpose, "ok").inc()
         _log.info("overpass %s ok in %.1fs (%d bytes)",
                   url, elapsed, len(resp.content))
         # Cache the body rather than the parsed dict: it is what we already

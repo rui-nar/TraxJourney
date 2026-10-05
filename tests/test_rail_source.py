@@ -144,7 +144,7 @@ class FixtureOverpass:
         self.conn = sqlite3.connect(path)
         self.queries = []
 
-    def __call__(self, query):
+    def __call__(self, query, purpose):
         self.queries.append(query)
         if '"railway"~"^(station|halt)$"' in query:
             return {"elements": self._stations(*self._around(query))}
@@ -688,7 +688,7 @@ class TestOverpassFallback:
             {"lat": 49.62, "lon": 6.05},
             {"lat": 49.6385071, "lon": 5.9823816}]}]}
 
-        def _answer(query):
+        def _answer(query, purpose):
             if "uic_ref" in query and "railway" in query:
                 return {"elements": []}
             if "out ids" in query:

@@ -123,6 +123,23 @@ Strava — distinct from `outcome="rate_limited"`, which means Strava returned a
 under *Constraints*: a second worker would keep its own count and the app could
 exceed the quota by a factor of the worker count.
 
+### Route resolution (issue #345)
+
+| Metric | Labels |
+|---|---|
+| `traxjourney_overpass_requests_total` | `purpose`, `outcome` |
+| `traxjourney_route_resolves_total` | `mode`, `source`, `degraded` |
+
+`purpose` ∈ `rail`, `rail_station`, `ferry`, `bus`. `outcome` ∈ `cache_hit`,
+`ok`, `back_off`, `unreachable`, `cooling`, `no_slot`, `client_error` (a 4xx
+that is not a back-off), `bad_body` (unparseable). It counts per endpoint
+attempt, so one query that fails over counts once per host it tried; only `ok`
+is a request that Overpass answered.
+
+`mode` ∈ `train`, `boat`, `bus`. `source` ∈ `motis` (a matched train), `local`,
+`overpass`. `degraded` is `true` or `false`. One increment per resolve; a rail
+resolve that fell back from the local store to Overpass counts `overpass`.
+
 ### Background jobs
 
 | Metric | Labels |

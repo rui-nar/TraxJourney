@@ -252,6 +252,24 @@ EXTERNAL_DURATION = Histogram(
     ["service", "endpoint"],
 )
 
+# Overpass is the one upstream whose quota we are asked to spend sparingly
+# (issue #345), so it is counted per attempt, by what the query was for. Each
+# call to ``_overpass`` records the outcome of every endpoint it tries, so one
+# call can count more than once. Both label sets are closed.
+OVERPASS_REQUESTS = Counter(
+    "traxjourney_overpass_requests_total",
+    "Overpass queries by purpose and what became of each attempt.",
+    ["purpose", "outcome"],
+)
+
+# One increment per route resolve, whichever source answered it.
+ROUTE_RESOLVES = Counter(
+    "traxjourney_route_resolves_total",
+    "Route resolves by segment mode, the source that answered, and whether the "
+    "result is a degraded straight line.",
+    ["mode", "source", "degraded"],
+)
+
 # Strava's quotas belong to the application, and the limiters enforcing them are
 # process-wide (issue #130), which is what makes these worth exporting.
 # Scrape-time: the limiter lives in the API process, the only one that calls
