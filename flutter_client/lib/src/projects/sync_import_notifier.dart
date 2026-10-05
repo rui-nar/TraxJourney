@@ -4,6 +4,8 @@ import 'package:http/http.dart' as http;
 import '../api/client.dart';
 import '../billing/billing_service.dart';
 import '../core/project_ref.dart';
+import '../crypto/encryption.dart';
+import '../crypto/encryption_service.dart' show encryptionRefusalMessage;
 
 class SyncImportNotifier extends ChangeNotifier {
   final ApiClient _api;
@@ -109,6 +111,22 @@ class SyncImportNotifier extends ChangeNotifier {
 
     if (stravaToImport.isEmpty && psToImport.isEmpty) return 0;
 
+    // Polarsteps memory text is encrypted when the user owns the trip and the
+    // account is encrypted (#505); while the key is locked, an import with
+    // steps doesn't start (#506). Strava activities alone need no key.
+    // Ownership comes from the session's own id: the dialog's ref is built
+    // from the URL and has no server role (its default says "owner").
+    final owned =
+        ref.resolveRoleFor(_api.tokenUserId?.toString()).role == 'owner';
+    final blocked = owned && psToImport.isNotEmpty
+        ? encryption.writeBlockedMessage
+        : null;
+    if (blocked != null) {
+      error = blocked;
+      notifyListeners();
+      return 0;
+    }
+
     isImporting = true;
     importedCount = 0;
     importTotal = stravaToImport.length + psToImport.length;
@@ -157,12 +175,15 @@ class SyncImportNotifier extends ChangeNotifier {
         final lon = (step['lon'] as num?)?.toDouble();
 
         try {
+          final encName = owned ? await encryption.protect(name) : name;
+          final encDescription =
+              owned ? await encryption.protect(description) : description;
           final result = await _api.post(ref.withOwner('/api/memories/'), {
             'project_name': ref.name,
             'date': date,
             'geo_mode': (lat != null && lon != null) ? 'custom' : 'start_of_day',
-            if (name != null) 'name': name,
-            if (description != null) 'description': description,
+            if (encName != null) 'name': encName,
+            if (encDescription != null) 'description': encDescription,
             if (lat != null) 'lat': lat,
             if (lon != null) 'lon': lon,
           }) as Map<String, dynamic>;
@@ -183,7 +204,10 @@ class SyncImportNotifier extends ChangeNotifier {
           }
           created++;
         } on Exception catch (e) {
-          error = e.toString().replaceFirst('Exception: ', '');
+          error = (e is ApiException
+                  ? encryptionRefusalMessage(e.statusCode, e.body)
+                  : null) ??
+              e.toString().replaceFirst('Exception: ', '');
         }
 
         importedCount++;

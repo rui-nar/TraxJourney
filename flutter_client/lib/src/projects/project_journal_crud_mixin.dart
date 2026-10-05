@@ -10,6 +10,7 @@ import '../api/client.dart';
 import '../core/project_ref.dart';
 import '../crypto/e2ee_crypto.dart' show EncryptedField;
 import '../crypto/encryption.dart';
+import '../crypto/encryption_service.dart' show encryptionRefusalMessage;
 import '../crypto/undecrypted_fields.dart';
 import 'project_quota_mixin.dart';
 
@@ -45,6 +46,17 @@ mixin ProjectJournalCrudMixin on ChangeNotifier, ProjectQuotaMixin {
 
   // ── Journal CRUD ──────────────────────────────────────────────────────────
 
+  /// Why a journal entry can't be saved from this device now, or null when
+  /// it can (#506). Journal entries are private to their author and
+  /// encrypted under the author's key on any trip, so this is the account's
+  /// state alone. The journal editor disables Save with this message.
+  String? get journalWriteBlockedMessage => encryption.writeBlockedMessage;
+
+  /// [errorMessage], with the server's encryption refusals in plain words.
+  String _journalErrorMessage(Exception e) =>
+      (e is ApiException ? encryptionRefusalMessage(e.statusCode, e.body) : null) ??
+      errorMessage(e);
+
   /// Creates a journal entry. Returns `true` on success, `false` on failure
   /// (in which case the optimistic placeholder is rolled back and [error] is
   /// set) — callers must check this before treating the save as done.
@@ -60,6 +72,12 @@ mixin ProjectJournalCrudMixin on ChangeNotifier, ProjectQuotaMixin {
   }) async {
     final ref = projectRef;
     if (ref == null) return false;
+    final blocked = journalWriteBlockedMessage;
+    if (blocked != null) {
+      error = blocked;
+      notifyListeners();
+      return false;
+    }
     // Unique per call so two concurrent creates never share a placeholder id
     // (a literal '__optimistic__' would collide and produce duplicate
     // ValueKeys in the map marker layer).
@@ -109,13 +127,15 @@ mixin ProjectJournalCrudMixin on ChangeNotifier, ProjectQuotaMixin {
               !(item['item_type'] == 'journal' &&
                 item['journal']?['id']?.toString() == tempId))
           .toList();
-      error = errorMessage(e);
+      error = _journalErrorMessage(e);
       notifyListeners();
       return false;
     }
   }
 
-  Future<void> updateJournal(
+  /// Updates a journal entry. Returns `true` on success, `false` on failure
+  /// (in which case [error] is set), like [createJournal].
+  Future<bool> updateJournal(
     String journalId, {
     required String date,
     required String geoMode,
@@ -126,7 +146,13 @@ mixin ProjectJournalCrudMixin on ChangeNotifier, ProjectQuotaMixin {
     bool keepStoredDescription = false,
   }) async {
     final ref = projectRef;
-    if (ref == null) return;
+    if (ref == null) return false;
+    final blocked = journalWriteBlockedMessage;
+    if (blocked != null) {
+      error = blocked;
+      notifyListeners();
+      return false;
+    }
     // keepStoredDescription: the editor hands back the stored envelope it
     // could not decrypt, untouched; it is resent as it is, never encrypted
     // again. A value that is not a well-formed envelope is text the user
@@ -170,9 +196,11 @@ mixin ProjectJournalCrudMixin on ChangeNotifier, ProjectQuotaMixin {
         if (lon != null) 'lon': lon,
       });
       await reloadDetailsOnly(ref);
+      return true;
     } on Exception catch (e) {
-      error = errorMessage(e);
+      error = _journalErrorMessage(e);
       notifyListeners();
+      return false;
     }
   }
 
