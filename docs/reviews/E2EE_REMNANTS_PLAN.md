@@ -343,11 +343,15 @@ No findings. Backfill traced against reset_activity_track branch by branch; SQLi
 | U3 | Python parity vectors for the Dart track maths | Opus | S3 | 2 (orchestrator added a sentinel_mask section) | — | yes | — |
 | U12 | Encrypted edit/split routes, scalar snapshots, plain_fields, gain route | Opus | S4 | 1 | X3 → Scope widened (tests/test_activity_track_edit_api.py::test_reset_restores_original, new reset contract) | yes | — |
 | U6 | Client encryption state, write gating, owner-only memory encryption | Opus | S5 | 1 | — | yes | — |
+| U13 | Dart track_metrics port | Sonnet | — | 1 | — | yes | — |
+| U9 | Poster consent dialog | Sonnet | — | 1 | X3 → Scope corrected (plan paths wrong; new poster_consent_dialog.dart, app_screen `_startPosterJob`) | yes | — |
+| U7 | Catch-up encryption and companion repair on load | Opus | S5 | 2 (fix round U7-R1-1) | — | yes | U7-R1-1, U7-R1-2, U7-R1-3 |
 
 Notes:
 - Wave 1 interrupted once by an API session limit; all four implementers resumed from their worktrees with no work lost.
 - Local Windows full-suite runs hung (U1); full checks run in the `traxjourney-py314-citest` container instead. Wave 1 without U2: 6131 passed, 39 skipped. Full wave 1 (a01ecf3c): 6175 passed, 39 skipped.
 - Wave 2 (a7b1e14e): server 6292 passed, 40 skipped; flutter analyze clean; flutter test 1986 passed.
+- Wave 3 (3519a0a3): server 6293 passed, 39 skipped; flutter analyze clean; flutter test 2169 passed.
 - Orchestrator decisions in wave 2: plan updated (fixture name `track_metrics_vectors.json`; `_sentinel_mask` added to the U13 port list); U6 accepted narrowings (memory Save gate on owned trips only; sync import refused only with Polarsteps steps; import ownership from the session user id).
 
 ## Unit U12, round 1 — 2026-10-05, reviewed ae7469f7..ffad0cbe (worktree-agent-a52415c6772734e32)
