@@ -40,6 +40,8 @@ from api.project_access import (
     translate_insert_after,
 )
 from api.photo_locks import photo_lock
+from api.photo_order import dump_state, load_state, place
+from api.photo_order import remove as remove_from_order, replace as replace_in_order
 from api.project_shared import bust_project_payloads, project_cache_ref
 from models.project_db import DBJournalEntry, DBProject, DBProjectItem
 from src.models.value_bounds import Lat, Lon
@@ -165,34 +167,53 @@ def _save_photo_files(user_id: str, journal_id: int, uuid_str: str, raw: bytes) 
         ) from exc
 
 
-def _write_journal_photo(journal_id: int, uuid_str: str, order: Optional[int] = None) -> None:
-    """Add *uuid_str* to a journal entry's photo list, at *order* if given, else appended.
+def _delete_photo_files(user_id: str, journal_id: int, photo_uuids: List[str]) -> None:
+    """Remove the full-res + thumbnail files of *photo_uuids* from *user_id*'s
+    tree — the entry's author's, where they were written — and uncount them."""
+    unlink_and_record(user_id, photo_files(
+        photo_folder(_DATA_DIR, user_id, "journal", journal_id), photo_uuids))
 
-    Guarded by a per-entry lock (issue #237) — see api/memories.py's
-    _write_memory_photo for why this read-modify-write of photos_json can't
-    be left unsynchronized.
+
+def _write_journal_photo(
+    journal_id: int, uuid_str: str, order: Optional[int] = None, epoch: Optional[int] = None,
+    *, owner_dir: Optional[str] = None,
+) -> bool:
+    """Place *uuid_str*, whose files are already written under *owner_dir*
+    (the entry's author: journal photos live in the author's tree, not the
+    project owner's), in a journal entry's photo list. Returns False when it
+    could not be placed.
+
+    Mirrors api/memories.py's _write_memory_photo (issue #237): *order* is a
+    rank, inserted among the ranked photos and never over another one; with
+    no *order* the photo is appended (``api/photo_order.py``). The list stays
+    dense — no placeholders. Guarded by a per-entry lock. When the entry is
+    gone (deleted while the files were written; ids are never reused), or
+    *epoch* is given and differs from the stored one, the photo's files are
+    deleted — and uncounted — instead. Nothing bumps a journal entry's epoch
+    today; it is checked so the two modules keep one rule.
     """
     with photo_lock("journal", journal_id):
         with get_session() as sess:
             row = sess.get(DBJournalEntry, journal_id)
-            if row is None:
-                return
-            photos: List[Optional[str]] = json.loads(row.photos_json or "[]")
-            if order is None:
-                photos.append(uuid_str)
-            else:
-                if len(photos) <= order:
-                    photos.extend([None] * (order + 1 - len(photos)))
-                photos[order] = uuid_str
+            state = load_state(row.photo_order_json) if row is not None else None
+            if row is None or (epoch is not None and state["epoch"] != epoch):
+                if owner_dir is not None:
+                    _delete_photo_files(owner_dir, journal_id, [uuid_str])
+                return False
+            photos = [p for p in json.loads(row.photos_json or "[]") if p]
+            photos, state = place(photos, state, uuid_str, order)
             row.photos_json = json.dumps(photos)
+            row.photo_order_json = dump_state(state)
             sess.add(row)
             cache_ref = project_cache_ref(sess, row.project_id)
             sess.commit()
             bust_project_payloads(cache_ref)
+    return True
 
 
 def _download_photo_from_url(
-    journal_id: int, url: str, user_id: str, project_id: Optional[int] = None, order: Optional[int] = None,
+    journal_id: int, url: str, user_id: str, project_id: Optional[int] = None,
+    order: Optional[int] = None, epoch: Optional[int] = None,
 ) -> None:
     try:
         # The client picks this URL: fetch it only from a public address
@@ -213,7 +234,7 @@ def _download_photo_from_url(
         return
     uuid_str = str(uuid_lib.uuid4())
     _save_photo_files(user_id, journal_id, uuid_str, content)
-    _write_journal_photo(journal_id, uuid_str, order)
+    _write_journal_photo(journal_id, uuid_str, order, epoch, owner_dir=user_id)
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -245,8 +266,9 @@ class JournalUpdateBody(BaseModel):
 class PhotoFromUrlIn(BaseModel):
     url: str = Field(description="Public URL of the image to download")
     order: Optional[int] = Field(
-        None, description="Intended position of this photo within the entry's photo list; "
-                           "preserved even if concurrent downloads complete out of order. Omit to append.",
+        None, ge=0, le=9999,
+        description="Intended position of this photo within the entry's photo list; "
+                    "preserved even if concurrent downloads complete out of order. Omit to append.",
     )
 
 
@@ -449,7 +471,8 @@ async def upload_photo(
     # semaphore comment in api/memories.py — but here via FastAPI's thread
     # pool instead of a sync route, since the rest of this handler stays async).
     await run_in_threadpool(_save_photo_files, current_user["sub"], journal_id, photo_uuid, raw)
-    _write_journal_photo(journal_id, photo_uuid)
+    if not _write_journal_photo(journal_id, photo_uuid, owner_dir=current_user["sub"]):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Journal entry not found")
     return {"uuid": photo_uuid}
 
 
@@ -466,8 +489,11 @@ async def queue_photo_from_url(
     with get_session() as sess:
         row = _get_owned_journal(sess, journal_id, user_info_id)
         project_id = row.project_id
+        # Kept in step with memories (#237), where a re-import's clear bumps
+        # the epoch; nothing bumps a journal entry's, so this always matches.
+        epoch = load_state(row.photo_order_json)["epoch"]
     background_tasks.add_task(
-        _download_photo_from_url, journal_id, body.url, current_user["sub"], project_id, body.order,
+        _download_photo_from_url, journal_id, body.url, current_user["sub"], project_id, body.order, epoch,
     )
     return {"queued": True}
 
@@ -490,8 +516,9 @@ def delete_photo(
         unlink_and_record(current_user["sub"], photo_files(
             photo_folder(_DATA_DIR, current_user["sub"], "journal", journal_id), [photo_uuid]))
 
-        photos.remove(photo_uuid)
+        photos, state = remove_from_order(photos, load_state(row.photo_order_json), photo_uuid)
         row.photos_json = json.dumps(photos)
+        row.photo_order_json = dump_state(state)
         sess.add(row)
         cache_ref = project_cache_ref(sess, row.project_id)
         sess.commit()
@@ -527,10 +554,20 @@ async def replace_photo(
 
     with photo_lock("journal", journal_id), get_session() as sess:
         row = sess.get(DBJournalEntry, journal_id)
-        photos: List[str] = json.loads(row.photos_json or "[]")
-        # In-place index replacement, not remove+append: photos_json order is display order.
-        photos[photos.index(old_uuid)] = new_uuid
+        # Same position and rank, not remove+append: photos_json order is
+        # display order. None when the old photo was deleted meanwhile.
+        replaced = None if row is None else replace_in_order(
+            [p for p in json.loads(row.photos_json or "[]") if p],
+            load_state(row.photo_order_json), old_uuid, new_uuid,
+        )
+        if replaced is None:
+            # The entry or the old photo went while the new files were
+            # written: they have nowhere to go (#237).
+            _delete_photo_files(current_user["sub"], journal_id, [new_uuid])
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
+        photos, state = replaced
         row.photos_json = json.dumps(photos)
+        row.photo_order_json = dump_state(state)
         sess.add(row)
         cache_ref = project_cache_ref(sess, row.project_id)
         sess.commit()

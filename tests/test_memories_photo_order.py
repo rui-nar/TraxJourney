@@ -25,7 +25,8 @@ Covers:
     leave no files and never land in a newer memory;
   * ``order`` outside 0..9999 is refused;
   * N threads writing shuffled ranks concurrently lose nothing (memories on
-    a file-backed SQLite; journal still index-based until its own unit);
+    a file-backed SQLite; the journal's rank rules are covered in
+    ``tests/test_journal_photo_order.py``);
   * the end-to-end ``POST /photos/from-url`` route accepts ``order``;
   * ``delete_photo`` still works under the same lock.
 """
