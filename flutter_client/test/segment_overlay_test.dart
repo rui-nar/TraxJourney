@@ -29,6 +29,8 @@ class _Host extends ChangeNotifier with ProjectSegmentCrudMixin {
   Future<void> reloadDetailsOnly(ProjectRef ref) async {}
   @override
   String errorMessage(Exception e) => e.toString();
+  @override
+  bool get isAlive => true;
 }
 
 Map<String, dynamic> _segFeature(String id) => {

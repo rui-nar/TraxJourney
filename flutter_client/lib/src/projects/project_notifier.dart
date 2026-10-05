@@ -778,6 +778,10 @@ class ProjectNotifier extends ChangeNotifier
   /// the store refuses (a full localStorage, a failed Android commit) still
   /// reads back until the next page load.
   Future<bool> _saveUiState() async {
+    // A discarded notifier's state is not the signed-in account's to save:
+    // the key is built from the token, which may be the next account's
+    // (issue #418).
+    if (_isDisposed) return false;
     final ref = this.ref;
     if (ref == null) return false;
     final key = _uiStateKey(ref);
@@ -1352,7 +1356,7 @@ class ProjectNotifier extends ChangeNotifier
     if (viewport != null) _mapViewport = viewport;
     // Client-built geometry (E2EE) has no server counterpart to refetch.
     if (encryption.isUnlocked) return;
-    if (!_geoIsStaleForCamera()) return;
+    if (_isDisposed || !_geoIsStaleForCamera()) return;
     _zoomRefetchTimer?.cancel();
     _zoomRefetchTimer = Timer(zoomRefetchDebounce, () {
       final r = ref;
@@ -1511,13 +1515,23 @@ class ProjectNotifier extends ChangeNotifier
   /// make the upgrade's arrival depend on the frame pipeline having spare
   /// time, which is exactly what a busy map does not have.
   Future<void> _waitForCameraIdle() async {
-    if (!_mapCameraActive) return;
+    if (!_mapCameraActive || _isDisposed) return;
     final waiter = _cameraIdleWaiter ??= Completer<void>();
-    await Future.any([
-      waiter.future,
-      Future<void>.delayed(cameraIdleTimeout),
-    ]);
+    // A Timer rather than Future.delayed, so dispose() can cancel it: a
+    // discarded notifier keeps no timer running (issue #418).
+    final timedOut = Completer<void>();
+    final timeout = Timer(cameraIdleTimeout, timedOut.complete);
+    _cameraIdleTimeouts.add(timeout);
+    try {
+      await Future.any([waiter.future, timedOut.future]);
+    } finally {
+      timeout.cancel();
+      _cameraIdleTimeouts.remove(timeout);
+    }
   }
+
+  /// The timeouts of the [_waitForCameraIdle] calls outstanding.
+  final Set<Timer> _cameraIdleTimeouts = {};
 
   /// Fetches full-res GeoJSON and progressively replaces each activity's
   /// straight-line approximation with its real GPS trace (last activity first).
@@ -2212,24 +2226,29 @@ class ProjectNotifier extends ChangeNotifier
   Object? _authUserId = _kUnset;
 
   /// Called by the [ChangeNotifierProxyProvider] over `AuthNotifier` on every
-  /// auth change. This notifier is app-wide and outlives a session, so the
-  /// account owns its lifetime: whenever the signed-in user id changes —
-  /// including to or from no account — everything held is dropped with
-  /// [clear]. One check here covers logout, the 401s that force one, account
-  /// deletion and any later way to switch account; a call at each exit is
-  /// what missed the 401 paths (issue #418).
+  /// auth change. The account owns this notifier's lifetime: whenever the
+  /// signed-in user id changes — including to or from no account — this
+  /// returns true, and the provider (`accountScopedProjectNotifier` in
+  /// main.dart) replaces this notifier with a fresh one and disposes it. One
+  /// check here covers logout, the 401s that force one, account deletion and
+  /// any later way to switch account; a call at each exit is what missed the
+  /// 401 paths (issue #418).
+  ///
+  /// Everything held is also dropped with [clear] first, so work still in
+  /// flight here finds its load invalidated and its trip gone.
   ///
   /// [restoring] is true while `AuthNotifier` restores the session at app
   /// start. Nothing is recorded then: the restored token is already the
   /// session's, so a trip opened under the splash belongs to the account the
   /// restore is about to name, and the null-to-id step that ends the restore
-  /// must not clear it.
-  void onAuthChanged(String? userId, {bool restoring = false}) {
-    if (restoring) return;
+  /// must not clear it. The first account seen is not a change either.
+  bool onAuthChanged(String? userId, {bool restoring = false}) {
+    if (restoring) return false;
     final previous = _authUserId;
     _authUserId = userId;
-    if (identical(previous, _kUnset) || previous == userId) return;
+    if (identical(previous, _kUnset) || previous == userId) return false;
     clear();
+    return true;
   }
 
   /// Drops everything a load, and the session since, put in this notifier,
@@ -2468,6 +2487,7 @@ class ProjectNotifier extends ChangeNotifier
   Duration degradedRouteCheckInterval = const Duration(minutes: 15);
 
   void startDegradedRouteWatch(ProjectRef ref) {
+    if (_isDisposed) return;
     _degradedRouteCheckTimer?.cancel();
     _lastDegradedRouteCount = null; // re-establish the baseline against fresh data
     _degradedRouteCheckTimer =
@@ -2817,6 +2837,7 @@ class ProjectNotifier extends ChangeNotifier
   void startPhotoPolling(ProjectRef ref,
       {Duration interval = const Duration(seconds: 3), int maxTicks = 60}) {
     _stopPhotoPolling();
+    if (_isDisposed) return;
     var remainingTicks = maxTicks;
     _photoPollingTimer = Timer.periodic(interval, (_) async {
       if (remainingTicks <= 0 || this.ref != ref) {
@@ -2887,6 +2908,7 @@ class ProjectNotifier extends ChangeNotifier
   /// Whether this notifier is still mounted (not disposed). Background tasks
   /// (e.g. segment route polling) check this before touching captured UI such
   /// as a ScaffoldMessenger.
+  @override
   bool get isAlive => !_isDisposed;
 
   @override
@@ -2894,11 +2916,29 @@ class ProjectNotifier extends ChangeNotifier
     if (!_isDisposed) super.notifyListeners();
   }
 
+  /// Discarded — by its screen, or by the provider when the account changes
+  /// (issue #418). Work still in flight lands here afterwards, so this leaves
+  /// it nothing to do: its loads and reloads are invalidated, no timer runs,
+  /// and the guards on [_saveUiState] and the timer starts keep it from
+  /// writing shared state or starting another.
   @override
   void dispose() {
     _isDisposed = true;
+    _loadTrack.invalidate();
+    _reloadTrack.invalidate();
+    _detailsOnlyReloadTrack.invalidate();
+    _buildFullTrackGen++;
     _stopPhotoPolling();
     _zoomRefetchTimer?.cancel();
+    for (final timeout in _cameraIdleTimeouts) {
+      timeout.cancel();
+    }
+    _cameraIdleTimeouts.clear();
+    // Released rather than left hanging: the waits resume, find their load
+    // invalidated above, and return.
+    final idle = _cameraIdleWaiter;
+    _cameraIdleWaiter = null;
+    if (idle != null && !idle.isCompleted) idle.complete();
     stopDegradedRouteWatch(); // usually already stopped by the owning screen's dispose()
     stopSegmentResolvePolling();
     previewArcNotifier.dispose();

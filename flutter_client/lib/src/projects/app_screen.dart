@@ -239,7 +239,9 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
           .resolveRoleFor(context.read<AuthNotifier>().user?.id);
 
       void afterLoad() {
-        if (!mounted) return;
+        // Discarded at an account change while loading (issue #418): its
+        // trip is not the signed-in account's last-opened one.
+        if (!mounted || !notifier.isAlive) return;
         if (notifier.error != null) {
           // Stale shared-project ref (owner renamed the trip) — issue #111.
           if (notifier.loadErrorStatus == 404 && !projectRef.isOwn) {

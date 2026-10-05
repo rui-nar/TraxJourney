@@ -36,6 +36,9 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
   /// Format an Exception into a user-readable string — delegates to _msg.
   String errorMessage(Exception e);
 
+  /// False once the notifier is disposed — satisfied by ProjectNotifier.
+  bool get isAlive;
+
   /// If [e] is a 409 optimistic-lock conflict, resync items + geo from the
   /// server (discarding the optimistic change) and surface a soft retry
   /// message. Returns true when the conflict was handled.
@@ -329,7 +332,9 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
   /// deleted first.
   Future<Map<String, dynamic>> pollSegmentResolution(String segId) {
     final ref = projectRef;
-    if (ref == null) return Future.value(const {'route_status': 'cancelled'});
+    if (ref == null || !isAlive) {
+      return Future.value(const {'route_status': 'cancelled'});
+    }
     final poll = _joinResolvePoll(ref, segId);
     return poll.waiters.putIfAbsent(segId, Completer.new).future;
   }
@@ -397,6 +402,12 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
   }
 
   void _scheduleResolvePoll(_ResolvePoll poll) {
+    // A disposed notifier — discarded at an account change (issue #418) —
+    // keeps no poller: its waiters get `cancelled`, as on leaving the trip.
+    if (!isAlive) {
+      stopSegmentResolvePolling();
+      return;
+    }
     poll.timer?.cancel();
     final delay = _resolvePollDelay(poll.elapsed);
     poll.timer = Timer(delay, () {
