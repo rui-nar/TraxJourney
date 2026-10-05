@@ -348,3 +348,5 @@ Notes:
 ## Unit U12, round 1 — 2026-10-05, reviewed ae7469f7..ffad0cbe (worktree-agent-a52415c6772734e32)
 
 No findings. One envelope question raised for the owner: should the encrypted track routes also require `activity_e2ee_writable_by` for the head row, so a trip editor can never put another user's (positive-id) Strava row under a key that user cannot use (the reverse direction of the Trust bullet; R2-2's reasoning applied to the edit routes)?
+
+Envelope decision (owner, 2026-10-05): **no** — trip editors are trusted to edit any track in the trip, as on the plaintext routes; the first-edit snapshot keeps the row owner's original. A finding that needs a trip editor to overwrite another member's row on the encrypted routes is outside the envelope (D1).
