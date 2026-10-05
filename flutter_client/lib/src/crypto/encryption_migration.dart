@@ -19,6 +19,8 @@ import 'package:flutter/foundation.dart';
 
 import '../api/client.dart';
 import '../core/project_ref.dart';
+import '../track_metrics/elevation_gain.dart';
+import '../track_metrics/elevation_profile.dart';
 import 'e2ee_crypto.dart';
 import 'encryption_service.dart';
 
@@ -56,7 +58,8 @@ const encryptedFieldsByResource = <String, Set<String>>{
 ///
 /// Activities keep only their id and `plain_fields`: their geometry is never
 /// encrypted from a trip payload, whose `/meta` form has no polyline and only
-/// the downsampled profile (R3-1).
+/// the downsampled profile (R3-1). The gain candidates keep their profile
+/// envelope and stored gain as well.
 class CatchUpPayload {
   /// The trip's name as the server answered it.
   final String? name;
@@ -72,22 +75,46 @@ class CatchUpPayload {
   /// still holding plaintext.
   final List<({Object id, List<String> fields})> plainActivities;
 
+  /// Activities whose stored gain the pass re-measures (decision 12): edited
+  /// or GPX-imported — the rows the pre-#374 sentinel and the unsmoothed
+  /// gain could reach — whose full profile is not plaintext. [profile] is
+  /// the payload's `elevation_profile_enc`: the low-res column's envelope in
+  /// `/meta`, which is the full profile's (R4-5); null when that column is
+  /// still plaintext, and the pass then reads it from `GET …/track`.
+  final List<({Object id, String? profile, double? gain})> gainActivities;
+
   /// Memory and journal maps as received (shallow copies, so the in-place
   /// reveal of the originals does not reach them).
   final List<Map<String, dynamic>> memories;
   final List<Map<String, dynamic>> journals;
 
   const CatchUpPayload._(this.name, this.lockVersion, this.role,
-      this.plainActivities, this.memories, this.journals);
+      this.plainActivities, this.gainActivities, this.memories, this.journals);
 
   factory CatchUpPayload.of(Map details) {
     final plainActivities = <({Object id, List<String> fields})>[];
+    final gainActivities = <({Object id, String? profile, double? gain})>[];
     for (final raw in (details['activities'] as List?) ?? const []) {
       final act = raw as Map;
       final id = act['id'];
       final fields = act['plain_fields'];
       if (id != null && fields is List && fields.isNotEmpty) {
         plainActivities.add((id: id as Object, fields: fields.cast<String>()));
+      }
+      // A full profile still in plaintext was measured by the server's own
+      // pipeline (and repaired by its migration); the pass encrypts it below,
+      // and the next pass re-measures it from the envelope.
+      final profilePlain =
+          fields is List && fields.contains('elevation_profile_json');
+      if (id != null &&
+          !profilePlain &&
+          (act['is_edited'] == true || act['source'] == 'gpx')) {
+        final enc = act['elevation_profile_enc'];
+        gainActivities.add((
+          id: id as Object,
+          profile: enc is String ? enc : null,
+          gain: (act['total_elevation_gain'] as num?)?.toDouble(),
+        ));
       }
     }
     final memories = <Map<String, dynamic>>[];
@@ -108,6 +135,7 @@ class CatchUpPayload {
       details['lock_version'] as int?,
       details['caller_role'] as String?,
       plainActivities,
+      gainActivities,
       memories,
       journals,
     );
@@ -207,6 +235,9 @@ class EncryptionMigration {
   ///   under the user's key is written back in plaintext — it was encrypted
   ///   under the wrong key (#505, decision 2).
   ///
+  /// Then, as owner, the encrypted profile of every edited or GPX activity is
+  /// re-measured and its gain corrected (decision 12, see [_recomputeGain]).
+  ///
   /// The pass holds one expected lock version, advanced only by its own
   /// writes (R4-1). It ends at a `stale_write` or at a `GET …/track` answered
   /// at another lock version; any other failed write skips that row only.
@@ -228,10 +259,24 @@ class EncryptionMigration {
     var expected = lockVersion;
     try {
       if (role == 'owner') {
+        final tripName = trip.name ?? ref.name;
+        // What this pass read from GET …/track, and the rows the server
+        // refused it (decision 14), for the gain recompute below.
+        final tracks = <Object, Map<String, dynamic>>{};
+        final refused = <Object>{};
         for (final act in trip.plainActivities) {
           _checkSession();
+          final unencryptable = result.unencryptable;
           expected = await _encryptActivity(
-              ref, trip.name ?? ref.name, act.id, act.fields, expected, result);
+              ref, tripName, act.id, act.fields, expected, result, tracks);
+          if (result.unencryptable > unencryptable) refused.add(act.id);
+        }
+        for (final act in trip.gainActivities) {
+          if (refused.contains(act.id)) continue;
+          _checkSession();
+          expected = await _recomputeGain(tripName, act.id,
+              tracks[act.id]?['elevation_profile_enc'] ?? act.profile, act.gain,
+              expected, result);
         }
         for (final mem in trip.memories) {
           _checkSession();
@@ -379,9 +424,15 @@ class EncryptionMigration {
 
   /// Encrypt one activity's listed plaintext [fields], read from
   /// `GET …/track` — the full track and profile and the edit snapshots — and
-  /// never from the trip payload (R3-1).
-  Future<int> _encryptActivity(ProjectRef ref, String tripName, Object id,
-      List<String> fields, int expected, CatchUpResult result) async {
+  /// never from the trip payload (R3-1). The answer is kept in [tracks].
+  Future<int> _encryptActivity(
+      ProjectRef ref,
+      String tripName,
+      Object id,
+      List<String> fields,
+      int expected,
+      CatchUpResult result,
+      Map<Object, Map<String, dynamic>> tracks) async {
     final Map<String, dynamic> track;
     try {
       track = await _api.get(ref.path('/activities/$id/track'))
@@ -399,6 +450,7 @@ class EncryptionMigration {
     // Someone else wrote to the trip since the payload: anything encrypted
     // from that payload (memories) could now be stale too (R4-1).
     if (track['lock_version'] != expected) throw const _TripChanged();
+    tracks[id] = track;
 
     final body = await _activityBody(track, fields);
     final missing = fields.where((f) => !body.containsKey(f)).toList();
@@ -477,5 +529,76 @@ class EncryptionMigration {
       'elevations_m': [for (final p in pairs) (p as List)[1]],
     });
     return _enc.protect(epJson);
+  }
+
+  /// Re-measure one encrypted activity's elevation gain from its full
+  /// [envelope] with the `track_metrics/` port (decision 12, #366): the
+  /// server cannot read the profile to do it, so legacy encrypted rows still
+  /// carry the gain of the pre-#374 sentinel and the unsmoothed measure.
+  ///
+  /// A profile still holding the 0.0 dropout sentinel is repaired as
+  /// migration c4a9e1f70b38 repairs plaintext ones and written back, one
+  /// envelope to both profile columns (R4-5). The gain is written only when it
+  /// differs from the [stored] one by more than 0.5 m, so a second pass writes
+  /// nothing. Both writes carry the pass's lock version.
+  Future<int> _recomputeGain(String tripName, Object id, Object? envelope,
+      double? stored, int expected, CatchUpResult result) async {
+    if (envelope is! String || !EncryptedField.isEnvelope(envelope)) {
+      return expected;
+    }
+    final profile = await _decryptProfile(id, envelope);
+    if (profile == null) return expected;
+    final distances = profile.distances;
+    var elevations = profile.elevations;
+
+    final mask = sentinelMask(elevations, distances);
+    if (mask.contains(true)) {
+      elevations = interpolateElevationGaps(distances, [
+        for (var i = 0; i < elevations.length; i++) mask[i] ? null : elevations[i],
+      ]);
+      final repaired = await _enc.encryptText(jsonEncode(
+          {'distances_km': distances, 'elevations_m': elevations}));
+      final written = result.written;
+      expected = await _write('/api/activities/$id', {
+        'elevation_profile_json': repaired,
+        'elevation_profile_low_res_json': repaired,
+        'project': tripName,
+        'lock_version': expected,
+      }, expected, result, activity: true);
+      // The stored profile is still the sentinel one: its gain would not match.
+      if (result.written == written) return expected;
+    }
+
+    final gain = elevationGain(elevations, distances);
+    if (stored != null && (gain - stored).abs() <= 0.5) return expected;
+    return _write('/api/activities/$id/elevation-gain', {
+      'total_elevation_gain': gain,
+      'project': tripName,
+      'lock_version': expected,
+    }, expected, result, activity: true);
+  }
+
+  /// The series of a profile [envelope], or null — logged — when it is not
+  /// under this user's key (another traveller's row) or not a profile of at
+  /// least two samples, which is what the server's repair skips too.
+  Future<({List<double> distances, List<double> elevations})?> _decryptProfile(
+      Object id, String envelope) async {
+    try {
+      final ep = jsonDecode(await _enc.decryptText(envelope)) as Map;
+      final distances = [
+        for (final v in ep['distances_km'] as List) (v as num).toDouble()
+      ];
+      final elevations = [
+        for (final v in ep['elevations_m'] as List) (v as num).toDouble()
+      ];
+      if (elevations.length < 2 || distances.length != elevations.length) {
+        debugPrint('encryption catch-up: activity $id: profile too short');
+        return null;
+      }
+      return (distances: distances, elevations: elevations);
+    } catch (e) {
+      debugPrint('encryption catch-up: activity $id: profile not readable: $e');
+      return null;
+    }
   }
 }
