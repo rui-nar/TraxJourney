@@ -1024,10 +1024,12 @@ REVIEW.md defaults apply, with:
 
 - **Goal:** generating a poster on an encrypted trip asks the user before
   sending memory text, then sends it with consent.
-- **Scope:** `flutter_client/lib/src/poster/poster_job_notifier.dart`, the
-  poster dialog/screen that starts a job (as found from `app_screen.dart:550`
-  — change `app_screen.dart` only if the call site lives there), tests under
-  `flutter_client/test/poster/`.
+- **Scope** (corrected during delivery, X3): `flutter_client/lib/src/projects/poster_job_notifier.dart`
+  (`PosterConsentRequired`, `plaintext_consent` passthrough),
+  `flutter_client/lib/src/projects/poster_consent_dialog.dart` (new),
+  `flutter_client/lib/src/projects/app_screen.dart` (`_startPosterJob`
+  only), `flutter_client/test/poster_job_notifier_test.dart`,
+  `flutter_client/test/poster_consent_dialog_test.dart` (new).
 - **Context:** decision 11; the video consent dialog and its 409 handling in
   the video export client code (find via `consent_required` under
   `flutter_client/lib/`) is the example to follow.
