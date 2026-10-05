@@ -109,6 +109,43 @@ def _apportion_gain(stored: Optional[float], before: float, after: float) -> flo
     return stored * (after / before)
 
 
+class EncryptedEditOnDevice(Exception):
+    """The stored polyline or profile is a client-side E2EE envelope.
+
+    The plaintext track routes take decrypted points and would store their
+    result in plaintext, so they refuse such a row; the device edits it
+    instead. Raised before anything is decoded or written.
+    """
+
+
+class NothingToRestore(Exception):
+    """An edited row whose ``original_polyline`` is null has no geometry to
+    reset to: the shipped encryption migration nulled the snapshots, and
+    copying the nulls back would wipe the track."""
+
+
+def _refuse_encrypted_geometry(row: DBActivity) -> None:
+    if (is_encrypted_envelope(row.summary_polyline)
+            or is_encrypted_envelope(row.elevation_profile_json)):
+        raise EncryptedEditOnDevice(row.id)
+
+
+def _recheck_plaintext_geometry(sess: Session, row: DBActivity) -> None:
+    """Re-read the geometry once the lock-version bump holds the write lock.
+
+    The first check ran on a read taken before this transaction began, so the
+    catch-up may have encrypted the row since. Writing the plaintext result
+    over that would leave an encrypted name beside a plaintext track. Rolls
+    the bump back when it refuses.
+    """
+    sess.refresh(row, ["summary_polyline", "elevation_profile_json"])
+    try:
+        _refuse_encrypted_geometry(row)
+    except EncryptedEditOnDevice:
+        sess.rollback()
+        raise
+
+
 class ActivityMixin:
     """Activity CRUD, enrichment writes, and track-geometry editing."""
 
@@ -257,14 +294,19 @@ class ActivityMixin:
         raises ``StaleWriteError`` if the project changed since the caller
         last loaded it, so two edits racing on the same activity don't
         silently clobber each other.
+
+        Raises ``EncryptedEditOnDevice``, writing nothing, when the stored
+        polyline or profile is an envelope.
         """
         row = sess.get(DBActivity, activity_id)
         if row is None:
             return False
+        _refuse_encrypted_geometry(row)
         if expected_version is not None:
             check_and_bump_lock_version(sess, project_id, expected_version)
         else:
             bump_lock_version(sess, project_id)
+        _recheck_plaintext_geometry(sess, row)
         self._write_track_geometry(row, points, sess=sess)
         sess.commit()
         return True
@@ -345,7 +387,8 @@ class ActivityMixin:
         return len(pieces)
 
     def reset_activity_track(
-        self, sess: Session, project_id: int, activity_id: int
+        self, sess: Session, project_id: int, activity_id: int,
+        *, expected_version: Optional[int] = None,
     ) -> bool:
         """Restore an edited activity's geometry from its original snapshot.
 
@@ -366,15 +409,25 @@ class ActivityMixin:
 
         A piece with no children of its own cascades nothing: resetting it undoes
         just its own post-split edits (issue #131).
+
+        Raises ``NothingToRestore``, writing nothing, for an edited row whose
+        ``original_polyline`` is null. With *expected_version* the reset is a
+        compare-and-swap on the project's lock_version, as in
+        ``edit_activity_track``.
         """
         row = sess.get(DBActivity, activity_id)
         if row is None or not row.is_edited:
             return False
+        if not row.original_polyline:
+            raise NothingToRestore(activity_id)
 
         # Advance the project's lock_version (issue #173) so a native client's
         # on-disk cache — which only ever checks that counter — notices the
         # restored geometry.
-        bump_lock_version(sess, project_id)
+        if expected_version is not None:
+            check_and_bump_lock_version(sess, project_id, expected_version)
+        else:
+            bump_lock_version(sess, project_id)
 
         self._remove_split_descendants(sess, project_id, row)
 
@@ -510,12 +563,16 @@ class ActivityMixin:
         raises ``StaleWriteError`` if the project changed since the caller
         last loaded it, so two splits racing on the same activity don't
         silently clobber each other.
+
+        Raises ``EncryptedEditOnDevice``, writing nothing, when the head's
+        stored polyline or profile is an envelope.
         """
         from src.models.track_edit import align_points
 
         head = sess.get(DBActivity, activity_id)
         if head is None:
             return None
+        _refuse_encrypted_geometry(head)
 
         if points is None:
             points = align_points(
@@ -531,6 +588,7 @@ class ActivityMixin:
             check_and_bump_lock_version(sess, project_id, expected_version)
         else:
             bump_lock_version(sess, project_id)
+        _recheck_plaintext_geometry(sess, head)
 
         head_points = points[: split_index + 1]
         tail_points = points[min_tail_start:]
@@ -996,6 +1054,38 @@ class ActivityMixin:
             DBProjectMember.project_id == project_id,
             DBProjectMember.user_info_id == act.user_info_id,
         )).first() is not None
+
+    def activity_e2ee_writable_by(
+        self, sess: Session, activity_id: int, user_info_id: int
+    ) -> bool:
+        """Whether *user_info_id* may write this activity's E2EE fields.
+
+        The row's owner may. So may the owner of every trip that references a
+        LOCAL row (negative id: a GPX import or a split piece), when at least
+        one trip does: the catch-up must be able to encrypt a piece a former
+        companion left in the owner's trips. A Strava row (positive id) stays
+        its owner's alone even then: their next sync reuses it, and it would
+        come back to them encrypted under someone else's key. An unreferenced
+        row is no one's but its owner's. False for a row that does not exist.
+        """
+        owner = sess.exec(
+            select(DBActivity.user_info_id).where(DBActivity.id == activity_id)
+        ).first()
+        if owner is None:
+            return False
+        if owner == user_info_id:
+            return True
+        if activity_id >= 0:
+            return False
+        trip_owners = sess.exec(
+            select(DBProject.user_info_id)
+            .join(DBProjectItem, DBProjectItem.project_id == DBProject.id)
+            .where(
+                DBProjectItem.item_type == "activity",
+                DBProjectItem.activity_id == activity_id,
+            ).distinct()
+        ).all()
+        return bool(trip_owners) and all(o == user_info_id for o in trip_owners)
 
     def activity_owners(self, sess: Session, activity_ids) -> Dict[int, int]:
         """Owner account of each of *activity_ids* that has a row.
