@@ -165,4 +165,17 @@ Envelope question (U7 round 1): the script selects every memory with a polarstep
 - Revisit when: —
 - Guard: (to add) per walked folder, print "leftover temp file: <path>" for each `.*_thumb.*.tmp` and count them in the summary line, deleting nothing.
 - Override: —
+- Outcome: guard added (e6637145)
+
+## Unit U6 review — Round 2 — 2026-10-05, reviewed at e6637145 (5c01cff5..e6637145, guard only)
+
+### U6R2-1 — monkeypatch.undo() in the killed-rewrite test also reverts the engine fixture's DB patch
+- Trigger: A maintainer later makes the test's second run `--apply` → `undo()` has already restored `models.db.engine`, so `record_delta` writes to the process-wide DB (tests/test_backfill_thumbnail_orientation.py:215-219). Today the second run is a dry run; nothing misbehaves.
+- Scores: trigger=theoretical, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Reject (D11)
+- Revisit when: —
+- Guard: —
+- Override: —
 - Outcome: open
+
+No Fix now in this round: U6 review stops (REVIEW.md §6).
