@@ -187,8 +187,9 @@ encrypted.
 
 Trips shared **with** you by another user are not touched by the enable-time
 `run()` (issue #106); their journal entries and memory repair are handled by
-the catch-up when you load them. Activity rows you may not encrypt are the
-exception, see "Remaining plaintext".
+the catch-up when you load them. Activities are the exception: on a trip you
+do not own the catch-up leaves your own activity rows alone, and rows you may
+not encrypt stay plaintext too — see "Remaining plaintext".
 
 ## Editing an encrypted track
 
@@ -394,8 +395,8 @@ days and downloadable with its link token.
 
 The list found while writing this page from the code (issue #433) had nine
 entries; the remnant package for #504, #505, #506 and #366 fixed all but the
-backups and the on-device cache, and added the two cases below. Each remaining
-one names the code to check.
+backups and the on-device cache, and added the three cases below. The list is
+complete as far as the code shows; each case names the code to check.
 
 1. **Database backups** — `src/backup/backup_service.py` keeps the last 30
    daily SQLite copies. A backup taken before you enabled encryption holds the
@@ -436,6 +437,15 @@ one names the code to check.
    content unavailable"), until key sharing between travellers exists (#108).
    No new case can arise: companions cannot join an encrypted owner's trip, and
    the owner cannot enable encryption while the trip has companions.
+5. **Your own activities that live only in someone else's trip.** An encrypted
+   user's Strava or GPX activity rows that are held only by another user's
+   (plaintext) trip stay plaintext. The catch-up on a trip you do not own
+   encrypts only your journal entries and runs the memory repair (the
+   non-owner branch of `EncryptionMigration.encryptTrip`,
+   `encryption_migration.dart`), and the enable-time `run()` skips trips shared
+   with you (`isSharedWithMe`). This is intended: the trip's owner and
+   travellers must still be able to read the track (issue #106), and a key they
+   do not have would make it unreadable to them.
 
 ## What the server checks
 
