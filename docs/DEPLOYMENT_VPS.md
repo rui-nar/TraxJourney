@@ -910,6 +910,16 @@ The stores are not in the image and nothing fetches them at boot: they are a
 deployment step, run here, against the `rail-data-<date>` prereleases the
 `Rail extract` workflow publishes on GitHub.
 
+A release only reaches GitHub after the route corpus (`config/route_corpus.yml`)
+has passed against stores built from it: before uploading anything, the
+workflow builds every region the corpus names — from that run's extracts, or
+from the release it patches for the regions a subset run carries — and runs
+`scripts/route_corpus.py` on them. A leg that routes wrong fails the run and
+nothing is uploaded; the corpus lines are in the log of the publish job's
+"Check the route corpus" step. Dispatching with `force_publish` skips the gate
+and the run says so in a warning — use it only knowing which leg failed and
+why it is acceptable, because the box installs whatever is published.
+
 Everything below is `docker compose run --rm` in the **prod** stack
 (`/opt/traxjourney`); val is the same with `-f` pointed at `/opt/traxjourney-val`.
 Starting a second refresh of the same directory is harmless: it takes an

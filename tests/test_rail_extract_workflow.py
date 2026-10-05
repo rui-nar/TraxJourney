@@ -13,6 +13,7 @@ change plus a rebuild, never a code change, so the matrix has to be read from
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -486,3 +487,195 @@ def test_a_success_closes_every_open_issue(jobs, tmp_path, requested, tag, warns
     else:
         assert "::warning::" not in output
         assert "no rail-data release exists" not in calls
+
+
+# ---------------------------------------------------------------------------
+# The route corpus gates the publish
+# ---------------------------------------------------------------------------
+
+CORPUS_STEP = "Check the route corpus"
+
+
+def test_the_corpus_gates_every_upload(jobs):
+    """Every step that writes to the release runs after the corpus has passed,
+    and the corpus runs on the verified manifest — the one being published."""
+    steps = jobs["publish"]["steps"]
+    names = [step.get("name") for step in steps]
+    gate = names.index(CORPUS_STEP)
+    assert names.index("Build and verify the manifest") < gate
+    writers = [i for i, step in enumerate(steps)
+               if "gh release upload" in step.get("run", "")
+               or "gh release create" in step.get("run", "")]
+    assert writers, "the upload step is gone, not the gate"
+    assert all(gate < i for i in writers)
+
+
+def test_the_corpus_gate_is_skipped_only_under_force_publish(jobs):
+    """No `if:` can skip the step; the shell's own check of `force_publish` is
+    the one way past it, and is exercised for real below."""
+    step = _step(jobs["publish"], CORPUS_STEP)
+    assert "if" not in step
+    assert step["env"]["FORCE"] == "${{ inputs.force_publish }}"
+    # Inputs reach the shell through env only: `${{ }}` inside `run:` is
+    # script injection from a dispatch form.
+    assert "${{" not in step["run"]
+
+
+def test_the_corpus_gate_adds_no_job(jobs):
+    """It is a step of `publish`, so nothing new holds `contents: write`
+    (test_only_the_publish_job_can_write checks who does)."""
+    assert set(jobs) == {"plan", "build", "publish", "notify"}
+    assert "scripts/route_corpus.py" in _step(jobs["publish"], CORPUS_STEP)["run"]
+
+
+def test_the_publish_job_installs_what_the_corpus_imports(jobs):
+    """The runner resolves legs with the server's resolver, which imports
+    metrics, redis and SQLAlchemy as well as pyosmium for the builder."""
+    assert "pip install -r requirements.txt" in _steps_text(jobs["publish"])
+
+
+CARRIED_BYTES = b"carried sweden\n"
+
+
+def _run_corpus_step(tmp_path, jobs, *, requested="", force="",
+                     corpus_exit=0, carried_sha=None):
+    """Run the corpus step for real against a fake `gh` and `python`.
+
+    The manifest holds Denmark (built by this run, in dist/rail), Sweden (ok
+    but carried: only the release has it), France (ok, not in the corpus) and
+    Andorra (in the corpus, but `empty`). The real python lists what to build,
+    so reading the manifest and the corpus is the step's own code; the builder
+    and the runner are faked and log their arguments.
+    """
+    script = _step(jobs["publish"], CORPUS_STEP)["run"]
+    work = tmp_path / "work"
+    (work / "dist" / "rail").mkdir(parents=True)
+    (work / "config").mkdir()
+    (work / "config" / "route_corpus.yml").write_text(
+        "legs:\n"
+        "  - {name: a, regions: [europe/denmark, europe/sweden]}\n"
+        "  - {name: b, regions: [europe/andorra]}\n",
+        encoding="utf-8",
+    )
+    (work / "dist" / "rail" / "denmark-rail.osm.pbf").write_bytes(b"built")
+    sha = carried_sha or hashlib.sha256(CARRIED_BYTES).hexdigest()
+
+    def ok(region, file, digest="0" * 64):
+        return {"region": region, "status": "ok", "file": file,
+                "sha256": digest, "bbox": [0, 0, 1, 1]}
+
+    (work / "dist" / "rail" / "manifest.json").write_text(json.dumps({
+        "schema": 2,
+        "regions": [ok("europe/denmark", "denmark-rail.osm.pbf"),
+                    ok("europe/sweden", "sweden-rail.osm.pbf", sha),
+                    ok("europe/france", "france-rail.osm.pbf"),
+                    {"region": "europe/andorra", "status": "empty"}],
+    }), encoding="utf-8")
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    log = tmp_path / "calls.log"
+    (fake_bin / "gh").write_text(
+        chr(10).join([
+            "#!/bin/sh",
+            f'printf "gh %s\\n" "$*" >> "{log.as_posix()}"',
+            # release download TAG --pattern FILE --dir DIR --clobber
+            'if [ "$1 $2" = "release download" ]; then',
+            f'  printf "%s\\n" "{CARRIED_BYTES.decode().strip()}" > "$7/$5"',
+            "fi",
+            "exit 0",
+            "",
+        ]),
+        encoding="utf-8", newline="\n",
+    )
+    (fake_bin / "python").write_text(
+        chr(10).join([
+            "#!/bin/bash",
+            "set -o pipefail",
+            f'printf "python %s\\n" "$*" >> "{log.as_posix()}"',
+            'case "$1" in',
+            # Windows' python ends its lines with CRLF; Linux's never does.
+            f'  -c) "{Path(sys.executable).as_posix()}" "$@" | tr -d "\\r" ;;',
+            '  -m) [ -f "$3" ] || exit 3; : > "$4" ;;',
+            '  scripts/route_corpus.py) [ -f "$2/manifest.json" ] || exit 4;'
+            f" exit {corpus_exit} ;;",
+            "  *) exit 5 ;;",
+            "esac",
+            "",
+        ]),
+        encoding="utf-8", newline="\n",
+    )
+    for tool in ("gh", "python"):
+        (fake_bin / tool).chmod(0o755)
+
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir()
+    result = subprocess.run(
+        # What Actions runs a `run:` with: bash -e -o pipefail.
+        [BASH, "-e", "-o", "pipefail", "-c", script],
+        cwd=work,
+        env={**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+             "PYTHONPATH": str(ROOT), "RUNNER_TEMP": runner_temp.as_posix(),
+             "TAG": "rail-data-2026-10-05", "REQUESTED": requested,
+             "FORCE": force},
+        capture_output=True, text=True,
+    )
+    calls = log.read_text(encoding="utf-8") if log.exists() else ""
+    return result.returncode, result.stdout + result.stderr, calls, runner_temp
+
+
+@pytest.mark.skipif(BASH is None, reason="needs a working POSIX shell")
+@pytest.mark.parametrize("requested, require_all",
+                         [("", True), ("europe/denmark", False)],
+                         ids=["full run requires every region",
+                              "subset run lets an uncovered region skip"])
+def test_the_corpus_runs_on_built_and_carried_stores(jobs, tmp_path,
+                                                     requested, require_all):
+    """Stores come from this run's extract where it built one and from the
+    release being patched where it carries one; a region outside the corpus,
+    or not `ok`, is never built."""
+    code, output, calls, temp = _run_corpus_step(tmp_path, jobs,
+                                                 requested=requested)
+    assert code == 0, output
+    stores = f"{temp.as_posix()}/rail-stores"
+    carried = f"{temp.as_posix()}/rail-carried"
+    assert (f"python -m src.rail.builder dist/rail/denmark-rail.osm.pbf "
+            f"{stores}/europe-denmark.rail.sqlite --region europe/denmark") in calls
+    assert ("gh release download rail-data-2026-10-05 --pattern "
+            f"sweden-rail.osm.pbf --dir {carried}") in calls
+    assert (f"python -m src.rail.builder {carried}/sweden-rail.osm.pbf "
+            f"{stores}/europe-sweden.rail.sqlite --region europe/sweden") in calls
+    assert calls.count("src.rail.builder") == 2
+    assert "denmark-rail.osm.pbf --dir" not in calls
+    corpus = [line for line in calls.splitlines() if "route_corpus.py" in line]
+    assert corpus == [f"python scripts/route_corpus.py {stores}"
+                      + (" --require-all" if require_all else "")]
+    assert calls.rindex("src.rail.builder") < calls.index("route_corpus.py")
+
+
+@pytest.mark.skipif(BASH is None, reason="needs a working POSIX shell")
+def test_a_failing_corpus_fails_the_step(jobs, tmp_path):
+    code, output, calls, _ = _run_corpus_step(tmp_path, jobs, corpus_exit=1)
+    assert code != 0, output
+    assert "route_corpus.py" in calls
+
+
+@pytest.mark.skipif(BASH is None, reason="needs a working POSIX shell")
+def test_a_carried_extract_that_does_not_match_the_manifest_fails(jobs, tmp_path):
+    """The manifest about to be published vouches for the carried asset's
+    checksum; a mismatch is a release the box would refuse at install."""
+    code, output, calls, _ = _run_corpus_step(tmp_path, jobs,
+                                              requested="europe/denmark",
+                                              carried_sha="f" * 64)
+    assert code != 0, output
+    assert "sweden-rail.osm.pbf --region" not in calls
+    assert "route_corpus.py" not in calls
+
+
+@pytest.mark.skipif(BASH is None, reason="needs a working POSIX shell")
+def test_force_publish_skips_the_corpus_and_says_so(jobs, tmp_path):
+    code, output, calls, _ = _run_corpus_step(tmp_path, jobs, force="true",
+                                              corpus_exit=1)
+    assert code == 0, output
+    assert "::warning::force_publish: the route corpus gate was skipped" in output
+    assert calls == ""
