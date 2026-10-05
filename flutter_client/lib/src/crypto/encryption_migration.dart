@@ -75,9 +75,12 @@ class CatchUpPayload {
   /// still holding plaintext.
   final List<({Object id, List<String> fields})> plainActivities;
 
-  /// Activities whose stored gain the pass re-measures (decision 12): edited
-  /// or GPX-imported — the rows the pre-#374 sentinel and the unsmoothed
-  /// gain could reach — whose full profile is not plaintext. [profile] is
+  /// Activities whose stored gain the pass re-measures (decision 12): the
+  /// legacy rows the pre-#374 sentinel and the unsmoothed gain could reach —
+  /// GPX imports, and edits made before #386 (no gain snapshot; an absent
+  /// `has_gain_snapshot` counts as none) — whose full profile is not
+  /// plaintext. A later edit keeps its Strava-scaled gain and its profile,
+  /// which the fixed pipeline wrote. [profile] is
   /// the payload's `elevation_profile_enc`: the low-res column's envelope in
   /// `/meta`, which is the full profile's (R4-5); null when that column is
   /// still plaintext, and the pass then reads it from `GET …/track`.
@@ -106,9 +109,11 @@ class CatchUpPayload {
       // and the next pass re-measures it from the envelope.
       final profilePlain =
           fields is List && fields.contains('elevation_profile_json');
+      final legacyEdit =
+          act['is_edited'] == true && act['has_gain_snapshot'] != true;
       if (id != null &&
           !profilePlain &&
-          (act['is_edited'] == true || act['source'] == 'gpx')) {
+          (act['source'] == 'gpx' || legacyEdit)) {
         final enc = act['elevation_profile_enc'];
         gainActivities.add((
           id: id as Object,
@@ -235,8 +240,9 @@ class EncryptionMigration {
   ///   under the user's key is written back in plaintext — it was encrypted
   ///   under the wrong key (#505, decision 2).
   ///
-  /// Then, as owner, the encrypted profile of every edited or GPX activity is
-  /// re-measured and its gain corrected (decision 12, see [_recomputeGain]).
+  /// Then, as owner, the encrypted profile of every legacy GPX or edited
+  /// activity is re-measured and its gain corrected (decision 12, see
+  /// [CatchUpPayload.gainActivities] and [_recomputeGain]).
   ///
   /// The pass holds one expected lock version, advanced only by its own
   /// writes (R4-1). It ends at a `stale_write` or at a `GET …/track` answered

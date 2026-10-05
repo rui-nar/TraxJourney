@@ -104,14 +104,21 @@ class _Server {
     };
   }
 
-  /// The `/meta` payload.
+  /// The `/meta` payload. `ProjectIO.to_dict` adds `plain_fields` and
+  /// `has_gain_snapshot` (U15) to each activity; a row without the latter
+  /// key stands for a server that does not send it yet.
   Map<String, dynamic> meta() => {
         'name': 'Trip',
         'lock_version': lockVersion,
         'caller_role': 'owner',
         'activities': [
           for (final id in activities.keys)
-            {...activityJson(id, heavy: false), 'plain_fields': plainFields(activities[id]!)},
+            {
+              ...activityJson(id, heavy: false),
+              'plain_fields': plainFields(activities[id]!),
+              if (activities[id]!.containsKey('has_gain_snapshot'))
+                'has_gain_snapshot': activities[id]!['has_gain_snapshot'],
+            },
         ],
         'items': [
           for (final e in memories.entries)
@@ -228,6 +235,7 @@ Future<Map<String, Object?>> _encryptedActivity({
   required double gain,
   bool isEdited = false,
   String source = 'strava',
+  bool? hasGainSnapshot,
   EncryptionService? under,
 }) async {
   final key = under ?? _enc;
@@ -240,6 +248,7 @@ Future<Map<String, Object?>> _encryptedActivity({
     'is_edited': isEdited,
     'source': source,
     'total_elevation_gain': gain,
+    if (hasGainSnapshot != null) 'has_gain_snapshot': hasGainSnapshot,
   };
 }
 
@@ -279,6 +288,51 @@ void main() {
     _server.log.clear();
     await _pass();
     expect(_server.writes, isEmpty);
+  });
+
+  test('an edit with no gain snapshot (before #386) is recomputed', () async {
+    final v = _vector('climb_barometric');
+    _server.activities[-5] = await _encryptedActivity(
+        profileJson: _profileJson(v.distances, v.elevations),
+        gain: 900.0,
+        isEdited: true,
+        hasGainSnapshot: false);
+
+    await _pass();
+
+    expect(_server.gainWrites, hasLength(1));
+    expect(_server.activities[-5]!['total_elevation_gain'] as double, closeTo(v.gain, 1e-6));
+  });
+
+  test('an edit with a gain snapshot (since #386) is never touched, not even repaired',
+      () async {
+    // Its profile came from the server's own fixed pipeline or the device
+    // port, and its gain is the Strava figure scaled by the edit.
+    final v = _vector('sentinel_dropouts_as_stored_before_374');
+    _server.activities[-5] = await _encryptedActivity(
+        profileJson: _profileJson(v.distances, v.elevations),
+        gain: 5000.0,
+        isEdited: true,
+        hasGainSnapshot: true);
+
+    await _pass();
+
+    expect(_server.log, isEmpty);
+  });
+
+  test('a GPX activity is recomputed even when it has a gain snapshot', () async {
+    final v = _vector('climb_barometric');
+    _server.activities[-6] = await _encryptedActivity(
+        profileJson: _profileJson(v.distances, v.elevations),
+        gain: 900.0,
+        isEdited: true,
+        source: 'gpx',
+        hasGainSnapshot: true);
+
+    await _pass();
+
+    expect(_server.gainWrites, hasLength(1));
+    expect(_server.activities[-6]!['total_elevation_gain'] as double, closeTo(v.gain, 1e-6));
   });
 
   test('a GPX activity is selected too, edited or not', () async {
