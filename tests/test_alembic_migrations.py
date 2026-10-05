@@ -11,6 +11,8 @@ Each test builds a throwaway SQLite database from the migrations alone, so it is
 hermetic and never touches the developer's real db.
 """
 import os
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -72,3 +74,25 @@ def test_downgrade_base_succeeds(fresh_db):
     cfg = _alembic_config(fresh_db)
     command.upgrade(cfg, "head")
     command.downgrade(cfg, "base")
+
+
+def test_existing_recovery_wraps_migrate_to_confirmed(fresh_db):
+    """Decision 16: recovery_wrap.confirmed is added with a server default of
+    true, so a wrap stored before it is confirmed and its user is never asked
+    to replace a recovery key they already have."""
+    cfg = _alembic_config(fresh_db)
+    command.upgrade(cfg, "87200bcb9342")
+    with closing(sqlite3.connect(fresh_db)) as conn:
+        conn.execute(
+            "INSERT INTO userinfo (id, google_sub, display_name, email, avatar_url, "
+            "auth_provider, is_admin, email_verified, created_at, encryption_enabled) "
+            "VALUES (1, '', 'U', 'u1@x.io', '', 'local', 0, 0, 1.0, 1)")
+        conn.execute(
+            "INSERT INTO recovery_wrap (user_info_id, method, wrapped_cmk, salt, "
+            "kdf_params_json, version, created_at) "
+            "VALUES (1, 'recovery_key', 'WRAP', 'SALT', NULL, 1, 1.0)")
+        conn.commit()
+
+    command.upgrade(cfg, "head")
+    with closing(sqlite3.connect(fresh_db)) as conn:
+        assert conn.execute("SELECT confirmed FROM recovery_wrap").fetchall() == [(1,)]
