@@ -13,6 +13,7 @@
 /// one client whose answers the current [_Server] decides.
 library;
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:cryptography_plus/cryptography_plus.dart';
@@ -72,7 +73,10 @@ class _Server {
   final Set<int> refused = {};
 
   /// Runs once, when the first `GET …/track` arrives (another device writing).
-  void Function()? onFirstTrackGet;
+  FutureOr<void> Function()? onFirstTrackGet;
+
+  /// Refuses every request with 401 from then on (the session expired).
+  bool unauthorized = false;
 
   /// The next write is refused as stale: another device wrote just before.
   bool staleNext = false;
@@ -173,6 +177,7 @@ class _Server {
     final path = req.url.path;
     if (path.startsWith('/api/encryption/')) return _json({});
     log.add(req);
+    if (unauthorized) return http.Response('{"detail":"Not authenticated"}', 401);
     if (req.method == 'GET') {
       if (path == '/api/projects/Trip/meta') return _json(meta());
       if (path == '/api/projects/Trip') {
@@ -187,7 +192,7 @@ class _Server {
       if (t != null) {
         final hook = onFirstTrackGet;
         onFirstTrackGet = null;
-        hook?.call();
+        await hook?.call();
         return _json(track(int.parse(t.group(1)!)));
       }
       return http.Response('not found', 404);
@@ -252,6 +257,12 @@ Future<String> _foreignEnvelope(String text) async {
 
 Future<String> _decrypted(Object? v) => encryption.decryptText(v! as String);
 
+/// A session token for [userId], shaped like the server's JWT.
+String _token(int userId) {
+  String part(Object json) => base64Url.encode(utf8.encode(jsonEncode(json)));
+  return '${part({'alg': 'HS256'})}.${part({'sub': '$userId'})}.sig';
+}
+
 /// Opens [ref] the way the trip screen does and waits for the pass.
 Future<ProjectNotifier> _load(ProjectRef ref) async {
   final notifier = ProjectNotifier(ProjectService());
@@ -274,6 +285,7 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     FlutterSecureStorage.setMockInitialValues({});
     _server = _Server();
+    api.setToken(_token(1));
     await encryption.enable(const RecoveryKeyChoice());
   });
 
@@ -449,6 +461,76 @@ void main() {
     await notifier.catchUpSettled();
 
     expect(await _decrypted(_server.memories[1]!['name']), 'Summit');
+  });
+
+  group('the pass ends with the session (U7-R1-1)', () {
+    void plaintextTrip() {
+      _server.activities[-5] = _plainActivity('First ride');
+      _server.activities[-6] = _plainActivity('Second ride');
+      _server.memories[1] = {'name': 'Summit', 'date': '2026-01-01'};
+      _server.journals[2] = {'description': 'Long day', 'date': '2026-01-01'};
+    }
+
+    void expectAllPlaintext() {
+      for (final act in _server.activities.values) {
+        expect(_isEnv(act['name']), isFalse);
+      }
+      expect(_server.memories[1]!['name'], 'Summit');
+      expect(_server.journals[2]!['description'], 'Long day');
+    }
+
+    test('sign-out mid-pass (token cleared, key locked): nothing more is sent',
+        () async {
+      plaintextTrip();
+      var sentAtSignOut = -1;
+      // AuthService.logout clears the token, then AuthNotifier locks the key.
+      _server.onFirstTrackGet = () {
+        api.clearToken();
+        encryption.lock();
+        sentAtSignOut = _server.log.length;
+      };
+
+      await _load(_ownTrip);
+
+      final passRequests = _server.log
+          .skip(sentAtSignOut)
+          .where((r) => r.method == 'PUT' || r.url.path.endsWith('/track'));
+      expect(passRequests, isEmpty);
+      expectAllPlaintext();
+    });
+
+    test('a 401 ends the pass: no request follows it', () async {
+      plaintextTrip();
+      _server.onFirstTrackGet = () {
+        _server.unauthorized = true;
+      };
+
+      await _load(_ownTrip);
+
+      // The first activity's write met the 401; nothing of the pass after it.
+      expect(_server.trackGets, ['/api/projects/Trip/activities/-5/track']);
+      expect(_server.writes, hasLength(1));
+      expectAllPlaintext();
+    });
+
+    test('another account signed in mid-pass: the pass ends before the next row',
+        () async {
+      plaintextTrip();
+      // Sign-out, then another account signs in and unlocks its own key on
+      // this device, while the first activity is being read.
+      _server.onFirstTrackGet = () async {
+        api.clearToken();
+        encryption.lock();
+        api.setToken(_token(2));
+        await encryption.enable(const RecoveryKeyChoice());
+      };
+
+      await _load(_ownTrip);
+
+      expect(_server.writes, isEmpty);
+      expect(_server.trackGets, hasLength(1));
+      expectAllPlaintext();
+    });
   });
 
   test('CatchUpPayload copies memory text before the reveal changes it', () {

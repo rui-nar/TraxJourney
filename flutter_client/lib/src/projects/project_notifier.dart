@@ -3473,7 +3473,8 @@ class ProjectNotifier extends ChangeNotifier
       debugPrint('encryption catch-up for ${trip.name} failed: $e');
       return;
     }
-    if (_isDisposed) return;
+    // Signed out or another account now: nothing here is that session's.
+    if (_isDisposed || result.sessionEnded) return;
     final current = ref;
     final isCurrent = current != null && _tripKey(current) == key;
     // A pass that ended early has not reached every activity; the count

@@ -130,6 +130,11 @@ class CatchUpResult {
   /// `stale_write`, or a `GET …/track` at another lock version).
   int ended = 0;
 
+  /// The pass ended because the session it ran for is gone: signed out,
+  /// locked, another account signed in, or the server refused the session
+  /// (401/403). Whatever it found is not this trip's answer (U7-R1-1).
+  bool sessionEnded = false;
+
   bool get complete => skipped == 0 && unencryptable == 0 && ended == 0;
 
   void _add(CatchUpResult other) {
@@ -143,6 +148,11 @@ class CatchUpResult {
 /// Thrown inside a pass to end it: the trip changed since its payload.
 class _TripChanged implements Exception {
   const _TripChanged();
+}
+
+/// Thrown inside a pass to end it: the session it started in is over.
+class _SessionEnded implements Exception {
+  const _SessionEnded();
 }
 
 class EncryptionMigration {
@@ -171,8 +181,13 @@ class EncryptionMigration {
         final trip = CatchUpPayload.of(details);
         final lockVersion = trip.lockVersion;
         if (lockVersion == null) continue;
-        total._add(await encryptTrip(ref, trip,
-            role: trip.role ?? 'owner', lockVersion: lockVersion));
+        final result = await encryptTrip(ref, trip,
+            role: trip.role ?? 'owner', lockVersion: lockVersion);
+        total._add(result);
+        if (result.sessionEnded) {
+          total.sessionEnded = true;
+          break;
+        }
       } on Exception catch (e) {
         debugPrint('encryption migration: trip ${ref.name} not loaded: $e');
         total.skipped++;
@@ -195,6 +210,12 @@ class EncryptionMigration {
   /// The pass holds one expected lock version, advanced only by its own
   /// writes (R4-1). It ends at a `stale_write` or at a `GET …/track` answered
   /// at another lock version; any other failed write skips that row only.
+  ///
+  /// It also ends as soon as the session it started in is over (U7-R1-1): a
+  /// 401/403, or — checked before every row and every write — the key
+  /// locked or another account's token in [ApiClient]. Otherwise a sign-out
+  /// followed by another sign-in on the same device would encrypt the rest
+  /// of this trip under the other account's key, with its token.
   Future<CatchUpResult> encryptTrip(
     ProjectRef ref,
     CatchUpPayload trip, {
@@ -203,29 +224,49 @@ class EncryptionMigration {
   }) async {
     final result = CatchUpResult();
     if (!_enc.isUnlocked || role == 'viewer') return result;
+    _sessionUser = _api.tokenUserId;
     var expected = lockVersion;
     try {
       if (role == 'owner') {
         for (final act in trip.plainActivities) {
+          _checkSession();
           expected = await _encryptActivity(
               ref, trip.name ?? ref.name, act.id, act.fields, expected, result);
         }
         for (final mem in trip.memories) {
+          _checkSession();
           expected = await _encryptMemory(mem, expected, result);
         }
       } else {
         for (final mem in trip.memories) {
+          _checkSession();
           expected = await _restoreMemory(mem, expected, result);
         }
       }
       for (final j in trip.journals) {
+        _checkSession();
         expected = await _encryptJournal(j, expected, result);
       }
     } on _TripChanged {
       result.ended++;
+    } on _SessionEnded {
+      result.ended++;
+      result.sessionEnded = true;
     }
     return result;
   }
+
+  /// The account [encryptTrip] started for, by the token's user id.
+  int? _sessionUser;
+
+  void _checkSession() {
+    if (!_enc.isUnlocked || _api.tokenUserId != _sessionUser) {
+      throw const _SessionEnded();
+    }
+  }
+
+  static bool _isSessionRefusal(ApiException e) =>
+      e.statusCode == 401 || e.statusCode == 403;
 
   bool _isPlain(String? v) =>
       v != null && v.isNotEmpty && !EncryptedField.isEnvelope(v);
@@ -250,10 +291,13 @@ class EncryptionMigration {
   /// A 404 on an activity means the user may not encrypt it (decision 14).
   Future<int> _write(String path, Map<String, dynamic> body, int expected,
       CatchUpResult result, {bool activity = false}) async {
+    // The row's encryption awaited: the session may have changed meanwhile.
+    _checkSession();
     final dynamic response;
     try {
       response = await _api.put(path, body);
     } on ApiException catch (e) {
+      if (_isSessionRefusal(e)) throw const _SessionEnded();
       if (_isStaleWrite(e)) throw const _TripChanged();
       if (activity && e.statusCode == 404) {
         result.unencryptable++;
@@ -342,6 +386,11 @@ class EncryptionMigration {
     try {
       track = await _api.get(ref.path('/activities/$id/track'))
           as Map<String, dynamic>;
+    } on ApiException catch (e) {
+      if (_isSessionRefusal(e)) throw const _SessionEnded();
+      result.skipped++;
+      debugPrint('encryption catch-up: activity $id not read (${e.statusCode})');
+      return expected;
     } on Exception catch (e) {
       result.skipped++;
       debugPrint('encryption catch-up: activity $id not read: $e');
