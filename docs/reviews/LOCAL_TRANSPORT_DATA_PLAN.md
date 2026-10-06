@@ -329,7 +329,7 @@ Answer (owner, 2026-10-06): 20 GB free on the VPS, so bus for all 49 regions is 
 - Decision: Defer (D10) — not a D2 duplicate of I1-2 or I2-1
 - Revisit when: before RAIL_PUBLISH_LAYERS is switched to include ferry or bus, when a rollback from part 2 to part 1 is considered, or a part-1 fetch logs an OOM on a bus store — case 1 needs `--tag <last release with no ferry/bus entries>`
 - Guard: —
-- Override: —
+- Override: user: Fix now — two sentences in the rollback runbook; verifier step kept, no round 4
 - Outcome: open
 
 ### I3-2 — §9 case 2 ties `--tag` to "releases with ferry and bus layers", but part 2's workflow writes manifest schema 3 for every release
@@ -338,5 +338,5 @@ Answer (owner, 2026-10-06): 20 GB free on the VPS, so bus for all 49 regions is 
 - Decision: Defer (D10)
 - Revisit when: before part 2 merges to main, or a rollback to a store-schema-2 image is considered — reword to "once part 2's workflow has published any release"
 - Guard: —
-- Override: —
+- Override: user: Fix now — two sentences in the rollback runbook; verifier step kept, no round 4
 - Outcome: open
