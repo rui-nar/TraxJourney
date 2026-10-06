@@ -429,7 +429,7 @@ class _ViewBodyState extends State<_ViewBody> with TickerProviderStateMixin {
                   ),
                 ),
                 tooltip: 'Filter by tag',
-                onPressed: n.availableTags.isEmpty
+                onPressed: n.itemsFacet.availableTags.isEmpty
                     ? null
                     : () => showModalBottomSheet<void>(
                           context: context,
@@ -639,7 +639,7 @@ class _ViewLayout extends StatelessWidget {
     final selActId = notifier.selectionFacet.selectedActivityId;
     final elevChart = notifier.isElevationLoaded
         ? ElevationChart(
-            activities: notifier.activities,
+            activities: notifier.itemsFacet.activities,
             selectedActivityId: selActId,
             onCursorChanged: (pos) =>
                 notifier.elevationCursorNotifier.value = pos,

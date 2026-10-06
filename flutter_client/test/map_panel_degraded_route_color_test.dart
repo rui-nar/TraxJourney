@@ -44,12 +44,12 @@ ProjectNotifier _notifier({required bool degraded}) =>
     ProjectNotifier(ProjectService())
       ..ref = const ProjectRef(name: 'Trip')
       ..geoFacetWriter.replaceKeepingLod(_geo(degraded: degraded))
-      ..items = [
+      ..itemsFacetWriter.setItems([
         {
           'item_type': 'segment',
           'segment': {'id': 'seg-1', 'segment_type': 'boat'},
         },
-      ]
+      ])
       ..isLoading = false;
 
 /// Mirrors map_panel_fit_bounds_test.dart's harness.

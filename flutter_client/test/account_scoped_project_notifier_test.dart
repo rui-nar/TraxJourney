@@ -251,7 +251,7 @@ void main() {
     late Future<void> saving;
     await tester.runAsync(() async {
       await a.load(_japan);
-      expect(a.dayMeta[_day], {'note': 'A note'});
+      expect(a.itemsFacet.dayMeta[_day], {'note': 'A note'});
       saving = a.saveDayMeta(days: {
         _day: {'note': 'A edit'},
       });
@@ -265,7 +265,7 @@ void main() {
     await app.signIn(2);
     final b = app.notifier;
     await tester.runAsync(() => b.load(_japan));
-    expect(b.dayMeta[_day], {'note': 'B note'});
+    expect(b.itemsFacet.dayMeta[_day], {'note': 'B note'});
 
     await tester.runAsync(() async {
       server.held.complete(http.Response(
@@ -279,7 +279,7 @@ void main() {
     });
     await tester.pump();
 
-    expect(app.notifier.dayMeta[_day], {'note': 'B note'},
+    expect(app.notifier.itemsFacet.dayMeta[_day], {'note': 'B note'},
         reason: "A's notes must not land on B's trip");
   });
 

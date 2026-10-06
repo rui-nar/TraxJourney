@@ -225,7 +225,7 @@ void main() {
     await n.load(_ref);
     await _settle(n);
 
-    final profile = n.activities.first['elevation_profile'] as List;
+    final profile = n.itemsFacet.activities.first['elevation_profile'] as List;
     expect(profile, hasLength(3));
     expect((profile.last as List)[0], 1.0);
     expect(n.fullTrack.last.$1, closeTo(1.0, 1e-9));
@@ -261,7 +261,7 @@ void main() {
     await n.load(_ref);
     await _settle(n);
 
-    final profile = n.activities.first['elevation_profile'] as List;
+    final profile = n.itemsFacet.activities.first['elevation_profile'] as List;
     expect(profile, hasLength(2));
     expect((profile.last as List)[1], closeTo(110.0, 0.051));
   });

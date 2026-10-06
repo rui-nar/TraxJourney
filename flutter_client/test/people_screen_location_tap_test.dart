@@ -8,10 +8,10 @@ import 'package:traxjourney_client/src/projects/project_service.dart';
 
 ProjectNotifier _notifierWithGroupEncounters() {
   final n = ProjectNotifier(ProjectService())..ref = const ProjectRef(name: 'Trip');
-  n.groups = [
+  n.itemsFacetWriter.setGroups([
     {'id': 5, 'name': 'Crew', 'nationalities': [], 'socials': []},
-  ];
-  n.items = [
+  ]);
+  n.itemsFacetWriter.setItems([
     {
       'item_type': 'encounter',
       'encounter': {
@@ -32,7 +32,7 @@ ProjectNotifier _notifierWithGroupEncounters() {
         'description': 'no coords',
       },
     },
-  ];
+  ]);
   return n;
 }
 
@@ -45,7 +45,7 @@ void main() {
       'group encounter place icon is tappable only when lat/lon exist, and '
       'invokes onLocationTap with the right values', (tester) async {
     final notifier = _notifierWithGroupEncounters();
-    final group = notifier.groups.first;
+    final group = notifier.itemsFacet.groups.first;
     (double, double)? tapped;
 
     await tester.pumpWidget(MaterialApp(

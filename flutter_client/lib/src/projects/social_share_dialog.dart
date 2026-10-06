@@ -28,7 +28,7 @@ void showSocialShareDialog(
   ProjectNotifier notifier, {
   String? initialMemoryPublicId,
 }) {
-  final memories = notifier.items
+  final memories = notifier.itemsFacet.items
       .where((i) => i['item_type'] == 'memory' && i['memory'] != null)
       .map((i) => (i['memory'] as Map).cast<String, dynamic>())
       .toList()

@@ -117,8 +117,8 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(AlertDialog), findsNothing);
-    expect(notifier.groups, hasLength(1));
-    expect(notifier.groups.single['id'], 5);
+    expect(notifier.itemsFacet.groups, hasLength(1));
+    expect(notifier.itemsFacet.groups.single['id'], 5);
   });
 
   testWidgets(
@@ -176,7 +176,7 @@ void main() {
     expect(groupPostCount, 1,
         reason: 'retry must not create a second group');
     expect(membersPutCount, 2);
-    expect(notifier.groups, hasLength(1));
-    expect(notifier.groups.single['id'], 5);
+    expect(notifier.itemsFacet.groups, hasLength(1));
+    expect(notifier.itemsFacet.groups.single['id'], 5);
   });
 }

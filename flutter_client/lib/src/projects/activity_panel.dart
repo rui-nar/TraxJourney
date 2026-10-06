@@ -417,8 +417,8 @@ class _ActivityPanelState extends State<ActivityPanel> {
     _prevSelectedActivityIdStr = widget.notifier.selectionFacet.selectedActivityId?.toString();
     _prevSelectedSegmentIdStr = widget.notifier.selectionFacet.selectedSegmentId?.toString();
     widget.notifier.addListener(_onNotifierChanged);
-    _refreshActivityById(widget.notifier.activities);
-    _rebuildDisplayList(widget.notifier.items, widget.notifier.tripStart, widget.notifier.dayMeta);
+    _refreshActivityById(widget.notifier.itemsFacet.activities);
+    _rebuildDisplayList(widget.notifier.itemsFacet.items, widget.notifier.itemsFacet.tripStart, widget.notifier.itemsFacet.dayMeta);
   }
 
   @override
@@ -436,8 +436,8 @@ class _ActivityPanelState extends State<ActivityPanel> {
       _prevSelectedActivityIdStr = widget.notifier.selectionFacet.selectedActivityId?.toString();
       _prevSelectedSegmentIdStr = widget.notifier.selectionFacet.selectedSegmentId?.toString();
     }
-    _refreshActivityById(widget.notifier.activities);
-    _rebuildDisplayList(widget.notifier.items, widget.notifier.tripStart, widget.notifier.dayMeta);
+    _refreshActivityById(widget.notifier.itemsFacet.activities);
+    _rebuildDisplayList(widget.notifier.itemsFacet.items, widget.notifier.itemsFacet.tripStart, widget.notifier.itemsFacet.dayMeta);
 
     // Panel just became visible (narrow layout: opened after a selection was
     // made on the map while it was hidden). Center the current selection now
@@ -1003,7 +1003,7 @@ class _ActivityPanelState extends State<ActivityPanel> {
   /// Resolve the person map for an encounter's person_id from the loaded people.
   Map<String, dynamic>? _personFor(int? personId) {
     if (personId == null) return null;
-    for (final p in widget.notifier.people) {
+    for (final p in widget.notifier.itemsFacet.people) {
       if (p['id'] == personId) return p;
     }
     return null;
@@ -1012,7 +1012,7 @@ class _ActivityPanelState extends State<ActivityPanel> {
   /// Resolve the group map for an encounter's group_id (issue #56).
   Map<String, dynamic>? _groupFor(int? groupId) {
     if (groupId == null) return null;
-    for (final g in widget.notifier.groups) {
+    for (final g in widget.notifier.itemsFacet.groups) {
       if (g['id'] == groupId) return g;
     }
     return null;
@@ -1267,7 +1267,7 @@ class _ActivityPanelState extends State<ActivityPanel> {
     return perfSpans.blocking('activity_panel_build', () {
     final notifier = widget.notifier;
     final theme = Theme.of(context);
-    final items = notifier.items;
+    final items = notifier.itemsFacet.items;
     // Layout class is invariant across the list — compute once here rather than
     // calling MediaQuery.of() inside the item builder for every row.
     final isWide = MediaQuery.of(context).size.width >= 720;
@@ -1388,7 +1388,7 @@ class _ActivityPanelState extends State<ActivityPanel> {
                   ),
                 )
               : Builder(builder: (context) {
-                  _rebuildDisplayList(items, notifier.tripStart, notifier.dayMeta);
+                  _rebuildDisplayList(items, notifier.itemsFacet.tripStart, notifier.itemsFacet.dayMeta);
                   final hasFilter    = notifier.selectionFacet.hasActiveFilter;
                   final selectedDays = notifier.selectionFacet.selectedDays;
                   // Recompute filtered list only when inputs actually change.
@@ -1503,9 +1503,9 @@ class _ActivityPanelState extends State<ActivityPanel> {
                                   // Effective tags include those inherited from
                                   // an earlier day (issue #18); inherited ones
                                   // render faded to mark them as a default.
-                                  final tags = notifier.effectiveTagsFor(h.dateKey);
+                                  final tags = notifier.itemsFacet.effectiveTagsFor(h.dateKey);
                                   final inherited =
-                                      !notifier.dayHasOwnTags(h.dateKey) &&
+                                      !notifier.itemsFacet.dayHasOwnTags(h.dateKey) &&
                                           tags.isNotEmpty;
                                   return Column(
                                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -2281,7 +2281,7 @@ class _BulkTagDialogState extends State<_BulkTagDialog> {
     }
     final updated = <String, Map<String, dynamic>>{};
     for (final dateKey in widget.selectedDays) {
-      final existing = Map<String, dynamic>.from(widget.notifier.dayMeta[dateKey] ?? {});
+      final existing = Map<String, dynamic>.from(widget.notifier.itemsFacet.dayMeta[dateKey] ?? {});
       final existingTags = (existing['tags'] as List?)?.cast<String>().toSet() ?? <String>{};
       existing['tags'] = (existingTags..addAll(_chosenTags)).toList()..sort();
       updated[dateKey] = existing;
@@ -2293,7 +2293,7 @@ class _BulkTagDialogState extends State<_BulkTagDialog> {
   @override
   Widget build(BuildContext context) {
     final allTags = {
-      ...widget.notifier.availableTags,
+      ...widget.notifier.itemsFacet.availableTags,
       ..._chosenTags,
     }.toList()..sort();
 
@@ -2404,15 +2404,15 @@ class FilterSheet extends StatelessWidget {
         // narrowed with nothing here to untick. A non-empty filter also keeps
         // its section on screen when the trip holds nothing else in it.
         final tags       = _withSelected(
-            notifier.availableTags, notifier.selectionFacet.tagFilter);
+            notifier.itemsFacet.availableTags, notifier.selectionFacet.tagFilter);
         final sleeping   = _withSelected(
-            notifier.availableSleepingModes, notifier.selectionFacet.sleepingFilter,
+            notifier.itemsFacet.availableSleepingModes, notifier.selectionFacet.sleepingFilter,
             last: 'No data');
         final actTypes   = _withSelected(
-            notifier.availableActivityTypes, notifier.selectionFacet.activityTypeFilter);
+            notifier.itemsFacet.availableActivityTypes, notifier.selectionFacet.activityTypeFilter);
         final transport  = _withSelected(
-            notifier.availableTransportationMeans, notifier.selectionFacet.transportFilter);
-        final sources    = notifier.availableSources;
+            notifier.itemsFacet.availableTransportationMeans, notifier.selectionFacet.transportFilter);
+        final sources    = notifier.itemsFacet.availableSources;
         // What the trip holds, plus anything already filtered on. A source
         // whose last activity has since been deleted has to keep the chip that
         // turns it off: without it the list stays empty and nothing in this

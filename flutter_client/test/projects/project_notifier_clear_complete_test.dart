@@ -159,10 +159,10 @@ Map<String, Object?> _state(ProjectNotifier n) => {
       'canEditContent': n.canEditContent,
       'canManageTrip': n.canManageTrip,
       'isProjectOwner': n.isProjectOwner,
-      'activities': n.activities,
-      'items': n.items,
-      'people': n.people,
-      'groups': n.groups,
+      'activities': n.itemsFacet.activities,
+      'items': n.itemsFacet.items,
+      'people': n.itemsFacet.people,
+      'groups': n.itemsFacet.groups,
       'geo': n.geoFacet.geo,
       'geoLod': n.geoFacet.lod,
       'geoServedFrom': n.geoFacet.servedFrom,
@@ -181,13 +181,13 @@ Map<String, Object?> _state(ProjectNotifier n) => {
       'showJournals': n.selectionFacet.showJournals,
       'selectedDay': n.selectionFacet.selectedDay,
       'selectedDays': n.selectionFacet.selectedDays,
-      'tripStart': n.tripStart,
-      'tripEnd': n.tripEnd,
-      'dayMeta': n.dayMeta,
-      'orderedDayKeys': n.orderedDayKeys(),
-      'sleepingOptions': n.sleepingOptions,
-      'sleepingOptionGroups': n.sleepingOptionGroups,
-      'counters': n.counters,
+      'tripStart': n.itemsFacet.tripStart,
+      'tripEnd': n.itemsFacet.tripEnd,
+      'dayMeta': n.itemsFacet.dayMeta,
+      'orderedDayKeys': n.itemsFacet.orderedDayKeys(),
+      'sleepingOptions': n.itemsFacet.sleepingOptions,
+      'sleepingOptionGroups': n.itemsFacet.sleepingOptionGroups,
+      'counters': n.itemsFacet.counters,
       'shareToken': n.shareToken,
       'shareTokenNoMemories': n.shareTokenNoMemories,
       'autoSyncEnabled': n.autoSyncEnabled,
@@ -209,7 +209,7 @@ Map<String, Object?> _state(ProjectNotifier n) => {
       'totalDistanceM': n.totalDistanceM,
       'totalMovingSeconds': n.totalMovingSeconds,
       'totalElevationGainM': n.totalElevationGainM,
-      'dayStats': n.dayStats(_day1),
+      'dayStats': n.itemsFacet.dayStats(_day1),
       'fullTrack': n.fullTrack,
       'perActivityTracks': n.perActivityTracks,
       'previewArc': n.previewArcNotifier.value,
@@ -229,13 +229,13 @@ Map<String, Object?> _state(ProjectNotifier n) => {
       'transportFilter': n.selectionFacet.transportFilter,
       'activeFilterCount': n.selectionFacet.activeFilterCount,
       'hasActiveFilter': n.selectionFacet.hasActiveFilter,
-      'hasFilterableContent': n.hasFilterableContent,
-      'availableTags': n.availableTags,
-      'availableSleepingModes': n.availableSleepingModes,
+      'hasFilterableContent': n.itemsFacet.hasFilterableContent,
+      'availableTags': n.itemsFacet.availableTags,
+      'availableSleepingModes': n.itemsFacet.availableSleepingModes,
       // The durable segment overlay, read through the only door it has: a
       // stale server snapshot still carrying the tombstoned segment, merged.
       'segmentOverlay': n.mergePendingSegmentPatches([_segmentFeature('s1')]),
-      'undecrypted': n.undecryptedFields.contains('journal', 'j1', 'name'),
+      'undecrypted': n.itemsFacet.undecryptedFields.contains('journal', 'j1', 'name'),
     };
 
 void main() {
@@ -289,7 +289,7 @@ void main() {
         n.toggleJournals();
         n.removeSegmentFromGeo('s1'); // a tombstone
         n.upsertSegmentInGeo('s2', _segmentFeature('s2')); // a pending patch
-        n.undecryptedFields.mark('journal', 'j1', 'name');
+        n.itemsFacet.undecryptedFields.mark('journal', 'j1', 'name');
         n.pendingSync = (strava: [<String, dynamic>{'id': 9}], polarsteps: []);
         n.degradedRouteUpgradeAvailable = true;
         n.offlineFromCache = true;

@@ -19,7 +19,9 @@ class _Host extends ChangeNotifier with ProjectSegmentCrudMixin {
   @override
   ProjectRef? projectRef = const ProjectRef(name: 'p');
   @override
-  List<Map<String, dynamic>> items = [];
+  final ItemsFacetWriter itemsFacetWriter = ItemsFacetWriter();
+  List<Map<String, dynamic>> get items => itemsFacetWriter.facet.items;
+  set items(List<Map<String, dynamic>> v) => itemsFacetWriter.setItems(v);
   @override
   final GeoFacetWriter geoFacetWriter = GeoFacetWriter();
   Map<String, dynamic>? get geo => geoFacetWriter.facet.geo;

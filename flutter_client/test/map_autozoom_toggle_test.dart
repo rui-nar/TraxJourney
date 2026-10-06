@@ -38,14 +38,14 @@ Map<String, dynamic> _geo() => {
 ProjectNotifier _notifier() => ProjectNotifier(ProjectService())
   ..ref = const ProjectRef(name: 'Trip')
   ..geoFacetWriter.replaceKeepingLod(_geo())
-  ..activities = [
+  ..itemsFacetWriter.setActivities([
     {'id': '1', 'start_date_local': '2026-05-01T08:00:00'},
     {'id': '2', 'start_date_local': '2026-05-02T08:00:00'},
-  ]
-  ..items = [
+  ])
+  ..itemsFacetWriter.setItems([
     {'item_type': 'activity', 'activity_id': '1'},
     {'item_type': 'activity', 'activity_id': '2'},
-  ]
+  ])
   ..isLoading = false;
 
 const _basemap = 'https://example.invalid/{z}/{x}/{y}.png';

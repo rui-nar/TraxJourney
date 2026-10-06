@@ -235,7 +235,7 @@ class _ProjectStatsScreenState extends State<ProjectStatsScreen> {
           if (mounted) context.read<ProjectNotifier>().load(target);
         });
       }
-      _tagOptions = List.of(notifier.availableTags);
+      _tagOptions = List.of(notifier.itemsFacet.availableTags);
     }
     _load();
   }
@@ -256,7 +256,7 @@ class _ProjectStatsScreenState extends State<ProjectStatsScreen> {
   @override
   Widget build(BuildContext context) {
     final sleepingOptionGroups = widget.sleepingOptionGroups ??
-        context.watch<ProjectNotifier>().sleepingOptionGroups;
+        context.watch<ProjectNotifier>().itemsFacet.sleepingOptionGroups;
     return Scaffold(
       appBar: AppBar(title: Text('${widget.projectName} — Statistics')),
       body: Column(

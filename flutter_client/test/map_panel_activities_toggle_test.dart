@@ -13,10 +13,10 @@ import 'package:traxjourney_client/src/projects/project_service.dart';
 /// side effects on all of them.
 ProjectNotifier _notifierWithMixedMarkers() {
   final n = ProjectNotifier(ProjectService())..ref = const ProjectRef(name: 'Trip');
-  n.people = [
+  n.itemsFacetWriter.setPeople([
     {'id': 1, 'name': 'Alice'},
-  ];
-  n.items = [
+  ]);
+  n.itemsFacetWriter.setItems([
     {
       'item_type': 'activity',
       'activity': {'id': 1, 'name': 'Hike', 'sport_type': 'hike'},
@@ -45,7 +45,7 @@ ProjectNotifier _notifierWithMixedMarkers() {
         'date': '2026-01-01',
       },
     },
-  ];
+  ]);
   n.geoFacetWriter.replaceKeepingLod({
     'type': 'FeatureCollection',
     'features': [
@@ -67,12 +67,12 @@ ProjectNotifier _notifierWithMixedMarkers() {
 
 ProjectNotifier _notifierWithActivity() {
   final n = ProjectNotifier(ProjectService())..ref = const ProjectRef(name: 'Trip');
-  n.items = [
+  n.itemsFacetWriter.setItems([
     {
       'item_type': 'activity',
       'activity': {'id': 1, 'name': 'Hike', 'sport_type': 'hike'},
     },
-  ];
+  ]);
   n.geoFacetWriter.replaceKeepingLod({
     'type': 'FeatureCollection',
     'features': [

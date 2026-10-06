@@ -146,8 +146,8 @@ void main() {
       expect(service.triggerCalls, 1);
       expect(service.metaCalls, 3);
       expect(service.detailsCalls, 1, reason: 'one heavy fetch after the verdict');
-      expect(n.activities.single['name'], 'Fresh name');
-      expect(n.activities.single['map']['summary_polyline'], 'abc');
+      expect(n.itemsFacet.activities.single['name'], 'Fresh name');
+      expect(n.itemsFacet.activities.single['map']['summary_polyline'], 'abc');
     });
 
     test('failed verdict surfaces the server error message', () async {

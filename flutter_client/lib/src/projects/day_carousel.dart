@@ -104,7 +104,7 @@ class _DayCarouselState extends State<DayCarousel> {
   void initState() {
     super.initState();
     _scrollController = FixedExtentScrollController(
-      initialItem: _activeIndex(widget.notifier.orderedDayKeys()),
+      initialItem: _activeIndex(widget.notifier.itemsFacet.orderedDayKeys()),
     );
     _prevSelectedActivityIdStr = widget.notifier.selectionFacet.selectedActivityId?.toString();
     _prevSelectedSegmentIdStr = widget.notifier.selectionFacet.selectedSegmentId?.toString();
@@ -130,14 +130,14 @@ class _DayCarouselState extends State<DayCarousel> {
     // scroll debounce, and selectDays() would clear it — drop the older one.
     _selectDebounce?.cancel();
     final day = dayForSelection(
-      widget.notifier.items,
-      widget.notifier.activities,
+      widget.notifier.itemsFacet.items,
+      widget.notifier.itemsFacet.activities,
       activityId: widget.notifier.selectionFacet.selectedActivityId,
       segmentId: segId,
     );
     // Unscheduled, or a day the strip doesn't list: same, leave the wheel be.
     if (day == null) return;
-    final index = widget.notifier.orderedDayKeys().indexOf(day);
+    final index = widget.notifier.itemsFacet.orderedDayKeys().indexOf(day);
     if (index < 0 || !_scrollController.hasClients) return;
     // Where the wheel will end up, not where it happens to be right now: a
     // follow already in flight has not reached its own target yet.
@@ -183,7 +183,7 @@ class _DayCarouselState extends State<DayCarousel> {
       _prevSelectedSegmentIdStr = widget.notifier.selectionFacet.selectedSegmentId?.toString();
       if (_scrollController.hasClients) {
         _scrollController
-            .jumpToItem(_activeIndex(widget.notifier.orderedDayKeys()));
+            .jumpToItem(_activeIndex(widget.notifier.itemsFacet.orderedDayKeys()));
       }
     }
   }
@@ -228,7 +228,7 @@ class _DayCarouselState extends State<DayCarousel> {
 
   @override
   Widget build(BuildContext context) {
-    final days = widget.notifier.orderedDayKeys();
+    final days = widget.notifier.itemsFacet.orderedDayKeys();
     if (days.isEmpty) return const SizedBox.shrink();
 
     final cs = Theme.of(context).colorScheme;
@@ -345,8 +345,8 @@ class _DayCarouselState extends State<DayCarousel> {
                             // offset that often.
                             final dateKey = days[index];
                             final n = dayTripNumbering(
-                                dateKey, days, widget.notifier.tripStart);
-                            final stats = widget.notifier.dayStats(dateKey);
+                                dateKey, days, widget.notifier.itemsFacet.tripStart);
+                            final stats = widget.notifier.itemsFacet.dayStats(dateKey);
                             return AnimatedBuilder(
                               // Rebuilds this card every scroll tick so its
                               // scale/offset/"Day N" state tracks the live

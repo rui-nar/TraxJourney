@@ -169,7 +169,7 @@ Future<Uint8List?> performOffscreenExport({
   final dayMarkers = buildDayBreakpointMarkers(
     geo,
     dayStartActivityIds(
-        notifier.items, {for (final a in notifier.activities) a['id']: a}),
+        notifier.itemsFacet.items, {for (final a in notifier.itemsFacet.activities) a['id']: a}),
     Colors.black,
   );
 
@@ -250,7 +250,7 @@ Future<Uint8List?> performOffscreenExport({
                     SizedBox(
                       height: renderChartH,
                       child: ElevationChart(
-                        activities: notifier.activities,
+                        activities: notifier.itemsFacet.activities,
                         selectedActivityId: null,
                         track: notifier.fullTrack,
                         color: notifier.styleFacet.effectiveElevationChartColor,

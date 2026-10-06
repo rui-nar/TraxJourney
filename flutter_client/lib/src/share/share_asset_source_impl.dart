@@ -41,8 +41,8 @@ class ShareAssetSourceImpl implements ShareAssetSource {
     if (dayFocus && date != null) {
       final points = dayRoutePoints(
         geo: geo,
-        items: notifier.items,
-        activities: notifier.activities,
+        items: notifier.itemsFacet.items,
+        activities: notifier.itemsFacet.activities,
         date: date,
       );
       if (points.isNotEmpty) bounds = LatLngBounds.fromPoints(points);

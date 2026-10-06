@@ -109,8 +109,8 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(AlertDialog), findsNothing);
-    expect(notifier.people, hasLength(1));
-    expect(notifier.people.single['id'], 42);
+    expect(notifier.itemsFacet.people, hasLength(1));
+    expect(notifier.itemsFacet.people.single['id'], 42);
   });
 
   testWidgets(
@@ -122,9 +122,9 @@ void main() {
             (req) async => http.Response('{"detail":"Server exploded"}', 500)));
     final notifier = ProjectNotifier(ProjectService())
       ..ref = _ref
-      ..people = [
+      ..itemsFacetWriter.setPeople([
         {'id': 7, 'name': 'Alice'},
-      ];
+      ]);
 
     await tester.pumpWidget(
         _harness(notifier, person: {'id': 7, 'name': 'Alice'}));

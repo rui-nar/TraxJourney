@@ -723,11 +723,11 @@ List<Marker> buildEncounterMarkers(
   // group ("People") icon (the individual is masked); an ungrouped person
   // shows a person icon (issue #50).
   final peopleById = {
-    for (final p in notifier.people)
+    for (final p in notifier.itemsFacet.people)
       if (p['id'] is int) p['id'] as int: p,
   };
   final groupsById = {
-    for (final g in notifier.groups)
+    for (final g in notifier.itemsFacet.groups)
       if (g['id'] is int) g['id'] as int: g,
   };
 
@@ -949,12 +949,12 @@ SelectionStatsData? computeSelectionStats(ProjectNotifier notifier) {
       : (notifier.selectionFacet.selectedDay != null ? {notifier.selectionFacet.selectedDay!} : <String>{});
   if (selActId == null && selDays.isEmpty) return null;
 
-  final orderedDays = notifier.orderedDayKeys();
+  final orderedDays = notifier.itemsFacet.orderedDayKeys();
 
   if (selDays.isEmpty) {
     // Single activity selected.
     Map<String, dynamic>? activity;
-    for (final a in notifier.activities) {
+    for (final a in notifier.itemsFacet.activities) {
       if (a['id']?.toString() == selActId.toString()) {
         activity = a;
         break;
@@ -966,15 +966,15 @@ SelectionStatsData? computeSelectionStats(ProjectNotifier notifier) {
     final dateKey = (activity['start_date_local'] as String?)?.split('T').first;
     final dayLabel = dateKey == null
         ? ''
-        : 'Day ${dayTripNumbering(dateKey, orderedDays, notifier.tripStart).dayNumber}';
+        : 'Day ${dayTripNumbering(dateKey, orderedDays, notifier.itemsFacet.tripStart).dayNumber}';
     return SelectionStatsData(
         distanceKm: distanceKm, elevationM: elevationM, dayLabel: dayLabel);
   }
 
   if (selDays.length == 1) {
     final dateKey = selDays.first;
-    final stats = notifier.dayStats(dateKey);
-    final n = dayTripNumbering(dateKey, orderedDays, notifier.tripStart);
+    final stats = notifier.itemsFacet.dayStats(dateKey);
+    final n = dayTripNumbering(dateKey, orderedDays, notifier.itemsFacet.tripStart);
     return SelectionStatsData(
         distanceKm: stats.distanceKm,
         elevationM: stats.elevationM,
@@ -984,7 +984,7 @@ SelectionStatsData? computeSelectionStats(ProjectNotifier notifier) {
   // Multiple days selected: sum distance/climb across every selected date.
   double distanceKm = 0, elevationM = 0;
   for (final d in selDays) {
-    final s = notifier.dayStats(d);
+    final s = notifier.itemsFacet.dayStats(d);
     distanceKm += s.distanceKm;
     elevationM += s.elevationM;
   }
@@ -994,8 +994,8 @@ SelectionStatsData? computeSelectionStats(ProjectNotifier notifier) {
       indices.last - indices.first + 1 == indices.length;
   final String dayLabel;
   if (contiguous) {
-    final first = dayTripNumbering(sortedDays.first, orderedDays, notifier.tripStart).dayNumber;
-    final last = dayTripNumbering(sortedDays.last, orderedDays, notifier.tripStart).dayNumber;
+    final first = dayTripNumbering(sortedDays.first, orderedDays, notifier.itemsFacet.tripStart).dayNumber;
+    final last = dayTripNumbering(sortedDays.last, orderedDays, notifier.itemsFacet.tripStart).dayNumber;
     dayLabel = 'Days $first–$last';
   } else {
     dayLabel = '${selDays.length} days selected';
@@ -1582,7 +1582,7 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
     final selMemId = notifier.selectionFacet.selectedMemoryId;
     final selJournalId = notifier.selectionFacet.selectedJournalId;
     final showJournals = notifier.selectionFacet.showJournals;
-    final items = notifier.items;
+    final items = notifier.itemsFacet.items;
     final trackColor = notifier.styleFacet.trackColor;
     final trackSecondaryColor = notifier.styleFacet.trackSecondaryColor;
     final trackWidth = notifier.styleFacet.trackWidth;
@@ -1630,7 +1630,7 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
       if (geoOrStyleChanged) {
         perfSpans.blocking('build_specs', () {
         final actById = <dynamic, Map<String, dynamic>>{
-          for (final a in notifier.activities) a['id']: a
+          for (final a in notifier.itemsFacet.activities) a['id']: a
         };
         _dayIndex = buildDayIndex(items, actById);
         _polylineSpecs = geo != null
@@ -1704,12 +1704,12 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
     // geoOrStyleChanged/selectionChanged so a day/activity/segment/memory
     // selection never redoes this classification pass for nothing.
     if (!identical(items, _lastEncounterItems) ||
-        !identical(notifier.people, _lastEncounterPeople) ||
-        !identical(notifier.groups, _lastEncounterGroups) ||
+        !identical(notifier.itemsFacet.people, _lastEncounterPeople) ||
+        !identical(notifier.itemsFacet.groups, _lastEncounterGroups) ||
         widget.showEncounters != _lastEncounterShowEncounters) {
       _lastEncounterItems = items;
-      _lastEncounterPeople = notifier.people;
-      _lastEncounterGroups = notifier.groups;
+      _lastEncounterPeople = notifier.itemsFacet.people;
+      _lastEncounterGroups = notifier.itemsFacet.groups;
       _lastEncounterShowEncounters = widget.showEncounters;
       _cachedEncounterMarkers = widget.showEncounters
           ? buildEncounterMarkers(items, context, notifier,
@@ -2575,7 +2575,7 @@ class ManageMapPanelState extends State<ManageMapPanel>
     final selMemId = notifier.selectionFacet.selectedMemoryId;
     final selJournalId2 = notifier.selectionFacet.selectedJournalId;
     final showJournals2 = notifier.selectionFacet.showJournals;
-    final items = notifier.items;
+    final items = notifier.itemsFacet.items;
     final trackColor = notifier.styleFacet.trackColor;
     final trackSecondaryColor2 = notifier.styleFacet.trackSecondaryColor;
     final trackWidth = notifier.styleFacet.trackWidth;
@@ -2625,7 +2625,7 @@ class ManageMapPanelState extends State<ManageMapPanel>
       if (geoOrStyleChanged2) {
         // Build activityById for the day index below.
         final actById = <dynamic, Map<String, dynamic>>{
-          for (final a in notifier.activities) a['id']: a
+          for (final a in notifier.itemsFacet.activities) a['id']: a
         };
         _dayIndex = buildDayIndex(items, actById);
         _polylineSpecs = geo != null
@@ -2693,11 +2693,11 @@ class ManageMapPanelState extends State<ManageMapPanel>
     // geoOrStyleChanged2/selectionChanged2 so a day/activity/segment/memory
     // selection never redoes this classification pass for nothing.
     if (!identical(items, _lastEncounterItems) ||
-        !identical(notifier.people, _lastEncounterPeople) ||
-        !identical(notifier.groups, _lastEncounterGroups)) {
+        !identical(notifier.itemsFacet.people, _lastEncounterPeople) ||
+        !identical(notifier.itemsFacet.groups, _lastEncounterGroups)) {
       _lastEncounterItems = items;
-      _lastEncounterPeople = notifier.people;
-      _lastEncounterGroups = notifier.groups;
+      _lastEncounterPeople = notifier.itemsFacet.people;
+      _lastEncounterGroups = notifier.itemsFacet.groups;
       _cachedEncounterMarkers = buildEncounterMarkers(items, context,
           widget.notifier, onLocationTap: widget.onLocationTap);
     }

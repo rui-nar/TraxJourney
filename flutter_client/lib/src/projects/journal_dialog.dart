@@ -75,7 +75,7 @@ class _JournalDialogState extends State<JournalDialog> {
     final j = widget.editEntry;
     // From the record made when the items were revealed, never from the
     // value's shape: typed text such as "v1.2.3" looks like an envelope.
-    if (widget.notifier.undecryptedFields
+    if (widget.notifier.itemsFacet.undecryptedFields
         .contains('journal', j?['id']?.toString(), 'description')) {
       _descEnvelope = j!['description'] as String?;
     }
@@ -205,7 +205,7 @@ class _JournalDialogState extends State<JournalDialog> {
           return;
         }
         if (_pendingPhotos.isNotEmpty) {
-          final newEntry = widget.notifier.items
+          final newEntry = widget.notifier.itemsFacet.items
               .where((i) => i['item_type'] == 'journal')
               .map((i) => i['journal'] as Map<String, dynamic>?)
               .where((j2) =>

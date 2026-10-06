@@ -54,27 +54,29 @@ void main() {
     test('removeMemoryLocally reassigns items to a new list, content removed',
         () {
       final notifier = ProjectNotifier(ProjectService())..ref = _ref;
-      final before = notifier.items = [_memoryItem('m1'), _memoryItem('m2')];
+      final before = [_memoryItem('m1'), _memoryItem('m2')];
+      notifier.itemsFacetWriter.setItems(before);
 
       notifier.removeMemoryLocally('m1');
 
-      expect(notifier.items, isNot(same(before)),
+      expect(notifier.itemsFacet.items, isNot(same(before)),
           reason: 'a same-object mutation would never trip '
               'identical(items, _lastItems)-keyed caches');
-      expect(notifier.items.length, 1);
-      expect(notifier.items.first['memory']['id'], 'm2');
+      expect(notifier.itemsFacet.items.length, 1);
+      expect(notifier.itemsFacet.items.first['memory']['id'], 'm2');
     });
 
     test('removeJournalLocally reassigns items to a new list, content removed',
         () {
       final notifier = ProjectNotifier(ProjectService())..ref = _ref;
-      final before = notifier.items = [_journalItem('j1'), _journalItem('j2')];
+      final before = [_journalItem('j1'), _journalItem('j2')];
+      notifier.itemsFacetWriter.setItems(before);
 
       notifier.removeJournalLocally('j1');
 
-      expect(notifier.items, isNot(same(before)));
-      expect(notifier.items.length, 1);
-      expect(notifier.items.first['journal']['id'], 'j2');
+      expect(notifier.itemsFacet.items, isNot(same(before)));
+      expect(notifier.itemsFacet.items.length, 1);
+      expect(notifier.itemsFacet.items.first['journal']['id'], 'j2');
     });
 
     test(
@@ -83,16 +85,16 @@ void main() {
         'which used to reach into notifier.items directly and never even '
         'called notifyListeners()', () {
       final notifier = ProjectNotifier(ProjectService())..ref = _ref;
-      final before =
-          notifier.items = [_encounterItem('e1'), _encounterItem('e2')];
+      final before = [_encounterItem('e1'), _encounterItem('e2')];
+      notifier.itemsFacetWriter.setItems(before);
 
       var notified = false;
       notifier.addListener(() => notified = true);
       notifier.removeEncounterLocally('e1');
 
-      expect(notifier.items, isNot(same(before)));
-      expect(notifier.items.length, 1);
-      expect(notifier.items.first['encounter']['id'], 'e2');
+      expect(notifier.itemsFacet.items, isNot(same(before)));
+      expect(notifier.itemsFacet.items.length, 1);
+      expect(notifier.itemsFacet.items.first['encounter']['id'], 'e2');
       expect(notified, isTrue);
     });
   });
@@ -120,11 +122,12 @@ void main() {
         () async {
       api = mockedApi();
       final notifier = ProjectNotifier(ProjectService())..ref = _ref;
-      final before = notifier.items = [];
+      final before = <Map<String, dynamic>>[];
+      notifier.itemsFacetWriter.setItems(before);
 
       final future = notifier.createMemory(date: '2024-06-01', geoMode: 'pin');
-      expect(notifier.items, isNot(same(before)));
-      expect(notifier.items, hasLength(1));
+      expect(notifier.itemsFacet.items, isNot(same(before)));
+      expect(notifier.itemsFacet.items, hasLength(1));
 
       await future;
     });
@@ -134,12 +137,12 @@ void main() {
       api = mockedApi();
       final notifier = ProjectNotifier(ProjectService())
         ..ref = _ref
-        ..items = [_memoryItem('a'), _memoryItem('b'), _memoryItem('c')];
-      final before = notifier.items;
+        ..itemsFacetWriter.setItems([_memoryItem('a'), _memoryItem('b'), _memoryItem('c')]);
+      final before = notifier.itemsFacet.items;
 
       final future = notifier.reorderItems(0, 2);
-      expect(notifier.items, isNot(same(before)));
-      expect(notifier.items.map((i) => i['memory']['id']).toList(),
+      expect(notifier.itemsFacet.items, isNot(same(before)));
+      expect(notifier.itemsFacet.items.map((i) => i['memory']['id']).toList(),
           ['b', 'c', 'a']);
 
       await future;

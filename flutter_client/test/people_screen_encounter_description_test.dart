@@ -14,10 +14,10 @@ const _longNote =
 
 ProjectNotifier _notifierWithGroupEncounter(String description) {
   final n = ProjectNotifier(ProjectService())..ref = const ProjectRef(name: 'Trip');
-  n.groups = [
+  n.itemsFacetWriter.setGroups([
     {'id': 5, 'name': 'Crew', 'nationalities': [], 'socials': []},
-  ];
-  n.items = [
+  ]);
+  n.itemsFacetWriter.setItems([
     {
       'item_type': 'encounter',
       'encounter': {
@@ -27,7 +27,7 @@ ProjectNotifier _notifierWithGroupEncounter(String description) {
         'description': description,
       },
     },
-  ];
+  ]);
   return n;
 }
 
@@ -38,7 +38,7 @@ void main() {
   testWidgets('long description shows Read more and the dialog shows the full text',
       (tester) async {
     final notifier = _notifierWithGroupEncounter(_longNote);
-    final group = notifier.groups.first;
+    final group = notifier.itemsFacet.groups.first;
 
     await tester.pumpWidget(MaterialApp(
       home: Builder(
@@ -74,7 +74,7 @@ void main() {
 
   testWidgets('short description shows no Read more', (tester) async {
     final notifier = _notifierWithGroupEncounter('short note');
-    final group = notifier.groups.first;
+    final group = notifier.itemsFacet.groups.first;
 
     await tester.pumpWidget(MaterialApp(
       home: Builder(

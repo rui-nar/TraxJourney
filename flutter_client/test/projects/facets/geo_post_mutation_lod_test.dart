@@ -247,7 +247,7 @@ void main() {
       await _writes['a segment 409']!(n);
       await _settle();
 
-      final segment = n.items
+      final segment = n.itemsFacet.items
           .firstWhere((i) => i['item_type'] == 'segment')['segment'] as Map;
       expect(segment['label'], 'other device');
       expect(_v(n), server.version);

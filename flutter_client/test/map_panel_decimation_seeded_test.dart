@@ -58,14 +58,14 @@ ProjectNotifier _notifier(Map<String, dynamic> geo) =>
     ProjectNotifier(ProjectService())
       ..ref = const ProjectRef(name: 'Trip')
       ..geoFacetWriter.replaceKeepingLod(geo)
-      ..activities = [
+      ..itemsFacetWriter.setActivities([
         for (var a = 0; a < _acts; a++)
           {'id': a, 'start_date_local': '2026-06-01T08:00:00'}
-      ]
-      ..items = [
+      ])
+      ..itemsFacetWriter.setItems([
         for (var a = 0; a < _acts; a++)
           {'item_type': 'activity', 'activity_id': a}
-      ]
+      ])
       ..isLoading = false;
 
 Future<void> _pumpMap(WidgetTester tester, ProjectNotifier n) async {

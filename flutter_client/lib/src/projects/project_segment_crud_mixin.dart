@@ -33,8 +33,9 @@ typedef ServerGeo = ({
 mixin ProjectSegmentCrudMixin on ChangeNotifier {
   // ── Abstract: project state (satisfied by ProjectNotifier fields) ──────────
   ProjectRef? get projectRef;
-  List<Map<String, dynamic>> get items;
-  set items(List<Map<String, dynamic>> v);
+  /// The content facet's writer — satisfied by ProjectNotifier's.
+  ItemsFacetWriter get itemsFacetWriter;
+  List<Map<String, dynamic>> get _items => itemsFacetWriter.facet.items;
   /// The geometry facet's writer — satisfied by ProjectNotifier's.
   GeoFacetWriter get geoFacetWriter;
   String? get error;
@@ -117,12 +118,12 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
       },
     };
     final insertAt = insertAfterIndex != null
-        ? (insertAfterIndex + 1).clamp(0, items.length)
-        : items.length;
+        ? (insertAfterIndex + 1).clamp(0, _items.length)
+        : _items.length;
     // Assign a new list so identical() in the panel detects the change.
-    final newItems = List<Map<String, dynamic>>.from(items);
+    final newItems = List<Map<String, dynamic>>.from(_items);
     newItems.insert(insertAt, placeholder);
-    items = newItems;
+    itemsFacetWriter.setItems(newItems);
     notifyListeners();
     try {
       final result = await api.post(
@@ -143,8 +144,8 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
       final newId = result['id'] as String;
       // Replace the optimistic placeholder with the confirmed segment,
       // creating a new list so identical() in the panel triggers a rebuild.
-      items = [
-        for (final item in items)
+      itemsFacetWriter.setItems([
+        for (final item in _items)
           if (item['item_type'] == 'segment' &&
               item['segment']?['id'] == '__optimistic__')
             {
@@ -160,17 +161,17 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
             }
           else
             item,
-      ];
+      ]);
       upsertSegmentInGeo(newId, _segmentFeature(
           newId, segmentType, label, startLat, startLon, endLat, endLon));
       notifyListeners();
       return newId;
     } on Exception catch (e) {
       // Roll back the optimistic placeholder so a failed create leaves no ghost.
-      items = items
+      itemsFacetWriter.setItems(_items
           .where((item) => !(item['item_type'] == 'segment' &&
               item['segment']?['id'] == '__optimistic__'))
-          .toList();
+          .toList());
       removeSegmentFromGeo('__optimistic__');
       _segmentTombstones.remove('__optimistic__'); // not a real server segment
       if (await _resyncOnConflict(e, ref)) return '';
@@ -199,8 +200,8 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
     double? prevStartLat, prevStartLon, prevEndLat, prevEndLon;
     Map<String, dynamic>? prevSegment;  // full snapshot for rollback on error
     // Build a new list (new reference) so identical() in the panel fires.
-    items = [
-      for (final item in items)
+    itemsFacetWriter.setItems([
+      for (final item in _items)
         if (item['item_type'] == 'segment' &&
             item['segment']?['id']?.toString() == segId)
           () {
@@ -226,7 +227,7 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
           }()
         else
           item,
-    ];
+    ]);
     notifyListeners();
     try {
       await api.put(
@@ -257,14 +258,14 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
     } on Exception catch (e) {
       // Roll back the optimistic edit so the UI doesn't drift from the server.
       if (prevSegment != null) {
-        items = [
-          for (final item in items)
+        itemsFacetWriter.setItems([
+          for (final item in _items)
             if (item['item_type'] == 'segment' &&
                 item['segment']?['id']?.toString() == segId)
               {'item_type': 'segment', 'segment': prevSegment}
             else
               item,
-        ];
+        ]);
       }
       if (await _resyncOnConflict(e, ref)) return;
       error = errorMessage(e);
@@ -366,7 +367,7 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
     if (ref == null) return;
     final poll = _resolvePoll;
     if (poll != null && !_sameTrip(ref, poll.trip)) stopSegmentResolvePolling();
-    for (final item in items) {
+    for (final item in _items) {
       final seg = item['segment'];
       if (item['item_type'] == 'segment' &&
           seg is Map &&
@@ -519,8 +520,8 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
   /// Merge [fields] into the matching segment in [items], assigning a new list
   /// reference so identity-based rebuilds fire.
   void _patchSegmentFields(String segId, Map<String, dynamic> fields) {
-    items = [
-      for (final item in items)
+    itemsFacetWriter.setItems([
+      for (final item in _items)
         if (item['item_type'] == 'segment' &&
             item['segment']?['id']?.toString() == segId)
           {
@@ -532,7 +533,7 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
           }
         else
           item,
-    ];
+    ]);
   }
 
   /// Find the `segment` sub-map for [segId] in a `/meta` response, or null.
@@ -631,18 +632,18 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
   /// _rebuildDisplayList detects the change and removes the dismissed widget
   /// from the tree before the SnackBar fires.
   void removeSegmentLocally(String segId) {
-    final index = items.indexWhere((item) =>
+    final index = _items.indexWhere((item) =>
         item['item_type'] == 'segment' &&
         item['segment']?['id']?.toString() == segId);
     if (index >= 0) {
       _removedSegments[segId] = _RemovedSegment(
-        index, items[index], _pendingSegmentPatches[segId] ?? _geoFeature(segId));
+        index, _items[index], _pendingSegmentPatches[segId] ?? _geoFeature(segId));
     }
-    items = items
+    itemsFacetWriter.setItems(_items
         .where((item) =>
             !(item['item_type'] == 'segment' &&
               item['segment']?['id']?.toString() == segId))
-        .toList();
+        .toList());
     removeSegmentFromGeo(segId);
     notifyListeners();
   }
@@ -676,13 +677,13 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
   void _restoreRemovedSegment(String segId) {
     final removed = _removedSegments.remove(segId);
     if (removed == null) return;
-    final alreadyBack = items.any((item) =>
+    final alreadyBack = _items.any((item) =>
         item['item_type'] == 'segment' &&
         item['segment']?['id']?.toString() == segId);
     if (!alreadyBack) {
-      final restored = List<Map<String, dynamic>>.from(items);
+      final restored = List<Map<String, dynamic>>.from(_items);
       restored.insert(removed.index.clamp(0, restored.length), removed.item);
-      items = restored;
+      itemsFacetWriter.setItems(restored);
     }
     final feature = removed.feature;
     if (feature != null) {

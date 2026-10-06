@@ -89,9 +89,9 @@ class _Server extends ProjectService {
 
 ProjectNotifier _notifier(ProjectService service, {String segId = 'seg-1'}) {
   final n = ProjectNotifier(service)..ref = _ref;
-  n.items = [
+  n.itemsFacetWriter.setItems([
     _segmentItem({'id': segId, 'route_status': 'pending'}),
-  ];
+  ]);
   return n;
 }
 
@@ -99,10 +99,10 @@ ProjectNotifier _notifier(ProjectService service, {String segId = 'seg-1'}) {
 /// empty map loaded.
 ProjectNotifier _notifierOn(_Server server) {
   final n = ProjectNotifier(server)..ref = _ref;
-  n.items = [
+  n.itemsFacetWriter.setItems([
     for (final s in server.segments.values)
       _segmentItem(Map<String, dynamic>.from(s)),
-  ];
+  ]);
   n.geoFacetWriter.replaceKeepingLod({'type': 'FeatureCollection', 'features': <dynamic>[]});
   return n;
 }
@@ -123,7 +123,7 @@ String? _drawnMode(ProjectNotifier n, String segId) {
   return null;
 }
 
-String? _itemStatus(ProjectNotifier n, String segId) => n.items
+String? _itemStatus(ProjectNotifier n, String segId) => n.itemsFacet.items
     .map((i) => i['segment'] as Map)
     .firstWhere((s) => s['id'] == segId)['route_status'] as String?;
 
@@ -338,7 +338,7 @@ void main() {
 
       // A new resolve is quick again.
       server.segments['b'] = _seg('b');
-      n.items = [...n.items, _segmentItem(_seg('b'))];
+      n.itemsFacetWriter.setItems([...n.itemsFacet.items, _segmentItem(_seg('b'))]);
       n.resolveTrainRoute('b');
       await tester.pump(const Duration(seconds: 3));
       expect(server.metaCalls, 40 + 32 + 10 + 1);
@@ -435,7 +435,7 @@ void main() {
       await tester.pump(const Duration(seconds: 3)); // poll sent, held
       n.clear();
       n.ref = _ref;
-      n.items = [_segmentItem(_seg('a', status: 'pending'))];
+      n.itemsFacetWriter.setItems([_segmentItem(_seg('a', status: 'pending'))]);
       server.gate!.complete();
       await tester.pump();
 

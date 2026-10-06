@@ -316,7 +316,7 @@ void main() {
     // inherited tag is some earlier day's own tag, and a day's own tags are its
     // effective tags. These pin that, so a change to either side is noticed.
     ProjectNotifier notifierWith(Map<String, Map<String, dynamic>> dayMeta) =>
-        ProjectNotifier(ProjectService())..dayMeta = dayMeta;
+        ProjectNotifier(ProjectService())..itemsFacetWriter.setDayMeta(dayMeta);
 
     final dayMeta = <String, Map<String, dynamic>>{
       '2026-06-01': {
@@ -335,9 +335,9 @@ void main() {
       final notifier = notifierWith(dayMeta);
 
       final effective =
-          dayMeta.keys.expand(notifier.effectiveTagsFor).toSet();
+          dayMeta.keys.expand(notifier.itemsFacet.effectiveTagsFor).toSet();
 
-      expect(effective, notifier.availableTags.toSet());
+      expect(effective, notifier.itemsFacet.availableTags.toSet());
     });
 
     test('restore keeps a tag if and only if it matches a day', () {

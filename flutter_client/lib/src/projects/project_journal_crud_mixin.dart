@@ -10,7 +10,7 @@ import '../api/client.dart';
 import '../core/project_ref.dart';
 import '../crypto/e2ee_crypto.dart' show EncryptedField;
 import '../crypto/encryption.dart';
-import '../crypto/undecrypted_fields.dart';
+import 'facets/project_facet.dart';
 import 'project_quota_mixin.dart';
 
 /// Monotonic counter backing createJournal's optimistic placeholder ids — a
@@ -34,9 +34,9 @@ String generateJournalClientToken() =>
 mixin ProjectJournalCrudMixin on ChangeNotifier, ProjectQuotaMixin {
   // ── Abstract: project state (satisfied by ProjectNotifier fields) ─────────
   ProjectRef? get projectRef;
-  List<Map<String, dynamic>> get items;
-  set items(List<Map<String, dynamic>> v);
-  UndecryptedFields get undecryptedFields;
+  /// The content facet's writer — satisfied by ProjectNotifier's.
+  ItemsFacetWriter get itemsFacetWriter;
+  List<Map<String, dynamic>> get _items => itemsFacetWriter.facet.items;
   String? get error;
   set error(String? v);
 
@@ -78,14 +78,14 @@ mixin ProjectJournalCrudMixin on ChangeNotifier, ProjectQuotaMixin {
       },
     };
     final insertAt = insertAfterIndex != null
-        ? (insertAfterIndex + 1).clamp(0, items.length)
-        : items.length;
+        ? (insertAfterIndex + 1).clamp(0, _items.length)
+        : _items.length;
     // New list object, not an in-place insert: map_panel's marker cache and
     // ProjectNotifier's dayStats/orderedDayKeys caches invalidate via
     // identical(items, _last...), which a same-object mutation never trips.
-    final newItems = List.of(items);
+    final newItems = List.of(_items);
     newItems.insert(insertAt, placeholder);
-    items = newItems;
+    itemsFacetWriter.setItems(newItems);
     notifyListeners();
     try {
       final encDescription = await encryption.protect(description);
@@ -104,11 +104,11 @@ mixin ProjectJournalCrudMixin on ChangeNotifier, ProjectQuotaMixin {
       return true;
     } on Exception catch (e) {
       // Roll back the placeholder so a failed create leaves no phantom item.
-      items = items
+      itemsFacetWriter.setItems(_items
           .where((item) =>
               !(item['item_type'] == 'journal' &&
                 item['journal']?['id']?.toString() == tempId))
-          .toList();
+          .toList());
       error = errorMessage(e);
       notifyListeners();
       return false;
@@ -135,11 +135,11 @@ mixin ProjectJournalCrudMixin on ChangeNotifier, ProjectQuotaMixin {
         description != null &&
         EncryptedField.isWellFormed(description);
     if (!descriptionAsStored) {
-      undecryptedFields.remove('journal', journalId, 'description');
+      itemsFacetWriter.forgetUndecrypted('journal', journalId, 'description');
     }
     // New list + new item map, not an in-place mutation of the existing
     // item — see createJournal's comment above for why identity matters here.
-    final newItems = List.of(items);
+    final newItems = List.of(_items);
     for (var i = 0; i < newItems.length; i++) {
       final item = newItems[i];
       if (item['item_type'] == 'journal' &&
@@ -155,7 +155,7 @@ mixin ProjectJournalCrudMixin on ChangeNotifier, ProjectQuotaMixin {
         break;
       }
     }
-    items = newItems;
+    itemsFacetWriter.setItems(newItems);
     notifyListeners();
     try {
       final encDescription = descriptionAsStored
@@ -177,11 +177,11 @@ mixin ProjectJournalCrudMixin on ChangeNotifier, ProjectQuotaMixin {
   }
 
   void removeJournalLocally(String journalId) {
-    items = items
+    itemsFacetWriter.setItems(_items
         .where((item) =>
             !(item['item_type'] == 'journal' &&
               item['journal']?['id']?.toString() == journalId))
-        .toList();
+        .toList());
     notifyListeners();
   }
 

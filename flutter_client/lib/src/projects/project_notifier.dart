@@ -14,7 +14,6 @@ import '../core/perf_timing.dart';
 import '../core/project_ref.dart';
 import '../crypto/e2ee_crypto.dart' show EncryptedField;
 import '../crypto/encryption.dart';
-import '../crypto/undecrypted_fields.dart';
 import '../map/geo_point.dart';
 import '../map/polyline_decoder.dart';
 import '../share/share_content_generator.dart';
@@ -32,7 +31,6 @@ import 'project_people_crud_mixin.dart';
 import 'project_quota_mixin.dart';
 import 'project_segment_crud_mixin.dart';
 import 'project_service.dart';
-import 'trip_end_days.dart';
 
 /// Waits between the automatic retries of a failed project fetch.
 ///
@@ -440,6 +438,7 @@ class ProjectNotifier extends ChangeNotifier
   @override
   final SelectionFacetWriter selectionFacetWriter = SelectionFacetWriter();
   final StyleFacetWriter styleFacetWriter = StyleFacetWriter();
+  @override
   final ItemsFacetWriter itemsFacetWriter = ItemsFacetWriter();
   final ElevationFacetWriter elevationFacetWriter = ElevationFacetWriter();
 
@@ -473,12 +472,8 @@ class ProjectNotifier extends ChangeNotifier
   bool get canManageTrip => ref?.canManageTrip ?? true;
   bool get isProjectOwner => ref?.isOwner ?? true;
 
-  @override List<Map<String, dynamic>> activities = [];
-  @override List<Map<String, dynamic>> items = [];   // ordered project items (activities + segments + memories)
-  @override List<Map<String, dynamic>> people = [];  // trip people directory (#40)
-  @override List<Map<String, dynamic>> groups = [];  // people groups (#50)
-  /// Memory/journal fields [_revealItems] left as ciphertext (#466).
-  @override final UndecryptedFields undecryptedFields = UndecryptedFields();
+  // The trip's content — activities, items, people, groups, day-meta, trip
+  // dates, sleeping options and counters — lives in [itemsFacet] (#294).
   bool isLoading = false;
   @override String? error;
 
@@ -526,32 +521,15 @@ class ProjectNotifier extends ChangeNotifier
   /// already populated.
   bool isSyncMetaLoaded = true;
 
-  /// User-defined trip start date override ("YYYY-MM-DD"); null = infer from activities.
-  String? tripStart;
-
-  /// User-defined trip end date ("YYYY-MM-DD"); null = trip still ongoing.
-  String? tripEnd;
-
   /// True if the trip is still active (no tripEnd set, or tripEnd is today or later).
   bool get _tripIsActive {
+    final tripEnd = itemsFacet.tripEnd;
     if (tripEnd == null) return true;
-    final end = DateTime.tryParse(tripEnd!);
+    final end = DateTime.tryParse(tripEnd);
     if (end == null) return true;
     final now = DateTime.now();
     return !end.isBefore(DateTime(now.year, now.month, now.day));
   }
-
-  /// Day metadata keyed by "YYYY-MM-DD".
-  @override Map<String, Map<String, dynamic>> dayMeta = {};
-
-  /// Project-specific list of sleeping type options.
-  List<String> sleepingOptions = [];
-
-  /// Group assignment for each sleeping option: name → "Outdoors"|"Indoors"|"Other".
-  Map<String, String> sleepingOptionGroups = {};
-
-  /// Project-defined counters: [{name: String, start: double}].
-  List<Map<String, dynamic>> counters = [];
 
   // ── Share tokens ─────────────────────────────────────────────────────────
   String? shareToken;
@@ -844,13 +822,13 @@ class ProjectNotifier extends ChangeNotifier
       final pruned = restoreFilters(saved, prune: !offlineFromCache);
 
       final savedDay = data['selectedDay'] as String?;
-      if (savedDay != null && dayMeta.containsKey(savedDay)) {
+      if (savedDay != null && itemsFacet.dayMeta.containsKey(savedDay)) {
         selectionFacetWriter.setSelectedDay(savedDay);
       }
 
       final savedActivityId = data['selectedActivityId'] as String?;
       if (savedActivityId != null) {
-        final activityIds = activities.map((a) => a['id']?.toString()).toSet();
+        final activityIds = itemsFacet.activities.map((a) => a['id']?.toString()).toSet();
         if (activityIds.contains(savedActivityId)) {
           selectionFacetWriter.setSelectedActivityId(savedActivityId);
         }
@@ -858,7 +836,7 @@ class ProjectNotifier extends ChangeNotifier
 
       final savedSegmentId = data['selectedSegmentId'] as String?;
       if (savedSegmentId != null) {
-        final segmentIds = items
+        final segmentIds = itemsFacet.items
             .where((i) => i['item_type'] == 'segment')
             .map((i) => (i['segment'] as Map?)?['id']?.toString())
             .whereType<String>()
@@ -870,7 +848,7 @@ class ProjectNotifier extends ChangeNotifier
 
       final savedMemoryId = data['selectedMemoryId'] as String?;
       if (savedMemoryId != null) {
-        final memoryIds = items
+        final memoryIds = itemsFacet.items
             .where((i) => i['item_type'] == 'memory')
             .map((i) => (i['memory'] as Map?)?['id']?.toString())
             .whereType<String>()
@@ -1050,8 +1028,8 @@ class ProjectNotifier extends ChangeNotifier
     // Nothing to wait for when loadOwnerExtras is false (view mode still
     // has this true; shared mode doesn't) — see isSyncMetaLoaded's doc.
     isSyncMetaLoaded = !loadOwnerExtras;
-    activities = [];
-    items = [];
+    itemsFacetWriter.setActivities([]);
+    itemsFacetWriter.setItems([]);
     clearSegmentOverlay();  // discard any prior project's pending segment patches
     selectionFacetWriter.clearAllSelection();
     pendingSync = null;
@@ -1129,48 +1107,35 @@ class ProjectNotifier extends ChangeNotifier
         name: details['name'] as String? ?? name,
         role: details['caller_role'] as String? ?? ref.role,
       );
-      tripStart = details['trip_start'] as String?;
-      tripEnd = details['trip_end'] as String?;
+      itemsFacetWriter.setTripDates(
+          details['trip_start'] as String?, details['trip_end'] as String?);
       final rawActivities = details['activities'];
-      activities = rawActivities is List
+      itemsFacetWriter.setActivities(rawActivities is List
           ? rawActivities.cast<Map<String, dynamic>>()
-          : [];
-      await _revealActivities(activities);
+          : []);
+      await _revealActivities(itemsFacet.activities);
       final rawItems = details['items'];
-      items = rawItems is List
+      itemsFacetWriter.setItems(rawItems is List
           ? rawItems.cast<Map<String, dynamic>>()
-          : [];
-      await _revealItems(items);
+          : []);
+      await _revealItems(itemsFacet.items);
       final rawPeople = details['people'];
-      people = rawPeople is List
+      itemsFacetWriter.setPeople(rawPeople is List
           ? rawPeople.cast<Map<String, dynamic>>()
-          : [];
+          : []);
       final rawPeopleGroups = details['groups'];
-      groups = rawPeopleGroups is List
+      itemsFacetWriter.setGroups(rawPeopleGroups is List
           ? rawPeopleGroups.cast<Map<String, dynamic>>()
-          : [];
-      final rawDm = details['day_meta'];
-      dayMeta = rawDm is Map
-          ? rawDm.map((k, v) => MapEntry(k as String, Map<String, dynamic>.from(v as Map)))
-          : {};
-      final rawOpts = details['sleeping_options'];
-      final optList = rawOpts is List ? List<String>.from(rawOpts) : <String>[];
-      sleepingOptions = optList.isNotEmpty ? optList : List<String>.from(_defaultSleepingOptions);
-      final rawGroups = details['sleeping_option_groups'];
-      sleepingOptionGroups = rawGroups is Map
-          ? Map<String, String>.from(rawGroups.cast<String, String>())
-          : { for (final n in sleepingOptions) n: _defaultSleepingGroups[n] ?? 'Other' };
-      final rawCounters = details['counters'];
-      counters = rawCounters is List
-          ? rawCounters.map((c) => Map<String, dynamic>.from(c as Map)).toList()
-          : [];
+          : []);
+      _applyDayMetaDetails(details);
       styleFacetWriter.applyDetails(details, includeSecondary: true);
       _updateStats();
       if (encryption.isUnlocked) {
         // Decrypted activities/items are ready now — build the low-res map
         // client-side (mirrors src/project/repo_core.py's _compute_low_res_geo).
         geoFacetWriter.replace(
-            client_geo.buildLowResGeo(items, client_geo.activitiesById(activities)),
+            client_geo.buildLowResGeo(itemsFacet.items,
+                client_geo.activitiesById(itemsFacet.activities)),
             GeoLod.lowRes);
       }
       await _buildFullTrack();
@@ -1516,7 +1481,8 @@ class ProjectNotifier extends ChangeNotifier
       // race here; build it once, directly, from client_geo_builder.dart.
       try {
         geoFacetWriter.replace(
-            client_geo.buildFullGeo(items, client_geo.activitiesById(activities)),
+            client_geo.buildFullGeo(itemsFacet.items,
+                client_geo.activitiesById(itemsFacet.activities)),
             GeoLod.full);
         await _buildFullTrack();
         // Bug #1 of issue #283: this used to be set unconditionally right
@@ -1858,7 +1824,7 @@ class ProjectNotifier extends ChangeNotifier
     // envelope — so an encrypted trip would quietly lose track editing. That
     // is not elevation's decision to make here.
     if (!encryption.isUnlocked &&
-        activities.any((a) {
+        itemsFacet.activities.any((a) {
           final profile = a['elevation_profile'];
           return profile is List && profile.isNotEmpty;
         })) {
@@ -1892,9 +1858,9 @@ class ProjectNotifier extends ChangeNotifier
         for (final a in freshActivities) {
           byId[a['id']?.toString() ?? ''] = a;
         }
-        activities = [
-          for (final a in activities) byId[a['id']?.toString()] ?? a,
-        ];
+        itemsFacetWriter.setActivities([
+          for (final a in itemsFacet.activities) byId[a['id']?.toString()] ?? a,
+        ]);
         await _buildFullTrack();
         if (!_isCurrent(token, ref)) return;
         await _waitForCameraIdle();
@@ -1921,12 +1887,12 @@ class ProjectNotifier extends ChangeNotifier
       if (result.profiles.isEmpty) return true; // genuinely no elevation data
       // Copy-on-write per activity, so MapPanel's identical() caches see a
       // new list and nothing mutates an object another listener is reading.
-      activities = [
-        for (final a in activities)
+      itemsFacetWriter.setActivities([
+        for (final a in itemsFacet.activities)
           result.profiles[a['id']?.toString()] == null
               ? a
               : {...a, 'elevation_profile': result.profiles[a['id'].toString()]},
-      ];
+      ]);
       await _buildFullTrack();
       if (!_isCurrent(token, ref)) return true;
       await _waitForCameraIdle();
@@ -1944,7 +1910,7 @@ class ProjectNotifier extends ChangeNotifier
     double dist = 0;
     int moving = 0;
     double elev = 0;
-    for (final a in activities) {
+    for (final a in itemsFacet.activities) {
       dist   += (a['distance']              as num? ?? 0).toDouble();
       moving += (a['moving_time']           as num? ?? 0).toInt();
       elev   += (a['total_elevation_gain']  as num? ?? 0).toDouble();
@@ -1954,90 +1920,12 @@ class ProjectNotifier extends ChangeNotifier
     totalElevationGainM = elev;
   }
 
-  // Raw (pre-/1000) meters per day — divided down to km only when read, so
-  // caching this can't shift the float rounding of the original single
-  // divide-at-the-end computation below.
-  Map<String, ({double distanceM, double elevationM})>? _dayStatsCache;
-  List<Map<String, dynamic>>? _dayStatsCacheItems;
-  List<Map<String, dynamic>>? _dayStatsCacheActivities;
-
-  /// Distance (km) and climb (m) summed over the activities on [dateKey]
-  /// ("YYYY-MM-DD"). An activity belongs to the day of its
-  /// `start_date_local` — the same rule the activity panel groups by — so the
-  /// totals match what the day header shows. Returns zeros for a day with no
-  /// activities (the Edit Day hero then hides its stat strip).
-  ///
-  /// The day carousel calls this once per visible day on every rebuild —
-  /// including every rebuild a day *selection* triggers — so recomputing it
-  /// with a fresh O(activities) scan of `items` each time compounds with the
-  /// map's own per-selection rebuild cost (see map_panel.dart's
-  /// buildDayIndex). Cached here instead: one O(items) pass builds stats for
-  /// every day at once, reused until `items`/`activities` actually change.
-  ({double distanceKm, double elevationM}) dayStats(String dateKey) {
-    if (!identical(items, _dayStatsCacheItems) ||
-        !identical(activities, _dayStatsCacheActivities)) {
-      final byId = {for (final a in activities) a['id']?.toString(): a};
-      final cache = <String, ({double distanceM, double elevationM})>{};
-      for (final item in items) {
-        if (item['item_type'] != 'activity') continue;
-        final a = byId[item['activity_id']?.toString()];
-        if (a == null) continue;
-        final ds = (a['start_date_local'] as String?)?.split('T').first;
-        if (ds == null) continue;
-        final prev = cache[ds] ?? (distanceM: 0.0, elevationM: 0.0);
-        cache[ds] = (
-          distanceM: prev.distanceM + (a['distance'] as num? ?? 0).toDouble(),
-          elevationM: prev.elevationM +
-              (a['total_elevation_gain'] as num? ?? 0).toDouble(),
-        );
-      }
-      _dayStatsCache = cache;
-      _dayStatsCacheItems = items;
-      _dayStatsCacheActivities = activities;
-    }
-    final entry = _dayStatsCache![dateKey];
-    return entry == null
-        ? (distanceKm: 0.0, elevationM: 0.0)
-        : (distanceKm: entry.distanceM / 1000.0, elevationM: entry.elevationM);
-  }
+  // dayStats() and orderedDayKeys() live in [itemsFacet] (#294).
 
   static String _ymd(DateTime d) =>
       '${d.year.toString().padLeft(4, '0')}-'
       '${d.month.toString().padLeft(2, '0')}-'
       '${d.day.toString().padLeft(2, '0')}';
-
-  List<String>? _orderedDayKeysCache;
-  Map<String, Map<String, dynamic>>? _orderedDayKeysCacheDayMeta;
-  List<Map<String, dynamic>>? _orderedDayKeysCacheActivities;
-  List<Map<String, dynamic>>? _orderedDayKeysCacheItems;
-
-  /// Every day key ("YYYY-MM-DD") the project touches, ascending: the union of
-  /// day-meta days and the days any dated content falls on ([contentDayKeys] —
-  /// activities plus memories, journals, encounters and segments). That is the
-  /// same bucketing the activity panel gives a day header to, so a day the
-  /// panel shows is a day this lists (issue #370). It is the full-trip day
-  /// list regardless of any active filter (unlike the activity panel's
-  /// display-derived list), so it's safe to use from the add-FAB.
-  ///
-  /// Called from several places on every selection-triggered rebuild — the
-  /// day carousel, computeSelectionStats, activeDayKey — each a fresh
-  /// O(activities + items) scan before this cache existed. Same
-  /// identical()-based convention as dayStats above.
-  List<String> orderedDayKeys() {
-    if (!identical(dayMeta, _orderedDayKeysCacheDayMeta) ||
-        !identical(activities, _orderedDayKeysCacheActivities) ||
-        !identical(items, _orderedDayKeysCacheItems)) {
-      final keys = <String>{
-        ...dayMeta.keys,
-        ...contentDayKeys(activities, items),
-      };
-      _orderedDayKeysCache = keys.toList()..sort();
-      _orderedDayKeysCacheDayMeta = dayMeta;
-      _orderedDayKeysCacheActivities = activities;
-      _orderedDayKeysCacheItems = items;
-    }
-    return _orderedDayKeysCache!;
-  }
 
   /// The day the add-FAB should default to: today while the trip is still
   /// active (the day you're most likely adding to), otherwise the last day of
@@ -2045,7 +1933,7 @@ class ProjectNotifier extends ChangeNotifier
   /// ended.
   String? activeDayKey() {
     if (_tripIsActive) return _ymd(DateTime.now());
-    final keys = orderedDayKeys();
+    final keys = itemsFacet.orderedDayKeys();
     return keys.isEmpty ? null : keys.last;
   }
 
@@ -2074,9 +1962,9 @@ class ProjectNotifier extends ChangeNotifier
     // notify, leaving the mutation live but unbroadcast (issue #283 bug #3).
     if (!_isCurrent(token, ref)) return;
     final byId = {for (final a in fullActivities) a['id']?.toString(): a};
-    activities = [
-      for (final a in activities) byId[a['id']?.toString()] ?? a,
-    ];
+    itemsFacetWriter.setActivities([
+      for (final a in itemsFacet.activities) byId[a['id']?.toString()] ?? a,
+    ]);
     _updateStats();
     await _buildFullTrack();
     if (!_isCurrent(token, ref)) return;
@@ -2129,7 +2017,7 @@ class ProjectNotifier extends ChangeNotifier
     final gen = ++_buildFullTrackGen;
     final geo = geoFacet.geo;
     final coordPoints = totalTrackCoordinatePoints(geo);
-    final samplePoints = totalElevationProfilePoints(activities);
+    final samplePoints = totalElevationProfilePoints(itemsFacet.activities);
     final work = coordPoints > samplePoints ? coordPoints : samplePoints;
     // Web takes the inline path whatever the size: `compute` has no isolate to
     // hop to there and runs its callback inline, so the hop buys nothing and
@@ -2140,7 +2028,7 @@ class ProjectNotifier extends ChangeNotifier
       // so nothing can bump _buildFullTrackGen between the increment above and
       // this line — unlike the compute() branch below, which awaits across an
       // isolate hop and needs the check after it returns.
-      final r = buildFullTrackResult((geo: geo, activities: activities));
+      final r = buildFullTrackResult((geo: geo, activities: itemsFacet.activities));
       _fullTrack = r.fullTrack;
       _perActivityTracks = r.perActivityTracks;
       _noteTrackSizes();
@@ -2150,7 +2038,8 @@ class ProjectNotifier extends ChangeNotifier
     // handing it `activities` serialised every elevation sample in the trip
     // to read one double from each — measured as a 2.4 s frame (issue #276).
     final totals =
-        perfSpans.blocking('elevation_totals', () => activityElevationTotals(activities));
+        perfSpans.blocking('elevation_totals',
+            () => activityElevationTotals(itemsFacet.activities));
     // Flatten before the hop, for the same reason as `totals`: compute()
     // copies its argument, and GeoJSON coordinates are one list object per
     // point. See [FlatGeoCoords] — this is the third time that copy has cost
@@ -2190,9 +2079,9 @@ class ProjectNotifier extends ChangeNotifier
       // Every sample is a 2-element List: the single largest object count
       // this app holds, and the one the report used to omit entirely — which
       // is how ~700k of them crossed an isolate boundary unnoticed (#276).
-      ..note('elevation_points', '${totalElevationProfilePoints(activities)}')
-      ..note('activities', '${activities.length}')
-      ..note('items', '${items.length}')
+      ..note('elevation_points', '${totalElevationProfilePoints(itemsFacet.activities)}')
+      ..note('activities', '${itemsFacet.activities.length}')
+      ..note('items', '${itemsFacet.items.length}')
       ..note('dart_structs_est', perfEstimateStructBytes(
           fullTrackPoints: _fullTrack.length,
           perActivityTrackPoints: perAct,
@@ -2259,23 +2148,12 @@ class ProjectNotifier extends ChangeNotifier
     // The saved state the filters belong to: a held key would let the next
     // load of the same key keep filters this clear has just dropped.
     _heldStateKey = null;
-    activities = [];
-    items = [];
-    people = [];
-    groups = [];
-    undecryptedFields.reset();
     geoFacetWriter.reset();
     selectionFacetWriter.reset();
     styleFacetWriter.reset();
     itemsFacetWriter.reset();
     elevationFacetWriter.reset();
     resetSegmentState();
-    tripStart = null;
-    tripEnd = null;
-    dayMeta = {};
-    sleepingOptions = [];
-    sleepingOptionGroups = {};
-    counters = [];
     shareToken = null;
     shareTokenNoMemories = null;
     autoSyncEnabled = true;
@@ -2288,15 +2166,6 @@ class ProjectNotifier extends ChangeNotifier
     polarstepsOverlayLabel = null;
     _immichConnectedCheckedAt = null;
     _immichConnectedCached = false;
-    // Memos keyed on the identity of the lists dropped above. They would
-    // miss anyway, but holding them kept the last trip alive in memory.
-    _dayStatsCache = null;
-    _dayStatsCacheItems = null;
-    _dayStatsCacheActivities = null;
-    _orderedDayKeysCache = null;
-    _orderedDayKeysCacheDayMeta = null;
-    _orderedDayKeysCacheActivities = null;
-    _orderedDayKeysCacheItems = null;
     members = [];
     pendingInvites = [];
     memberInviteToken = null;
@@ -2762,7 +2631,7 @@ class ProjectNotifier extends ChangeNotifier
   Future<String?> generateShareContent() async {
     final ref = this.ref;
     if (ref == null) throw Exception('No project open');
-    return ShareContentGenerator(api).generate(ref, items);
+    return ShareContentGenerator(api).generate(ref, itemsFacet.items);
   }
 
   /// Fetches raw bytes for an export API path.
@@ -2781,9 +2650,8 @@ class ProjectNotifier extends ChangeNotifier
   Future<void> setTripDates(String? startStr, String? endStr) async {
     final ref = this.ref;
     if (ref == null) return;
-    if (tripStart == startStr && tripEnd == endStr) return;
-    tripStart = startStr;
-    tripEnd = endStr;
+    if (itemsFacet.tripStart == startStr && itemsFacet.tripEnd == endStr) return;
+    itemsFacetWriter.setTripDates(startStr, endStr);
     notifyListeners();
     try {
       await api.put(
@@ -2837,6 +2705,7 @@ class ProjectNotifier extends ChangeNotifier
       // The merge below swaps a whole item in, so each candidate is the item
       // already on screen rebuilt around the server's photo list — the shape
       // the full details payload used to hand it, minus the 36 MB (issue #308).
+      final items = itemsFacet.items;
       final freshById = <String, Map<String, dynamic>>{};
       for (final item in items) {
         if (item['item_type'] != 'memory') continue;
@@ -2871,8 +2740,8 @@ class ProjectNotifier extends ChangeNotifier
         // New list identity: MapPanel's marker cache invalidates via
         // `identical(items, _lastItems)`, which a same-object in-place
         // mutation would never trip.
-        items = List.of(items);
-        await _revealItems(items);
+        itemsFacetWriter.setItems(List.of(items));
+        await _revealItems(itemsFacet.items);
         notifyListeners();
       }
     } catch (_) {}
@@ -3051,13 +2920,14 @@ class ProjectNotifier extends ChangeNotifier
     if (!_reloadTrack.isCurrent(token, ref)) return;
 
     final rawActivities = details['activities'];
-    activities = rawActivities is List
+    itemsFacetWriter.setActivities(rawActivities is List
         ? rawActivities.cast<Map<String, dynamic>>()
-        : [];
-    await _revealActivities(activities);
+        : []);
+    await _revealActivities(itemsFacet.activities);
     final rawItems = details['items'];
-    items = rawItems is List ? rawItems.cast<Map<String, dynamic>>() : [];
-    await _revealItems(items);
+    itemsFacetWriter.setItems(
+        rawItems is List ? rawItems.cast<Map<String, dynamic>>() : []);
+    await _revealItems(itemsFacet.items);
     if (!_reloadTrack.isCurrent(token, ref)) return;
     _updateStats();
     await _buildFullTrack();
@@ -3122,7 +2992,8 @@ class ProjectNotifier extends ChangeNotifier
     if (encryption.isUnlocked) {
       if (stale()) return;
       geoFacetWriter.replace(
-          client_geo.buildFullGeo(items, client_geo.activitiesById(activities)),
+          client_geo.buildFullGeo(itemsFacet.items,
+              client_geo.activitiesById(itemsFacet.activities)),
           GeoLod.full);
       return;
     }
@@ -3133,18 +3004,20 @@ class ProjectNotifier extends ChangeNotifier
   }
 
   void removeItemLocally(int index) {
-    if (index >= 0 && index < items.length) {
+    if (index >= 0 && index < itemsFacet.items.length) {
       // New list identity, not an in-place removeAt/removeWhere: map_panel's
       // marker/polyline cache and ProjectNotifier.dayStats both invalidate
       // via `identical(items/activities, _last...)`, which a same-object
       // in-place mutation would never trip (see the memory-refresh path
       // above for the same convention).
-      final next = List.of(items);
+      final next = List.of(itemsFacet.items);
       final removed = next.removeAt(index);
-      items = next;
+      itemsFacetWriter.setItems(next);
       if (removed['item_type'] == 'activity') {
         final actId = removed['activity_id']?.toString();
-        activities = activities.where((a) => a['id']?.toString() != actId).toList();
+        itemsFacetWriter.setActivities(itemsFacet.activities
+            .where((a) => a['id']?.toString() != actId)
+            .toList());
       }
     }
     notifyListeners();
@@ -3196,10 +3069,10 @@ class ProjectNotifier extends ChangeNotifier
     // list object, not an in-place removeAt/insert: map_panel's marker cache
     // and dayStats/orderedDayKeys above invalidate via
     // identical(items, _last...), which a same-object mutation never trips.
-    final newItems = List.of(items);
+    final newItems = List.of(itemsFacet.items);
     final moved = newItems.removeAt(fromIndex);
     newItems.insert(toIndex, moved);
-    items = newItems;
+    itemsFacetWriter.setItems(newItems);
     notifyListeners();
     try {
       await api.put(
@@ -3323,15 +3196,19 @@ class ProjectNotifier extends ChangeNotifier
     // for the same fallback: by then another one may hold the token.
     final account = api.tokenUserId;
     final merged = {
-      for (final e in dayMeta.entries)
+      for (final e in itemsFacet.dayMeta.entries)
         if (!delete.contains(e.key)) e.key: e.value,
       ...days,
     };
-    dayMeta = {...merged};
+    itemsFacetWriter.setDayMeta({...merged});
     _autoFillDaysToToday();
-    if (newSleepingOptions != null) sleepingOptions = newSleepingOptions;
-    if (newSleepingOptionGroups != null) sleepingOptionGroups = newSleepingOptionGroups;
-    if (newCounters != null) counters = newCounters;
+    if (newSleepingOptions != null) {
+      itemsFacetWriter.setSleepingOptions(newSleepingOptions);
+    }
+    if (newSleepingOptionGroups != null) {
+      itemsFacetWriter.setSleepingOptionGroups(newSleepingOptionGroups);
+    }
+    if (newCounters != null) itemsFacetWriter.setCounters(newCounters);
     notifyListeners();
     try {
       Object? res;
@@ -3368,11 +3245,11 @@ class ProjectNotifier extends ChangeNotifier
         // The server's value wins for every day it returns. A day it no longer
         // has stays only when it is an empty gap-fill day, which exists in
         // memory alone.
-        dayMeta = {
-          for (final e in dayMeta.entries)
+        itemsFacetWriter.setDayMeta({
+          for (final e in itemsFacet.dayMeta.entries)
             if (!server.containsKey(e.key) && e.value.isEmpty) e.key: e.value,
           ...server,
-        };
+        });
         _autoFillDaysToToday();
         notifyListeners();
       }
@@ -3384,26 +3261,35 @@ class ProjectNotifier extends ChangeNotifier
     }
   }
 
+  /// Adopts the day-meta block of a project-details response: day-meta, the
+  /// sleeping options and their groups (defaults when it sends none) and the
+  /// counters. For [load] and [_reloadDayMeta].
+  void _applyDayMetaDetails(Map<String, dynamic> details) {
+    final rawDm = details['day_meta'];
+    itemsFacetWriter.setDayMeta(rawDm is Map
+        ? rawDm.map((k, v) => MapEntry(k as String, Map<String, dynamic>.from(v as Map)))
+        : {});
+    final rawOpts = details['sleeping_options'];
+    final optList = rawOpts is List ? List<String>.from(rawOpts) : <String>[];
+    final sleepingOptions =
+        optList.isNotEmpty ? optList : List<String>.from(_defaultSleepingOptions);
+    itemsFacetWriter.setSleepingOptions(sleepingOptions);
+    final rawGroups = details['sleeping_option_groups'];
+    itemsFacetWriter.setSleepingOptionGroups(rawGroups is Map
+        ? Map<String, String>.from(rawGroups.cast<String, String>())
+        : { for (final n in sleepingOptions) n: _defaultSleepingGroups[n] ?? 'Other' });
+    final rawCounters = details['counters'];
+    itemsFacetWriter.setCounters(rawCounters is List
+        ? rawCounters.map((c) => Map<String, dynamic>.from(c as Map)).toList()
+        : []);
+  }
+
   /// Restores what a rejected [saveDayMeta] had applied optimistically.
   Future<void> _reloadDayMeta(ProjectRef ref) async {
     try {
       final details = await _service.getDetailsMeta(ref);
       if (this.ref != ref) return;
-      final rawDm = details['day_meta'];
-      dayMeta = rawDm is Map
-          ? rawDm.map((k, v) => MapEntry(k as String, Map<String, dynamic>.from(v as Map)))
-          : {};
-      final rawOpts = details['sleeping_options'];
-      final optList = rawOpts is List ? List<String>.from(rawOpts) : <String>[];
-      sleepingOptions = optList.isNotEmpty ? optList : List<String>.from(_defaultSleepingOptions);
-      final rawGroups = details['sleeping_option_groups'];
-      sleepingOptionGroups = rawGroups is Map
-          ? Map<String, String>.from(rawGroups.cast<String, String>())
-          : { for (final n in sleepingOptions) n: _defaultSleepingGroups[n] ?? 'Other' };
-      final rawCounters = details['counters'];
-      counters = rawCounters is List
-          ? rawCounters.map((c) => Map<String, dynamic>.from(c as Map)).toList()
-          : [];
+      _applyDayMetaDetails(details);
       _autoFillDaysToToday();
     } on Exception {
       // The caller reports the save failure; a failed reload leaves the
@@ -3421,12 +3307,13 @@ class ProjectNotifier extends ChangeNotifier
     final now = DateTime.now();
     final todayDate = DateTime(now.year, now.month, now.day);
 
-    String? earliest = tripStart;
+    final dayMeta = itemsFacet.dayMeta;
+    String? earliest = itemsFacet.tripStart;
     if (dayMeta.isNotEmpty) {
       final minKey = (dayMeta.keys.toList()..sort()).first;
       if (earliest == null || minKey.compareTo(earliest) < 0) earliest = minKey;
     }
-    for (final a in activities) {
+    for (final a in itemsFacet.activities) {
       final d = a['start_date_local'] as String?;
       if (d != null && d.length >= 10) {
         final dk = d.substring(0, 10);
@@ -3457,7 +3344,7 @@ class ProjectNotifier extends ChangeNotifier
       cursor = DateTime(cursor.year, cursor.month, cursor.day + 1);
     }
     if (!changed) return;
-    dayMeta = updated;
+    itemsFacetWriter.setDayMeta(updated);
   }
 
   /// Full reload: details + geo. Use when a mutation can change map geometry
@@ -3495,7 +3382,8 @@ class ProjectNotifier extends ChangeNotifier
         }
         _autoFillDaysToToday();
         geoFacetWriter.replace(
-            client_geo.buildFullGeo(items, client_geo.activitiesById(activities)),
+            client_geo.buildFullGeo(itemsFacet.items,
+                client_geo.activitiesById(itemsFacet.activities)),
             GeoLod.full);
       } else {
         final lod = _cameraLod();
@@ -3581,7 +3469,7 @@ class ProjectNotifier extends ChangeNotifier
   /// item list. Idempotent: text already revealed is not a well-formed
   /// envelope, so it is neither decrypted nor marked again.
   Future<void> _revealItems(List<Map<String, dynamic>> list) async =>
-      _recordUndecrypted(await _revealItemText(list));
+      itemsFacetWriter.recordUndecrypted(await _revealItemText(list));
 
   /// [_revealItems] without the record: decrypts [list] in place and returns
   /// the fields it left as ciphertext, touching no notifier state, for a
@@ -3607,15 +3495,6 @@ class ProjectNotifier extends ChangeNotifier
       }
     }
     return undecrypted;
-  }
-
-  /// Replaces [undecryptedFields] with [undecrypted], as [_revealItemText]
-  /// returned it.
-  void _recordUndecrypted(List<(String, String, String)> undecrypted) {
-    undecryptedFields.reset();
-    for (final (kind, id, field) in undecrypted) {
-      undecryptedFields.mark(kind, id, field);
-    }
   }
 
   Future<String?> _revealField(String kind, Map entry, String field,
@@ -3719,28 +3598,28 @@ class ProjectNotifier extends ChangeNotifier
       name: details['name'] as String? ?? ref.name,
       role: details['caller_role'] as String? ?? ref.role,
     );
-    tripStart   = details['trip_start'] as String?;
+    itemsFacetWriter.setTripDates(
+        details['trip_start'] as String?, details['trip_end'] as String?);
     styleFacetWriter.applyDetails(details, includeSecondary: false);
-    tripEnd     = details['trip_end']   as String?;
-    activities = nextActivities;
-    items = nextItems;
-    _recordUndecrypted(undecrypted);
+    itemsFacetWriter.setActivities(nextActivities);
+    itemsFacetWriter.setItems(nextItems);
+    itemsFacetWriter.recordUndecrypted(undecrypted);
     final rawPeople = details['people'];
-    people = rawPeople is List
+    itemsFacetWriter.setPeople(rawPeople is List
         ? rawPeople.cast<Map<String, dynamic>>()
-        : [];
+        : []);
     final rawPeopleGroups = details['groups'];
-    groups = rawPeopleGroups is List
+    itemsFacetWriter.setGroups(rawPeopleGroups is List
         ? rawPeopleGroups.cast<Map<String, dynamic>>()
-        : [];
+        : []);
     final rawDm = details['day_meta'];
-    dayMeta = rawDm is Map
+    itemsFacetWriter.setDayMeta(rawDm is Map
         ? rawDm.map((k, v) => MapEntry(k as String, Map<String, dynamic>.from(v as Map)))
-        : {};
+        : {});
     final rawOpts = details['sleeping_options'];
-    sleepingOptions = rawOpts is List
+    itemsFacetWriter.setSleepingOptions(rawOpts is List
         ? List<String>.from(rawOpts)
-        : List<String>.from(_defaultSleepingOptions);
+        : List<String>.from(_defaultSleepingOptions));
     return true;
   }
 

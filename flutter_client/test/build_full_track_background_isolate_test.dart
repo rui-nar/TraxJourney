@@ -49,7 +49,7 @@ void main() {
     expect(totalElevationProfilePoints(activities), greaterThan(kInlineFullTrackThreshold));
 
     final notifier = ProjectNotifier(ProjectService());
-    notifier.activities = activities;
+    notifier.itemsFacetWriter.setActivities(activities);
     notifier.geoFacetWriter.replaceKeepingLod(geo);
     await notifier.buildFullTrack();
 
@@ -67,7 +67,7 @@ void main() {
     final notifier = ProjectNotifier(ProjectService());
     final genBefore = notifier.buildFullTrackGen;
 
-    notifier.activities = [_activity('1', 2)]; // well under the threshold
+    notifier.itemsFacetWriter.setActivities([_activity('1', 2)]); // well under the threshold
     notifier.geoFacetWriter.replaceKeepingLod(_geo([_geoFeature('1', 2, 7.0)]));
     await notifier.buildFullTrack();
     expect(notifier.buildFullTrackGen, genBefore + 1);
@@ -95,7 +95,7 @@ void main() {
     final smallGeo = _geo([_geoFeature('small', 2, 20.0)]);
 
     final notifier = ProjectNotifier(ProjectService());
-    notifier.activities = largeActivities;
+    notifier.itemsFacetWriter.setActivities(largeActivities);
     notifier.geoFacetWriter.replaceKeepingLod(largeGeo);
     // Start the large-trip build but don't await it yet — it's now in flight
     // on a background isolate.
@@ -104,7 +104,7 @@ void main() {
     // The notifier gets reused for a different (small) project before that
     // finishes — its own _buildFullTrack() call takes the inline branch and
     // must still bump the generation counter (bug fix under test).
-    notifier.activities = smallActivities;
+    notifier.itemsFacetWriter.setActivities(smallActivities);
     notifier.geoFacetWriter.replaceKeepingLod(smallGeo);
     await notifier.buildFullTrack();
 

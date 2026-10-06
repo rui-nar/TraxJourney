@@ -42,6 +42,8 @@ const _facetDeclarations = {
   'final class SelectionFacetWriter': '$_dir/facets/selection_facet.dart',
   'final class StyleFacet': '$_dir/facets/style_facet.dart',
   'final class StyleFacetWriter': '$_dir/facets/style_facet.dart',
+  'final class ItemsFacet': '$_dir/facets/items_facet.dart',
+  'final class ItemsFacetWriter': '$_dir/facets/items_facet.dart',
 };
 
 /// Fields clear() deliberately leaves alone, each with why.
@@ -92,7 +94,7 @@ void main() {
     expect(
         scan.fields,
         containsAll([
-          'people', 'groups', '_heldStateKey', 'pendingSync',
+          '_heldStateKey', 'pendingSync',
           'shareToken', '_photoPollingTimer', '_degradedRouteCheckTimer',
           '_fullTrack', 'members', 'quotaError',
           'polarstepsOverlaySteps',
@@ -111,6 +113,14 @@ void main() {
           'StyleFacet._elevationChartColor',
           'StyleFacet._elevationChartShowLine', 'StyleFacet._colorByType',
           'StyleFacet._typeStyles', 'StyleFacet._languages',
+          'itemsFacetWriter',
+          'ItemsFacet._activities', 'ItemsFacet._items', 'ItemsFacet._people',
+          'ItemsFacet._groups', 'ItemsFacet._undecrypted',
+          'ItemsFacet._tripStart', 'ItemsFacet._tripEnd', 'ItemsFacet._dayMeta',
+          'ItemsFacet._sleepingOptions', 'ItemsFacet._sleepingOptionGroups',
+          'ItemsFacet._counters', 'ItemsFacet._dayStatsCache',
+          'ItemsFacet._orderedDayKeysCache', 'ItemsFacet._listVersion',
+          'ItemsFacet._dayMetaVersion',
         ]));
     // Neither another class in the same file nor a mixin's abstract getters.
     expect(scan.fields, isNot(contains('_token'))); // _SupersessionTrack's
@@ -125,6 +135,10 @@ void main() {
       'trackColor', 'trackSecondaryColor', 'trackWidth',
       'alternatingTrackColors', 'elevationChartColor',
       'elevationChartShowLine', 'colorByType', 'typeStyles', 'languages',
+      'activities', 'items', 'people', 'groups', 'undecryptedFields',
+      'tripStart', 'tripEnd', 'dayMeta', 'sleepingOptions',
+      'sleepingOptionGroups', 'counters', '_dayStatsCache',
+      '_orderedDayKeysCache',
     ]) {
       expect(scan.fields, isNot(contains(moved)));
     }
@@ -138,7 +152,7 @@ void main() {
 
   test('removing a reset from clear() fails the scan', () {
     for (final (field, line) in [
-      ('people', 'people = [];'),
+      ('shareToken', 'shareToken = null;'),
       ('_heldStateKey', '_heldStateKey = null;'),
       ('_removedSegments', 'resetSegmentState();'),
     ]) {
@@ -194,6 +208,21 @@ void main() {
       facet: style.replaceRange(lineAt, lineAt + line.length, ''),
     });
     expect(scan.unreset(), {'StyleFacet._languages'});
+  });
+
+  test("removing an items field's reset fails the scan", () {
+    const facet = 'final class ItemsFacet';
+    const line = '_people = [];';
+    final items = sources[facet]!;
+    final resetAt = items.indexOf('  void _reset() {');
+    final lineAt = items.indexOf(line, resetAt);
+    expect(resetAt, isNonNegative);
+    expect(lineAt, isNonNegative, reason: '$line is not in _reset()');
+    final scan = _Scan({
+      ...sources,
+      facet: items.replaceRange(lineAt, lineAt + line.length, ''),
+    });
+    expect(scan.unreset(), {'ItemsFacet._people'});
   });
 
   test("clear() not resetting the facet fails the scan for all of its fields, "
