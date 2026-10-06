@@ -456,4 +456,10 @@ Clean: no findings. Notes (not findings): `_silentReload`'s record cast (project
 - Decision: Defer (D10). Introduced by Part 2: the old post-edit full-res reload rewrote the disk row; #379's simplified refresh writes nothing
 - Revisit when: the owner wants offline geometry current straight after an edit, or a user reports an edited trip opening offline with no map
 - Override: user: Fix now — refill the offline copy in the background after an edit (F7); verifier only, then close
-- Outcome: open
+- Outcome: fixed (F7, e9755c27)
+
+## Integrated review Part 2 — closed 2026-10-07
+
+Closed by the owner after F7's verification (verifier only). Notes left by F7's verifier (not findings, not regressions):
+- If `clear()` is followed by a reopen of the same trip while the old seed loop runs, the old loop's `finally` can reset the new loop's coalescing state, allowing one extra concurrent seed.
+- `fullResGeoForExport` and the seed share the `geoFullUncached` dedup key; a seed that joins an export fetch started before an edit stores pre-edit geometry under the new version. The load's seed already had this exposure.
