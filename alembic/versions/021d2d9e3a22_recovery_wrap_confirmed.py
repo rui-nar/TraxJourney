@@ -10,7 +10,7 @@ Existing rows become confirmed through the server default, so no existing user
 is asked to replace a key.
 
 Revision ID: 021d2d9e3a22
-Revises: 87200bcb9342
+Revises: 4b9d2e7a1c63
 Create Date: 2026-10-04
 
 """
@@ -20,7 +20,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = '021d2d9e3a22'
-down_revision: Union[str, Sequence[str], None] = '87200bcb9342'
+down_revision: Union[str, Sequence[str], None] = '4b9d2e7a1c63'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
