@@ -3,7 +3,8 @@
 An upload, a photo fetched from a URL, and a photo read from an imported trip
 archive (#469) all go through :func:`write_photo_files`: the image is decoded
 before anything is written, the raw bytes are stored as they came, and a
-400×400 JPEG thumbnail is generated from them. Nothing here knows about HTTP:
+400×400 JPEG thumbnail, turned upright by the original's EXIF orientation, is
+generated from them. Nothing here knows about HTTP:
 a caller turns :class:`InvalidPhoto` into its own error.
 """
 from __future__ import annotations
@@ -12,7 +13,7 @@ import io
 from pathlib import Path
 from typing import Tuple, Union
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from src.billing.usage import record_written
 from src.utils.photo_paths import photo_file
@@ -71,6 +72,9 @@ def _thumbnail(raw: bytes) -> Image.Image:
             # at 1/2 to 1/8 of its size instead of in full. The whole file is
             # still read and checked; only the pixels kept are fewer.
             img.thumbnail(THUMB_SIZE, Image.LANCZOS)
+            # Transposed after the reduced decode, so only the small image is
+            # rotated; the stored original keeps its tag (#511).
+            img = ImageOps.exif_transpose(img)
             return img if img.mode == "RGB" else img.convert("RGB")
         # Other formats have no reduced decode. Converting first keeps their
         # thumbnails as they always were (a palette or alpha image resampled
@@ -80,7 +84,7 @@ def _thumbnail(raw: bytes) -> Image.Image:
         else:
             img = img.convert("RGB")
         img.thumbnail(THUMB_SIZE, Image.LANCZOS)
-        return img
+        return ImageOps.exif_transpose(img)
     except (OSError, ValueError, SyntaxError) as exc:
         raise InvalidPhoto("it is not a readable image") from exc
 
