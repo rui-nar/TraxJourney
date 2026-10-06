@@ -155,9 +155,9 @@ def test_the_trip_reads_back_as_an_encrypted_one(app):  # noqa: F811
         assert act["elevation_profile_enc"] == ENV["profile"]
     with Session(engine) as sess:
         assert sess.get(DBActivityGeoPrepared, activity_id) is None
-        low_res = json.loads(sess.exec(select(DBProject).where(
-            DBProject.name == "Back")).one().low_res_geo_json)
-    assert low_res["features"] == []
+    low_res = client.get("/api/geo/project/low-res?name=Back")
+    assert low_res.status_code == 200, low_res.text
+    assert low_res.json()["features"] == []
     assert client.get("/api/projects/Back/stats").status_code == 200
 
 

@@ -8,10 +8,13 @@ Routes:
     POST   /api/projects/{name}/activities/{activity_id}/refresh    — trigger async activity refresh from Strava
     GET    /api/projects/{name}/activities/{activity_id}/track      — get editable track geometry
     PUT    /api/projects/{name}/activities/{activity_id}/track      — replace track geometry
+    PUT    /api/projects/{name}/activities/{activity_id}/track/encrypted — store a device-edited encrypted track
     POST   /api/projects/{name}/activities/{activity_id}/reset      — reset edited track to original
     POST   /api/projects/{name}/activities/{activity_id}/split      — split into head + local tail
+    POST   /api/projects/{name}/activities/{activity_id}/split/encrypted — store a device-split encrypted track
     DELETE /api/projects/{name}/activities/{activity_id}/local      — delete a local (split-tail) activity
     PUT    /api/activities/{activity_id}                            — update an activity's E2EE-in-scope fields
+    PUT    /api/activities/{activity_id}/elevation-gain             — set an encrypted activity's elevation gain
 """
 from __future__ import annotations
 
@@ -28,11 +31,11 @@ from sqlmodel import select
 from starlette.concurrency import run_in_threadpool
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Path, UploadFile, status
 from starlette.concurrency import run_in_threadpool
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from api.deps import get_current_user
 from api.geo import bust_geo_cache, warm_geo_cache
-from api.project_access import OwnerParam, resolve_project
+from api.project_access import OwnerParam, effective_role, resolve_project, _role_satisfies
 from api.project_shared import _refresh_share_tiles, _refresh_stats_background, _repo, queue_share_tiles_refresh, queue_stats_refresh, warm_meta_cache
 from api.strava import _strava_client_for_token
 from models.project_db import DBActivity, DBProject, DBProjectItem
@@ -56,16 +59,23 @@ from src.gpx.timezone import local_to_utc, to_local, zone_at
 from src.models.activity import (
     ACTIVITY_ID_MAX, ACTIVITY_ID_MIN, Activity, parse_activities_or_log,
 )
-from src.models.value_bounds import DURATION_MAX_S
+from src.models.value_bounds import (
+    DISTANCE_MAX_M, DURATION_MAX_S, ELEVATION_MAX_M, ELEVATION_MIN_M, GAIN_MAX_M,
+    SPEED_MAX_M_S,
+)
 from src.project.traxj_schema import activity_fault, stored_json_fault
-from src.utils.encryption_check import is_encrypted_envelope
+from src.utils.encryption_check import is_encrypted_envelope, is_well_formed_envelope
 from src.models.track_edit import (
     elevation_profile_from_streams, implausible_track, repair_elapsed,
     points_to_elevation_profile, points_to_polyline, recompute_track_metrics,
 )
 from src.project.local_ids import LocalIdExhausted, allocate_local_activity_id, track_fingerprint
-from src.project.project_repo import bump_lock_version
-from src.project.repo_activities import store_prepared_geometry
+from src.project.project_repo import StaleWriteError, bump_lock_version
+from src.project.repo_activities import (
+    ENCRYPTED_PIECE_FIELDS, EncryptedEditOnDevice, NotEncrypted, NothingToRestore,
+    store_prepared_geometry,
+)
+from src.project.repo_core import check_and_bump_lock_version
 from src.utils.logging import get_logger
 
 _log = get_logger(__name__)
@@ -1571,6 +1581,52 @@ def _require_rewritable_by_trip(sess, project_row: DBProject, activity_id: int) 
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not in project")
 
 
+def _conflict(code: str, message: str, **ids: int) -> HTTPException:
+    """A 409 shaped like the video consent one: a fixed code, ids, no content."""
+    return HTTPException(status_code=status.HTTP_409_CONFLICT,
+                         detail={"code": code, "message": message, **ids})
+
+
+def _encrypted_edit_on_device(activity_id: int) -> HTTPException:
+    return _conflict(
+        "encrypted_edit_on_device",
+        "This activity is encrypted: its track is edited on your device.",
+        activity_id=activity_id)
+
+
+def _stale_write(project_id: int) -> HTTPException:
+    return _conflict(
+        "stale_write",
+        "The trip changed since it was loaded. Reload it and try again.",
+        project_id=project_id)
+
+
+def _require_e2ee_writable(sess, activity_id: int, caller_id: int) -> None:
+    """404 unless the caller may write this activity's E2EE fields — see
+    ``activity_e2ee_writable_by`` (decision 14 of the E2EE remnants plan).
+    404 rather than 403, so a stranger cannot probe which ids exist."""
+    if not _repo.activity_e2ee_writable_by(sess, activity_id, caller_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not found")
+
+
+def _refuse_shared(sess, activity_id: int, key_owner_id: int, *, rollback: bool = False) -> None:
+    """409 ``shared_with_other_trip`` when a trip owned by someone other than
+    *key_owner_id* holds this activity (E2EE remnants decision 15): its owner
+    could not read an envelope stored on the row. *key_owner_id* is the caller
+    on the row-scoped routes, the trip's owner on the trip-scoped ones (the
+    owner of the trip ``shared_with_others`` is computed for). Called by every
+    write that stores an envelope, before it writes; with *rollback*, once more
+    after the lock-version bump holds the write lock, undoing the bump, so a
+    trip that took the row in between is seen."""
+    if _repo.activity_shared_with_others(sess, activity_id, key_owner_id):
+        if rollback:
+            sess.rollback()
+        raise _conflict(
+            "shared_with_other_trip",
+            "This activity is also in another traveller's trip, so it stays unencrypted.",
+            activity_id=activity_id)
+
+
 def _project_contains_activity(project, activity_id: int) -> bool:
     return any(
         it.item_type == "activity" and it.activity_id == activity_id
@@ -1590,23 +1646,44 @@ def get_activity_track(
     pairs), so the track editor doesn't download the whole project just to edit a
     single activity — the full GET /{name} payload is 10-15x larger. Same per-activity
     shape as GET /{name}.
+
+    Reads the one activity row and nothing else of the trip: containment is an
+    item-row lookup, so no other activity's geometry comes off disk (R4-7).
+
+    An edited row also carries its four geometry snapshots,
+    ``original_polyline``, ``original_elevation_profile_json``,
+    ``original_start_latlng_json`` and ``original_end_latlng_json``, as
+    stored — envelopes on an encrypted row — to callers with the editor role or
+    above, the role reset requires; the encryption catch-up encrypts them from
+    here (R3-4, R5-1).
     """
     user_info_id = int(current_user["sub"])
     with get_session() as sess:
         row = resolve_project(sess, user_info_id, name, owner)
-        project = _repo.get_project(
-            sess, row.user_info_id, name,
-        )
-    if project is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-    activity = next((a for a in project.activities if a.id == activity_id), None)
-    if activity is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not in project")
-    d = activity.to_strava_dict()
-    ep = activity.elevation_profile or getattr(activity, "elevation_profile_low_res", None)
-    d["elevation_profile"] = [list(pair) for pair in zip(ep[0], ep[1])] if ep else None
-    # So the editor can send it back on save/split — see TrackEditRequest.lock_version.
-    d["lock_version"] = project.lock_version
+        held = sess.exec(select(DBProjectItem.id).where(
+            DBProjectItem.project_id == row.id,
+            DBProjectItem.item_type == "activity",
+            DBProjectItem.activity_id == activity_id,
+        )).first() is not None
+        act_row = sess.get(DBActivity, activity_id) if held else None
+        if act_row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not in project")
+        activity = _repo._row_to_activity(act_row)
+        # The snapshots go only where reset could use them: an editor of a trip
+        # that may still rewrite this row (its owner has not left the trip).
+        gets_originals = _role_satisfies(effective_role(sess, row, user_info_id), "editor") and (
+            _repo.activity_rewritable_by_trip(sess, row.id, activity_id)
+            or _repo.activity_e2ee_writable_by(sess, activity_id, user_info_id))
+        d = activity.to_strava_dict()
+        ep = activity.elevation_profile or getattr(activity, "elevation_profile_low_res", None)
+        d["elevation_profile"] = [list(pair) for pair in zip(ep[0], ep[1])] if ep else None
+        if act_row.is_edited and gets_originals:
+            d["original_polyline"] = act_row.original_polyline
+            d["original_elevation_profile_json"] = act_row.original_elevation_profile_json
+            d["original_start_latlng_json"] = act_row.original_start_latlng_json
+            d["original_end_latlng_json"] = act_row.original_end_latlng_json
+        # So the editor can send it back on save/split — see TrackEditRequest.lock_version.
+        d["lock_version"] = row.lock_version
     return d
 
 
@@ -1665,9 +1742,12 @@ def edit_activity_track(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
         if not _project_contains_activity(project, activity_id):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not in project")
-        if not _repo.edit_activity_track(
-            sess, row.id, activity_id, points, expected_version=body.lock_version
-        ):
+        try:
+            edited = _repo.edit_activity_track(
+                sess, row.id, activity_id, points, expected_version=body.lock_version)
+        except EncryptedEditOnDevice:
+            raise _encrypted_edit_on_device(activity_id)
+        if not edited:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not found")
         # include_elevation=False: the client (see project_notifier.dart
         # saveActivityTrack) discards this response and immediately re-fetches
@@ -1692,6 +1772,14 @@ def edit_activity_track(
     return result
 
 
+class ResetRequest(BaseModel):
+    lock_version: Optional[int] = Field(
+        default=None,
+        description="The project's lock_version last seen by the caller. When "
+                    "given, the reset is rejected with 409 stale_write if the "
+                    "project has changed since. Omit to reset unconditionally.")
+
+
 @router.post("/{name}/activities/{activity_id}/reset",
              summary="Reset an edited activity's track to the original")
 def reset_activity_track(
@@ -1700,13 +1788,19 @@ def reset_activity_track(
     current_user: Annotated[dict, Depends(get_current_user)],
     background_tasks: BackgroundTasks,
     owner: OwnerParam = None,
+    body: Optional[ResetRequest] = None,
 ):
     """Restore an edited activity's geometry from its snapshot and clear is_edited.
 
     On the root of a split family this also undoes the split — the pieces cut out
     of it would otherwise duplicate the restored full track (#141). The editor
     confirms before calling this; see reset_activity_track in the repo.
+
+    An edited row with no original polyline to restore answers 409
+    ``nothing_to_restore`` and is left as it is. The body is optional: older
+    clients send none.
     """
+    expected_version = body.lock_version if body is not None else None
     user_info_id = int(current_user["sub"])
     with get_session() as sess:
         row = resolve_project(sess, user_info_id, name, owner, min_role="editor")
@@ -1722,7 +1816,17 @@ def reset_activity_track(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
         if not _project_contains_activity(project, activity_id):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not in project")
-        if not _repo.reset_activity_track(sess, row.id, activity_id):
+        try:
+            reset = _repo.reset_activity_track(
+                sess, row.id, activity_id, expected_version=expected_version)
+        except NothingToRestore:
+            raise _conflict(
+                "nothing_to_restore",
+                "This activity's original track was not kept, so it cannot be reset.",
+                activity_id=activity_id)
+        except StaleWriteError:
+            raise _stale_write(row.id)
+        if not reset:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Activity has no edit to reset",
@@ -1819,6 +1923,8 @@ def split_activity(
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
+        except EncryptedEditOnDevice:
+            raise _encrypted_edit_on_device(activity_id)
         if tail_id is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not found")
         t2 = time.time()
@@ -1844,6 +1950,229 @@ def split_activity(
         name, activity_id, t1 - t0, t2 - t1, t3 - t2, t4 - t3, t4 - t0,
     )
     return result
+
+
+# ── Encrypted track edit and split (E2EE remnants decision 7) ─────────────────
+#
+# The track of an encrypted activity is edited and split on the device: the
+# server never receives its points. The device sends what the plaintext routes
+# would have computed — the geometry as envelopes, the figures as numbers — and
+# the server keeps the bookkeeping. Those figures are untrusted input, so each
+# is held to the bounds every stored figure obeys (src/models/value_bounds.py).
+
+def _unprocessable(detail: str) -> HTTPException:
+    # An HTTPException rather than a ValueError, for the reason TrackPointIn
+    # gives: a non-finite value echoed in a validation error would be a 500.
+    return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=detail)
+
+
+def _not_encrypted(activity_id: int) -> HTTPException:
+    return _conflict(
+        "not_encrypted",
+        "This activity is not encrypted: its track is edited on the server.",
+        activity_id=activity_id)
+
+
+def _bounded_figure(name: str, value: float, lo: float, hi: float) -> float:
+    if not math.isfinite(value) or not lo <= value <= hi:
+        raise _unprocessable(f"{name} must be finite and within {lo:g}..{hi:g}")
+    return value
+
+
+class EncryptedTrackPiece(BaseModel):
+    """One device-computed track: what ``_write_track_geometry`` would store.
+
+    The four geometry fields are envelopes as ``EncryptedField.encode`` writes
+    them; ``elevation_profile_json`` also goes to the low-res column. A track
+    with no elevations sends ``elevation_profile_json``, ``elev_high`` and
+    ``elev_low`` all null, as the server stores such a track.
+    """
+    summary_polyline: str
+    elevation_profile_json: Optional[str] = None
+    start_latlng_json: str
+    end_latlng_json: str
+    distance: float
+    moving_time: float
+    elapsed_time: float
+    average_speed: float
+    total_elevation_gain: float
+    elev_high: Optional[float] = None
+    elev_low: Optional[float] = None
+
+    @field_validator("summary_polyline", "elevation_profile_json",
+                     "start_latlng_json", "end_latlng_json")
+    @classmethod
+    def _envelope(cls, v: Optional[str], info) -> Optional[str]:
+        if v is not None and not is_well_formed_envelope(v):
+            raise _unprocessable(f"{info.field_name} is not an encrypted envelope")
+        return v
+
+    @field_validator("distance")
+    @classmethod
+    def _distance(cls, v: float) -> float:
+        return _bounded_figure("distance", v, 0, DISTANCE_MAX_M)
+
+    @field_validator("moving_time", "elapsed_time")
+    @classmethod
+    def _duration(cls, v: float, info) -> int:
+        _bounded_figure(info.field_name, v, 0, DURATION_MAX_S)
+        if v != int(v):
+            raise _unprocessable(f"{info.field_name} must be whole seconds")
+        return int(v)
+
+    @field_validator("average_speed")
+    @classmethod
+    def _speed(cls, v: float) -> float:
+        return _bounded_figure("average_speed", v, 0, SPEED_MAX_M_S)
+
+    @field_validator("total_elevation_gain")
+    @classmethod
+    def _gain(cls, v: float) -> float:
+        return _bounded_figure("total_elevation_gain", v, 0, GAIN_MAX_M)
+
+    @field_validator("elev_high", "elev_low")
+    @classmethod
+    def _elevation(cls, v: Optional[float], info) -> Optional[float]:
+        if v is None:
+            return v
+        return _bounded_figure(info.field_name, v, ELEVATION_MIN_M, ELEVATION_MAX_M)
+
+    @model_validator(mode="after")
+    def _elevations_together(self) -> "EncryptedTrackPiece":
+        given = [f is not None for f in (self.elevation_profile_json, self.elev_high, self.elev_low)]
+        if any(given) and not all(given):
+            raise _unprocessable(
+                "elevation_profile_json, elev_high and elev_low are null together or not at all")
+        if self.elev_high is not None and self.elev_low > self.elev_high:
+            raise _unprocessable("elev_low must not exceed elev_high")
+        return self
+
+    def stored(self) -> Dict[str, Any]:
+        return {name: getattr(self, name) for name in ENCRYPTED_PIECE_FIELDS}
+
+
+class EncryptedTrackEditRequest(EncryptedTrackPiece):
+    lock_version: int = Field(
+        description="The project's lock_version from GET .../track. Required: "
+                    "the save is rejected with 409 stale_write if the project "
+                    "has changed since.")
+
+
+class EncryptedSplitRequest(BaseModel):
+    head: EncryptedTrackPiece = Field(description="The piece that keeps the activity's id")
+    tail: EncryptedTrackPiece = Field(description="The piece that becomes a new local activity")
+    tail_name: str = Field(description="The tail's name, encrypted")
+    lock_version: int = Field(
+        description="The project's lock_version from GET .../track. Required: "
+                    "the split is rejected with 409 stale_write if the project "
+                    "has changed since.")
+
+    @field_validator("tail_name")
+    @classmethod
+    def _envelope(cls, v: str) -> str:
+        if not is_well_formed_envelope(v):
+            raise _unprocessable("tail_name is not an encrypted envelope")
+        return v
+
+
+def _require_held(sess, project_row: DBProject, activity_id: int) -> None:
+    """404 unless the trip holds the activity: one item-row lookup, so no
+    activity's geometry is read to answer it."""
+    held = sess.exec(select(DBProjectItem.id).where(
+        DBProjectItem.project_id == project_row.id,
+        DBProjectItem.item_type == "activity",
+        DBProjectItem.activity_id == activity_id,
+    )).first() is not None
+    if not held:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not in project")
+
+
+@router.put("/{name}/activities/{activity_id}/track/encrypted",
+            summary="Store an encrypted activity's track as edited on the device")
+def edit_activity_track_encrypted(
+    name: str,
+    activity_id: ActivityIdPath,
+    body: EncryptedTrackEditRequest,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    background_tasks: BackgroundTasks,
+    owner: OwnerParam = None,
+):
+    """The ``PUT …/track`` of an encrypted activity: the device edited the
+    decrypted track and sends it back encrypted, with the figures it computed.
+
+    Same permission checks as ``PUT …/track``; ``lock_version`` is required.
+    The first edit snapshots the previous track and figures for reset. 409
+    ``not_encrypted`` when the stored polyline is not an envelope, 409
+    ``stale_write`` on a lock_version mismatch, 409 ``shared_with_other_trip``
+    when another user's trip holds the row, 422 on any value that is not a
+    well-formed envelope or a figure out of bounds. Returns the trip's new
+    ``lock_version``.
+    """
+    user_info_id = int(current_user["sub"])
+    with get_session() as sess:
+        row = resolve_project(sess, user_info_id, name, owner, min_role="editor")
+        owner_id = row.user_info_id
+        _require_rewritable_by_trip(sess, row, activity_id)
+        _require_held(sess, row, activity_id)
+        _refuse_shared(sess, activity_id, owner_id)
+        try:
+            edited = _repo.edit_activity_track_encrypted(
+                sess, row.id, activity_id, body.stored(),
+                expected_version=body.lock_version)
+        except NotEncrypted:
+            raise _not_encrypted(activity_id)
+        except StaleWriteError:
+            raise _stale_write(row.id)
+        if not edited:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not found")
+
+    bust_geo_cache(owner_id, name)
+    queue_stats_refresh(background_tasks, owner_id, name)
+    queue_share_tiles_refresh(background_tasks, owner_id, name)
+    return {"id": activity_id, "lock_version": body.lock_version + 1}
+
+
+@router.post("/{name}/activities/{activity_id}/split/encrypted",
+             summary="Store an encrypted activity's split as cut on the device")
+def split_activity_encrypted(
+    name: str,
+    activity_id: ActivityIdPath,
+    body: EncryptedSplitRequest,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    background_tasks: BackgroundTasks,
+    owner: OwnerParam = None,
+):
+    """The ``POST …/split`` of an encrypted activity: the device cut the
+    decrypted track and sends both pieces back encrypted, with their figures.
+
+    The head keeps the activity's id; the tail becomes a new local activity
+    inserted right after it, starting where the head ends (its start plus the
+    head's ``elapsed_time``). Checks and answers as ``PUT …/track/encrypted``.
+    Returns the tail's id and the trip's new ``lock_version``.
+    """
+    user_info_id = int(current_user["sub"])
+    with get_session() as sess:
+        row = resolve_project(sess, user_info_id, name, owner, min_role="editor")
+        owner_id = row.user_info_id
+        _require_rewritable_by_trip(sess, row, activity_id)
+        _require_held(sess, row, activity_id)
+        # The tail is a new row only this trip holds: the head decides.
+        _refuse_shared(sess, activity_id, owner_id)
+        try:
+            tail_id = _repo.split_activity_encrypted(
+                sess, row.id, activity_id, body.head.stored(), body.tail.stored(),
+                body.tail_name, expected_version=body.lock_version)
+        except NotEncrypted:
+            raise _not_encrypted(activity_id)
+        except StaleWriteError:
+            raise _stale_write(row.id)
+        if tail_id is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not found")
+
+    bust_geo_cache(owner_id, name)
+    queue_stats_refresh(background_tasks, owner_id, name)
+    queue_share_tiles_refresh(background_tasks, owner_id, name)
+    return {"id": activity_id, "tail_id": tail_id, "lock_version": body.lock_version + 1}
 
 
 @router.delete("/{name}/activities/{activity_id}/local",
@@ -1919,8 +2248,8 @@ def delete_local_activity(
 # routes above — this doesn't hang off /api/projects/{name}. Deliberately
 # narrow: it only ever writes the six DB columns EncryptionMigration.run()
 # (flutter_client/lib/src/crypto/encryption_migration.dart) needs to migrate an
-# activity from plaintext to ciphertext, plus the two original_* edit-undo
-# snapshot columns (issue #31) it may also need to scrub — nothing else. This
+# activity from plaintext to ciphertext, plus the four original_* edit-undo
+# geometry snapshot columns (issue #31) it may also need to encrypt — nothing else. This
 # is not a general-purpose activity editor; every other activity field is
 # updated exclusively via the Strava-sync / track-edit paths above.
 activity_fields_router = APIRouter(prefix="/api/activities", tags=["activities"])
@@ -1935,13 +2264,24 @@ class ActivityFieldsUpdate(BaseModel):
     elevation_profile_low_res_json: Optional[str] = None
     original_polyline: Optional[str] = None
     original_elevation_profile_json: Optional[str] = None
+    original_start_latlng_json: Optional[str] = None
+    original_end_latlng_json: Optional[str] = None
+    # Compare-and-swap (E2EE remnants decision 13): the caller's own trip,
+    # by name, holding this activity, and its lock_version as last loaded.
+    # Given together or not at all; neither is written to the row.
+    project: Optional[str] = None
+    lock_version: Optional[int] = None
+    # The trip owner's id, only beside ``project``: the CAS trip is then that
+    # user's, which the caller edits as a member (decision 15, I3-1).
+    owner: Optional[int] = None
 
     # A value that is not a ciphertext envelope is plaintext the export parses
     # and writes as the activity's start, end or profile, so it must be one
     # the trip-file import takes (issue #462). HTTPException rather than
     # ValueError, for the reason TrackPointIn gives.
     @field_validator("start_latlng_json", "end_latlng_json", "elevation_profile_json",
-                     "elevation_profile_low_res_json", "original_elevation_profile_json")
+                     "elevation_profile_low_res_json", "original_elevation_profile_json",
+                     "original_start_latlng_json", "original_end_latlng_json")
     @classmethod
     def _exportable(cls, v: Optional[str], info) -> Optional[str]:
         if v is not None and not is_encrypted_envelope(v):
@@ -1968,13 +2308,40 @@ def update_activity_fields(
     The server does not interpret these values — once encrypted they're opaque
     ciphertext envelopes — so an envelope is taken as it is. A plaintext
     start, end or profile must be one the trip-file import takes (#462).
+
+    The caller must own the row, or own every trip referencing a local row
+    (``activity_e2ee_writable_by``). With ``project`` and ``lock_version`` the
+    write is a compare-and-swap on that trip: 404 unless it holds the row,
+    409 ``stale_write`` (nothing written) on a mismatch, and the response
+    carries the trip's new ``lock_version``. ``owner`` (only with ``project``)
+    names another user's trip the caller edits as a member, editor or above;
+    any other caller gets the same 404. An envelope ``name`` also clears
+    ``split_base_name``, the plaintext name the row had before it was split.
+    A body storing any envelope on a row another user's trip holds is refused
+    with 409 ``shared_with_other_trip``, nothing written (decision 15);
+    plaintext is not.
     """
     user_info_id = int(current_user["sub"])
     data = body.model_dump(exclude_unset=True)
+    cas_project = data.pop("project", None)
+    expected_version = data.pop("lock_version", None)
+    cas_owner = data.pop("owner", None)
+    if (cas_project is None) != (expected_version is None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="project and lock_version are given together or not at all",
+        )
+    if cas_owner is not None and cas_project is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="owner is given only with project",
+        )
+    stores_envelope = any(is_well_formed_envelope(v) for v in data.values())
     with get_session() as sess:
+        _require_e2ee_writable(sess, activity_id, user_info_id)
+        if stores_envelope:
+            _refuse_shared(sess, activity_id, user_info_id)
         row = sess.get(DBActivity, activity_id)
-        if row is None or row.user_info_id != user_info_id:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not found")
 
         # Every project this activity appears in — needed both to bust the geo
         # cache below and to advance each one's lock_version (issue #173) so a
@@ -1985,11 +2352,34 @@ def update_activity_fields(
                 DBProjectItem.activity_id == activity_id,
             ).distinct()
         ).all()
+        cas_project_id = None
+        if cas_project is not None:
+            try:
+                cas_project_id = resolve_project(sess, user_info_id, cas_project,
+                                                 cas_owner, min_role="editor").id
+            except HTTPException:
+                # Missing trip, no membership or a viewer one: one answer,
+                # as for a trip that does not hold the row.
+                cas_project_id = None
+            if cas_project_id is None or cas_project_id not in project_ids:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                    detail="Activity not in project")
+            try:
+                check_and_bump_lock_version(sess, cas_project_id, expected_version)
+            except StaleWriteError:
+                raise _stale_write(cas_project_id)
         for project_id in project_ids:
-            bump_lock_version(sess, project_id)
+            if project_id != cas_project_id:
+                bump_lock_version(sess, project_id)
+        if stores_envelope:
+            _refuse_shared(sess, activity_id, user_info_id, rollback=True)
 
         for field, value in data.items():
             setattr(row, field, value)
+        if is_encrypted_envelope(data.get("name")):
+            # The pre-split plaintext name must not outlive the encrypted one
+            # (decision 10); renumbering ignores it for an enveloped root anyway.
+            row.split_base_name = None
         sess.add(row)
         if "summary_polyline" in data:
             # Once the polyline is ciphertext the prepared row derived from its
@@ -2001,13 +2391,114 @@ def update_activity_fields(
         # Bust the full-res geo cache for every project this activity appears
         # in — same as every other activity-mutating endpoint above — so a
         # subsequent (non-E2EE-client) geo load doesn't serve a stale cached
-        # response built from the pre-migration plaintext.
-        project_names = sess.exec(
-            select(DBProject.name).where(DBProject.id.in_(project_ids))
+        # response built from the pre-migration plaintext. Each trip is cached
+        # under its own owner, who may not be the caller (decision 15, I3-1).
+        holders = sess.exec(
+            select(DBProject.user_info_id, DBProject.name)
+            .where(DBProject.id.in_(project_ids))
         ).all() if project_ids else []
 
-    for pname in project_names:
-        bust_geo_cache(user_info_id, pname)
-        queue_stats_refresh(background_tasks, user_info_id, pname)
+    for trip_owner, pname in holders:
+        bust_geo_cache(trip_owner, pname)
+        queue_stats_refresh(background_tasks, trip_owner, pname)
 
+    if cas_project_id is not None:
+        return {"id": activity_id, "lock_version": expected_version + 1}
+    return {"id": activity_id}
+
+
+#: The largest elevation gain the device may write for an encrypted activity
+#: (E2EE remnants decision 12): its own measure of one activity's profile.
+ENCRYPTED_GAIN_MAX_M = 50_000.0
+
+
+class ElevationGainUpdate(BaseModel):
+    total_elevation_gain: float
+    # Compare-and-swap, as on ActivityFieldsUpdate.
+    project: Optional[str] = None
+    lock_version: Optional[int] = None
+
+    @field_validator("total_elevation_gain")
+    @classmethod
+    def _gain(cls, v: float) -> float:
+        return _bounded_figure("total_elevation_gain", v, 0, ENCRYPTED_GAIN_MAX_M)
+
+
+@activity_fields_router.put("/{activity_id}/elevation-gain",
+                            summary="Set an encrypted activity's elevation gain")
+def update_activity_elevation_gain(
+    activity_id: ActivityIdPath,
+    body: ElevationGainUpdate,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    background_tasks: BackgroundTasks,
+):
+    """Store the elevation gain the device measured from an encrypted profile
+    (#366): the server cannot read the profile to measure it itself.
+
+    Who may call it is who may call ``PUT /api/activities/{id}``. 409
+    ``not_encrypted`` unless the stored ``elevation_profile_json`` is an
+    envelope, 409 ``shared_with_other_trip`` when another user's trip holds
+    the row; 422 unless the value is finite and within 0..50 000 m. The
+    compare-and-swap (``project`` + ``lock_version``) and the lock_version
+    advance of every trip holding the row are those of
+    ``PUT /api/activities/{id}``, which itself still never writes the gain.
+    """
+    user_info_id = int(current_user["sub"])
+    cas_project = body.project
+    expected_version = body.lock_version
+    if (cas_project is None) != (expected_version is None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="project and lock_version are given together or not at all",
+        )
+    with get_session() as sess:
+        _require_e2ee_writable(sess, activity_id, user_info_id)
+        # The gain is the device's measure of an enveloped profile, which a
+        # shared row must not keep: refused like the envelope itself.
+        _refuse_shared(sess, activity_id, user_info_id)
+        row = sess.get(DBActivity, activity_id)
+        if not is_encrypted_envelope(row.elevation_profile_json):
+            raise _not_encrypted(activity_id)
+
+        holders = sess.exec(
+            select(DBProject.id, DBProject.user_info_id, DBProject.name)
+            .join(DBProjectItem, DBProjectItem.project_id == DBProject.id)
+            .where(
+                DBProjectItem.item_type == "activity",
+                DBProjectItem.activity_id == activity_id,
+            ).distinct()
+        ).all()
+        cas_project_id = None
+        if cas_project is not None:
+            cas_project_id = next(
+                (pid for pid, uid, pname in holders
+                 if uid == user_info_id and pname == cas_project), None)
+            if cas_project_id is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                    detail="Activity not in project")
+            try:
+                check_and_bump_lock_version(sess, cas_project_id, expected_version)
+            except StaleWriteError:
+                raise _stale_write(cas_project_id)
+        for project_id, _, _ in holders:
+            if project_id != cas_project_id:
+                bump_lock_version(sess, project_id)
+        # Re-read once the bump holds the write lock: the profile may have been
+        # decrypted since the check above.
+        sess.refresh(row, ["elevation_profile_json"])
+        if not is_encrypted_envelope(row.elevation_profile_json):
+            sess.rollback()
+            raise _not_encrypted(activity_id)
+        _refuse_shared(sess, activity_id, user_info_id, rollback=True)
+
+        row.total_elevation_gain = body.total_elevation_gain
+        sess.add(row)
+        sess.commit()
+
+    for _, trip_owner, pname in holders:
+        bust_geo_cache(trip_owner, pname)
+        queue_stats_refresh(background_tasks, trip_owner, pname)
+
+    if cas_project_id is not None:
+        return {"id": activity_id, "lock_version": expected_version + 1}
     return {"id": activity_id}

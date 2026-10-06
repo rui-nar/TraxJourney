@@ -10,6 +10,8 @@ import '../core/perf_timing.dart' show perfSpans;
 import '../core/design_tokens.dart';
 import '../core/scrolling_selectable_text.dart';
 import '../crypto/e2ee_crypto.dart' show EncryptedField;
+import '../crypto/encryption.dart';
+import '../crypto/encryption_service.dart' show EncryptionState;
 import 'activity_editor_page.dart';
 import 'day_meta_editor.dart';
 import 'encounter_dialog.dart';
@@ -24,6 +26,22 @@ import 'people_search.dart';
 import 'project_notifier.dart';
 import 'segment_dialog.dart';
 import '../crypto/encrypted_display.dart';
+
+/// Why "Edit track" opens nothing for an encrypted track on a device that
+/// can't decrypt it: the track is edited on the device, never on the server.
+const _kTrackLockedMessage = "This activity's track is encrypted. Unlock "
+    'encryption on this device (approve it, or recover access) to edit it.';
+
+/// The same for an account without encryption (another traveller's encrypted
+/// track): there is nothing to unlock, so the message doesn't suggest it.
+const _kTrackEncryptedMessage =
+    "This activity is encrypted and its track can't be edited.";
+
+String _trackBlockedMessage() =>
+    encryption.state.value == EncryptionState.disabled
+        ? _kTrackEncryptedMessage
+        : _kTrackLockedMessage;
+
 // ── ActivityPanel ─────────────────────────────────────────────────────────────
 
 class ActivityPanel extends StatefulWidget {
@@ -854,6 +872,13 @@ class _ActivityPanelState extends State<ActivityPanel> {
   /// (with polyline + elevation) since the panel list is meta-only, then pushes
   /// [ActivityEditorPage]. The page persists via the notifier and reloads on
   /// success, so no local merge is needed here.
+  ///
+  /// An encrypted track is always opened from `GET …/track`, decrypted, never
+  /// from the panel's copy, so the editor holds the stored full geometry and
+  /// figures its edits are measured against (E2EE remnants decision 7). The
+  /// panel's copy is revealed in place, so it may look plaintext: on an
+  /// encrypted account, or when the copy shows any envelope, the track is
+  /// fetched and the response decides.
   Future<void> _openTrackEditor(
     BuildContext context,
     ProjectNotifier notifier,
@@ -863,9 +888,17 @@ class _ActivityPanelState extends State<ActivityPanel> {
     if (id == null) return;
     final messenger = ScaffoldMessenger.of(context);
     final navigator = Navigator.of(context);
+    final panelPoly = (activity['map'] as Map?)?['summary_polyline'] as String?;
+    if (panelPoly != null &&
+        EncryptedField.isEnvelope(panelPoly) &&
+        !encryption.isUnlocked) {
+      messenger.showSnackBar(SnackBar(content: Text(_trackBlockedMessage())));
+      return;
+    }
     Map<String, dynamic>? full = activity;
-    // Fetch geometry if the panel's copy lacks it (meta load omits the polyline).
-    if ((activity['map'] as Map?)?['summary_polyline'] == null) {
+    // Fetch geometry if the panel's copy lacks it (meta load omits the
+    // polyline) or the stored track may be encrypted.
+    if (panelPoly == null || _mayBeEncrypted(activity)) {
       // Block the panel with a spinner while the fetch runs so the user gets
       // feedback and can't fire other actions on a half-loaded list.
       final dialogNav = Navigator.of(context, rootNavigator: true);
@@ -892,19 +925,25 @@ class _ActivityPanelState extends State<ActivityPanel> {
       );
       return;
     }
-    // Track editing needs a Dart polyline re-encoder + server-side metric
-    // recompute that don't exist yet for ciphertext (issue #29) — hide the
-    // entry point rather than open an editor that can't save.
+    EncryptedTrackEdit? encrypted;
     if (EncryptedField.isEnvelope(poly)) {
-      messenger.showSnackBar(
-        const SnackBar(
-          content: Text("This activity is encrypted and its track can't be edited."),
-        ),
-      );
-      return;
+      if (!encryption.isUnlocked) {
+        messenger.showSnackBar(SnackBar(content: Text(_trackBlockedMessage())));
+        return;
+      }
+      try {
+        encrypted = await EncryptedTrackEdit.open(loaded);
+      } catch (_) {
+        messenger.showSnackBar(const SnackBar(
+          content: Text("This activity's track is encrypted with a key this "
+              "device doesn't have, so it can't be edited here."),
+        ));
+        return;
+      }
     }
     final result = await navigator.push(MaterialPageRoute(
-      builder: (_) => ActivityEditorPage(notifier: notifier, activity: loaded),
+      builder: (_) => ActivityEditorPage(
+          notifier: notifier, activity: loaded, encrypted: encrypted),
     ));
     // #104: "Cut & add transport" pops with a request to immediately open the
     // Add Transportation dialog, pre-filled from the freshly cut activity.
@@ -916,6 +955,18 @@ class _ActivityPanelState extends State<ActivityPanel> {
         preselectedStartActivityId: result['openSegmentFor'],
       );
     }
+  }
+
+  /// Whether [activity]'s stored track may be an envelope although the
+  /// panel's copy shows plaintext: the account is encrypted (the catch-up
+  /// may have encrypted it since the load), or the copy carries an envelope.
+  static bool _mayBeEncrypted(Map<String, dynamic> activity) {
+    if (encryption.state.value != EncryptionState.disabled) return true;
+    bool env(Object? v) => v is String && EncryptedField.isEnvelope(v);
+    return env((activity['map'] as Map?)?['summary_polyline']) ||
+        env(activity['start_latlng_enc']) ||
+        env(activity['end_latlng_enc']) ||
+        env(activity['elevation_profile_enc']);
   }
 
   void _flyToActivity(Map<String, dynamic> activity) {

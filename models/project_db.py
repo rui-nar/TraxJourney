@@ -50,8 +50,6 @@ class DBProject(sqlmodel.SQLModel, table=True):
     trip_end: Optional[str] = sqlmodel.Field(default=None)
     # Pre-computed project stats JSON; recomputed after any mutation
     stats_json: Optional[str] = sqlmodel.Field(default=None)
-    # Pre-computed low-res GeoJSON (straight line per activity); recomputed after any mutation
-    low_res_geo_json: Optional[str] = sqlmodel.Field(default=None)
     # Day metadata keyed by "YYYY-MM-DD": difficulty, sleeping, weather, journal
     day_meta_json: Optional[str] = sqlmodel.Field(default="{}")
     # Ordered list of sleeping option strings (project-configurable)
@@ -117,7 +115,6 @@ _PROJECT_INFRA_FIELDS: frozenset[str] = frozenset({
     "share_token",
     "share_token_no_memories",
     "stats_json",
-    "low_res_geo_json",
 })
 
 
@@ -312,6 +309,21 @@ class DBActivity(sqlmodel.SQLModel, table=True):
     #: above and restored by a reset, because an edit no longer recomputes the
     #: number from scratch: it scales whatever was there (issue #386).
     original_total_elevation_gain: Optional[float] = sqlmodel.Field(default=None)
+    #: The scalars the activity had before its first edit, snapshotted beside
+    #: the geometry so a reset can restore them verbatim instead of recomputing
+    #: them from the original track — which it cannot do once that track is a
+    #: client-side E2EE envelope (docs/E2EE_REMNANTS_PLAN.md decision 7). NULL
+    #: on an unedited row, and on an edited row snapshotted before these columns
+    #: existed whose original geometry is encrypted or missing (migration
+    #: c4e2a9f1b7d3 backfilled the rest).
+    original_distance: Optional[float] = sqlmodel.Field(default=None)
+    original_moving_time: Optional[int] = sqlmodel.Field(default=None)
+    original_elapsed_time: Optional[int] = sqlmodel.Field(default=None)
+    original_average_speed: Optional[float] = sqlmodel.Field(default=None)
+    original_elev_high: Optional[float] = sqlmodel.Field(default=None)
+    original_elev_low: Optional[float] = sqlmodel.Field(default=None)
+    original_start_latlng_json: Optional[str] = sqlmodel.Field(default=None)
+    original_end_latlng_json: Optional[str] = sqlmodel.Field(default=None)
 
     # Split-family tracking (issue #45 follow-up). NULL on a row that has never
     # been split (or is the root of a family — the very first piece, which by

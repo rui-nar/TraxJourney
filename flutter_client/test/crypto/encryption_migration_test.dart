@@ -50,9 +50,10 @@ void main() {
           {'name': 'Trip1'}
         ]), 200);
       }
-      if (req.method == 'GET' && path == '/api/projects/Trip1') {
+      if (req.method == 'GET' && path == '/api/projects/Trip1/meta') {
         return http.Response(
           jsonEncode({
+            'lock_version': 1,
             'items': [
               {
                 'item_type': 'memory',
@@ -82,8 +83,9 @@ void main() {
         );
       }
       if (req.method == 'PUT') {
-        puts[path] = jsonDecode(req.body) as Map<String, dynamic>;
-        return http.Response('', 204);
+        final body = puts[path] = jsonDecode(req.body) as Map<String, dynamic>;
+        return http.Response(
+            jsonEncode({'lock_version': (body['lock_version'] as int) + 1}), 200);
       }
       return http.Response('not found', 404);
     });
@@ -92,7 +94,7 @@ void main() {
     final enc = EncryptionService(_FakeStore(), _FakeApi());
     await enc.enable(const RecoveryKeyChoice()); // unlock
 
-    final migrated = await EncryptionMigration(api, enc).run();
+    final migrated = (await EncryptionMigration(api, enc).run()).written;
 
     expect(migrated, 2); // memory 1 + journal 5; memory 2 skipped
     expect(puts.keys.toSet(), {'/api/memories/1', '/api/journal/5'});
@@ -120,6 +122,7 @@ void main() {
       if (req.method == 'GET') {
         return http.Response(
           jsonEncode({
+            'lock_version': 1,
             'items': [
               {
                 'item_type': 'memory',
@@ -141,7 +144,7 @@ void main() {
     final enc = EncryptionService(_FakeStore(), _FakeApi());
     await enc.enable(const RecoveryKeyChoice());
 
-    expect(await EncryptionMigration(api, enc).run(), 0);
+    expect((await EncryptionMigration(api, enc).run()).written, 0);
     expect(putCount, 0);
   });
 
@@ -166,7 +169,8 @@ void main() {
       }
       getPaths.add(req.url.path);
       if (req.method == 'GET') {
-        return http.Response(jsonEncode({'items': <dynamic>[]}), 200);
+        return http.Response(
+            jsonEncode({'lock_version': 1, 'items': <dynamic>[]}), 200);
       }
       return http.Response('', 204);
     });
@@ -175,7 +179,8 @@ void main() {
     final enc = EncryptionService(_FakeStore(), _FakeApi());
     await enc.enable(const RecoveryKeyChoice());
 
-    expect(await EncryptionMigration(api, enc).run(), 0);
-    expect(getPaths, ['/api/projects/OwnTrip']);
+    expect((await EncryptionMigration(api, enc).run()).written, 0);
+    // The shared trip's journal entries are left to the catch-up on its load.
+    expect(getPaths, ['/api/projects/OwnTrip/meta']);
   });
 }

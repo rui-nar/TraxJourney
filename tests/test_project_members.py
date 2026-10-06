@@ -513,6 +513,24 @@ def test_invite_blocked_for_encrypted_owner(env):
     assert r.status_code == 409
 
 
+def test_accept_invite_refused_after_owner_enabled_encryption(env):
+    """An invite made before the owner enabled E2EE must not let anyone join
+    afterwards (#505)."""
+    client, engine, ids, act_as = env
+    act_as("owner")
+    token = client.post("/api/projects/Trip/members/invite").json()["token"]
+    with Session(engine) as sess:
+        owner = sess.get(UserInfo, ids["owner"])
+        owner.encryption_enabled = True
+        sess.add(owner); sess.commit()
+    act_as("editor")
+    r = client.post(f"/api/invites/{token}/accept")
+    assert r.status_code == 409
+    assert "encrypted" in r.json()["detail"]
+    with Session(engine) as sess:
+        assert sess.exec(select(DBProjectMember)).all() == []
+
+
 def test_enable_encryption_blocked_with_members(env):
     client, _, _, act_as = env
     _join(client, act_as)

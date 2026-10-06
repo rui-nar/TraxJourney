@@ -10,10 +10,12 @@ import 'package:traxjourney_client/src/crypto/encryption_migration.dart';
 import 'package:traxjourney_client/src/crypto/encryption_service.dart';
 
 /// Extends encryption_migration_test.dart's coverage to activity geometry
-/// (issue #29): EncryptionMigration.run() must also encrypt a still-plaintext
-/// activity's name/summary_polyline/start_latlng/end_latlng/elevation_profile
-/// via PUT /api/activities/{id}, skip an already-encrypted one (idempotent),
-/// and leave non-in-scope fields (e.g. kudos_count) untouched.
+/// (issue #29, E2EE remnants decision 6): EncryptionMigration.run() encrypts
+/// the fields an activity lists in `plain_fields`, read from
+/// `GET …/track` — never from the trip payload, whose `/meta` form has no
+/// polyline and only the downsampled profile — via a compare-and-swap
+/// PUT /api/activities/{id}; it skips an activity with nothing listed and
+/// leaves non-in-scope fields (e.g. kudos_count) untouched.
 class _FakeStore implements DeviceKeyStore {
   SimpleKeyPair? _kp;
   @override
@@ -44,55 +46,91 @@ class _FakeApi implements EncryptionApi {
       wrappedCmkB64;
 }
 
+const _allColumns = [
+  'name', 'summary_polyline', 'start_latlng_json', 'end_latlng_json',
+  'elevation_profile_json', 'elevation_profile_low_res_json',
+];
+
+/// A `/meta` activity: no polyline, the downsampled profile.
+Map<String, dynamic> _metaActivity(int id, List<String> plainFields) => {
+      'id': id,
+      'name': 'Morning Ride',
+      'kudos_count': 4,
+      'map': {'summary_polyline': null},
+      'start_latlng': [48.0, 2.0],
+      'end_latlng': [48.5, 2.5],
+      'elevation_profile': [
+        [0.0, 10.0],
+        [2.0, 30.0],
+      ],
+      'plain_fields': plainFields,
+    };
+
+/// `GET …/track` for the same activity: the full track and profile.
+Map<String, dynamic> _track(int id, int lockVersion) => {
+      'id': id,
+      'name': 'Morning Ride',
+      'kudos_count': 4,
+      'map': {'summary_polyline': 'abc123xyz'},
+      'start_latlng': [48.0, 2.0],
+      'end_latlng': [48.5, 2.5],
+      'elevation_profile': [
+        [0.0, 10.0],
+        [1.0, 20.0],
+        [2.0, 30.0],
+      ],
+      'lock_version': lockVersion,
+    };
+
+/// Serves one trip of [activities] at lock version 1; records every request.
+MockClient _server(List<Map<String, dynamic>> activities,
+    Map<String, Map<String, dynamic>> puts, List<String> gets) {
+  var lockVersion = 1;
+  return MockClient((req) async {
+    final path = req.url.path;
+    if (req.method == 'GET' && path == '/api/projects/') {
+      return http.Response(jsonEncode([{'name': 'Trip1'}]), 200);
+    }
+    if (req.method == 'GET') {
+      gets.add(path);
+      if (path == '/api/projects/Trip1/meta') {
+        return http.Response(jsonEncode({
+          'name': 'Trip1',
+          'lock_version': lockVersion,
+          'items': const [],
+          'activities': activities,
+        }), 200);
+      }
+      final m = RegExp(r'/activities/(\d+)/track$').firstMatch(path);
+      if (m != null) {
+        return http.Response(
+            jsonEncode(_track(int.parse(m.group(1)!), lockVersion)), 200);
+      }
+    }
+    if (req.method == 'PUT') {
+      puts[path] = jsonDecode(req.body) as Map<String, dynamic>;
+      lockVersion++;
+      return http.Response(jsonEncode({'id': 0, 'lock_version': lockVersion}), 200);
+    }
+    return http.Response('not found', 404);
+  });
+}
+
 void main() {
-  test('encrypts a plaintext activity\'s in-scope fields via PUT /api/activities/{id}',
+  test('encrypts a plaintext activity\'s listed fields from GET …/track',
       () async {
     final puts = <String, Map<String, dynamic>>{};
-
-    final mock = MockClient((req) async {
-      final path = req.url.path;
-      if (req.method == 'GET' && path == '/api/projects/') {
-        return http.Response(jsonEncode([
-          {'name': 'Trip1'}
-        ]), 200);
-      }
-      if (req.method == 'GET' && path == '/api/projects/Trip1') {
-        return http.Response(
-          jsonEncode({
-            'items': const [],
-            'activities': [
-              {
-                'id': 111,
-                'name': 'Morning Ride',
-                'kudos_count': 4,
-                'map': {'summary_polyline': 'abc123xyz'},
-                'start_latlng': [48.0, 2.0],
-                'end_latlng': [48.5, 2.5],
-                'elevation_profile': [
-                  [0.0, 10.0],
-                  [1.0, 20.0],
-                ],
-              },
-            ],
-          }),
-          200,
-        );
-      }
-      if (req.method == 'PUT') {
-        puts[path] = jsonDecode(req.body) as Map<String, dynamic>;
-        return http.Response('', 200);
-      }
-      return http.Response('not found', 404);
-    });
+    final gets = <String>[];
+    final mock = _server([_metaActivity(111, _allColumns)], puts, gets);
 
     final api = ApiClient(baseUrl: '', httpClient: mock);
     final enc = EncryptionService(_FakeStore(), _FakeApi());
     await enc.enable(const RecoveryKeyChoice());
 
-    final migrated = await EncryptionMigration(api, enc).run();
+    final result = await EncryptionMigration(api, enc).run();
 
-    expect(migrated, 1);
-    expect(puts.keys, contains('/api/activities/111'));
+    expect(result.written, 1);
+    expect(gets, contains('/api/projects/Trip1/activities/111/track'));
     final body = puts['/api/activities/111']!;
 
     // In-scope fields are now ciphertext envelopes that decrypt back to the
@@ -102,115 +140,61 @@ void main() {
     expect(EncryptedField.isEnvelope(body['name'] as String), isTrue);
     expect(await enc.decryptText(body['name'] as String), 'Morning Ride');
 
+    // The polyline /meta never carries, from /track.
     expect(EncryptedField.isEnvelope(body['summary_polyline'] as String), isTrue);
     expect(await enc.decryptText(body['summary_polyline'] as String), 'abc123xyz');
 
-    expect(EncryptedField.isEnvelope(body['start_latlng_json'] as String), isTrue);
     expect(jsonDecode(await enc.decryptText(body['start_latlng_json'] as String)),
         [48.0, 2.0]);
-
-    expect(EncryptedField.isEnvelope(body['end_latlng_json'] as String), isTrue);
     expect(jsonDecode(await enc.decryptText(body['end_latlng_json'] as String)),
         [48.5, 2.5]);
 
-    expect(EncryptedField.isEnvelope(body['elevation_profile_json'] as String), isTrue);
+    // The full profile from /track, not /meta's two-point downsample.
     final ep = jsonDecode(await enc.decryptText(body['elevation_profile_json'] as String))
         as Map<String, dynamic>;
-    expect(ep['distances_km'], [0.0, 1.0]);
-    expect(ep['elevations_m'], [10.0, 20.0]);
-
-    // Reused for the low-res column too (see _migrateActivity's doc comment).
+    expect(ep['distances_km'], [0.0, 1.0, 2.0]);
+    expect(ep['elevations_m'], [10.0, 20.0, 30.0]);
+    // One envelope for both profile columns (R4-5).
     expect(body['elevation_profile_low_res_json'], body['elevation_profile_json']);
 
-    // Edit-undo snapshot columns are scrubbed (best-effort, DB-only, unreadable
-    // by the client) rather than left as a potential plaintext remnant.
-    expect(body.containsKey('original_polyline'), isTrue);
-    expect(body['original_polyline'], isNull);
-    expect(body.containsKey('original_elevation_profile_json'), isTrue);
-    expect(body['original_elevation_profile_json'], isNull);
+    // Compare-and-swap on the trip, by its name and the payload's version.
+    expect(body['project'], 'Trip1');
+    expect(body['lock_version'], 1);
 
-    // kudos_count is out of scope — never sent in this narrow field update.
+    // Nothing listed is touched: no snapshot column is sent (let alone
+    // nulled), and kudos_count is out of scope.
+    expect(body.keys.where((k) => k.startsWith('original_')), isEmpty);
     expect(body.containsKey('kudos_count'), isFalse);
   });
 
-  test('skips an activity whose fields are already encrypted (idempotent)', () async {
-    var putCount = 0;
-    final mock = MockClient((req) async {
-      if (req.method == 'GET' && req.url.path == '/api/projects/') {
-        return http.Response(jsonEncode([
-          {'name': 'Trip1'}
-        ]), 200);
-      }
-      if (req.method == 'GET') {
-        return http.Response(
-          jsonEncode({
-            'items': const [],
-            'activities': [
-              {
-                'id': 111,
-                'name': 'v1.AA.BB',
-                'map': {'summary_polyline': 'v1.CC.DD'},
-                // Once encrypted, the server nulls the parsed geometry fields
-                // and carries ciphertext via the sibling *_enc keys instead —
-                // simulate exactly that shape here.
-                'start_latlng': null,
-                'end_latlng': null,
-                'elevation_profile': null,
-                'start_latlng_enc': 'v1.EE.FF',
-                'end_latlng_enc': 'v1.GG.HH',
-                'elevation_profile_enc': 'v1.II.JJ',
-              },
-            ],
-          }),
-          200,
-        );
-      }
-      putCount++;
-      return http.Response('', 200);
-    });
+  test('skips an activity with nothing in plain_fields (idempotent)', () async {
+    final puts = <String, Map<String, dynamic>>{};
+    final gets = <String>[];
+    final mock = _server([_metaActivity(111, const [])], puts, gets);
 
     final api = ApiClient(baseUrl: '', httpClient: mock);
     final enc = EncryptionService(_FakeStore(), _FakeApi());
     await enc.enable(const RecoveryKeyChoice());
 
-    expect(await EncryptionMigration(api, enc).run(), 0);
-    expect(putCount, 0);
+    expect((await EncryptionMigration(api, enc).run()).written, 0);
+    expect(puts, isEmpty);
+    expect(gets, ['/api/projects/Trip1/meta']);
   });
 
   test('a mixed plaintext/encrypted set of activities migrates only the plaintext one',
       () async {
-    final puts = <String>[];
-    final mock = MockClient((req) async {
-      if (req.method == 'GET' && req.url.path == '/api/projects/') {
-        return http.Response(jsonEncode([
-          {'name': 'Trip1'}
-        ]), 200);
-      }
-      if (req.method == 'GET') {
-        return http.Response(
-          jsonEncode({
-            'items': const [],
-            'activities': [
-              {
-                'id': 1, 'name': 'Plain', 'map': {'summary_polyline': 'poly1'},
-              },
-              {
-                'id': 2, 'name': 'v1.AA.BB', 'map': {'summary_polyline': 'v1.CC.DD'},
-              },
-            ],
-          }),
-          200,
-        );
-      }
-      puts.add(req.url.path);
-      return http.Response('', 200);
-    });
+    final puts = <String, Map<String, dynamic>>{};
+    final gets = <String>[];
+    final mock = _server(
+        [_metaActivity(1, const ['name']), _metaActivity(2, const [])], puts, gets);
 
     final api = ApiClient(baseUrl: '', httpClient: mock);
     final enc = EncryptionService(_FakeStore(), _FakeApi());
     await enc.enable(const RecoveryKeyChoice());
 
-    expect(await EncryptionMigration(api, enc).run(), 1);
-    expect(puts, ['/api/activities/1']);
+    expect((await EncryptionMigration(api, enc).run()).written, 1);
+    expect(puts.keys, ['/api/activities/1']);
+    // Only the listed field is written.
+    expect(puts['/api/activities/1']!.keys.toSet(), {'name', 'project', 'lock_version'});
   });
 }

@@ -149,7 +149,7 @@ def test_legacy_null_author_entry_belongs_to_owner(env):
     r = client.put(f"/api/journal/{legacy_id}", json={
         "date": "2025-05-02", "geo_mode": "custom", "lat": 1.0, "lon": 2.0,
     })
-    assert r.status_code == 204
+    assert r.status_code == 200
 
     act_as("companion")
     assert _journal_ids_in_details(client, ids, as_companion=True) == []
@@ -172,7 +172,7 @@ def test_only_the_author_may_edit_or_delete(env):
     assert client.post(f"/api/journal/{entry_id}/photos", files=upload).status_code == 403
 
     act_as("companion")
-    assert client.put(f"/api/journal/{entry_id}", json=body).status_code == 204
+    assert client.put(f"/api/journal/{entry_id}", json=body).status_code == 200
     assert client.delete(f"/api/journal/{entry_id}").status_code == 204
     with Session(engine) as sess:
         assert sess.get(DBJournalEntry, entry_id) is None

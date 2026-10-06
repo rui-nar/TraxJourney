@@ -94,6 +94,24 @@ class Activity:
     start_latlng_enc: Optional[str] = None
     end_latlng_enc: Optional[str] = None
     elevation_profile_enc: Optional[str] = None
+    # The E2EE columns still holding plaintext (E2EE remnants decision 6), by
+    # their PUT /api/activities/{id} field names: the encryption catch-up
+    # fetches and encrypts these. Set by the project-load query only, so None
+    # on an activity built from anything else. Sent to the client by
+    # ProjectIO.to_dict, never written to a .traxj file (to_strava_dict).
+    plain_fields: Optional[List[str]] = None
+    # Whether the row holds a gain snapshot (original_total_elevation_gain not
+    # null; E2EE remnants decision 12): an edit without one predates #386.
+    # Set by _row_to_activity, sent by ProjectIO.to_dict, never written to a
+    # .traxj file (to_strava_dict).
+    has_gain_snapshot: bool = False
+    # Whether a trip owned by someone other than the loaded trip's owner also
+    # holds the row (E2EE remnants decision 15): it must stay readable, so the
+    # catch-up leaves it plaintext and PUT /api/activities/{id} refuses an
+    # envelope on it. Set by the project-load query only, so None on an
+    # activity built from anything else. Sent by ProjectIO.to_dict, never
+    # written to a .traxj file (to_strava_dict).
+    shared_with_others: Optional[bool] = None
 
     def to_strava_dict(self) -> dict:
         """Serialise to a dict that can be round-tripped via from_strava_api()."""

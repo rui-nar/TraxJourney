@@ -2,15 +2,16 @@
 /// enabling encryption, and unlocking the Content Master Key (CMK) on a trusted
 /// device. Crypto comes from [e2ee_crypto]; device-key persistence and the
 /// server API are injected interfaces, so this service is unit-testable with
-/// fakes and carries no Flutter / dart:io / http dependency itself.
+/// fakes and carries no dart:io / http dependency itself (only
+/// `flutter/foundation`, for the [EncryptionService.state] listenable).
 library;
 
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
-import 'dart:typed_data';
 
 import 'package:cryptography_plus/cryptography_plus.dart';
+import 'package:flutter/foundation.dart';
 
 import 'e2ee_crypto.dart';
 
@@ -173,6 +174,63 @@ class EncryptionSessionEnded implements Exception {
   String toString() => 'the session ended before encryption was turned on';
 }
 
+/// Where this account and device stand with encryption (#506).
+enum EncryptionState {
+  /// Encryption is off for the account, or its status is not known yet (no
+  /// session prepared, or the status request failed). Writes go out as they
+  /// are; the server refuses plaintext into an encrypted space on its own.
+  disabled,
+
+  /// The key is held in memory: this device reads and writes ciphertext.
+  unlocked,
+
+  /// Encryption is on and this device is approved, but the key is not
+  /// unwrapped (signed out of it, or the unwrap failed).
+  locked,
+
+  /// Encryption is on and this device is not approved yet.
+  awaitingApproval,
+}
+
+/// What the trip screen and the editors say while [EncryptionState.locked].
+const kEncryptionLockedMessage =
+    "Encryption is on for your account, but this device hasn't unlocked your "
+    "key, so memories and journal entries can't be saved here. Recover "
+    'access to unlock it.';
+
+/// What the trip screen and the editors say while
+/// [EncryptionState.awaitingApproval].
+const kEncryptionAwaitingApprovalMessage =
+    'Encryption is on for your account and this device is waiting to be '
+    "approved, so memories and journal entries can't be saved here yet. "
+    'Approve it from a device you already use, or recover access.';
+
+/// A clear message for the server's encryption refusals (decision 3): a 409
+/// whose `detail.code` is `encryption_locked` or `encryption_not_shared`.
+/// Null for any other response, which callers report as they did before.
+String? encryptionRefusalMessage(int statusCode, String body) {
+  if (statusCode != 409) return null;
+  Object? code;
+  try {
+    final decoded = jsonDecode(body);
+    final detail = decoded is Map ? decoded['detail'] : null;
+    code = detail is Map ? detail['code'] : null;
+  } on FormatException {
+    return null;
+  }
+  return switch (code) {
+    'encryption_locked' =>
+      "This text has to be stored encrypted, and this device can't encrypt "
+          'it right now. Unlock encryption on this device (approve it, or '
+          'recover access), then try again.',
+    'encryption_not_shared' =>
+      "This trip isn't encrypted, so it can't store text encrypted with your "
+          "key: the other travellers couldn't read it. Retype the text, then "
+          'save again.',
+    _ => null,
+  };
+}
+
 class EncryptionService {
   final DeviceKeyStore _store;
   final EncryptionApi _api;
@@ -181,6 +239,12 @@ class EncryptionService {
   EncryptionService(this._store, this._api, {this.deviceLabel = ''});
 
   SecretKey? _cmk;
+
+  final _state = ValueNotifier<EncryptionState>(EncryptionState.disabled);
+
+  /// The account's encryption state on this device, kept from the last
+  /// status, unlock, recovery or [lock] (#506).
+  ValueListenable<EncryptionState> get state => _state;
 
   /// True once the CMK is held in memory (this device can read/write ciphertext).
   bool get isUnlocked => _cmk != null;
@@ -206,11 +270,26 @@ class EncryptionService {
       isUnlocked &&
       (_status?.unconfirmedRecoveryMethods.contains('recovery_key') ?? false);
 
-  /// Drop the in-memory CMK (e.g. on logout).
+  /// Why text that must be encrypted can't be written from this device now,
+  /// or null when it can: the account is encrypted and the key is not
+  /// unlocked. Text that stays plaintext anyway (a memory on a trip the user
+  /// doesn't own) is not concerned; callers decide that.
+  String? get writeBlockedMessage => switch (_state.value) {
+        EncryptionState.locked => kEncryptionLockedMessage,
+        EncryptionState.awaitingApproval => kEncryptionAwaitingApprovalMessage,
+        EncryptionState.disabled || EncryptionState.unlocked => null,
+      };
+
+  /// Drop the in-memory CMK (e.g. on logout). The account stays encrypted, so
+  /// an unlocked device becomes locked; the next [prepareForSession] reads
+  /// the next session's state afresh.
   void lock() {
     _cmk = null;
     _status = null;
     _lockGeneration++;
+    if (_state.value == EncryptionState.unlocked) {
+      _state.value = EncryptionState.locked;
+    }
     _changes.add(null);
   }
 
@@ -276,7 +355,10 @@ class EncryptionService {
       },
     });
 
-    if (generation == _lockGeneration) _cmk = cmk;
+    if (generation == _lockGeneration) {
+      _cmk = cmk;
+      _state.value = EncryptionState.unlocked;
+    }
     if (recoverySecret == null) return const EnableResult(null);
     // The server's copy when it says what it stored; an older server does not
     // say, and stored what was sent.
@@ -370,18 +452,35 @@ class EncryptionService {
 
     final pub = await keyPair.extractPublicKey();
     final status = await _api.fetchStatus(base64.encode(pub.bytes));
-    if (!status.enabled) return false;
-    if (!status.deviceApproved || status.wrappedCmkB64 == null) return false;
+    // The ended session's status: the next session's state is its own.
+    if (generation != _lockGeneration) return false;
+    if (!status.enabled) {
+      _state.value = EncryptionState.disabled;
+      return false;
+    }
+    if (!status.deviceApproved || status.wrappedCmkB64 == null) {
+      _state.value = EncryptionState.awaitingApproval;
+      return false;
+    }
 
     final wrapped = WrappedCmk(
       base64.decode(status.wrappedCmkB64!),
       ephemeralPublicKey: base64.decode(status.ephemeralPublicKeyB64!),
     );
-    final cmk = await unwrapCmkWithDeviceKeyPair(wrapped, keyPair);
+    final SecretKey cmk;
+    try {
+      cmk = await unwrapCmkWithDeviceKeyPair(wrapped, keyPair);
+    } catch (_) {
+      // Approved, yet the key would not unwrap: encrypted and locked, not
+      // unknown — writes that need the key must stop.
+      if (generation == _lockGeneration) _state.value = EncryptionState.locked;
+      rethrow;
+    }
     // Locked while this was waiting — a logout, or a 401 ending the session.
     if (generation != _lockGeneration) return false;
     _cmk = cmk;
     _status = status;
+    _state.value = EncryptionState.unlocked;
     _changes.add(null);
     return true;
   }
@@ -389,16 +488,28 @@ class EncryptionService {
   /// Prepare encryption for a freshly-authenticated session: unlock on a trusted
   /// device; or, if encryption is enabled but this device isn't approved yet,
   /// register it as pending so a trusted device can approve it. Returns whether
-  /// the CMK is now unlocked.
+  /// the CMK is now unlocked. Sets [state] from the status it reads; when the
+  /// status can't be read it stays [EncryptionState.disabled] (unknown), and
+  /// the server's refusals stand in for the client's gate.
   Future<bool> prepareForSession() async {
+    final generation = _lockGeneration;
+    if (!isUnlocked) _state.value = EncryptionState.disabled;
     if (await unlock()) return true;
     final keyPair = await _store.load();
     final pubB64 = keyPair == null
         ? null
         : base64.encode((await keyPair.extractPublicKey()).bytes);
     final status = await _api.fetchStatus(pubB64);
-    if (status.enabled && !status.deviceApproved) {
+    // Locked meanwhile: neither set the next session's state nor register
+    // this device for an account that has signed out.
+    if (generation != _lockGeneration) return false;
+    if (!status.enabled) {
+      _state.value = EncryptionState.disabled;
+    } else if (!status.deviceApproved) {
+      _state.value = EncryptionState.awaitingApproval;
       await registerThisDevice();
+    } else {
+      _state.value = EncryptionState.locked;
     }
     return false;
   }
@@ -483,6 +594,7 @@ class EncryptionService {
     // re-trust this device with it.
     if (generation != _lockGeneration) return false;
     _cmk = cmk;
+    _state.value = EncryptionState.unlocked;
     await _retrustThisDevice();
     return true;
   }

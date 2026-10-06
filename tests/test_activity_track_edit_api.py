@@ -161,17 +161,17 @@ def test_reset_restores_original(env):
     act = _find_act(resp.json())
     assert act["is_edited"] is False
 
-    from src.models.track_edit import align_points, recompute_track_metrics
-    full_geom_dist = recompute_track_metrics(
-        align_points(polyline_lib.encode(_TRACK), None)).distance
     with Session(engine) as sess:
         row = sess.get(DBActivity, 111)
         assert row.is_edited is False
         assert row.original_polyline is None
         assert row.summary_polyline == polyline_lib.encode(_TRACK)
-        # Distance restored to the pre-edit geometry length (haversine of the
-        # full track); the original Strava scalar distance is not snapshotted.
-        assert row.distance == pytest.approx(full_geom_dist, rel=1e-6)
+        # Distance restored to the pre-edit stored figure (Strava's 4000 m),
+        # not re-measured from the restored track: the first edit snapshots
+        # the scalars and reset hands them back exactly (E2EE remnants
+        # decision 7).
+        assert row.distance == 4000.0
+        assert row.original_distance is None
 
 
 def test_reset_restores_the_original_elevation_gain(env):

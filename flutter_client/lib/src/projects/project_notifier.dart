@@ -15,9 +15,14 @@ import '../core/perf_timing.dart';
 import '../core/project_ref.dart';
 import '../crypto/e2ee_crypto.dart' show EncryptedField;
 import '../crypto/encryption.dart';
+import '../crypto/encryption_migration.dart';
 import '../map/geo_point.dart';
 import '../map/polyline_decoder.dart';
 import '../share/share_content_generator.dart';
+import '../track_metrics/align.dart';
+import '../track_metrics/elevation_profile.dart';
+import '../track_metrics/polyline_encoder.dart';
+import '../track_metrics/track_metrics.dart';
 import 'client_geo_builder.dart' as client_geo;
 import 'facets/project_facet.dart';
 import 'geo_viewport.dart';
@@ -32,6 +37,7 @@ import 'project_people_crud_mixin.dart';
 import 'project_quota_mixin.dart';
 import 'project_segment_crud_mixin.dart';
 import 'project_service.dart';
+import 'track_edit_model.dart' show EditPoint;
 
 /// Waits between the automatic retries of a failed project fetch.
 ///
@@ -401,6 +407,134 @@ class _SupersessionTrack {
   /// not just once at the top — since anything can supersede this call
   /// during any of those awaits.
   bool isCurrent(int token, ProjectRef ref) => token == _token && _ref == ref;
+}
+
+/// An encrypted activity opened for editing on this device (E2EE remnants
+/// decision 7): the stored track and figures `GET …/track` returned,
+/// decrypted. Save and split measure every piece against this geometry and
+/// these times, as the server's `_write_track_geometry` measures against the
+/// row it overwrites.
+class EncryptedTrackEdit {
+  const EncryptedTrackEdit({
+    required this.polyline,
+    required this.profile,
+    required this.name,
+    required this.movingTime,
+    required this.elapsedTime,
+    required this.totalElevationGain,
+    required this.lockVersion,
+  });
+
+  /// The stored polyline, decrypted.
+  final String polyline;
+
+  /// The stored full profile, decrypted; null when the row has none.
+  final ElevationProfile? profile;
+
+  /// The activity's name, decrypted.
+  final String? name;
+  final int movingTime;
+  final int elapsedTime;
+  final double? totalElevationGain;
+
+  /// The trip's lock_version from the same `GET …/track`.
+  final int lockVersion;
+
+  /// Decrypts [track], a `GET …/track` response whose polyline is an
+  /// envelope. Throws when this device cannot: locked, or another key.
+  static Future<EncryptedTrackEdit> open(Map<String, dynamic> track) async {
+    final poly = (track['map'] as Map?)?['summary_polyline'] as String;
+    final name = track['name'] as String?;
+    final epEnc = track['elevation_profile_enc'];
+    final ElevationProfile? profile;
+    if (epEnc is String) {
+      profile = _parseProfile(await encryption.decryptText(epEnc));
+    } else {
+      // A row whose profile the catch-up has not encrypted yet.
+      final pairs = track['elevation_profile'];
+      profile = pairs is List
+          ? ElevationProfile(
+              [for (final p in pairs) ((p as List)[0] as num).toDouble()],
+              [for (final p in pairs) ((p as List)[1] as num).toDouble()])
+          : null;
+    }
+    return EncryptedTrackEdit(
+      polyline: await encryption.decryptText(poly),
+      profile: profile,
+      name: name != null && EncryptedField.isEnvelope(name)
+          ? await encryption.decryptText(name)
+          : name,
+      movingTime: (track['moving_time'] as num?)?.toInt() ?? 0,
+      elapsedTime: (track['elapsed_time'] as num?)?.toInt() ?? 0,
+      totalElevationGain: (track['total_elevation_gain'] as num?)?.toDouble(),
+      lockVersion: (track['lock_version'] as num).toInt(),
+    );
+  }
+
+  /// Mirrors `_parse_ep`: the stored profile JSON as its two lists (a missing
+  /// list reads as empty), or null when it does not parse.
+  static ElevationProfile? _parseProfile(String json) {
+    try {
+      final ep = jsonDecode(json) as Map<String, dynamic>;
+      List<double> list(Object? v) =>
+          [for (final x in (v as List?) ?? const []) (x as num).toDouble()];
+      return ElevationProfile(list(ep['distances_km']), list(ep['elevations_m']));
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+/// What `_write_track_geometry` stores for [points] edited from, or cut out
+/// of, [opened], in plaintext: the figures with times apportioned against the
+/// opened geometry and gain by `_apportion_gain` from the stored gain, the
+/// polyline and the profile. Keyed by column name, geometry not yet encrypted.
+@visibleForTesting
+Map<String, dynamic> measureTrackPiece(
+    List<TrackPoint> points, EncryptedTrackEdit opened) {
+  final before =
+      recomputeTrackMetrics(alignPoints(opened.polyline, opened.profile));
+  final m = recomputeTrackMetrics(
+    points,
+    originalDistanceM: before.distance,
+    originalMovingTime: opened.movingTime,
+    originalElapsedTime: opened.elapsedTime,
+  );
+  final ep = pointsToElevationProfile(points);
+  return {
+    'summary_polyline': encodePolyline([for (final p in points) (p.lat, p.lng)]),
+    'elevation_profile_json': ep == null
+        ? null
+        : jsonEncode(
+            {'distances_km': ep.distancesKm, 'elevations_m': ep.elevationsM}),
+    'start_latlng_json': jsonEncode(m.startLatLng),
+    'end_latlng_json': jsonEncode(m.endLatLng),
+    'distance': m.distance,
+    'moving_time': m.movingTime,
+    'elapsed_time': m.elapsedTime,
+    'average_speed': m.averageSpeed,
+    'total_elevation_gain': apportionGain(opened.totalElevationGain,
+        before.totalElevationGain, m.totalElevationGain),
+    'elev_high': m.elevHigh,
+    'elev_low': m.elevLow,
+  };
+}
+
+/// [measureTrackPiece] with its four geometry values encrypted: the body of
+/// one piece for the encrypted track routes.
+Future<Map<String, dynamic>> _encryptedTrackPiece(
+    List<TrackPoint> points, EncryptedTrackEdit opened) async {
+  final piece = measureTrackPiece(points, opened);
+  for (final key in const [
+    'summary_polyline',
+    'elevation_profile_json',
+    'start_latlng_json',
+    'end_latlng_json',
+  ]) {
+    final plain = piece[key] as String?;
+    piece[key] = plain == null ? null : await encryption.encryptText(plain);
+  }
+  return piece;
 }
 
 /// How far past a zoom bucket's edge the camera must go before the loaded
@@ -1179,8 +1313,10 @@ class ProjectNotifier extends ChangeNotifier
     pendingInvites = [];
     memberInviteToken = null;
     memberInviteRole = null;
+    _unencryptableActivityCount.value = _unencryptableByTrip[_tripKey(ref)] ?? 0;
     notifyListeners();
 
+    CatchUpPayload? catchUp;
     try {
       // Fire both simultaneously.  /meta omits elevation_profile (~12 MB) so
       // the panel becomes interactive in ~1-2 s instead of ~17 s.  Elevation
@@ -1251,6 +1387,9 @@ class ProjectNotifier extends ChangeNotifier
       );
       itemsFacetWriter.setTripDates(
           details['trip_start'] as String?, details['trip_end'] as String?);
+      // Before the reveal below decrypts it in place. Not from the offline
+      // copy: the pass would only fail against the live trip.
+      if (!offlineFromCache) catchUp = _catchUpPayload(details);
       final rawActivities = details['activities'];
       itemsFacetWriter.setActivities(rawActivities is List
           ? rawActivities.cast<Map<String, dynamic>>()
@@ -1310,6 +1449,7 @@ class ProjectNotifier extends ChangeNotifier
         notifyListeners();   // map appears here with low-res straight lines
       }
     }
+    if (_isCurrent(token, ref) && error == null) _catchUpAfterLoad(ref, catchUp);
 
     // Phase 2: full-res GeoJSON, then elevation data — chained rather than
     // fired together. Both are whole-project loads server-side (the elevation
@@ -2349,6 +2489,9 @@ class ProjectNotifier extends ChangeNotifier
     previewArcNotifier.value = null;
     elevationCursorNotifier.value = null;
     mapCursorDistNotifier.value = null;
+    // The stays-unencrypted counts are the previous account's trips'.
+    _unencryptableByTrip.clear();
+    _unencryptableActivityCount.value = 0;
     // Invalidate any _buildFullTrack() still in flight from before this
     // clear() — without this, a stale compute() resolving afterward would
     // pass the gen check and repopulate the track data this just wiped.
@@ -3006,6 +3149,7 @@ class ProjectNotifier extends ChangeNotifier
     previewArcNotifier.dispose();
     elevationCursorNotifier.dispose();
     mapCursorDistNotifier.dispose();
+    _unencryptableActivityCount.dispose();
     for (final writer in _facetWriters) {
       writer.dispose();
     }
@@ -3128,6 +3272,7 @@ class ProjectNotifier extends ChangeNotifier
     }
     if (!_reloadTrack.isCurrent(token, ref)) return;
 
+    final catchUp = _catchUpPayload(details);
     final rawActivities = details['activities'];
     itemsFacetWriter.setActivities(rawActivities is List
         ? rawActivities.cast<Map<String, dynamic>>()
@@ -3146,6 +3291,7 @@ class ProjectNotifier extends ChangeNotifier
         ref, () => !_reloadTrack.isCurrent(token, ref));
     if (!_reloadTrack.isCurrent(token, ref)) return;
     notifyListeners();
+    _catchUpAfterLoad(ref, catchUp);
   }
 
   /// The level of detail a refresh after a write asks for (issue #379): the
@@ -3355,6 +3501,66 @@ class ProjectNotifier extends ChangeNotifier
         dropBoundary: dropBoundary, payload: payload, lockVersion: lockVersion);
     await _silentReload(ref);
   }
+
+  /// [resetActivityTrack] as a compare-and-swap on [lockVersion], the
+  /// project's lock_version the editor last saw: a 409 `stale_write` means the
+  /// trip changed elsewhere since, and 409 `nothing_to_restore` that the
+  /// original track was not kept. Rethrows both for the editor to explain.
+  Future<void> resetActivityTrackIfUnchanged(
+      int activityId, int lockVersion) async {
+    final ref = this.ref;
+    if (ref == null) return;
+    await _service.resetActivityTrackIfUnchanged(ref, activityId, lockVersion);
+    await _silentReload(ref);
+  }
+
+  /// Save the edited [points] of an encrypted activity (E2EE remnants
+  /// decision 7): measured on this device against [opened], encrypted, and
+  /// sent with the figures, so the server never sees the track. Reloads on
+  /// success; rethrows, a 409 meaning the trip changed since [opened].
+  Future<void> saveEncryptedActivityTrack(int activityId,
+      EncryptedTrackEdit opened, List<EditPoint> points) async {
+    final ref = this.ref;
+    if (ref == null) return;
+    final piece = await _encryptedTrackPiece(_trackPoints(points), opened);
+    await _service.saveEncryptedActivityTrack(ref, activityId, piece,
+        lockVersion: opened.lockVersion);
+    await _silentReload(ref);
+  }
+
+  /// Split an encrypted activity at [splitIndex] of [points] on this device,
+  /// cutting as the server's `split_activity` does: the head keeps
+  /// `points[..splitIndex]`, the tail starts at [splitIndex] (one later with
+  /// [dropBoundary], #104), and both pieces are apportioned against [opened],
+  /// so their times and gain sum to the edited track's share. The tail's name
+  /// is the server's placeholder for it, `"<head name> (2)"`, encrypted: the
+  /// server cannot number a family whose names it cannot read.
+  Future<void> splitEncryptedActivity(
+    int activityId,
+    EncryptedTrackEdit opened,
+    List<EditPoint> points,
+    int splitIndex, {
+    bool dropBoundary = false,
+  }) async {
+    final ref = this.ref;
+    if (ref == null) return;
+    final all = _trackPoints(points);
+    final tailStart = dropBoundary ? splitIndex + 1 : splitIndex;
+    if (splitIndex < 1 || all.length - tailStart < 2) {
+      throw RangeError(
+          'split index $splitIndex out of range for a ${all.length}-point track');
+    }
+    final head = await _encryptedTrackPiece(all.sublist(0, splitIndex + 1), opened);
+    final tail = await _encryptedTrackPiece(all.sublist(tailStart), opened);
+    final tailName =
+        await encryption.encryptText('${opened.name ?? 'Activity'} (2)');
+    await _service.splitEncryptedActivity(ref, activityId,
+        head: head, tail: tail, tailName: tailName, lockVersion: opened.lockVersion);
+    await _silentReload(ref);
+  }
+
+  static List<TrackPoint> _trackPoints(List<EditPoint> points) =>
+      [for (final p in points) TrackPoint(p.lat, p.lng, p.elev)];
 
   /// Delete a local (split-tail, negative-id) [activityId].
   ///
@@ -3639,7 +3845,9 @@ class ProjectNotifier extends ChangeNotifier
 
   /// Details-only reload: skips the heavy GeoJSON fetch. Use when a mutation
   /// cannot change map geometry (reorder, trip-start, memory CRUD).
-  Future<void> _silentReloadDetailsOnly(ProjectRef ref) async {
+  /// [catchUp] false is the encryption catch-up's own refresh, which must not
+  /// start another pass.
+  Future<void> _silentReloadDetailsOnly(ProjectRef ref, {bool catchUp = true}) async {
     // issue #283: this reload had no staleness guard at all originally — a
     // second concurrent call (or a navigation away) could clobber the
     // outcome of a later, current one landing first. On _detailsOnlyReloadTrack
@@ -3663,7 +3871,7 @@ class ProjectNotifier extends ChangeNotifier
       // slower, superseded one (the same bug class applyFullActivities was
       // fixed for — issue #283 review finding).
       if (stale()) return;
-      if (!await _applyDetails(details, ref, stale)) return;
+      if (!await _applyDetails(details, ref, stale, catchUp: catchUp)) return;
       _autoFillDaysToToday();
       _updateStats();
     } on Exception catch (e) {
@@ -3792,8 +4000,14 @@ class ProjectNotifier extends ChangeNotifier
   /// in which the open trip was the reload's but the items still another
   /// trip's, so an index-addressed save such as reorderItems or removeItem
   /// went to the wrong trip (I1-R5-1).
+  ///
+  /// [catchUp] false is the encryption catch-up's own refresh, which must not
+  /// start another pass; the pass's copy is taken before the reveals below
+  /// decrypt the lists in place.
   Future<bool> _applyDetails(
-      dynamic details, ProjectRef ref, bool Function() stale) async {
+      dynamic details, ProjectRef ref, bool Function() stale,
+      {bool catchUp = true}) async {
+    final catchUpPayload = catchUp ? _catchUpPayload(details as Map) : null;
     final rawActivities = details['activities'];
     final List<Map<String, dynamic>> nextActivities = rawActivities is List
         ? rawActivities.cast<Map<String, dynamic>>()
@@ -3831,7 +4045,78 @@ class ProjectNotifier extends ChangeNotifier
     itemsFacetWriter.setSleepingOptions(rawOpts is List
         ? List<String>.from(rawOpts)
         : List<String>.from(_defaultSleepingOptions));
+    _catchUpAfterLoad(ref, catchUpPayload);
     return true;
+  }
+
+  // ── Encryption catch-up (E2EE remnants decision 6) ────────────────────────
+  //
+  // Every place that applies a loaded trip — load(), _applyRefreshedProject
+  // and _applyDetails — copies the payload before revealing it
+  // ([_catchUpPayload]) and hands the copy to [_catchUpAfterLoad] once
+  // applied, so opening a trip is enough to encrypt what arrived in plaintext
+  // since the last pass (R2-7).
+
+  /// Activities the server refused to let this user encrypt in the current
+  /// trip's last complete pass: rows another traveller imported (decision
+  /// 14). The trip screen says they stay unencrypted.
+  ValueListenable<int> get unencryptableActivityCount => _unencryptableActivityCount;
+  final _unencryptableActivityCount = ValueNotifier<int>(0);
+  final Map<String, int> _unencryptableByTrip = {};
+
+  /// The pass in flight per trip: at most one per trip.
+  final Map<String, Future<void>> _catchUpRunning = {};
+
+  /// Completes once every pass in flight, and its refresh, is done.
+  @visibleForTesting
+  Future<void> catchUpSettled() => Future.wait(_catchUpRunning.values.toList());
+
+  String _tripKey(ProjectRef r) => '${r.ownerId ?? 0}/${r.name}';
+
+  /// The pre-reveal copy a pass needs, or null when no pass can run: locked
+  /// or encryption off, or a share-link view that has no account session.
+  CatchUpPayload? _catchUpPayload(Map details) =>
+      encryption.isUnlocked && loadOwnerExtras ? CatchUpPayload.of(details) : null;
+
+  void _catchUpAfterLoad(ProjectRef ref, CatchUpPayload? payload) {
+    final lockVersion = payload?.lockVersion;
+    if (payload == null || lockVersion == null || !encryption.isUnlocked) return;
+    final trip = ref.copyWith(name: payload.name, role: payload.role);
+    final key = _tripKey(trip);
+    if (_catchUpRunning.containsKey(key)) return;
+    // A block body: `=> remove(key)` would return this very future to
+    // whenComplete, which would then wait on itself.
+    _catchUpRunning[key] = _runCatchUp(trip, key, payload, lockVersion)
+        .whenComplete(() {
+      _catchUpRunning.remove(key);
+    });
+  }
+
+  Future<void> _runCatchUp(
+      ProjectRef trip, String key, CatchUpPayload payload, int lockVersion) async {
+    final CatchUpResult result;
+    try {
+      result = await EncryptionMigration(api, encryption)
+          .encryptTrip(trip, payload, role: trip.role, lockVersion: lockVersion);
+    } on Object catch (e) {
+      debugPrint('encryption catch-up for ${trip.name} failed: $e');
+      return;
+    }
+    // Signed out or another account now: nothing here is that session's.
+    if (_isDisposed || result.sessionEnded) return;
+    final current = ref;
+    final isCurrent = current != null && _tripKey(current) == key;
+    // A pass that ended early has not reached every activity; the count
+    // stays as the last complete pass found it.
+    if (result.ended == 0) {
+      _unencryptableByTrip[key] = result.unencryptable;
+      if (isCurrent) _unencryptableActivityCount.value = result.unencryptable;
+    }
+    // The in-memory copy already shows the plaintext; refresh it for the new
+    // lock version and cache, without starting another pass.
+    if (result.written > 0 && isCurrent) {
+      await _silentReloadDetailsOnly(current, catchUp: false);
+    }
   }
 
   // ── Mixin delegates (forward private helpers to ProjectMemoryCrudMixin) ────

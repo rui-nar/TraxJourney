@@ -27,6 +27,7 @@ import '../core/last_opened_project.dart';
 import '../core/perf_timing.dart' show kPerfNoMap, perfSpans;
 import '../core/project_ref.dart';
 import '../core/stale_shared_ref.dart';
+import '../crypto/encryption_locked_banner.dart';
 import 'project_notifier.dart';
 import 'activity_panel.dart';
 import 'panel_resize.dart';
@@ -37,6 +38,7 @@ import 'project_file.dart';
 import 'image_export.dart';
 import 'image_download.dart';
 import 'poster_config_dialog.dart';
+import 'poster_consent_dialog.dart';
 import 'poster_job_notifier.dart';
 import 'poster_status_card.dart';
 import 'poster_title_dialog.dart';
@@ -625,7 +627,7 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
     if (!mounted) return;
     final messenger = ScaffoldMessenger.of(context);
     try {
-      final jobId = await createPosterJob(
+      final jobId = await createPosterJobWithConsent(
         ref: widget.projectRef,
         bounds: posterBoundsFromLatLngBounds(bounds),
         orientation: orientation,
@@ -635,7 +637,13 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
         titlePosition: {'x': titleOpts.positionX, 'y': titleOpts.positionY},
         titleText: titleOpts.titleText,
         titleScale: titleOpts.titleScale,
+        // An encrypted trip's memory text reaches the server only with the
+        // user's consent (E2EE remnants D11).
+        askConsent: (n) async => mounted
+            ? await showPosterConsentDialog(context, memoryCount: n)
+            : PosterConsentChoice.cancel,
       );
+      if (jobId == null) return;
       // Ambient status card (issue #14, unit G) picks up from here — the
       // SnackBar below is a one-off confirmation, the card is what actually
       // reflects real server state (generating/done/failed) afterwards.
@@ -1118,6 +1126,10 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
               );
             },
           ),
+          // ── Encryption locked / awaiting approval (#506) ─────────────────
+          // Always mounted: the banner decides from the encryption state
+          // whether it shows.
+          const EncryptionLockedBanner(),
           // ── Degraded-route upgrade banner (issue #207) ───────────────────
           Selector<ProjectNotifier, bool>(
             selector: (_, n) => n.degradedRouteUpgradeAvailable,

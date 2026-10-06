@@ -23,6 +23,12 @@ all. Unlike a route job's transient network hiccup, a poster OOM is a
 deterministic property of that job's own inputs (bounds size, photo count),
 so neither path retries; both go straight to "failed" plus the same
 notification email a normal failure would send.
+
+A job that ends (done or failed, by any path) keeps only a scrubbed copy of
+its request: no memory text, no coordinates (``scrub_request``). Nothing reads
+the request after the render, and an encrypted trip's text must not outlive
+it. ``sweep_poster_jobs`` deletes finished jobs' rows and files after
+``RETENTION_S``.
 """
 from __future__ import annotations
 
@@ -30,9 +36,11 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import time
 from pathlib import Path
 
+from sqlalchemy import delete
 from sqlmodel import select
 
 from models.db import get_session
@@ -50,6 +58,43 @@ _DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 _repo = ProjectRepo()
 
 TERMINAL = ("done", "failed")
+
+# Finished poster jobs (row and files) are deleted this long after
+# ``completed_at`` — 30 days, as for trip videos.
+RETENTION_S = 30 * 24 * 3600
+
+# What a finished job's ``request_json`` keeps: the layout choices, never the
+# region, the title or a memory's text, date or position.
+_KEPT_REQUEST_KEYS = ("orientation", "paper_size", "config", "title_position",
+                      "title_scale", "plaintext_consent")
+_KEPT_MEMORY_KEYS = ("id", "photo_uuids")
+
+
+def scrub_request(request_json: str | None) -> str:
+    """The copy of a job's request a finished job keeps (see module docstring).
+
+    An allow-list, so a field added to the request later is dropped unless
+    someone decides it is safe to keep. An unreadable request becomes ``{}``.
+    """
+    try:
+        request = json.loads(request_json or "{}")
+    except ValueError:
+        return "{}"
+    if not isinstance(request, dict):
+        return "{}"
+    kept = {k: request[k] for k in _KEPT_REQUEST_KEYS if k in request}
+    memories = request.get("memories")
+    if isinstance(memories, list):
+        kept["memories"] = [
+            {k: m[k] for k in _KEPT_MEMORY_KEYS if k in m}
+            for m in memories if isinstance(m, dict)
+        ]
+    return json.dumps(kept)
+
+
+def _poster_dir_path(user_info_id: int, job_id: int) -> Path:
+    """The job's file directory, without creating it (unlike ``_poster_dir``)."""
+    return _DATA_DIR / "users" / str(user_info_id) / "posters" / str(job_id)
 
 
 def _frontend_origin() -> str:
@@ -184,6 +229,7 @@ def run_poster_job(job_id: int) -> None:
             job.result_png_path = str(png_path)
             job.result_pdf_path = str(pdf_path)
             job.completed_at = time.time()
+            job.request_json = scrub_request(job.request_json)
             sess.add(job)
             sess.commit()
         _notify_poster_ready(job_id, user_info_id, project_id, download_token)
@@ -195,6 +241,7 @@ def run_poster_job(job_id: int) -> None:
                 job.status = "failed"
                 job.error_message = str(exc)
                 job.completed_at = time.time()
+                job.request_json = scrub_request(job.request_json)
                 sess.add(job)
                 sess.commit()
         _notify_poster_failed(job_id, user_info_id, project_id)
@@ -216,6 +263,7 @@ def mark_job_interrupted(job_id: int, reason: str) -> None:
         job.status = "failed"
         job.error_message = reason
         job.completed_at = time.time()
+        job.request_json = scrub_request(job.request_json)
         sess.add(job)
         sess.commit()
         user_info_id = job.user_info_id
@@ -265,3 +313,38 @@ def sweep_orphaned_poster_jobs() -> int:
     if failed:
         _log.info("failed %d orphaned poster job(s) at startup", failed)
     return failed
+
+
+def sweep_poster_jobs(now: float | None = None) -> int:
+    """The API's hourly poster sweep: deletes the files, then the row, of every
+    finished job whose ``completed_at`` is more than ``RETENTION_S`` ago.
+    Returns how many rows it deleted. Never raises.
+
+    Only ``done``/``failed`` jobs are candidates, and the row delete re-checks
+    that, so a pending or running job's files are never touched. Files go
+    before the row: a sweep interrupted between the two leaves a row the next
+    run deletes again, never files nothing points at.
+    """
+    cutoff = (time.time() if now is None else now) - RETENTION_S
+    deleted = 0
+    try:
+        with get_session() as sess:
+            expired = [(j.id, j.user_info_id) for j in sess.exec(
+                select(DBPosterJob).where(
+                    DBPosterJob.status.in_(TERMINAL),
+                    DBPosterJob.completed_at < cutoff,
+                )).all()]
+        for job_id, user_info_id in expired:
+            shutil.rmtree(_poster_dir_path(user_info_id, job_id), ignore_errors=True)
+            with get_session() as sess:
+                result = sess.execute(delete(DBPosterJob).where(
+                    DBPosterJob.id == job_id,
+                    DBPosterJob.status.in_(TERMINAL),
+                ))
+                sess.commit()
+                deleted += result.rowcount
+    except Exception:  # noqa: BLE001 — a scheduled job must not die loudly
+        _log.exception("Poster sweep failed")
+    if deleted:
+        _log.info("Poster sweep: deleted %d job(s) older than the retention", deleted)
+    return deleted

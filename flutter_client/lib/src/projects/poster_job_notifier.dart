@@ -15,11 +15,14 @@
 /// polling class that was deleted here — no state machine lives in this file.
 library;
 
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 
 import '../api/client.dart';
 import '../core/project_ref.dart';
 import '../crypto/encrypted_display.dart';
+import 'poster_consent_dialog.dart' show PosterConsentChoice;
 
 /// Converts a memory item (as found in `ProjectNotifier.items`) to the
 /// `PosterMemoryIn` shape the poster API expects.
@@ -33,6 +36,43 @@ Map<String, dynamic> posterMemoryJson(Map<String, dynamic> memory) => {
       'description': readableOrNull(memory['description'] as String?),
       'photo_uuids': (memory['photos'] as List?)?.cast<String>() ?? const [],
     };
+
+/// The same memories with every `name` and `description` removed; ids, places,
+/// dates and photos stay. What gets resent when the user declines to send the
+/// memory text of an encrypted trip.
+List<Map<String, dynamic>> posterMemoriesWithoutText(
+        List<Map<String, dynamic>> memories) =>
+    [
+      for (final m in memories) {...m, 'name': null, 'description': null},
+    ];
+
+/// A 409 `consent_required` from poster creation: the trip is encrypted and
+/// the request carries memory text the server may only print with consent.
+class PosterConsentRequired {
+  final List<int> memoryIds;
+  final String message;
+
+  const PosterConsentRequired(this.memoryIds, this.message);
+
+  /// Parse a 409 consent response, or null for any other failure.
+  static PosterConsentRequired? fromApiException(ApiException e) {
+    if (e.statusCode != 409) return null;
+    try {
+      final body = jsonDecode(e.body);
+      final detail = body is Map ? body['detail'] : null;
+      if (detail is! Map || detail['code'] != 'consent_required') return null;
+      return PosterConsentRequired(
+        [
+          for (final id in (detail['consent_required'] as List?) ?? const [])
+            (id as num).toInt(),
+        ],
+        detail['message'] as String? ?? '',
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+}
 
 /// A poster preview: the rendered PNG, plus a [warning] when the server could
 /// render everything *except* the map imagery.
@@ -128,6 +168,9 @@ Future<int> createPosterJob({
   Map<String, double> titlePosition = const {'x': 0.0, 'y': 0.0},
   String? titleText,
   double titleScale = 1.0,
+  // Agreement to send an encrypted trip's memory text for this one poster
+  // (answer to a `PosterConsentRequired`); omitted from the request unless true.
+  bool plaintextConsent = false,
   ApiClient? client,
 }) async {
   final result = await (client ?? api).post(ref.path('/poster'), {
@@ -139,8 +182,59 @@ Future<int> createPosterJob({
     'title_position': titlePosition,
     'title_text': titleText,
     'title_scale': titleScale,
+    if (plaintextConsent) 'plaintext_consent': true,
   }) as Map<String, dynamic>;
   return result['job_id'] as int;
+}
+
+/// [createPosterJob] with the consent round trip for an encrypted trip: on a
+/// 409 `consent_required` it calls [askConsent] (with the number of memories
+/// that carry text) and resends with consent, resends without any memory
+/// text, or returns null when the user cancels. Any other failure rethrows.
+/// Without a 409 (a plaintext trip) [askConsent] is never called.
+Future<int?> createPosterJobWithConsent({
+  required ProjectRef ref,
+  required Map<String, double> bounds,
+  required String orientation,
+  required Map<String, dynamic> config,
+  required List<Map<String, dynamic>> memories,
+  required Future<PosterConsentChoice> Function(int memoryCount) askConsent,
+  String paperSize = 'A0',
+  Map<String, double> titlePosition = const {'x': 0.0, 'y': 0.0},
+  String? titleText,
+  double titleScale = 1.0,
+  ApiClient? client,
+}) {
+  Future<int> create(List<Map<String, dynamic>> mems, bool consent) =>
+      createPosterJob(
+        ref: ref,
+        bounds: bounds,
+        orientation: orientation,
+        config: config,
+        memories: mems,
+        paperSize: paperSize,
+        titlePosition: titlePosition,
+        titleText: titleText,
+        titleScale: titleScale,
+        plaintextConsent: consent,
+        client: client,
+      );
+  return () async {
+    try {
+      return await create(memories, false);
+    } on ApiException catch (e) {
+      final need = PosterConsentRequired.fromApiException(e);
+      if (need == null) rethrow;
+      switch (await askConsent(need.memoryIds.length)) {
+        case PosterConsentChoice.sendText:
+          return await create(memories, true);
+        case PosterConsentChoice.withoutText:
+          return await create(posterMemoriesWithoutText(memories), false);
+        case PosterConsentChoice.cancel:
+          return null;
+      }
+    }
+  }();
 }
 
 /// A poster job's server-side status, as returned by

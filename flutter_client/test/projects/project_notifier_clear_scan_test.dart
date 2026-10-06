@@ -68,6 +68,10 @@ const _allowlist = {
   '_refetchInFlight': "single-flight latch the running refetch releases in its "
       'own finally; clearing it would start a second refetch beside it',
   '_geoRefetchCount': 'session-wide perf diagnostic counter',
+  '_catchUpRunning': 'single-flight latch per trip that each catch-up pass '
+      'removes in its own whenComplete; a pass from the ended session stops '
+      'at its sessionEnded check, and clearing it would start a second pass '
+      'beside it',
   'loadRetryBackoff': 'test seam, configured once',
   'zoomRefetchDebounce': 'test seam, configured once',
   'cameraIdleTimeout': 'test seam, configured once',

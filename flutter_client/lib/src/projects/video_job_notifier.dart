@@ -25,34 +25,10 @@ import '../core/project_ref.dart';
 import '../crypto/e2ee_crypto.dart' show EncryptedField;
 import '../crypto/encryption.dart';
 import '../map/polyline_decoder.dart';
+import '../track_metrics/polyline_encoder.dart';
 
-/// Google-encodes [points] (`(lat, lon)`) at precision 5, the format the
-/// server decodes consent geometry with.
-///
-/// Arithmetic only, no shifts or bitwise ops on accumulated values, for the
-/// same reason as [decodePolyline]: on the web those run as 32-bit ops.
-String encodePolyline(List<(double, double)> points) {
-  final out = StringBuffer();
-  void write(int delta) {
-    var v = delta < 0 ? -delta * 2 - 1 : delta * 2;
-    while (v >= 32) {
-      out.writeCharCode(32 + v % 32 + 63);
-      v = v ~/ 32;
-    }
-    out.writeCharCode(v + 63);
-  }
-
-  var lat = 0, lon = 0;
-  for (final (pLat, pLon) in points) {
-    final eLat = (pLat * 1e5).round();
-    final eLon = (pLon * 1e5).round();
-    write(eLat - lat);
-    write(eLon - lon);
-    lat = eLat;
-    lon = eLon;
-  }
-  return out.toString();
-}
+// The encoder now lives in track_metrics/; callers of this module still get it.
+export '../track_metrics/polyline_encoder.dart' show encodePolyline;
 
 /// Reveals one stored field; `encryption.reveal` in production.
 typedef FieldRevealer = Future<String?> Function(String? value);

@@ -2,6 +2,8 @@ import 'package:flutter/foundation.dart';
 
 import '../api/client.dart';
 import '../core/project_ref.dart';
+import '../crypto/encryption.dart';
+import '../crypto/encryption_service.dart' show encryptionRefusalMessage;
 
 /// One step that failed to import, with the reason shown in the "Details"
 /// list on the completion summary (see [PolarstepsImportNotifier.failedSteps]).
@@ -238,11 +240,24 @@ class PolarstepsImportNotifier extends ChangeNotifier {
   ///
   /// For each step: POST /api/memories/ then upload each photo.
   /// Returns the count of successfully created memories.
+  /// Memory text is encrypted when the user owns the trip and the account is
+  /// encrypted (#505); while the key is locked, it refuses to start (#506).
   Future<int> importSelected(ProjectRef ref) async {
     final toImport = steps
         .where((s) => selectedStepIds.contains(s['id'] as int?))
         .toList();
     if (toImport.isEmpty) return 0;
+
+    // Who owns the trip, from the session's own id: the screen's ref is built
+    // from the URL and has no server role (its default says "owner").
+    final owned =
+        ref.resolveRoleFor(_api.tokenUserId?.toString()).role == 'owner';
+    final blocked = owned ? encryption.writeBlockedMessage : null;
+    if (blocked != null) {
+      error = blocked;
+      notifyListeners();
+      return 0;
+    }
 
     isImporting = true;
     importedCount = 0;
@@ -263,7 +278,7 @@ class PolarstepsImportNotifier extends ChangeNotifier {
         );
 
         final results = await Future.wait(
-          batch.map((step) => _importStep(step, ref)),
+          batch.map((step) => _importStep(step, ref, owned: owned)),
         );
 
         for (final outcome in results) {
@@ -291,8 +306,9 @@ class PolarstepsImportNotifier extends ChangeNotifier {
 
   Future<_StepOutcome> _importStep(
     Map<String, dynamic> step,
-    ProjectRef ref,
-  ) async {
+    ProjectRef ref, {
+    required bool owned,
+  }) async {
     final stepName = (step['name'] as String?)?.isNotEmpty == true
         ? step['name'] as String
         : 'Step ${step['id'] ?? '?'}';
@@ -316,18 +332,22 @@ class PolarstepsImportNotifier extends ChangeNotifier {
     final lon = (step['lon'] as num?)?.toDouble();
     final stepId = step['id'] as int?;
 
-    final body = <String, dynamic>{
-      'project_name': ref.name,
-      'date': date,
-      'geo_mode': (lat != null && lon != null) ? 'custom' : 'start_of_day',
-      if (name != null) 'name': name,
-      if (description != null) 'description': description,
-      if (lat != null) 'lat': lat,
-      if (lon != null) 'lon': lon,
-      if (stepId != null) 'polarsteps_step_id': stepId,
-    };
-
     try {
+      // The trip owner's key encrypts memories; on another's trip they stay
+      // plaintext (#505).
+      final encName = owned ? await encryption.protect(name) : name;
+      final encDescription =
+          owned ? await encryption.protect(description) : description;
+      final body = <String, dynamic>{
+        'project_name': ref.name,
+        'date': date,
+        'geo_mode': (lat != null && lon != null) ? 'custom' : 'start_of_day',
+        if (encName != null) 'name': encName,
+        if (encDescription != null) 'description': encDescription,
+        if (lat != null) 'lat': lat,
+        if (lon != null) 'lon': lon,
+        if (stepId != null) 'polarsteps_step_id': stepId,
+      };
       final result = await _postWithRetry(ref.withOwner('/api/memories/'), body);
       final memId = result['id']?.toString();
       var photosAttempted = 0;
@@ -365,7 +385,10 @@ class PolarstepsImportNotifier extends ChangeNotifier {
       return (
         success: false,
         stepName: stepName,
-        failReason: e.toString().replaceFirst('Exception: ', ''),
+        failReason: (e is ApiException
+                ? encryptionRefusalMessage(e.statusCode, e.body)
+                : null) ??
+            e.toString().replaceFirst('Exception: ', ''),
         photosAttempted: 0,
         photosSucceeded: 0,
       );

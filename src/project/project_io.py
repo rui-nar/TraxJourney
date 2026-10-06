@@ -184,10 +184,13 @@ class ProjectIO:
     def to_dict(project: Project) -> Dict[str, Any]:
         """Return project data as a dict suitable for the REST API.
 
-        Differs from :meth:`save` in one way: ``elevation_profile`` is
+        Differs from :meth:`save` in two ways: ``elevation_profile`` is
         converted from the storage format ``{"distances_km": [...], "elevations_m": [...]}``
         to a list of ``[dist_km, elev_m]`` pairs so the Flutter client can
-        iterate over them directly.
+        iterate over them directly, and an activity loaded from the database
+        carries ``plain_fields``, its E2EE columns still in plaintext, and
+        ``shared_with_others``, whether another user's trip holds it; every
+        activity carries ``has_gain_snapshot``.
         """
         def _ep_pairs(a: Activity) -> Any:
             # Prefer the full profile; fall back to the downsampled low-res copy
@@ -203,6 +206,11 @@ class ProjectIO:
         for a in project.activities:
             d = a.to_strava_dict()
             d["elevation_profile"] = _ep_pairs(a)
+            if a.plain_fields is not None:
+                d["plain_fields"] = a.plain_fields
+            d["has_gain_snapshot"] = a.has_gain_snapshot
+            if a.shared_with_others is not None:
+                d["shared_with_others"] = a.shared_with_others
             activities_out.append(d)
 
         return {

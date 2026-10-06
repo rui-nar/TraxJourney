@@ -8,6 +8,8 @@ import 'location_picker_dialog.dart';
 import 'project_journal_crud_mixin.dart' show generateJournalClientToken;
 import 'project_notifier.dart';
 import '../crypto/encrypted_display.dart';
+import '../crypto/encryption.dart';
+import '../crypto/encryption_locked_banner.dart' show EncryptionBlockedNote;
 
 /// Dialog to create or edit a journal entry.
 ///
@@ -72,6 +74,7 @@ class _JournalDialogState extends State<JournalDialog> {
   @override
   void initState() {
     super.initState();
+    encryption.state.addListener(_onEncryptionState);
     final j = widget.editEntry;
     // From the record made when the items were revealed, never from the
     // value's shape: typed text such as "v1.2.3" looks like an envelope.
@@ -110,8 +113,15 @@ class _JournalDialogState extends State<JournalDialog> {
     }
   }
 
+  // Save follows the encryption state: unlocking (a recovery, an approval)
+  // while the editor is open enables it.
+  void _onEncryptionState() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
+    encryption.state.removeListener(_onEncryptionState);
     _descCtrl.dispose();
     super.dispose();
   }
@@ -172,7 +182,7 @@ class _JournalDialogState extends State<JournalDialog> {
         for (final uuid in _photosToDelete) {
           await widget.notifier.deleteJournalPhoto(jId, uuid, reload: false);
         }
-        await widget.notifier.updateJournal(
+        final ok = await widget.notifier.updateJournal(
           jId,
           date: dateStr,
           geoMode: _geoMode,
@@ -182,6 +192,11 @@ class _JournalDialogState extends State<JournalDialog> {
           lon: _geoMode == 'custom' ? _customLon : null,
           keepStoredDescription: _descEnvelope != null,
         );
+        if (!ok) {
+          setState(() => _saveError =
+              widget.notifier.error ?? 'Failed to save journal entry');
+          return;
+        }
         for (final p in _pendingPhotos) {
           final uuid =
               await widget.notifier.uploadJournalPhoto(jId, p.bytes, p.filename);
@@ -249,6 +264,9 @@ class _JournalDialogState extends State<JournalDialog> {
     final theme = Theme.of(context);
     final isEdit = widget.editEntry != null;
     final jId = widget.editEntry?['id']?.toString();
+    // Encrypted account, key not unlocked (#506): nothing can be saved, so
+    // Save is off and the editor says why.
+    final blocked = widget.notifier.journalWriteBlockedMessage;
 
     return AlertDialog(
       title: Text(isEdit ? 'Edit Journal Entry' : 'Journal Entry'),
@@ -479,6 +497,10 @@ class _JournalDialogState extends State<JournalDialog> {
                 label: const Text('Add photos'),
                 onPressed: _pickPhotos,
               ),
+              if (blocked != null) ...[
+                const SizedBox(height: 12),
+                EncryptionBlockedNote(message: blocked),
+              ],
               if (_saveError != null) ...[
                 const SizedBox(height: 12),
                 Container(
@@ -515,7 +537,7 @@ class _JournalDialogState extends State<JournalDialog> {
         ),
         ElevatedButton(
           style: ElevatedButton.styleFrom(minimumSize: const Size(80, 44)),
-          onPressed: _saving ? null : _save,
+          onPressed: _saving || blocked != null ? null : _save,
           child: _saving
               ? const SizedBox(
                   width: 18,

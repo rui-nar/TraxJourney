@@ -20,7 +20,9 @@ from src.models.prepared_geo import prepare_polyline
 from src.models.simplify import PREPARED_GEO_VERSION
 from src.project.local_ids import allocate_local_activity_id
 from src.project.elevation_downsample import downsample_elevation
-from src.project.repo_core import bump_lock_version, check_and_bump_lock_version
+from src.project.repo_core import (
+    bump_lock_version, check_and_bump_lock_version, referenced_by_others,
+)
 from src.utils.encryption_check import is_encrypted_envelope
 from src.utils.logging import get_logger
 
@@ -109,6 +111,110 @@ def _apportion_gain(stored: Optional[float], before: float, after: float) -> flo
     return stored * (after / before)
 
 
+class EncryptedEditOnDevice(Exception):
+    """The stored polyline or profile is a client-side E2EE envelope.
+
+    The plaintext track routes take decrypted points and would store their
+    result in plaintext, so they refuse such a row; the device edits it
+    instead. Raised before anything is decoded or written.
+    """
+
+
+class NothingToRestore(Exception):
+    """An edited row whose ``original_polyline`` is null has no geometry to
+    reset to: the shipped encryption migration nulled the snapshots, and
+    copying the nulls back would wipe the track."""
+
+
+class NotEncrypted(Exception):
+    """The stored polyline is not an E2EE envelope, so the encrypted track
+    routes, which store only device-computed ciphertext, refuse the row: its
+    track is edited on the server. Raised before anything is written."""
+
+
+#: The scalars a first edit snapshots beside the geometry (E2EE remnants
+#: decision 7), each into ``original_<name>``: reset restores them exactly,
+#: which it must do without reading the geometry once that is ciphertext.
+_SCALAR_SNAPSHOT = (
+    "distance", "moving_time", "elapsed_time", "average_speed",
+    "elev_high", "elev_low", "start_latlng_json", "end_latlng_json",
+)
+
+#: What an encrypted edit writes, from the device: the geometry envelopes and
+#: the scalars computed from it. ``elevation_profile_json`` also goes to the
+#: low-res column, which cannot be derived from ciphertext.
+ENCRYPTED_PIECE_FIELDS = (
+    "summary_polyline", "elevation_profile_json", "start_latlng_json",
+    "end_latlng_json", "distance", "moving_time", "elapsed_time",
+    "average_speed", "total_elevation_gain", "elev_high", "elev_low",
+)
+
+
+def _snapshot_current(row: DBActivity) -> None:
+    """Make the row's current track and figures its edit snapshot."""
+    row.original_polyline = row.summary_polyline
+    row.original_elevation_profile_json = row.elevation_profile_json
+    row.original_total_elevation_gain = row.total_elevation_gain
+    for name in _SCALAR_SNAPSHOT:
+        setattr(row, f"original_{name}", getattr(row, name))
+
+
+def _snapshot_first_edit(row: DBActivity) -> None:
+    """Snapshot the pre-edit track and figures on the FIRST edit only, so a
+    later "Reset to Strava" can restore them."""
+    if not row.is_edited:
+        _snapshot_current(row)
+
+
+def _apply_encrypted_piece(sess: Session, row: DBActivity, piece: Dict) -> None:
+    """Store a device-computed track on *row*, verbatim (no commit)."""
+    for name in ENCRYPTED_PIECE_FIELDS:
+        setattr(row, name, piece[name])
+    row.elevation_profile_low_res_json = piece["elevation_profile_json"]
+    # Removes any prepared row: ciphertext cannot be prepared.
+    store_prepared_geometry(sess, row)
+    row.is_edited = True
+
+
+def _refuse_plaintext_geometry(row: DBActivity) -> None:
+    if not is_encrypted_envelope(row.summary_polyline):
+        raise NotEncrypted(row.id)
+
+
+def _recheck_encrypted_geometry(sess: Session, row: DBActivity) -> None:
+    """The mirror of ``_recheck_plaintext_geometry`` for the encrypted
+    routes: a row decrypted since the first check is refused, the bump
+    rolled back."""
+    sess.refresh(row, ["summary_polyline"])
+    try:
+        _refuse_plaintext_geometry(row)
+    except NotEncrypted:
+        sess.rollback()
+        raise
+
+
+def _refuse_encrypted_geometry(row: DBActivity) -> None:
+    if (is_encrypted_envelope(row.summary_polyline)
+            or is_encrypted_envelope(row.elevation_profile_json)):
+        raise EncryptedEditOnDevice(row.id)
+
+
+def _recheck_plaintext_geometry(sess: Session, row: DBActivity) -> None:
+    """Re-read the geometry once the lock-version bump holds the write lock.
+
+    The first check ran on a read taken before this transaction began, so the
+    catch-up may have encrypted the row since. Writing the plaintext result
+    over that would leave an encrypted name beside a plaintext track. Rolls
+    the bump back when it refuses.
+    """
+    sess.refresh(row, ["summary_polyline", "elevation_profile_json"])
+    try:
+        _refuse_encrypted_geometry(row)
+    except EncryptedEditOnDevice:
+        sess.rollback()
+        raise
+
+
 class ActivityMixin:
     """Activity CRUD, enrichment writes, and track-geometry editing."""
 
@@ -166,8 +272,9 @@ class ActivityMixin:
     ) -> None:
         """Re-derive geometry + scalar metrics from *points* onto *row* (no commit).
 
-        Snapshots the pre-edit polyline/elevation into the original_* columns on
-        the FIRST edit only, so a later "Reset to Strava" can restore them.
+        Snapshots the pre-edit polyline/elevation and scalars into the
+        original_* columns on the FIRST edit only, so a later "Reset to Strava"
+        can restore them.
 
         Elevation gain is SCALED, not recomputed (issue #386). A synced activity
         arrives with Strava's own figure, measured from data we never see and
@@ -190,10 +297,7 @@ class ActivityMixin:
             recompute_track_metrics,
         )
 
-        if not row.is_edited:
-            row.original_polyline = row.summary_polyline
-            row.original_elevation_profile_json = row.elevation_profile_json
-            row.original_total_elevation_gain = row.total_elevation_gain
+        _snapshot_first_edit(row)
 
         # Apportion times against the CURRENT geometry's haversine length (not
         # the stored scalar distance, which Strava derives differently). This
@@ -257,15 +361,45 @@ class ActivityMixin:
         raises ``StaleWriteError`` if the project changed since the caller
         last loaded it, so two edits racing on the same activity don't
         silently clobber each other.
+
+        Raises ``EncryptedEditOnDevice``, writing nothing, when the stored
+        polyline or profile is an envelope.
         """
         row = sess.get(DBActivity, activity_id)
         if row is None:
             return False
+        _refuse_encrypted_geometry(row)
         if expected_version is not None:
             check_and_bump_lock_version(sess, project_id, expected_version)
         else:
             bump_lock_version(sess, project_id)
+        _recheck_plaintext_geometry(sess, row)
         self._write_track_geometry(row, points, sess=sess)
+        sess.commit()
+        return True
+
+    def edit_activity_track_encrypted(
+        self, sess: Session, project_id: int, activity_id: int, piece: Dict,
+        *, expected_version: int,
+    ) -> bool:
+        """Store a track the device edited and encrypted (E2EE remnants
+        decision 7): *piece* holds ``ENCRYPTED_PIECE_FIELDS``, already checked.
+
+        The ``edit_activity_track`` of an encrypted row: the same snapshot on
+        the first edit, the same is_edited mark and the same compare-and-swap
+        on the project's lock_version (required here), with the geometry and
+        figures taken as sent instead of computed. Returns False if the row
+        does not exist; raises ``NotEncrypted``, writing nothing, when its
+        stored polyline is not an envelope.
+        """
+        row = sess.get(DBActivity, activity_id)
+        if row is None:
+            return False
+        _refuse_plaintext_geometry(row)
+        check_and_bump_lock_version(sess, project_id, expected_version)
+        _recheck_encrypted_geometry(sess, row)
+        _snapshot_first_edit(row)
+        _apply_encrypted_piece(sess, row, piece)
         sess.commit()
         return True
 
@@ -345,13 +479,14 @@ class ActivityMixin:
         return len(pieces)
 
     def reset_activity_track(
-        self, sess: Session, project_id: int, activity_id: int
+        self, sess: Session, project_id: int, activity_id: int,
+        *, expected_version: Optional[int] = None,
     ) -> bool:
         """Restore an edited activity's geometry from its original snapshot.
 
-        Recomputes scalar metrics from the restored geometry and clears
-        is_edited + the snapshot columns.  Returns False if the row does not
-        exist or was never edited (nothing to reset).
+        Restores the scalar metrics with it and clears is_edited + the
+        snapshot columns.  Returns False if the row does not exist or was never
+        edited (nothing to reset).
 
         The snapshot is whatever geometry the row held before its last edit, so
         on anything that has been split it spans the pieces cut out of it too.
@@ -366,69 +501,117 @@ class ActivityMixin:
 
         A piece with no children of its own cascades nothing: resetting it undoes
         just its own post-split edits (issue #131).
+
+        The geometry comes back verbatim. The figures come back exactly from
+        the scalar snapshot when the row has one (``original_distance`` set:
+        every edit since E2EE remnants U12, and the backfill); a row edited
+        before that recomputes them from the restored track, as reset always
+        did. An enveloped original can only be restored from the snapshot,
+        since the server cannot measure ciphertext.
+
+        Raises ``NothingToRestore``, writing nothing, for an edited row whose
+        ``original_polyline`` is null, or whose originals are envelopes with no
+        scalar snapshot. With *expected_version* the reset is a
+        compare-and-swap on the project's lock_version, as in
+        ``edit_activity_track``.
         """
         row = sess.get(DBActivity, activity_id)
         if row is None or not row.is_edited:
             return False
+        if not row.original_polyline:
+            raise NothingToRestore(activity_id)
+        has_snapshot = row.original_distance is not None
+        enveloped = (is_encrypted_envelope(row.original_polyline)
+                     or is_encrypted_envelope(row.original_elevation_profile_json))
+        if enveloped and not has_snapshot:
+            # The server cannot measure ciphertext, and decoding it below would
+            # raise or restore garbage.
+            _log.error("reset refused: activity %s has an enveloped original "
+                       "and no scalar snapshot", activity_id)
+            raise NothingToRestore(activity_id)
 
         # Advance the project's lock_version (issue #173) so a native client's
         # on-disk cache — which only ever checks that counter — notices the
         # restored geometry.
-        bump_lock_version(sess, project_id)
+        if expected_version is not None:
+            check_and_bump_lock_version(sess, project_id, expected_version)
+        else:
+            bump_lock_version(sess, project_id)
 
         self._remove_split_descendants(sess, project_id, row)
 
-        from src.models.track_edit import align_points, recompute_track_metrics
-
-        orig_poly = row.original_polyline
         orig_ep_json = row.original_elevation_profile_json
-        orig_ep = None
-        if orig_ep_json:
-            ep = json.loads(orig_ep_json)
-            orig_ep = (ep.get("distances_km") or [], ep.get("elevations_m") or [])
-        points = align_points(orig_poly, orig_ep)
-
-        row.summary_polyline = orig_poly
+        row.summary_polyline = row.original_polyline
         store_prepared_geometry(sess, row)
         row.elevation_profile_json = orig_ep_json
-        row.elevation_profile_low_res_json = _low_res_ep_json(orig_ep_json)
+        # The low-res copy of an enveloped profile is the same envelope, as the
+        # client's encryption writes it: it cannot be derived from ciphertext.
+        row.elevation_profile_low_res_json = (
+            orig_ep_json if is_encrypted_envelope(orig_ep_json)
+            else _low_res_ep_json(orig_ep_json))
 
-        if points:
-            # Geometry-derived metrics (distance, elevation, latlng) restore
-            # exactly from the snapshot. Scalar times were apportioned DOWN to
-            # the retained-distance fraction on edit; scale them back UP by the
-            # inverse ratio (restored ÷ edited distance) so a trim→reset round
-            # trip recovers the original times too.
-            edited_distance = row.distance or 0.0
-            metrics = recompute_track_metrics(points)
-            row.distance = metrics.distance
-            # The snapshot is the figure the activity had before anything was
-            # edited — Strava's own, where Strava supplied one. Restoring it is
-            # the whole point of keeping it; recomputing here would hand back a
-            # different number than the one the reset is undoing to.
-            row.total_elevation_gain = (
-                row.original_total_elevation_gain
-                if row.original_total_elevation_gain is not None
-                else metrics.total_elevation_gain
-            )
-            row.elev_high = metrics.elev_high
-            row.elev_low = metrics.elev_low
-            row.start_latlng_json = json.dumps(metrics.start_latlng) if metrics.start_latlng else None
-            row.end_latlng_json = json.dumps(metrics.end_latlng) if metrics.end_latlng else None
-            if edited_distance > 0 and metrics.distance > 0:
-                ratio = metrics.distance / edited_distance
-                row.moving_time = int(round((row.moving_time or 0) * ratio))
-                row.elapsed_time = int(round((row.elapsed_time or 0) * ratio))
-                row.average_speed = (
-                    metrics.distance / row.moving_time if row.moving_time > 0 else 0.0
+        from src.models.track_edit import recompute_track_metrics
+
+        if has_snapshot:
+            for name in _SCALAR_SNAPSHOT:
+                setattr(row, name, getattr(row, f"original_{name}"))
+            if row.original_total_elevation_gain is not None:
+                row.total_elevation_gain = row.original_total_elevation_gain
+            elif not enveloped:
+                points = self._original_points(row)
+                if points:
+                    row.total_elevation_gain = recompute_track_metrics(points).total_elevation_gain
+        else:
+            points = self._original_points(row)
+            if points:
+                # Geometry-derived metrics (distance, elevation, latlng) restore
+                # exactly from the snapshot. Scalar times were apportioned DOWN to
+                # the retained-distance fraction on edit; scale them back UP by the
+                # inverse ratio (restored ÷ edited distance) so a trim→reset round
+                # trip recovers the original times too.
+                edited_distance = row.distance or 0.0
+                metrics = recompute_track_metrics(points)
+                row.distance = metrics.distance
+                # The snapshot is the figure the activity had before anything was
+                # edited — Strava's own, where Strava supplied one. Restoring it is
+                # the whole point of keeping it; recomputing here would hand back a
+                # different number than the one the reset is undoing to.
+                row.total_elevation_gain = (
+                    row.original_total_elevation_gain
+                    if row.original_total_elevation_gain is not None
+                    else metrics.total_elevation_gain
                 )
+                row.elev_high = metrics.elev_high
+                row.elev_low = metrics.elev_low
+                row.start_latlng_json = json.dumps(metrics.start_latlng) if metrics.start_latlng else None
+                row.end_latlng_json = json.dumps(metrics.end_latlng) if metrics.end_latlng else None
+                if edited_distance > 0 and metrics.distance > 0:
+                    ratio = metrics.distance / edited_distance
+                    row.moving_time = int(round((row.moving_time or 0) * ratio))
+                    row.elapsed_time = int(round((row.elapsed_time or 0) * ratio))
+                    row.average_speed = (
+                        metrics.distance / row.moving_time if row.moving_time > 0 else 0.0
+                    )
 
         row.is_edited = False
         row.original_polyline = None
         row.original_elevation_profile_json = None
         row.original_total_elevation_gain = None
+        for name in _SCALAR_SNAPSHOT:
+            setattr(row, f"original_{name}", None)
         sess.commit()
         return True
+
+    @staticmethod
+    def _original_points(row: DBActivity) -> list:
+        """The points of a row's plaintext original track."""
+        from src.models.track_edit import align_points
+
+        orig_ep = None
+        if row.original_elevation_profile_json:
+            ep = json.loads(row.original_elevation_profile_json)
+            orig_ep = (ep.get("distances_km") or [], ep.get("elevations_m") or [])
+        return align_points(row.original_polyline, orig_ep)
 
     @staticmethod
     def _renumber_split_family(sess: Session, root_id: int) -> None:
@@ -510,12 +693,16 @@ class ActivityMixin:
         raises ``StaleWriteError`` if the project changed since the caller
         last loaded it, so two splits racing on the same activity don't
         silently clobber each other.
+
+        Raises ``EncryptedEditOnDevice``, writing nothing, when the head's
+        stored polyline or profile is an envelope.
         """
         from src.models.track_edit import align_points
 
         head = sess.get(DBActivity, activity_id)
         if head is None:
             return None
+        _refuse_encrypted_geometry(head)
 
         if points is None:
             points = align_points(
@@ -531,10 +718,96 @@ class ActivityMixin:
             check_and_bump_lock_version(sess, project_id, expected_version)
         else:
             bump_lock_version(sess, project_id)
+        _recheck_plaintext_geometry(sess, head)
 
         head_points = points[: split_index + 1]
         tail_points = points[min_tail_start:]
 
+        tail = self._new_split_tail(sess, head)
+        # Seed the tail with the FULL pre-split geometry + the original scalar
+        # times so _write_track_geometry apportions the tail's time to its own
+        # retained fraction (tail_length / full_length), mirroring the head.
+        # This stays the STORED geometry even when the caller supplied edited
+        # points (issue #127): the head's own apportioning below also measures
+        # against the stored track, so both pieces share one denominator and
+        # their times sum to the edited track's share of the original. Seeding
+        # from the edited points instead would give the tail a smaller
+        # denominator than the head and inflate it.
+        tail.summary_polyline = head.summary_polyline
+        tail.elevation_profile_json = head.elevation_profile_json
+        # The pre-split gain rides along for the same reason the times do: each
+        # piece then keeps the share of it its own geometry accounts for, and
+        # the two sum to the track they came out of instead of each being
+        # measured from scratch. Captured before the head is written, since that
+        # write replaces the head's figure with its own share.
+        tail.total_elevation_gain = head.total_elevation_gain
+
+        # Write head then tail geometry (each snapshots its own original + recomputes).
+        self._write_track_geometry(head, head_points, sess=sess)
+        self._start_tail_after_head(tail, head)
+        self._write_track_geometry(tail, tail_points, sess=sess)
+        # Re-point the tail's snapshot at its OWN geometry. The seeding above is
+        # a time-apportioning device, but _write_track_geometry snapshots whatever
+        # sat on the row before the write — for a fresh tail that's the head's
+        # full pre-split track, so "Reset" expanded the tail back into a duplicate
+        # of the whole track it was cut out of (issue #131). A tail has no upstream
+        # original; the only thing reset can meaningfully undo is edits made to the
+        # tail AFTER the split, so snapshot the post-split geometry instead. This
+        # keeps the seeding trick and decouples it from the snapshot.
+        _snapshot_current(tail)
+
+        self._insert_split_tail(sess, project_id, head.id, tail.id)
+        self._renumber_split_family(sess, tail.split_root_id)
+        sess.commit()
+        return tail.id
+
+    def split_activity_encrypted(
+        self, sess: Session, project_id: int, activity_id: int,
+        head_piece: Dict, tail_piece: Dict, tail_name: str,
+        *, expected_version: int,
+    ) -> Optional[int]:
+        """Split an encrypted activity the device has already cut (E2EE
+        remnants decision 7). *head_piece* and *tail_piece* hold
+        ``ENCRYPTED_PIECE_FIELDS``, *tail_name* the tail's encrypted name, all
+        already checked.
+
+        Keeps ``split_activity``'s bookkeeping — a local tail id, the family
+        links, the head's snapshot on its first edit, the tail item right after
+        the head, the tail starting where the head ends, the tail's snapshot
+        being its own values, the family renamed (which an enveloped root
+        skips) — and takes each piece's geometry and figures as sent. The
+        compare-and-swap on the project's lock_version is required here.
+
+        Returns the new tail id, or None if the activity is missing. Raises
+        ``NotEncrypted``, writing nothing, when the head's stored polyline is
+        not an envelope.
+        """
+        head = sess.get(DBActivity, activity_id)
+        if head is None:
+            return None
+        _refuse_plaintext_geometry(head)
+        check_and_bump_lock_version(sess, project_id, expected_version)
+        _recheck_encrypted_geometry(sess, head)
+
+        tail = self._new_split_tail(sess, head)
+        tail.name = tail_name
+        _snapshot_first_edit(head)
+        _apply_encrypted_piece(sess, head, head_piece)
+        self._start_tail_after_head(tail, head)
+        _apply_encrypted_piece(sess, tail, tail_piece)
+        _snapshot_current(tail)
+
+        self._insert_split_tail(sess, project_id, head.id, tail.id)
+        self._renumber_split_family(sess, tail.split_root_id)
+        sess.commit()
+        return tail.id
+
+    @staticmethod
+    def _new_split_tail(sess: Session, head: DBActivity) -> DBActivity:
+        """A new tail row cut out of *head*, added to *sess*, with no geometry.
+
+        Shared by the plaintext and the encrypted split.
+        """
         # A tail is an activity the app creates, so it takes a local (negative)
         # id from the shared allocator — the same one GPX import uses, rather
         # than the decrementing scheme this used to have. That scheme handed out
@@ -579,27 +852,12 @@ class ActivityMixin:
             # upload is one too (issue #462), not a Strava activity.
             source=head.source,
         )
-        # Seed the tail with the FULL pre-split geometry + the original scalar
-        # times so _write_track_geometry apportions the tail's time to its own
-        # retained fraction (tail_length / full_length), mirroring the head.
-        # This stays the STORED geometry even when the caller supplied edited
-        # points (issue #127): the head's own apportioning below also measures
-        # against the stored track, so both pieces share one denominator and
-        # their times sum to the edited track's share of the original. Seeding
-        # from the edited points instead would give the tail a smaller
-        # denominator than the head and inflate it.
-        tail.summary_polyline = head.summary_polyline
-        tail.elevation_profile_json = head.elevation_profile_json
-        # The pre-split gain rides along for the same reason the times do: each
-        # piece then keeps the share of it its own geometry accounts for, and
-        # the two sum to the track they came out of instead of each being
-        # measured from scratch. Captured before the head is written, since that
-        # write replaces the head's figure with its own share.
-        tail.total_elevation_gain = head.total_elevation_gain
         sess.add(tail)
+        return tail
 
-        # Write head then tail geometry (each snapshots its own original + recomputes).
-        self._write_track_geometry(head, head_points, sess=sess)
+    @staticmethod
+    def _start_tail_after_head(tail: DBActivity, head: DBActivity) -> None:
+        """Start *tail* where the already written *head* ends."""
         # The tail begins at the split boundary — i.e. where the head ends. Tracks
         # carry no per-point timestamps, so derive the boundary time as the head's
         # start plus its (now apportioned) elapsed duration. Without this the tail
@@ -617,20 +875,12 @@ class ActivityMixin:
 
         tail.start_date = _shift(head.start_date)
         tail.start_date_local = _shift(head.start_date_local)
-        self._write_track_geometry(tail, tail_points, sess=sess)
-        # Re-point the tail's snapshot at its OWN geometry. The seeding above is
-        # a time-apportioning device, but _write_track_geometry snapshots whatever
-        # sat on the row before the write — for a fresh tail that's the head's
-        # full pre-split track, so "Reset" expanded the tail back into a duplicate
-        # of the whole track it was cut out of (issue #131). A tail has no upstream
-        # original; the only thing reset can meaningfully undo is edits made to the
-        # tail AFTER the split, so snapshot the post-split geometry instead. This
-        # keeps the seeding trick and decouples it from the snapshot.
-        tail.original_polyline = tail.summary_polyline
-        tail.original_elevation_profile_json = tail.elevation_profile_json
-        tail.original_total_elevation_gain = tail.total_elevation_gain
 
-        # Insert the tail item directly after the head item, renumbering positions.
+    @staticmethod
+    def _insert_split_tail(
+        sess: Session, project_id: int, head_id: int, tail_id: int
+    ) -> None:
+        """Insert the tail item directly after the head item, renumbering positions."""
         item_rows = sess.exec(
             select(DBProjectItem)
             .where(DBProjectItem.project_id == project_id)
@@ -639,7 +889,7 @@ class ActivityMixin:
         new_order: List[DBProjectItem] = []
         for it in item_rows:
             new_order.append(it)
-            if it.item_type == "activity" and it.activity_id == activity_id:
+            if it.item_type == "activity" and it.activity_id == head_id:
                 new_order.append(DBProjectItem(
                     project_id=project_id, position=0,
                     item_type="activity", activity_id=tail_id,
@@ -647,10 +897,6 @@ class ActivityMixin:
         for pos, it in enumerate(new_order):
             it.position = pos
             sess.add(it)
-
-        self._renumber_split_family(sess, root_id)
-        sess.commit()
-        return tail_id
 
     def delete_local_activity(
         self, sess: Session, project_id: int, activity_id: int
@@ -997,6 +1243,48 @@ class ActivityMixin:
             DBProjectMember.user_info_id == act.user_info_id,
         )).first() is not None
 
+    def activity_e2ee_writable_by(
+        self, sess: Session, activity_id: int, user_info_id: int
+    ) -> bool:
+        """Whether *user_info_id* may write this activity's E2EE fields.
+
+        The row's owner may. So may the owner of every trip that references a
+        LOCAL row (negative id: a GPX import or a split piece), when at least
+        one trip does: the catch-up must be able to encrypt a piece a former
+        companion left in the owner's trips. A Strava row (positive id) stays
+        its owner's alone even then: their next sync reuses it, and it would
+        come back to them encrypted under someone else's key. An unreferenced
+        row is no one's but its owner's. False for a row that does not exist.
+        """
+        owner = sess.exec(
+            select(DBActivity.user_info_id).where(DBActivity.id == activity_id)
+        ).first()
+        if owner is None:
+            return False
+        if owner == user_info_id:
+            return True
+        if activity_id >= 0:
+            return False
+        trip_owners = sess.exec(
+            select(DBProject.user_info_id)
+            .join(DBProjectItem, DBProjectItem.project_id == DBProject.id)
+            .where(
+                DBProjectItem.item_type == "activity",
+                DBProjectItem.activity_id == activity_id,
+            ).distinct()
+        ).all()
+        return bool(trip_owners) and all(o == user_info_id for o in trip_owners)
+
+    def activity_shared_with_others(
+        self, sess: Session, activity_id: int, user_info_id: int
+    ) -> bool:
+        """Whether a trip owned by someone other than *user_info_id* holds this
+        activity (E2EE remnants decision 15): that trip's owner cannot read an
+        envelope, so none may be stored on the row, even by its own owner."""
+        return bool(sess.exec(
+            select(referenced_by_others(activity_id, user_info_id))
+        ).one())
+
     def activity_owners(self, sess: Session, activity_ids) -> Dict[int, int]:
         """Owner account of each of *activity_ids* that has a row.
 
@@ -1234,4 +1522,6 @@ class ActivityMixin:
             # ciphertext when the full profile is deferred/unavailable — mirrors
             # ProjectIO.to_dict()'s _ep_pairs() fallback for the plaintext case.
             elevation_profile_enc=elevation_profile_enc or elevation_profile_low_res_enc,
+            # Never deferred, so the light path reads it with no extra query.
+            has_gain_snapshot=getattr(row, "original_total_elevation_gain", None) is not None,
         )

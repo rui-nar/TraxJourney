@@ -64,6 +64,7 @@ from src.exceptions.errors import QuotaExceeded
 from src.models.memory import Memory
 from src.project.memory_match import step_key
 from src.project.project_repo import bump_lock_version
+from src.project.repo_core import StaleWriteError, check_and_bump_lock_version
 from src.utils.encryption_check import is_encrypted_envelope as _is_encrypted_envelope
 from src.utils.photo_privacy import UndecodablePhoto, ensure_share_copy, remove_share_copy
 
@@ -128,6 +129,10 @@ class CommentOut(BaseModel):
     replies: List["CommentOut"] = Field(default_factory=list, description="Nested replies")
 
 
+class LockVersionOut(BaseModel):
+    lock_version: int = Field(description="The trip's lock_version after this write")
+
+
 class TranslationOut(BaseModel):
     lang_code: str = Field(description="BCP-47 language code, e.g. 'fr' or 'de'")
     name: Optional[str] = Field(None, description="Translated memory name")
@@ -140,6 +145,61 @@ def _owner_id_of(sess, project_id: int) -> int:
     """The trip owner's user id — whose plan the trip's limits come from."""
     project = sess.get(DBProject, project_id)
     return project.user_info_id if project else 0
+
+
+def encryption_guard_code(key_holder_encrypted: bool, *values: Optional[str]) -> Optional[str]:
+    """The 409 code a text write must be refused with, or None (#505, #506).
+
+    *key_holder_encrypted* is the encryption flag of the user whose key the
+    text belongs under: the trip owner for memories, the author for journal
+    entries. An encrypted key holder only accepts envelopes (plaintext means a
+    locked device or an old build); a plaintext one never accepts envelopes
+    (nobody else could decrypt them). Empty and None values are exempt.
+    """
+    for value in values:
+        if not value:
+            continue
+        if key_holder_encrypted and not _is_encrypted_envelope(value):
+            return "encryption_locked"
+        if not key_holder_encrypted and _is_encrypted_envelope(value):
+            return "encryption_not_shared"
+    return None
+
+
+def raise_if_encryption_mismatch(key_holder_encrypted: bool, *values: Optional[str]) -> None:
+    """409 ``{"code": ...}`` when ``encryption_guard_code`` refuses *values*."""
+    code = encryption_guard_code(key_holder_encrypted, *values)
+    if code is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": code})
+
+
+def _user_encrypted(sess, user_info_id: int) -> bool:
+    user = sess.get(UserInfo, user_info_id)
+    return bool(user is not None and user.encryption_enabled)
+
+
+def advance_lock_version(sess, project_id: int, expected: Optional[int]) -> int:
+    """Advance the trip's lock_version for a row update and return the new one.
+
+    With *expected* this is the compare-and-swap of decision 13: 409
+    ``{"code": "stale_write"}`` when another write landed first (the session
+    is rolled back, so the row is unchanged). Without it the version still
+    advances, so other devices see the update as a change (issue #173).
+    Call it before touching the row: the UPDATE autoflushes pending changes.
+    """
+    if expected is None:
+        bump_lock_version(sess, project_id)
+    else:
+        try:
+            check_and_bump_lock_version(sess, project_id, expected)
+        except StaleWriteError:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail={"code": "stale_write"}
+            ) from None
+    sess.flush()
+    return sess.exec(
+        select(DBProject.lock_version).where(DBProject.id == project_id)
+    ).one()
 
 
 def _owner_dir_id(sess, mem_row: DBMemory) -> str:
@@ -334,6 +394,12 @@ def create_memory(
             by_id = _find_by_step_id(sess, project_id, body.polarsteps_step_id)
             if by_id is not None:
                 return {"id": by_id.id}
+
+        # A trip's memories are encrypted under its owner's key (decision 3 of
+        # docs/E2EE_REMNANTS_PLAN.md), whoever writes them.
+        raise_if_encryption_mismatch(_user_encrypted(sess, owner_id), body.name, body.description)
+
+        if body.polarsteps_step_id is not None:
             # Pre-step-id duplicate (NULL step id, same name+date): adopt it —
             # backfill the step id and refresh from the step — instead of
             # creating a second copy. This is the split-brain fix.
@@ -425,27 +491,31 @@ class MemoryUpdateBody(BaseModel):
     description: Optional[str] = Field(None, description="Free-text notes")
     lat: Optional[Lat] = Field(None, description="Latitude (required when geo_mode='custom')")
     lon: Optional[Lon] = Field(None, description="Longitude (required when geo_mode='custom')")
+    lock_version: Optional[int] = Field(
+        None, description="The trip's lock_version last seen by the caller. When given, the "
+                          "update is refused with 409 stale_write if the trip changed since. "
+                          "Omit to update unconditionally.")
 
 
-@router.put("/{memory_id}", status_code=status.HTTP_204_NO_CONTENT,
-            summary="Update a memory")
+@router.put("/{memory_id}", response_model=LockVersionOut, summary="Update a memory")
 def update_memory(
     memory_id: int,
     body: MemoryUpdateBody,
     current_user: Annotated[dict, Depends(get_current_user)],
 ):
-    """Update the metadata of an existing memory."""
+    """Update the metadata of an existing memory. Returns the trip's new lock_version."""
     user_info_id = int(current_user["sub"])
     with get_session() as sess:
         mem_row = _get_owned_memory(sess, memory_id, user_info_id)
-        ensure_trip_days_quota(
-            sess, mem_row.project_id, _owner_id_of(sess, mem_row.project_id), body.date
-        )
+        owner_id = _owner_id_of(sess, mem_row.project_id)
+        raise_if_encryption_mismatch(_user_encrypted(sess, owner_id), body.name, body.description)
+        ensure_trip_days_quota(sess, mem_row.project_id, owner_id, body.date)
 
         lat, lon = body.lat, body.lon
         if body.geo_mode != "custom":
             lat, lon = _resolve_geo(sess, mem_row.project_id, body.date, body.geo_mode)
 
+        lock_version = advance_lock_version(sess, mem_row.project_id, body.lock_version)
         mem_row.name = body.name
         mem_row.date = body.date
         mem_row.time = body.time
@@ -467,6 +537,7 @@ def update_memory(
         cache_ref = project_cache_ref(sess, mem_row.project_id)
         sess.commit()
         bust_project_payloads(cache_ref)
+    return {"lock_version": lock_version}
 
 
 @router.delete("/{memory_id}", status_code=status.HTTP_204_NO_CONTENT,

@@ -34,6 +34,27 @@ const int kMinSecurityQuestions = 3;
 /// depends on server escrow + email infra not yet built — surfaced but disabled.
 enum SecurityLevel { low, medium, high }
 
+/// Shown when the enable-time migration could not run to its end.
+const kMigrationFailedNotice =
+    "Encryption is on, but some of your existing items couldn't be encrypted "
+    "yet. They're encrypted the next time you open their trip.";
+
+/// What to tell the user once the enable-time migration has run, or null
+/// when it encrypted everything.
+String? migrationNotice(CatchUpResult r) {
+  if (r.complete) return null;
+  final retried = r.skipped > 0 || r.ended > 0;
+  // The trip banner's words (encryption_locked_banner.dart): one count for
+  // rows another traveller imported and rows their trip also holds.
+  final foreign = r.unencryptable == 1
+      ? '1 activity is also used by another traveller and stays unencrypted.'
+      : '${r.unencryptable} activities are also used by another traveller and '
+          'stay unencrypted.';
+  if (!retried) return 'Encryption is on. $foreign';
+  if (r.unencryptable == 0) return kMigrationFailedNotice;
+  return '$kMigrationFailedNotice $foreign';
+}
+
 enum _HighMethod { passphrase, recoveryKey }
 
 enum _Step { choose, showRecoveryKey, done }
@@ -42,8 +63,9 @@ class EnableEncryptionScreen extends StatefulWidget {
   final EncryptionService service;
 
   /// Runs after encryption is enabled to encrypt existing entries. Defaults to
-  /// the real migration; injectable so tests don't hit the network.
-  final Future<void> Function(EncryptionService service)? onEnabled;
+  /// the real migration; injectable so tests don't hit the network. What it
+  /// returns decides whether the user is told some items are not done yet.
+  final Future<CatchUpResult?> Function(EncryptionService service)? onEnabled;
 
   const EnableEncryptionScreen({
     super.key,
@@ -122,14 +144,22 @@ class _EnableEncryptionScreenState extends State<EnableEncryptionScreen> {
 
   Future<void> _enable() async {
     setState(() => _busy = true);
+    // The app-wide messenger, so the notice below still shows once this
+    // screen is gone.
+    final messenger = ScaffoldMessenger.of(context);
     try {
       final result = await widget.service.enable(_choice());
       // Encrypt any existing plaintext entries in the background (idempotent).
-      final migrate = widget.onEnabled ??
-          (s) async {
-            await EncryptionMigration(api, s).run();
-          };
-      unawaited(migrate(widget.service).catchError((_) {}));
+      final migrate =
+          widget.onEnabled ?? (s) => EncryptionMigration(api, s).run();
+      unawaited(migrate(widget.service).then(
+        (r) {
+          final notice = r == null ? null : migrationNotice(r);
+          if (notice != null) messenger.showSnackBar(SnackBar(content: Text(notice)));
+        },
+        onError: (Object _) => messenger.showSnackBar(
+            const SnackBar(content: Text(kMigrationFailedNotice))),
+      ));
       if (!mounted) return;
       setState(() {
         _result = result;

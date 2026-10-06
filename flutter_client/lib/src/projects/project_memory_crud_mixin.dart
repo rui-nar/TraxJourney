@@ -12,6 +12,7 @@ import '../api/client.dart';
 import '../core/project_ref.dart';
 import '../crypto/e2ee_crypto.dart' show EncryptedField;
 import '../crypto/encryption.dart';
+import '../crypto/encryption_service.dart' show encryptionRefusalMessage;
 import 'facets/project_facet.dart';
 import 'project_quota_mixin.dart';
 
@@ -42,6 +43,26 @@ mixin ProjectMemoryCrudMixin on ChangeNotifier, ProjectQuotaMixin {
 
   // ── Memory CRUD ───────────────────────────────────────────────────────────
 
+  /// A trip's memories are shared with everyone on it, so they are encrypted
+  /// under the trip owner's key: this device encrypts them only on a trip
+  /// the user owns (#505). A companion's memory text stays plaintext, which
+  /// the owner and the other travellers can read.
+  bool get _memoriesUseOwnKey => projectRef?.role == 'owner';
+
+  /// Why a memory can't be saved from this device now, or null when it can:
+  /// the user owns the trip, the account is encrypted and the key is not
+  /// unlocked (#506). The memory editor disables Save with this message.
+  String? get memoryWriteBlockedMessage =>
+      _memoriesUseOwnKey ? encryption.writeBlockedMessage : null;
+
+  Future<String?> _protectMemoryText(String? value) async =>
+      _memoriesUseOwnKey ? await encryption.protect(value) : value;
+
+  /// [errorMessage], with the server's encryption refusals in plain words.
+  String _memoryErrorMessage(Exception e) =>
+      (e is ApiException ? encryptionRefusalMessage(e.statusCode, e.body) : null) ??
+      errorMessage(e);
+
   /// Creates a memory. Returns `true` on success, `false` on failure (in
   /// which case the optimistic placeholder is rolled back and [error] is
   /// set) — callers must check this before treating the save as done.
@@ -57,6 +78,12 @@ mixin ProjectMemoryCrudMixin on ChangeNotifier, ProjectQuotaMixin {
   }) async {
     final ref = projectRef;
     if (ref == null) return false;
+    final blocked = memoryWriteBlockedMessage;
+    if (blocked != null) {
+      error = blocked;
+      notifyListeners();
+      return false;
+    }
     // Unique per call so two concurrent creates never share a placeholder id
     // (a literal '__optimistic__' would collide and produce duplicate
     // ValueKeys in the map marker layer).
@@ -86,8 +113,8 @@ mixin ProjectMemoryCrudMixin on ChangeNotifier, ProjectQuotaMixin {
     itemsFacetWriter.setItems(newItems);
     notifyListeners();
     try {
-      final encName = await encryption.protect(name);
-      final encDescription = await encryption.protect(description);
+      final encName = await _protectMemoryText(name);
+      final encDescription = await _protectMemoryText(description);
       await api.post(ref.withOwner('/api/memories/'), {
         'project_name': ref.name,
         'date': date,
@@ -108,13 +135,15 @@ mixin ProjectMemoryCrudMixin on ChangeNotifier, ProjectQuotaMixin {
               !(item['item_type'] == 'memory' &&
                 item['memory']?['id']?.toString() == tempId))
           .toList());
-      error = errorMessage(e);
+      error = _memoryErrorMessage(e);
       notifyListeners();
       return false;
     }
   }
 
-  Future<void> updateMemory(
+  /// Updates a memory. Returns `true` on success, `false` on failure (in
+  /// which case [error] is set), like [createMemory].
+  Future<bool> updateMemory(
     String memoryId, {
     required String date,
     required String geoMode,
@@ -126,7 +155,13 @@ mixin ProjectMemoryCrudMixin on ChangeNotifier, ProjectQuotaMixin {
     bool keepStoredName = false,
     bool keepStoredDescription = false,
   }) async {
-    if (projectRef == null) return;
+    if (projectRef == null) return false;
+    final blocked = memoryWriteBlockedMessage;
+    if (blocked != null) {
+      error = blocked;
+      notifyListeners();
+      return false;
+    }
     // keepStored*: the editor hands back the stored envelope it could not
     // decrypt, untouched; it is resent as it is, never encrypted again. A
     // value that is not a well-formed envelope is text the user typed, and is
@@ -162,10 +197,10 @@ mixin ProjectMemoryCrudMixin on ChangeNotifier, ProjectQuotaMixin {
     itemsFacetWriter.setItems(newItems);
     notifyListeners();
     try {
-      final encName = nameAsStored ? name : await encryption.protect(name);
+      final encName = nameAsStored ? name : await _protectMemoryText(name);
       final encDescription = descriptionAsStored
           ? description
-          : await encryption.protect(description);
+          : await _protectMemoryText(description);
       await api.put('/api/memories/$memoryId', {
         'date': date,
         'geo_mode': geoMode,
@@ -176,9 +211,11 @@ mixin ProjectMemoryCrudMixin on ChangeNotifier, ProjectQuotaMixin {
         if (lon != null) 'lon': lon,
       });
       // No reload needed — optimistic update already applied above.
+      return true;
     } on Exception catch (e) {
-      error = errorMessage(e);
+      error = _memoryErrorMessage(e);
       notifyListeners();
+      return false;
     }
   }
 

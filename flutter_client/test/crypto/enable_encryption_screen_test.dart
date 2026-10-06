@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:traxjourney_client/src/api/client.dart';
 import 'package:traxjourney_client/src/crypto/enable_encryption_screen.dart';
+import 'package:traxjourney_client/src/crypto/encryption_migration.dart';
 import 'package:traxjourney_client/src/crypto/encryption_service.dart';
 
 class _FakeStore implements DeviceKeyStore {
@@ -49,7 +50,7 @@ class _HeldApi extends _FakeApi {
 Widget _wrap() => MaterialApp(
       home: EnableEncryptionScreen(
         service: EncryptionService(_FakeStore(), _FakeApi()),
-        onEnabled: (_) async {}, // skip the real migration (no network in tests)
+        onEnabled: (_) async => null, // skip the real migration (no network in tests)
       ),
     );
 
@@ -103,7 +104,7 @@ Future<void> _enableAndConfirm(WidgetTester tester, EncryptionApi api) async {
   await tester.pumpWidget(MaterialApp(
     home: EnableEncryptionScreen(
       service: EncryptionService(_FakeStore(), api),
-      onEnabled: (_) async {},
+      onEnabled: (_) async => null,
     ),
   ));
   await tester.tap(find.text('Recovery key'));
@@ -191,6 +192,52 @@ void main() {
     expect(doneBtn2.onPressed, isNotNull);
   });
 
+  group('after the migration runs', () {
+    Future<void> enableWith(WidgetTester tester,
+        Future<CatchUpResult?> Function(EncryptionService) onEnabled) async {
+      tester.view.physicalSize = const Size(1080, 2600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(MaterialApp(
+        home: EnableEncryptionScreen(
+          service: EncryptionService(_FakeStore(), _FakeApi()),
+          onEnabled: onEnabled,
+        ),
+      ));
+      await tester.tap(find.text('Recovery key'));
+      await tester.pump();
+      await tester.tap(find.text('Turn on encryption'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('items left plaintext are said, not swallowed', (tester) async {
+      await enableWith(tester, (_) async => CatchUpResult()..skipped = 2);
+      expect(find.text(kMigrationFailedNotice), findsOneWidget);
+    });
+
+    testWidgets('a migration that throws is said too', (tester) async {
+      await enableWith(tester, (_) async => throw Exception('offline'));
+      expect(find.text(kMigrationFailedNotice), findsOneWidget);
+    });
+
+    testWidgets('a complete migration says nothing', (tester) async {
+      await enableWith(tester, (_) async => CatchUpResult()..written = 3);
+      expect(find.byType(SnackBar), findsNothing);
+    });
+  });
+
+  test('migrationNotice counts the activities another traveller also uses, '
+      "in the trip banner's words", () {
+    // Both reasons in one count (decision 15): a ride another traveller
+    // imported, and one their trip also holds.
+    expect(migrationNotice(CatchUpResult()..unencryptable = 1),
+        'Encryption is on. 1 activity is also used by another traveller and '
+        'stays unencrypted.');
+    expect(migrationNotice(CatchUpResult()..unencryptable = 2..ended = 1),
+        '$kMigrationFailedNotice 2 activities are also used by another '
+        'traveller and stay unencrypted.');
+  });
+
   testWidgets('the screen cannot be left while the request is out (U5-R3-1)',
       (tester) async {
     tester.view.physicalSize = const Size(1080, 2600);
@@ -206,7 +253,7 @@ void main() {
     navigator.currentState!.push(MaterialPageRoute<void>(
       builder: (_) => EnableEncryptionScreen(
         service: EncryptionService(_FakeStore(), api),
-        onEnabled: (_) async {},
+        onEnabled: (_) async => null,
       ),
     ));
     await tester.pumpAndSettle();
