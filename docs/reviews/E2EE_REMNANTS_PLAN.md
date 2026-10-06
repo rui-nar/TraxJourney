@@ -536,7 +536,7 @@ The origin/main merge (photos package; migration re-parented onto 4b9d2e7a1c63) 
 
 ## Merge resolution, round 1 — 2026-10-06, reviewed 60d87b68 + 7f1ed07e (+ baeda414)
 
-Conflict resolution of merging main (Package C facets, recovery-key confirmation, #576, #561) into feat/e2ee-remnants. Reviewer: Fable; triage: Opus.
+Conflict resolution of merging main (Package C facets, recovery-key confirmation, #576, #561) into feat/e2ee-remnants. Reviewer: Fable; triage: Opus. A second reviewer pass, after baeda414 was added to the scope, raised no new finding and re-raised M1-1 with impact degraded-ux (still D10).
 
 ### M1-1 — Stale unlock()/prepareForSession() still write `_state` after lock()
 - Trigger: user A signs in on a shared device → unlock() awaits a slow fetchStatus → A signs out (lock()) → user B without encryption signs in → A's stale status lands as awaitingApproval → B's memory/journal saves and imports are refused on the client until B signs in again
