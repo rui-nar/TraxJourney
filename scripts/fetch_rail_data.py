@@ -72,7 +72,12 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from src.rail.builder import build_store  # noqa: E402 — after the sys.path fix
-from src.rail.store import SCHEMA_VERSION, store_filename  # noqa: E402
+from src.rail.store import (  # noqa: E402
+    DEFAULT_LAYER,
+    LAYERS,
+    SCHEMA_VERSION,
+    store_filename,
+)
 
 # The repository the extracts are published from. Public, so the releases API
 # answers unauthenticated (verified: GET /repos/<repo>/releases returns 200 with
@@ -89,9 +94,18 @@ RELEASE_BY_TAG_URL = "https://api.github.com/repos/{repo}/releases/tags/{tag}"
 TAG_PREFIX = "rail-data-"
 
 MANIFEST_NAME = "manifest.json"
-# Refuse anything else outright. A manifest read with the wrong shape would
-# install stores under a coverage claim nobody has checked, which is the failure
-# that looks exactly like success.
+# The release manifest schemas this version installs from; anything else is
+# refused outright. A manifest read with the wrong shape would install stores
+# under a coverage claim nobody has checked, which is the failure that looks
+# exactly like success. Schema 3 gives each entry a `layer` (rail, ferry, bus);
+# a schema 2 entry, which has none, is rail. Both are accepted so that this code
+# can ship before the first schema 3 release, and keep installing schema 2
+# releases — every rollback target until then — after it.
+RELEASE_SCHEMAS = (2, 3)
+# What the *installed* manifest is written as: still 2, whatever the release
+# was. The age check reads it against src/services/rail_source.MANIFEST_SCHEMA,
+# which says why; its entries may carry `layer`, which every reader on the box
+# reads as rail when it is missing.
 MANIFEST_SCHEMA = 2
 STATUS_OK = "ok"
 STATUS_EMPTY = "empty"
@@ -170,9 +184,10 @@ def read_manifest(get: Callable, url: str) -> dict:
     except ValueError as exc:
         raise RailDataError(f"{url}: manifest is not JSON ({exc})") from exc
     schema = manifest.get("schema")
-    if schema != MANIFEST_SCHEMA:
+    if schema not in RELEASE_SCHEMAS:
         raise RailDataError(
-            f"{url}: manifest schema {schema!r}, expected {MANIFEST_SCHEMA} — "
+            f"{url}: manifest schema {schema!r}, expected one of "
+            f"{', '.join(str(s) for s in RELEASE_SCHEMAS)} — "
             f"refusing to install from a manifest this version does not know")
     if not isinstance(manifest.get("regions"), list):
         raise RailDataError(f"{url}: manifest has no regions list")
@@ -183,12 +198,26 @@ def read_manifest(get: Callable, url: str) -> dict:
 # What is already installed
 # ---------------------------------------------------------------------------
 
-def _sidecar(dest: Path, region: str) -> Path:
-    return dest / (store_filename(region) + SHA_SUFFIX)
+def entry_layer(entry: dict) -> str:
+    """The entry's layer. A schema 2 entry has none, and is rail."""
+    return entry.get("layer", DEFAULT_LAYER)
 
 
-def installed_build(dest: Path, region: str) -> Optional[tuple[str, int]]:
-    """(asset digest, store schema) the installed store was built from, or None.
+def _label(region: str, layer: str) -> str:
+    """How a log line names a (region, layer): rail as it always has."""
+    return f"[{region}]" if layer == DEFAULT_LAYER else f"[{region} {layer}]"
+
+
+def _sidecar(dest: Path, region: str, layer: str = DEFAULT_LAYER) -> Path:
+    return dest / (store_filename(region, layer) + SHA_SUFFIX)
+
+
+def installed_build(dest: Path, region: str,
+                    layer: str = DEFAULT_LAYER) -> Optional[tuple[str, int]]:
+    """(asset digest, store schema) the installed *layer* store was built from, or None.
+
+    One store and one sidecar per (region, layer); rail's are named as they
+    were before layers existed, so a rail sidecar on the box is found as is.
 
     None whenever anything is missing or unreadable, so the region is simply
     rebuilt — this record exists to save work, never to authorise skipping it.
@@ -202,10 +231,10 @@ def installed_build(dest: Path, region: str) -> Optional[tuple[str, int]]:
     sidecar, holding one token, reads as "schema unknown" and rebuilds, which
     is exactly what that first run must do.
     """
-    if not (dest / store_filename(region)).is_file():
+    if not (dest / store_filename(region, layer)).is_file():
         return None
     try:
-        parts = _sidecar(dest, region).read_text(encoding="utf-8").split()
+        parts = _sidecar(dest, region, layer).read_text(encoding="utf-8").split()
     except OSError:
         return None
     if len(parts) != 2 or not parts[0]:
@@ -216,13 +245,13 @@ def installed_build(dest: Path, region: str) -> Optional[tuple[str, int]]:
         return None
 
 
-def _record_build(dest: Path, work: Path, region: str, digest: str) -> None:
+def _record_build(dest: Path, work: Path, region: str, layer: str, digest: str) -> None:
     # Staged and renamed like everything else here. A torn sidecar would cost
     # only a needless rebuild, but "every file appears by atomic rename" is a
     # documented contract and an exception nobody can see is how contracts rot.
-    staged = work / (store_filename(region) + SHA_SUFFIX + PART_SUFFIX)
+    staged = work / (store_filename(region, layer) + SHA_SUFFIX + PART_SUFFIX)
     staged.write_text(f"{digest} {SCHEMA_VERSION}\n", encoding="utf-8")
-    os.replace(staged, _sidecar(dest, region))
+    os.replace(staged, _sidecar(dest, region, layer))
 
 
 # ---------------------------------------------------------------------------
@@ -250,34 +279,36 @@ def _download(get: Callable, url: str, dest: Path) -> tuple[str, int]:
 
 
 def install_region(get: Callable, entry: dict, url: str, dest: Path, work: Path) -> None:
-    """Fetch one region's extract, build its store and move it into place.
+    """Fetch one (region, layer)'s extract, build its store and move it into place.
 
     Raises on any failure, having left the previously installed store — if any
     — untouched. Nothing is written into *dest* before the checksum matches and
     the store is fully built.
     """
     region = entry["region"]
+    layer = entry_layer(entry)
     # *work* is this run's own directory (see _staging), so these names cannot
     # collide with a concurrent run's. basename because the file name comes
     # from the manifest: a GitHub asset name cannot contain a slash, but this
     # is the one place a manifest value is used as a path.
     pbf = work / os.path.basename(entry["file"])
-    staged = work / (store_filename(region) + PART_SUFFIX)
+    staged = work / (store_filename(region, layer) + PART_SUFFIX)
     try:
         digest, size = _download(get, url, pbf)
         if size != entry["bytes"] or digest != entry["sha256"]:
             raise RailDataError(
                 f"{entry['file']}: downloaded {size} bytes sha256 {digest}, "
                 f"manifest says {entry['bytes']} bytes sha256 {entry['sha256']}")
-        build_store(pbf, staged, region=region, source_date=entry.get("source_date", ""))
+        build_store(pbf, staged, region=region,
+                    source_date=entry.get("source_date", ""), layer=layer)
         pbf.unlink()
         # The whole design in one line: the reader's open handle keeps the old
         # inode, so a refresh cannot corrupt a query already in flight.
-        os.replace(staged, dest / store_filename(region))
+        os.replace(staged, dest / store_filename(region, layer))
         # After the rename, never before: a sidecar recording a digest whose
         # store did not make it into place would make every later run skip the
         # region as "up to date" and the stale data would never be replaced.
-        _record_build(dest, work, region, digest)
+        _record_build(dest, work, region, layer, digest)
     finally:
         for leftover in (pbf, staged):
             try:
@@ -358,16 +389,86 @@ def _existing_manifest(dest: Path) -> dict:
     return manifest if isinstance(manifest, dict) else {}
 
 
-def _installed_manifest(dest: Path, release_manifest: dict, complete: bool) -> dict:
+# Marks on an installed-manifest entry the release omitted: kept for one
+# release (`carried`), and which release omitted it (`omitted_by`) — so a re-run
+# of that same release, the normal retry after a refused region, keeps carrying
+# it instead of mistaking itself for the next release and retiring it.
+CARRIED = "carried"
+OMITTED_BY = "omitted_by"
+
+
+def _carry_omitted(dest: Path, release_manifest: dict, tag: str) -> list[dict]:
+    """The installed entries to keep for (region, layer)s *release_manifest* omits.
+
+    Says what happens to each one, because nothing else will (review finding
+    R1-6): the installed manifest is rebuilt from the release, so an omitted
+    entry would otherwise leave coverage — its routes back to Overpass — while
+    the age check, which reads the same manifest, kept reporting fresh data.
+
+    * **Carried, once** (R2-2): an ``ok`` entry whose store and sidecar are on
+      disk stays listed, marked ``carried: true``, exactly as a region whose
+      install failed keeps its entry. It still routes, and the age gauge keeps
+      seeing it age rather than losing sight of it. A ferry layer that failed
+      in CI one month is back the next.
+    * **Retired** (R3-1): an entry already carried, which the *next* release
+      omits too, leaves the manifest — what removing a region or layer from
+      ``config/rail_regions.yml`` looks like from here, and it needs no manual
+      step. Its store file lingers unreferenced, as a dropped region's always
+      has (docs/DEPLOYMENT_VPS.md §9).
+    * **Dropped** otherwise: no store on disk to keep serving, or an ``empty``
+      entry, which has none by definition.
+    """
+    published = {(e.get("region"), entry_layer(e)) for e in release_manifest["regions"]
+                 if isinstance(e, dict)}
+    installed = _existing_manifest(dest).get("regions")
+    previous = [e for e in (installed if isinstance(installed, list) else [])
+                if isinstance(e, dict) and e.get("region")
+                and entry_layer(e) in LAYERS]
+    carried = []
+    for entry in sorted(previous, key=lambda e: (e["region"], entry_layer(e))):
+        region, layer = entry["region"], entry_layer(entry)
+        if (region, layer) in published:
+            continue
+        label = _label(region, layer)
+        again = entry.get(CARRIED) and entry.get(OMITTED_BY) == tag
+        if entry.get(CARRIED) and not again:
+            _log(f"WARNING: {label} was carried because "
+                 f"{entry.get(OMITTED_BY) or 'the previous release'} did not "
+                 f"publish it, and {tag} does not either — treated as retired: "
+                 f"it leaves the installed manifest and its routes go to Overpass")
+            continue
+        if (entry.get("status", STATUS_OK) == STATUS_OK
+                and installed_build(dest, region, layer) is not None):
+            if again:
+                # This release re-run — the retry after a refused region. It
+                # was decided, and said, on the first run.
+                carried.append(entry)
+                continue
+            carried.append({**entry, CARRIED: True, OMITTED_BY: tag})
+            _log(f"WARNING: {label} is installed but {tag} does not publish it — "
+                 f"its installed store is carried for this one release and still "
+                 f"ages; if the next release omits it too, it is retired")
+            continue
+        _log(f"WARNING: {label} is installed but {tag} does not publish it — it "
+             f"leaves the installed manifest and its routes go to Overpass")
+    return carried
+
+
+def _installed_manifest(dest: Path, release_manifest: dict, complete: bool,
+                        carried: list[dict]) -> dict:
     """The manifest describing what *dest* actually holds.
 
-    Entries are the release's, verbatim, for every region whose store is
-    installed at that entry's checksum. A region that failed this run keeps the
+    Entries are keyed by (region, layer), a missing ``layer`` being rail.
+    They are the release's, verbatim, for every (region, layer) whose store is
+    installed at that entry's checksum. One that failed this run keeps the
     entry it had, because the store on disk is still the one that entry
     describes — dropping it would send a country that is sitting right there
-    back to Overpass. ``empty`` entries are carried through as they are: there
+    back to Overpass — and loses any ``carried`` mark, because this release
+    does publish it. ``empty`` entries are carried through as they are: there
     is no file to install and Phase 3 reads them as "we know there is no rail
-    here".
+    here". An entry for a layer this version does not know is left out.
+    *carried* are the entries :func:`_carry_omitted` kept for (region, layer)s
+    the release omits.
 
     ``generated_at`` is the release's only when every region was installed.
     A partial run keeps the old value rather than claiming a freshness the
@@ -375,25 +476,35 @@ def _installed_manifest(dest: Path, release_manifest: dict, complete: bool) -> d
     timestamp is the one failure mode that looks like success.
     """
     previous = _existing_manifest(dest)
-    carried = {e.get("region"): e for e in previous.get("regions", [])
-               if isinstance(e, dict)}
-    regions = []
+    kept = {(e.get("region"), entry_layer(e)): e for e in previous.get("regions", [])
+            if isinstance(e, dict)}
+    regions = list(carried)
     for entry in release_manifest["regions"]:
-        region = entry.get("region")
+        region, layer = entry.get("region"), entry_layer(entry)
+        if layer not in LAYERS:
+            continue
         if entry.get("status", STATUS_OK) == STATUS_EMPTY:
             regions.append(entry)
-        elif (entry.get("sha256") and installed_build(dest, region)
+        elif (entry.get("sha256") and installed_build(dest, region, layer)
               == (entry["sha256"], SCHEMA_VERSION)):
             regions.append(entry)
-        elif region in carried:
-            regions.append(carried[region])
+        elif (region, layer) in kept:
+            regions.append({k: v for k, v in kept[(region, layer)].items()
+                            if k not in (CARRIED, OMITTED_BY)})
     generated_at = release_manifest.get("generated_at", "")
     if not complete:
         generated_at = previous.get("generated_at", generated_at)
     return {
         "schema": MANIFEST_SCHEMA,
         "generated_at": generated_at,
-        "regions": sorted(regions, key=lambda e: e.get("region", "")),
+        # Rail sorts after bus and ferry within a region, so the old fetch's
+        # _installed_manifest — which keys this file by region alone, last
+        # entry winning — lands on the rail entry after a rollback. The old
+        # resolver's load_coverage and the old age check read every entry
+        # whatever its layer; that is harmless after a rollback past U8,
+        # because the old reader refuses schema-3 stores anyway and falls
+        # back to Overpass.
+        "regions": sorted(regions, key=lambda e: (e.get("region", ""), entry_layer(e))),
     }
 
 
@@ -436,19 +547,29 @@ def refresh(
         manifest = read_manifest(get, urls[MANIFEST_NAME])
         _log(f"{release['tag_name']}: {len(manifest['regions'])} regions, "
              f"generated {manifest.get('generated_at', '?')}")
+        carried = _carry_omitted(dest, manifest, release["tag_name"])
 
         installed = skipped = empty = 0
         failed: list[str] = []
         for entry in manifest["regions"]:
             region = entry.get("region", "?")
+            layer = entry_layer(entry)
+            if layer not in LAYERS:
+                # Something newer published it. Not a refusal — the layers this
+                # version does know are unaffected — and not installed either:
+                # there is no store name, and no reader, for it here.
+                _log(f"WARNING: [{region}] layer {layer!r} is not one this version "
+                     f"knows ({', '.join(LAYERS)}) — ignored")
+                continue
+            label = _label(region, layer)
             status = entry.get("status", STATUS_OK)
             if status == STATUS_EMPTY:
                 empty += 1
-                _log(f"[{region}] empty — no rail in this region, nothing to fetch")
+                _log(f"{label} empty — no {layer} in this region, nothing to fetch")
                 continue
             if status != STATUS_OK:
-                failed.append(region)
-                _log(f"[{region}] REFUSED: unknown status {status!r}")
+                failed.append(label)
+                _log(f"{label} REFUSED: unknown status {status!r}")
                 continue
             digest = entry.get("sha256")
             if not digest:
@@ -456,34 +577,36 @@ def refresh(
                 # entry with no digest would otherwise match an *absent*
                 # sidecar and be skipped as up to date, claiming coverage with
                 # no file behind it.
-                failed.append(region)
-                _log(f"[{region}] REFUSED: manifest entry has no sha256")
+                failed.append(label)
+                _log(f"{label} REFUSED: manifest entry has no sha256")
                 continue
-            if installed_build(dest, region) == (digest, SCHEMA_VERSION):
+            if installed_build(dest, region, layer) == (digest, SCHEMA_VERSION):
                 skipped += 1
-                _log(f"[{region}] up to date ({entry.get('source_date', '?')})")
+                _log(f"{label} up to date ({entry.get('source_date', '?')})")
                 continue
             url = urls.get(entry.get("file"))
             if url is None:
-                failed.append(region)
-                _log(f"[{region}] REFUSED: {release['tag_name']} has no asset "
+                failed.append(label)
+                _log(f"{label} REFUSED: {release['tag_name']} has no asset "
                      f"{entry.get('file')!r}")
                 continue
             try:
                 install_region(get, entry, url, dest, work)
             except Exception as exc:  # noqa: BLE001 — one region must not stop the rest
-                failed.append(region)
-                _log(f"[{region}] REFUSED: {exc} — the installed store is unchanged")
+                failed.append(label)
+                _log(f"{label} REFUSED: {exc} — the installed store is unchanged")
                 continue
             installed += 1
-            _log(f"[{region}] installed {entry['file']} "
+            _log(f"{label} installed {entry['file']} "
                  f"({entry['bytes']} bytes, source {entry.get('source_date', '?')})")
 
-        _write_manifest(dest, work, _installed_manifest(dest, manifest, not failed))
+        _write_manifest(dest, work,
+                        _installed_manifest(dest, manifest, not failed, carried))
         _log(f"{dest}: {installed} installed, {skipped} up to date, {empty} empty, "
              f"{len(failed)} refused")
         if failed:
-            _log("refused: " + ", ".join(failed) + " — re-run to retry only these")
+            _log("refused: " + ", ".join(f.strip("[]") for f in failed)
+                 + " — re-run to retry only these")
         return len(failed)
 
 

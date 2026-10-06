@@ -1,0 +1,465 @@
+# The route corpus: real legs and the shape their route is known to have
+# (issue #345, docs/LOCAL_TRANSPORT_DATA_PLAN.md Decisions 3-4).
+#
+#     python scripts/route_corpus.py <store dir> [--require-all]
+#
+# Each leg is resolved as production resolves it under RAIL_SOURCE=local, with
+# no Overpass fallback, against only the regions it names, in its own mode's
+# layer: a ferry leg reads ferry stores and nothing else. For rail, `regions`
+# is every region whose rail box reaches within 25 km of either endpoint (what
+# the station and relation lookups ask) plus any the route itself runs
+# through, so the answer here is the answer production's merged stores give.
+#
+# For ferry and bus, `regions` is the countries the endpoints and the route
+# lie in. A ferry layer's box is every sea its routes reach — Denmark's runs
+# from the Faroes to Finland, Croatia's from Venice to Patras — so "every box
+# that overlaps" would name half of Europe's ferry layers for each leg; the
+# crossing's own countries hold the whole relation between them (Decision 8).
+# Checked where it can be: Copenhagen's bus 19 lies inside Sweden's bus box,
+# and Helsingør -> Helsingborg inside Germany's ferry box; adding those
+# regions changes neither result.
+#
+# Leg format:
+#   name, mode: rail|ferry|bus, from/to: {label, lat, lon}, regions: [...]
+#   expect:
+#     max_endpoint_km    both ends of the line within this of the stations
+#     length_km          [min, max]
+#     via                [{label, lat, lon, within_km}]  must pass this close
+#     avoid              [{label, lat, lon, within_km}]  must not pass this close
+#     strategy_not       [straight, ...]
+#     degraded           false
+#     local_miss         true, alone: ferry and bus only. The local stores must
+#                        find no route — production then asks Overpass — and
+#                        must not invent one. Any other leg that misses fails.
+#   known_bad: <reason>  the leg is wrong today; `expect` says what right looks
+#   current: {...}       like and `current` (same keys) pins today's wrong
+#                        outcome. Either one moving fails the run, so a fix
+#                        flips the entry in its own diff.
+#
+# A ferry or bus line found by way Dijkstra (way_dijkstra, ferry_yes_dijkstra)
+# starts and ends at the query points themselves, so `max_endpoint_km` is met
+# by construction there: a snap to a far-off way shows as length and `via`.
+#
+# Measured 2026-10-05 against stores built locally with `python -m
+# src.rail.builder` from the `rail-data-2026-09-08` extracts (france, germany,
+# denmark, spain, sweden, austria, netherlands), current resolver, no fallback;
+# every route was read against the map by hand. The same stores built from
+# `rail-data-2026-10-05`, one monthly refresh later, gave identical numbers on
+# every leg to 0.01 km, which is the evidence the bands below survive a refresh.
+#
+# How the bands were chosen:
+#   max_endpoint_km  1 everywhere. Every end measured within 0.21 km; the two
+#                    endpoint regressions this corpus exists for were 3.5 km
+#                    (#363) and 13.9 km (#359).
+#   length_km        the measured length +-5 %, rounded outward to 5 km. Wide
+#                    enough for a remapped junction or a relation gaining a
+#                    member; narrow enough that the nearest wrong corridor falls
+#                    out (Toulouse -> Austerlitz through Bordeaux is ~800 km
+#                    against a 750 km ceiling; Paris Est -> Strasbourg on the
+#                    classic line through Nancy ~500 against 460).
+#   via              towns the line was measured passing, at about 3x the
+#                    measured distance with a 2 km floor (Poitiers, 2.6 km off
+#                    the LGV, gets 5). A via names the corridor, so a route that
+#                    keeps its length but changes line still fails.
+#   avoid            the wrong corridor's landmark, at roughly half the
+#                    distance the right line keeps from it.
+legs:
+  # -- France: the legs of the plan's *Current state* ------------------------
+  - name: Toulouse -> Paris Austerlitz
+    mode: rail
+    from: {label: Toulouse Matabiau, lat: 43.6113, lon: 1.4536}
+    to: {label: Paris Austerlitz, lat: 48.8420, lon: 2.3650}
+    regions: [europe/france, europe/spain]
+    # measured: relation_uic, 712 km, ends 0.05/0.14 km; Limoges 0.0, Brive 0.8,
+    # Les Aubrais 0.1, Bordeaux 150.1
+    expect:
+      max_endpoint_km: 1
+      length_km: [675, 750]
+      via:
+        - {label: Brive-la-Gaillarde, lat: 45.1593, lon: 1.5323, within_km: 3}
+        - {label: Limoges-Benedictins, lat: 45.8364, lon: 1.2678, within_km: 2}
+        - {label: Les Aubrais, lat: 47.9265, lon: 1.9073, within_km: 2}
+      avoid:
+        - {label: Bordeaux Saint-Jean, lat: 44.8259, lon: -0.5560, within_km: 75}
+      strategy_not: [straight]
+      degraded: false
+
+  - name: Toulouse -> Paris Montparnasse
+    mode: rail
+    from: {label: Toulouse Matabiau, lat: 43.6113, lon: 1.4536}
+    to: {label: Paris Montparnasse, lat: 48.8412, lon: 2.3203}
+    regions: [europe/france, europe/spain]
+    # measured: relation_uic, 792 km, ends 0.05/0.21 km; Agen 0.1, Bordeaux 0.0,
+    # Poitiers 2.6, Limoges 88.4
+    expect:
+      max_endpoint_km: 1
+      length_km: [750, 835]
+      via:
+        - {label: Agen, lat: 44.2075, lon: 0.6207, within_km: 2}
+        - {label: Bordeaux Saint-Jean, lat: 44.8259, lon: -0.5560, within_km: 2}
+        - {label: Poitiers, lat: 46.5823, lon: 0.3335, within_km: 5}
+      avoid:
+        - {label: Limoges-Benedictins, lat: 45.8364, lon: 1.2678, within_km: 45}
+      strategy_not: [straight]
+      degraded: false
+
+  - name: Paris Montparnasse -> Bordeaux
+    mode: rail
+    from: {label: Paris Montparnasse, lat: 48.8412, lon: 2.3203}
+    to: {label: Bordeaux Saint-Jean, lat: 44.8259, lon: -0.5560}
+    regions: [europe/france]
+    # measured: relation_uic, 536 km, ends 0.21/0.03 km; Poitiers 2.6,
+    # Limoges 88.4. The #363 station-throat gap (3.5 km) does not reproduce.
+    expect:
+      max_endpoint_km: 1
+      length_km: [510, 565]
+      via:
+        - {label: Poitiers, lat: 46.5823, lon: 0.3335, within_km: 5}
+      avoid:
+        - {label: Limoges-Benedictins, lat: 45.8364, lon: 1.2678, within_km: 45}
+      strategy_not: [straight]
+      degraded: false
+
+  - name: Bordeaux -> Paris Montparnasse
+    mode: rail
+    from: {label: Bordeaux Saint-Jean, lat: 44.8259, lon: -0.5560}
+    to: {label: Paris Montparnasse, lat: 48.8412, lon: 2.3203}
+    regions: [europe/france]
+    # measured: relation_uic, 536 km, ends 0.03/0.21 km; Poitiers 2.6
+    expect:
+      max_endpoint_km: 1
+      length_km: [510, 565]
+      via:
+        - {label: Poitiers, lat: 46.5823, lon: 0.3335, within_km: 5}
+      avoid:
+        - {label: Limoges-Benedictins, lat: 45.8364, lon: 1.2678, within_km: 45}
+      strategy_not: [straight]
+      degraded: false
+
+  # -- France ----------------------------------------------------------------
+  - name: Paris Est -> Strasbourg
+    mode: rail
+    from: {label: Paris Est, lat: 48.8768, lon: 2.3592}
+    to: {label: Strasbourg, lat: 48.5850, lon: 7.7350}
+    regions: [europe/france, europe/germany]
+    # #359: resolved 13.9 km south of Paris Est before the platform fix.
+    # measured: relation_uic, 438 km, ends 0.09/0.06 km; Champagne-Ardenne TGV
+    # 0.1, Lorraine TGV 0.0, Nancy 28.1
+    expect:
+      max_endpoint_km: 1
+      length_km: [415, 460]
+      via:
+        - {label: Champagne-Ardenne TGV, lat: 49.2136, lon: 3.9944, within_km: 2}
+        - {label: Lorraine TGV, lat: 48.9474, lon: 6.1697, within_km: 2}
+      avoid:
+        - {label: Nancy, lat: 48.6898, lon: 6.1744, within_km: 14}
+      strategy_not: [straight]
+      degraded: false
+
+  - name: Lyon -> Marseille
+    mode: rail
+    from: {label: Lyon Part-Dieu, lat: 45.7606, lon: 4.8594}
+    to: {label: Marseille Saint-Charles, lat: 43.3028, lon: 5.3806}
+    regions: [europe/france]
+    # measured: relation_uic, 325 km, ends 0.06/0.06 km, on the LGV
+    # Mediterranee; Valence TGV, Avignon TGV, Aix TGV all 0.0, Grenoble 58.4
+    expect:
+      max_endpoint_km: 1
+      length_km: [310, 345]
+      via:
+        - {label: Valence TGV, lat: 44.9914, lon: 4.9783, within_km: 2}
+        - {label: Avignon TGV, lat: 43.9216, lon: 4.7861, within_km: 2}
+        - {label: Aix-en-Provence TGV, lat: 43.4553, lon: 5.3172, within_km: 2}
+      avoid:
+        - {label: Grenoble, lat: 45.1913, lon: 5.7146, within_km: 30}
+      strategy_not: [straight]
+      degraded: false
+
+  - name: Nantes -> Rennes
+    mode: rail
+    from: {label: Nantes, lat: 47.2172, lon: -1.5420}
+    to: {label: Rennes, lat: 48.1035, lon: -1.6722}
+    regions: [europe/france]
+    # measured: relation_uic, 149 km, ends 0.07/0.05 km; Redon 1.2,
+    # Chateaubriant 33.2
+    expect:
+      max_endpoint_km: 1
+      length_km: [140, 160]
+      via:
+        - {label: Redon, lat: 47.6514, lon: -2.0839, within_km: 4}
+      avoid:
+        - {label: Chateaubriant, lat: 47.7185, lon: -1.3746, within_km: 15}
+      strategy_not: [straight]
+      degraded: false
+
+  # -- Germany ---------------------------------------------------------------
+  - name: Hamburg -> Flensburg
+    mode: rail
+    from: {label: Hamburg Hbf, lat: 53.5530, lon: 10.0069}
+    to: {label: Flensburg, lat: 54.7744, lon: 9.4366}
+    regions: [europe/germany, europe/denmark]
+    # measured: relation_endpoints, 179 km, ends 0.04/0.04 km; Neumuenster 0.1,
+    # Rendsburg 0.2, Schleswig 1.0, Kiel 23.0
+    expect:
+      max_endpoint_km: 1
+      length_km: [170, 190]
+      via:
+        - {label: Neumuenster, lat: 54.0754, lon: 9.9817, within_km: 2}
+        - {label: Rendsburg, lat: 54.3026, lon: 9.6667, within_km: 2}
+        - {label: Schleswig, lat: 54.5094, lon: 9.5403, within_km: 3}
+      avoid:
+        - {label: Kiel Hbf, lat: 54.3147, lon: 10.1320, within_km: 10}
+      strategy_not: [straight]
+      degraded: false
+
+  - name: Hamburg -> Munich
+    mode: rail
+    from: {label: Hamburg Hbf, lat: 53.5530, lon: 10.0069}
+    to: {label: Muenchen Hbf, lat: 48.1402, lon: 11.5600}
+    regions: [europe/germany, europe/austria]
+    known_bad: >-
+      strategy B keeps the relation whose ends sit closest to the stations,
+      never the shortest, and picks the ICE line through Berlin, Leipzig and
+      Erfurt (934 km) over the direct Hannover - Wuerzburg line (~790 km)
+    # measured: relation_endpoints, 934 km, ends 0.02/0.19 km; Berlin Hbf 0.0,
+    # Erfurt 0.0, Nuernberg 0.0, Hannover 126.8, Wuerzburg 69.2
+    expect:
+      max_endpoint_km: 1
+      length_km: [750, 840]
+      via:
+        - {label: Hannover Hbf, lat: 52.3766, lon: 9.7410, within_km: 2}
+        - {label: Wuerzburg Hbf, lat: 49.8017, lon: 9.9358, within_km: 2}
+        - {label: Nuernberg Hbf, lat: 49.4458, lon: 11.0823, within_km: 2}
+      avoid:
+        - {label: Berlin Hbf, lat: 52.5251, lon: 13.3694, within_km: 30}
+      strategy_not: [straight]
+      degraded: false
+    current:
+      max_endpoint_km: 1
+      length_km: [890, 980]
+      via:
+        - {label: Berlin Hbf, lat: 52.5251, lon: 13.3694, within_km: 2}
+        - {label: Erfurt Hbf, lat: 50.9725, lon: 11.0383, within_km: 2}
+        - {label: Nuernberg Hbf, lat: 49.4458, lon: 11.0823, within_km: 2}
+      degraded: false
+
+  - name: Berlin -> Cologne
+    mode: rail
+    from: {label: Berlin Hbf, lat: 52.5251, lon: 13.3694}
+    to: {label: Koeln Hbf, lat: 50.9430, lon: 6.9589}
+    regions: [europe/germany, europe/france, europe/netherlands]
+    # measured: relation_endpoints, 585 km, ends 0.04/0.03 km; Wolfsburg 0.0,
+    # Hannover 0.1, Hamm 0.0, Magdeburg 44.1
+    expect:
+      max_endpoint_km: 1
+      length_km: [555, 615]
+      via:
+        - {label: Wolfsburg, lat: 52.4295, lon: 10.7878, within_km: 2}
+        - {label: Hannover Hbf, lat: 52.3766, lon: 9.7410, within_km: 2}
+        - {label: Hamm (Westf) Hbf, lat: 51.6780, lon: 7.8077, within_km: 2}
+      avoid:
+        - {label: Magdeburg Hbf, lat: 52.1305, lon: 11.6275, within_km: 20}
+      strategy_not: [straight]
+      degraded: false
+
+  # -- Denmark ---------------------------------------------------------------
+  - name: Copenhagen -> Aarhus
+    mode: rail
+    from: {label: Koebenhavn H, lat: 55.6727, lon: 12.5647}
+    to: {label: Aarhus H, lat: 56.1503, lon: 10.2045}
+    regions: [europe/denmark, europe/sweden]
+    # measured: relation_endpoints, 328 km, ends 0.05/0.07 km, over the Great
+    # Belt; Roskilde 0.0, Odense 0.0, Fredericia 1.0, Vejle 0.0, Kalundborg 34.0
+    expect:
+      max_endpoint_km: 1
+      length_km: [310, 345]
+      via:
+        - {label: Roskilde, lat: 55.6392, lon: 12.0890, within_km: 2}
+        - {label: Odense, lat: 55.4017, lon: 10.3870, within_km: 2}
+        - {label: Fredericia, lat: 55.5654, lon: 9.7550, within_km: 3}
+        - {label: Vejle, lat: 55.7068, lon: 9.5373, within_km: 2}
+      avoid:
+        - {label: Kalundborg, lat: 55.6820, lon: 11.0884, within_km: 15}
+      strategy_not: [straight]
+      degraded: false
+
+  - name: Copenhagen -> Odense
+    mode: rail
+    from: {label: Koebenhavn H, lat: 55.6727, lon: 12.5647}
+    to: {label: Odense, lat: 55.4017, lon: 10.3870}
+    regions: [europe/denmark, europe/sweden]
+    # measured: relation_endpoints, 160 km, ends 0.01/0.03 km; Roskilde 0.0,
+    # Ringsted 0.5, Nyborg 0.3, Kalundborg 34.0
+    expect:
+      max_endpoint_km: 1
+      length_km: [150, 170]
+      via:
+        - {label: Roskilde, lat: 55.6392, lon: 12.0890, within_km: 2}
+        - {label: Ringsted, lat: 55.4425, lon: 11.7899, within_km: 2}
+        - {label: Nyborg, lat: 55.3137, lon: 10.7962, within_km: 2}
+      avoid:
+        - {label: Kalundborg, lat: 55.6820, lon: 11.0884, within_km: 15}
+      strategy_not: [straight]
+      degraded: false
+
+  # -- Ferry -------------------------------------------------------------------
+  # Measured 2026-10-06 against ferry and bus stores built locally with
+  # `python -m src.rail.builder --layer ferry|bus` from that day's Geofabrik
+  # extracts (source dates 2026-10-03/04) filtered by
+  # `scripts/build_rail_extract.py build` — denmark, sweden, croatia and
+  # germany — current resolver, no fallback; each line's length checked
+  # against the crow-fly crossing and its course against the channel and
+  # town points recorded below. Bands as for rail, but
+  # a crossing of a few km gets its length band rounded to 0.5 km, not 5, and
+  # a via a 1 km floor, not 2. Endpoints are the ferry relation's own stops
+  # where one exists, else the end nodes of the crossing's way: the berths.
+  - name: Rodby -> Puttgarden
+    mode: ferry
+    from: {label: Rodby Faergehavn, lat: 54.6535587, lon: 11.3515647}
+    to: {label: Puttgarden, lat: 54.5025487, lon: 11.2280161}
+    regions: [europe/denmark, europe/germany]
+    # Cross-border, DK/DE. Each extract holds the relation whole, and the
+    # merge counts it once: either region alone gives the same line.
+    # measured: relation, 18.87 km, ends 0.00/0.00 km; mid-Belt 0.72,
+    # Gedser 38.1
+    expect:
+      max_endpoint_km: 1
+      length_km: [17.5, 20]
+      via:
+        - {label: Fehmarn Belt, lat: 54.5780, lon: 11.2900, within_km: 2.5}
+      avoid:
+        - {label: Gedser, lat: 54.5747, lon: 11.9283, within_km: 15}
+      strategy_not: [straight]
+      degraded: false
+
+  - name: Helsingor -> Helsingborg
+    mode: ferry
+    from: {label: Helsingor, lat: 56.032946, lon: 12.6160047}
+    to: {label: Helsingborg, lat: 56.0433107, lon: 12.6915204}
+    regions: [europe/denmark, europe/sweden]
+    # Cross-border, DK/SE. measured: relation, 5.23 km, ends 0.00/0.00 km;
+    # mid-Oresund 0.32
+    expect:
+      max_endpoint_km: 1
+      length_km: [4.5, 5.5]
+      via:
+        - {label: Oresund narrows, lat: 56.0380, lon: 12.6540, within_km: 1}
+      strategy_not: [straight]
+      degraded: false
+
+  - name: Split -> Supetar
+    mode: ferry
+    from: {label: Split ferry port, lat: 43.5026, lon: 16.4417}
+    to: {label: Supetar, lat: 43.3859, lon: 16.5549}
+    regions: [europe/croatia]
+    # No relation of its own: strategy B over the line's route=ferry ways.
+    # measured: way_dijkstra, 16.76 km; mid-channel 0.47, Milna 10.7
+    # (Split - Milna is a different line)
+    expect:
+      max_endpoint_km: 1
+      length_km: [15.5, 18]
+      via:
+        - {label: Brac channel, lat: 43.4450, lon: 16.5000, within_km: 1.5}
+      avoid:
+        - {label: Milna, lat: 43.3262, lon: 16.4497, within_km: 5}
+      strategy_not: [straight]
+      degraded: false
+
+  - name: Prizna -> Zigljen
+    mode: ferry
+    from: {label: Prizna, lat: 44.6019, lon: 14.9702}
+    to: {label: Zigljen (Pag), lat: 44.5806, lon: 14.9487}
+    regions: [europe/croatia]
+    # The Croatian island hopper. Its crossing is tagged ferry=yes as well as
+    # route=ferry, so strategy B finds it before C is asked. No Croatian leg
+    # reaches strategy C today: every ferry=yes-only way in the croatia
+    # extract is a closed pier outline. Vastervik -> Visby is the C leg.
+    # measured: way_dijkstra, 3.03 km; mid-crossing 0.08
+    expect:
+      max_endpoint_km: 1
+      length_km: [2.5, 3.5]
+      via:
+        - {label: Velebit channel, lat: 44.5910, lon: 14.9590, within_km: 1}
+      strategy_not: [straight]
+      degraded: false
+
+  - name: Vastervik -> Visby
+    mode: ferry
+    from: {label: Vastervik, lat: 57.7494, lon: 16.6758}
+    to: {label: Visby, lat: 57.6358, lon: 18.2766}
+    regions: [europe/sweden]
+    # Strategy C: the crossing is one ferry=yes way, with no route=ferry tag
+    # and no relation. measured: ferry_yes_dijkstra, 98.66 km; mid-crossing
+    # 0.53, Oskarshamn 53.9 (Oskarshamn - Visby is the other Gotland line)
+    expect:
+      max_endpoint_km: 1
+      length_km: [90, 105]
+      via:
+        - {label: Mid crossing, lat: 57.70, lon: 17.45, within_km: 2}
+      avoid:
+        - {label: Oskarshamn, lat: 57.2640, lon: 16.4480, within_km: 25}
+      strategy_not: [straight]
+      degraded: false
+
+  - name: Split -> Trogir
+    mode: ferry
+    from: {label: Split ferry port, lat: 43.5026, lon: 16.4417}
+    to: {label: Trogir, lat: 43.5163, lon: 16.2505}
+    regions: [europe/croatia]
+    # The leg that must fall back. The seasonal Split - Trogir boats are not
+    # mapped as a ferry route, so the stores have no route here and production
+    # asks Overpass. measured: A finds no relation, B no path between the two
+    # ends' nearest ferry ways, C no ferry=yes way in the box.
+    expect:
+      local_miss: true
+
+  - name: Napoli -> Capri, Croatia's data only
+    mode: ferry
+    from: {label: Napoli Molo Beverello, lat: 40.8380, lon: 14.2560}
+    to: {label: Capri Marina Grande, lat: 40.5560, lon: 14.2400}
+    regions: [europe/croatia]
+    # Croatia's ferry box runs from Venice to Patras, so production asks its
+    # store for this leg (Italy's store, when present, answers A first). The
+    # Ancona - Greece crossings' extents cover the Bay of Naples though no
+    # vertex comes within 200 km; Overpass tests the geometry and returns none
+    # of them, and so must the local source, or B snaps both ends to one node
+    # in the mid-Adriatic and returns a 525 km line (issue #345, F6).
+    expect:
+      local_miss: true
+
+  # -- Bus ---------------------------------------------------------------------
+  - name: Bus 19 Glostrup -> Valbyparken
+    mode: bus
+    from: {label: Glostrup, lat: 55.6634846, lon: 12.3982163}
+    to: {label: Valbyparken, lat: 55.648728, lon: 12.5336911}
+    regions: [europe/denmark]
+    # The city line. measured: relation, 17.45 km, ends 0.00/0.00 km on the
+    # line's stops (and 17.45 km via Overpass); Rodovre 0.01, Hvidovre 3.8
+    expect:
+      max_endpoint_km: 1
+      length_km: [16.5, 18.5]
+      via:
+        - {label: Rodovre, lat: 55.6806, lon: 12.4537, within_km: 1}
+      avoid:
+        - {label: Hvidovre, lat: 55.6426, lon: 12.4740, within_km: 2}
+      strategy_not: [straight]
+      degraded: false
+
+  - name: Bus 973X Frederikshavn -> Aalborg
+    mode: bus
+    from: {label: Frederikshavn, lat: 57.4411329, lon: 10.5407039}
+    to: {label: Aalborg Busterminal, lat: 57.0413348, lon: 9.918738}
+    regions: [europe/denmark]
+    # The regional line, from its first stop to its last. measured: relation,
+    # 66.50 km, ends 0.00/0.00 km; Saeby 0.47, Hjorring 29.7, Bronderslev 17.0
+    # (the railway's corridor)
+    expect:
+      max_endpoint_km: 1
+      length_km: [60, 70]
+      via:
+        - {label: Saeby, lat: 57.3330, lon: 10.5230, within_km: 1.5}
+      avoid:
+        - {label: Hjorring, lat: 57.4642, lon: 9.9823, within_km: 15}
+        - {label: Bronderslev, lat: 57.2700, lon: 9.9410, within_km: 8}
+      strategy_not: [straight]
+      degraded: false

@@ -1,6 +1,7 @@
 """Combines all REST API sub-routers into a single FastAPI app."""
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
@@ -18,6 +19,11 @@ from src.exceptions.errors import (
     QuotaExceeded,
 )
 from src.jobs.prepared_geo_jobs import sweep_unprepared_geometry
+from src.jobs.rail_data_jobs import (
+    check_rail_data_age,
+    enqueue_rail_data_refresh,
+    rail_refresh_day,
+)
 from src.jobs.route_jobs import (
     sweep_degraded_segments,
     sweep_orphaned_jobs,
@@ -194,6 +200,19 @@ async def lifespan(_app: FastAPI):
     # by a terminal job. On its own minute, away from the other hourly jobs.
     _scheduler.add_job(sweep_video_jobs, "cron", minute=40,
                        id="video_sweep", replace_existing=True)
+    # How old the installed local rail data is (issue #345): a gauge and a daily
+    # WARNING while it is over 40 days or unreadable. Daily, an hour after the
+    # monthly refresh (04:10), and once at start-up too, so the gauge exists
+    # from the first scrape after a deploy rather than up to a day later.
+    _scheduler.add_job(check_rail_data_age, "cron", hour=5, minute=15,
+                       next_run_time=datetime.now(timezone.utc),
+                       id="rail_data_age", replace_existing=True)
+    # The monthly rail data refresh (issue #345): queues the install of the
+    # newest published release for a worker, a few days after CI builds it on
+    # the 2nd. Off unless RAIL_SOURCE=local; never runs in this process.
+    _scheduler.add_job(enqueue_rail_data_refresh, "cron", day=rail_refresh_day(),
+                       hour=4, minute=10, id="rail_data_refresh",
+                       replace_existing=True)
     # One listener covers every job — current and future — with run counts,
     # duration and a last-success timestamp (issue #125).
     _scheduler.add_listener(record_job_event, JOB_EVENT_MASK)

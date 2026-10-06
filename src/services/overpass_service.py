@@ -28,12 +28,15 @@ import requests
 from src.brand import USER_AGENT
 from src.jobs.upstream_cache import get as cache_get, put as cache_put
 from src.jobs.upstream_slots import is_cooling, mark_cooling, slot
+from src.rail.store import CLS_FERRY_YES, CLS_ROUTE
 from src.services.rail_source import (
     LocalRailSource,
     RailSource,
     RailSourceOverload,
 )
+from src.services.route_source import LocalRouteSource, RouteSource
 from src.utils.logging import get_logger
+from src.utils.metrics import OVERPASS_REQUESTS
 
 _log = get_logger(__name__)
 
@@ -45,12 +48,18 @@ class RailGeometry:
     Carries *how* the polyline was obtained, not just the points, so callers can
     log it and surface degradation to the user. ``degraded`` is True when every
     strategy failed and we fell back to a straight endpoint-to-endpoint chord —
-    i.e. the line is approximate, not real track. Ferry/bus resolution doesn't
-    use this: those raise ``OverpassError`` on failure instead of degrading.
+    i.e. the line is approximate, not real track.
+
+    Ferry and bus resolves return it too (issue #345), for its ``source``. They
+    raise ``OverpassError`` when no route is found rather than degrading; their
+    one degraded result is a box the local vertex ceiling refused.
     """
     polyline: list[list[float]]
-    strategy: str          # relation_uic | relation_endpoints | coordinate_dijkstra | straight
+    # rail: relation_uic | relation_endpoints | coordinate_dijkstra | straight
+    # ferry/bus: relation | way_dijkstra | ferry_yes_dijkstra | straight
+    strategy: str
     degraded: bool
+    source: str = "overpass"   # local | overpass — which source answered
 
 # ÖBB and some HAFAS providers return compound location IDs like
 # "A=1@O=Linz Hbf@X=14280@Y=48290@U=81@L=8100013@…"
@@ -208,7 +217,7 @@ class OverpassRailSource(RailSource):
 );
 out center body;
 """
-        elements = _overpass(query).get("elements", [])
+        elements = _overpass(query, "rail_station").get("elements", [])
         if not elements:
             return None
 
@@ -242,7 +251,7 @@ node["uic_ref"="{uic2}"]->.b;
 )->.r;
 .r out geom;
 """
-        return _overpass(query).get("elements", [])
+        return _overpass(query, "rail").get("elements", [])
 
     def relations_near(
         self, lat: float, lon: float, radius_m: float = 25_000
@@ -252,7 +261,7 @@ node["uic_ref"="{uic2}"]->.b;
 rel[{_ROUTE_TAGS}](around:{radius_m},{lat},{lon});
 out ids;
 """
-        return {e["id"] for e in _overpass(query).get("elements", [])}
+        return {e["id"] for e in _overpass(query, "rail").get("elements", [])}
 
     def relation_geometry(
         self, rel_ids: Sequence[int], near: Sequence[tuple[float, float]]
@@ -263,7 +272,7 @@ out ids;
 rel(id:{ids_str});
 ._ out geom;
 """
-        return _overpass(query).get("elements", [])
+        return _overpass(query, "rail").get("elements", [])
 
     def ways_in_bbox(
         self, min_lat: float, min_lon: float, max_lat: float, max_lon: float
@@ -278,7 +287,7 @@ rel(id:{ids_str});
             f"({min_lat},{min_lon},{max_lat},{max_lon});"
             "out geom;"
         )
-        return _overpass(query).get("elements", [])
+        return _overpass(query, "rail").get("elements", [])
 
 
 # One instance, because it holds nothing: the pacing, caching and cooldowns all
@@ -385,6 +394,7 @@ def get_rail_geometry(stops: list[dict]) -> RailGeometry:
     if local is not None:
         try:
             result = _resolve_rail(stops, local)
+            result.source = "local"
             if result.degraded:
                 _log.info("local rail source found no route — retrying via Overpass")
                 result = None
@@ -394,9 +404,11 @@ def get_rail_geometry(stops: list[dict]) -> RailGeometry:
             # the graph from its answer is the allocation that was just refused.
             # So this is the one local failure that does not fall back.
             _log.warning("rail bounding box refused locally (%s) — straight-lining", exc)
-            result = RailGeometry(_straight(lat1, lon1, lat2, lon2), "straight", True)
+            result = RailGeometry(
+                _straight(lat1, lon1, lat2, lon2), "straight", True, "local")
     if result is None:
         result = _resolve_rail(stops, _OVERPASS_SOURCE)
+        result.source = "overpass"
 
     log = _log.warning if result.degraded else _log.info
     log("rail geometry resolved: strategy=%s points=%d degraded=%s elapsed=%.1fs",
@@ -1196,16 +1208,93 @@ def _dijkstra(
 
 
 # ---------------------------------------------------------------------------
-# Ferry / bus geometry  (shared Overpass route-relation strategy)
+# Ferry / bus geometry  (shared route-relation strategy)
 # ---------------------------------------------------------------------------
 
-def get_ferry_geometry(lat1: float, lon1: float, lat2: float, lon2: float) -> list[list[float]]:
-    """Return [[lon, lat], …] polyline following OSM ferry route geometry."""
+class OverpassRouteSource(RouteSource):
+    """The ferry and bus strategies' two questions, asked over the network.
+
+    The queries are byte-identical to the ones the strategies issued inline
+    before issue #345 moved them here — which also keeps the 24 h response
+    cache's keys, so a deploy does not re-ask Overpass for every cached leg.
+    The buffering of each box stayed with its strategy, as for rail.
+    """
+
+    def relations_in_bbox(self, mode: str, bbox: Sequence[float]) -> list[dict]:
+        query = f"""
+[out:json][timeout:{_TIMEOUT_QUERY}];
+rel["route"="{mode}"]({bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]});
+._;
+out geom;
+"""
+        return _overpass(query, mode).get("elements", [])
+
+    def ways_in_bbox(
+        self, mode: str, cls_mask: int, bbox: Sequence[float]
+    ) -> list[dict]:
+        # One mask per query: each is one strategy's selection, and no strategy
+        # asks for the union of two.
+        if cls_mask == CLS_ROUTE:
+            selector = f'way["route"="{mode}"]'
+        elif cls_mask == CLS_FERRY_YES:
+            selector = 'way["ferry"="yes"]'
+        else:
+            raise ValueError(f"no Overpass selection for class mask {cls_mask}")
+        query = (
+            f"[out:json][timeout:{_TIMEOUT_QUERY}];"
+            f"{selector}"
+            f"({bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]});"
+            "out geom;"
+        )
+        return _overpass(query, mode).get("elements", [])
+
+
+_OVERPASS_ROUTE_SOURCE = OverpassRouteSource()
+
+# The configured local ferry/bus source, held like the rail one and for the same
+# reasons (see _LOCAL_SOURCE_TTL_S). `RAIL_SOURCE=local` switches all three
+# modes: a local miss falls back to Overpass for every one of them, so a
+# separate switch would only be a way to leave ferry and bus on the traffic
+# this issue exists to stop.
+_local_route: Optional[tuple[str, Optional[LocalRouteSource], float]] = None
+
+
+def _local_route_source() -> Optional[LocalRouteSource]:
+    """The local ferry/bus source when configured, else None.
+
+    Every exception building it means "resolve via Overpass, retry at the next
+    expiry" — the same wide guard ``_local_rail_source`` uses, for the same
+    reason: a manifest is someone else's file and can be wrong in shapes no
+    reader enumerates.
+    """
+    global _local_route
+    if os.environ.get(_RAIL_SOURCE_ENV, "").strip().lower() != "local":
+        return None
+    directory = os.environ.get(_RAIL_DATA_DIR_ENV, "").strip()
+    if not directory:
+        _log.warning("%s=local but %s is unset — resolving ferry and bus via "
+                     "Overpass", _RAIL_SOURCE_ENV, _RAIL_DATA_DIR_ENV)
+        return None
+    now = time.monotonic()
+    if (_local_route is None or _local_route[0] != directory
+            or now - _local_route[2] >= _LOCAL_SOURCE_TTL_S):
+        try:
+            _local_route = (directory, LocalRouteSource(directory), now)
+        except Exception as exc:  # noqa: BLE001 — see docstring
+            _log.warning("local ferry/bus data at %s is unusable (%s) — resolving "
+                         "ferry and bus via Overpass, retrying in %.0fs",
+                         directory, exc, _LOCAL_SOURCE_TTL_S)
+            _local_route = (directory, None, now)
+    return _local_route[1]
+
+
+def get_ferry_geometry(lat1: float, lon1: float, lat2: float, lon2: float) -> RailGeometry:
+    """[[lon, lat], …] polyline following OSM ferry route geometry, with its source."""
     return _get_route_geometry("ferry", lat1, lon1, lat2, lon2)
 
 
-def get_bus_geometry(lat1: float, lon1: float, lat2: float, lon2: float) -> list[list[float]]:
-    """Return [[lon, lat], …] polyline following OSM bus route geometry."""
+def get_bus_geometry(lat1: float, lon1: float, lat2: float, lon2: float) -> RailGeometry:
+    """[[lon, lat], …] polyline following OSM bus route geometry, with its source."""
     return _get_route_geometry("bus", lat1, lon1, lat2, lon2)
 
 
@@ -1213,44 +1302,105 @@ def _get_route_geometry(
     route_tag: str,
     lat1: float, lon1: float,
     lat2: float, lon2: float,
-) -> list[list[float]]:
+) -> RailGeometry:
+    """Resolve a ferry or bus leg: the local stores first, then Overpass.
+
+    With the local source configured, the whole strategy chain runs against it
+    first, and against Overpass only when that found no route or failed in any
+    way — a store can hold a region and not this leg (an open-sea crossing
+    outside every extract), and a local miss must never be the reason a real
+    route is lost. Raises
+    ``OverpassError`` when Overpass finds none either, as it always has: ferry
+    and bus do not degrade to a straight line on a miss.
+
+    The one exception is the local vertex ceiling. It bounds this worker's
+    memory, and Overpass answering the same box would rebuild the allocation
+    it just refused, so a refused box straight-lines — flagged degraded — and
+    does not fall back, exactly as for rail.
     """
-    Three strategies tried in order:
+    t0 = time.monotonic()
+    result = None
+    local = _local_route_source()
+    if local is not None:
+        try:
+            poly, strategy = _resolve_route(route_tag, lat1, lon1, lat2, lon2, local)
+            result = RailGeometry(poly, strategy, False, "local")
+        except RailSourceOverload as exc:
+            _log.warning("%s bounding box refused locally (%s) — straight-lining",
+                         route_tag, exc)
+            result = RailGeometry(
+                _straight(lat1, lon1, lat2, lon2), "straight", True, "local")
+        except OverpassError as exc:
+            _log.info("local %s source found no route (%s) — retrying via Overpass",
+                      route_tag, exc)
+        except Exception:  # noqa: BLE001 — any local failure is a local miss
+            # A store is a file someone else wrote, and what a bad one raises is
+            # not ours to enumerate. Letting it out sends the job into RQ's
+            # retry, which meets the same file — so every ferry or bus resolve
+            # would fail while it sat there. Overpass answers instead.
+            _log.warning("local %s source failed — retrying via Overpass",
+                         route_tag, exc_info=True)
+    if result is None:
+        try:
+            poly, strategy = _resolve_route(
+                route_tag, lat1, lon1, lat2, lon2, _OVERPASS_ROUTE_SOURCE)
+        except OverpassError:
+            _log.warning("%s geometry unresolved: no route found, elapsed=%.1fs",
+                         route_tag, time.monotonic() - t0)
+            raise
+        result = RailGeometry(poly, strategy, False, "overpass")
+    _log.info("%s geometry resolved: strategy=%s source=%s points=%d elapsed=%.1fs",
+              route_tag, result.strategy, result.source, len(result.polyline),
+              time.monotonic() - t0)
+    return result
+
+
+def _resolve_route(
+    route_tag: str,
+    lat1: float, lon1: float,
+    lat2: float, lon2: float,
+    source: RouteSource,
+) -> tuple[list[list[float]], str]:
+    """
+    Three strategies tried in order, against one source:
       A  Route-relation strategy: query OSM route relations for *route_tag*
          (e.g. "ferry", "bus"), pick the best-fitting one, return trimmed geometry.
       B  Way route=* fallback: Dijkstra on ways tagged route=*route_tag*.
       C  ferry=yes way fallback (ferry only): Dijkstra on ways tagged ferry=yes.
          Many short island-hopper crossings use this tag instead of route=ferry.
+
+    Returns ``(polyline, strategy)``; raises ``OverpassError`` when none finds a
+    route. ``RailSourceOverload`` from a local source is not caught here: it
+    ends the resolve, not the strategy (see ``_get_route_geometry``).
     """
-    t0 = time.monotonic()
     strategy = poly = None
     try:
-        poly, strategy = _via_route_relation_type(route_tag, lat1, lon1, lat2, lon2), "relation"
+        poly, strategy = _via_route_relation_type(
+            route_tag, lat1, lon1, lat2, lon2, source), "relation"
     except OverpassError as exc:
         _log.info("%s strategy A (route relation) failed: %s", route_tag, exc)
     if poly is None:
         try:
-            poly, strategy = _via_way_type_fallback(route_tag, lat1, lon1, lat2, lon2), "way_dijkstra"
+            poly, strategy = _via_way_type_fallback(
+                route_tag, lat1, lon1, lat2, lon2, source), "way_dijkstra"
         except OverpassError as exc:
             _log.info("%s strategy B (way dijkstra) failed: %s", route_tag, exc)
     if poly is None and route_tag == "ferry":
         try:
-            poly, strategy = _via_ferry_yes_fallback(lat1, lon1, lat2, lon2), "ferry_yes_dijkstra"
+            poly, strategy = _via_ferry_yes_fallback(
+                lat1, lon1, lat2, lon2, source), "ferry_yes_dijkstra"
         except OverpassError as exc:
             _log.info("ferry strategy C (ferry=yes dijkstra) failed: %s", exc)
     if poly is None:
-        _log.warning("%s geometry unresolved: no route found, elapsed=%.1fs",
-                     route_tag, time.monotonic() - t0)
         raise OverpassError(f"No {route_tag} route found between the two endpoints")
-    _log.info("%s geometry resolved: strategy=%s points=%d elapsed=%.1fs",
-              route_tag, strategy, len(poly), time.monotonic() - t0)
-    return poly
+    return poly, strategy
 
 
 def _via_route_relation_type(
     route_tag: str,
     lat1: float, lon1: float,
     lat2: float, lon2: float,
+    source: Optional[RouteSource] = None,
 ) -> list[list[float]]:
     # Clamp buffer: enough headroom to capture terminal areas, but not so large
     # that mega-routes (Stockholm–Turku) flood the result and cause timeouts.
@@ -1260,14 +1410,7 @@ def _via_route_relation_type(
         min(lat1, lat2) - buf, min(lon1, lon2) - buf,
         max(lat1, lat2) + buf, max(lon1, lon2) + buf,
     )
-    query = f"""
-[out:json][timeout:{_TIMEOUT_QUERY}];
-rel["route"="{route_tag}"]({bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]});
-._;
-out geom;
-"""
-    data = _overpass(query)
-    relations = data.get("elements", [])
+    relations = (source or _OVERPASS_ROUTE_SOURCE).relations_in_bbox(route_tag, bbox)
 
     # Maximum acceptable endpoint-proximity score (~0.002 ≈ both terminals
     # within ~1-2 km of the query points).  Routes whose trimmed endpoints
@@ -1302,24 +1445,14 @@ def _via_way_type_fallback(
     route_tag: str,
     lat1: float, lon1: float,
     lat2: float, lon2: float,
+    source: Optional[RouteSource] = None,
 ) -> list[list[float]]:
     buf = 0.25
     bbox = (
         min(lat1, lat2) - buf, min(lon1, lon2) - buf,
         max(lat1, lat2) + buf, max(lon1, lon2) + buf,
     )
-    query = (
-        f"[out:json][timeout:{_TIMEOUT_QUERY}];"
-        f'way["route"="{route_tag}"]'
-        f"({bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]});"
-        "out geom;"
-    )
-    try:
-        data = _overpass(query)
-    except OverpassError:
-        raise
-
-    ways = data.get("elements", [])
+    ways = (source or _OVERPASS_ROUTE_SOURCE).ways_in_bbox(route_tag, CLS_ROUTE, bbox)
     if not ways:
         raise OverpassError(f"No {route_tag} ways found in bounding box")
 
@@ -1339,6 +1472,7 @@ def _via_way_type_fallback(
 def _via_ferry_yes_fallback(
     lat1: float, lon1: float,
     lat2: float, lon2: float,
+    source: Optional[RouteSource] = None,
 ) -> list[list[float]]:
     """Strategy C: Dijkstra on OSM ways tagged ferry=yes.
 
@@ -1351,18 +1485,7 @@ def _via_ferry_yes_fallback(
         min(lat1, lat2) - buf, min(lon1, lon2) - buf,
         max(lat1, lat2) + buf, max(lon1, lon2) + buf,
     )
-    query = (
-        f"[out:json][timeout:{_TIMEOUT_QUERY}];"
-        f'way["ferry"="yes"]'
-        f"({bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]});"
-        "out geom;"
-    )
-    try:
-        data = _overpass(query)
-    except OverpassError:
-        raise
-
-    ways = data.get("elements", [])
+    ways = (source or _OVERPASS_ROUTE_SOURCE).ways_in_bbox("ferry", CLS_FERRY_YES, bbox)
     if not ways:
         raise OverpassError("No ferry=yes ways found in bounding box")
 
@@ -1434,7 +1557,7 @@ def _slot_name(url: str) -> str:
     return "overpass:" + urlsplit(url).netloc
 
 
-def _overpass(query: str) -> dict:
+def _overpass(query: str, purpose: str) -> dict:
     """POST a query to Overpass, backing off a host rather than arguing with it.
 
     A cached answer short-circuits everything below — including the concurrency
@@ -1456,9 +1579,13 @@ def _overpass(query: str) -> dict:
 
     Every attempt is recorded and surfaced on the final error, so a resolve that
     degrades can say which hosts refused it and why.
+
+    *purpose* (``rail``, ``rail_station``, ``ferry`` or ``bus``) only labels the
+    ``traxjourney_overpass_requests_total`` counter.
     """
     cached = cache_get(_CACHE_NAMESPACE, query)
     if cached is not None:
+        OVERPASS_REQUESTS.labels(purpose, "cache_hit").inc()
         _log.info("overpass cache hit (%d bytes)", len(cached))
         return json.loads(cached)
 
@@ -1466,6 +1593,7 @@ def _overpass(query: str) -> dict:
     for url in _OVERPASS_ENDPOINTS:
         host = _slot_name(url)
         if is_cooling(host):
+            OVERPASS_REQUESTS.labels(purpose, "cooling").inc()
             attempts.append(f"{url}: cooling down")
             _log.info("overpass %s: still cooling down, skipped", url)
             continue
@@ -1478,6 +1606,7 @@ def _overpass(query: str) -> dict:
             if not got_slot:
                 # Our own traffic is saturating this host. Another endpoint has
                 # its own quota; queueing behind ourselves does not.
+                OVERPASS_REQUESTS.labels(purpose, "no_slot").inc()
                 attempts.append(
                     f"{url}: no free slot within {_SLOT_ACQUIRE_TIMEOUT_S:.0f}s")
                 _log.info("overpass %s: no free slot, moving on", url)
@@ -1491,6 +1620,7 @@ def _overpass(query: str) -> dict:
             except Exception as exc:  # noqa: BLE001 — cannot even reach it
                 elapsed = time.monotonic() - started
                 mark_cooling(host, _COOLDOWN_UNREACHABLE_S)
+                OVERPASS_REQUESTS.labels(purpose, "unreachable").inc()
                 attempts.append(f"{url}: {type(exc).__name__} after {elapsed:.1f}s")
                 _log.warning(
                     "overpass %s unreachable after %.1fs (%s) — backing off for %ds",
@@ -1500,6 +1630,7 @@ def _overpass(query: str) -> dict:
 
         if resp.status_code in _BACK_OFF_STATUSES:
             mark_cooling(host, _COOLDOWN_RATE_LIMITED_S)
+            OVERPASS_REQUESTS.labels(purpose, "back_off").inc()
             attempts.append(f"{url}: HTTP {resp.status_code} after {elapsed:.1f}s")
             _log.warning(
                 "overpass %s returned %d after %.1fs — backing off for %ds",
@@ -1509,6 +1640,7 @@ def _overpass(query: str) -> dict:
             # A 4xx that is not a rate limit is about this query, not this host,
             # so another endpoint will reject it identically — but do not cool a
             # host over our own malformed request either.
+            OVERPASS_REQUESTS.labels(purpose, "client_error").inc()
             attempts.append(f"{url}: HTTP {resp.status_code} after {elapsed:.1f}s")
             _log.info("overpass %s returned %d after %.1fs",
                       url, resp.status_code, elapsed)
@@ -1518,10 +1650,12 @@ def _overpass(query: str) -> dict:
         except ValueError:
             body = (resp.text or "")[:120].replace(chr(10), " ")
             mark_cooling(host, _COOLDOWN_RATE_LIMITED_S)
+            OVERPASS_REQUESTS.labels(purpose, "bad_body").inc()
             attempts.append(f"{url}: unparseable body after {elapsed:.1f}s")
             _log.warning("overpass %s returned an unparseable body after %.1fs: %r",
                          url, elapsed, body)
             continue
+        OVERPASS_REQUESTS.labels(purpose, "ok").inc()
         _log.info("overpass %s ok in %.1fs (%d bytes)",
                   url, elapsed, len(resp.content))
         # Cache the body rather than the parsed dict: it is what we already
