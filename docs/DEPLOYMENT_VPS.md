@@ -1135,19 +1135,30 @@ docker compose run --rm --entrypoint python traxjourney \
 Expect `N installed, 0 up to date`. Two cases:
 
 - **Back from the ferry/bus image (store schema 4) to the layers image (schema
-  3).** The command above is all it takes: the layers image reads manifest
-  schemas 2 and 3, so no `--tag` is needed.
+  3).** While no release with ferry or bus entries has been published
+  (`RAIL_PUBLISH_LAYERS` still `rail`), the command above is all it takes: the
+  layers image reads manifest schemas 2 and 3. Once ferry or bus are published,
+  add `--tag <the last release with no ferry or bus entries>` — otherwise the
+  layers image installs every layer of the latest manifest and tries to build
+  Germany's bus store with the old builder, which runs out of memory — and
+  switch the variable back so the next scheduled release does not reintroduce
+  them: `gh variable set RAIL_PUBLISH_LAYERS --body rail`. The layers image
+  never resolves ferry or bus locally, so it loses nothing by not installing
+  them.
 - **Back past the layers image as well, to an image at store schema 2.** Once
-  the workflow publishes releases with ferry and bus layers (manifest schema 3),
-  that older image refuses those manifests outright (`manifest schema 3,
-  expected 2`) and installs nothing — add `--tag <the last release whose
-  manifest is schema 2>` to the command. To find it, newest first:
+  part 2's workflow has published any release (it writes manifest schema 3,
+  rail-only releases included), that older image refuses those manifests
+  outright (`manifest schema 3, expected 2`) and installs nothing — add `--tag
+  <the last release whose manifest is schema 2>` to the command.
+
+To find the tag for either case, run the loop below, newest first. It prints
+each release's manifest schema and the layers it carries: for the first case
+take the newest release whose layers are only `['rail']`, for the second the
+newest whose schema is 2.
 
 ```bash
-for t in $(gh release list --repo rui-nar/TraxJourney --limit 100 \
-           --json tagName -q '.[].tagName' | grep '^rail-data-'); do
-  echo "$t $(gh release download "$t" --repo rui-nar/TraxJourney \
-              -p manifest.json -O - | python3 -c 'import json,sys;print(json.load(sys.stdin)["schema"])')"
+for t in $(gh release list --repo rui-nar/TraxJourney --limit 100            --json tagName -q '.[].tagName' | grep '^rail-data-'); do
+  echo "$t $(gh release download "$t" --repo rui-nar/TraxJourney               -p manifest.json -O - | python3 -c 'import json,sys;m=json.load(sys.stdin);print(m["schema"], sorted({e.get("layer","rail") for e in m["regions"]}))')"
 done
 ```
 
