@@ -212,9 +212,7 @@ class SharedProjectNotifier extends ProjectNotifier {
   }
 
   Future<void> loadShared() async {
-    isMetaLoaded = false;
-    isElevationLoaded = false;
-    isGeoLoaded = false;
+    resetProgressiveFlags();
 
     // Phase 1: load() calls _sharedSvc.getDetailsMeta() which returns the
     // lightweight /meta response in ~1 s.  isLoading goes false after that.

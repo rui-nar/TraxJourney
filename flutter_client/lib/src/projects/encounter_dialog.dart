@@ -230,7 +230,7 @@ class _EncounterDialogState extends State<EncounterDialog> {
         title: 'Pick encounter location',
         initialLat: _lat,
         initialLon: _lon,
-        geo: widget.notifier.geo,
+        geo: widget.notifier.geoFacet.geo,
       ),
     );
     if (result != null && mounted) {

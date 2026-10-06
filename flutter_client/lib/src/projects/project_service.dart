@@ -173,11 +173,15 @@ class ProjectService {
     // Ask the geometry, not the cache: L1 residency does not imply the decode
     // hop ever ran over this Map (see geoGeometrySeeded).
     if (cached != null && geoGeometrySeeded(cached)) return cached;
+    // Read before the bytes: an edit's /meta landing during the decode makes
+    // them stale, and they must not become L1's answer (issue #379).
+    final lockVersion = projectDataCache.lockVersionOf(ref);
     final bytes = await projectDataCache.readFullGeoBytes(ref);
     if (bytes != null) {
       final geo = await perfSpans.stage(
           'decode_geo_cached', () => heavy.decodeGeoOffIsolate(bytes));
-      projectDataCache.promoteFullGeo(ref, geo, scope: scope);
+      projectDataCache.promoteFullGeo(ref, geo,
+          scope: scope, lockVersion: lockVersion);
       return geo;
     }
     return cached;
@@ -200,8 +204,11 @@ class ProjectService {
       if (cached != null) return cached;
     }
     return _dedupFetch('geo:${ref.ownerId ?? 0}:${ref.name}', () async {
+      // The version the answer is for, read before the request (issue #379).
+      final lockVersion = projectDataCache.lockVersionOf(ref);
       final expanded = await _fetchFullGeo(ref);
-      projectDataCache.writeFullGeo(ref, expanded, scope: scope);
+      projectDataCache.writeFullGeo(ref, expanded,
+          scope: scope, lockVersion: lockVersion);
       return expanded;
     });
   }
@@ -284,6 +291,20 @@ class ProjectService {
         () => fetchSimplifiedGeo(ref, zoom, bbox));
   }
 
+  /// The same answer as [getSimplifiedGeo], from a request of its own that
+  /// never joins one already in flight, and that no later caller joins.
+  ///
+  /// For the refresh after a write (issue #379): an identical request already
+  /// in flight may have started before the write, and its answer would show
+  /// the trip as it was. The server's simplified answers are invalidated by
+  /// every write, so a request sent after the write sees it.
+  ///
+  /// A method of its own rather than a parameter of [getSimplifiedGeo], so the
+  /// test fakes overriding that one keep compiling.
+  Future<Map<String, dynamic>> getSimplifiedGeoFresh(
+          ProjectRef ref, double zoom, {GeoBox? bbox}) =>
+      fetchSimplifiedGeo(ref, zoom, bbox);
+
   /// The request [getSimplifiedGeo] deduplicates. Override *this*, not
   /// [getSimplifiedGeo], to serve the same answer from a different endpoint —
   /// the share-token one does (issue #321) — and the dedup, and its key, stay
@@ -319,6 +340,8 @@ class ProjectService {
     final cached = await projectDataCache.readLowResGeo(ref);
     if (cached != null) return cached;
     return _dedupFetch('lowResGeo:${ref.ownerId ?? 0}:${ref.name}', () async {
+      // The version the answer is for, read before the request (issue #379).
+      final lockVersion = projectDataCache.lockVersionOf(ref);
       final encoded = Uri.encodeComponent(ref.name);
       final bytes = await perfSpans.stage(
           'fetch_low_res_geo',
@@ -332,7 +355,8 @@ class ProjectService {
       // it needs the same derive-and-seed treatment as the full-res geo.
       final data = await perfSpans.stage(
           'decode_low_res_geo', () => heavy.decodeGeoOffIsolate(bytes));
-      projectDataCache.writeLowResGeo(ref, data, scope: scope);
+      projectDataCache.writeLowResGeo(ref, data,
+          scope: scope, lockVersion: lockVersion);
       return data;
     });
   }

@@ -46,7 +46,7 @@ Map<String, dynamic> _geo({required String routeStatus}) => {
 ProjectNotifier _notifier({required String routeStatus}) =>
     ProjectNotifier(ProjectService())
       ..ref = const ProjectRef(name: 'Trip')
-      ..geo = _geo(routeStatus: routeStatus)
+      ..geoFacetWriter.replaceKeepingLod(_geo(routeStatus: routeStatus))
       ..items = [
         {
           'item_type': 'segment',

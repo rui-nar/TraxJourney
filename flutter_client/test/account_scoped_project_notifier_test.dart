@@ -320,7 +320,7 @@ void main() {
     });
     await tester.pump();
 
-    final features = app.notifier.geo?['features'] as List? ?? const [];
+    final features = app.notifier.geoFacet.geo?['features'] as List? ?? const [];
     expect(
         features.where((f) => (f as Map)['properties']?['segment_id'] == 's1'),
         isEmpty,

@@ -103,7 +103,7 @@ ApiClient _api(_Calls calls,
     );
 
 int _pointsOf(ProjectNotifier n) {
-  final features = n.geo?['features'] as List?;
+  final features = n.geoFacet.geo?['features'] as List?;
   if (features == null || features.isEmpty) return 0;
   return (features.first['geometry']['coordinates'] as List?)?.length ?? 0;
 }

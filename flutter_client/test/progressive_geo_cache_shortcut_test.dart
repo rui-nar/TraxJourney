@@ -137,9 +137,9 @@ void main() {
     expect(service.seedCalls, 0,
         reason: 'nothing to seed: the device already has the full payload, '
             'and the seed only follows a successful simplified fetch');
-    expect(notifier.isGeoLoaded, isTrue);
-    expect(notifier.geo?['features'], hasLength(1));
-    expect((notifier.geo?['features'] as List).first['properties']['activity_id'], '111');
+    expect(notifier.geoFacet.isLoaded, isTrue);
+    expect(notifier.geoFacet.geo?['features'], hasLength(1));
+    expect((notifier.geoFacet.geo?['features'] as List).first['properties']['activity_id'], '111');
   });
 
   test('a warm full-geo cache is a fallback, not a shortcut past the load',
@@ -160,7 +160,7 @@ void main() {
     expect(service.simplifiedCalls, 1,
         reason: 'the load asks for the zoom on screen even when a '
             'full-resolution row is on file');
-    expect((notifier.geo?['features'] as List).first['properties']['activity_id'], '222',
+    expect((notifier.geoFacet.geo?['features'] as List).first['properties']['activity_id'], '222',
         reason: 'the simplified payload is what gets rendered');
     expect(service.getGeoCalls, 0,
         reason: 'the cached branch is skipped, not replaced by a fetch');

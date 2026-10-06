@@ -77,7 +77,7 @@ void main() {
     api = _failingDelete(409);
     final notifier = _notifier()
       ..items = [_activityItem('a'), _segmentItem('s1'), _activityItem('b')]
-      ..geo = _geoWith(['s1']);
+      ..geoFacetWriter.replaceKeepingLod(_geoWith(['s1']));
 
     notifier.removeSegmentLocally('s1');
     expect(notifier.items.map((i) => i['item_type']), ['activity', 'activity']);
@@ -94,14 +94,14 @@ void main() {
     api = _failingDelete(500);
     final notifier = _notifier()
       ..items = [_segmentItem('s1')]
-      ..geo = _geoWith(['s1']);
+      ..geoFacetWriter.replaceKeepingLod(_geoWith(['s1']));
 
     notifier.removeSegmentLocally('s1');
-    expect((notifier.geo!['features'] as List), isEmpty);
+    expect((notifier.geoFacet.geo!['features'] as List), isEmpty);
 
     await notifier.deleteSegment('s1');
 
-    final ids = (notifier.geo!['features'] as List)
+    final ids = (notifier.geoFacet.geo!['features'] as List)
         .map((f) => (f as Map)['properties']['segment_id'])
         .toList();
     expect(ids, ['s1'],
@@ -112,7 +112,7 @@ void main() {
     api = _failingDelete(409);
     final notifier = _notifier()
       ..items = [_segmentItem('s1')]
-      ..geo = _geoWith(['s1']);
+      ..geoFacetWriter.replaceKeepingLod(_geoWith(['s1']));
 
     var notified = false;
     notifier.addListener(() => notified = true);
@@ -128,7 +128,7 @@ void main() {
     api = _failingDelete(404);
     final notifier = _notifier()
       ..items = [_segmentItem('s1')]
-      ..geo = _geoWith(['s1']);
+      ..geoFacetWriter.replaceKeepingLod(_geoWith(['s1']));
 
     notifier.removeSegmentLocally('s1');
 
@@ -144,7 +144,7 @@ void main() {
         httpClient: MockClient((_) async => http.Response('', 204)));
     final notifier = _notifier()
       ..items = [_segmentItem('s1'), _segmentItem('s2')]
-      ..geo = _geoWith(['s1', 's2']);
+      ..geoFacetWriter.replaceKeepingLod(_geoWith(['s1', 's2']));
 
     notifier.removeSegmentLocally('s1');
     await notifier.deleteSegment('s1');
@@ -158,7 +158,7 @@ void main() {
     api = _failingDelete(409);
     final notifier = _notifier()
       ..items = [_segmentItem('s1')]
-      ..geo = _geoWith(['s1']);
+      ..geoFacetWriter.replaceKeepingLod(_geoWith(['s1']));
 
     notifier.removeSegmentLocally('s1');
     // Something else (an Undo, a poll) reloaded the list from the server while

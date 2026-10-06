@@ -13,16 +13,30 @@ import 'package:flutter/foundation.dart';
 
 import '../api/client.dart';
 import '../core/project_ref.dart';
+import 'facets/project_facet.dart';
 import 'project_data_cache.dart';
 import 'project_service.dart';
+
+/// A server geometry answer, as [ProjectSegmentCrudMixin.fetchServerGeo]
+/// returns it.
+///
+/// - [requestedAt]: the start of the oldest geo request in flight when this
+///   one started, for [ProjectSegmentCrudMixin.reconcileSegmentOverlay].
+/// - [servedFrom]: the start of the request that produced [geo] — this one's,
+///   or the one it joined — for `GeoFacetWriter.replace`.
+typedef ServerGeo = ({
+  Map<String, dynamic> geo,
+  int requestedAt,
+  int servedFrom,
+});
 
 mixin ProjectSegmentCrudMixin on ChangeNotifier {
   // ── Abstract: project state (satisfied by ProjectNotifier fields) ──────────
   ProjectRef? get projectRef;
   List<Map<String, dynamic>> get items;
   set items(List<Map<String, dynamic>> v);
-  Map<String, dynamic>? get geo;
-  set geo(Map<String, dynamic>? v);
+  /// The geometry facet's writer — satisfied by ProjectNotifier's.
+  GeoFacetWriter get geoFacetWriter;
   String? get error;
   set error(String? v);
 
@@ -39,6 +53,11 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
   /// False once the notifier is disposed — satisfied by ProjectNotifier.
   bool get isAlive;
 
+  /// Shows the server's geometry for [ref] after a write, at the level of
+  /// detail on screen (issue #379) — satisfied by ProjectNotifier. Dropped if
+  /// [stale] is true once the answer is in.
+  Future<void> refreshGeoAfterMutation(ProjectRef ref, bool Function() stale);
+
   /// If [e] is a 409 optimistic-lock conflict, resync items + geo from the
   /// server (discarding the optimistic change) and surface a soft retry
   /// message. Returns true when the conflict was handled.
@@ -54,17 +73,9 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
     if (!_sameTrip(projectRef, ref)) return true;
     try {
       await reloadDetailsOnly(ref);
-      final fetched =
-          await fetchServerGeo(() => service.getGeo(ref, bypassCache: true));
       // The overlay belongs to whatever trip is open now, under this account.
-      if (projectDataCache.scope == scope && _sameTrip(projectRef, ref)) {
-        reconcileSegmentOverlay(fetched.geo, requestedAt: fetched.requestedAt);
-        geo = {
-          'type': 'FeatureCollection',
-          'features': mergePendingSegmentPatches(
-              List<dynamic>.from(fetched.geo['features'] as List? ?? [])),
-        };
-      }
+      await refreshGeoAfterMutation(ref,
+          () => projectDataCache.scope != scope || !_sameTrip(projectRef, ref));
     } catch (_) {
       // Best-effort resync; the next load will reconcile regardless.
     }
@@ -685,7 +696,8 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
 
   /// The [geo] feature for [segId], if geo is loaded and carries one.
   Map<String, dynamic>? _geoFeature(String segId) {
-    for (final f in (geo?['features'] as List? ?? const [])) {
+    for (final f in (geoFacetWriter.facet.geo?['features'] as List? ??
+        const [])) {
       if (f is Map && f['properties']?['segment_id']?.toString() == segId) {
         return Map<String, dynamic>.from(f);
       }
@@ -733,14 +745,28 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
   /// view-mode and the app-wide one coexisting — so this one's answer may be
   /// that older request's (I1-R3-3). Erring early only keeps a patch until a
   /// later request settles it; erring late would let a stale answer drop it.
-  Future<({Map<String, dynamic> geo, int requestedAt})> fetchServerGeo(
+  ///
+  /// It also returns `servedFrom`, the start of the request that produced the
+  /// answer, which orders answers against each other (Decision 24 of
+  /// docs/CLIENT_STATE_MAP_PLAN.md): this request's own start, or — when
+  /// [fetch] hands back the very Future of a request already in flight, as the
+  /// service's dedup does — that request's start, because its answer is the
+  /// one this caller gets. A join the service hides behind a Future of its own
+  /// (an `async` wrapper) reads as a request of its own, which errs late.
+  Future<ServerGeo> fetchServerGeo(
       Future<Map<String, dynamic>> Function() fetch) async {
     final request = _GeoRequest(++_overlayClock);
     final requestedAt = _geoRequestsInFlight.fold(
         request.startedAt, (int at, r) => math.min(at, r.startedAt));
     _geoRequestsInFlight.add(request);
     try {
-      return (geo: await fetch(), requestedAt: requestedAt);
+      final answer = fetch();
+      final sentBy = _geoRequestOf[answer] ??= request;
+      return (
+        geo: await answer,
+        requestedAt: requestedAt,
+        servedFrom: sentBy.startedAt,
+      );
     } finally {
       _geoRequestsInFlight.remove(request);
     }
@@ -751,7 +777,7 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
     _pendingSegmentPatches[segId] = feature;
     _patchAppliedAt[segId] = ++_overlayClock;
     _segmentTombstones.remove(segId);
-    final current = geo;
+    final current = geoFacetWriter.facet.geo;
     if (current == null) return; // overlay re-applies it when geo is rebuilt
     final features = List<dynamic>.from(current['features'] as List? ?? []);
     final idx = features.indexWhere(
@@ -761,7 +787,8 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
     } else {
       features.add(feature);
     }
-    geo = {'type': 'FeatureCollection', 'features': features};
+    geoFacetWriter
+        .replaceKeepingLod({'type': 'FeatureCollection', 'features': features});
   }
 
   /// Remove a segment feature from [geo] by segment_id.
@@ -769,12 +796,13 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
     _pendingSegmentPatches.remove(segId);
     _patchAppliedAt.remove(segId);
     _segmentTombstones.add(segId);
-    final current = geo;
+    final current = geoFacetWriter.facet.geo;
     if (current == null) return;
     final features = List<dynamic>.from(current['features'] as List? ?? []);
     features.removeWhere(
         (f) => (f as Map)['properties']?['segment_id']?.toString() == segId);
-    geo = {'type': 'FeatureCollection', 'features': features};
+    geoFacetWriter
+        .replaceKeepingLod({'type': 'FeatureCollection', 'features': features});
   }
 
   /// Merge the durable overlay onto a freshly-rebuilt feature [list]: drop
@@ -959,6 +987,12 @@ int _overlayClock = 0;
 /// early, a request joining one of them would look newer than the answer it
 /// gets. Holds start readings only.
 final Set<_GeoRequest> _geoRequestsInFlight = {};
+
+/// The request that produced each answer Future [ProjectSegmentCrudMixin.fetchServerGeo]
+/// has handed out, so a caller handed the same Future knows it joined that
+/// request. An Expando, so an answer settled and dropped takes its entry with
+/// it.
+final Expando<_GeoRequest> _geoRequestOf = Expando('geo request');
 
 /// A server geo request in flight. See [ProjectSegmentCrudMixin.fetchServerGeo].
 /// An object rather than its start value, so each request removes only itself.

@@ -75,7 +75,7 @@ void main() {
 
     final notifier = ProjectNotifier(ProjectService());
     notifier.activities = activities;
-    notifier.geo = geo;
+    notifier.geoFacetWriter.replaceKeepingLod(geo);
 
     flatCoordsConversionCount = 0;
     await notifier.buildFullTrack();
@@ -101,7 +101,7 @@ void main() {
 
     final notifier = ProjectNotifier(ProjectService());
     notifier.activities = activities;
-    notifier.geo = geo;
+    notifier.geoFacetWriter.replaceKeepingLod(geo);
 
     flatCoordsConversionCount = 0;
     await notifier.buildFullTrack();
@@ -123,7 +123,7 @@ void main() {
     final geo = await decodeGeoOffIsolate(small);
     final notifier = ProjectNotifier(ProjectService());
     notifier.activities = _activities(2, 5);
-    notifier.geo = geo;
+    notifier.geoFacetWriter.replaceKeepingLod(geo);
 
     flatCoordsConversionCount = 0;
     await notifier.buildFullTrack();

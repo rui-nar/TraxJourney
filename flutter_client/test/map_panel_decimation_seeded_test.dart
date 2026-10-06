@@ -57,7 +57,7 @@ Map<String, dynamic> _rawGeo() => {
 ProjectNotifier _notifier(Map<String, dynamic> geo) =>
     ProjectNotifier(ProjectService())
       ..ref = const ProjectRef(name: 'Trip')
-      ..geo = geo
+      ..geoFacetWriter.replaceKeepingLod(geo)
       ..activities = [
         for (var a = 0; a < _acts; a++)
           {'id': a, 'start_date_local': '2026-06-01T08:00:00'}

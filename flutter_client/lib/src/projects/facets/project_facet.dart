@@ -31,6 +31,8 @@ library;
 
 import 'package:flutter/foundation.dart';
 
+import '../geo_viewport.dart' show GeoBox;
+
 part 'elevation_facet.dart';
 part 'geo_facet.dart';
 part 'items_facet.dart';

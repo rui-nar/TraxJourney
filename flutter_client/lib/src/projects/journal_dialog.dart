@@ -133,7 +133,7 @@ class _JournalDialogState extends State<JournalDialog> {
         title: 'Pick journal location',
         initialLat: _customLat,
         initialLon: _customLon,
-        geo: widget.notifier.geo,
+        geo: widget.notifier.geoFacet.geo,
       ),
     );
     if (result != null && mounted) {

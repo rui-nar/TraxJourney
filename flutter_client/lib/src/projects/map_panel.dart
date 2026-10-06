@@ -1529,7 +1529,7 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
 
   void _onMapTap(LatLng latlng) {
     widget.onClearFocusedLocation?.call();
-    final geo = widget.notifier.geo;
+    final geo = widget.notifier.geoFacet.geo;
     final zoom = widget.mapController.mapController.camera.zoom;
     final pixelDeg = 360.0 / (pow(2.0, zoom) * 256.0);
     final args = (
@@ -1574,7 +1574,7 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
     final notifier = widget.notifier;
 
     // Recompute polylines only when geo, selection, or track style changes.
-    final geo = notifier.geo;
+    final geo = notifier.geoFacet.geo;
     final selActId = notifier.selectedActivityId;
     final selSegId = notifier.selectedSegmentId;
     final selDay = notifier.selectedDay;
@@ -2482,7 +2482,7 @@ class ManageMapPanelState extends State<ManageMapPanel>
 
   void _onMapTap(LatLng latlng) {
     widget.onClearFocusedLocation?.call();
-    final geo = widget.notifier.geo;
+    final geo = widget.notifier.geoFacet.geo;
     final zoom = widget.mapController.mapController.camera.zoom;
     final pixelDeg = 360.0 / (pow(2.0, zoom) * 256.0);
     final args = (
@@ -2567,7 +2567,7 @@ class ManageMapPanelState extends State<ManageMapPanel>
     final perfSw = kPerfTiming ? (Stopwatch()..start()) : null;
     var perfRebuiltLayers = false;
     final notifier = widget.notifier;
-    final geo = notifier.geo;
+    final geo = notifier.geoFacet.geo;
     final selActId = notifier.selectedActivityId;
     final selSegId = notifier.selectedSegmentId;
     final selDay = notifier.selectedDay;

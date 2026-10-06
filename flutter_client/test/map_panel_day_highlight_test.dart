@@ -49,7 +49,7 @@ Map<String, dynamic> _geo() => {
 ProjectNotifier _notifier({required String selectedDay}) =>
     ProjectNotifier(ProjectService())
       ..ref = const ProjectRef(name: 'Trip')
-      ..geo = _geo()
+      ..geoFacetWriter.replaceKeepingLod(_geo())
       ..activities = [
         {'id': 1, 'start_date_local': '2026-06-01T08:00:00'},
         {'id': 2, 'start_date_local': '2026-06-02T08:00:00'},

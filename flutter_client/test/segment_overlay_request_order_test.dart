@@ -110,6 +110,12 @@ class _Server extends ProjectService {
     return Future.value(_copy(geo));
   }
 
+  /// The refresh after a write asks for its own request (issue #379).
+  @override
+  Future<Map<String, dynamic>> getSimplifiedGeoFresh(ProjectRef ref, double zoom,
+          {Object? bbox}) async =>
+      _copy(geo);
+
   @override
   Future<Map<String, dynamic>> getGeo(ProjectRef ref,
           {bool bypassCache = false}) async =>
@@ -137,7 +143,7 @@ List<dynamic> _drawn(List<dynamic> features) {
 }
 
 List<dynamic> _drawnOnMap(ProjectNotifier n) =>
-    _drawn(n.geo!['features'] as List);
+    _drawn(n.geoFacet.geo!['features'] as List);
 
 /// Loads the trip and applies route A the way the resolve poller does.
 Future<(_Server, ProjectNotifier)> _loadedWithRouteA(
@@ -247,7 +253,7 @@ void main() {
 
     // Every later rebuild re-applies the overlay over what the server sent.
     final rebuilt = n.mergePendingSegmentPatches(
-        List<dynamic>.from(n.geo!['features'] as List));
+        List<dynamic>.from(n.geoFacet.geo!['features'] as List));
     expect(_drawn(rebuilt)[1], [0.4, 0.9],
         reason: 'route A must not come back over the server route');
     n.dispose();

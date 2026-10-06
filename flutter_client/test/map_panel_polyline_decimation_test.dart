@@ -62,7 +62,7 @@ void main() {
 
     final notifier = ProjectNotifier(ProjectService())
       ..ref = const ProjectRef(name: 'Trip')
-      ..geo = _largeGeo()
+      ..geoFacetWriter.replaceKeepingLod(_largeGeo())
       ..isLoading = false;
     final controller = AnimatedMapController(vsync: const TestVSync());
     addTearDown(controller.dispose);
