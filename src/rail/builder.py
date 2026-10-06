@@ -125,8 +125,9 @@ CREATE INDEX relation_way_way ON relation_way(way_id);
 -- sequence. `relation_uic` below answers "does this relation serve both these
 -- codes" and is the index for that question; it is a set, so it cannot answer
 -- "in what order", which is what routing a leg through its intermediate stops
--- needs. Only nodes the extract carries have a location — Phase 1 keeps nodes
--- with a `uic_ref` and station/halt nodes — so an ordinary stop node is named
+-- needs. Only nodes the extract carries have a location — on rail, Phase 1
+-- keeps nodes with a `uic_ref` and station/halt nodes (#570); on ferry and bus
+-- it keeps every stop the source holds — so a stop node it lacks is named
 -- here with NULL lat/lon rather than dropped, because the *sequence* is the
 -- point and a hole in it is not the same as a shorter route.
 CREATE TABLE relation_node (
@@ -240,10 +241,11 @@ def build_store(
         "nodes": 0, "stations": 0, "relations": 0,
         "relation_ways": 0, "relation_ways_held": 0,
         # Node members of route relations, and how many of them the extract can
-        # place. Most cannot be: Phase 1 keeps nodes carrying a uic_ref, so an
-        # ordinary stop node is recorded in sequence with no location. The ratio
-        # is the honest measure of how much of a relation's calling pattern this
-        # region actually knows.
+        # place. On rail most cannot be: Phase 1 keeps nodes carrying a uic_ref,
+        # so an ordinary stop node is recorded in sequence with no location
+        # (#570). Ferry and bus files carry every stop their source holds. The
+        # ratio is the honest measure of how much of a relation's calling
+        # pattern this region actually knows.
         "relation_nodes": 0, "relation_nodes_located": 0,
         # Nodes a way references that the extract does not locate. Dropping one
         # welds its neighbours together, which silently moves the geometry, so
@@ -270,9 +272,17 @@ def build_store(
     # the decoder busy at no measured cost. Read from the environment when the
     # reader opens, so an operator's own setting still wins.
     os.environ.setdefault("OSMIUM_MAX_OSMDATA_QUEUE_SIZE", "2")
+    reader = osmium.FileProcessor(str(pbf_path)).with_locations()
+    # Ferry and bus place a relation's stops from the location cache the way
+    # geometry is read through, which holds every node in the file: Phase 1
+    # writes those layers' stops located, with or without a uic_ref, and
+    # strategy A bridges a broken relation only towards a stop it can place.
+    # Rail places only the uic_ref nodes it always has — its stops are #570,
+    # and a rail store must not change under it.
+    stop_locations = None if layer == "rail" else reader.node_location_storage
     # Nodes, then ways, then relations — PBF order, so the uic map is complete
     # by the time relations need it and one pass is enough.
-    for obj in osmium.FileProcessor(str(pbf_path)).with_locations():
+    for obj in reader:
         tags = obj.tags
         uic = tags.get("uic_ref")
         is_station = bool(uic) and tags.get("railway") in _STATION_VALUES
@@ -337,6 +347,13 @@ def build_store(
                 elif member.type == "n":
                     member_uic = node_uic.get(member.ref)
                     loc = node_loc.get(member.ref)
+                    if loc is None and stop_locations is not None:
+                        try:
+                            where = stop_locations.get(member.ref)
+                        except KeyError:   # not in the file: across a border
+                            pass
+                        else:
+                            loc = (where.lat, where.lon)
                     # Every node member, in order, located or not — see the
                     # relation_node comment in _SCHEMA. `relation_uic` below is
                     # unchanged and still deduplicated: strategy A's pair query

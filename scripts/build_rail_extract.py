@@ -187,7 +187,12 @@ def is_station(tags: Mapping[str, str]) -> bool:
 #   C  way["ferry"="yes"]         _via_ferry_yes_fallback, ferry only
 #
 # No node row: neither mode looks anything up by UIC code or asks for a
-# station, so a layer's nodes are its ways' and nothing else.
+# station. A layer's nodes are its ways', and its relations' node members —
+# the stops. `out geom` returns those located, and strategy A's bridge
+# (_bridge_to_named_stops) joins a relation broken near a leg's end only towards
+# a stop the relation names there: without them a broken bus route is drawn
+# from whichever piece is longest, kilometres off its first stop. The resolver
+# reads where a stop is and nothing else; it carries LAYER_TAGS like any node.
 def is_ferry_route(tags: Mapping[str, str]) -> bool:
     """``route=ferry`` — strategy A's relations and strategy B's ways alike."""
     return tags.get("route") == "ferry"
@@ -300,6 +305,11 @@ class Selection:
     # `out geom` parity, never track to route over — phase 2 flags them without
     # bit 0. On bus they are the roads the routes run on, and most of the file.
     member_ways: int
+    # Ferry and bus: node members of the layer's relations — its stops — that
+    # the file holds, located. Not in the manifest; in the build log, because a
+    # zero here is what a broken stop closure looks like. Always 0 on rail,
+    # whose relations' stops are #570.
+    stop_nodes: int
     # Members of kept relations that this extract does not contain at all —
     # ways on the far side of a border, which live in the neighbouring
     # country's file. No filter can close that; it is phase 3's cross-border
@@ -452,7 +462,9 @@ def prefilter(source: Path, dest: Path) -> Path:
 
     Referenced objects are kept — the default — because a way without its nodes
     has no geometry, and neither has a station relation without its member
-    ways, nor a bus route without the roads it runs on.
+    ways, nor a bus route without the roads it runs on. The same completion
+    keeps a matching relation's node members, which are the ferry and bus
+    layers' stops.
     """
     if shutil.which("osmium") is None:
         raise RuntimeError(
@@ -493,9 +505,9 @@ def select(source: Path, dests: Mapping[str, Path]) -> dict[str, Selection]:
     ordered nodes, ways, relations and two of the things kept are only known
     from further down that order:
 
-    1. relations — which member ways a kept relation needs: a station mapped
-       as a polygon has no position of its own, and a bus route is nothing but
-       the roads it names;
+    1. relations — which members a kept relation needs: a station mapped as a
+       polygon has no position of its own, a bus route is nothing but the
+       roads it names, and a ferry or bus route's node members are its stops;
     2. ways — which nodes the kept ways need, for the same reason one level
        down. Only the kept ways: taking every node the prefilter over-selected
        would drag the file back up to the prefilter's size.
@@ -505,8 +517,8 @@ def select(source: Path, dests: Mapping[str, Path]) -> dict[str, Selection]:
     dense bitset allocated in chunks across the id range, and a country's nodes
     are scattered over all 13 billion ids — 300,000 of them cost 1.5 GB, and
     Denmark's three layers peaked at 8.1 GB. A bus layer's nodes are millions
-    of road nodes, so ferry and bus share one set for "kept" and "routable":
-    they keep nothing else.
+    of road nodes, so ferry and bus share one set for "kept" and "routable",
+    and hold their stops — a few per route — in a set of their own.
 
     Per-object OSM metadata (version, timestamp, changeset, user) is dropped:
     nothing downstream reads it and it is ~15 % of the file. Ferry and bus
@@ -528,6 +540,10 @@ def select(source: Path, dests: Mapping[str, Path]) -> dict[str, Selection]:
     # is six slots. Both numbers are reported (see Selection).
     member_slot_counts: dict[str, Counter[int]] = {layer: Counter() for layer in layers}
     wanted_nodes: dict[str, set[int]] = {layer: set() for layer in layers}
+    # Ferry and bus stops, apart from `wanted_nodes`: that set is also those
+    # layers' routable nodes, which the bbox is measured over, and a stop is
+    # not a way the store measures.
+    stop_nodes: dict[str, set[int]] = {layer: set() for layer in layers}
     for rel in osmium.FileProcessor(str(source), osmium.osm.RELATION):
         for layer in layers:
             if not keeps_relation(layer, rel.tags):
@@ -538,6 +554,8 @@ def select(source: Path, dests: Mapping[str, Path]) -> dict[str, Selection]:
                     member_slot_counts[layer][member.ref] += 1
                 elif member.type == "n" and station:
                     wanted_nodes[layer].add(member.ref)
+                elif member.type == "n" and layer != RAIL:
+                    stop_nodes[layer].add(member.ref)
 
     # The nodes each bbox is measured over: the routable ways' own, no others.
     # Ferry and bus keep only their routable set, so for them it is the same
@@ -575,8 +593,10 @@ def select(source: Path, dests: Mapping[str, Path]) -> dict[str, Selection]:
                 for layer in layers:
                     # Rail's node row: every uic_ref, wherever it is.
                     uic = layer == RAIL and is_uic_node(tags)
-                    if not uic and obj.id not in wanted_nodes[layer]:
+                    stop = obj.id in stop_nodes[layer]
+                    if not uic and not stop and obj.id not in wanted_nodes[layer]:
                         continue
+                    counts[layer]["stop_nodes"] += stop
                     if layer == RAIL:
                         counts[layer]["uic_nodes"] += uic
                         counts[layer]["stations"] += is_station(tags)
@@ -637,6 +657,7 @@ def select(source: Path, dests: Mapping[str, Path]) -> dict[str, Selection]:
             stations=c["stations"],
             uic_nodes=c["uic_nodes"],
             member_ways=c["member_ways"],
+            stop_nodes=c["stop_nodes"],
             member_ways_missing=len(slots) - len(held),
             member_slots_missing=sum(
                 count for way_id, count in slots.items() if way_id not in held
@@ -827,7 +848,7 @@ def build(
             f"[{slug} {layer}] {size}, status={entry['status']} "
             f"ways={selection.ways} relations={selection.relations} "
             f"stations={selection.stations} uic_nodes={selection.uic_nodes} "
-            f"member_ways={selection.member_ways} "
+            f"member_ways={selection.member_ways} stop_nodes={selection.stop_nodes} "
             f"member_ways_missing={selection.member_ways_missing} distinct ids "
             f"({selection.member_slots_missing} of {selection.member_slots} "
             f"membership slots) bbox={selection.bbox} source_date={date} "
