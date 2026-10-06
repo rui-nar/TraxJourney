@@ -346,6 +346,14 @@ No findings. Backfill traced against reset_activity_track branch by branch; SQLi
 | U13 | Dart track_metrics port | Sonnet | — | 1 | — | yes | — |
 | U9 | Poster consent dialog | Sonnet | — | 1 | X3 → Scope corrected (plan paths wrong; new poster_consent_dialog.dart, app_screen `_startPosterJob`) | yes | — |
 | U7 | Catch-up encryption and companion repair on load | Opus | S5 | 2 (fix round U7-R1-1) | — | yes | U7-R1-1, U7-R1-2, U7-R1-3 |
+| U15 | `has_gain_snapshot` in the trip payload (owner decision: #366 legacy rows only) | Opus | S4 | 1 | — | yes | — |
+| U8 | Encrypted gain recompute in the catch-up | Opus | S5 | 3 (legacy-only rule after owner decision; fix round U8-R1-1) | — | yes | U8-R1-1 |
+| U14 | Encrypted track editing on the device, stays-unencrypted notice | Opus | S5 | 2 (fix round U14-R1-1) | — | yes | U14-R1-1, U14-R1-2 |
+| U10 | ENCRYPTION.md | Sonnet | — | 4 (I1-4, I2-1a, I3-3, I4-2 fix rounds) | — | yes | I1-4, I2-1a, I3-3, I4-2 |
+| U16 | Server refuses envelopes on rows another user's trip holds; `shared_with_others` (decision 15) | Opus | S4 | 1 | — | yes | I2-1b |
+| U17 | Catch-up skips and repairs shared rows | Opus | S5 | 1 | — | yes | I2-1b |
+| U18 | CAS on a trip the caller edits; cache refresh per trip owner | Opus | S4 | 2 (orchestrator widened Scope for the cache refresh) | X3 → Scope widened | yes | I3-1 |
+| U19 | Non-owner pass repairs own envelopes; enable-screen wording | Opus | S5 | 1 | — | yes | I3-1, I3-2 |
 
 Notes:
 - Wave 1 interrupted once by an API session limit; all four implementers resumed from their worktrees with no work lost.
@@ -463,14 +471,14 @@ Owner decisions (2026-10-06): integrated-review table approved as is; the plan's
 - Scores: trigger=concrete, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
 - Decision: Fix now (D7)
 - Override: —
-- Outcome: open
+- Outcome: fixed (99ee7cd1)
 
 ### I2-1b — An encrypted user's own ride shared into a friend's plaintext trip is enveloped by their catch-up
 - Trigger: encrypted companion's own Strava/GPX row is in their trip and a friend's → owner-branch pass PUTs envelopes (activity_e2ee_writable_by short-circuits on row owner) → friend's trip loses track/name/endpoints; pre-existing once at enable time, now repeated every load
 - Scores: trigger=concrete, impact=wrong-visible (triage-corrected), detect=user-visible (triage-corrected), later=expensive (triage-corrected), fix=M/shared (triage-corrected), confidence=verified
 - Decision: Fix now (D5)
 - Override: —
-- Outcome: open
+- Outcome: fixed (U16 60a5e6d1, U17 c4944fde)
 
 Owner decision (2026-10-06): keep shared rides readable — decision 15 added (server refuses envelopes on rows another user's trip references; client skips and repairs). Units U16 (wave 6), U17 + U10 second fix (wave 7).
 
@@ -481,19 +489,19 @@ Owner decision (2026-10-06): keep shared rides readable — decision 15 added (s
 - Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=L/shared (triage-corrected), confidence=verified
 - Decision: Fix now (D6) — needs the repair in the non-owner branch and a CAS on a trip the caller edits but does not own (a write without CAS would break decision 13)
 - Override: —
-- Outcome: open
+- Outcome: fixed (U18 7eda1220/33926d5c, U19 0f0fd6a2)
 
 ### I3-2 — Enable-screen notice counts shared rows as "imported by another traveller"
 - Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
 - Decision: Fix now (D6)
 - Override: —
-- Outcome: open
+- Outcome: fixed (0f0fd6a2)
 
 ### I3-3 — ENCRYPTION.md case 3 quotes the pre-U17 notice wording
 - Scores: trigger=concrete, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
 - Decision: Fix now (D7)
 - Override: —
-- Outcome: open
+- Outcome: fixed (07ff839d)
 
 Round 3 is the integrated review's last round under the cap (REVIEW.md §6); a fourth needs the owner's request.
 
@@ -515,4 +523,13 @@ The origin/main merge (photos package; migration re-parented onto 4b9d2e7a1c63) 
 - Scores: trigger=concrete, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
 - Decision: Fix now (D7)
 - Override: —
-- Outcome: open
+- Outcome: fixed (878d84f6)
+
+### Delivery summary
+
+- 19 units (16 Opus, 3 Sonnet) across 9 waves; every unit verified before integration; unit reviews for U2, U4, U7, U8, U12, U14; integrated diff reviewed in 4 rounds (fourth at the owner's request).
+- Owner decisions during delivery: trip editors may edit any track (U12 envelope); legacy companion memories accepted until #108 (U7); #366 gain recompute limited to legacy rows (U15, U8); shared rides stay readable (decision 15, U16/U17); repair from friends' trips (I3-1, U18/U19); plan DoD amended.
+- Integration: origin/main (photos package) merged at ffe702a8; this package's migration c4e2a9f1b7d3 re-parented onto 4b9d2e7a1c63 (single head).
+- Checks on the final branch: flutter analyze clean, flutter test 2233 passed (container); server suite — see the line below.
+- Deferred, with revisit triggers above: R1-8, R1-10, R4-5, R4-8, U7-R1-2, U7-R1-3, U14-R1-2, I1-1, I1-2, I1-3, I4-1.
+- Session notes: two API session-limit interruptions (all agents resumed from their worktrees, no work lost); one Docker Desktop restart mid-run; local Windows full-suite runs hang, so full server checks ran in the traxjourney-py314-citest container.
