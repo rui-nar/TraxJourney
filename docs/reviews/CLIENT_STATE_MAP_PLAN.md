@@ -463,3 +463,29 @@ Clean: no findings. Notes (not findings): `_silentReload`'s record cast (project
 Closed by the owner after F7's verification (verifier only). Notes left by F7's verifier (not findings, not regressions):
 - If `clear()` is followed by a reopen of the same trip while the old seed loop runs, the old loop's `finally` can reset the new loop's coalescing state, allowing one extra concurrent seed.
 - `fullResGeoForExport` and the seed share the `geoFullUncached` dedup key; a seed that joins an export fetch started before an edit stores pre-edit geometry under the new version. The load's seed already had this exposure.
+
+## Delivery — Part 2
+
+Part 2 (waves 5-9: #294 facet split, #379, #401 hysteresis) on `feat/package-c-part2`, stacked on Part 1 (#564). Plan amended first (Part 2 amendment, Decisions 17-24, three review rounds, clean at round 3).
+
+| Unit | Goal | Route | Rule | Attempts | Escalated | Verified first time | Findings traced |
+|---|---|---|---|---|---|---|---|
+| U9 | Facet base, notify flush, providers | Opus | S2 | 1 | — | yes | — |
+| U10 | GeoFacet, #379 refresh at the current LOD, request-ordered geometry, offline-seed version check | Opus | S2 | 2 | escalate (offline-seed race; owner: cache checks the version, Scope widened to project_data_cache.dart) | yes | — |
+| U10b | Trip-details save checks the trip version (owner) | Sonnet | — | 1 | — | yes | — |
+| U11 | Zoom-bucket hysteresis | Sonnet | — | 1 | — | yes | — |
+| U12 | SelectionFacet | Sonnet | — | 1 | — | yes | — |
+| U13 | StyleFacet | Sonnet | — | 1 | — | yes | — |
+| U14 | ItemsFacet (four versions) | Opus | S2 | 1 | — | yes | — |
+| U15 | ElevationFacet | Sonnet | — | 1 | — | yes | — |
+| U16 | Map panels on facets; version keys replace 35 guards | Opus | S2 | 1 | — | yes | — |
+| U17 | Side panels on facets (closes R2-2) | Opus | S2 | 1 | — | yes | — |
+| U18 | Screens on facets + root-listener audit | Opus | S2 | 2 | — | no (account-swap test missing) | — |
+| U19 | Root fields behind marking setters; the root notifies only for its own state | Opus | S2 | 1 | — | yes | — |
+| F7 | Refill the offline map after an edit | Sonnet | — | 2 | escalate (requirement change hit the #379 tests; Scope widened to two tests) | yes | I2-R1-1 |
+
+Integration: after merging `origin/main` (photo-order migration `4b9d2e7a1c63` on the same parent as Part 1's `021d2d9e3a22`) there were two Alembic heads; `021d2d9e3a22` was re-parented onto `4b9d2e7a1c63` on Part 1 (commit 8a6341bd, pushed to #564), then Part 1 merged into Part 2. One head.
+
+Final checks on the Part 2 head (main and Part 1 merged, 2026-10-07): flutter analyze clean; flutter test 2289 passed; pytest CI command 6341 passed, 47 skipped; the two git-dependent tests run natively in the worktree: passed.
+
+Follow-ups noted during Part 2 (not defects of this delivery): `_applyDetails` never reads `track_secondary_color` (U13, pre-existing); with auto-zoom on, opening the edit map refits the whole trip and drops a viewport carried over from view mode (U16, pre-existing); the two F7 verifier notes above; #568 (pan during an in-flight refetch).
