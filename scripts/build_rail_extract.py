@@ -41,11 +41,13 @@ quietly too narrow looks exactly like one that works.
 Usage:
 
     python scripts/build_rail_extract.py regions --json
+    python scripts/build_rail_extract.py layers "rail ferry"
     python scripts/build_rail_extract.py build europe/denmark --out-dir dist
     python scripts/build_rail_extract.py manifest --out-dir dist \
         --base released/manifest.json --expect '["europe/denmark"]'
 
-``regions`` needs PyYAML alone — the workflow's plan job installs nothing else.
+``regions`` and ``layers`` need PyYAML alone — the workflow's plan job installs
+nothing else.
 
 Requires the ``osmium`` CLI (Debian/Ubuntu: ``apt-get install osmium-tool``).
 """
@@ -92,6 +94,25 @@ BASE_SCHEMAS = (2, MANIFEST_SCHEMA)
 # only the file and the manifest) and a test holds them equal.
 RAIL = "rail"
 LAYERS = (RAIL, "ferry", "bus")
+
+
+def parse_layers(text: str | None) -> list[str]:
+    """The layers a run publishes, from the ``RAIL_PUBLISH_LAYERS`` variable.
+
+    Space or comma separated, returned in ``LAYERS`` order whatever order they
+    were given in. Rail is always one of them, so unset or empty means rail
+    alone: a box still running code from before ferry and bus would build
+    Germany's bus store with a builder that does not fit in its worker, so
+    those two are switched on by hand once every box can take them. A name
+    that is not a layer is refused rather than ignored — a typo would
+    otherwise keep a layer off without a word.
+    """
+    asked = set((text or "").replace(",", " ").split())
+    unknown = asked - set(LAYERS)
+    if unknown:
+        raise ValueError(f"unknown layer(s) {', '.join(sorted(unknown))}: "
+                         f"the layers are {' '.join(LAYERS)}")
+    return [layer for layer in LAYERS if layer == RAIL or layer in asked]
 
 # A region's outcome. `empty` is not a failure: a few configured regions have no
 # railway at all (Andorra, Malta, the Azores) and one has only a line currently
@@ -795,8 +816,15 @@ def build(
     work_dir: Path,
     source: Path | None = None,
     keep_source: bool = False,
+    layers: Iterable[str] = LAYERS,
 ) -> dict[str, dict]:
-    """Produce one region's filtered extracts and manifest entries, by layer."""
+    """Produce one region's filtered extracts and manifest entries, by layer.
+
+    Only *layers*: a layer this run does not publish is not selected at all,
+    which saves its share of the pass — Germany's bus layer is most of its
+    time and memory.
+    """
+    layers = [layer for layer in LAYERS if layer in set(layers)]
     slug = region_slug(region)
     out_dir.mkdir(parents=True, exist_ok=True)
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -822,12 +850,12 @@ def build(
     if downloaded and not keep_source:
         source.unlink()
 
-    extracts = {layer: out_dir / extract_name(slug, layer) for layer in LAYERS}
+    extracts = {layer: out_dir / extract_name(slug, layer) for layer in layers}
     selections = select(intermediate, extracts)
     intermediate.unlink()
 
     entries = {}
-    for layer in LAYERS:
+    for layer in layers:
         selection, extract = selections[layer], extracts[layer]
         if selection.ways:
             entry = manifest_entry(region, layer, extract, selection, date)
@@ -866,7 +894,8 @@ def _read_entries(out_dir: Path) -> list[dict]:
     ]
 
 
-def collect_manifest(out_dir: Path, base: dict | None = None) -> dict:
+def collect_manifest(out_dir: Path, base: dict | None = None,
+                     layers: Iterable[str] = LAYERS) -> dict:
     """Merge the entry files in ``out_dir`` into a verified manifest.
 
     *base* is the manifest of the release this run is updating, if it already
@@ -887,10 +916,16 @@ def collect_manifest(out_dir: Path, base: dict | None = None) -> dict:
     A schema 2 base has no ``layer``; its entries are rail entries, and are
     carried as ``layer: rail`` (R1-10).
 
+    Only *layers* are entered, this run's and the base's alike: switching a
+    layer off in ``RAIL_PUBLISH_LAYERS`` takes it out of the release a subset
+    run patches too, rather than carrying its entry forward.
+
     Only the rebuilt entries are verified against ``out_dir``: the carried ones
     describe files that are already release assets and were never downloaded.
     """
-    entries = _read_entries(out_dir)
+    layers = set(layers)
+    entries = [entry for entry in _read_entries(out_dir)
+               if entry.get("layer", RAIL) in layers]
     if not entries:
         raise RuntimeError(f"no {ENTRY_SUFFIX} files in {out_dir}")
     verify_manifest(merge_manifest(entries), out_dir)
@@ -899,7 +934,7 @@ def collect_manifest(out_dir: Path, base: dict | None = None) -> dict:
     carried = [
         {**entry, "layer": entry.get("layer", RAIL)}
         for entry in (base or {}).get("regions", [])
-        if entry["region"] not in rebuilt
+        if entry["region"] not in rebuilt and entry.get("layer", RAIL) in layers
     ]
     manifest = merge_manifest(entries + carried)
     (out_dir / MANIFEST_NAME).write_text(
@@ -926,17 +961,21 @@ def missing_regions(manifest: dict, expected: Iterable[str]) -> list[str]:
     return sorted(set(expected) - _regions(manifest["regions"]))
 
 
-def missing_layers(manifest: dict, expected: Iterable[str]) -> list[str]:
+def missing_layers(manifest: dict, expected: Iterable[str],
+                   layers: Iterable[str] = LAYERS) -> list[str]:
     """``"<region> <layer>"`` for each expected region's absent ferry or bus layer.
 
     Never a refusal: that region's ferry or bus keeps going to Overpass, as it
     did before layers existed, and its rail — the reason for this pipeline —
-    must not wait for it.
+    must not wait for it. Only of *layers*: a layer this run does not publish
+    is absent by design, not missing.
     """
+    layers = set(layers)
     return [f"{region} {layer}"
             for region in sorted(set(expected))
             for layer in LAYERS
-            if layer != RAIL and region not in _regions(manifest["regions"], layer)]
+            if layer != RAIL and layer in layers
+            and region not in _regions(manifest["regions"], layer)]
 
 
 def carried_regions(manifest: dict, expected: Iterable[str], out_dir: Path) -> list[str]:
@@ -961,6 +1000,14 @@ def main(argv: list[str]) -> int:
     p_regions.add_argument("--json", action="store_true",
                            help="emit a JSON array (the workflow's build matrix)")
 
+    p_layers = sub.add_parser(
+        "layers", help="validate RAIL_PUBLISH_LAYERS and print the layers to publish")
+    p_layers.add_argument("text", nargs="?", default="",
+                          help="space or comma separated (default: rail alone)")
+
+    layers_help = ("layers to publish, space or comma separated; rail is always "
+                   "one (default: all of them)")
+
     p_build = sub.add_parser("build", help="filter one region")
     p_build.add_argument("region", help="Geofabrik path, e.g. europe/denmark")
     p_build.add_argument("--out-dir", type=Path, default=Path("dist/rail"))
@@ -969,6 +1016,7 @@ def main(argv: list[str]) -> int:
                          help="use a local .osm.pbf instead of downloading")
     p_build.add_argument("--keep-source", action="store_true",
                          help="keep the downloaded raw extract (local debugging only)")
+    p_build.add_argument("--layers", default=" ".join(LAYERS), help=layers_help)
 
     p_manifest = sub.add_parser("manifest", help="merge entry files into manifest.json")
     p_manifest.add_argument("--out-dir", type=Path, default=Path("dist/rail"))
@@ -985,8 +1033,18 @@ def main(argv: list[str]) -> int:
     p_manifest.add_argument(
         "--force", action="store_true",
         help="publish even though regions are missing (deliberate override)")
+    p_manifest.add_argument("--layers", default=" ".join(LAYERS), help=layers_help)
 
     args = parser.parse_args(argv[1:])
+
+    if args.command == "layers":
+        try:
+            print(" ".join(parse_layers(args.text)))
+        except ValueError as exc:
+            # stderr: the workflow reads stdout into the plan job's output.
+            print(f"::error::RAIL_PUBLISH_LAYERS: {exc}", file=sys.stderr)
+            return 1
+        return 0
 
     if args.command == "regions":
         regions = load_regions()
@@ -995,7 +1053,8 @@ def main(argv: list[str]) -> int:
 
     if args.command == "build":
         build(args.region, args.out_dir, args.work_dir,
-              source=args.source, keep_source=args.keep_source)
+              source=args.source, keep_source=args.keep_source,
+              layers=parse_layers(args.layers))
         return 0
 
     base = None
@@ -1014,12 +1073,14 @@ def main(argv: list[str]) -> int:
             )
         print(f"merging into {len(base['regions'])} regions from {args.base}")
 
-    manifest = collect_manifest(args.out_dir, base=base)
+    layers = parse_layers(args.layers)
+    print(f"publishing layers: {' '.join(layers)}")
+    manifest = collect_manifest(args.out_dir, base=base, layers=layers)
     expected = json.loads(args.expect) if args.expect else load_regions()
     missing = missing_regions(manifest, expected)
     carried = carried_regions(manifest, expected, args.out_dir)
     print(f"{len(manifest['regions'])} entries verified in {args.out_dir}")
-    for absent in missing_layers(manifest, expected):
+    for absent in missing_layers(manifest, expected, layers):
         print(f"::warning::{absent}: no entry — this layer is not published for "
               f"the region, which keeps resolving it through Overpass", flush=True)
     if missing:
