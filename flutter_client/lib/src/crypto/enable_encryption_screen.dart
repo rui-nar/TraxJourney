@@ -44,10 +44,12 @@ const kMigrationFailedNotice =
 String? migrationNotice(CatchUpResult r) {
   if (r.complete) return null;
   final retried = r.skipped > 0 || r.ended > 0;
+  // The trip banner's words (encryption_locked_banner.dart): one count for
+  // rows another traveller imported and rows their trip also holds.
   final foreign = r.unencryptable == 1
-      ? '1 activity imported by another traveller stays unencrypted.'
-      : '${r.unencryptable} activities imported by another traveller stay '
-          'unencrypted.';
+      ? '1 activity is also used by another traveller and stays unencrypted.'
+      : '${r.unencryptable} activities are also used by another traveller and '
+          'stay unencrypted.';
   if (!retried) return 'Encryption is on. $foreign';
   if (r.unencryptable == 0) return kMigrationFailedNotice;
   return '$kMigrationFailedNotice $foreign';

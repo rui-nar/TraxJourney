@@ -154,11 +154,15 @@ void main() {
     });
   });
 
-  test('migrationNotice names activities another traveller imported', () {
+  test('migrationNotice counts the activities another traveller also uses, '
+      "in the trip banner's words", () {
+    // Both reasons in one count (decision 15): a ride another traveller
+    // imported, and one their trip also holds.
     expect(migrationNotice(CatchUpResult()..unencryptable = 1),
-        'Encryption is on. 1 activity imported by another traveller stays unencrypted.');
+        'Encryption is on. 1 activity is also used by another traveller and '
+        'stays unencrypted.');
     expect(migrationNotice(CatchUpResult()..unencryptable = 2..ended = 1),
-        '$kMigrationFailedNotice 2 activities imported by another traveller '
-        'stay unencrypted.');
+        '$kMigrationFailedNotice 2 activities are also used by another '
+        'traveller and stay unencrypted.');
   });
 }
