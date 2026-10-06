@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Build a rail-only OSM extract for one region (issue #345, phase 1).
+"""Build the rail, ferry and bus OSM extracts for one region (issue #345, phase 1).
 
 Route resolution needs four things from OpenStreetMap: railway ways, route
 relations, the nodes a UIC code can be looked up on, and stations. Overpass
@@ -7,6 +7,12 @@ answers those over the network today, and the answers are large enough that
 fair use bans us. The same data, filtered out of a Geofabrik country extract,
 is three orders of magnitude smaller: Denmark 494 MB -> 0.8 MB, Germany
 4.83 GB -> ~25 MB.
+
+Ferry and bus resolution ask Overpass the same kind of question, so the same
+download is filtered into three **layers**, one file each — ``rail``,
+``ferry`` and ``bus`` (docs/LOCAL_TRANSPORT_DATA_PLAN.md, Decision 7). Separate
+files and separate stores because bus ways are roads: one graph would let a rail
+Dijkstra walk down a high street.
 
 **The raw extracts must never reach the server, the repo, or an image.** Europe
 raw is 34.9 GB and the VPS has 40 GB total. So this script runs in CI, on a
@@ -73,8 +79,19 @@ GEOFABRIK_BASE = "https://download.geofabrik.de"
 
 # Bumped only when the manifest's shape changes; phase 2 reads it to decide
 # whether it understands the file at all. 2 added `status`, and with it entries
-# that describe a region holding no rail rather than a published file.
-MANIFEST_SCHEMA = 2
+# that describe a region holding no rail rather than a published file. 3 added
+# `layer`: one entry per region *and layer*.
+MANIFEST_SCHEMA = 3
+# What `manifest --base` merges into. A schema 2 release is the one this code
+# replaces, and a subset recovery patching it must still work (R1-10): its
+# entries are rail entries without the word, so they are carried as `rail`.
+BASE_SCHEMAS = (2, MANIFEST_SCHEMA)
+
+# The layers, in the order they are built and logged. src/rail/store.py has the
+# same tuple; the two are not imported from each other (phases 1 and 2 share
+# only the file and the manifest) and a test holds them equal.
+RAIL = "rail"
+LAYERS = (RAIL, "ferry", "bus")
 
 # A region's outcome. `empty` is not a failure: a few configured regions have no
 # railway at all (Andorra, Malta, the Azores) and one has only a line currently
@@ -86,8 +103,20 @@ STATUS_OK = "ok"
 STATUS_EMPTY = "empty"
 
 MANIFEST_NAME = "manifest.json"
-ENTRY_SUFFIX = "-rail.entry.json"
-EXTRACT_SUFFIX = "-rail.osm.pbf"
+# `<slug>-<layer>.entry.json` and `<slug>-<layer>.osm.pbf`: rail's names are
+# the ones every release before layers used, so no published asset changes name.
+ENTRY_SUFFIX = ".entry.json"
+EXTRACT_SUFFIX = ".osm.pbf"
+
+
+def extract_name(slug: str, layer: str) -> str:
+    """``("germany", "bus")`` -> ``germany-bus.osm.pbf``, the release asset."""
+    return f"{slug}-{layer}{EXTRACT_SUFFIX}"
+
+
+def entry_name(slug: str, layer: str) -> str:
+    return f"{slug}-{layer}{ENTRY_SUFFIX}"
+
 
 # ---------------------------------------------------------------------------
 # The selection — must mirror src/services/overpass_service.py
@@ -149,22 +178,127 @@ def is_station(tags: Mapping[str, str]) -> bool:
     return tags.get("railway") in STATION_RAILWAY_TYPES and bool(tags.get("uic_ref"))
 
 
+# The ferry and bus layers mirror _get_route_geometry's three strategies, each
+# one query:
+#
+#   A  rel["route"=MODE]          _via_route_relation_type, `out geom` — so the
+#                                 relation's member ways come with it
+#   B  way["route"=MODE]          _via_way_type_fallback
+#   C  way["ferry"="yes"]         _via_ferry_yes_fallback, ferry only
+#
+# No node row: neither mode looks anything up by UIC code or asks for a
+# station, so a layer's nodes are its ways' and nothing else.
+def is_ferry_route(tags: Mapping[str, str]) -> bool:
+    """``route=ferry`` — strategy A's relations and strategy B's ways alike."""
+    return tags.get("route") == "ferry"
+
+
+def is_ferry_yes(tags: Mapping[str, str]) -> bool:
+    """Strategy C's ways: island hoppers mapped with no route at all."""
+    return tags.get("ferry") == "yes"
+
+
+def is_bus_route(tags: Mapping[str, str]) -> bool:
+    """``route=bus`` — strategy A's relations and strategy B's ways alike."""
+    return tags.get("route") == "bus"
+
+
+# `way.cls` in the store src/rail/builder.py builds from each file (Decision 9):
+# bit 0 the layer's own way class (track for rail, route=MODE for ferry and
+# bus), bit 1 `ferry=yes`, bit 2 a member of one of the layer's relations. Each
+# layer's **routable set** is the bits below. It is what this script calls the
+# layer `empty` on, what the builder refuses a store on, and what both measure
+# the bbox over — one table, so CI never publishes a file the builder refuses
+# and the manifest's box is the store's (R2-3). A bus layer is mostly relation
+# members, because bus routes are mapped as relations over ordinary roads and
+# `route=bus` ways are rare; bit 0 alone would make nearly every bus layer empty.
+CLS_ROUTE = 1
+CLS_FERRY_YES = 2
+CLS_MEMBER = 4
+ROUTABLE = {
+    RAIL: CLS_ROUTE,
+    "ferry": CLS_ROUTE | CLS_FERRY_YES | CLS_MEMBER,
+    "bus": CLS_ROUTE | CLS_MEMBER,
+}
+
+
+def keeps_relation(layer: str, tags: Mapping[str, str]) -> bool:
+    """Is this relation in *layer*'s file?"""
+    if layer == RAIL:
+        return is_route_relation(tags) or is_station(tags)
+    if layer == "ferry":
+        return is_ferry_route(tags)
+    return is_bus_route(tags)
+
+
+def way_class(layer: str, tags: Mapping[str, str], member: bool) -> int:
+    """The ``cls`` bits a way has in *layer* — *member* being "a relation this
+    layer keeps names it"."""
+    if layer == RAIL:
+        route = is_rail_way(tags)
+    elif layer == "ferry":
+        route = is_ferry_route(tags)
+    else:
+        route = is_bus_route(tags)
+    return ((CLS_ROUTE if route else 0)
+            | (CLS_FERRY_YES if is_ferry_yes(tags) else 0)
+            | (CLS_MEMBER if member else 0))
+
+
+def keeps_way(layer: str, tags: Mapping[str, str], member: bool) -> bool:
+    """Is this way in *layer*'s file?
+
+    Ferry and bus keep exactly their routable set. Rail also keeps what it
+    needs for geometry and nothing routes over: station polygons, and the
+    platforms and sidings a route relation names.
+    """
+    if layer == RAIL:
+        return is_rail_way(tags) or is_station(tags) or member
+    return bool(way_class(layer, tags, member) & ROUTABLE[layer])
+
+
+# The tags src/rail/builder.py reads, by element kind — the only tags a ferry
+# or bus file carries. A bus layer is millions of road nodes and ways whose
+# `highway`, `surface`, `maxspeed` and `name` nothing reads: Germany's went
+# from 160 MB to 112 MB without them, Denmark's from 3.6 to 2.8 MB. `uic_ref`
+# and `railway` are there because the builder asks every element of every layer
+# whether it is a station, so dropping them could change a store. Rail keeps
+# every tag: its published fixture pins the file.
+LAYER_TAGS = {
+    "n": frozenset({"uic_ref", "railway"}),
+    "w": frozenset({"route", "ferry", "uic_ref", "railway"}),
+    "r": frozenset({"route", "name", "uic_ref", "railway"}),
+}
+
+
+def _strip(obj, keep: frozenset):
+    """*obj* with only the tags in *keep*: itself if it has no others."""
+    if all(tag.k in keep for tag in obj.tags):
+        return obj
+    return obj.replace(tags={tag.k: tag.v for tag in obj.tags if tag.k in keep})
+
+
 @dataclass(frozen=True)
 class Selection:
-    """What a filtered extract contains, and where it actually reaches."""
+    """What one layer's filtered extract contains, and where it actually reaches."""
 
+    # The layer's routable set (ROUTABLE): the discriminator between `ok` and
+    # `empty`. For rail that is the track and nothing else, as it always was.
     ways: int
+    # The layer's route relations; station relations are counted as stations.
     relations: int
     # Stations of every element type, which is what _find_station_near can
-    # return. The manifest reports this one number rather than three.
+    # return. The manifest reports this one number rather than three. Rail
+    # only: ferry and bus have no station lookup.
     stations: int
     # Not in the manifest — the contract fixes its keys — but counted because
     # this is the row a wrong filter silently empties, and it belongs in the
-    # build log where a rebuild that lost it would be visible.
+    # build log where a rebuild that lost it would be visible. Rail only.
     uic_nodes: int
-    # Ways held only because a kept relation references them: geometry for
-    # `out geom` parity, never track to route over. Phase 2 tells them apart
-    # with the same is_rail_way predicate and flags them `rail=0`.
+    # Ways held because a kept relation references them and that are not of
+    # the layer's own way class (bit 0). On rail they are geometry for
+    # `out geom` parity, never track to route over — phase 2 flags them without
+    # bit 0. On bus they are the roads the routes run on, and most of the file.
     member_ways: int
     # Members of kept relations that this extract does not contain at all —
     # ways on the far side of a border, which live in the neighbouring
@@ -179,13 +313,14 @@ class Selection:
     member_ways_missing: int
     member_slots_missing: int
     member_slots: int
-    # [min_lon, min_lat, max_lon, max_lat] over the nodes of the *rail ways* —
-    # the same extent src/rail/builder.py records for the store it builds from
-    # this file (its `extent`, over rail=1 ways only). Phase 3 picks a region
-    # for a coordinate by this box, so the two phases must not disagree about
-    # what the region covers: a bare uic_ref node or a platform hundreds of
-    # kilometres from any track would otherwise claim coverage here that the
-    # store does not report. Empty when the region has no rail ways.
+    # [min_lon, min_lat, max_lon, max_lat] over the nodes of the layer's
+    # *routable set* — the rail ways, on rail — which is the same extent
+    # src/rail/builder.py records for the store it builds from this file.
+    # Phase 3 picks a region for a coordinate by this box, so the two phases
+    # must not disagree about what the region covers: a bare uic_ref node or a
+    # platform hundreds of kilometres from any track would otherwise claim
+    # coverage here that the store does not report. Empty when the layer has no
+    # routable way with a located node.
     bbox: list[float]
 
 
@@ -304,7 +439,7 @@ def download(
 
 
 def prefilter(source: Path, dest: Path) -> Path:
-    """Reduce a raw extract to a rail superset with the osmium CLI.
+    """Reduce a raw extract to a superset of all three layers with the osmium CLI.
 
     Over-selects on purpose (see the module docstring): it keeps service ways
     and stations without a UIC code, which ``select`` then drops. What it buys
@@ -317,148 +452,205 @@ def prefilter(source: Path, dest: Path) -> Path:
 
     Referenced objects are kept — the default — because a way without its nodes
     has no geometry, and neither has a station relation without its member
-    ways.
+    ways, nor a bus route without the roads it runs on.
     """
     if shutil.which("osmium") is None:
         raise RuntimeError(
             "the osmium CLI is required (Debian/Ubuntu: apt-get install osmium-tool)"
         )
-    stations = ",".join(sorted(STATION_RAILWAY_TYPES))
     dest.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [
-            "osmium", "tags-filter", "--overwrite",
-            "-o", str(dest), str(source),
-            "n/uic_ref",
-            f"w/railway={','.join(sorted(RAIL_WAY_TYPES))}",
-            f"w/railway={stations}",
-            f"r/route={','.join(sorted(ROUTE_TYPES))}",
-            f"r/railway={stations}",
-        ],
-        check=True,
-    )
+    subprocess.run(["osmium", "tags-filter", "--overwrite",
+                    "-o", str(dest), str(source), *prefilter_expressions()],
+                   check=True)
     return dest
 
 
-def select(source: Path, dest: Path) -> Selection:
-    """Write the exact selection, and report what it holds.
+def prefilter_expressions() -> list[str]:
+    """The tags-filter expressions: every predicate's tags, ORed together.
 
-    Three passes over ``source``, because a PBF is ordered nodes, ways,
-    relations and two of the things kept are only known from further down that
-    order:
+    Each layer's rows have to be here or that layer is empty in every region,
+    silently — ``select`` can only narrow what this lets through.
+    """
+    stations = ",".join(sorted(STATION_RAILWAY_TYPES))
+    return [
+        "n/uic_ref",
+        f"w/railway={','.join(sorted(RAIL_WAY_TYPES))}",
+        f"w/railway={stations}",
+        # Ferry and bus strategy B, and ferry strategy C.
+        "w/route=bus,ferry",
+        "w/ferry=yes",
+        # Strategy A of all three modes in one expression.
+        f"r/route={','.join(sorted(ROUTE_TYPES | {'bus', 'ferry'}))}",
+        f"r/railway={stations}",
+    ]
 
-    1. relations — which member ways a kept station relation needs, since a
-       station mapped as a polygon has no position of its own;
+
+def select(source: Path, dests: Mapping[str, Path]) -> dict[str, Selection]:
+    """Write the exact selection of each layer in *dests* to its file, and
+    report what each holds.
+
+    Three passes over ``source``, shared by every layer, because a PBF is
+    ordered nodes, ways, relations and two of the things kept are only known
+    from further down that order:
+
+    1. relations — which member ways a kept relation needs: a station mapped
+       as a polygon has no position of its own, and a bus route is nothing but
+       the roads it names;
     2. ways — which nodes the kept ways need, for the same reason one level
        down. Only the kept ways: taking every node the prefilter over-selected
        would drag the file back up to the prefilter's size.
-    3. write.
+    3. write, every layer's file at once.
+
+    Node ids are held in Python sets, not ``osmium.index.IdSet``: that is a
+    dense bitset allocated in chunks across the id range, and a country's nodes
+    are scattered over all 13 billion ids — 300,000 of them cost 1.5 GB, and
+    Denmark's three layers peaked at 8.1 GB. A bus layer's nodes are millions
+    of road nodes, so ferry and bus share one set for "kept" and "routable":
+    they keep nothing else.
 
     Per-object OSM metadata (version, timestamp, changeset, user) is dropped:
-    nothing downstream reads it and it is ~15 % of the file.
+    nothing downstream reads it and it is ~15 % of the file. Ferry and bus
+    also drop every tag but ``LAYER_TAGS``; rail keeps its tags.
 
-    A region with no rail ways is not an error here — see ``STATUS_EMPTY``. The
-    caller decides; ``ways`` is the discriminator, matching the refusal in
-    src/rail/builder.py so that what phase 1 publishes is what phase 2 accepts.
+    A layer with an empty routable set is not an error here — see
+    ``STATUS_EMPTY``. The caller decides; ``ways`` is the discriminator,
+    matching the refusal in src/rail/builder.py so that what phase 1 publishes
+    is what phase 2 accepts.
     """
     import osmium  # noqa: PLC0415 — CI-only, see the note beside the imports
 
-    ways = relations = stations = uic_nodes = member_ways = 0
+    unknown = set(dests) - set(LAYERS)
+    if unknown:
+        raise ValueError(f"unknown layer(s): {sorted(unknown)}")
+    layers = [layer for layer in LAYERS if layer in dests]
 
     # Membership slots, not distinct ways: the same way named by six relations
     # is six slots. Both numbers are reported (see Selection).
-    member_slot_counts: Counter[int] = Counter()
-    station_member_nodes: set[int] = set()
+    member_slot_counts: dict[str, Counter[int]] = {layer: Counter() for layer in layers}
+    wanted_nodes: dict[str, set[int]] = {layer: set() for layer in layers}
     for rel in osmium.FileProcessor(str(source), osmium.osm.RELATION):
-        station = is_station(rel.tags)
-        if not (station or is_route_relation(rel.tags)):
-            continue
-        for member in rel.members:
-            if member.type == "w":
-                member_slot_counts[member.ref] += 1
-            elif member.type == "n" and station:
-                station_member_nodes.add(member.ref)
-    member_way_ids = set(member_slot_counts)
+        for layer in layers:
+            if not keeps_relation(layer, rel.tags):
+                continue
+            station = layer == RAIL and is_station(rel.tags)
+            for member in rel.members:
+                if member.type == "w":
+                    member_slot_counts[layer][member.ref] += 1
+                elif member.type == "n" and station:
+                    wanted_nodes[layer].add(member.ref)
 
-    wanted_nodes = set(station_member_nodes)
-    # The nodes the bbox is measured over: the rail ways' own, and no others.
-    rail_nodes: set[int] = set()
-    held_members: set[int] = set()
+    # The nodes each bbox is measured over: the routable ways' own, no others.
+    # Ferry and bus keep only their routable set, so for them it is the same
+    # set; rail also keeps station and platform geometry, so it needs its own.
+    routable_nodes = {layer: set() if layer == RAIL else wanted_nodes[layer]
+                      for layer in layers}
+    held_members: dict[str, set[int]] = {layer: set() for layer in layers}
     for way in osmium.FileProcessor(str(source), osmium.osm.WAY):
-        member = way.id in member_way_ids
-        if member:
-            held_members.add(way.id)
-        rail = is_rail_way(way.tags)
-        if member or rail or is_station(way.tags):
-            refs = [node.ref for node in way.nodes]
-            wanted_nodes.update(refs)
-            if rail:
-                rail_nodes.update(refs)
+        refs = None
+        for layer in layers:
+            member = way.id in member_slot_counts[layer]
+            if member:
+                held_members[layer].add(way.id)
+            if not keeps_way(layer, way.tags, member):
+                continue
+            if refs is None:
+                refs = [node.ref for node in way.nodes]
+            wanted_nodes[layer].update(refs)
+            if way_class(layer, way.tags, member) & ROUTABLE[layer]:
+                routable_nodes[layer].update(refs)
 
-    min_lon = min_lat = 180.0
-    max_lon = max_lat = -180.0
-    located = False
-    writer = osmium.SimpleWriter(
-        osmium.io.File(str(dest), "pbf,add_metadata=false"), overwrite=True
-    )
+    counts = {layer: Counter() for layer in layers}
+    extents = {layer: [180.0, 180.0, -180.0, -180.0] for layer in layers}
+    writers = {
+        layer: osmium.SimpleWriter(
+            osmium.io.File(str(dests[layer]), "pbf,add_metadata=false"), overwrite=True)
+        for layer in layers
+    }
     try:
         for obj in osmium.FileProcessor(str(source)):
+            tags = obj.tags
+            # The tag-stripped copy ferry and bus write, made once for both.
+            stripped = None
             if obj.is_node():
-                uic = is_uic_node(obj.tags)
-                if not uic and obj.id not in wanted_nodes:
-                    continue
-                uic_nodes += uic
-                stations += is_station(obj.tags)
-                writer.add_node(obj)
-                if obj.id in rail_nodes:
-                    lon, lat = obj.location.lon, obj.location.lat
-                    min_lon, max_lon = min(min_lon, lon), max(max_lon, lon)
-                    min_lat, max_lat = min(min_lat, lat), max(max_lat, lat)
-                    located = True
+                for layer in layers:
+                    # Rail's node row: every uic_ref, wherever it is.
+                    uic = layer == RAIL and is_uic_node(tags)
+                    if not uic and obj.id not in wanted_nodes[layer]:
+                        continue
+                    if layer == RAIL:
+                        counts[layer]["uic_nodes"] += uic
+                        counts[layer]["stations"] += is_station(tags)
+                        writers[layer].add_node(obj)
+                    else:
+                        if stripped is None:
+                            stripped = _strip(obj, LAYER_TAGS["n"])
+                        writers[layer].add_node(stripped)
+                    if obj.id in routable_nodes[layer]:
+                        lon, lat = obj.location.lon, obj.location.lat
+                        box = extents[layer]
+                        box[0], box[2] = min(box[0], lon), max(box[2], lon)
+                        box[1], box[3] = min(box[1], lat), max(box[3], lat)
+                        counts[layer]["located"] = 1
             elif obj.is_way():
-                rail_way = is_rail_way(obj.tags)
-                station_way = is_station(obj.tags)
-                member = obj.id in member_way_ids
-                if not (rail_way or station_way or member):
-                    continue
-                # `ways` counts the rail graph and nothing else: a station
-                # polygon is counted as a station, and a member way that is not
-                # track is counted apart, because phase 2 indexes and snaps to
-                # exactly the ways this number describes.
-                ways += rail_way
-                stations += station_way
-                member_ways += member and not rail_way
-                writer.add_way(obj)
+                for layer in layers:
+                    member = obj.id in member_slot_counts[layer]
+                    if not keeps_way(layer, tags, member):
+                        continue
+                    cls = way_class(layer, tags, member)
+                    # `ways` counts the routable set and nothing else: a
+                    # station polygon is counted as a station, and a member way
+                    # outside the layer's own class is counted apart too.
+                    counts[layer]["ways"] += bool(cls & ROUTABLE[layer])
+                    counts[layer]["member_ways"] += member and not cls & CLS_ROUTE
+                    if layer == RAIL:
+                        counts[layer]["stations"] += is_station(tags)
+                        writers[layer].add_way(obj)
+                    else:
+                        if stripped is None:
+                            stripped = _strip(obj, LAYER_TAGS["w"])
+                        writers[layer].add_way(stripped)
             else:
-                route = is_route_relation(obj.tags)
-                if not route and not is_station(obj.tags):
-                    continue
-                relations += route
-                stations += is_station(obj.tags)
-                writer.add_relation(obj)
+                for layer in layers:
+                    if not keeps_relation(layer, tags):
+                        continue
+                    if layer == RAIL:
+                        counts[layer]["stations"] += is_station(tags)
+                    # Every ferry and bus relation kept is a route; a rail one
+                    # may be a station instead.
+                    counts[layer]["relations"] += layer != RAIL or is_route_relation(tags)
+                    if layer == RAIL:
+                        writers[layer].add_relation(obj)
+                    else:
+                        if stripped is None:
+                            stripped = _strip(obj, LAYER_TAGS["r"])
+                        writers[layer].add_relation(stripped)
     finally:
-        writer.close()
+        for writer in writers.values():
+            writer.close()
 
-    return Selection(
-        ways=ways,
-        relations=relations,
-        stations=stations,
-        uic_nodes=uic_nodes,
-        member_ways=member_ways,
-        member_ways_missing=len(member_way_ids) - len(held_members),
-        member_slots_missing=sum(
-            count for way_id, count in member_slot_counts.items()
-            if way_id not in held_members
-        ),
-        member_slots=sum(member_slot_counts.values()),
-        bbox=(
-            [round(v, 5) for v in (min_lon, min_lat, max_lon, max_lat)]
-            # Gated on a rail node actually seen, not on `ways`: a rail way
-            # whose nodes are all absent from the file would otherwise publish
-            # the inverted starting values as the region's extent (#350).
-            if located else []
-        ),
-    )
+    selections = {}
+    for layer in layers:
+        held, slots, c = held_members[layer], member_slot_counts[layer], counts[layer]
+        selections[layer] = Selection(
+            ways=c["ways"],
+            relations=c["relations"],
+            stations=c["stations"],
+            uic_nodes=c["uic_nodes"],
+            member_ways=c["member_ways"],
+            member_ways_missing=len(slots) - len(held),
+            member_slots_missing=sum(
+                count for way_id, count in slots.items() if way_id not in held
+            ),
+            member_slots=sum(slots.values()),
+            bbox=(
+                [round(v, 5) for v in extents[layer]]
+                # Gated on a routable node actually seen, not on `ways`: a way
+                # whose nodes are all absent from the file would otherwise
+                # publish the inverted starting values as the extent (#350).
+                if c["located"] else []
+            ),
+        )
+    return selections
 
 
 def source_date(pbf: Path) -> str:
@@ -489,11 +681,12 @@ def sha256_file(path: Path) -> str:
 
 
 def manifest_entry(
-    region: str, extract: Path, selection: Selection, date: str
+    region: str, layer: str, extract: Path, selection: Selection, date: str
 ) -> dict:
-    """One region's manifest record (the phase 1 / phase 2 contract)."""
+    """One region's record for one layer (the phase 1 / phase 2 contract)."""
     return {
         "region": region,
+        "layer": layer,
         "status": STATUS_OK,
         "file": extract.name,
         "source": source_url(region),
@@ -507,8 +700,9 @@ def manifest_entry(
     }
 
 
-def empty_entry(region: str, date: str) -> dict:
-    """A region the pipeline built correctly and that holds no rail ways.
+def empty_entry(region: str, layer: str, date: str) -> dict:
+    """A layer the pipeline built correctly and whose routable set is empty —
+    for rail, a region that holds no rail ways.
 
     No file, so no checksum, size or bbox: there is nothing to download and
     nothing to cover. It is in the manifest so that phase 3 can tell "we know
@@ -517,6 +711,7 @@ def empty_entry(region: str, date: str) -> dict:
     """
     return {
         "region": region,
+        "layer": layer,
         "status": STATUS_EMPTY,
         "source": source_url(region),
         "source_date": date,
@@ -530,7 +725,11 @@ def merge_manifest(entries: Iterable[dict], generated_at: str | None = None) -> 
     return {
         "schema": MANIFEST_SCHEMA,
         "generated_at": generated_at,
-        "regions": sorted(entries, key=lambda entry: entry["region"]),
+        # By region, then layer — bus, ferry, rail — which is the order the
+        # box's installed manifest uses (scripts/fetch_rail_data.py): a
+        # reader from before layers that keys entries by region alone, last
+        # one winning, then lands on rail.
+        "regions": sorted(entries, key=lambda entry: (entry["region"], entry["layer"])),
     }
 
 
@@ -544,6 +743,8 @@ def verify_manifest(manifest: dict, directory: Path) -> None:
     if manifest.get("schema") != MANIFEST_SCHEMA:
         raise ValueError(f"unknown manifest schema: {manifest.get('schema')!r}")
     for entry in manifest["regions"]:
+        if entry.get("layer") not in LAYERS:
+            raise ValueError(f"{entry['region']}: unknown layer {entry.get('layer')!r}")
         if entry["status"] == STATUS_EMPTY:
             # Nothing was published for it, so there is nothing to verify.
             continue
@@ -573,8 +774,8 @@ def build(
     work_dir: Path,
     source: Path | None = None,
     keep_source: bool = False,
-) -> dict:
-    """Produce one region's filtered extract and manifest entry."""
+) -> dict[str, dict]:
+    """Produce one region's filtered extracts and manifest entries, by layer."""
     slug = region_slug(region)
     out_dir.mkdir(parents=True, exist_ok=True)
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -600,35 +801,40 @@ def build(
     if downloaded and not keep_source:
         source.unlink()
 
-    extract = out_dir / f"{slug}{EXTRACT_SUFFIX}"
-    selection = select(intermediate, extract)
+    extracts = {layer: out_dir / extract_name(slug, layer) for layer in LAYERS}
+    selections = select(intermediate, extracts)
     intermediate.unlink()
 
-    if selection.ways:
-        entry = manifest_entry(region, extract, selection, date)
-        size = f"{entry['bytes'] / 1e6:.2f} MB"
-    else:
-        # No rail ways: the region is `empty`, not failed. Phase 2 refuses a
-        # store with no rail ways, so publishing this file would hand the next
-        # phase something it is right to reject. Delete it and say so.
-        extract.unlink()
-        entry = empty_entry(region, date)
-        size = "no rail ways — nothing published"
-
-    (out_dir / f"{slug}{ENTRY_SUFFIX}").write_text(
-        json.dumps(entry, indent=2) + "\n", encoding="utf-8"
-    )
-    print(
-        f"[{slug}] {size}, status={entry['status']} ways={selection.ways} "
-        f"relations={selection.relations} stations={selection.stations} "
-        f"uic_nodes={selection.uic_nodes} member_ways={selection.member_ways} "
-        f"member_ways_missing={selection.member_ways_missing} distinct ids "
-        f"({selection.member_slots_missing} of {selection.member_slots} "
-        f"membership slots) bbox={selection.bbox} source_date={date} "
-        f"(+{time.monotonic() - started:.0f}s)",
-        flush=True,
-    )
-    return entry
+    entries = {}
+    for layer in LAYERS:
+        selection, extract = selections[layer], extracts[layer]
+        if selection.ways:
+            entry = manifest_entry(region, layer, extract, selection, date)
+            size = f"{entry['bytes'] / 1e6:.2f} MB"
+        else:
+            # Nothing routable: the layer is `empty`, not failed. Phase 2
+            # refuses a store whose routable set is empty, so publishing this
+            # file would hand the next phase something it is right to reject.
+            # Delete it and say so.
+            extract.unlink()
+            entry = empty_entry(region, layer, date)
+            size = f"no {layer} ways — nothing published"
+        entries[layer] = entry
+        (out_dir / entry_name(slug, layer)).write_text(
+            json.dumps(entry, indent=2) + "\n", encoding="utf-8"
+        )
+        print(
+            f"[{slug} {layer}] {size}, status={entry['status']} "
+            f"ways={selection.ways} relations={selection.relations} "
+            f"stations={selection.stations} uic_nodes={selection.uic_nodes} "
+            f"member_ways={selection.member_ways} "
+            f"member_ways_missing={selection.member_ways_missing} distinct ids "
+            f"({selection.member_slots_missing} of {selection.member_slots} "
+            f"membership slots) bbox={selection.bbox} source_date={date} "
+            f"(+{time.monotonic() - started:.0f}s)",
+            flush=True,
+        )
+    return entries
 
 
 def _read_entries(out_dir: Path) -> list[dict]:
@@ -648,8 +854,17 @@ def collect_manifest(out_dir: Path, base: dict | None = None) -> dict:
     manifest that disowns the 48 regions it did not touch: their assets are
     still attached to that release and phase 3 reads a missing entry as "not
     covered", so a one-region manifest silently sends most of Europe back to
-    Overpass. So a region rebuilt in this run replaces its entry, and every
+    Overpass. So a region rebuilt in this run replaces its entries, and every
     other entry is carried through untouched.
+
+    Replaced by region, not by (region, layer): what this run built for a region
+    is the whole of what the manifest says about it, whichever of its layers
+    made it. A layer that did not — dropped by the size guard — is then missing
+    rather than last month's, which is what a full run would publish too, and
+    the box carries its installed store for a release (U8).
+
+    A schema 2 base has no ``layer``; its entries are rail entries, and are
+    carried as ``layer: rail`` (R1-10).
 
     Only the rebuilt entries are verified against ``out_dir``: the carried ones
     describe files that are already release assets and were never downloaded.
@@ -661,7 +876,8 @@ def collect_manifest(out_dir: Path, base: dict | None = None) -> dict:
 
     rebuilt = {entry["region"] for entry in entries}
     carried = [
-        entry for entry in (base or {}).get("regions", [])
+        {**entry, "layer": entry.get("layer", RAIL)}
+        for entry in (base or {}).get("regions", [])
         if entry["region"] not in rebuilt
     ]
     manifest = merge_manifest(entries + carried)
@@ -671,6 +887,10 @@ def collect_manifest(out_dir: Path, base: dict | None = None) -> dict:
     return manifest
 
 
+def _regions(entries: Iterable[dict], layer: str = RAIL) -> set[str]:
+    return {entry["region"] for entry in entries if entry.get("layer", RAIL) == layer}
+
+
 def missing_regions(manifest: dict, expected: Iterable[str]) -> list[str]:
     """Expected regions the manifest does not account for.
 
@@ -678,9 +898,24 @@ def missing_regions(manifest: dict, expected: Iterable[str]) -> list[str]:
     is an answer. What is missing is a region that was supposed to be in this
     manifest and is not, which is a build that failed, and phase 3 reads it as
     "not covered" and falls back to Overpass: the service that banned us.
+
+    Rail only: rail is what completeness means. A missing ferry or bus layer is
+    ``missing_layers``, and only a warning.
     """
-    covered = {entry["region"] for entry in manifest["regions"]}
-    return sorted(set(expected) - covered)
+    return sorted(set(expected) - _regions(manifest["regions"]))
+
+
+def missing_layers(manifest: dict, expected: Iterable[str]) -> list[str]:
+    """``"<region> <layer>"`` for each expected region's absent ferry or bus layer.
+
+    Never a refusal: that region's ferry or bus keeps going to Overpass, as it
+    did before layers existed, and its rail — the reason for this pipeline —
+    must not wait for it.
+    """
+    return [f"{region} {layer}"
+            for region in sorted(set(expected))
+            for layer in LAYERS
+            if layer != RAIL and region not in _regions(manifest["regions"], layer)]
 
 
 def carried_regions(manifest: dict, expected: Iterable[str], out_dir: Path) -> list[str]:
@@ -692,8 +927,8 @@ def carried_regions(manifest: dict, expected: Iterable[str], out_dir: Path) -> l
     current around a ``source_date`` nobody rebuilt, with no message (#350).
     A region this run was asked to build has to have been built by it.
     """
-    covered = {entry["region"] for entry in manifest["regions"]}
-    rebuilt = {entry["region"] for entry in _read_entries(out_dir)}
+    covered = _regions(manifest["regions"])
+    rebuilt = _regions(_read_entries(out_dir))
     return sorted((set(expected) & covered) - rebuilt)
 
 
@@ -718,13 +953,14 @@ def main(argv: list[str]) -> int:
     p_manifest.add_argument("--out-dir", type=Path, default=Path("dist/rail"))
     p_manifest.add_argument(
         "--base", type=Path,
-        help="manifest.json of the release being updated; regions not rebuilt "
-             "in this run are carried through from it (missing file: ignored)")
+        help="manifest.json of the release being updated (schema 2 or 3); regions "
+             "not rebuilt in this run are carried through from it (missing file: "
+             "ignored)")
     p_manifest.add_argument(
         "--expect", default=None,
         help="JSON array of the regions this run was supposed to cover "
-             "(default: every region in the config). Publishing a manifest that "
-             "covers fewer is refused")
+             "(default: every region in the config). Publishing a manifest whose "
+             "rail covers fewer is refused; a missing ferry or bus layer warns")
     p_manifest.add_argument(
         "--force", action="store_true",
         help="publish even though regions are missing (deliberate override)")
@@ -748,11 +984,12 @@ def main(argv: list[str]) -> int:
         # re-checksums what this run built — so a base we do not understand
         # would publish a manifest of a shape nobody has validated. Refuse it
         # rather than merge two schemas into one file.
-        if base.get("schema") != MANIFEST_SCHEMA:
+        # Schema 2 is understood: it is schema 3 with every entry rail.
+        if base.get("schema") not in BASE_SCHEMAS:
             raise SystemExit(
                 f"::error::{args.base} is manifest schema "
-                f"{base.get('schema')!r}, not {MANIFEST_SCHEMA} — refusing to "
-                f"merge into it"
+                f"{base.get('schema')!r}, not one of {BASE_SCHEMAS} — refusing "
+                f"to merge into it"
             )
         print(f"merging into {len(base['regions'])} regions from {args.base}")
 
@@ -760,7 +997,10 @@ def main(argv: list[str]) -> int:
     expected = json.loads(args.expect) if args.expect else load_regions()
     missing = missing_regions(manifest, expected)
     carried = carried_regions(manifest, expected, args.out_dir)
-    print(f"{len(manifest['regions'])} regions verified in {args.out_dir}")
+    print(f"{len(manifest['regions'])} entries verified in {args.out_dir}")
+    for absent in missing_layers(manifest, expected):
+        print(f"::warning::{absent}: no entry — this layer is not published for "
+              f"the region, which keeps resolving it through Overpass", flush=True)
     if missing:
         print(
             f"::error::{len(missing)} region(s) missing from the manifest — "
