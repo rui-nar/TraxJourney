@@ -533,3 +533,16 @@ The origin/main merge (photos package; migration re-parented onto 4b9d2e7a1c63) 
 - Checks on the final branch: flutter analyze clean, flutter test 2233 passed (container); server suite 6558 passed, 39 skipped (container, on ffe702a8; only docs changed after).
 - Deferred, with revisit triggers above: R1-8, R1-10, R4-5, R4-8, U7-R1-2, U7-R1-3, U14-R1-2, I1-1, I1-2, I1-3, I4-1.
 - Session notes: two API session-limit interruptions (all agents resumed from their worktrees, no work lost); one Docker Desktop restart mid-run; local Windows full-suite runs hang, so full server checks ran in the traxjourney-py314-citest container.
+
+## Merge resolution, round 1 — 2026-10-06, reviewed 60d87b68 + 7f1ed07e (+ baeda414)
+
+Conflict resolution of merging main (Package C facets, recovery-key confirmation, #576, #561) into feat/e2ee-remnants. Reviewer: Fable; triage: Opus.
+
+### M1-1 — Stale unlock()/prepareForSession() still write `_state` after lock()
+- Trigger: user A signs in on a shared device → unlock() awaits a slow fetchStatus → A signs out (lock()) → user B without encryption signs in → A's stale status lands as awaitingApproval → B's memory/journal saves and imports are refused on the client until B signs in again
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: a report of a user blocked by "waiting to be approved" or a wrong encryption state after switching accounts on one device; shared-device or quick account switching becomes a supported flow; or the next change touching unlock()/prepareForSession() (add the generation check before every `_state` write and before registerThisDevice())
+- Guard: —
+- Override: —
+- Outcome: open
