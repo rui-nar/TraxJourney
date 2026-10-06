@@ -216,6 +216,11 @@ Branch `feat/345-local-transport-data`, base cc52978b (plan + origin/main e96f86
 | F3 | Store builder runs in bounded memory | Opus | S4 | 1 | — | yes | R1-7 |
 | F5 | Ferry and bus stores know where their relations' stops are | Opus | S4 | 1 | — | yes | — |
 | U9 | Ferry and bus resolve from local stores first | Opus | S2 | 2 | escalate (no stop positions) → owner | no (narrow local guard) | R1-2, R1-8, R2-1 |
+| U10 | Ferry and bus legs in the corpus, gated in CI | Opus | S3 (re-routed from Sonnet) | 1 | — | yes | — |
+| F6 | Local ferry/bus way queries match Overpass's geometry test | Opus | S2 | 1 | — | yes | — |
+| F7 | Store schema 4 (ferry/bus stores older than 4 refused) | Opus | S4 | 1 | — | yes | I1-1 |
+| F8 | Regions gauge gains a layer label | Sonnet | — | 1 | — | yes | I1-4 |
+| F9 | RAIL_PUBLISH_LAYERS decides which layers are published | Opus | S3 | 1 | — | yes | I1-2 |
 
 Notes:
 - U1: the `rail-data` label did not exist; owner approved creating it (created 2026-10-05). `_working_bash()` in the workflow test now prefers Git Bash on Windows (a bare `bash` is the WSL launcher and drops env vars); no change on Linux.
@@ -273,7 +278,7 @@ Answer (owner, 2026-10-06): 20 GB free on the VPS, so bus for all 49 regions is 
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (F7)
 
 ### I1-2 — Nothing enforces "the first ferry/bus release waits until part 2 is on prod"
 - Trigger: part 2 merged before the 2nd, deployed after the 5th → the cron publishes germany-bus → a part-1 box's refresh is OOM-killed building it (unbounded builder) → the run fails, regions after Germany stay stale, repeats until part 2 is deployed
@@ -282,7 +287,7 @@ Answer (owner, 2026-10-06): 20 GB free on the VPS, so bus for all 49 regions is 
 - Revisit when: part 2 is about to merge while either box still runs part 1 and a scheduled run could fall between merge and deploy, or a part-1 box logs a refresh killed/OOM on a ferry/bus layer — gate ferry/bus publishing behind a repo variable or an explicit checkpoint
 - Guard: —
 - Override: user: Fix now — a RAIL_PUBLISH_LAYERS repository variable (default rail) decides which layers the Rail extract publishes; ferry/bus are switched on after part 2 is on both boxes
-- Outcome: open
+- Outcome: fixed (F9)
 
 ### I1-3 — The refresh timeout (55 min) was sized from a rail-only install
 - Trigger: the first three-layer install on the VPS exceeds 3,300 s → SIGKILL, manifest not written, one lost month (no corruption)
@@ -300,4 +305,7 @@ Answer (owner, 2026-10-06): 20 GB free on the VPS, so bus for all 49 regions is 
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (F8)
+- U10: no Croatian crossing reaches strategy C (every ferry=yes-only way there is a pier outline), so the strategy-C leg is Västervik → Visby. It found that the local ferry/bus source returned bbox-overlapping ways where Overpass tests geometry (Napoli → Capri on Croatia's data: an invented 525 km line, accepted locally — a silent wrong result); fixed by F6 (Liang–Barsky clip in route_source.py; every other ferry/bus leg's polyline unchanged). Corpus: 20 pass, 1 known-bad (Hamburg → Munich). Gate adds ~10 s; Germany's bus store is never needed. Rail's own local ways_in_bbox keeps bbox-overlap semantics (rail strategy C rejects implausible lengths) — not changed here.
+- Wave 7 integration (c7ac29dc): full suite 6308 passed, 39 skipped.
+- Integrated review round 1: 4 findings (I1-1 Fix now D3, I1-4 Fix now D7, I1-2 owner override Fix now, I1-3 Defer); Open decision 3 decided (bus for all 49 regions; 20 GB free). Fix wave F7/F8/F9 verified first time, merged at fb4f57c4.
