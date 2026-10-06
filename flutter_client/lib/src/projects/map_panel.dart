@@ -1537,7 +1537,7 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
       tapLat: latlng.latitude,
       tapLon: latlng.longitude,
       thresholdSq: pow(15.0 * pixelDeg, 2).toDouble(),
-      track: widget.notifier.fullTrack,
+      track: widget.notifier.elevationFacet.fullTrack,
     );
     // See hitTestMapTap's doc comment: most taps are cheap enough to just
     // handle inline (instant selection/cursor feedback); only a trip large
@@ -2490,7 +2490,7 @@ class ManageMapPanelState extends State<ManageMapPanel>
       tapLat: latlng.latitude,
       tapLon: latlng.longitude,
       thresholdSq: pow(15.0 * pixelDeg, 2).toDouble(),
-      track: widget.notifier.fullTrack,
+      track: widget.notifier.elevationFacet.fullTrack,
     );
     // See hitTestMapTap's doc comment: most taps are cheap enough to just
     // handle inline (instant selection/cursor feedback); only a trip large

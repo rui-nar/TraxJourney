@@ -44,6 +44,8 @@ const _facetDeclarations = {
   'final class StyleFacetWriter': '$_dir/facets/style_facet.dart',
   'final class ItemsFacet': '$_dir/facets/items_facet.dart',
   'final class ItemsFacetWriter': '$_dir/facets/items_facet.dart',
+  'final class ElevationFacet': '$_dir/facets/elevation_facet.dart',
+  'final class ElevationFacetWriter': '$_dir/facets/elevation_facet.dart',
 };
 
 /// Fields clear() deliberately leaves alone, each with why.
@@ -96,7 +98,7 @@ void main() {
         containsAll([
           '_heldStateKey', 'pendingSync',
           'shareToken', '_photoPollingTimer', '_degradedRouteCheckTimer',
-          '_fullTrack', 'members', 'quotaError',
+          'members', 'quotaError',
           'polarstepsOverlaySteps',
           '_pendingSegmentPatches', '_segmentTombstones', '_removedSegments',
           'geoFacetWriter',
@@ -121,6 +123,10 @@ void main() {
           'ItemsFacet._counters', 'ItemsFacet._dayStatsCache',
           'ItemsFacet._orderedDayKeysCache', 'ItemsFacet._listVersion',
           'ItemsFacet._dayMetaVersion',
+          'elevationFacetWriter',
+          'ElevationFacet._fullTrack', 'ElevationFacet._perActivityTracks',
+          'ElevationFacet._totalDistanceM', 'ElevationFacet._totalMovingSeconds',
+          'ElevationFacet._totalElevationGainM',
         ]));
     // Neither another class in the same file nor a mixin's abstract getters.
     expect(scan.fields, isNot(contains('_token'))); // _SupersessionTrack's
@@ -139,6 +145,8 @@ void main() {
       'tripStart', 'tripEnd', 'dayMeta', 'sleepingOptions',
       'sleepingOptionGroups', 'counters', '_dayStatsCache',
       '_orderedDayKeysCache',
+      '_fullTrack', '_perActivityTracks', 'totalDistanceM',
+      'totalMovingSeconds', 'totalElevationGainM',
     ]) {
       expect(scan.fields, isNot(contains(moved)));
     }
@@ -223,6 +231,21 @@ void main() {
       facet: items.replaceRange(lineAt, lineAt + line.length, ''),
     });
     expect(scan.unreset(), {'ItemsFacet._people'});
+  });
+
+  test("removing an elevation field's reset fails the scan", () {
+    const facet = 'final class ElevationFacet';
+    const line = '_totalMovingSeconds = 0;';
+    final elevation = sources[facet]!;
+    final resetAt = elevation.indexOf('  void _reset() {');
+    final lineAt = elevation.indexOf(line, resetAt);
+    expect(resetAt, isNonNegative);
+    expect(lineAt, isNonNegative, reason: '$line is not in _reset()');
+    final scan = _Scan({
+      ...sources,
+      facet: elevation.replaceRange(lineAt, lineAt + line.length, ''),
+    });
+    expect(scan.unreset(), {'ElevationFacet._totalMovingSeconds'});
   });
 
   test("clear() not resetting the facet fails the scan for all of its fields, "

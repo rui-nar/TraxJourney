@@ -898,10 +898,7 @@ class ProjectNotifier extends ChangeNotifier
     if (_isCurrent(token, loadRef)) notifyListeners();
   }
 
-  // Cached aggregate stats — computed once in load(), not on every build.
-  double totalDistanceM = 0;
-  int totalMovingSeconds = 0;
-  double totalElevationGainM = 0;
+  // The cached aggregate stats live in [elevationFacet] (#294).
 
   /// Loads project details and GeoJSON in two phases.
   ///
@@ -1915,9 +1912,8 @@ class ProjectNotifier extends ChangeNotifier
       moving += (a['moving_time']           as num? ?? 0).toInt();
       elev   += (a['total_elevation_gain']  as num? ?? 0).toDouble();
     }
-    totalDistanceM      = dist;
-    totalMovingSeconds  = moving;
-    totalElevationGainM = elev;
+    elevationFacetWriter.setTotals(
+        distanceM: dist, movingSeconds: moving, elevationGainM: elev);
   }
 
   // dayStats() and orderedDayKeys() live in [itemsFacet] (#294).
@@ -1985,23 +1981,15 @@ class ProjectNotifier extends ChangeNotifier
   /// Holds the cumulative distance (km) of the nearest track point.
   final ValueNotifier<double?> mapCursorDistNotifier = ValueNotifier(null);
 
-  /// Full distance-indexed track for all activities — used by the map panel
-  /// to map a tapped GeoPoint back to a distance on the elevation chart.
-  List<(double, GeoPoint)> _fullTrack = const [];
-  List<(double, GeoPoint)> get fullTrack => _fullTrack;
-
-  /// Per-activity distance-indexed tracks (0-based distances) — used by
-  /// ElevationChart to map chart x-position to a map position.
-  /// Keys are activity_id as String.
-  Map<String, List<(double, GeoPoint)>> get perActivityTracks => _perActivityTracks;
-  Map<String, List<(double, GeoPoint)>> _perActivityTracks = const {};
+  // The full track and the per-activity tracks live in [elevationFacet]
+  // (#294). The generation below is control state, not data, so it stays here.
 
   // Bumped on every _buildFullTrack call; guards a stale async result (from a
   // superseded call — e.g. the geo-load's call and the elevation-load's call
   // landing out of order) from overwriting a newer one.
   int _buildFullTrackGen = 0;
 
-  /// Rebuilds [_fullTrack]/[_perActivityTracks] from the current [geo] +
+  /// Rebuilds the facet's full and per-activity tracks from the current [geo] +
   /// [activities]. Delegates to [buildFullTrackResult] — see its doc comment
   /// for why that's a separate top-level function: above
   /// [kInlineFullTrackThreshold] raw elevation_profile points, the work moves
@@ -2029,8 +2017,7 @@ class ProjectNotifier extends ChangeNotifier
       // this line — unlike the compute() branch below, which awaits across an
       // isolate hop and needs the check after it returns.
       final r = buildFullTrackResult((geo: geo, activities: itemsFacet.activities));
-      _fullTrack = r.fullTrack;
-      _perActivityTracks = r.perActivityTracks;
+      elevationFacetWriter.setTracks(r.fullTrack, r.perActivityTracks);
       _noteTrackSizes();
       return;
     }
@@ -2053,8 +2040,7 @@ class ProjectNotifier extends ChangeNotifier
         perfSpans.blocking('geo_flatten', () => flattenGeoCoords(geo));
     final r = await compute(buildFullTrackFromTotals, (coords: coords, totals: totals));
     if (gen != _buildFullTrackGen) return; // superseded by a newer call
-    _fullTrack = r.fullTrack;
-    _perActivityTracks = r.perActivityTracks;
+    elevationFacetWriter.setTracks(r.fullTrack, r.perActivityTracks);
     _noteTrackSizes();
   }
 
@@ -2068,12 +2054,12 @@ class ProjectNotifier extends ChangeNotifier
   void _noteTrackSizes() {
     if (!perfSpans.enabled) return;
     var perAct = 0;
-    for (final t in _perActivityTracks.values) {
+    for (final t in elevationFacet.perActivityTracks.values) {
       perAct += t.length;
     }
     final coords = totalTrackCoordinatePoints(geoFacet.geo);
     perfSpans
-      ..note('full_track_points', '${_fullTrack.length}')
+      ..note('full_track_points', '${elevationFacet.fullTrack.length}')
       ..note('per_activity_track_points', '$perAct')
       ..note('geo_coords', '$coords')
       // Every sample is a 2-element List: the single largest object count
@@ -2083,7 +2069,7 @@ class ProjectNotifier extends ChangeNotifier
       ..note('activities', '${itemsFacet.activities.length}')
       ..note('items', '${itemsFacet.items.length}')
       ..note('dart_structs_est', perfEstimateStructBytes(
-          fullTrackPoints: _fullTrack.length,
+          fullTrackPoints: elevationFacet.fullTrack.length,
           perActivityTrackPoints: perAct,
           geoCoords: coords));
   }
@@ -2173,8 +2159,6 @@ class ProjectNotifier extends ChangeNotifier
     previewArcNotifier.value = null;
     elevationCursorNotifier.value = null;
     mapCursorDistNotifier.value = null;
-    _fullTrack = const [];
-    _perActivityTracks = const {};
     // Invalidate any _buildFullTrack() still in flight from before this
     // clear() — without this, a stale compute() resolving afterward would
     // pass the gen check and repopulate the track data this just wiped.
@@ -2185,9 +2169,6 @@ class ProjectNotifier extends ChangeNotifier
     _loadTrack.invalidate();
     _reloadTrack.invalidate();
     _detailsOnlyReloadTrack.invalidate();
-    totalDistanceM = 0;
-    totalMovingSeconds = 0;
-    totalElevationGainM = 0;
     isLoading = false;
     error = null;
     loadErrorStatus = null;

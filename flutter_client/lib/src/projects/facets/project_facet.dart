@@ -34,6 +34,7 @@ import 'dart:ui' show Color;
 import 'package:flutter/foundation.dart';
 
 import '../../crypto/undecrypted_fields.dart';
+import '../../map/geo_point.dart';
 import '../geo_viewport.dart' show GeoBox;
 import '../project_filter_mixin.dart' show effectiveDayTags;
 import '../project_filters.dart';

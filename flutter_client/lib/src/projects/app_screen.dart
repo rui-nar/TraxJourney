@@ -1209,8 +1209,8 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
                                     n.elevationCursorNotifier.value = pos,
                                 mapCursorNotifier: n.mapCursorDistNotifier,
                                 track: selActId != null
-                                    ? n.perActivityTracks[selActId.toString()] ?? n.fullTrack
-                                    : n.fullTrack,
+                                    ? n.elevationFacet.perActivityTracks[selActId.toString()] ?? n.elevationFacet.fullTrack
+                                    : n.elevationFacet.fullTrack,
                                 color: n.styleFacet.effectiveElevationChartColor,
                                 showLine: n.styleFacet.elevationChartShowLine,
                               ));
@@ -1309,8 +1309,8 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
                               n.elevationCursorNotifier.value = pos,
                           mapCursorNotifier: n.mapCursorDistNotifier,
                           track: selActId != null
-                              ? n.perActivityTracks[selActId.toString()] ?? n.fullTrack
-                              : n.fullTrack,
+                              ? n.elevationFacet.perActivityTracks[selActId.toString()] ?? n.elevationFacet.fullTrack
+                              : n.elevationFacet.fullTrack,
                           color: n.styleFacet.effectiveElevationChartColor,
                         ));
                       },

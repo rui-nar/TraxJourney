@@ -252,7 +252,7 @@ Future<Uint8List?> performOffscreenExport({
                       child: ElevationChart(
                         activities: notifier.itemsFacet.activities,
                         selectedActivityId: null,
-                        track: notifier.fullTrack,
+                        track: notifier.elevationFacet.fullTrack,
                         color: notifier.styleFacet.effectiveElevationChartColor,
                       ),
                     ),
