@@ -1583,10 +1583,10 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
     final selJournalId = notifier.selectionFacet.selectedJournalId;
     final showJournals = notifier.selectionFacet.showJournals;
     final items = notifier.items;
-    final trackColor = notifier.trackColor;
-    final trackSecondaryColor = notifier.trackSecondaryColor;
-    final trackWidth = notifier.trackWidth;
-    final alternating = notifier.alternatingTrackColors;
+    final trackColor = notifier.styleFacet.trackColor;
+    final trackSecondaryColor = notifier.styleFacet.trackSecondaryColor;
+    final trackWidth = notifier.styleFacet.trackWidth;
+    final alternating = notifier.styleFacet.alternatingTrackColors;
     final selectionChanged = selActId != _lastSelectedId ||
         selSegId?.toString() != _lastSelectedSegId?.toString() ||
         selDay != _lastSelectedDay ||
@@ -1597,8 +1597,8 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
     _autoZoomJustEnabled = false;
     final styleChanged = trackColor != _lastTrackColor ||
         trackWidth != _lastTrackWidth || alternating != _lastAlternating ||
-        notifier.colorByType != _lastColorByType ||
-        !identical(notifier.typeStyles, _lastTypeStyles);
+        notifier.styleFacet.colorByType != _lastColorByType ||
+        !identical(notifier.styleFacet.typeStyles, _lastTypeStyles);
     // Geometry (points, base colours, icons — everything a day/activity/
     // segment/memory selection doesn't change) only needs rebuilding when
     // geo, items, or track style actually change. A selection change alone
@@ -1619,8 +1619,8 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
       _lastTrackWidth = trackWidth;
       _lastAlternating = alternating;
       _lastShowJournals = showJournals;
-      _lastColorByType = notifier.colorByType;
-      _lastTypeStyles = notifier.typeStyles;
+      _lastColorByType = notifier.styleFacet.colorByType;
+      _lastTypeStyles = notifier.styleFacet.typeStyles;
       final tilesActive = widget.trackTileUrlTemplate != null;
       // Multi-select takes priority over single-day selection, mirroring
       // ManageMapPanel's day-highlighting (issue #199 view-mode carousel).
@@ -1636,16 +1636,16 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
         _polylineSpecs = geo != null
             ? _buildPolylineSpecs(geo, items, trackColor,
                 trackSecondaryColor: trackSecondaryColor, alternating: alternating,
-                colorByType: notifier.colorByType, typeStyles: notifier.typeStyles)
+                colorByType: notifier.styleFacet.colorByType, typeStyles: notifier.styleFacet.typeStyles)
             : const [];
         _maybeDecimatePolylines(_polylineSpecs);
         _activityMarkerSpecs = geo != null
             ? _buildActivityMarkerSpecs(geo, trackColor,
-                colorByType: notifier.colorByType, typeStyles: notifier.typeStyles)
+                colorByType: notifier.styleFacet.colorByType, typeStyles: notifier.styleFacet.typeStyles)
             : const [];
         _segmentMarkerSpecs = geo != null
             ? _buildSegmentMarkerSpecs(geo, trackColor,
-                colorByType: notifier.colorByType, typeStyles: notifier.typeStyles)
+                colorByType: notifier.styleFacet.colorByType, typeStyles: notifier.styleFacet.typeStyles)
             : const [];
         _cachedDayBreakpointMarkers = geo != null
             ? buildDayBreakpointMarkers(
@@ -2576,10 +2576,10 @@ class ManageMapPanelState extends State<ManageMapPanel>
     final selJournalId2 = notifier.selectionFacet.selectedJournalId;
     final showJournals2 = notifier.selectionFacet.showJournals;
     final items = notifier.items;
-    final trackColor = notifier.trackColor;
-    final trackSecondaryColor2 = notifier.trackSecondaryColor;
-    final trackWidth = notifier.trackWidth;
-    final alternating = notifier.alternatingTrackColors;
+    final trackColor = notifier.styleFacet.trackColor;
+    final trackSecondaryColor2 = notifier.styleFacet.trackSecondaryColor;
+    final trackWidth = notifier.styleFacet.trackWidth;
+    final alternating = notifier.styleFacet.alternatingTrackColors;
     final selectionChanged2 = selActId != _lastSelectedId ||
         selSegId?.toString() != _lastSelectedSegId?.toString() ||
         selDay != _lastSelectedDay ||
@@ -2590,8 +2590,8 @@ class ManageMapPanelState extends State<ManageMapPanel>
     _autoZoomJustEnabled = false;
     final styleChanged2 = trackColor != _lastTrackColor ||
         trackWidth != _lastTrackWidth || alternating != _lastAlternating ||
-        notifier.colorByType != _lastColorByType ||
-        !identical(notifier.typeStyles, _lastTypeStyles);
+        notifier.styleFacet.colorByType != _lastColorByType ||
+        !identical(notifier.styleFacet.typeStyles, _lastTypeStyles);
     final perfGeoChg = !identical(geo, _lastGeo);
     final perfItemsChg = !identical(items, _lastItems);
     final perfJournalsChg = showJournals2 != _lastShowJournals;
@@ -2616,8 +2616,8 @@ class ManageMapPanelState extends State<ManageMapPanel>
       _lastTrackWidth = trackWidth;
       _lastAlternating = alternating;
       _lastShowJournals = showJournals2;
-      _lastColorByType = notifier.colorByType;
-      _lastTypeStyles = notifier.typeStyles;
+      _lastColorByType = notifier.styleFacet.colorByType;
+      _lastTypeStyles = notifier.styleFacet.typeStyles;
       // Multi-select takes priority over single-day selection.
       final effectiveDays = selDays.isNotEmpty
           ? selDays
@@ -2631,16 +2631,16 @@ class ManageMapPanelState extends State<ManageMapPanel>
         _polylineSpecs = geo != null
             ? _buildPolylineSpecs(geo, items, trackColor,
                 trackSecondaryColor: trackSecondaryColor2, alternating: alternating,
-                colorByType: notifier.colorByType, typeStyles: notifier.typeStyles)
+                colorByType: notifier.styleFacet.colorByType, typeStyles: notifier.styleFacet.typeStyles)
             : const [];
         _maybeDecimatePolylines(_polylineSpecs);
         _activityMarkerSpecs = geo != null
             ? _buildActivityMarkerSpecs(geo, trackColor,
-                colorByType: notifier.colorByType, typeStyles: notifier.typeStyles)
+                colorByType: notifier.styleFacet.colorByType, typeStyles: notifier.styleFacet.typeStyles)
             : const [];
         _segmentMarkerSpecs = geo != null
             ? _buildSegmentMarkerSpecs(geo, trackColor,
-                colorByType: notifier.colorByType, typeStyles: notifier.typeStyles)
+                colorByType: notifier.styleFacet.colorByType, typeStyles: notifier.styleFacet.typeStyles)
             : const [];
         _cachedDayBreakpointMarkers = geo != null
             ? buildDayBreakpointMarkers(

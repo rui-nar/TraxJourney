@@ -40,6 +40,8 @@ const _facetDeclarations = {
   'final class GeoFacetWriter': '$_dir/facets/geo_facet.dart',
   'final class SelectionFacet': '$_dir/facets/selection_facet.dart',
   'final class SelectionFacetWriter': '$_dir/facets/selection_facet.dart',
+  'final class StyleFacet': '$_dir/facets/style_facet.dart',
+  'final class StyleFacetWriter': '$_dir/facets/style_facet.dart',
 };
 
 /// Fields clear() deliberately leaves alone, each with why.
@@ -103,6 +105,12 @@ void main() {
           'SelectionFacet._memoryId', 'SelectionFacet._journalId',
           'SelectionFacet._showJournals', 'SelectionFacet._day',
           'SelectionFacet._days', 'SelectionFacet._filters',
+          'styleFacetWriter',
+          'StyleFacet._trackColor', 'StyleFacet._trackSecondaryColor',
+          'StyleFacet._trackWidth', 'StyleFacet._alternatingTrackColors',
+          'StyleFacet._elevationChartColor',
+          'StyleFacet._elevationChartShowLine', 'StyleFacet._colorByType',
+          'StyleFacet._typeStyles', 'StyleFacet._languages',
         ]));
     // Neither another class in the same file nor a mixin's abstract getters.
     expect(scan.fields, isNot(contains('_token'))); // _SupersessionTrack's
@@ -114,6 +122,9 @@ void main() {
       'selectedActivityId', 'selectedSegmentId', 'selectedMemoryId',
       'selectedJournalId', 'showJournals', 'selectedDay', 'selectedDays',
       '_filters',
+      'trackColor', 'trackSecondaryColor', 'trackWidth',
+      'alternatingTrackColors', 'elevationChartColor',
+      'elevationChartShowLine', 'colorByType', 'typeStyles', 'languages',
     ]) {
       expect(scan.fields, isNot(contains(moved)));
     }
@@ -168,6 +179,21 @@ void main() {
       facet: selection.replaceRange(lineAt, lineAt + line.length, ''),
     });
     expect(scan.unreset(), {'SelectionFacet._days'});
+  });
+
+  test("removing a style field's reset fails the scan", () {
+    const facet = 'final class StyleFacet';
+    const line = '_languages = [];';
+    final style = sources[facet]!;
+    final resetAt = style.indexOf('  void _reset() {');
+    final lineAt = style.indexOf(line, resetAt);
+    expect(resetAt, isNonNegative);
+    expect(lineAt, isNonNegative, reason: '$line is not in _reset()');
+    final scan = _Scan({
+      ...sources,
+      facet: style.replaceRange(lineAt, lineAt + line.length, ''),
+    });
+    expect(scan.unreset(), {'StyleFacet._languages'});
   });
 
   test("clear() not resetting the facet fails the scan for all of its fields, "

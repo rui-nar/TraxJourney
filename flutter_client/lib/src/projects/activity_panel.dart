@@ -1693,7 +1693,7 @@ class _ActivityPanelState extends State<ActivityPanel> {
                                   : null,
                               leading: _ActivityIconBox(
                                   type: type,
-                                  typeStyles: notifier.typeStyles,
+                                  typeStyles: notifier.styleFacet.typeStyles,
                                   manualImport: a['source'] == 'gpx'),
                               title: Semantics(
                                 label: '$name, $statsText'
@@ -2108,12 +2108,12 @@ class _ActivityPanelState extends State<ActivityPanel> {
                               // panel never changes appearance on its own.
                               final effectiveSegType = segType ??
                                   (seg['route_mode'] == 'rail' ? 'train' : null);
-                              final segColor = notifier.colorByType
+                              final segColor = notifier.styleFacet.colorByType
                                   ? resolveTypeStyle(
                                       segmentTypeBucket(effectiveSegType),
                                       isSegment: true,
                                       overrides: notifier
-                                          .typeStyles[segmentTypeBucket(effectiveSegType)],
+                                          .styleFacet.typeStyles[segmentTypeBucket(effectiveSegType)],
                                     ).color
                                   : const Color(0xFF94A3B8);
                               return ListTile(
@@ -2133,7 +2133,7 @@ class _ActivityPanelState extends State<ActivityPanel> {
                                   child: Icon(
                                     _iconForSegmentType(effectiveSegType),
                                     size: 17,
-                                    color: notifier.colorByType
+                                    color: notifier.styleFacet.colorByType
                                         ? iconBoxFg(segColor,
                                             dark: Theme.of(context).brightness ==
                                                 Brightness.dark)
