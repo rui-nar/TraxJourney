@@ -348,7 +348,7 @@ Answer (owner, 2026-10-06): 20 GB free on the VPS, so bus for all 49 regions is 
 
 ### Summary
 
-- Units delivered: 10 plan units + 11 fix units (F1–F11). Routes: Opus 17 (U1, U2, U4, U5, U6, U7, U8, U9, U10, F3, F4, F5, F6, F7, F9 and the two Opus-routed escalation fixes counted in their rows), Sonnet 4 (U3, F1, F2, F8, F10, F11 — U10 re-routed Sonnet → Opus). Verified first time: every unit except U9 (attempt 2, narrow local guard).
+- Units delivered: 10 plan units + 11 fix units (F1–F11) = 21. Routes: Opus 15 (U1, U2, U4, U5, U6, U7, U8, U9, U10, F3, F4, F5, F6, F7, F9), Sonnet 6 (U3, F1, F2, F8, F10, F11); U10 re-routed Sonnet → Opus. Verified first time: all except U9 (attempt 2, narrow local guard).
 - Escalations: U3 (X3, scope +3 test files), U4 (owner question, Hamburg → Munich), U7 (Germany bus size and build memory → owner → F3, F4), U9 (no stop positions → owner → F5, #570 filed). Orchestrator re-route: U10 to Opus with the CI gate in scope.
 - Reviews: plan 3 rounds; U8 unit review 1 round; integrated review 3 rounds (cap). Owner overrides to Fix now: R1-9, R1-10, R2-2, R2-6, R3-1, U8R1-1, U8R1-2, I1-2, I2-1, I3-1, I3-2. Still deferred with revisit triggers: R1-2, R1-11, I1-3.
 - Live checks: France subset Rail extract on the branch (gate on a real CI runner); rail-data-2026-10-05 published and installed on both boxes; val ran part 1 (validation-d9561d7).
