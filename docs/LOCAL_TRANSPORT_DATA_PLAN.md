@@ -444,7 +444,7 @@ Not a unit. Nothing in Wave 5 merges until both boxes run U8's reader: a box wit
   - The full dispatch run's per-layer sizes and Germany's bus-store peak RSS are in the PR, and Open decision 3 is answered from them.
 - **Out of scope:** readers (U8); resolving (U9).
 - **Latitude:** local design.
-- **Escalate if:** any single region's bus layer exceeds 150 MB filtered; Germany's bus-store build peaks above 700 MB RSS (the box builds it inside a 1 GB worker); a file outside Scope is needed.
+- **Escalate if:** any single region's bus layer exceeds 250 MB filtered (raised from 150 MB by the owner on 2026-10-06, after Germany measured 160 MB; unused tags are now stripped, ~112 MB); Germany's bus-store build peaks above 700 MB RSS (the box builds it inside a 1 GB worker); a file outside Scope is needed.
 - **Depends on:** U8 merged **and deployed** to both boxes.
 
 ### Wave 6 — ferry and bus resolve locally
