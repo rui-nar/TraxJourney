@@ -250,3 +250,25 @@ Round cap reached for U7 (§6): a fourth round needs the user to ask for it.
 ## Integrated diff review — Round 3 — 2026-10-06, reviewed at db0e287b (b667fcd8..db0e287b, fix for IR2-1)
 
 No findings. Reviewer traced re-entrancy (no helper under the moved cleanup takes photo_lock), the error path (lock released on exception, same 500-after-commit as before), lock hold time (same work delete_photo already does under the lock), the journal change, and the test's forced interleaving. Review loop stops (REVIEW.md §6).
+
+## Delivery
+
+| Unit | Goal | Route | Rule | Attempts | Escalated | Verified first time | Findings traced |
+|---|---|---|---|---|---|---|---|
+| U1 | Upright thumbnails (#511) | Sonnet | — | 1 | — | yes | R1-4 (deferred) |
+| U2 | photo_order_json column, null compaction, AUTOINCREMENT ids | Opus | S4 | 1 (+1 review fix) | X3 → Scope widened to tests/test_import_zip.py | yes | U2R1-1 |
+| U3 | Rank placement helpers | Opus | S2 | 1 | — | yes | — |
+| U4 | Memories use rank placement and epochs | Opus | S4 | 1 | — | yes | R1-1, R1-2, R1-3, R2-1, R3-2 |
+| U5 | Journal parity | Opus | S4 | 1 | — | yes | R1-2, R1-3, R2-1 |
+| U6 | Thumbnail orientation backfill script | Opus | S4 | 1 (+1 guard) | — | yes | R1-5, U6R1-1, U6R1-2, U6R2-1 |
+| U7 | Reorder script on the rank model, runbook | Opus | S4 | 1 (+3 review fixes) | — | yes | R3-1, R4-1, U7R1-1, U7R1-2, U7R2-1, U7R2-2, U7R3-1 |
+| F1 | Deletes and replace cleanup serialised against placement | Opus | S5 | 1 (+1 review fix) | X3 reported (archive-import replace window); decided D1, out of envelope, no new unit | yes | IR1-1, IR2-1, IR2-2 |
+
+Notes:
+- Split overrides: U5 moved from wave 2 to its own wave 3 (it depends on U4) and its Scope gained tests/test_memories_photo_order.py.
+- Wave 2 was launched while the wave-1 full suite was still running in the CI container (slow under shared load); no wave-2 unit was merged before that suite came back green (6243 passed).
+- The local Windows .venv reproduces the known FastAPI router race (405/404 on threaded app startup); the authoritative suite runs are in the traxjourney-py314-citest container.
+- Mid-delivery another session switched the shared checkout to main and stashed the uncommitted ledger; recovered from the stash by SHA, and integration moved to a dedicated worktree (.claude/worktrees/photos-int).
+- Final full suite on caf94dc3 (traxjourney-py314-citest, CI command): 6297 passed, 39 skipped, 1 failed — tests/test_video_camera.py::test_ninety_seconds_of_a_long_trip_is_fast, a timing test in code this branch does not touch, under load from two other sessions' suites; it passed 3/3 when re-run alone.
+- Follow-ups filed: #565 (per-memory re-sync from Polarsteps), #566 (duplicate photos on a retried step creation, plan O1).
+- Pre-existing gaps reported by F1, outside this plan: deleting a trip leaves its photo files on disk and counted (repo_core.delete_project); account deletion leaves companion-authored journal photos on the deleted user's trips counted; archive-import replace reads photos_json without photo_lock.
