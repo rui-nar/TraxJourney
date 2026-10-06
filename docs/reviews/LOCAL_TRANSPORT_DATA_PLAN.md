@@ -214,6 +214,8 @@ Branch `feat/345-local-transport-data`, base cc52978b (plan + origin/main e96f86
 | U7 | Ferry and bus layers in the extract build | Opus | S3 | 1 | escalate (Germany bus 160 MB, store build 2.1 GB) → owner | yes (code) | R1-3, R1-7, R1-10, R2-3 |
 | F4 | Ferry/bus files keep only the tags the builder reads | Opus | S3 | 1 | — | yes | — |
 | F3 | Store builder runs in bounded memory | Opus | S4 | 1 | — | yes | R1-7 |
+| F5 | Ferry and bus stores know where their relations' stops are | Opus | S4 | 1 | — | yes | — |
+| U9 | Ferry and bus resolve from local stores first | Opus | S2 | 2 | escalate (no stop positions) → owner | no (narrow local guard) | R1-2, R1-8, R2-1 |
 
 Notes:
 - U1: the `rail-data` label did not exist; owner approved creating it (created 2026-10-05). `_working_bash()` in the workflow test now prefers Git Bash on Windows (a bare `bash` is the WSL launcher and drops env vars); no change on Linux.
@@ -254,3 +256,7 @@ Reviewer hand-off note: `.github/workflows/rail-extract.yml:284` (U5's gate) cal
 - U7 notes for U9: ferry/bus files carry no stop nodes (`_bridge_to_named_stops` reads stop positions from Overpass's `out geom`); ferry bboxes are wide (Denmark −6.8…25.2 lon). `osmium.index.IdSet` is dense (1.5 GB per 300k scattered ids) — Python sets used instead.
 - Orchestrator incident (2026-10-06 09:56): a one-off check's failed `cd` let `git reset --hard` run in the shared main checkout; HEAD unchanged, no staged blob lost (fsck), checkout believed clean. Lesson recorded.
 - Wave 5 integration (550515ff): full suite 6249 passed, 39 skipped, 1 failed — the same load-sensitive video timing test as wave 3; passed 3/3 alone.
+- U9 escalated before writing code: ferry/bus stores had no stop positions (Denmark 0/18,030 bus stops located), so 38 of 730 Danish bus relations resolved differently from Overpass and passed strategy A's own check (no fallback). Owner (2026-10-06): keep and locate stop nodes for ferry/bus (F5); file rail's partial version of the gap separately (#570). F5: Denmark bus relations differing 38 → 0, bus stops located 17,504/18,030 (the rest absent from the extract), rail stores and rail extract byte-identical (Denmark, Germany).
+- U9 attempt 1 failed verification: the local ferry/bus attempt caught only OverpassError/RailSourceOverload, so any other local exception escaped with no fallback (binding wide-guard convention). Attempt 2 added the wide guard and a test; passed. Local vs Overpass identical on Rødby–Puttgarden, Helsingør–Helsingborg, Hirtshals–Kristiansand and bus 19; Copenhagen bus resolve 68 MB (R1-2 stays deferred). Non-blocking: route_source.py reads RailStore._query (private) — a public relation box query in store.py would be cleaner. Stale docstrings in store.py (relation_geometry/relation_stops say stops are unlocated — now rail-only).
+- F5 + U9 integration (b5091c4d): full suite 6284 passed, 39 skipped.
+- U10 re-routed Sonnet → Opus (S3): adding ferry/bus legs needs the CI corpus gate (rail-extract.yml) to build ferry/bus stores too, or `--require-all` fails every full run; Scope widened to the gate step and its tests.
