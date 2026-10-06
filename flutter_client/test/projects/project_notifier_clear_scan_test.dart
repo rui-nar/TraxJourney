@@ -15,6 +15,10 @@
 // fields must be written by a method of its own that clear() reaches, through
 // the notifier's `…FacetWriter.reset()`. Methods are keyed by class, so a
 // facet's `reset` is only reached through a field of that facet's type.
+//
+// Root fields are private behind setters that mark the root changed (issue
+// #294, Decision 17): an assignment `name = …` runs the setter `set name`, so
+// clear() resets `_name` by assigning `name`.
 
 import 'dart:io';
 
@@ -96,10 +100,10 @@ void main() {
     expect(
         scan.fields,
         containsAll([
-          '_heldStateKey', 'pendingSync',
-          'shareToken', '_photoPollingTimer', '_degradedRouteCheckTimer',
-          'members', 'quotaError',
-          'polarstepsOverlaySteps',
+          '_heldStateKey', '_pendingSync',
+          '_shareToken', '_photoPollingTimer', '_degradedRouteCheckTimer',
+          '_members', '_quotaError',
+          '_polarstepsOverlaySteps', '_isLoading', '_error', '_ref',
           '_pendingSegmentPatches', '_segmentTombstones', '_removedSegments',
           'geoFacetWriter',
           'GeoFacet._geo', 'GeoFacet._lod', 'GeoFacet._servedFrom',
@@ -132,6 +136,9 @@ void main() {
     expect(scan.fields, isNot(contains('_token'))); // _SupersessionTrack's
     expect(scan.fields, isNot(contains('index'))); // _RemovedSegment's
     expect(scan.fields, isNot(contains('projectRef'))); // abstract getter
+    // A root field's setter is not a field: the private one behind it is.
+    expect(scan.fields, isNot(contains('shareToken')));
+    expect(scan.fields, isNot(contains('quotaError'))); // abstract in a mixin
     // The fields that moved to the geometry facet are its, not the notifier's.
     for (final moved in [
       'geo', 'isGeoLoaded', '_loadedZoomBucket', '_loadedGeoBox',
@@ -160,7 +167,8 @@ void main() {
 
   test('removing a reset from clear() fails the scan', () {
     for (final (field, line) in [
-      ('shareToken', 'shareToken = null;'),
+      ('_shareToken', 'shareToken = null;'),
+      ('_members', 'members = [];'),
       ('_heldStateKey', '_heldStateKey = null;'),
       ('_removedSegments', 'resetSegmentState();'),
     ]) {
@@ -345,6 +353,19 @@ class _Scan {
           if (methods.containsKey(t) && reached.add(t)) queue.add(t);
         }
       }
+      // An assignment to a name, or to `this.` a name, runs its setter. A
+      // local declaration (`final ref = this.ref;`) does not.
+      final assigns = RegExp(
+              r'(?<!\b(?:final|var|late)\s+)(?:(?<![\w.])|(?<=(?<![\w.])this\.))'
+              r'([A-Za-z_]\w*)\s*(?:=(?![=>])|\?\?=)')
+          .allMatches(body);
+      for (final m in assigns) {
+        final setter = '${m.group(1)!}=';
+        for (final t in methods.keys.where((k) =>
+            k.endsWith('.$setter') && _groupOf(k.split('.').first) == group)) {
+          if (reached.add(t)) queue.add(t);
+        }
+      }
     }
     return {
       for (final e in _fieldsOf.entries)
@@ -444,8 +465,11 @@ class _Scan {
     return RegExp(r'(_?[A-Za-z]\w*)$').firstMatch(head)?.group(1);
   }
 
-  /// The name of the method or constructor whose header is [head].
+  /// The name of the method or constructor whose header is [head]; a setter's
+  /// is its name followed by `=`, so it is not taken for its getter.
   static String? _methodName(String head) {
+    final setter = RegExp(r'\bset\s+(\w+)\s*\(').firstMatch(head);
+    if (setter != null) return '${setter.group(1)}=';
     // The parameter list is the last bracket group at depth 0.
     var depth = 0;
     var open = -1;

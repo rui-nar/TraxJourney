@@ -89,7 +89,8 @@ void main() {
       notifier.itemsFacetWriter.setItems(before);
 
       var notified = false;
-      notifier.addListener(() => notified = true);
+      // The item list is the content facet's: its listeners are told (#294).
+      notifier.itemsFacet.addListener(() => notified = true);
       notifier.removeEncounterLocally('e1');
 
       expect(notifier.itemsFacet.items, isNot(same(before)));

@@ -161,7 +161,7 @@ void main() {
     expect(n.styleFacet.effectiveElevationChartColor, n.styleFacet.trackColor);
   });
 
-  test('setTrackStyle and saveLanguages notify the root and the facet once',
+  test('setTrackStyle and saveLanguages notify the facet once, not the root',
       () async {
     final n = await _loaded();
     addTearDown(n.dispose);
@@ -171,9 +171,10 @@ void main() {
 
     await n.setTrackStyle(
         color: const Color(0xFF010203), colorByTypeEnabled: false);
-    expect((root, facet), (1, 1));
+    // A style change is the facet's alone: the root stays quiet (U19).
+    expect((root, facet), (0, 1));
     await n.saveLanguages(['de']);
-    expect((root, facet), (2, 2));
+    expect((root, facet), (0, 2));
     expect(n.styleFacet.languages, ['de']);
   });
 

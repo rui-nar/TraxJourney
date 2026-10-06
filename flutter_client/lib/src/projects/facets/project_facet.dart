@@ -24,9 +24,11 @@
 /// **When listeners hear of it.** A write marks its facet changed — the
 /// [ProjectFacet.version] goes up — and notifies nobody. The notifier's
 /// `notifyListeners()` first notifies each facet changed since the last one,
-/// then its own listeners. So a write followed by a check that skips the
-/// notify still notifies nobody, and an operation that writes several facets
-/// notifies each of them once, together, as it did before facets existed.
+/// then its own listeners only if root state — a field in no facet — changed
+/// too, so a facet change no longer rebuilds what listens to the root (U19).
+/// So a write followed by a check that skips the notify still notifies
+/// nobody, and an operation that writes several facets notifies each of them
+/// once, together, as it did before facets existed.
 library;
 
 import 'dart:ui' show Color;

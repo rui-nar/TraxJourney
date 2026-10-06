@@ -15,7 +15,9 @@ import '../billing/billing_service.dart';
 
 mixin ProjectQuotaMixin on ChangeNotifier {
   /// The last upload refused on a plan limit, until someone consumes it.
-  QuotaError? quotaError;
+  /// Root state, held by ProjectNotifier.
+  QuotaError? get quotaError;
+  set quotaError(QuotaError? value);
 
   /// Record a refusal from a raw HTTP response. True when it was a quota 402.
   bool recordQuotaRefusal(int statusCode, String body) {

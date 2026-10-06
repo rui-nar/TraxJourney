@@ -10,6 +10,7 @@ import 'package:flutter/material.dart' show Color;
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../api/client.dart';
+import '../billing/billing_service.dart' show QuotaError;
 import '../core/perf_timing.dart';
 import '../core/project_ref.dart';
 import '../crypto/e2ee_crypto.dart' show EncryptedField;
@@ -456,9 +457,25 @@ class ProjectNotifier extends ChangeNotifier
         elevationFacetWriter,
       ];
 
+  // ── Root state (#294) ──────────────────────────────────────────────────────
+  //
+  // What is not in a facet is root state, and only a change to it notifies
+  // this notifier's own listeners (see [notifyListeners]). Each root field is
+  // private behind a setter that marks the root changed, so nothing — this
+  // class, its mixins (which declare these as abstract getter/setter pairs)
+  // or its subclasses — can change root state without the mark. A write
+  // straight to a backing field is caught by
+  // test/projects/facets/root_setter_scan_test.dart.
+
   /// The addressing for the currently open project (name + owner + role —
   /// issue #106). Null until [load] has been called at least once.
-  ProjectRef? ref;
+  ProjectRef? get ref => _ref;
+  set ref(ProjectRef? value) {
+    _ref = value;
+    _markRootChanged();
+  }
+
+  ProjectRef? _ref;
 
   String? get projectName => ref?.name;
 
@@ -474,14 +491,35 @@ class ProjectNotifier extends ChangeNotifier
 
   // The trip's content — activities, items, people, groups, day-meta, trip
   // dates, sleeping options and counters — lives in [itemsFacet] (#294).
-  bool isLoading = false;
-  @override String? error;
+  bool get isLoading => _isLoading;
+  set isLoading(bool value) {
+    _isLoading = value;
+    _markRootChanged();
+  }
+
+  bool _isLoading = false;
+
+  @override
+  String? get error => _error;
+  @override
+  set error(String? value) {
+    _error = value;
+    _markRootChanged();
+  }
+
+  String? _error;
 
   /// HTTP status of the [ApiException] that failed the last [load], or null
   /// when the load succeeded / failed for a non-API reason. Lets screens
   /// distinguish a 404 (stale shared-project ref after an owner rename —
   /// issue #111) from other errors.
-  int? loadErrorStatus;
+  int? get loadErrorStatus => _loadErrorStatus;
+  set loadErrorStatus(int? value) {
+    _loadErrorStatus = value;
+    _markRootChanged();
+  }
+
+  int? _loadErrorStatus;
 
   /// True when the current [activities]/[items]/geometry came from
   /// [projectDataCache]'s on-device store rather than a live server
@@ -489,14 +527,32 @@ class ProjectNotifier extends ChangeNotifier
   /// outright (offline / server unreachable) and a previously cached copy of
   /// this project exists. Screens show a "showing last saved version" banner
   /// while this is true; the next successful [load] clears it.
-  bool offlineFromCache = false;
+  bool get offlineFromCache => _offlineFromCache;
+  set offlineFromCache(bool value) {
+    _offlineFromCache = value;
+    _markRootChanged();
+  }
+
+  bool _offlineFromCache = false;
 
   /// Progressive-loading flags — default true so manage-mode screens that use
   /// the base load() see no behaviour change.  Set to false at the start of
   /// loadShared() / loadView() and flipped to true as each phase completes.
   /// The geometry phase's flag is [GeoFacet.isLoaded].
-  bool isMetaLoaded = true;
-  bool isElevationLoaded = true;
+  bool get isMetaLoaded => _isMetaLoaded;
+  set isMetaLoaded(bool value) {
+    _isMetaLoaded = value;
+    _markRootChanged();
+  }
+
+  bool _isMetaLoaded = true;
+  bool get isElevationLoaded => _isElevationLoaded;
+  set isElevationLoaded(bool value) {
+    _isElevationLoaded = value;
+    _markRootChanged();
+  }
+
+  bool _isElevationLoaded = true;
 
   /// Marks every progressive-loading phase as not loaded yet: what
   /// loadView() and loadShared() do before they start (P2-R1-5). A method,
@@ -519,7 +575,13 @@ class ProjectNotifier extends ChangeNotifier
   /// linkedPsTripId / shareToken / shareTokenNoMemories directly should gate
   /// on this rather than assume isLoading turning false means they're
   /// already populated.
-  bool isSyncMetaLoaded = true;
+  bool get isSyncMetaLoaded => _isSyncMetaLoaded;
+  set isSyncMetaLoaded(bool value) {
+    _isSyncMetaLoaded = value;
+    _markRootChanged();
+  }
+
+  bool _isSyncMetaLoaded = true;
 
   /// True if the trip is still active (no tripEnd set, or tripEnd is today or later).
   bool get _tripIsActive {
@@ -532,17 +594,59 @@ class ProjectNotifier extends ChangeNotifier
   }
 
   // ── Share tokens ─────────────────────────────────────────────────────────
-  String? shareToken;
-  String? shareTokenNoMemories;
+  String? get shareToken => _shareToken;
+  set shareToken(String? value) {
+    _shareToken = value;
+    _markRootChanged();
+  }
+
+  String? _shareToken;
+  String? get shareTokenNoMemories => _shareTokenNoMemories;
+  set shareTokenNoMemories(String? value) {
+    _shareTokenNoMemories = value;
+    _markRootChanged();
+  }
+
+  String? _shareTokenNoMemories;
 
   // ── Auto-sync state ──────────────────────────────────────────────────────
-  bool autoSyncEnabled = true;
-  int? linkedPsTripId;
-  double? lastStravaSyncAt;
-  double? lastPsSyncAt;
+  bool get autoSyncEnabled => _autoSyncEnabled;
+  set autoSyncEnabled(bool value) {
+    _autoSyncEnabled = value;
+    _markRootChanged();
+  }
+
+  bool _autoSyncEnabled = true;
+  int? get linkedPsTripId => _linkedPsTripId;
+  set linkedPsTripId(int? value) {
+    _linkedPsTripId = value;
+    _markRootChanged();
+  }
+
+  int? _linkedPsTripId;
+  double? get lastStravaSyncAt => _lastStravaSyncAt;
+  set lastStravaSyncAt(double? value) {
+    _lastStravaSyncAt = value;
+    _markRootChanged();
+  }
+
+  double? _lastStravaSyncAt;
+  double? get lastPsSyncAt => _lastPsSyncAt;
+  set lastPsSyncAt(double? value) {
+    _lastPsSyncAt = value;
+    _markRootChanged();
+  }
+
+  double? _lastPsSyncAt;
 
   /// Non-null when background check found new items; cleared by markSynced().
-  ({List<Map<String, dynamic>> strava, List<Map<String, dynamic>> polarsteps})? pendingSync;
+  ({List<Map<String, dynamic>> strava, List<Map<String, dynamic>> polarsteps})? get pendingSync => _pendingSync;
+  set pendingSync(({List<Map<String, dynamic>> strava, List<Map<String, dynamic>> polarsteps})? value) {
+    _pendingSync = value;
+    _markRootChanged();
+  }
+
+  ({List<Map<String, dynamic>> strava, List<Map<String, dynamic>> polarsteps})? _pendingSync;
 
   /// True when a periodic background check found a segment that was only an
   /// approximate straight line (route_degraded=true) has since resolved with
@@ -551,7 +655,48 @@ class ProjectNotifier extends ChangeNotifier
   /// reloadForDegradedUpgrade(). Deliberately never applied automatically —
   /// a silent background rewrite of the map/track a user is actively looking
   /// at or editing is exactly what this avoids; the user picks the timing.
-  bool degradedRouteUpgradeAvailable = false;
+  bool get degradedRouteUpgradeAvailable => _degradedRouteUpgradeAvailable;
+  set degradedRouteUpgradeAvailable(bool value) {
+    _degradedRouteUpgradeAvailable = value;
+    _markRootChanged();
+  }
+
+  bool _degradedRouteUpgradeAvailable = false;
+
+  // ── Mixin state ───────────────────────────────────────────────────────────
+  // Declared by the mixins as abstract getter/setter pairs, held here so it
+  // marks the root changed like every other root field.
+
+  @override
+  QuotaError? get quotaError => _quotaError;
+  @override
+  set quotaError(QuotaError? value) {
+    _quotaError = value;
+    _markRootChanged();
+  }
+
+  QuotaError? _quotaError;
+
+  @override
+  List<Map<String, dynamic>> get polarstepsOverlaySteps =>
+      _polarstepsOverlaySteps;
+  @override
+  set polarstepsOverlaySteps(List<Map<String, dynamic>> value) {
+    _polarstepsOverlaySteps = value;
+    _markRootChanged();
+  }
+
+  List<Map<String, dynamic>> _polarstepsOverlaySteps = [];
+
+  @override
+  String? get polarstepsOverlayLabel => _polarstepsOverlayLabel;
+  @override
+  set polarstepsOverlayLabel(String? value) {
+    _polarstepsOverlayLabel = value;
+    _markRootChanged();
+  }
+
+  String? _polarstepsOverlayLabel;
 
   // ── Track style ───────────────────────────────────────────────────────────
   // The style fields (track colours, width, type styles, languages) live in
@@ -2492,22 +2637,46 @@ class ProjectNotifier extends ChangeNotifier
 
   /// Members of the open project (owner first — server ordering). Loaded on
   /// demand by the settings screen's Travel companions section.
-  List<ProjectMember> members = [];
+  List<ProjectMember> get members => _members;
+  set members(List<ProjectMember> value) {
+    _members = value;
+    _markRootChanged();
+  }
+
+  List<ProjectMember> _members = [];
 
   /// The project's invite token, once the owner/co-owner has created (or
   /// re-fetched) it this session. There is no GET endpoint for it — POST is
   /// idempotent and returns the existing token — so this stays null until
   /// [createMemberInvite] is called.
-  String? memberInviteToken;
+  String? get memberInviteToken => _memberInviteToken;
+  set memberInviteToken(String? value) {
+    _memberInviteToken = value;
+    _markRootChanged();
+  }
+
+  String? _memberInviteToken;
 
   /// The role [memberInviteToken] grants on accept — the actual role
   /// returned by the server, which can differ from what was last requested
   /// if an invite already existed (creation is idempotent).
-  String? memberInviteRole;
+  String? get memberInviteRole => _memberInviteRole;
+  set memberInviteRole(String? value) {
+    _memberInviteRole = value;
+    _markRootChanged();
+  }
+
+  String? _memberInviteRole;
 
   /// Invites emailed to someone who hasn't joined yet (issue #110). Co-owner+;
   /// empty for editors and viewers, who never fetch them.
-  List<PendingInvite> pendingInvites = [];
+  List<PendingInvite> get pendingInvites => _pendingInvites;
+  set pendingInvites(List<PendingInvite> value) {
+    _pendingInvites = value;
+    _markRootChanged();
+  }
+
+  List<PendingInvite> _pendingInvites = [];
 
   /// GET members into [members]. Throws ([ApiException] passes through) so
   /// the caller can show an inline error.
@@ -2736,17 +2905,31 @@ class ProjectNotifier extends ChangeNotifier
   @override
   bool get isAlive => !_isDisposed;
 
+  /// Whether root state — anything not in a facet — changed since the last
+  /// [notifyListeners]. Set only by the root fields' setters.
+  bool _rootChanged = false;
+
+  void _markRootChanged() {
+    // A write landing after dispose changes nothing anyone can see.
+    if (_isDisposed) return;
+    _rootChanged = true;
+  }
+
   /// Notifies the listeners of every facet written since the last notify,
-  /// each once, then this notifier's own listeners. Facet writes notify
-  /// nobody by themselves, so each notify of this notifier keeps telling
-  /// everyone at the moment it always did (Decision 17 of
-  /// docs/CLIENT_STATE_MAP_PLAN.md).
+  /// each once, then this notifier's own listeners if root state changed
+  /// (Decision 17 of docs/CLIENT_STATE_MAP_PLAN.md, issue #294). Writes
+  /// notify nobody by themselves, so each call keeps telling everyone whose
+  /// state changed at the moment it always did; a call after facet writes
+  /// alone — selecting a day, a geometry upgrade — no longer rebuilds every
+  /// widget that listens to the root.
   @override
   void notifyListeners() {
     if (_isDisposed) return;
     for (final writer in _facetWriters) {
       writer.flush();
     }
+    if (!_rootChanged) return;
+    _rootChanged = false;
     super.notifyListeners();
   }
 

@@ -329,11 +329,14 @@ mixin ProjectPeopleCrudMixin on ChangeNotifier, ProjectQuotaMixin {
   // rendered on the manage map. Never persisted into the project.
 
   /// Step points of the currently-displayed Polarsteps trip overlay (each with
-  /// `lat`/`lon`/`date`/`name`), or empty when no overlay is shown.
-  List<Map<String, dynamic>> polarstepsOverlaySteps = [];
+  /// `lat`/`lon`/`date`/`name`), or empty when no overlay is shown. Root
+  /// state, held by ProjectNotifier.
+  List<Map<String, dynamic>> get polarstepsOverlaySteps;
+  set polarstepsOverlaySteps(List<Map<String, dynamic>> value);
 
   /// Label for the current overlay (e.g. "Alice · Asia 2024"), or null.
-  String? polarstepsOverlayLabel;
+  String? get polarstepsOverlayLabel;
+  set polarstepsOverlayLabel(String? value);
 
   /// Fetch a person's shared Polarsteps trips. Returns null on failure (error set).
   Future<List<Map<String, dynamic>>?> fetchPersonPolarstepsTrips(
