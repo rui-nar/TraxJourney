@@ -318,5 +318,5 @@ Answer (owner, 2026-10-06): 20 GB free on the VPS, so bus for all 49 regions is 
 - Decision: Defer (D10) — not a D2 duplicate of R2-6 (that settled the 2→3 text; F7's bump is new evidence)
 - Revisit when: before part 2 is deployed to val or prod, or when a rollback past F7 is considered — generalise §9 so rolling back past any store-schema bump needs the fetch step with the rolled-back image, naming 3→4 as well as 2→3
 - Guard: —
-- Override: —
+- Override: user: Fix now — the rollback steps belong in §9 before part 2 ships, as for R2-6
 - Outcome: open
