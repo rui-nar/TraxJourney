@@ -117,8 +117,10 @@ void main() {
     final notifier = ProjectNotifier(_Service());
 
     // Record the identity of every distinct geo object listeners are shown.
+    // The geometry facet's listeners are the ones told of a geo change; the
+    // root's are not (#294).
     final seen = <Map<String, dynamic>>[];
-    notifier.addListener(() {
+    notifier.geoFacet.addListener(() {
       final g = notifier.geoFacet.geo;
       if (g == null) return;
       if (seen.isEmpty || !identical(seen.last, g)) seen.add(g);

@@ -165,7 +165,7 @@ void main() {
   });
 
   test("a geometry write tells the facet's listeners on the notifier's next "
-      'notify, not before (Decision 17)', () {
+      'notify, not before, and not the root (Decision 17)', () {
     final n = ProjectNotifier(ProjectService());
     final heard = <String>[];
     n.geoFacet.addListener(() => heard.add('geo'));
@@ -174,7 +174,7 @@ void main() {
     n.geoFacetWriter.replace(_collection('a'), GeoLod.lowRes);
     expect(heard, isEmpty);
     n.notifyListeners();
-    expect(heard, ['geo', 'root']);
+    expect(heard, ['geo']);
     n.dispose();
   });
 

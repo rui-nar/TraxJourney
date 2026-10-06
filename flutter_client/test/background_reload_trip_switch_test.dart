@@ -165,7 +165,9 @@ void main() {
       final server = _Server()..tItems = ['T-2'];
       final n = _openOnT(server);
       var notified = 0;
-      n.addListener(() => notified++);
+      // Both change the item list, which the content facet's listeners hear
+      // of (#294).
+      n.itemsFacet.addListener(() => notified++);
 
       await n.removeItem(0);
 

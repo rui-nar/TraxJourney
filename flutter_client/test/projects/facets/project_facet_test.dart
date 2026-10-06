@@ -2,10 +2,12 @@
 // docs/CLIENT_STATE_MAP_PLAN.md).
 //
 // A facet write marks the facet changed and notifies nobody; the notifier's
-// notifyListeners() notifies each changed facet once, then its own listeners.
-// That keeps every existing notify call site's timing when state moves into
-// facets: a write whose notify a stale check skips still tells nobody, and
-// one operation writing several facets tells each once, together.
+// notifyListeners() notifies each changed facet once, then its own listeners
+// if root state changed too (U19: the root no longer re-notifies facet
+// changes; test/projects/facets/no_bubble_test.dart). That keeps every
+// existing notify call site's timing when state moves into facets: a write
+// whose notify a stale check skips still tells nobody, and one operation
+// writing several facets tells each once, together.
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -63,6 +65,7 @@ void main() {
     final heard = _record(n);
 
     n.styleFacetWriter.markChanged(); // …and the caller's stale check returns
+    n.isLoading = true; // a root write, likewise
 
     expect(heard, isEmpty);
     // As a root field written without a notify is today: whoever notifies
@@ -79,6 +82,7 @@ void main() {
     n.geoFacetWriter.markChanged();
     n.itemsFacetWriter.markChanged();
     n.itemsFacetWriter.markChanged(); // a second write to the same facet
+    n.error = 'x'; // and root state
     n.notifyListeners();
 
     expect(heard, ['geo', 'items', 'root'],
@@ -86,10 +90,11 @@ void main() {
             'facets hear nothing');
     expect(n.itemsFacet.version, 2);
 
-    // The flush cleared the marks: the next notify is the root's alone.
+    // The flush cleared the marks, the root's included: the next notify,
+    // with nothing written since, tells nobody.
     heard.clear();
     n.notifyListeners();
-    expect(heard, ['root']);
+    expect(heard, isEmpty);
     n.dispose();
   });
 
@@ -102,6 +107,7 @@ void main() {
     n.addListener(() => order.add('root'));
 
     n.selectionFacetWriter.markChanged();
+    n.isLoading = true;
     n.notifyListeners();
 
     expect(order, ['facet v1', 'root']);

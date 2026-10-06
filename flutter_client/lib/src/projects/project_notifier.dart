@@ -2916,16 +2916,19 @@ class ProjectNotifier extends ChangeNotifier
   }
 
   /// Notifies the listeners of every facet written since the last notify,
-  /// each once, then this notifier's own listeners. Facet writes notify
-  /// nobody by themselves, so each notify of this notifier keeps telling
-  /// everyone at the moment it always did (Decision 17 of
-  /// docs/CLIENT_STATE_MAP_PLAN.md).
+  /// each once, then this notifier's own listeners if root state changed
+  /// (Decision 17 of docs/CLIENT_STATE_MAP_PLAN.md, issue #294). Writes
+  /// notify nobody by themselves, so each call keeps telling everyone whose
+  /// state changed at the moment it always did; a call after facet writes
+  /// alone — selecting a day, a geometry upgrade — no longer rebuilds every
+  /// widget that listens to the root.
   @override
   void notifyListeners() {
     if (_isDisposed) return;
     for (final writer in _facetWriters) {
       writer.flush();
     }
+    if (!_rootChanged) return;
     _rootChanged = false;
     super.notifyListeners();
   }

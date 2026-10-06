@@ -101,7 +101,8 @@ void main() {
     expect(n.selectionFacet.selectedActivityId, 1);
   });
 
-  test('every selection setter notifies the root and the facet once', () async {
+  test('every selection setter notifies the facet once, not the root',
+      () async {
     final n = await _loaded();
     addTearDown(n.dispose);
     var root = 0, facet = 0;
@@ -121,7 +122,7 @@ void main() {
       call();
     }
 
-    expect((root, facet), (calls.length, calls.length));
+    expect((root, facet), (0, calls.length));
   });
 
   test('selecting one kind clears the others, and the same id deselects', () async {
@@ -189,7 +190,7 @@ void main() {
 
     await n.restoreSavedUiState();
 
-    expect((root, facet), (1, 1));
+    expect((root, facet), (0, 1));
     final s = n.selectionFacet;
     expect(s.selectedDay, _day2);
     expect(s.selectedActivityId, isNull,

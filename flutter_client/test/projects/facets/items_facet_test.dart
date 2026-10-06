@@ -336,7 +336,7 @@ void main() {
     expect(n.itemsFacet.tripStart, '2024-05-31');
   });
 
-  test('a change notifies the facet once, with the root', () async {
+  test('a change notifies the facet once, not the root', () async {
     final n = await _loaded();
     addTearDown(n.dispose);
     var root = 0, facet = 0;
@@ -345,7 +345,7 @@ void main() {
 
     // Two writes — the list and the activities — and one notify.
     n.removeItemLocally(0); // the activity
-    expect((root, facet), (1, 1));
+    expect((root, facet), (0, 1));
     expect(n.itemsFacet.activities, isEmpty);
   });
 
