@@ -1,10 +1,10 @@
 library;
 
+import 'package:flutter/foundation.dart' show setEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_map_animations/flutter_map_animations.dart';
 import 'package:latlong2/latlong.dart';
-import 'package:provider/provider.dart';
 
 import '../core/perf_timing.dart' show perfSpans;
 import '../core/design_tokens.dart';
@@ -13,6 +13,8 @@ import '../crypto/e2ee_crypto.dart' show EncryptedField;
 import 'activity_editor_page.dart';
 import 'day_meta_editor.dart';
 import 'encounter_dialog.dart';
+import 'facets/project_facet.dart'
+    show ItemsFacet, SelectionFacet, StyleFacet;
 import 'journal_detail_modal.dart';
 import 'journal_dialog.dart';
 import 'memory_detail_modal.dart';
@@ -180,6 +182,21 @@ class _ActivityIconBox extends StatelessWidget {
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _ActivityPanelState extends State<ActivityPanel> {
+  // The facets this panel reads (#294), taken from [ActivityPanel.notifier]
+  // and kept so a notifier swap (an account change) unsubscribes from exactly
+  // what was subscribed. Root-only state the build also reads (`isLoading`,
+  // `error`) reaches it through the parent's rebuild.
+  late SelectionFacet _selection;
+  late ItemsFacet _itemsFacet;
+  late StyleFacet _style;
+
+  // The selection the panel as a whole draws — journals shown, filter on,
+  // days filtered to. An item selection alone rebuilds only the two tiles
+  // whose highlight flips (see [_SelectedBuilder]).
+  bool? _drawnShowJournals;
+  bool? _drawnHasFilter;
+  Set<String>? _drawnSelectedDays;
+
   // activityById cache — rebuilt only when the activities list reference changes.
   List<Map<String, dynamic>>? _lastActivities;
   Map<dynamic, Map<String, dynamic>> _activityById = {};
@@ -414,27 +431,47 @@ class _ActivityPanelState extends State<ActivityPanel> {
   @override
   void initState() {
     super.initState();
-    _prevSelectedActivityIdStr = widget.notifier.selectionFacet.selectedActivityId?.toString();
-    _prevSelectedSegmentIdStr = widget.notifier.selectionFacet.selectedSegmentId?.toString();
-    widget.notifier.addListener(_onNotifierChanged);
+    _bindFacets();
     _refreshActivityById(widget.notifier.itemsFacet.activities);
     _rebuildDisplayList(widget.notifier.itemsFacet.items, widget.notifier.itemsFacet.tripStart, widget.notifier.itemsFacet.dayMeta);
   }
 
+  // Subscribes to [widget.notifier]'s facets and takes their current
+  // selection as already reacted to.
+  void _bindFacets() {
+    final n = widget.notifier;
+    _selection = n.selectionFacet..addListener(_onSelectionChanged);
+    _itemsFacet = n.itemsFacet..addListener(_onItemsChanged);
+    _style = n.styleFacet..addListener(_onStyleChanged);
+    _prevSelectedActivityIdStr = _selection.selectedActivityId?.toString();
+    _prevSelectedSegmentIdStr = _selection.selectedSegmentId?.toString();
+    _drawnShowJournals = _selection.showJournals;
+    _drawnHasFilter = _selection.hasActiveFilter;
+    _drawnSelectedDays = _selection.selectedDays;
+  }
+
+  void _unbindFacets() {
+    _selection.removeListener(_onSelectionChanged);
+    _itemsFacet.removeListener(_onItemsChanged);
+    _style.removeListener(_onStyleChanged);
+  }
+
   @override
   void dispose() {
-    widget.notifier.removeListener(_onNotifierChanged);
+    _unbindFacets();
     super.dispose();
   }
 
   @override
   void didUpdateWidget(ActivityPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.notifier != widget.notifier) {
-      oldWidget.notifier.removeListener(_onNotifierChanged);
-      widget.notifier.addListener(_onNotifierChanged);
-      _prevSelectedActivityIdStr = widget.notifier.selectionFacet.selectedActivityId?.toString();
-      _prevSelectedSegmentIdStr = widget.notifier.selectionFacet.selectedSegmentId?.toString();
+    // A new notifier brings new facets; the old ones may already be disposed,
+    // which removeListener allows.
+    if (!identical(_selection, widget.notifier.selectionFacet) ||
+        !identical(_itemsFacet, widget.notifier.itemsFacet) ||
+        !identical(_style, widget.notifier.styleFacet)) {
+      _unbindFacets();
+      _bindFacets();
     }
     _refreshActivityById(widget.notifier.itemsFacet.activities);
     _rebuildDisplayList(widget.notifier.itemsFacet.items, widget.notifier.itemsFacet.tripStart, widget.notifier.itemsFacet.dayMeta);
@@ -462,18 +499,37 @@ class _ActivityPanelState extends State<ActivityPanel> {
     if (actId != null) _expandAndScrollToActivity(actId);
   }
 
-  void _onNotifierChanged() {
-    final actId = widget.notifier.selectionFacet.selectedActivityId?.toString();
+  void _onSelectionChanged() {
+    final actId = _selection.selectedActivityId?.toString();
     if (actId != _prevSelectedActivityIdStr) {
       _prevSelectedActivityIdStr = actId;
       if (actId != null) _expandAndScrollToActivity(actId);
     }
-    final segId = widget.notifier.selectionFacet.selectedSegmentId?.toString();
+    final segId = _selection.selectedSegmentId?.toString();
     if (segId != _prevSelectedSegmentIdStr) {
       _prevSelectedSegmentIdStr = segId;
       if (segId != null) _expandAndScrollToSegment(segId);
     }
+    // Contents, not identity, for the days: every item selection replaces
+    // the set with a new empty one.
+    if (_selection.showJournals != _drawnShowJournals ||
+        _selection.hasActiveFilter != _drawnHasFilter ||
+        !setEquals(_selection.selectedDays, _drawnSelectedDays)) {
+      _drawnShowJournals = _selection.showJournals;
+      _drawnHasFilter = _selection.hasActiveFilter;
+      _drawnSelectedDays = _selection.selectedDays;
+      setState(() {});
+    }
   }
+
+  void _onItemsChanged() {
+    // The build reads the activity index, which only initState and
+    // didUpdateWidget refreshed while a parent's rebuild was the only one.
+    _refreshActivityById(_itemsFacet.activities);
+    setState(() {});
+  }
+
+  void _onStyleChanged() => setState(() {});
 
   void _expandAndScrollToActivity(String activityIdStr) {
     // Find which dateKey this activity belongs to.
@@ -1681,11 +1737,12 @@ class _ActivityPanelState extends State<ActivityPanel> {
                             child: Icon(Icons.delete_outline,
                                 color: theme.colorScheme.onError),
                           ),
-                          child: Selector<ProjectNotifier, bool>(
-                            selector: (_, n) =>
+                          child: _SelectedBuilder(
+                            facet: _selection,
+                            selected: (s) =>
                                 activityId?.toString() ==
-                                n.selectionFacet.selectedActivityId?.toString(),
-                            builder: (_, isSelected, __) => ListTile(
+                                s.selectedActivityId?.toString(),
+                            builder: (_, isSelected) => ListTile(
                               dense: true,
                               tileColor: isSelected
                                   ? theme.colorScheme.primaryContainer
@@ -1825,10 +1882,10 @@ class _ActivityPanelState extends State<ActivityPanel> {
                             );
                             return true;
                           },
-                          child: Selector<ProjectNotifier, bool>(
-                            selector: (_, n) =>
-                                n.selectionFacet.selectedMemoryId?.toString() == memId,
-                            builder: (_, isSelected, __) {
+                          child: _SelectedBuilder(
+                            facet: _selection,
+                            selected: (s) => s.selectedMemoryId?.toString() == memId,
+                            builder: (_, isSelected) {
                               final commentCount =
                                   (mem['comment_count'] as num?)?.toInt() ?? 0;
                               final likeCount =
@@ -1975,10 +2032,10 @@ class _ActivityPanelState extends State<ActivityPanel> {
                             );
                             return true;
                           },
-                          child: Selector<ProjectNotifier, bool>(
-                            selector: (_, n) =>
-                                n.selectionFacet.selectedJournalId?.toString() == jId,
-                            builder: (_, isSelected, __) => ListTile(
+                          child: _SelectedBuilder(
+                            facet: _selection,
+                            selected: (s) => s.selectedJournalId?.toString() == jId,
+                            builder: (_, isSelected) => ListTile(
                               dense: true,
                               tileColor: isSelected
                                   ? const Color(0xFF64748B)
@@ -2098,10 +2155,10 @@ class _ActivityPanelState extends State<ActivityPanel> {
                             );
                             return true;
                           },
-                          child: Selector<ProjectNotifier, bool>(
-                            selector: (_, n) =>
-                                n.selectionFacet.selectedSegmentId?.toString() == segId,
-                            builder: (_, isSelected, __) {
+                          child: _SelectedBuilder(
+                            facet: _selection,
+                            selected: (s) => s.selectedSegmentId?.toString() == segId,
+                            builder: (_, isSelected) {
                               // Segments stay grey unless the project has opted
                               // into per-type colouring (issue #95) — matches
                               // the map's colorByType-gated behaviour, so the
@@ -2386,6 +2443,62 @@ const _transportLabels = {
 
 String _capitalize(String s) => s.isEmpty ? s : s[0].toUpperCase() + s.substring(1);
 
+/// Builds one panel tile with whether [selected] holds, and rebuilds it only
+/// when that flips (#294) — the per-tile highlight, so a selection change
+/// rebuilds the two tiles it moves between, not the list. Listens to the
+/// panel's [SelectionFacet] rather than looking one up, so the tile follows
+/// the panel's own notifier.
+class _SelectedBuilder extends StatefulWidget {
+  const _SelectedBuilder({
+    required this.facet,
+    required this.selected,
+    required this.builder,
+  });
+
+  final SelectionFacet facet;
+  final bool Function(SelectionFacet) selected;
+  final Widget Function(BuildContext context, bool isSelected) builder;
+
+  @override
+  State<_SelectedBuilder> createState() => _SelectedBuilderState();
+}
+
+class _SelectedBuilderState extends State<_SelectedBuilder> {
+  late bool _isSelected;
+
+  @override
+  void initState() {
+    super.initState();
+    _isSelected = widget.selected(widget.facet);
+    widget.facet.addListener(_onChanged);
+  }
+
+  @override
+  void didUpdateWidget(_SelectedBuilder oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // A notifier swap brings a new facet, and a reused tile a new item.
+    if (!identical(oldWidget.facet, widget.facet)) {
+      oldWidget.facet.removeListener(_onChanged);
+      widget.facet.addListener(_onChanged);
+    }
+    _isSelected = widget.selected(widget.facet);
+  }
+
+  @override
+  void dispose() {
+    widget.facet.removeListener(_onChanged);
+    super.dispose();
+  }
+
+  void _onChanged() {
+    final isSelected = widget.selected(widget.facet);
+    if (isSelected != _isSelected) setState(() => _isSelected = isSelected);
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.builder(context, _isSelected);
+}
+
 class FilterSheet extends StatelessWidget {
   final ProjectNotifier notifier;
   final bool readOnly;
@@ -2394,8 +2507,11 @@ class FilterSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // What the trip offers (items) and what is ticked (selection): adding the
+    // first activity to an empty trip changes the one, a tap the other (#294).
     return ListenableBuilder(
-      listenable: notifier,
+      listenable:
+          Listenable.merge([notifier.selectionFacet, notifier.itemsFacet]),
       builder: (context, _) {
         final theme = Theme.of(context);
         // Each section offers what the trip holds plus anything already
