@@ -1,14 +1,16 @@
-// The offline seed never stores geometry older than the trip's version
-// (issue #379, U10 escalation).
+// The offline copy is refilled in the background after an edit (I2-R1-1,
+// issue #379).
 //
-// The seed fetches the full-resolution geometry in the background after a
-// trip opens (issue #317) and writes it to disk for offline opens. An edit
-// made while that fetch is in flight bumps the trip's lock_version, and the
-// edit's reload records the new version. The seed's answer, from before the
-// edit, used to be written under that new version — so no later /meta could
-// tell it was stale, and every offline open drew the trip as it was before
-// the edit. The reload after an edit used to write full-resolution geometry
-// over it in some orderings; since #379 it no longer fetches any.
+// An edit's /meta brings a new lock_version, which clears the trip's
+// full-resolution row on disk, and since #379 the refresh after an edit
+// fetches simplified geometry and writes none. The only writer of that row is
+// the offline seed, which ran only at the end of a load — so a trip edited
+// online and opened offline before the next online open had no map. The
+// reload after an edit now starts the same disk-only seed.
+//
+// What an offline open draws is the row asserted here (readCachedGeo reads
+// it back through the native store, which `flutter test` has no backend for),
+// so the rows reaching the disk seam are the observable.
 
 import 'dart:async';
 import 'dart:convert';
@@ -28,11 +30,11 @@ const _ref = ProjectRef(name: 'Trip');
 http.Response _json(Object body) => http.Response(jsonEncode(body), 200);
 
 /// One trip whose every write bumps [version]; the full-resolution endpoint
-/// waits on [releaseFull] and answers with the version it saw on arrival.
+/// waits on [gate] and answers with the version it saw on arrival.
 class _Server {
   int version = 1;
   int fullRequests = 0;
-  final releaseFull = Completer<void>();
+  Completer<void> gate = Completer<void>()..complete();
 
   Map<String, dynamic> _geo(int v) => {
         'type': 'FeatureCollection',
@@ -74,7 +76,7 @@ class _Server {
           if (path == '/api/geo/project') {
             final v = version;
             fullRequests++;
-            await releaseFull.future;
+            await gate.future;
             return _json(_geo(v));
           }
           if (req.method != 'GET') {
@@ -107,50 +109,70 @@ void main() {
     };
   });
 
-  /// Opens the trip and waits until the seed's fetch is in flight.
-  Future<(ProjectNotifier, _Server)> openWithSeedInFlight() async {
+  /// Opens the trip and waits for the load's own seed to have written.
+  Future<(ProjectNotifier, _Server)> openSeeded() async {
     final server = _Server();
     api = server.api();
     final n = ProjectNotifier(ProjectService())
       ..loadRetryBackoff = const []
       ..setMapZoom(9);
     await n.load(_ref);
-    expect(await _waitFor(() => server.fullRequests == 1), isTrue,
-        reason: 'the seed is fetching');
+    expect(await _waitFor(() => fullGeoRows.length == 1), isTrue,
+        reason: 'the load seeds version 1');
     return (n, server);
   }
 
-  test('a seed whose fetch started before an edit never stores its geometry '
-      'under the new version', () async {
-    final (n, server) = await openWithSeedInFlight();
+  int vOf(Map<String, dynamic> row) =>
+      (row['fullGeo']['features'] as List).single['properties']['v'] as int;
 
-    await n.resetActivityTrack(1); // the edit, and its reload's /meta
+  test('an edit refills the disk row for the new version, and only there',
+      () async {
+    final (n, server) = await openSeeded();
+
+    await n.resetActivityTrack(1);
     expect(server.version, 2);
-    server.releaseFull.complete();
-    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(await _waitFor(() => fullGeoRows.length == 2), isTrue);
 
-    // The edit's own reload seeds afresh once the stale seed is done
-    // (I2-R1-1), so a row for version 2 is expected — of version 2's geometry.
-    expect(await _waitFor(() => fullGeoRows.isNotEmpty), isTrue);
-    await Future<void>.delayed(const Duration(milliseconds: 50));
-    expect(fullGeoRows, hasLength(1),
-        reason: "the stale seed's own write was refused");
-    expect(fullGeoRows.single['lockVersion'], 2);
-    expect((fullGeoRows.single['fullGeo']['features'] as List).single
-        ['properties']['v'], 2,
-        reason: 'geometry from version 1 must not be stored for version 2');
+    expect(fullGeoRows.last['lockVersion'], 2);
+    expect(vOf(fullGeoRows.last), 2);
+    expect(await projectDataCache.readFullGeo(_ref), isNull,
+        reason: 'the seed is disk only, never L1');
     n.dispose();
   });
 
-  test('a seed with an unchanged version still writes', () async {
-    final (n, server) = await openWithSeedInFlight();
+  test('a saved track edit refills it too', () async {
+    final (n, server) = await openSeeded();
 
-    server.releaseFull.complete();
-    expect(await _waitFor(() => fullGeoRows.isNotEmpty), isTrue);
+    await n.saveActivityTrack(1, {'points': <dynamic>[]});
+    expect(server.version, 2);
+    expect(await _waitFor(() => fullGeoRows.length == 2), isTrue);
 
-    expect(fullGeoRows.single['lockVersion'], 1);
-    expect((fullGeoRows.single['fullGeo']['features'] as List).single
-        ['properties']['v'], 1);
+    expect(fullGeoRows.last['lockVersion'], 2);
+    expect(vOf(fullGeoRows.last), 2);
+    n.dispose();
+  });
+
+  test('two quick edits run two seeds and the disk ends at the newest',
+      () async {
+    final (n, server) = await openSeeded();
+    server.gate = Completer<void>(); // hold the post-edit fetches
+
+    await n.resetActivityTrack(1);
+    expect(await _waitFor(() => server.fullRequests == 2), isTrue,
+        reason: 'the first edit started a seed');
+    await n.resetActivityTrack(1); // during it
+    expect(server.version, 3);
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(server.fullRequests, 2, reason: 'one in flight per trip');
+
+    server.gate.complete();
+    expect(await _waitFor(() => fullGeoRows.length == 2), isTrue);
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    expect(server.fullRequests, 3, reason: 'run once more, not once per edit');
+    expect(fullGeoRows, hasLength(2), reason: 'the stale answer was refused');
+    expect(fullGeoRows.last['lockVersion'], 3);
+    expect(vOf(fullGeoRows.last), 3);
     n.dispose();
   });
 }

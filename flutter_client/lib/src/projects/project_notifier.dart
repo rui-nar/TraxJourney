@@ -1688,7 +1688,7 @@ class ProjectNotifier extends ChangeNotifier
       // offline fallback below reads, so a trip first opened on this device
       // had none to fall back to (issue #317). Seeding runs in the
       // background, after the map is already on screen.
-      unawaited(_seedOfflineFullGeo(ref, token));
+      _startOfflineSeed(ref);
       return;
     } on Object {
       // Fall through to the offline cache, then the full-resolution path.
@@ -1884,6 +1884,48 @@ class ProjectNotifier extends ChangeNotifier
       // beyond the offline detail they already do not have, and must never
       // surface as an error over a map that loaded fine.
     }
+  }
+
+  /// The trip whose post-edit offline seed is in flight, and whether an edit
+  /// landed meanwhile (I2-R1-1).
+  ProjectRef? _postEditSeedRef;
+  bool _postEditSeedAgain = false;
+
+  /// Refills the offline full-resolution row after an edit (I2-R1-1).
+  ///
+  /// The edit's `/meta` brought a new lock_version, which cleared the trip's
+  /// disk geometry, and the refresh after an edit fetches simplified geometry
+  /// and writes none — so without this an offline open before the next online
+  /// one had no map. The same disk-only seed a load runs, with the same skips;
+  /// an E2EE trip is one more, as it is on the load path (its geometry is
+  /// built client-side, the server has none to seed).
+  ///
+  /// At most one in flight per trip, the load's own seed included: an edit
+  /// during a seed marks it to run once more after, since the running one's
+  /// write is refused by the version check anyway. Not started alongside it —
+  /// its full-resolution fetch would join the running one (the service
+  /// deduplicates it) and come back with the geometry from before the edit.
+  void _startOfflineSeed(ProjectRef ref) {
+    if (kIsWeb || !loadOwnerExtras || encryption.isUnlocked) return;
+    if (!isOpenTrip(ref)) return;
+    if (_postEditSeedRef == ref) {
+      _postEditSeedAgain = true;
+      return;
+    }
+    _postEditSeedRef = ref;
+    unawaited(() async {
+      try {
+        do {
+          _postEditSeedAgain = false;
+          await _seedOfflineFullGeo(ref, _loadTrack.token);
+        } while (_postEditSeedAgain && isOpenTrip(ref));
+      } finally {
+        if (_postEditSeedRef == ref) {
+          _postEditSeedRef = null;
+          _postEditSeedAgain = false;
+        }
+      }
+    }());
   }
 
   /// Total coordinates across every feature of [geo] — the size measure the
@@ -2276,6 +2318,9 @@ class ProjectNotifier extends ChangeNotifier
     _lastDegradedRouteCount = null;
     degradedRouteUpgradeAvailable = false;
     ref = null;
+    // The next trip starts its own seeds; a running one stops at its trip check.
+    _postEditSeedRef = null;
+    _postEditSeedAgain = false;
     // The saved state the filters belong to: a held key would let the next
     // load of the same key keep filters this clear has just dropped.
     _heldStateKey = null;
@@ -3165,6 +3210,7 @@ class ProjectNotifier extends ChangeNotifier
     final fetched = await _fetchGeoAfterMutation(ref, lod);
     if (stale()) return;
     _showGeoAfterMutation(fetched, lod);
+    _startOfflineSeed(ref);
   }
 
   void removeItemLocally(int index) {
@@ -3573,6 +3619,7 @@ class ProjectNotifier extends ChangeNotifier
         notify = false;
         return;
       }
+      _startOfflineSeed(ref);
     } on Exception catch (e) {
       // issue #283 review finding: this used to set `error`/notify
       // unconditionally on the exception path — the staleness guard above
