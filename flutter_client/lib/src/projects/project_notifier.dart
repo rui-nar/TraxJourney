@@ -2489,6 +2489,9 @@ class ProjectNotifier extends ChangeNotifier
     previewArcNotifier.value = null;
     elevationCursorNotifier.value = null;
     mapCursorDistNotifier.value = null;
+    // The stays-unencrypted counts are the previous account's trips'.
+    _unencryptableByTrip.clear();
+    _unencryptableActivityCount.value = 0;
     // Invalidate any _buildFullTrack() still in flight from before this
     // clear() — without this, a stale compute() resolving afterward would
     // pass the gen check and repopulate the track data this just wiped.
