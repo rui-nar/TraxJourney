@@ -94,7 +94,7 @@ Future<ProjectNotifier> _loaded(WidgetTester tester) async {
 }
 
 Map<String, dynamic> _item(ProjectNotifier n, String kind) =>
-    Map.of(n.items.firstWhere((i) => i['item_type'] == kind)[kind] as Map<String, dynamic>);
+    Map.of(n.itemsFacet.items.firstWhere((i) => i['item_type'] == kind)[kind] as Map<String, dynamic>);
 
 Widget _harness(Widget dialog) => MaterialApp(
       home: Scaffold(
@@ -314,10 +314,10 @@ void main() {
       // only a well-formed envelope is resent as it is.
       final notifier = ProjectNotifier(ProjectService())
         ..ref = _ref
-        ..items = [
+        ..itemsFacetWriter.setItems([
           {'item_type': 'memory', 'memory': memory()},
           {'item_type': 'journal', 'journal': journal()},
-        ];
+        ]);
 
       await notifier.updateMemory('m1',
           date: '2026-01-01', geoMode: 'start_of_day',

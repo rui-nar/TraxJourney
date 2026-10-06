@@ -489,6 +489,7 @@ def shared_project_geo_simplified(
     - it resolves the token before reading any cache, so a revoked link stops
       working immediately rather than for as long as some level stays warm.
     """
+    started = time.perf_counter()
     # First, and before any cache is consulted: no token, no answer.
     project, _token_type, _project_id, owner_uid = _get_meta_project_and_type(token)
     # The lightweight variant is enough — only the owner's id and the project
@@ -496,7 +497,8 @@ def shared_project_geo_simplified(
     # warm. Loading every polyline just to read a name would undo the saving.
     name = project.name
     return serve_simplified_geo(
-        owner_uid, name, zoom, bbox, lambda: _load_shared_project(owner_uid, name))
+        owner_uid, name, zoom, bbox, lambda: _load_shared_project(owner_uid, name),
+        started=started)
 
 
 @router.get("/{token}/stats", summary="Get shared project statistics")

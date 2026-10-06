@@ -59,7 +59,7 @@ class _JournalDetailModalState extends State<_JournalDetailModal> {
 
   // ── Journal list helpers ───────────────────────────────────────────────────
 
-  List<Map<String, dynamic>> get _allJournals => widget.notifier.items
+  List<Map<String, dynamic>> get _allJournals => widget.notifier.itemsFacet.items
       .where((i) => i['item_type'] == 'journal')
       .map((i) => i['journal'] as Map<String, dynamic>?)
       .whereType<Map<String, dynamic>>()
@@ -135,7 +135,7 @@ class _JournalDetailModalState extends State<_JournalDetailModal> {
 
   ({int dayNum, int totalDays})? _tripDayInfo(String? dateStr) {
     if (dateStr == null) return null;
-    final dayMeta = widget.notifier.dayMeta;
+    final dayMeta = widget.notifier.itemsFacet.dayMeta;
     if (dayMeta.isEmpty) return null;
     final sorted = dayMeta.keys.toList()..sort();
     final prefix = dateStr.length >= 10 ? dateStr.substring(0, 10) : dateStr;

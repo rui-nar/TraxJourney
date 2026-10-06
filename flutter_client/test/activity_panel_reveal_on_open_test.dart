@@ -72,8 +72,8 @@ ProjectNotifier _notifierWithSegmentAtEnd() {
     'item_type': 'segment',
     'segment': {'id': 'segZ', 'segment_type': 'train', 'label': 'Train'},
   });
-  n.activities = acts;
-  n.items = items;
+  n.itemsFacetWriter.setActivities(acts);
+  n.itemsFacetWriter.setItems(items);
   return n;
 }
 
@@ -92,7 +92,7 @@ void main() {
 
     final notifier = _notifierWithSegmentAtEnd();
     // Selection made on the map while the panel is hidden.
-    notifier.selectedSegmentId = 'segZ';
+    notifier.selectionFacetWriter.setSelectedSegmentId('segZ');
 
     await tester.pumpWidget(_VisibilityHarness(
       notifier: notifier, controller: controller, visible: visible));

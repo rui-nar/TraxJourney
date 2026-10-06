@@ -30,8 +30,13 @@ import 'package:traxjourney_client/src/projects/project_notifier.dart';
 import 'package:traxjourney_client/src/projects/project_service.dart';
 import 'package:traxjourney_client/src/projects/project_settings_screen.dart';
 
-/// Every day-meta map PUT during a test, in order.
+/// Every day-meta PATCH body during a test, in order.
 late List<Map<String, dynamic>> putDayMeta;
+
+/// The days the server holds: seeded with the notifier's day-meta, then
+/// updated by each PATCH the way the server merges it (issue #397).
+late Map<String, Map<String, dynamic>> storedDayMeta;
+Set<String> storedDays() => storedDayMeta.keys.toSet();
 
 /// What GET /content-days answers — the days the trip holds content on for
 /// *any* member (issue #372). [contentDaysFail] makes the request fail
@@ -49,10 +54,16 @@ late bool contentDaysUnreachable;
 
 ApiClient _recordingApi() => ApiClient(
       httpClient: MockClient((req) async {
-        if (req.method == 'PUT' && req.url.path.endsWith('/day-meta')) {
+        if (req.method == 'PATCH' && req.url.path.endsWith('/day-meta')) {
           final body = jsonDecode(req.body) as Map<String, dynamic>;
-          putDayMeta.add(body['day_meta'] as Map<String, dynamic>);
-          return http.Response('', 204);
+          putDayMeta.add(body);
+          for (final d in (body['delete'] as List).cast<String>()) {
+            storedDayMeta.remove(d);
+          }
+          for (final e in (body['days'] as Map<String, dynamic>).entries) {
+            storedDayMeta[e.key] = Map<String, dynamic>.from(e.value as Map);
+          }
+          return http.Response(jsonEncode({'day_meta': storedDayMeta}), 200);
         }
         if (req.method == 'GET' && req.url.path.endsWith('/content-days')) {
           contentDaysCalls++;
@@ -75,13 +86,16 @@ ProjectNotifier _notifier({
   List<Map<String, dynamic>> activities = const [],
   List<Map<String, dynamic>> items = const [],
 }) {
+  storedDayMeta = {
+    for (final e in dayMeta.entries) e.key: Map<String, dynamic>.from(e.value)
+  };
   final n = ProjectNotifier(ProjectService())
     ..ref = const ProjectRef(name: 'Trip')
-    ..tripStart = '2026-06-01'
-    ..tripEnd = tripEnd
-    ..dayMeta = dayMeta
-    ..activities = List<Map<String, dynamic>>.from(activities)
-    ..items = List<Map<String, dynamic>>.from(items);
+    ..itemsFacetWriter.setTripStart('2026-06-01')
+    ..itemsFacetWriter.setTripEnd(tripEnd)
+    ..itemsFacetWriter.setDayMeta(dayMeta)
+    ..itemsFacetWriter.setActivities(List<Map<String, dynamic>>.from(activities))
+    ..itemsFacetWriter.setItems(List<Map<String, dynamic>>.from(items));
   return n;
 }
 
@@ -188,11 +202,13 @@ void main() {
     // the last state on the wire must be the pruned one.
     expect(putDayMeta, isNotEmpty);
     for (final body in putDayMeta) {
-      expect(body.keys, isNot(contains('2026-06-15')));
-      expect(body.keys, isNot(contains('2026-06-16')));
+      final sent = (body['days'] as Map).keys;
+      expect(sent, isNot(contains('2026-06-15')));
+      expect(sent, isNot(contains('2026-06-16')));
     }
-    expect(putDayMeta.last.keys.toSet(), {'2026-06-13', '2026-06-14'});
-    expect(n.dayMeta.keys, isNot(contains('2026-06-15')));
+    expect(putDayMeta.single['delete'], ['2026-06-15', '2026-06-16']);
+    expect(storedDays(), {'2026-06-13', '2026-06-14'});
+    expect(n.itemsFacet.dayMeta.keys, isNot(contains('2026-06-15')));
   });
 
   testWidgets('cancelling the warning writes no day-meta at all', (tester) async {
@@ -207,7 +223,7 @@ void main() {
     await _frames(tester);
 
     expect(putDayMeta, isEmpty);
-    expect(n.dayMeta.keys, contains('2026-06-15'));
+    expect(n.itemsFacet.dayMeta.keys, contains('2026-06-15'));
   });
 
   testWidgets('a day after the end date pinned by an activity is reported as staying',
@@ -232,7 +248,7 @@ void main() {
     await tester.tap(find.text('Delete'));
     await _frames(tester);
 
-    expect(putDayMeta.last.keys.toSet(), {'2026-06-14', '2026-06-16'});
+    expect(storedDays(), {'2026-06-14', '2026-06-16'});
   });
 
   testWidgets('no end date means no warning and no pruning', (tester) async {
@@ -244,7 +260,7 @@ void main() {
     await _tapSave(tester);
 
     expect(find.text('Remove days after the end date?'), findsNothing);
-    expect(putDayMeta.last.keys.toSet(), {'2026-06-14', '2026-06-15'});
+    expect(storedDays(), {'2026-06-14', '2026-06-15'});
   });
 
   testWidgets('a journal-only day past the end date keeps its day-meta', (tester) async {
@@ -271,7 +287,7 @@ void main() {
     await tester.tap(find.text('Continue'));
     await _frames(tester);
 
-    expect(putDayMeta.last.keys.toSet(), {'2026-06-14', '2026-06-15'});
+    expect(storedDays(), {'2026-06-14', '2026-06-15'});
   });
 
   testWidgets('moving the end date over a fully pinned set warns instead of saving silently',
@@ -313,7 +329,7 @@ void main() {
 
     expect(find.text('Days after the end date will stay'), findsNothing);
     expect(find.text('Remove days after the end date?'), findsNothing);
-    expect(putDayMeta.last.keys.toSet(), {'2026-06-14', '2026-06-15'});
+    expect(storedDays(), {'2026-06-14', '2026-06-15'});
   });
 
   testWidgets('a journal-only day with no day-meta is still reported as staying',
@@ -340,7 +356,7 @@ void main() {
     await tester.tap(find.text('Continue'));
     await _frames(tester);
 
-    expect(putDayMeta.last.keys.toSet(), {'2026-06-14'});
+    expect(storedDays(), {'2026-06-14'});
   });
 
   // ── Issue #372: content the caller cannot see ───────────────────────────────
@@ -372,8 +388,8 @@ void main() {
     await tester.tap(find.text('Delete'));
     await _frames(tester);
 
-    expect(putDayMeta.last.keys.toSet(), {'2026-06-14', '2026-06-16'});
-    expect(n.dayMeta.keys, contains('2026-06-16'));
+    expect(storedDays(), {'2026-06-14', '2026-06-16'});
+    expect(n.itemsFacet.dayMeta.keys, contains('2026-06-16'));
   });
 
   testWidgets('a failed content check deletes nothing', (tester) async {
@@ -390,7 +406,7 @@ void main() {
     await _tapSave(tester);
 
     expect(find.text('Remove days after the end date?'), findsNothing);
-    expect(putDayMeta.last.keys.toSet(),
+    expect(storedDays(),
         {'2026-06-14', '2026-06-15', '2026-06-16'});
   });
 
@@ -413,7 +429,7 @@ void main() {
     await tester.tap(find.text('Continue'));
     await _frames(tester);
 
-    expect(putDayMeta.last.keys.toSet(), {'2026-06-14', '2026-06-15'});
+    expect(storedDays(), {'2026-06-14', '2026-06-15'});
   });
 
   testWidgets('a day only the server knows about is still reported as staying',
@@ -443,7 +459,7 @@ void main() {
     await tester.tap(find.text('Continue'));
     await _frames(tester);
 
-    expect(putDayMeta.last.keys.toSet(), {'2026-06-14'});
+    expect(storedDays(), {'2026-06-14'});
   });
 
   group('the cross-member check is only run when it can matter', () {
@@ -460,7 +476,7 @@ void main() {
       await _tapSave(tester);
 
       expect(contentDaysCalls, 0);
-      expect(putDayMeta.last.keys.toSet(), {'2026-06-14', '2026-06-15'});
+      expect(storedDays(), {'2026-06-14', '2026-06-15'});
     });
 
     testWidgets('a day past the end date still runs it even if the date did not move',
@@ -528,7 +544,7 @@ void main() {
 
       await tester.tap(find.text('Continue'));
       await _frames(tester);
-      expect(putDayMeta.last.keys.toSet(), {'2026-06-14', '2026-06-15'});
+      expect(storedDays(), {'2026-06-14', '2026-06-15'});
     });
   });
 
@@ -557,7 +573,7 @@ void main() {
     await tester.tap(find.text('Continue'));
     await _frames(tester);
 
-    expect(putDayMeta.last.keys.toSet(),
+    expect(storedDays(),
         {'2026-06-14', '2026-06-15', '2026-06-16'});
   });
 }

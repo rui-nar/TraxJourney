@@ -93,9 +93,9 @@ void main() {
     await notifier.load(_ref);
     await pumpEventQueue();
 
-    expect(notifier.sourceFilter, isEmpty);
-    expect(notifier.hasActiveFilter, isFalse);
-    expect(notifier.selectedDay, '2026-06-01');
+    expect(notifier.selectionFacet.sourceFilter, isEmpty);
+    expect(notifier.selectionFacet.hasActiveFilter, isFalse);
+    expect(notifier.selectionFacet.selectedDay, '2026-06-01');
 
     final prefs = await SharedPreferences.getInstance();
     final saved = prefs.getString(_key);
@@ -123,8 +123,8 @@ void main() {
     await second.load(_ref);
     await pumpEventQueue();
 
-    expect(second.selectedDay, '2026-06-01');
-    expect(second.selectedActivityId, '1');
+    expect(second.selectionFacet.selectedDay, '2026-06-01');
+    expect(second.selectionFacet.selectedActivityId, '1');
   });
 
   test('and so does not re-apply itself when a new import arrives', () async {
@@ -141,9 +141,9 @@ void main() {
     await notifier.load(_ref);
     await pumpEventQueue();
 
-    expect(notifier.sourceFilter, isEmpty,
+    expect(notifier.selectionFacet.sourceFilter, isEmpty,
         reason: 'the user never re-ticked it');
-    expect(notifier.selectedDays, isEmpty);
+    expect(notifier.selectionFacet.selectedDays, isEmpty);
   });
 
   test('a filter the trip still matches survives the round trip', () async {
@@ -156,8 +156,8 @@ void main() {
     await notifier.load(_ref);
     await pumpEventQueue();
 
-    expect(notifier.sourceFilter, {'gpx'});
-    expect(notifier.selectedDays, {'2026-06-02'});
+    expect(notifier.selectionFacet.sourceFilter, {'gpx'});
+    expect(notifier.selectionFacet.selectedDays, {'2026-06-02'});
     final prefs = await SharedPreferences.getInstance();
     expect(prefs.getString(_key), contains('gpx'));
   });

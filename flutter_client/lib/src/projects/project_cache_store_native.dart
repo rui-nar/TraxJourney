@@ -68,6 +68,37 @@ Future<void> cacheStoreClearAll() async {
   } catch (_) {}
 }
 
+/// Deletes every row whose key starts with [prefix].
+///
+/// A range, not `LIKE`: `_` and `%` are wildcards there, and `LIKE` folds
+/// ASCII case, so a prefix holding either could match more than itself. A
+/// key starts with [prefix] exactly when it sorts in `[prefix, upper)` — see
+/// [keyPrefixRange].
+Future<void> cacheStoreDeleteKeyPrefix(String prefix) async {
+  try {
+    final db = await _open();
+    if (db == null) return;
+    final (lower, upper) = keyPrefixRange(prefix);
+    await db.delete(_kTable,
+        where: 'cache_key >= ? AND cache_key < ?', whereArgs: [lower, upper]);
+  } catch (_) {}
+}
+
+/// The half-open range of keys that start with [prefix]: the prefix itself,
+/// up to the prefix with its last character bumped by one. ASCII only, so
+/// SQLite's byte-wise (BINARY) text order and code-unit order agree.
+@visibleForTesting
+(String, String) keyPrefixRange(String prefix) {
+  if (prefix.isEmpty || prefix.codeUnits.any((c) => c >= 0x7F)) {
+    throw ArgumentError.value(prefix, 'prefix', 'must be non-empty ASCII');
+  }
+  final last = prefix.codeUnitAt(prefix.length - 1);
+  return (
+    prefix,
+    prefix.substring(0, prefix.length - 1) + String.fromCharCode(last + 1),
+  );
+}
+
 /// Pure gzip+JSON encode, split out so it can run via [compute] on a
 /// background isolate instead of the UI isolate: full-res geo/elevation
 /// payloads can be several MB (see project_service.dart), and jsonEncode +

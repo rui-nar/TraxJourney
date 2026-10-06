@@ -49,17 +49,17 @@ Map<String, dynamic> _geo() => {
 ProjectNotifier _notifier({required String selectedDay}) =>
     ProjectNotifier(ProjectService())
       ..ref = const ProjectRef(name: 'Trip')
-      ..geo = _geo()
-      ..activities = [
+      ..geoFacetWriter.replaceKeepingLod(_geo())
+      ..itemsFacetWriter.setActivities([
         {'id': 1, 'start_date_local': '2026-06-01T08:00:00'},
         {'id': 2, 'start_date_local': '2026-06-02T08:00:00'},
-      ]
-      ..items = [
+      ])
+      ..itemsFacetWriter.setItems([
         {'item_type': 'activity', 'activity_id': 1},
         {'item_type': 'activity', 'activity_id': 2},
-      ]
+      ])
       ..isLoading = false
-      ..selectedDays = {selectedDay};
+      ..selectionFacetWriter.setSelectedDays({selectedDay});
 
 /// Mirrors map_panel_fit_bounds_test.dart's / map_panel_degraded_route_color_test.dart's harness.
 Widget _panel(ProjectNotifier notifier, AnimatedMapController controller) =>

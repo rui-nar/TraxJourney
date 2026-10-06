@@ -5,6 +5,7 @@
 /// fakes and carries no Flutter / dart:io / http dependency itself.
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
@@ -30,6 +31,11 @@ class EncryptionStatus {
   final String? wrappedCmkB64;
   final String? ephemeralPublicKeyB64;
 
+  /// Recovery methods whose wrap the user never confirmed having saved
+  /// (Decision 16). Only `recovery_key` is ever listed. Empty from a server
+  /// that predates the field.
+  final List<String> unconfirmedRecoveryMethods;
+
   const EncryptionStatus({
     required this.enabled,
     required this.recoveryMethods,
@@ -37,6 +43,7 @@ class EncryptionStatus {
     required this.deviceApproved,
     this.wrappedCmkB64,
     this.ephemeralPublicKeyB64,
+    this.unconfirmedRecoveryMethods = const [],
   });
 }
 
@@ -58,7 +65,12 @@ class RecoveryWrapData {
 /// The server endpoints this service needs. Implemented by the app's HTTP layer.
 abstract class EncryptionApi {
   Future<EncryptionStatus> fetchStatus(String? devicePublicKeyB64);
-  Future<void> enable(Map<String, dynamic> payload);
+
+  /// Turns encryption on. Resolves to the recovery `wrapped_cmk` the server
+  /// says it stored (a base64 [String]); anything else — null from an older
+  /// server that does not return it — means "the wrap that was sent". Typed
+  /// [Object?] so an implementation answering `Future<void>` still conforms.
+  Future<Object?> enable(Map<String, dynamic> payload);
   Future<void> registerDevice(String publicKeyB64, String label);
   Future<List<PendingDevice>> pendingDevices();
   Future<void> approveDevice(
@@ -66,6 +78,53 @@ abstract class EncryptionApi {
 
   /// The recovery wrap for [method], or null if the user didn't configure it.
   Future<RecoveryWrapData?> fetchRecoveryWrap(String method);
+
+  /// Records that the user saved the recovery wrap [wrappedCmkB64] of
+  /// [method]. Throws [RecoveryKeyConflict] when that is not the wrap the
+  /// server holds (Decision 16, U5b-R1-1); any other failure throws as is.
+  Future<void> confirmRecovery(String method, String wrappedCmkB64);
+
+  /// Replaces the unconfirmed `recovery_key` wrap and resolves to the wrap
+  /// this request wrote. Throws [RecoveryKeyConflict] when the current key is
+  /// already confirmed.
+  Future<String> replaceRecoveryKey(String wrappedCmkB64, String saltB64);
+}
+
+/// The server refused a recovery-key confirm or replace with a 409: the key on
+/// the server is not the one shown, or it is already confirmed.
+class RecoveryKeyConflict implements Exception {
+  const RecoveryKeyConflict();
+  @override
+  String toString() => 'the recovery key on the server has changed';
+}
+
+/// What the user confirms having saved: the exact recovery wrap they were
+/// shown, tied to the session that showed it.
+class RecoveryKeyConfirmation {
+  final String wrappedCmkB64;
+  final int _generation;
+  const RecoveryKeyConfirmation._(this.wrappedCmkB64, this._generation);
+}
+
+/// How [EncryptionService.confirmRecoveryKey] ended.
+enum RecoveryConfirmOutcome {
+  /// The server recorded it.
+  confirmed,
+
+  /// The key shown is no longer the one on the server (409): discard it.
+  conflict,
+
+  /// Not recorded (an older server, the network, an ended session): the key
+  /// stays unconfirmed and a replacement is offered at the next sign-in.
+  failed,
+}
+
+/// A recovery key made by [EncryptionService.replaceRecoveryKey], to show
+/// once and then confirm.
+class NewRecoveryKey {
+  final Uint8List secret;
+  final RecoveryKeyConfirmation confirmation;
+  const NewRecoveryKey(this.secret, this.confirmation);
 }
 
 /// The user's recovery choice at enable-time (the honest A/B decision).
@@ -99,7 +158,19 @@ class PassphraseChoice extends RecoveryChoice {
 /// in plaintext). Null for Option B.
 class EnableResult {
   final Uint8List? recoverySecret;
-  const EnableResult(this.recoverySecret);
+
+  /// What to confirm once the user saved [recoverySecret]; null without one.
+  final RecoveryKeyConfirmation? confirmation;
+  const EnableResult(this.recoverySecret, [this.confirmation]);
+}
+
+/// Thrown by [EncryptionService.enable] when the session ended (a [lock]
+/// — sign-out or a 401) while it was still building the keys: encryption
+/// was not turned on (U5-R3-1, issue #418).
+class EncryptionSessionEnded implements Exception {
+  const EncryptionSessionEnded();
+  @override
+  String toString() => 'the session ended before encryption was turned on';
 }
 
 class EncryptionService {
@@ -114,17 +185,50 @@ class EncryptionService {
   /// True once the CMK is held in memory (this device can read/write ciphertext).
   bool get isUnlocked => _cmk != null;
 
+  /// Bumped by every [lock], so an [unlock], [enable] or recovery still in
+  /// flight when the session ends cannot put the key back afterwards
+  /// (U5-R1-2, U5-R2-1, issue #418). Every assignment of [_cmk] after an
+  /// await checks it.
+  int _lockGeneration = 0;
+
+  /// The status the last [unlock] read (or a 409 refetched), for
+  /// [needsRecoveryKeyReplacement]. Cleared by [lock].
+  EncryptionStatus? _status;
+
+  final _changes = StreamController<void>.broadcast();
+
+  /// Fires whenever [needsRecoveryKeyReplacement] may have changed.
+  late final Stream<void> changes = _changes.stream;
+
+  /// True while unlocked with a `recovery_key` the user never confirmed
+  /// saving (Decision 16): the projects screen offers to replace it.
+  bool get needsRecoveryKeyReplacement =>
+      isUnlocked &&
+      (_status?.unconfirmedRecoveryMethods.contains('recovery_key') ?? false);
+
   /// Drop the in-memory CMK (e.g. on logout).
-  void lock() => _cmk = null;
+  void lock() {
+    _cmk = null;
+    _status = null;
+    _lockGeneration++;
+    _changes.add(null);
+  }
 
   /// Enable encryption for the account: generate a CMK, wrap it to this device
   /// and to the chosen recovery method, push the wraps to the server, and hold
   /// the CMK unlocked. Returns the one-time recovery secret for Option A.
+  ///
+  /// Locked before the request is sent, nothing is sent or saved and
+  /// [EncryptionSessionEnded] is thrown: a recovery method nobody was shown
+  /// must not be created. Locked while the request itself is out, the server
+  /// is enabled but the key is not held; the result, recovery secret
+  /// included, goes back to a caller whose session has ended, which may no
+  /// longer be there to show it.
   Future<EnableResult> enable(RecoveryChoice choice) async {
+    final generation = _lockGeneration;
     final cmk = await generateCmk();
 
     final keyPair = await _store.load() ?? await generateDeviceKeyPair();
-    await _store.save(keyPair);
     final devicePub = await keyPair.extractPublicKey();
     final deviceWrap = await wrapCmkToDevicePublicKey(cmk, devicePub);
 
@@ -151,7 +255,13 @@ class EncryptionService {
         kdfParamsJson = jsonEncode({...params.toJson(), 'questions': questions});
     }
 
-    await _api.enable({
+    // Every step above is client-side (Argon2 takes seconds on web), so this
+    // is where a session that ended meanwhile is caught: before anything is
+    // stored or sent. Checked again after the save, which awaits too.
+    if (generation != _lockGeneration) throw const EncryptionSessionEnded();
+    await _store.save(keyPair);
+    if (generation != _lockGeneration) throw const EncryptionSessionEnded();
+    final stored = await _api.enable({
       'device': {
         'public_key': base64.encode(devicePub.bytes),
         'label': deviceLabel,
@@ -166,8 +276,87 @@ class EncryptionService {
       },
     });
 
-    _cmk = cmk;
-    return EnableResult(recoverySecret);
+    if (generation == _lockGeneration) _cmk = cmk;
+    if (recoverySecret == null) return const EnableResult(null);
+    // The server's copy when it says what it stored; an older server does not
+    // say, and stored what was sent.
+    final wrapB64 = stored is String ? stored : base64.encode(recoveryWrap.blob);
+    return EnableResult(
+        recoverySecret, RecoveryKeyConfirmation._(wrapB64, generation));
+  }
+
+  /// Record on the server that the user saved the recovery key [c] came with.
+  /// Sends nothing once the session that showed it has ended. A 409 refetches
+  /// the status, so [needsRecoveryKeyReplacement] follows the server. Never
+  /// throws.
+  Future<RecoveryConfirmOutcome> confirmRecoveryKey(
+      RecoveryKeyConfirmation c) async {
+    if (c._generation != _lockGeneration) return RecoveryConfirmOutcome.failed;
+    try {
+      await _api.confirmRecovery('recovery_key', c.wrappedCmkB64);
+    } on RecoveryKeyConflict {
+      await _refreshStatus(c._generation);
+      return RecoveryConfirmOutcome.conflict;
+    } catch (_) {
+      return RecoveryConfirmOutcome.failed;
+    }
+    final status = _status;
+    if (c._generation == _lockGeneration && status != null) {
+      _status = EncryptionStatus(
+        enabled: status.enabled,
+        recoveryMethods: status.recoveryMethods,
+        deviceRegistered: status.deviceRegistered,
+        deviceApproved: status.deviceApproved,
+        wrappedCmkB64: status.wrappedCmkB64,
+        ephemeralPublicKeyB64: status.ephemeralPublicKeyB64,
+        unconfirmedRecoveryMethods: [
+          for (final m in status.unconfirmedRecoveryMethods)
+            if (m != 'recovery_key') m,
+        ],
+      );
+      _changes.add(null);
+    }
+    return RecoveryConfirmOutcome.confirmed;
+  }
+
+  /// Replace a recovery key that was never confirmed (Decision 16): generate a
+  /// new secret, wrap the CMK under it and send the wrap. Requires
+  /// [isUnlocked]. As in [enable], a session that ends before the request is
+  /// sent sends nothing and throws [EncryptionSessionEnded]. A 409 (the key
+  /// is already confirmed) refetches the status and rethrows
+  /// [RecoveryKeyConflict].
+  Future<NewRecoveryKey> replaceRecoveryKey() async {
+    final generation = _lockGeneration;
+    final cmk = _requireCmk();
+    final secret = generateRecoverySecret();
+    final salt = _randomBytes(16);
+    final wrap = await wrapCmkWithRecoveryKey(cmk, secret, salt);
+    if (generation != _lockGeneration) throw const EncryptionSessionEnded();
+    final String written;
+    try {
+      written = await _api.replaceRecoveryKey(
+          base64.encode(wrap.blob), base64.encode(salt));
+    } on RecoveryKeyConflict {
+      await _refreshStatus(generation);
+      rethrow;
+    }
+    return NewRecoveryKey(
+        secret, RecoveryKeyConfirmation._(written, generation));
+  }
+
+  /// Re-read the status for [needsRecoveryKeyReplacement], unless the session
+  /// [generation] belongs to has ended. Never throws.
+  Future<void> _refreshStatus(int generation) async {
+    try {
+      final keyPair = await _store.load();
+      final pubB64 = keyPair == null
+          ? null
+          : base64.encode((await keyPair.extractPublicKey()).bytes);
+      final status = await _api.fetchStatus(pubB64);
+      if (generation != _lockGeneration) return;
+      _status = status;
+      _changes.add(null);
+    } catch (_) {}
   }
 
   /// Try to unlock on a trusted device: load the stored key pair, ask the server
@@ -175,6 +364,7 @@ class EncryptionService {
   /// stored key, encryption is off, or this device is not yet approved — those
   /// cases fall through to device-approval (Phase 5) or recovery (Phase 6).
   Future<bool> unlock() async {
+    final generation = _lockGeneration;
     final keyPair = await _store.load();
     if (keyPair == null) return false;
 
@@ -187,7 +377,12 @@ class EncryptionService {
       base64.decode(status.wrappedCmkB64!),
       ephemeralPublicKey: base64.decode(status.ephemeralPublicKeyB64!),
     );
-    _cmk = await unwrapCmkWithDeviceKeyPair(wrapped, keyPair);
+    final cmk = await unwrapCmkWithDeviceKeyPair(wrapped, keyPair);
+    // Locked while this was waiting — a logout, or a 401 ending the session.
+    if (generation != _lockGeneration) return false;
+    _cmk = cmk;
+    _status = status;
+    _changes.add(null);
     return true;
   }
 
@@ -275,6 +470,7 @@ class EncryptionService {
 
   Future<bool> _recover(
       String method, Future<SecretKey> Function(RecoveryWrapData) unwrap) async {
+    final generation = _lockGeneration;
     final wrap = await _api.fetchRecoveryWrap(method);
     if (wrap == null) return false;
     final SecretKey cmk;
@@ -283,6 +479,9 @@ class EncryptionService {
     } catch (_) {
       return false; // wrong secret / corrupt wrap
     }
+    // Locked meanwhile: the session ended, so neither hold the key nor
+    // re-trust this device with it.
+    if (generation != _lockGeneration) return false;
     _cmk = cmk;
     await _retrustThisDevice();
     return true;

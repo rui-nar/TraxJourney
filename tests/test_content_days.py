@@ -180,7 +180,7 @@ def test_editor_and_owner_may_read_it(env):
 def test_a_viewer_may_not_read_it(env):
     """A journal-only day is exactly the day a viewer does NOT see in their own
     trip view, so this endpoint would disclose that somebody wrote something
-    that day. A viewer can't prune days anyway — PUT /day-meta is editor+."""
+    that day. A viewer can't prune days anyway — PATCH /day-meta is editor+."""
     client, engine, ids, act_as = env
     with Session(engine) as sess:
         sess.add(DBMemory(project_id=ids["project"], date="2026-07-01"))

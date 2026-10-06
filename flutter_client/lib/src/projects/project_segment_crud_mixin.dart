@@ -5,6 +5,7 @@
 /// by segment operations.
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
@@ -12,15 +13,31 @@ import 'package:flutter/foundation.dart';
 
 import '../api/client.dart';
 import '../core/project_ref.dart';
+import 'facets/project_facet.dart';
+import 'project_data_cache.dart';
 import 'project_service.dart';
+
+/// A server geometry answer, as [ProjectSegmentCrudMixin.fetchServerGeo]
+/// returns it.
+///
+/// - [requestedAt]: the start of the oldest geo request in flight when this
+///   one started, for [ProjectSegmentCrudMixin.reconcileSegmentOverlay].
+/// - [servedFrom]: the start of the request that produced [geo] — this one's,
+///   or the one it joined — for `GeoFacetWriter.replace`.
+typedef ServerGeo = ({
+  Map<String, dynamic> geo,
+  int requestedAt,
+  int servedFrom,
+});
 
 mixin ProjectSegmentCrudMixin on ChangeNotifier {
   // ── Abstract: project state (satisfied by ProjectNotifier fields) ──────────
   ProjectRef? get projectRef;
-  List<Map<String, dynamic>> get items;
-  set items(List<Map<String, dynamic>> v);
-  Map<String, dynamic>? get geo;
-  set geo(Map<String, dynamic>? v);
+  /// The content facet's writer — satisfied by ProjectNotifier's.
+  ItemsFacetWriter get itemsFacetWriter;
+  List<Map<String, dynamic>> get _items => itemsFacetWriter.facet.items;
+  /// The geometry facet's writer — satisfied by ProjectNotifier's.
+  GeoFacetWriter get geoFacetWriter;
   String? get error;
   set error(String? v);
 
@@ -34,16 +51,39 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
   /// Format an Exception into a user-readable string — delegates to _msg.
   String errorMessage(Exception e);
 
+  /// False once the notifier is disposed — satisfied by ProjectNotifier.
+  bool get isAlive;
+
+  /// Shows the server's geometry for [ref] after a write, at the level of
+  /// detail on screen (issue #379) — satisfied by ProjectNotifier. Dropped if
+  /// [stale] is true once the answer is in.
+  Future<void> refreshGeoAfterMutation(ProjectRef ref, bool Function() stale);
+
   /// If [e] is a 409 optimistic-lock conflict, resync items + geo from the
   /// server (discarding the optimistic change) and surface a soft retry
   /// message. Returns true when the conflict was handled.
   Future<bool> _resyncOnConflict(Object e, ProjectRef ref) async {
     if (e is! ApiException || e.statusCode != 409) return false;
+    // The account this conflict belongs to (I1-R3-1, issue #418). The trip
+    // check below compares name and owner, and an own trip has no owner, so
+    // after a sign-out the next account's trip of the same name passes it.
+    final scope = projectDataCache.scope;
+    // Another trip opened before the conflict came back: the reload below
+    // would refuse anyway (I1-R5-1), but the geo fetch would still go out, and
+    // the message below is not the other trip's (I1-R4-3).
+    if (!_sameTrip(projectRef, ref)) return true;
     try {
       await reloadDetailsOnly(ref);
-      geo = await service.getGeo(ref, bypassCache: true);
+      // The overlay belongs to whatever trip is open now, under this account.
+      await refreshGeoAfterMutation(ref,
+          () => projectDataCache.scope != scope || !_sameTrip(projectRef, ref));
     } catch (_) {
       // Best-effort resync; the next load will reconcile regardless.
+    }
+    // Signed out or another trip opened meanwhile: the message is not the
+    // open trip's either.
+    if (projectDataCache.scope != scope || !_sameTrip(projectRef, ref)) {
+      return true;
     }
     error = 'This trip changed elsewhere — refreshed from server, please retry';
     notifyListeners();
@@ -78,12 +118,12 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
       },
     };
     final insertAt = insertAfterIndex != null
-        ? (insertAfterIndex + 1).clamp(0, items.length)
-        : items.length;
+        ? (insertAfterIndex + 1).clamp(0, _items.length)
+        : _items.length;
     // Assign a new list so identical() in the panel detects the change.
-    final newItems = List<Map<String, dynamic>>.from(items);
+    final newItems = List<Map<String, dynamic>>.from(_items);
     newItems.insert(insertAt, placeholder);
-    items = newItems;
+    itemsFacetWriter.setItems(newItems);
     notifyListeners();
     try {
       final result = await api.post(
@@ -104,8 +144,8 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
       final newId = result['id'] as String;
       // Replace the optimistic placeholder with the confirmed segment,
       // creating a new list so identical() in the panel triggers a rebuild.
-      items = [
-        for (final item in items)
+      itemsFacetWriter.setItems([
+        for (final item in _items)
           if (item['item_type'] == 'segment' &&
               item['segment']?['id'] == '__optimistic__')
             {
@@ -121,17 +161,17 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
             }
           else
             item,
-      ];
+      ]);
       upsertSegmentInGeo(newId, _segmentFeature(
           newId, segmentType, label, startLat, startLon, endLat, endLon));
       notifyListeners();
       return newId;
     } on Exception catch (e) {
       // Roll back the optimistic placeholder so a failed create leaves no ghost.
-      items = items
+      itemsFacetWriter.setItems(_items
           .where((item) => !(item['item_type'] == 'segment' &&
               item['segment']?['id'] == '__optimistic__'))
-          .toList();
+          .toList());
       removeSegmentFromGeo('__optimistic__');
       _segmentTombstones.remove('__optimistic__'); // not a real server segment
       if (await _resyncOnConflict(e, ref)) return '';
@@ -160,8 +200,8 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
     double? prevStartLat, prevStartLon, prevEndLat, prevEndLon;
     Map<String, dynamic>? prevSegment;  // full snapshot for rollback on error
     // Build a new list (new reference) so identical() in the panel fires.
-    items = [
-      for (final item in items)
+    itemsFacetWriter.setItems([
+      for (final item in _items)
         if (item['item_type'] == 'segment' &&
             item['segment']?['id']?.toString() == segId)
           () {
@@ -187,7 +227,7 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
           }()
         else
           item,
-    ];
+    ]);
     notifyListeners();
     try {
       await api.put(
@@ -218,14 +258,14 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
     } on Exception catch (e) {
       // Roll back the optimistic edit so the UI doesn't drift from the server.
       if (prevSegment != null) {
-        items = [
-          for (final item in items)
+        itemsFacetWriter.setItems([
+          for (final item in _items)
             if (item['item_type'] == 'segment' &&
                 item['segment']?['id']?.toString() == segId)
               {'item_type': 'segment', 'segment': prevSegment}
             else
               item,
-        ];
+        ]);
       }
       if (await _resyncOnConflict(e, ref)) return;
       error = errorMessage(e);
@@ -249,15 +289,17 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
   }
 
   /// Trigger async OSM route resolution for a train, boat, or bus segment and
-  /// poll until it completes.
+  /// wait until it completes.
   ///
   /// The server marks the segment `route_status="pending"` and returns 202
   /// immediately (the HAFAS + Overpass work runs in a background task), so this
   /// method optimistically flips the segment to `pending` — driving a spinner on
-  /// the tile — then polls `/meta` until it resolves or fails.
+  /// the tile — then hands it to the trip's resolve poller
+  /// ([pollSegmentResolution]).
   ///
-  /// Returns a result map `{route_status, …}`. Throws on a `failed` resolution
-  /// so callers can surface the server's error message.
+  /// Returns a result map `{route_status, …}`: `resolved`, or `cancelled` when
+  /// the trip was left or the segment deleted first. Throws on a `failed`
+  /// resolution so callers can surface the server's error message.
   Future<Map<String, dynamic>> resolveTrainRoute(
     String segId, {
     String routeMode = 'rail',
@@ -285,77 +327,201 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
     return pollSegmentResolution(segId);
   }
 
-  /// Poll `/meta` until [segId] flips from `pending` to `resolved`/`failed`.
+  // ── Resolve polling (issue #278) ──────────────────────────────────────────
+  //
+  // One poller per trip, over every segment whose resolve is pending, rather
+  // than a loop per segment with a deadline. The server runs two resolve jobs
+  // at a time, so a third one queued behind them routinely outlived the old
+  // 2-minute deadline, and nothing ever polled for it again: the route only
+  // reached the map once the trip was reopened. There is no deadline now — a
+  // job stuck server-side is the server's to report (it logs route jobs
+  // pending for over 30 minutes) — and the poll backs off instead, so a
+  // forgotten tab costs one /meta a minute.
+
+  /// The running poller, or null when no resolve is pending.
+  _ResolvePoll? _resolvePoll;
+
+  /// Wait for [segId]'s pending resolve to finish, polling `/meta` for it
+  /// along with every other pending segment of this trip.
   ///
-  /// Self-cancels if the user navigates to another project (projectName change)
-  /// or the segment is deleted mid-resolve. On `resolved`, patches the segment's
-  /// geometry into [geo]. On `failed`, throws with the server error message. On
-  /// a timeout, sets [error] — mirrors `_pollActivityRefresh`'s handling of the
-  /// same class of bug (issue #213): a resolve that outlives this poll's own
-  /// deadline (a backgrounded browser tab throttling the poll ticks, most
-  /// plausibly — real elapsed server time can be well under [timeout] even so)
-  /// used to leave the tile spinning forever with no way to notice the result
-  /// had actually landed.
-  Future<Map<String, dynamic>> pollSegmentResolution(
-    String segId, {
-    Duration interval = const Duration(seconds: 3),
-    Duration timeout = const Duration(minutes: 2),
-  }) async {
+  /// On `resolved`, patches the segment's route into [items] and [geo] and
+  /// returns `{route_status: resolved, …}`. On `failed`, throws with the
+  /// server's error message. Returns `{route_status: cancelled}` when the trip
+  /// is left (another trip opened, [resetSegmentState]) or the segment is
+  /// deleted first.
+  Future<Map<String, dynamic>> pollSegmentResolution(String segId) {
     final ref = projectRef;
-    if (ref == null) return {'route_status': 'cancelled'};
-    final deadline = DateTime.now().add(timeout);
-    while (DateTime.now().isBefore(deadline)) {
-      await Future<void>.delayed(interval);
-      if (projectRef != ref) return {'route_status': 'cancelled'};
-      Map<String, dynamic> meta;
-      try {
-        meta = await service.getDetailsMeta(ref);
-      } on Exception {
-        continue; // transient network error — retry on the next tick
-      }
-      if (projectRef != ref) return {'route_status': 'cancelled'};
-      final seg = _segmentFromMeta(meta, segId);
-      if (seg == null) return {'route_status': 'cancelled'}; // deleted mid-resolve
-      final stat = (seg['route_status'] as String?) ?? 'idle';
-      if (stat == 'resolved') {
-        applyResolvedSegment(segId, seg);
-        notifyListeners();
-        return {
-          'route_status': 'resolved',
-          'stop_count': _polylineLength(seg),
-          // True when the server fell back to a straight endpoint chord (no real
-          // track found) — surfaced so the UI doesn't claim a detailed route.
-          'degraded': seg['route_degraded'] == true,
-          // True when the HAFAS lookup for the selected train failed and this
-          // resolved via the generic two-point OSM fallback instead — distinct
-          // from `degraded`.
-          'hafas_failed': seg['route_hafas_failed'] == true,
-          // On a HAFAS fallback the server keeps the provider's own reason here
-          // so the UI can say *why* the train lookup failed (issue #277).
-          'route_error': seg['route_error'],
-        };
-      }
-      if (stat == 'failed') {
-        _patchSegmentFields(segId, {
-          'route_status': 'failed',
-          'route_error': seg['route_error'],
-        });
-        notifyListeners();
-        throw Exception(seg['route_error'] ?? 'Route resolution failed');
-      }
-      // still pending → keep polling
+    if (ref == null || !isAlive) {
+      return Future.value(const {'route_status': 'cancelled'});
     }
-    error = 'Route resolution is taking longer than expected. '
-        'Reopen the project to see the result.';
-    notifyListeners();
-    return {'route_status': 'pending'};
+    final poll = _joinResolvePoll(ref, segId);
+    return poll.waiters.putIfAbsent(segId, Completer.new).future;
   }
+
+  /// Resume polling for every segment in [items] the server reports as still
+  /// resolving — after a load, so a resolve started before the trip was
+  /// opened, or on another device, still reaches the map. Stops a poller left
+  /// running for another trip.
+  void resumeSegmentResolves() {
+    final ref = projectRef;
+    if (ref == null) return;
+    final poll = _resolvePoll;
+    if (poll != null && !_sameTrip(ref, poll.trip)) stopSegmentResolvePolling();
+    for (final item in _items) {
+      final seg = item['segment'];
+      if (item['item_type'] == 'segment' &&
+          seg is Map &&
+          seg['route_status'] == 'pending' &&
+          seg['id'] != null) {
+        _joinResolvePoll(ref, seg['id'].toString());
+      }
+    }
+  }
+
+  /// Stop the poller. Anyone still waiting on a segment gets `cancelled`.
+  void stopSegmentResolvePolling() {
+    final poll = _resolvePoll;
+    _resolvePoll = null;
+    if (poll == null) return;
+    poll.timer?.cancel();
+    for (final waiter in poll.waiters.values) {
+      waiter.complete(const {'route_status': 'cancelled'});
+    }
+  }
+
+  /// A trip is the same trip whatever the caller's role on it: the role is
+  /// corrected from the server mid-session, and [ProjectRef.==] includes it.
+  static bool _sameTrip(ProjectRef? a, ProjectRef b) =>
+      a != null && a.name == b.name && a.ownerId == b.ownerId;
+
+  /// Whether [ref] is the trip open now, by [_sameTrip]. The notifier's
+  /// background reloads check it so one for a trip the user has left never
+  /// applies (I1-R5-1, I1-R5-2).
+  @protected
+  bool isOpenTrip(ProjectRef ref) => _sameTrip(projectRef, ref);
+
+  /// The wait before the next poll, by time spent polling since the last
+  /// segment joined: quick while a fresh resolve may land any second, then
+  /// backing off for one queued behind others or stuck server-side.
+  static Duration _resolvePollDelay(Duration elapsed) {
+    if (elapsed < const Duration(minutes: 2)) return const Duration(seconds: 3);
+    if (elapsed < const Duration(minutes: 10)) return const Duration(seconds: 15);
+    return const Duration(seconds: 60);
+  }
+
+  /// Add [segId] to the poller for [ref], starting one if needed. A joining
+  /// segment restarts the quick schedule.
+  _ResolvePoll _joinResolvePoll(ProjectRef ref, String segId) {
+    var poll = _resolvePoll;
+    if (poll != null && !_sameTrip(ref, poll.trip)) {
+      stopSegmentResolvePolling();
+      poll = null;
+    }
+    poll ??= _resolvePoll = _ResolvePoll(ref);
+    // Only a poll sent after this point may judge the segment: one already
+    // in flight can carry the state from before the resolve was requested.
+    poll.segments[segId] = poll.polls;
+    poll.elapsed = Duration.zero;
+    if (!poll.busy) _scheduleResolvePoll(poll);
+    return poll;
+  }
+
+  void _scheduleResolvePoll(_ResolvePoll poll) {
+    // A disposed notifier — discarded at an account change (issue #418) —
+    // keeps no poller: its waiters get `cancelled`, as on leaving the trip.
+    if (!isAlive) {
+      stopSegmentResolvePolling();
+      return;
+    }
+    poll.timer?.cancel();
+    final delay = _resolvePollDelay(poll.elapsed);
+    poll.timer = Timer(delay, () {
+      poll.timer = null;
+      poll.elapsed += delay;
+      _pollResolves(poll);
+    });
+  }
+
+  Future<void> _pollResolves(_ResolvePoll poll) async {
+    final ref = projectRef;
+    if (!_sameTrip(ref, poll.trip)) {
+      stopSegmentResolvePolling();
+      return;
+    }
+    poll.busy = true;
+    final pollNo = ++poll.polls;
+    Map<String, dynamic>? meta;
+    try {
+      meta = await service.getDetailsMeta(ref!);
+    } on Exception {
+      meta = null; // transient network error — retry on the next tick
+    }
+    if (!identical(_resolvePoll, poll)) return; // stopped meanwhile
+    poll.busy = false;
+    if (!_sameTrip(projectRef, poll.trip)) {
+      stopSegmentResolvePolling();
+      return;
+    }
+    if (meta != null) {
+      var changed = false;
+      for (final entry in poll.segments.entries.toList()) {
+        final segId = entry.key;
+        if (entry.value >= pollNo) continue; // joined after this poll was sent
+        final seg = _segmentFromMeta(meta, segId);
+        final stat = seg == null ? null : seg['route_status'] as String?;
+        if (stat == 'pending') continue;
+        poll.segments.remove(segId);
+        final waiter = poll.waiters.remove(segId);
+        changed = true;
+        if (seg == null) {
+          waiter?.complete(const {'route_status': 'cancelled'}); // deleted
+        } else if (stat == 'resolved') {
+          applyResolvedSegment(segId, seg);
+          waiter?.complete(_resolvedOutcome(seg));
+        } else if (stat == 'failed') {
+          _patchSegmentFields(segId, {
+            'route_status': 'failed',
+            'route_error': seg['route_error'],
+          });
+          waiter?.completeError(
+              Exception(seg['route_error'] ?? 'Route resolution failed'));
+        } else {
+          // No longer resolving, nor resolved: the segment was edited back to
+          // a plain line elsewhere. Show what the server has; nothing to wait on.
+          _patchSegmentFields(segId, {'route_status': stat});
+          waiter?.complete(const {'route_status': 'cancelled'});
+        }
+      }
+      if (changed) notifyListeners();
+    }
+    if (poll.segments.isEmpty) {
+      stopSegmentResolvePolling();
+    } else {
+      _scheduleResolvePoll(poll);
+    }
+  }
+
+  /// What [pollSegmentResolution] returns for a resolved segment.
+  Map<String, dynamic> _resolvedOutcome(Map<String, dynamic> seg) => {
+        'route_status': 'resolved',
+        'stop_count': _polylineLength(seg),
+        // True when the server fell back to a straight endpoint chord (no real
+        // track found) — surfaced so the UI doesn't claim a detailed route.
+        'degraded': seg['route_degraded'] == true,
+        // True when the HAFAS lookup for the selected train failed and this
+        // resolved via the generic two-point OSM fallback instead — distinct
+        // from `degraded`.
+        'hafas_failed': seg['route_hafas_failed'] == true,
+        // On a HAFAS fallback the server keeps the provider's own reason here
+        // so the UI can say *why* the train lookup failed (issue #277).
+        'route_error': seg['route_error'],
+      };
 
   /// Merge [fields] into the matching segment in [items], assigning a new list
   /// reference so identity-based rebuilds fire.
   void _patchSegmentFields(String segId, Map<String, dynamic> fields) {
-    items = [
-      for (final item in items)
+    itemsFacetWriter.setItems([
+      for (final item in _items)
         if (item['item_type'] == 'segment' &&
             item['segment']?['id']?.toString() == segId)
           {
@@ -367,7 +533,7 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
           }
         else
           item,
-    ];
+    ]);
   }
 
   /// Find the `segment` sub-map for [segId] in a `/meta` response, or null.
@@ -402,6 +568,7 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
     });
     final coords = _decodePolyline(segMeta['route_polyline']);
     if (coords.isEmpty) return;
+    final polyline = segMeta['route_polyline'];
     upsertSegmentInGeo(segId, {
       'type': 'Feature',
       'geometry': {'type': 'LineString', 'coordinates': coords},
@@ -410,10 +577,32 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
         'segment_id': segId,
         'route_mode': routeMode,
         'route_degraded': degraded,
+        // What [_sameRouteState] checks a server feature against before it
+        // lets this patch go: the server's `route_hash` is the same CRC-32 of
+        // the same stored string.
+        'route_status': 'resolved',
+        if (polyline is String) 'route_hash': _crc32(polyline),
         if (segMeta['segment_type'] != null) 'segment_type': segMeta['segment_type'],
       },
     });
   }
+
+  /// CRC-32 (IEEE, as Python's `zlib.crc32`) of [s]'s UTF-8 bytes.
+  static int _crc32(String s) {
+    var crc = 0xFFFFFFFF;
+    for (final b in utf8.encode(s)) {
+      crc = _crcTable[(crc ^ b) & 0xFF] ^ (crc >>> 8);
+    }
+    return (crc ^ 0xFFFFFFFF) & 0xFFFFFFFF;
+  }
+
+  static final List<int> _crcTable = List<int>.generate(256, (n) {
+    var c = n;
+    for (var k = 0; k < 8; k++) {
+      c = (c & 1) != 0 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+    }
+    return c;
+  });
 
   /// Decode a stored `route_polyline` (JSON string `[[lon,lat],…]`) to coords.
   List<List<double>> _decodePolyline(Object? raw) {
@@ -443,18 +632,18 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
   /// _rebuildDisplayList detects the change and removes the dismissed widget
   /// from the tree before the SnackBar fires.
   void removeSegmentLocally(String segId) {
-    final index = items.indexWhere((item) =>
+    final index = _items.indexWhere((item) =>
         item['item_type'] == 'segment' &&
         item['segment']?['id']?.toString() == segId);
     if (index >= 0) {
       _removedSegments[segId] = _RemovedSegment(
-        index, items[index], _pendingSegmentPatches[segId] ?? _geoFeature(segId));
+        index, _items[index], _pendingSegmentPatches[segId] ?? _geoFeature(segId));
     }
-    items = items
+    itemsFacetWriter.setItems(_items
         .where((item) =>
             !(item['item_type'] == 'segment' &&
               item['segment']?['id']?.toString() == segId))
-        .toList();
+        .toList());
     removeSegmentFromGeo(segId);
     notifyListeners();
   }
@@ -488,13 +677,13 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
   void _restoreRemovedSegment(String segId) {
     final removed = _removedSegments.remove(segId);
     if (removed == null) return;
-    final alreadyBack = items.any((item) =>
+    final alreadyBack = _items.any((item) =>
         item['item_type'] == 'segment' &&
         item['segment']?['id']?.toString() == segId);
     if (!alreadyBack) {
-      final restored = List<Map<String, dynamic>>.from(items);
+      final restored = List<Map<String, dynamic>>.from(_items);
       restored.insert(removed.index.clamp(0, restored.length), removed.item);
-      items = restored;
+      itemsFacetWriter.setItems(restored);
     }
     final feature = removed.feature;
     if (feature != null) {
@@ -508,7 +697,8 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
 
   /// The [geo] feature for [segId], if geo is loaded and carries one.
   Map<String, dynamic>? _geoFeature(String segId) {
-    for (final f in (geo?['features'] as List? ?? const [])) {
+    for (final f in (geoFacetWriter.facet.geo?['features'] as List? ??
+        const [])) {
       if (f is Map && f['properties']?['segment_id']?.toString() == segId) {
         return Map<String, dynamic>.from(f);
       }
@@ -531,11 +721,64 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
   /// snapshot still contains them.
   final Set<String> _segmentTombstones = {};
 
+  // ── Request ordering (I1-R2-2) ────────────────────────────────────────────
+  //
+  // A patch is only ever applied once the server has the change it draws: a
+  // segment's POST or PUT has returned, a poll has seen its resolve land, a
+  // track edit has been saved, a failed DELETE left the segment in place. So a
+  // geo request that starts after a patch is applied answers with the server's
+  // state at least as new as the patch, and that answer stands — whatever it
+  // says, including another writer's re-route (the hourly degraded-route sweep,
+  // another device's track edit) that the patch would otherwise hide until the
+  // trip is reopened. Only a request that started before the patch can carry
+  // the state the patch replaced, and only its content can say whether it
+  // already reflects the patch ([_sameRouteState]).
+
+  /// When each pending patch was applied, on [_overlayClock].
+  final Map<String, int> _patchAppliedAt = {};
+
+  /// Fetches server geo with [fetch] and returns it with the [_overlayClock]
+  /// reading to pass to [reconcileSegmentOverlay].
+  ///
+  /// The reading is the start of the oldest geo request still in flight, any
+  /// notifier's, not just this one's: the service hands an identical request
+  /// already in flight to a later caller — whichever notifier started it, the
+  /// view-mode and the app-wide one coexisting — so this one's answer may be
+  /// that older request's (I1-R3-3). Erring early only keeps a patch until a
+  /// later request settles it; erring late would let a stale answer drop it.
+  ///
+  /// It also returns `servedFrom`, the start of the request that produced the
+  /// answer, which orders answers against each other (Decision 24 of
+  /// docs/CLIENT_STATE_MAP_PLAN.md): this request's own start, or — when
+  /// [fetch] hands back the very Future of a request already in flight, as the
+  /// service's dedup does — that request's start, because its answer is the
+  /// one this caller gets. A join the service hides behind a Future of its own
+  /// (an `async` wrapper) reads as a request of its own, which errs late.
+  Future<ServerGeo> fetchServerGeo(
+      Future<Map<String, dynamic>> Function() fetch) async {
+    final request = _GeoRequest(++_overlayClock);
+    final requestedAt = _geoRequestsInFlight.fold(
+        request.startedAt, (int at, r) => math.min(at, r.startedAt));
+    _geoRequestsInFlight.add(request);
+    try {
+      final answer = fetch();
+      final sentBy = _geoRequestOf[answer] ??= request;
+      return (
+        geo: await answer,
+        requestedAt: requestedAt,
+        servedFrom: sentBy.startedAt,
+      );
+    } finally {
+      _geoRequestsInFlight.remove(request);
+    }
+  }
+
   /// Upsert a segment feature into [geo] by segment_id (adds if absent).
   void upsertSegmentInGeo(String segId, Map<String, dynamic> feature) {
     _pendingSegmentPatches[segId] = feature;
+    _patchAppliedAt[segId] = ++_overlayClock;
     _segmentTombstones.remove(segId);
-    final current = geo;
+    final current = geoFacetWriter.facet.geo;
     if (current == null) return; // overlay re-applies it when geo is rebuilt
     final features = List<dynamic>.from(current['features'] as List? ?? []);
     final idx = features.indexWhere(
@@ -545,19 +788,22 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
     } else {
       features.add(feature);
     }
-    geo = {'type': 'FeatureCollection', 'features': features};
+    geoFacetWriter
+        .replaceKeepingLod({'type': 'FeatureCollection', 'features': features});
   }
 
   /// Remove a segment feature from [geo] by segment_id.
   void removeSegmentFromGeo(String segId) {
     _pendingSegmentPatches.remove(segId);
+    _patchAppliedAt.remove(segId);
     _segmentTombstones.add(segId);
-    final current = geo;
+    final current = geoFacetWriter.facet.geo;
     if (current == null) return;
     final features = List<dynamic>.from(current['features'] as List? ?? []);
     features.removeWhere(
         (f) => (f as Map)['properties']?['segment_id']?.toString() == segId);
-    geo = {'type': 'FeatureCollection', 'features': features};
+    geoFacetWriter
+        .replaceKeepingLod({'type': 'FeatureCollection', 'features': features});
   }
 
   /// Merge the durable overlay onto a freshly-rebuilt feature [list]: drop
@@ -585,27 +831,87 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
   }
 
   /// Drop overlay entries the authoritative server [serverGeo] already reflects,
-  /// so the overlay self-cleans once the backend has caught up. A pending patch
-  /// is cleared when the server geo contains its segment_id; a tombstone is
-  /// cleared when the server geo no longer contains its segment_id.
-  void reconcileSegmentOverlay(Map<String, dynamic> serverGeo) {
-    final serverSegIds = <String>{
+  /// so the overlay self-cleans once the backend has caught up. [requestedAt]
+  /// is when the request for [serverGeo] started, on [_overlayClock]: what
+  /// [fetchServerGeo] returns, or 0 for a snapshot older than every patch (the
+  /// offline cache).
+  ///
+  /// A pending patch is cleared when the request started after the patch was
+  /// applied: the server's answer is then at least as new as the patch (see
+  /// "Request ordering" above). One that started before clears it only when
+  /// the server geo carries its segment *in the same route state*
+  /// ([_sameRouteState]). Matching on the id alone dropped a resolved route's
+  /// patch on any geo that still had the segment — including one fetched
+  /// before the resolve landed, which then put the great-circle line back
+  /// (issue #278).
+  ///
+  /// A tombstone is cleared when the server geo no longer contains its
+  /// segment_id, whenever the request started: it is made before the DELETE
+  /// is sent (the undo window), so a later request can still have the segment.
+  void reconcileSegmentOverlay(Map<String, dynamic> serverGeo,
+      {required int requestedAt}) {
+    final serverFeatures = <String, Map>{
       for (final f in (serverGeo['features'] as List? ?? const []))
         if (f is Map &&
             (f['properties'] as Map? ?? {})['segment_id'] != null)
-          (f['properties'] as Map)['segment_id'].toString(),
+          (f['properties'] as Map)['segment_id'].toString(): f,
     };
-    _pendingSegmentPatches.keys
-        .where(serverSegIds.contains)
+    _pendingSegmentPatches.entries
+        .where((e) {
+          if (requestedAt > (_patchAppliedAt[e.key] ?? 0)) return true;
+          final server = serverFeatures[e.key];
+          return server != null && _sameRouteState(e.value, server);
+        })
+        .map((e) => e.key)
         .toList()
-        .forEach(_pendingSegmentPatches.remove);
-    _segmentTombstones.removeWhere((id) => !serverSegIds.contains(id));
+        .forEach((segId) {
+          _pendingSegmentPatches.remove(segId);
+          _patchAppliedAt.remove(segId);
+        });
+    _segmentTombstones.removeWhere((id) => !serverFeatures.containsKey(id));
+  }
+
+  /// Whether two segment features draw the same kind of route: the same
+  /// `route_mode` (a great-circle arc carries none, or `great_circle`), and the
+  /// same `route_degraded` when both say. Every geo endpoint sends
+  /// `route_mode`; only the low-res one sends `route_degraded`.
+  ///
+  /// A resolved-route patch ([applyResolvedSegment]) also needs the server to
+  /// say `route_status: resolved`, and the same `route_hash` when both carry
+  /// one. `route_mode` alone cannot tell the route from the arc a stale fetch
+  /// still holds — the segment PUT stores `rail` before the resolve runs — nor
+  /// a re-resolved route from the one it replaced. A server too old to send
+  /// `route_status` cannot confirm the route, so the patch stays.
+  static bool _sameRouteState(Map patch, Map server) {
+    final p = patch['properties'] as Map? ?? const {};
+    final s = server['properties'] as Map? ?? const {};
+    String mode(Map props) => props['route_mode'] as String? ?? 'great_circle';
+    if (mode(p) != mode(s)) return false;
+    if (p['route_status'] == 'resolved') {
+      if (s['route_status'] != 'resolved') return false;
+      final ph = p['route_hash'], sh = s['route_hash'];
+      if (ph != null && sh != null && ph != sh) return false;
+    }
+    final pd = p['route_degraded'], sd = s['route_degraded'];
+    return pd == null || sd == null || pd == sd;
   }
 
   /// Clear the overlay — call when switching projects.
   void clearSegmentOverlay() {
     _pendingSegmentPatches.clear();
+    _patchAppliedAt.clear();
     _segmentTombstones.clear();
+  }
+
+  /// Drops all of this mixin's state: the overlay, the segments held to put
+  /// back if their DELETE fails, and the resolve poller. For
+  /// `ProjectNotifier.clear()` (issue #418): a DELETE that fails after it must
+  /// not restore a segment into whatever is loaded next, nor a poll write a
+  /// route into it.
+  void resetSegmentState() {
+    clearSegmentOverlay();
+    _removedSegments.clear();
+    stopSegmentResolvePolling();
   }
 
   // ── Geometry (SLERP great-circle, mirrors src/models/great_circle.py) ─────
@@ -667,4 +973,56 @@ class _RemovedSegment {
   final Map<String, dynamic> item;
   final Map<String, dynamic>? feature;
   const _RemovedSegment(this.index, this.item, this.feature);
+}
+
+/// Orders geo requests against patches: every request start and every patch,
+/// in every notifier, takes the next value. Library-wide, like the service's
+/// in-flight fetches a request may join: a notifier's patch and the request
+/// another notifier started must read the same clock (I1-R3-3). Never reset,
+/// not even by `clear()`: a request still in flight from before would then
+/// look newer than patches made after. Holds no trip data.
+int _overlayClock = 0;
+
+/// The server geo requests [ProjectSegmentCrudMixin.fetchServerGeo] has in
+/// flight, across notifiers. Each removes itself when it settles; emptied
+/// early, a request joining one of them would look newer than the answer it
+/// gets. Holds start readings only.
+final Set<_GeoRequest> _geoRequestsInFlight = {};
+
+/// The request that produced each answer Future [ProjectSegmentCrudMixin.fetchServerGeo]
+/// has handed out, so a caller handed the same Future knows it joined that
+/// request. An Expando, so an answer settled and dropped takes its entry with
+/// it.
+final Expando<_GeoRequest> _geoRequestOf = Expando('geo request');
+
+/// A server geo request in flight. See [ProjectSegmentCrudMixin.fetchServerGeo].
+/// An object rather than its start value, so each request removes only itself.
+class _GeoRequest {
+  _GeoRequest(this.startedAt);
+  final int startedAt;
+}
+
+/// One trip's resolve poller. See [ProjectSegmentCrudMixin.pollSegmentResolution].
+class _ResolvePoll {
+  _ResolvePoll(this.trip);
+
+  /// The trip it polls for, compared by name and owner only.
+  final ProjectRef trip;
+
+  /// Pending segment ids, each with the number of polls sent before it joined.
+  final Map<String, int> segments = {};
+
+  /// Callers waiting on a segment's outcome, by segment id.
+  final Map<String, Completer<Map<String, dynamic>>> waiters = {};
+
+  Timer? timer;
+
+  /// True while a poll's `/meta` request is in flight.
+  bool busy = false;
+
+  /// Polls sent so far.
+  int polls = 0;
+
+  /// Time spent waiting between polls since the last segment joined.
+  Duration elapsed = Duration.zero;
 }

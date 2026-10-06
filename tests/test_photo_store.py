@@ -98,6 +98,83 @@ def test_a_jpeg_is_decoded_at_reduced_scale(tmp_path, monkeypatch):
     assert decoded_size[0] <= 2000  # half scale or less, not 4000 wide
 
 
+def _oriented_bytes(orientation, size=(800, 400), fmt="JPEG") -> bytes:
+    """A photo whose top-left quarter is red and the rest blue, tagged with
+    EXIF *orientation* (None for no EXIF at all)."""
+    img = Image.new("RGB", size, (0, 0, 255))
+    img.paste((255, 0, 0), (0, 0, size[0] // 2, size[1] // 2))
+    kwargs = {}
+    if orientation is not None:
+        exif = Image.Exif()
+        exif[0x0112] = orientation
+        kwargs["exif"] = exif
+    buf = io.BytesIO()
+    img.save(buf, fmt, **kwargs)
+    return buf.getvalue()
+
+
+def _is_red(px) -> bool:
+    return px[0] > 200 and px[1] < 60 and px[2] < 60
+
+
+@pytest.mark.parametrize("fmt", ["JPEG", "PNG"])
+@pytest.mark.parametrize("orientation,size,red_corner", [
+    (3, (400, 200), (399, 199)),   # turned 180 degrees: red goes bottom-right
+    (6, (200, 400), (199, 0)),  # turned 90 clockwise: red goes top-right
+    (8, (200, 400), (0, 399)),     # turned 90 anticlockwise: red goes bottom-left
+])
+def test_a_rotated_photo_gets_an_upright_thumbnail(tmp_path, fmt, orientation, size, red_corner):
+    _, thumb = write_photo_files(tmp_path, NAME, _oriented_bytes(orientation, fmt=fmt))
+    with Image.open(thumb) as t:
+        assert t.size == size
+        assert _is_red(t.convert("RGB").getpixel(red_corner))
+        assert not _is_red(t.convert("RGB").getpixel((size[0] // 2, size[1] // 2)))
+
+
+def test_a_rotated_jpeg_gets_an_upright_thumbnail(tmp_path):
+    _, thumb = write_photo_files(tmp_path, NAME, _oriented_bytes(6))
+    with Image.open(thumb) as t:
+        assert t.size == (200, 400)
+
+
+def test_a_rotated_png_gets_an_upright_thumbnail(tmp_path):
+    _, thumb = write_photo_files(tmp_path, NAME, _oriented_bytes(6, fmt="PNG"))
+    with Image.open(thumb) as t:
+        assert t.size == (200, 400)
+
+
+@pytest.mark.parametrize("orientation", [1, None])
+def test_an_upright_jpeg_thumbnail_is_unchanged(tmp_path, orientation):
+    _, thumb = write_photo_files(tmp_path, NAME, _oriented_bytes(orientation))
+    with Image.open(thumb) as t:
+        assert t.size == (400, 200)
+        assert _is_red(t.getpixel((0, 0)))
+        assert not _is_red(t.getpixel((399, 199)))
+
+
+def test_a_rotated_jpeg_is_still_decoded_at_reduced_scale(tmp_path, monkeypatch):
+    requested = []
+    real_draft = JpegImagePlugin.JpegImageFile.draft
+
+    def spy(self, mode, size):
+        result = real_draft(self, mode, size)
+        requested.append(self.size)
+        return result
+
+    monkeypatch.setattr(JpegImagePlugin.JpegImageFile, "draft", spy)
+    _, thumb = write_photo_files(tmp_path, NAME, _oriented_bytes(6, size=(4000, 3000)))
+
+    assert requested and requested[0][0] <= 2000
+    with Image.open(thumb) as t:
+        assert t.size == (300, 400)
+
+
+def test_the_stored_original_is_unchanged(tmp_path):
+    raw = _oriented_bytes(6)
+    full, _ = write_photo_files(tmp_path, NAME, raw)
+    assert full.read_bytes() == raw
+
+
 def test_a_non_image_is_refused_and_nothing_is_written(tmp_path):
     folder = tmp_path / "f"
     with pytest.raises(InvalidPhoto) as exc:

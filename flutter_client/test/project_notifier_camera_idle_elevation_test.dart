@@ -116,21 +116,21 @@ void main() {
     // Phase 1 (meta, no elevation_profile) is in; phase 2 (full-res geo, then
     // the full elevation-carrying details fetch) is backgrounded and must
     // stay blocked on the camera the whole time.
-    expect(notifier.fullTrack, isEmpty);
+    expect(notifier.elevationFacet.fullTrack, isEmpty);
     await Future<void>.delayed(const Duration(milliseconds: 300));
-    expect(notifier.fullTrack, isEmpty,
+    expect(notifier.elevationFacet.fullTrack, isEmpty,
         reason: 'the elevation-data upgrade must not commit fullTrack while '
             'the camera is still reported as actively moving');
 
     notifier.setMapCameraActive(false);
-    for (var i = 0; i < 20 && notifier.fullTrack.isEmpty; i++) {
+    for (var i = 0; i < 20 && notifier.elevationFacet.fullTrack.isEmpty; i++) {
       await Future<void>.delayed(const Duration(milliseconds: 50));
     }
 
-    expect(notifier.fullTrack, isNotEmpty,
+    expect(notifier.elevationFacet.fullTrack, isNotEmpty,
         reason: 'once the camera goes idle the deferred elevation upgrade '
             'still lands');
-    expect(notifier.perActivityTracks.containsKey('1'), isTrue);
+    expect(notifier.elevationFacet.perActivityTracks.containsKey('1'), isTrue);
   });
 
   test('a camera that is never marked active does not block the upgrade',
@@ -139,10 +139,10 @@ void main() {
     final notifier = ProjectNotifier(ProjectService());
 
     await notifier.load(_ref);
-    for (var i = 0; i < 20 && notifier.fullTrack.isEmpty; i++) {
+    for (var i = 0; i < 20 && notifier.elevationFacet.fullTrack.isEmpty; i++) {
       await Future<void>.delayed(const Duration(milliseconds: 50));
     }
 
-    expect(notifier.fullTrack, isNotEmpty);
+    expect(notifier.elevationFacet.fullTrack, isNotEmpty);
   });
 }
