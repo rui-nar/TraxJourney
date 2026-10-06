@@ -211,6 +211,9 @@ Branch `feat/345-local-transport-data`, base cc52978b (plan + origin/main e96f86
 | U8 | Stores and readers learn layers (store schema 3) | Opus | S4 | 1 | — | yes | R1-1, R1-9, R2-2, R2-6, R3-1, U8R1-1 |
 | F1 | Correct the manifest sort comment | Sonnet | — | 1 | — | yes | U8R1-1 |
 | F2 | Age warning names a stale ferry/bus layer | Sonnet | — | 1 | — | yes | U8R1-2 |
+| U7 | Ferry and bus layers in the extract build | Opus | S3 | 1 | escalate (Germany bus 160 MB, store build 2.1 GB) → owner | yes (code) | R1-3, R1-7, R1-10, R2-3 |
+| F4 | Ferry/bus files keep only the tags the builder reads | Opus | S3 | 1 | — | yes | — |
+| F3 | Store builder runs in bounded memory | Opus | S4 | 1 | — | yes | R1-7 |
 
 Notes:
 - U1: the `rail-data` label did not exist; owner approved creating it (created 2026-10-05). `_working_bash()` in the workflow test now prefers Git Bash on Windows (a bare `bash` is the WSL launcher and drops env vars); no change on Linux.
@@ -247,3 +250,7 @@ Reviewer hand-off note: `.github/workflows/rail-extract.yml:284` (U5's gate) cal
 - U8: the box's installed manifest stays manifest schema 2 (entries may carry layer / carried / omitted_by) so U2's age check reads it unchanged; readers accept manifest schemas (2, 3); coverage is per layer (`load_coverage(dir, layer="rail")`). On real data, 14 stores rebuilt at schema 3 answer every rail query identically to their schema-2 originals; corpus 11 pass / 1 known-bad on both. Verifier: every changed assertion in existing tests traces to the plan. Unit review (§5 point 3): 2 findings, both owner-overridden to Fix now (F1, F2).
 - Wave 4 integration (099a6d3a): full suite 6202 passed, 39 skipped.
 - CHECKPOINT: owner deploys U8 to val and prod before Wave 5 (U7) merges.
+- U7 escalated on its own Germany run: bus layer 160 MB filtered (> 150 MB) and the U8 builder peaked at 2,127,220 kB building Germany's bus store (> 700 MB; the box builds in a 1 GB worker). Owner (2026-10-06): fix the builder first (F3) and raise U7's size line to 250 MB with unused tags stripped (F4). Results: Germany bus 160 → ~112 MB filtered; bus-store build 2.1 GB → 418 MB (verifier re-measured 416 MB); rail-store build 337 → 131 MB; every table identical to the old builder's on Germany rail/bus/ferry and the 7 corpus regions. Germany's bus store is 660 MB on disk (input to Open decision 3). Owner: F3 ships with part 2, not PR #563 — so the first ferry/bus Rail extract dispatch waits until part 2 is on prod.
+- U7 notes for U9: ferry/bus files carry no stop nodes (`_bridge_to_named_stops` reads stop positions from Overpass's `out geom`); ferry bboxes are wide (Denmark −6.8…25.2 lon). `osmium.index.IdSet` is dense (1.5 GB per 300k scattered ids) — Python sets used instead.
+- Orchestrator incident (2026-10-06 09:56): a one-off check's failed `cd` let `git reset --hard` run in the shared main checkout; HEAD unchanged, no staged blob lost (fsck), checkout believed clean. Lesson recorded.
+- Wave 5 integration (550515ff): full suite 6249 passed, 39 skipped, 1 failed — the same load-sensitive video timing test as wave 3; passed 3/3 alone.
