@@ -163,7 +163,16 @@ trip you own. The pass:
   entries, and **repairs** your earlier memories there: any memory whose
   envelope decrypts under your own key was written under the wrong key before
   #505, so it is re-saved as plaintext (successful decryption is the proof of
-  authorship, as memories carry no author column) — `_restoreMemory`;
+  authorship, as memories carry no author column) — `_restoreMemory`. It also
+  repairs your own activity envelopes there (see "Remaining plaintext" case 5):
+  an activity in that trip that is enveloped under your key is decrypted back,
+  because that trip is another user's. This is the one activity write the
+  non-owner pass makes, in `encryption_migration.dart`; it never encrypts your
+  activity rows on such a trip. Its writes are `PUT /api/activities/{id}` with
+  `project` (the trip's name), `owner` (the trip owner's id) and `lock_version`,
+  so they are a compare-and-swap on that trip, which you may edit as a member
+  (editor or above; any other caller gets 404). Envelopes under another key are
+  left alone, and a trip whose rows were already checked is not read again;
 - writes every row as a compare-and-swap on the trip's `lock_version`:
   `PUT /api/activities/{id}`, `PUT /api/memories/{id}` and
   `PUT /api/journal/{id}` take an optional `lock_version` (and, for activities,
@@ -192,7 +201,8 @@ encrypted.
 Trips shared **with** you by another user are not touched by the enable-time
 `run()` (issue #106); their journal entries and memory repair are handled by
 the catch-up when you load them. Activities are the exception: on a trip you
-do not own the catch-up leaves your own activity rows alone, and rows you may
+do not own the catch-up never encrypts your own activity rows (it only decrypts
+back your own envelopes, "Remaining plaintext" case 5), and rows you may
 not encrypt, or that another user's trip also holds, stay plaintext too — see
 "Remaining plaintext".
 
@@ -427,8 +437,8 @@ encrypted account, so that every traveller on the trip can read it.
    trip is refused for the same reason. Such rows keep their name, track,
    endpoints and profile in plaintext. The catch-up counts them
    (`CatchUpResult.unencryptable`, a 404 on the write), the trip screen says
-   "N activities were imported by another traveller and stay unencrypted"
-   (`_UnencryptableNotice` in `encryption_locked_banner.dart`, fed by
+   "N activities are also used by another traveller and stay unencrypted"
+   (one wording for this case and case 5; `_UnencryptableNotice` in `encryption_locked_banner.dart`, fed by
    `ProjectNotifier.unencryptableActivityCount`), and the enable screen reports
    the count after the migration (`migrationNotice` in
    `enable_encryption_screen.dart`).
@@ -469,6 +479,17 @@ encrypted account, so that every traveller on the trip can read it.
    the row, the next catch-up encrypts it. The enable-time `run()` skips trips
    shared with you (`isSharedWithMe`); on those trips the catch-up does not
    encrypt your own activity rows.
+
+   The repair also runs when you open a trip you do **not** own. A row you own
+   can sit in a friend's trip that holds it, with envelopes under your key that
+   the friend cannot read, and the owner's catch-up never runs on that trip. So
+   the non-owner pass (`encryption_migration.dart`) decrypts those envelopes
+   back to plaintext in the same way, writing with the compare-and-swap of the
+   friend's trip: `PUT /api/activities/{id}` with `owner`, `project` and
+   `lock_version` (`ActivityFieldsUpdate`, `update_activity_fields` in
+   `api/activities.py`; `owner` is accepted only beside `project`, else 422).
+   After such a write the server refreshes the cache of each trip holding the
+   row under that trip's own owner, not under the caller.
 
 ## What the server checks
 
