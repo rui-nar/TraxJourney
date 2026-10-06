@@ -34,10 +34,10 @@ Map<String, dynamic> _memoryItem(String id, double lat, double lon) => {
 ProjectNotifier _notifier() => ProjectNotifier(ProjectService())
   ..ref = const ProjectRef(name: 'Trip')
   ..geoFacetWriter.replaceKeepingLod(const {'type': 'FeatureCollection', 'features': <dynamic>[]})
-  ..items = [
+  ..itemsFacetWriter.setItems([
     _memoryItem('mem-1', 47.0, 11.0),
     _memoryItem('mem-2', 48.0, 12.0),
-  ]
+  ])
   ..isLoading = false;
 
 Widget _panel(ProjectNotifier notifier, AnimatedMapController controller) =>

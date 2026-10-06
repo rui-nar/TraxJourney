@@ -50,13 +50,13 @@ Map<String, dynamic> _geo() => {
 ProjectNotifier _notifier() => ProjectNotifier(ProjectService())
   ..ref = const ProjectRef(name: 'Trip')
   ..geoFacetWriter.replaceKeepingLod(_geo())
-  ..activities = [
+  ..itemsFacetWriter.setActivities([
     for (var a = 0; a < _acts; a++)
       {'id': a, 'start_date_local': '2026-06-0${a + 1}T08:00:00'}
-  ]
-  ..items = [
+  ])
+  ..itemsFacetWriter.setItems([
     for (var a = 0; a < _acts; a++) {'item_type': 'activity', 'activity_id': a}
-  ]
+  ])
   ..isLoading = false;
 
 void main() {

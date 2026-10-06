@@ -33,8 +33,11 @@ import 'dart:ui' show Color;
 
 import 'package:flutter/foundation.dart';
 
+import '../../crypto/undecrypted_fields.dart';
 import '../geo_viewport.dart' show GeoBox;
+import '../project_filter_mixin.dart' show effectiveDayTags;
 import '../project_filters.dart';
+import '../trip_end_days.dart' show contentDayKeys;
 
 part 'elevation_facet.dart';
 part 'geo_facet.dart';

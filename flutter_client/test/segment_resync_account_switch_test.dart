@@ -100,7 +100,7 @@ void main() {
     _session(n, 1);
     n
       ..ref = _trip
-      ..items = [_segmentItem]
+      ..itemsFacetWriter.setItems([_segmentItem])
       ..geoFacetWriter.replaceKeepingLod(_geo(1));
 
     final save = n.updateSegment('s1',
@@ -121,7 +121,7 @@ void main() {
     final bGeo = _geo(5);
     n
       ..ref = _trip
-      ..items = [_segmentItem]
+      ..itemsFacetWriter.setItems([_segmentItem])
       ..geoFacetWriter.replaceKeepingLod(bGeo);
 
     server.heldGeo.complete(_geo(9)); // A's geometry

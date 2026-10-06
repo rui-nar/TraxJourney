@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 
 import '../api/client.dart';
 import '../core/project_ref.dart';
+import 'facets/project_facet.dart';
 import 'project_quota_mixin.dart';
 
 /// The steps of a Polarsteps trip that can actually be drawn — those carrying
@@ -25,17 +26,25 @@ int _optimisticEncounterIdCounter = 0;
 mixin ProjectPeopleCrudMixin on ChangeNotifier, ProjectQuotaMixin {
   // ── Abstract: project state (satisfied by ProjectNotifier fields) ─────────
   ProjectRef? get projectRef;
-  List<Map<String, dynamic>> get items;
-  set items(List<Map<String, dynamic>> v);
-  List<Map<String, dynamic>> get people;
-  set people(List<Map<String, dynamic>> v);
-  List<Map<String, dynamic>> get groups;
-  set groups(List<Map<String, dynamic>> v);
+  /// The content facet's writer — satisfied by ProjectNotifier's.
+  ItemsFacetWriter get itemsFacetWriter;
+  List<Map<String, dynamic>> get _items => itemsFacetWriter.facet.items;
+  List<Map<String, dynamic>> get _people => itemsFacetWriter.facet.people;
+  List<Map<String, dynamic>> get _groups => itemsFacetWriter.facet.groups;
   String? get error;
   set error(String? v);
 
   Future<void> reloadDetailsOnly(ProjectRef ref);
   String errorMessage(Exception e);
+
+  /// Replaces the item list with one without the items [drop] matches, when
+  /// there are any: the list is left as it is otherwise, so deleting a person
+  /// or group with no encounters changes people only (Decision 23 of
+  /// docs/CLIENT_STATE_MAP_PLAN.md).
+  void _dropItemsWhere(bool Function(Map<String, dynamic> item) drop) {
+    final kept = _items.where((it) => !drop(it)).toList();
+    if (kept.length != _items.length) itemsFacetWriter.setItems(kept);
+  }
 
   // ── People CRUD ───────────────────────────────────────────────────────────
 
@@ -121,11 +130,9 @@ mixin ProjectPeopleCrudMixin on ChangeNotifier, ProjectQuotaMixin {
     final ref = projectRef;
     if (ref == null) return;
     // Optimistic: drop the person and any of their encounter items.
-    people = people.where((p) => p['id'] != personId).toList();
-    items = items
-        .where((it) => !(it['item_type'] == 'encounter' &&
-            it['encounter']?['person_id'] == personId))
-        .toList();
+    itemsFacetWriter.setPeople(_people.where((p) => p['id'] != personId).toList());
+    _dropItemsWhere((it) => it['item_type'] == 'encounter' &&
+        it['encounter']?['person_id'] == personId);
     notifyListeners();
     try {
       await api.delete('/api/people/$personId');
@@ -216,14 +223,14 @@ mixin ProjectPeopleCrudMixin on ChangeNotifier, ProjectQuotaMixin {
       },
     };
     final insertAt = insertAfterIndex != null
-        ? (insertAfterIndex + 1).clamp(0, items.length)
-        : items.length;
+        ? (insertAfterIndex + 1).clamp(0, _items.length)
+        : _items.length;
     // New list object, not an in-place insert: map_panel's marker cache and
     // ProjectNotifier's dayStats/orderedDayKeys caches invalidate via
     // identical(items, _last...), which a same-object mutation never trips.
-    final newItems = List.of(items);
+    final newItems = List.of(_items);
     newItems.insert(insertAt, placeholder);
-    items = newItems;
+    itemsFacetWriter.setItems(newItems);
     notifyListeners();
     try {
       await api.post(ref.withOwner('/api/encounters/'), {
@@ -242,11 +249,11 @@ mixin ProjectPeopleCrudMixin on ChangeNotifier, ProjectQuotaMixin {
       return true;
     } on Exception catch (e) {
       // Roll back the placeholder so a failed create leaves no phantom item.
-      items = items
+      itemsFacetWriter.setItems(_items
           .where((item) =>
               !(item['item_type'] == 'encounter' &&
                 item['encounter']?['id']?.toString() == tempId))
-          .toList();
+          .toList());
       error = errorMessage(e);
       notifyListeners();
       return false;
@@ -296,11 +303,11 @@ mixin ProjectPeopleCrudMixin on ChangeNotifier, ProjectQuotaMixin {
   /// immediately, before the undo window's delayed confirm ever calls
   /// [deleteEncounter] itself.
   void removeEncounterLocally(String encounterId) {
-    items = items
+    itemsFacetWriter.setItems(_items
         .where((item) =>
             !(item['item_type'] == 'encounter' &&
               item['encounter']?['id']?.toString() == encounterId))
-        .toList();
+        .toList());
     notifyListeners();
   }
 
@@ -429,12 +436,10 @@ mixin ProjectPeopleCrudMixin on ChangeNotifier, ProjectQuotaMixin {
     if (ref == null) return;
     // Optimistic: drop the group, its direct group-encounters (issue #56 —
     // unlike a member, they have no fallback), and ungroup remaining members.
-    groups = groups.where((g) => g['id'] != groupId).toList();
-    items = items
-        .where((it) => !(it['item_type'] == 'encounter' &&
-            it['encounter']?['group_id'] == groupId))
-        .toList();
-    for (final p in people) {
+    itemsFacetWriter.setGroups(_groups.where((g) => g['id'] != groupId).toList());
+    _dropItemsWhere((it) => it['item_type'] == 'encounter' &&
+        it['encounter']?['group_id'] == groupId);
+    for (final p in _people) {
       if (p['group_id'] == groupId) p['group_id'] = null;
     }
     notifyListeners();

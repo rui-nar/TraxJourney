@@ -91,11 +91,11 @@ class _PeopleScreenState extends State<PeopleScreen> {
 
   Widget _peopleBody(ThemeData theme) {
     final notesByPerson =
-        encounterNotesByPerson(widget.notifier.items, widget.notifier.people);
+        encounterNotesByPerson(widget.notifier.itemsFacet.items, widget.notifier.itemsFacet.people);
     final counts =
-        encounterCountByPerson(widget.notifier.items, widget.notifier.people);
+        encounterCountByPerson(widget.notifier.itemsFacet.items, widget.notifier.itemsFacet.people);
     final filtered =
-        filterPeople(widget.notifier.people, _search.text, notesByPerson);
+        filterPeople(widget.notifier.itemsFacet.people, _search.text, notesByPerson);
     return Column(
       children: [
         Padding(
@@ -117,7 +117,7 @@ class _PeopleScreenState extends State<PeopleScreen> {
           ),
         ),
         Expanded(
-          child: widget.notifier.people.isEmpty
+          child: widget.notifier.itemsFacet.people.isEmpty
               ? _empty(theme, 'No people yet',
                   'Add someone you met, or log an encounter on a day.')
               : filtered.isEmpty
@@ -136,13 +136,13 @@ class _PeopleScreenState extends State<PeopleScreen> {
   }
 
   Widget _groupsBody(ThemeData theme) {
-    final groups = widget.notifier.groups;
+    final groups = widget.notifier.itemsFacet.groups;
     if (groups.isEmpty) {
       return _empty(theme, 'No groups yet',
           'Group people you met — e.g. a hostel crew or a family.');
     }
-    final counts = memberCountByGroup(widget.notifier.people);
-    final encCounts = encounterCountByGroup(widget.notifier.items);
+    final counts = memberCountByGroup(widget.notifier.itemsFacet.people);
+    final encCounts = encounterCountByGroup(widget.notifier.itemsFacet.items);
     return ListView.builder(
       itemCount: groups.length,
       itemBuilder: (_, i) => _GroupTile(
@@ -880,7 +880,7 @@ class _GroupDetailSheet extends StatelessWidget {
         (group['nationalities'] as List?)?.cast<String>() ?? const [];
     final socials =
         (group['socials'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
-    final members = membersOfGroup(notifier.people, _groupId);
+    final members = membersOfGroup(notifier.itemsFacet.people, _groupId);
     return Padding(
       padding: EdgeInsets.only(
         left: 16, right: 16, top: 4,
@@ -977,7 +977,7 @@ class _GroupDetailSheet extends StatelessWidget {
           ListenableBuilder(
             listenable: notifier,
             builder: (context, _) {
-              final encounters = encountersForGroup(notifier.items, _groupId);
+              final encounters = encountersForGroup(notifier.itemsFacet.items, _groupId);
               if (encounters.isEmpty) {
                 return Padding(
                   padding: const EdgeInsets.symmetric(vertical: 8),

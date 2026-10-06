@@ -34,7 +34,7 @@ void main() {
 
   testWidgets('the activity panel shows no ciphertext', (tester) async {
     final notifier = ProjectNotifier(ProjectService())
-      ..activities = [
+      ..itemsFacetWriter.setActivities([
         {
           'id': 1,
           'type': 'Ride',
@@ -43,8 +43,8 @@ void main() {
           'moving_time': 1800,
           'start_date_local': '2026-06-01T08:00:00',
         },
-      ]
-      ..items = [
+      ])
+      ..itemsFacetWriter.setItems([
         {'item_type': 'activity', 'activity_id': 1},
         {
           'item_type': 'memory',
@@ -59,7 +59,7 @@ void main() {
           'item_type': 'journal',
           'journal': {'id': 'j1', 'description': _envelope, 'date': '2026-06-01'},
         },
-      ];
+      ]);
     await tester.pumpWidget(
       ChangeNotifierProvider<ProjectNotifier>.value(
         value: notifier,

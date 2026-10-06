@@ -19,16 +19,16 @@ Map<String, dynamic> _activity(int id, String startDateLocal, double distanceM, 
 
 /// Three activities, one per day, so orderedDayKeys() = [06-01, 06-02, 06-03].
 _FakeNotifier _tripNotifier() => _FakeNotifier()
-  ..activities = [
+  ..itemsFacetWriter.setActivities([
     _activity(1, '2024-06-01T08:00:00', 10000, 100),
     _activity(2, '2024-06-02T08:00:00', 20000, 200),
     _activity(3, '2024-06-03T08:00:00', 5000, 50),
-  ]
-  ..items = [
+  ])
+  ..itemsFacetWriter.setItems([
     {'item_type': 'activity', 'activity_id': 1},
     {'item_type': 'activity', 'activity_id': 2},
     {'item_type': 'activity', 'activity_id': 3},
-  ];
+  ]);
 
 Future<void> _pump(WidgetTester tester, ProjectNotifier notifier) async {
   await tester.pumpWidget(MaterialApp(

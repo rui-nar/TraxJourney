@@ -72,8 +72,8 @@ ProjectNotifier _notifierWithSegmentAtEnd() {
     'item_type': 'segment',
     'segment': {'id': 'segZ', 'segment_type': 'train', 'label': 'Train'},
   });
-  n.activities = acts;
-  n.items = items;
+  n.itemsFacetWriter.setActivities(acts);
+  n.itemsFacetWriter.setItems(items);
   return n;
 }
 

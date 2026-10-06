@@ -31,15 +31,15 @@ Map<String, dynamic> _activity({
 /// under test is the app's own and not a copy of it restated in the test.
 ProjectNotifier _notifierWith(List<Map<String, dynamic>> activities) {
   final notifier = ProjectNotifier(ProjectService());
-  notifier.activities = activities;
-  notifier.dayMeta = {
+  notifier.itemsFacetWriter.setActivities(activities);
+  notifier.itemsFacetWriter.setDayMeta({
     for (final a in activities)
       (a['start_date_local'] as String).substring(0, 10): <String, dynamic>{},
-  };
-  notifier.items = [
+  });
+  notifier.itemsFacetWriter.setItems([
     for (final a in activities)
       {'item_type': 'activity', 'activity_id': a['id']},
-  ];
+  ]);
   return notifier;
 }
 
@@ -79,7 +79,7 @@ void main() {
     test('a Strava-only trip offers one, so the sheet knows not to ask', () {
       final notifier = _notifierWith([_activity(day: '2024-06-01')]);
 
-      expect(notifier.availableSources, ['strava']);
+      expect(notifier.itemsFacet.availableSources, ['strava']);
     });
 
     test('a mixed trip offers both', () {
@@ -88,7 +88,7 @@ void main() {
         _activity(day: '2024-06-02', source: 'gpx'),
       ]);
 
-      expect(notifier.availableSources, ['gpx', 'strava']);
+      expect(notifier.itemsFacet.availableSources, ['gpx', 'strava']);
     });
   });
 

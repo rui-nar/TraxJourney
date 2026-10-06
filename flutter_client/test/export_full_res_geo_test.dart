@@ -93,14 +93,14 @@ void main() {
     // geometry to the exporter.
     final onScreen = dayRoutePoints(
       geo: n.geoFacet.geo,
-      items: n.items,
-      activities: n.activities,
+      items: n.itemsFacet.items,
+      activities: n.itemsFacet.activities,
       date: _day,
     );
     final forExport = dayRoutePoints(
       geo: await n.fullResGeoForExport(),
-      items: n.items,
-      activities: n.activities,
+      items: n.itemsFacet.items,
+      activities: n.itemsFacet.activities,
       date: _day,
     );
 

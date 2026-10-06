@@ -74,7 +74,7 @@ void main() {
     final activities = _activities(acts, 50);
 
     final notifier = ProjectNotifier(ProjectService());
-    notifier.activities = activities;
+    notifier.itemsFacetWriter.setActivities(activities);
     notifier.geoFacetWriter.replaceKeepingLod(geo);
 
     flatCoordsConversionCount = 0;
@@ -100,7 +100,7 @@ void main() {
     final activities = _activities(acts, 50);
 
     final notifier = ProjectNotifier(ProjectService());
-    notifier.activities = activities;
+    notifier.itemsFacetWriter.setActivities(activities);
     notifier.geoFacetWriter.replaceKeepingLod(geo);
 
     flatCoordsConversionCount = 0;
@@ -122,7 +122,7 @@ void main() {
     final small = _bytes(_geo(2, 10));
     final geo = await decodeGeoOffIsolate(small);
     final notifier = ProjectNotifier(ProjectService());
-    notifier.activities = _activities(2, 5);
+    notifier.itemsFacetWriter.setActivities(_activities(2, 5));
     notifier.geoFacetWriter.replaceKeepingLod(geo);
 
     flatCoordsConversionCount = 0;

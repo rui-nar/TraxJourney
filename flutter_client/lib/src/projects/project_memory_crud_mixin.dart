@@ -12,7 +12,7 @@ import '../api/client.dart';
 import '../core/project_ref.dart';
 import '../crypto/e2ee_crypto.dart' show EncryptedField;
 import '../crypto/encryption.dart';
-import '../crypto/undecrypted_fields.dart';
+import 'facets/project_facet.dart';
 import 'project_quota_mixin.dart';
 
 /// Thrown by [ProjectMemoryCrudMixin.fetchTranslation] when a memory is
@@ -28,9 +28,9 @@ int _optimisticMemoryIdCounter = 0;
 mixin ProjectMemoryCrudMixin on ChangeNotifier, ProjectQuotaMixin {
   // ── Abstract: project state (satisfied by ProjectNotifier fields) ─────────
   ProjectRef? get projectRef;
-  List<Map<String, dynamic>> get items;
-  set items(List<Map<String, dynamic>> v);
-  UndecryptedFields get undecryptedFields;
+  /// The content facet's writer — satisfied by ProjectNotifier's.
+  ItemsFacetWriter get itemsFacetWriter;
+  List<Map<String, dynamic>> get _items => itemsFacetWriter.facet.items;
   String? get error;
   set error(String? v);
 
@@ -76,14 +76,14 @@ mixin ProjectMemoryCrudMixin on ChangeNotifier, ProjectQuotaMixin {
       },
     };
     final insertAt = insertAfterIndex != null
-        ? (insertAfterIndex + 1).clamp(0, items.length)
-        : items.length;
+        ? (insertAfterIndex + 1).clamp(0, _items.length)
+        : _items.length;
     // New list object, not an in-place insert: map_panel's marker cache and
     // ProjectNotifier's dayStats/orderedDayKeys caches invalidate via
     // identical(items, _last...), which a same-object mutation never trips.
-    final newItems = List.of(items);
+    final newItems = List.of(_items);
     newItems.insert(insertAt, placeholder);
-    items = newItems;
+    itemsFacetWriter.setItems(newItems);
     notifyListeners();
     try {
       final encName = await encryption.protect(name);
@@ -103,11 +103,11 @@ mixin ProjectMemoryCrudMixin on ChangeNotifier, ProjectQuotaMixin {
       return true;
     } on Exception catch (e) {
       // Roll back the placeholder so a failed create leaves no phantom item.
-      items = items
+      itemsFacetWriter.setItems(_items
           .where((item) =>
               !(item['item_type'] == 'memory' &&
                 item['memory']?['id']?.toString() == tempId))
-          .toList();
+          .toList());
       error = errorMessage(e);
       notifyListeners();
       return false;
@@ -136,13 +136,13 @@ mixin ProjectMemoryCrudMixin on ChangeNotifier, ProjectQuotaMixin {
     final descriptionAsStored = keepStoredDescription &&
         description != null &&
         EncryptedField.isWellFormed(description);
-    if (!nameAsStored) undecryptedFields.remove('memory', memoryId, 'name');
+    if (!nameAsStored) itemsFacetWriter.forgetUndecrypted('memory', memoryId, 'name');
     if (!descriptionAsStored) {
-      undecryptedFields.remove('memory', memoryId, 'description');
+      itemsFacetWriter.forgetUndecrypted('memory', memoryId, 'description');
     }
     // New list + new item map, not an in-place mutation of the existing
     // item — see createMemory's comment above for why identity matters here.
-    final newItems = List.of(items);
+    final newItems = List.of(_items);
     for (var i = 0; i < newItems.length; i++) {
       final item = newItems[i];
       if (item['item_type'] == 'memory' &&
@@ -159,7 +159,7 @@ mixin ProjectMemoryCrudMixin on ChangeNotifier, ProjectQuotaMixin {
         break;
       }
     }
-    items = newItems;
+    itemsFacetWriter.setItems(newItems);
     notifyListeners();
     try {
       final encName = nameAsStored ? name : await encryption.protect(name);
@@ -183,11 +183,11 @@ mixin ProjectMemoryCrudMixin on ChangeNotifier, ProjectQuotaMixin {
   }
 
   void removeMemoryLocally(String memoryId) {
-    items = items
+    itemsFacetWriter.setItems(_items
         .where((item) =>
             !(item['item_type'] == 'memory' &&
               item['memory']?['id']?.toString() == memoryId))
-        .toList();
+        .toList());
     notifyListeners();
   }
 
@@ -274,7 +274,7 @@ mixin ProjectMemoryCrudMixin on ChangeNotifier, ProjectQuotaMixin {
       final newUuid = match?.group(1);
       if (newUuid == null) return null;
 
-      final newItems = List.of(items);
+      final newItems = List.of(_items);
       for (var i = 0; i < newItems.length; i++) {
         final item = newItems[i];
         if (item['item_type'] == 'memory' &&
@@ -289,7 +289,7 @@ mixin ProjectMemoryCrudMixin on ChangeNotifier, ProjectQuotaMixin {
           break;
         }
       }
-      items = newItems;
+      itemsFacetWriter.setItems(newItems);
       notifyListeners();
       return newUuid;
     } catch (_) {

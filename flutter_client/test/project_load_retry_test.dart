@@ -114,7 +114,7 @@ void main() {
     await notifier.load(_ref);
 
     expect(notifier.error, isNull, reason: 'a retried success is not an error');
-    expect(notifier.items, hasLength(1), reason: 'the panel has its items');
+    expect(notifier.itemsFacet.items, hasLength(1), reason: 'the panel has its items');
     expect(service.metaCalls, 2, reason: 'one failure, one retry');
   });
 
@@ -124,7 +124,7 @@ void main() {
 
     await notifier.load(_ref);
 
-    expect(notifier.items, hasLength(1));
+    expect(notifier.itemsFacet.items, hasLength(1));
     expect(service.metaCalls, 3);
     expect(service.lowResCalls, 1,
         reason: 'the low-res geo arrived first time and is not re-fetched');
@@ -151,7 +151,7 @@ void main() {
     await notifier.load(_ref);
 
     expect(service.metaCalls, 3, reason: 'first attempt plus two backoffs');
-    expect(notifier.items, isEmpty);
+    expect(notifier.itemsFacet.items, isEmpty);
     expect(notifier.error, isNotNull);
     expect(notifier.error, isNot(contains('TimeoutException')));
     expect(notifier.error, isNot(contains('Future not completed')));

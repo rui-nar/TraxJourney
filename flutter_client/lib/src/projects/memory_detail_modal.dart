@@ -388,7 +388,7 @@ class _MemoryDetailModalState extends State<_MemoryDetailModal> {
 
   // ── Navigation ────────────────────────────────────────────────────────────
 
-  List<Map<String, dynamic>> get _allMemories => widget.notifier.items
+  List<Map<String, dynamic>> get _allMemories => widget.notifier.itemsFacet.items
       .where((i) => i['item_type'] == 'memory')
       .map((i) => i['memory'] as Map<String, dynamic>?)
       .whereType<Map<String, dynamic>>()

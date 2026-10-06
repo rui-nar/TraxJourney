@@ -222,9 +222,9 @@ void main() {
     void hold() {
       notifier
         ..ref = const ProjectRef(name: 'Japan')
-        ..people = [
+        ..itemsFacetWriter.setPeople([
           {'id': 1}
-        ];
+        ]);
     }
 
     test('the first account it sees is not a change', () {
@@ -238,7 +238,7 @@ void main() {
       hold();
       notifier.onAuthChanged(null);
       expect(notifier.ref, isNull);
-      expect(notifier.people, isEmpty);
+      expect(notifier.itemsFacet.people, isEmpty);
     });
 
     test('another account clears it', () {

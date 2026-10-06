@@ -11,7 +11,7 @@ import 'package:traxjourney_client/src/projects/project_service.dart';
 void main() {
   ProjectNotifier notifierWith({required int activityId, String? source}) {
     final n = ProjectNotifier(ProjectService());
-    n.activities = [
+    n.itemsFacetWriter.setActivities([
       {
         'id': activityId,
         'type': 'Ride',
@@ -21,10 +21,10 @@ void main() {
         'start_date_local': '2026-06-01T08:00:00',
         if (source != null) 'source': source,
       },
-    ];
-    n.items = [
+    ]);
+    n.itemsFacetWriter.setItems([
       {'item_type': 'activity', 'activity_id': activityId},
-    ];
+    ]);
     return n;
   }
 

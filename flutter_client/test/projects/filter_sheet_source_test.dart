@@ -22,11 +22,11 @@ Map<String, dynamic> _activity({required int id, String? source}) => {
 
 ProjectNotifier _notifierWith(List<Map<String, dynamic>> activities) {
   final n = ProjectNotifier(ProjectService());
-  n.activities = activities;
-  n.items = [
+  n.itemsFacetWriter.setActivities(activities);
+  n.itemsFacetWriter.setItems([
     for (final a in activities)
       {'item_type': 'activity', 'activity_id': a['id']},
-  ];
+  ]);
   return n;
 }
 

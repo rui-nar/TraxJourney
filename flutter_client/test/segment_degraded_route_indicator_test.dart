@@ -38,9 +38,9 @@ Map<String, dynamic> _segment({
 
 ProjectNotifier _notifierWith(Map<String, dynamic> segment) {
   final n = ProjectNotifier(ProjectService());
-  n.items = [
+  n.itemsFacetWriter.setItems([
     {'item_type': 'segment', 'segment': segment},
-  ];
+  ]);
   return n;
 }
 

@@ -54,7 +54,7 @@ void main() {
     final service = _PhotoPollService(['a', 'b']);
     final notifier = ProjectNotifier(service)
       ..ref = _ref
-      ..items = [_memoryItem('mem-1', const [])];
+      ..itemsFacetWriter.setItems([_memoryItem('mem-1', const [])]);
     addTearDown(notifier.dispose);
 
     notifier.startPhotoPolling(_ref,
@@ -64,7 +64,7 @@ void main() {
     // getDetails throws if called, and _refreshMemoryPhotos swallows its own
     // errors — so the proof is that the merge still happened.
     expect(service.calls, greaterThanOrEqualTo(1));
-    expect((notifier.items[0]['memory'] as Map)['photos'], ['a', 'b']);
+    expect((notifier.itemsFacet.items[0]['memory'] as Map)['photos'], ['a', 'b']);
   });
 
   test('a memory goes from no photo to a thumbnail-able uuid', () async {
@@ -74,14 +74,14 @@ void main() {
     final service = _PhotoPollService(['uuid-late']);
     final notifier = ProjectNotifier(service)
       ..ref = _ref
-      ..items = [_memoryItem('mem-1', const [])];
+      ..itemsFacetWriter.setItems([_memoryItem('mem-1', const [])]);
     addTearDown(notifier.dispose);
 
     notifier.startPhotoPolling(_ref,
         interval: const Duration(milliseconds: 1), maxTicks: 1);
     await Future.delayed(const Duration(milliseconds: 50));
 
-    final mem = notifier.items[0]['memory'] as Map;
+    final mem = notifier.itemsFacet.items[0]['memory'] as Map;
     expect(mem['photos'], ['uuid-late']);
     // The rest of the memory survives the swap — the poll updates photos, it
     // does not replace the item with a photos-only stub.
@@ -92,10 +92,10 @@ void main() {
     final service = _PhotoPollService(['a', 'b']);
     final notifier = ProjectNotifier(service)
       ..ref = _ref
-      ..items = [_memoryItem('mem-1', const [])];
+      ..itemsFacetWriter.setItems([_memoryItem('mem-1', const [])]);
     addTearDown(notifier.dispose);
 
-    final originalItems = notifier.items;
+    final originalItems = notifier.itemsFacet.items;
 
     notifier.startPhotoPolling(_ref,
         interval: const Duration(milliseconds: 1), maxTicks: 1);
@@ -103,10 +103,10 @@ void main() {
     await Future.delayed(const Duration(milliseconds: 50));
 
     expect(service.calls, greaterThanOrEqualTo(1));
-    expect(identical(notifier.items, originalItems), isFalse,
+    expect(identical(notifier.itemsFacet.items, originalItems), isFalse,
         reason: 'a same-object mutation would leave MapPanel\'s '
             'identical(items, _lastItems) cache check blind to the change');
-    final mem = notifier.items[0]['memory'] as Map;
+    final mem = notifier.itemsFacet.items[0]['memory'] as Map;
     expect(mem['photos'], ['a', 'b']);
   });
 
@@ -114,23 +114,23 @@ void main() {
     final service = _PhotoPollService(['a']);
     final notifier = ProjectNotifier(service)
       ..ref = _ref
-      ..items = [_memoryItem('mem-1', const ['a'])];
+      ..itemsFacetWriter.setItems([_memoryItem('mem-1', const ['a'])]);
     addTearDown(notifier.dispose);
 
-    final originalItems = notifier.items;
+    final originalItems = notifier.itemsFacet.items;
 
     notifier.startPhotoPolling(_ref,
         interval: const Duration(milliseconds: 1), maxTicks: 1);
     await Future.delayed(const Duration(milliseconds: 50));
 
-    expect(identical(notifier.items, originalItems), isTrue);
+    expect(identical(notifier.itemsFacet.items, originalItems), isTrue);
   });
 
   test('polling stops at maxTicks', () async {
     final service = _PhotoPollService(['a']);
     final notifier = ProjectNotifier(service)
       ..ref = _ref
-      ..items = [_memoryItem('mem-1', const [])];
+      ..itemsFacetWriter.setItems([_memoryItem('mem-1', const [])]);
     addTearDown(notifier.dispose);
 
     notifier.startPhotoPolling(_ref,
@@ -144,7 +144,7 @@ void main() {
     final service = _PhotoPollService(['a']);
     final notifier = ProjectNotifier(service)
       ..ref = _ref
-      ..items = [_memoryItem('mem-1', const [])];
+      ..itemsFacetWriter.setItems([_memoryItem('mem-1', const [])]);
     addTearDown(notifier.dispose);
 
     // A budget far larger than this test's wall clock, so what stops the timer
@@ -172,7 +172,7 @@ void main() {
     final service = _PhotoPollService(['a']);
     final notifier = ProjectNotifier(service)
       ..ref = _ref
-      ..items = [_memoryItem('mem-1', const [])];
+      ..itemsFacetWriter.setItems([_memoryItem('mem-1', const [])]);
     addTearDown(notifier.dispose);
 
     notifier.startPhotoPolling(_ref, interval: const Duration(milliseconds: 1));

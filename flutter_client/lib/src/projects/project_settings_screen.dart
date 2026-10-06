@@ -126,15 +126,15 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
     });
     final n = context.read<ProjectNotifier>();
     _nameCtrl = TextEditingController(text: n.projectName ?? '');
-    final ts = n.tripStart;
+    final ts = n.itemsFacet.tripStart;
     if (ts != null) _tripStart = DateTime.tryParse(ts);
-    final te = n.tripEnd;
+    final te = n.itemsFacet.tripEnd;
     if (te != null) _tripEnd = DateTime.tryParse(te);
-    _optCtrls = n.sleepingOptions
+    _optCtrls = n.itemsFacet.sleepingOptions
         .map((opt) => TextEditingController(text: opt))
         .toList();
-    _optGroups = n.sleepingOptions
-        .map((opt) => n.sleepingOptionGroups[opt] ?? 'Other')
+    _optGroups = n.itemsFacet.sleepingOptions
+        .map((opt) => n.itemsFacet.sleepingOptionGroups[opt] ?? 'Other')
         .toList();
     _autoSync = n.autoSyncEnabled;
     _linkedPsTripId = n.linkedPsTripId;
@@ -150,7 +150,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
       for (final e in n.styleFacet.typeStyles.entries) e.key: Map<String, dynamic>.from(e.value)
     };
     _dayMeta = {
-      for (final e in n.dayMeta.entries)
+      for (final e in n.itemsFacet.dayMeta.entries)
         e.key: {
           ...e.value,
           if (e.value['tags'] is List)
@@ -165,10 +165,10 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
             'tags': List<String>.from(e.value['tags'] as List),
         }
     };
-    _counterNameCtrls = n.counters
+    _counterNameCtrls = n.itemsFacet.counters
         .map((c) => TextEditingController(text: c['name'] as String? ?? ''))
         .toList();
-    _counterStartCtrls = n.counters
+    _counterStartCtrls = n.itemsFacet.counters
         .map((c) => TextEditingController(text: (c['start'] ?? 0).toString()))
         .toList();
   }
@@ -305,10 +305,10 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
       // When the server can't be reached, every candidate counts as pinned:
       // nothing is deleted and the dialog says why. Falling back to the
       // caller-local set there is the bug itself.
-      final localPinned = contentDayKeys(n.activities, n.items);
+      final localPinned = contentDayKeys(n.itemsFacet.activities, n.itemsFacet.items);
       final localCandidates = {
         ..._dayMeta.keys,
-        ...n.orderedDayKeys(),
+        ...n.itemsFacet.orderedDayKeys(),
         ...localPinned,
       };
       // Days that can actually be removed are worth confirming on every save —
@@ -316,7 +316,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
       // once, when the end date is set or moved: nothing the dialog offers can
       // clear them, so raising it on an unrelated save (a colour tweak, say)
       // would nag forever and throw the edit away if the user cancels.
-      final endMoved = tripEndStr != n.tripEnd?.split('T').first;
+      final endMoved = tripEndStr != n.itemsFacet.tripEnd?.split('T').first;
       // Skip the round trip when its answer cannot matter: the end date hasn't
       // moved (so the stay-only half is suppressed) and nothing local sits past
       // it (so there is nothing to delete either). Otherwise every settings
@@ -437,10 +437,10 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
       for (final k in _initialDayMeta.keys)
         if (!dayMetaToSave.containsKey(k)) k,
     ];
-    final optionsChanged = !_sameValue(updatedOpts, n.sleepingOptions) ||
+    final optionsChanged = !_sameValue(updatedOpts, n.itemsFacet.sleepingOptions) ||
         updatedOpts.any((o) =>
-            updatedGroups[o] != (n.sleepingOptionGroups[o] ?? 'Other'));
-    final countersChanged = !_sameValue(updatedCounters, n.counters);
+            updatedGroups[o] != (n.itemsFacet.sleepingOptionGroups[o] ?? 'Other'));
+    final countersChanged = !_sameValue(updatedCounters, n.itemsFacet.counters);
     n.saveDayMeta(
       days: changedDays,
       delete: deletedDays,

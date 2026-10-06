@@ -362,7 +362,7 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
     final ref = widget.projectRef;
 
     final notifier = context.read<ProjectNotifier>();
-    final hasMemoryPhotos = notifier.items.any(
+    final hasMemoryPhotos = notifier.itemsFacet.items.any(
       (i) =>
           i['item_type'] == 'memory' &&
           ((i['memory']?['photos'] as List?)?.isNotEmpty ?? false),
@@ -464,7 +464,7 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
       barrierDismissible: false,
       builder: (_) => VideoConfigDialog(
         projectRef: widget.projectRef,
-        activities: () => notifier.activities,
+        activities: () => notifier.itemsFacet.activities,
         onStarted: (jobId) {
           _videoStatusNotifier.start(ref: widget.projectRef, jobId: jobId);
           messenger.showSnackBar(const SnackBar(
@@ -556,7 +556,7 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
   List<Map<String, dynamic>> _posterMemoriesPayload() {
     final notifier = context.read<ProjectNotifier>();
     return [
-      for (final item in notifier.items)
+      for (final item in notifier.itemsFacet.items)
         if (item['item_type'] == 'memory' && item['memory'] is Map)
           posterMemoryJson((item['memory'] as Map).cast<String, dynamic>()),
     ];
@@ -667,8 +667,8 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
         projectRef: widget.projectRef,
         // So the date picker opens on the trip rather than on today, and a date
         // outside it is flagged before it silently extends the trip.
-        tripStart: notifier.tripStart,
-        tripEnd: notifier.tripEnd,
+        tripStart: notifier.itemsFacet.tripStart,
+        tripEnd: notifier.itemsFacet.tripEnd,
         initialFile: initialFile,
       ),
     );
@@ -859,7 +859,7 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
                   ),
                 ),
                 tooltip: 'Filter',
-                onPressed: !n.hasFilterableContent
+                onPressed: !n.itemsFacet.hasFilterableContent
                     ? null
                     : () => _showFilterSheet(context, n, readOnly: false),
               );
@@ -1177,7 +1177,7 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
                           child: Selector<ProjectNotifier,
                               (List<Map<String, dynamic>>, Object?, String?, Set<String>)>(
                             selector: (_, n) => (
-                              n.activities,
+                              n.itemsFacet.activities,
                               n.selectionFacet.selectedActivityId as Object?,
                               n.selectionFacet.selectedDay,
                               n.selectionFacet.selectedDays,
@@ -1284,7 +1284,7 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
                     child: Selector<ProjectNotifier,
                         (List<Map<String, dynamic>>, Object?, String?)>(
                       selector: (_, n) => (
-                        n.activities,
+                        n.itemsFacet.activities,
                         n.selectionFacet.selectedActivityId as Object?,
                         n.selectionFacet.selectedDay,
                       ),

@@ -156,7 +156,7 @@ class _EncounterDialogState extends State<EncounterDialog> {
   /// mirrors the server's `_resolve_geo` start-of-day resolution
   /// (`api/encounters.py`) so the map picker zooms to the same place.
   ({double lat, double lon})? _dayLatLng(String dateIso) {
-    final dayActs = widget.notifier.activities.where((a) {
+    final dayActs = widget.notifier.itemsFacet.activities.where((a) {
       final ds = (a['start_date_local'] as String?)?.split('T').first;
       return ds == dateIso;
     }).toList()
@@ -304,8 +304,8 @@ class _EncounterDialogState extends State<EncounterDialog> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final isEdit = widget.editEntry != null;
-    final people = widget.notifier.people;
-    final groups = widget.notifier.groups;
+    final people = widget.notifier.itemsFacet.people;
+    final groups = widget.notifier.itemsFacet.groups;
 
     // (kind, id) so a person id and a group id never collide as raw ints.
     final selected = _groupId != null

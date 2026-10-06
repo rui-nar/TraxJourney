@@ -56,7 +56,7 @@ class _GroupFormDialogState extends State<_GroupFormDialog> {
     final gid = _groupId;
     if (gid == null) return {};
     return {
-      for (final p in membersOfGroup(widget.notifier.people, gid))
+      for (final p in membersOfGroup(widget.notifier.itemsFacet.people, gid))
         (p['id'] as num).toInt(),
     };
   }
@@ -221,7 +221,7 @@ class _GroupFormDialogState extends State<_GroupFormDialog> {
   }
 
   String _memberName(int id) {
-    for (final p in widget.notifier.people) {
+    for (final p in widget.notifier.itemsFacet.people) {
       if (p['id'] == id) return personDisplayName(p);
     }
     return 'Unknown';
@@ -249,7 +249,7 @@ class _MembersPickerState extends State<_MembersPicker> {
 
   @override
   Widget build(BuildContext context) {
-    final people = widget.notifier.people;
+    final people = widget.notifier.itemsFacet.people;
     return AlertDialog(
       title: const Text('Members'),
       content: SizedBox(

@@ -83,7 +83,7 @@ void main() {
 
   testWidgets('selecting a person and saving sends personId, no groupId',
       (tester) async {
-    final n = _FakeNotifier()..people = [person(1, 'Alice')];
+    final n = _FakeNotifier()..itemsFacetWriter.setPeople([person(1, 'Alice')]);
     await _pump(tester, n);
 
     await tester.tap(_picker);
@@ -102,8 +102,8 @@ void main() {
   testWidgets('selecting a group and saving sends groupId, no personId',
       (tester) async {
     final n = _FakeNotifier()
-      ..people = [person(1, 'Alice')]
-      ..groups = [group(10, 'Crew')];
+      ..itemsFacetWriter.setPeople([person(1, 'Alice')])
+      ..itemsFacetWriter.setGroups([group(10, 'Crew')]);
     await _pump(tester, n);
 
     await tester.tap(_picker);
@@ -121,8 +121,8 @@ void main() {
 
   testWidgets('section headers render but are not selectable', (tester) async {
     final n = _FakeNotifier()
-      ..people = [person(1, 'Alice')]
-      ..groups = [group(10, 'Crew')];
+      ..itemsFacetWriter.setPeople([person(1, 'Alice')])
+      ..itemsFacetWriter.setGroups([group(10, 'Crew')]);
     await _pump(tester, n);
 
     await tester.tap(_picker);
@@ -147,8 +147,8 @@ void main() {
   testWidgets('editing an existing group-encounter prefills the group',
       (tester) async {
     final n = _FakeNotifier()
-      ..people = [person(1, 'Alice')]
-      ..groups = [group(10, 'Crew')];
+      ..itemsFacetWriter.setPeople([person(1, 'Alice')])
+      ..itemsFacetWriter.setGroups([group(10, 'Crew')]);
     await _pump(tester, n, editEntry: {
       'id': 5,
       'group_id': 10,
@@ -170,14 +170,14 @@ void main() {
       "new encounter defaults the pin to the selected day's activity location, "
       'not the device GPS', (tester) async {
     final n = _FakeNotifier()
-      ..people = [person(1, 'Alice')]
-      ..activities = [
+      ..itemsFacetWriter.setPeople([person(1, 'Alice')])
+      ..itemsFacetWriter.setActivities([
         {
           'id': 1,
           'start_date_local': '2024-06-01T08:00:00',
           'start_latlng': [48.8566, 2.3522],
         },
-      ];
+      ]);
     await _pump(tester, n);
     await _settle(tester);
 
@@ -186,7 +186,7 @@ void main() {
 
   testWidgets('save is blocked with a snackbar when nothing is selected',
       (tester) async {
-    final n = _FakeNotifier()..people = [person(1, 'Alice')];
+    final n = _FakeNotifier()..itemsFacetWriter.setPeople([person(1, 'Alice')]);
     await _pump(tester, n);
 
     await tester.tap(_save);

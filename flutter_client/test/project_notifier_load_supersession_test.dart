@@ -275,7 +275,7 @@ void main() {
     final notifier = ProjectNotifier(svc);
 
     await notifier.load(_ref);
-    expect(notifier.activities.first['name'], 'meta');
+    expect(notifier.itemsFacet.activities.first['name'], 'meta');
 
     // Switch to holding getDetailsMeta() so the two reloadDetailsOnly()
     // calls below can be raced deterministically against each other —
@@ -293,7 +293,7 @@ void main() {
     // B's (current) response lands first with the real data.
     svc.metaCalls![1].complete(_metaNamed('CURRENT'));
     await callB;
-    expect(notifier.activities.first['name'], 'CURRENT');
+    expect(notifier.itemsFacet.activities.first['name'], 'CURRENT');
 
     // A's (stale) response lands late. Before this fix,
     // _silentReloadDetailsOnly guarded only its own trailing notify/error,
@@ -303,7 +303,7 @@ void main() {
     // fixed for.
     svc.metaCalls![0].complete(_metaNamed('STALE'));
     await callA;
-    expect(notifier.activities.first['name'], 'CURRENT',
+    expect(notifier.itemsFacet.activities.first['name'], 'CURRENT',
         reason: 'a stale reloadDetailsOnly() call must not be able to '
             'overwrite a newer one\'s already-applied data');
 
@@ -342,15 +342,15 @@ void main() {
 
     // B's (current) details land first with the real data.
     svc.detailsCalls[1].complete(_detailsNamed('CURRENT'));
-    await _pumpUntil(() => notifier.activities.first['name'] == 'CURRENT');
-    expect(notifier.activities.first['name'], 'CURRENT');
+    await _pumpUntil(() => notifier.itemsFacet.activities.first['name'] == 'CURRENT');
+    expect(notifier.itemsFacet.activities.first['name'], 'CURRENT');
 
     // A's (stale) details land late. Pre-fix, `_loadKey != ref` was the only
     // guard here and — same ref — it wouldn't have caught this: the merge
     // would silently overwrite 'CURRENT' with 'STALE'.
     svc.detailsCalls[0].complete(_detailsNamed('STALE'));
     await _pumpUntil(() => false, maxTicks: 10);
-    expect(notifier.activities.first['name'], 'CURRENT',
+    expect(notifier.itemsFacet.activities.first['name'], 'CURRENT',
         reason: 'the stale same-ref load\'s details fetch must not clobber '
             'the current load\'s already-merged activities');
   });
@@ -365,18 +365,18 @@ void main() {
     final svc = _RacingService();
     final notifier = _ExposedNotifier(svc);
     await notifier.load(_ref);
-    notifier.activities = [
+    notifier.itemsFacetWriter.setActivities([
       {'id': '1', 'name': 'OLD'}
-    ];
+    ]);
     final staleToken = notifier.token;
 
     // A second concurrent load() for the *same* ref supersedes staleToken —
     // currentLoadKey would still equal the ref (structural equality), so
     // only the token can tell these two calls apart.
     await notifier.load(_ref);
-    notifier.activities = [
+    notifier.itemsFacetWriter.setActivities([
       {'id': '1', 'name': 'CURRENT'}
-    ];
+    ]);
 
     // Applying with the stale token must be rejected outright — not even the
     // activities merge should run (bug #3: it used to mutate unconditionally
@@ -384,13 +384,13 @@ void main() {
     await notifier.apply([
       {'id': '1', 'name': 'STALE'}
     ], ref: _ref, token: staleToken);
-    expect(notifier.activities.first['name'], 'CURRENT');
+    expect(notifier.itemsFacet.activities.first['name'], 'CURRENT');
 
     // Applying with the current token still works normally.
     await notifier.apply([
       {'id': '1', 'name': 'FRESH'}
     ], ref: _ref, token: notifier.token);
-    expect(notifier.activities.first['name'], 'FRESH');
+    expect(notifier.itemsFacet.activities.first['name'], 'FRESH');
 
     // Drain both load() calls' still-pending Phase 2 fetches so nothing is
     // left hanging past the end of the test. getGeo() first — getDetails()

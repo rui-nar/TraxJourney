@@ -16,7 +16,7 @@ import 'package:traxjourney_client/src/projects/project_service.dart';
 void main() {
   ProjectNotifier notifierWithThreeDays() {
     final n = ProjectNotifier(ProjectService());
-    n.activities = [
+    n.itemsFacetWriter.setActivities([
       {
         'id': 1,
         'distance': 10000, // 10 km
@@ -29,15 +29,15 @@ void main() {
         'total_elevation_gain': 100,
         'start_date_local': '2026-06-03T08:00:00',
       },
-    ];
-    n.items = [
+    ]);
+    n.itemsFacetWriter.setItems([
       {'item_type': 'activity', 'activity_id': 1},
       {
         'item_type': 'memory',
         'memory': {'id': 1, 'date': '2026-06-02'},
       },
       {'item_type': 'activity', 'activity_id': 2},
-    ];
+    ]);
     return n;
   }
 

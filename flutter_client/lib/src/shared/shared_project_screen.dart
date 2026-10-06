@@ -394,7 +394,7 @@ class _SharedProjectViewState extends State<_SharedProjectView>
     if (!pn.isMetaLoaded) return;
     _deepLinkHandled = true;
 
-    final match = pn.items.firstWhere(
+    final match = pn.itemsFacet.items.firstWhere(
       (i) =>
           i['item_type'] == 'memory' &&
           (i['memory'] as Map?)?['public_id'] == widget.initialMemoryPublicId,
@@ -444,8 +444,8 @@ class _SharedProjectViewState extends State<_SharedProjectView>
                 MaterialPageRoute(
                   builder: (_) => ProjectStatsScreen(
                     projectName: notifier.projectName ?? '',
-                    availableTags: notifier.availableTags,
-                    sleepingOptionGroups: notifier.sleepingOptionGroups,
+                    availableTags: notifier.itemsFacet.availableTags,
+                    sleepingOptionGroups: notifier.itemsFacet.sleepingOptionGroups,
                     service: notifier.service,
                   ),
                 ),
@@ -485,7 +485,7 @@ class _SharedProjectViewState extends State<_SharedProjectView>
                       final selectedId = notifier.selectionFacet.selectedActivityId;
                       final elevChart = notifier.isElevationLoaded
                           ? ElevationChart(
-                              activities: notifier.activities,
+                              activities: notifier.itemsFacet.activities,
                               selectedActivityId: selectedId,
                               track: selectedId == null
                                   ? notifier.fullTrack
@@ -646,7 +646,7 @@ class _ReadOnlyActivityList extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final activities = notifier.activities;
+    final activities = notifier.itemsFacet.activities;
 
     if (activities.isEmpty) {
       return Center(

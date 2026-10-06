@@ -12,7 +12,7 @@ import 'package:traxjourney_client/src/projects/project_service.dart';
 void main() {
   ProjectNotifier notifierWith({required int activityId, String name = 'Ride'}) {
     final n = ProjectNotifier(ProjectService());
-    n.activities = [
+    n.itemsFacetWriter.setActivities([
       {
         'id': activityId,
         'type': 'Ride',
@@ -22,10 +22,10 @@ void main() {
         'start_date_local': '2026-06-01T08:00:00',
         'manual': activityId < 0,
       },
-    ];
-    n.items = [
+    ]);
+    n.itemsFacetWriter.setItems([
       {'item_type': 'activity', 'activity_id': activityId},
-    ];
+    ]);
     return n;
   }
 
@@ -82,7 +82,7 @@ void main() {
     final service = _RecordingService();
     final notifier = ProjectNotifier(service);
     notifier.ref = const ProjectRef(name: 'trip');
-    notifier.activities = [
+    notifier.itemsFacetWriter.setActivities([
       {
         'id': -7,
         'type': 'Ride',
@@ -92,17 +92,17 @@ void main() {
         'start_date_local': '2026-06-01T08:00:00',
         'manual': true,
       },
-    ];
-    notifier.items = [
+    ]);
+    notifier.itemsFacetWriter.setItems([
       {'item_type': 'activity', 'activity_id': -7},
-    ];
+    ]);
     await pumpPanel(tester, notifier);
 
     await tester.tap(find.byKey(const ValueKey('del_local_-7')));
     await tester.pump();
 
     // Optimistic removal happens immediately.
-    expect(notifier.items, isEmpty);
+    expect(notifier.itemsFacet.items, isEmpty);
 
     // The confirm (real delete) fires after the undo window elapses.
     await tester.pump(const Duration(milliseconds: 6000));
@@ -124,18 +124,18 @@ void main() {
     final service = _RefusingService(tail, item);
     final notifier = ProjectNotifier(service);
     notifier.ref = const ProjectRef(name: 'trip');
-    notifier.activities = [Map.of(tail)];
-    notifier.items = [Map.of(item)];
+    notifier.itemsFacetWriter.setActivities([Map.of(tail)]);
+    notifier.itemsFacetWriter.setItems([Map.of(item)]);
     await pumpPanel(tester, notifier);
 
     await tester.tap(find.byKey(const ValueKey('del_local_-7')));
     await tester.pump();
-    expect(notifier.items, isEmpty);
+    expect(notifier.itemsFacet.items, isEmpty);
 
     await tester.pump(const Duration(milliseconds: 6000));
     await tester.pump();
 
-    expect(notifier.items, [item]);
+    expect(notifier.itemsFacet.items, [item]);
     expect(notifier.error, _RefusingService.detail);
     expect(find.text(_RefusingService.detail), findsOneWidget);
   });

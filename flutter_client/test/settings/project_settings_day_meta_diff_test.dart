@@ -89,9 +89,9 @@ ProjectNotifier _notifier(Map<String, Map<String, dynamic>> dayMeta,
         {String? tripEnd}) =>
     ProjectNotifier(ProjectService())
       ..ref = const ProjectRef(name: 'Trip')
-      ..tripStart = '2026-06-01'
-      ..tripEnd = tripEnd
-      ..dayMeta = dayMeta;
+      ..itemsFacetWriter.setTripStart('2026-06-01')
+      ..itemsFacetWriter.setTripEnd(tripEnd)
+      ..itemsFacetWriter.setDayMeta(dayMeta);
 
 Future<void> _frames(WidgetTester tester, [int n = 8]) async {
   for (var i = 0; i < n; i++) {
@@ -279,8 +279,8 @@ void main() {
         '2026-06-13': {'note': 'mine'}
       });
 
-      expect(n.dayMeta['2026-06-12']?['note'], 'from the other phone');
-      expect(n.dayMeta['2026-06-13']?['note'], 'mine');
+      expect(n.itemsFacet.dayMeta['2026-06-12']?['note'], 'from the other phone');
+      expect(n.itemsFacet.dayMeta['2026-06-13']?['note'], 'mine');
     });
 
     test('saving a note keeps the carousel tiles up to today (R1-2)', () async {
@@ -288,11 +288,11 @@ void main() {
       final twoAgo = today.subtract(const Duration(days: 2));
       final n = ProjectNotifier(ProjectService())
         ..ref = const ProjectRef(name: 'Trip')
-        ..tripStart = _ymd(twoAgo)
-        ..activities = [
+        ..itemsFacetWriter.setTripStart(_ymd(twoAgo))
+        ..itemsFacetWriter.setActivities([
           {'start_date_local': '${_ymd(twoAgo)}T08:00:00'}
-        ]
-        ..dayMeta = {_ymd(twoAgo): <String, dynamic>{}};
+        ])
+        ..itemsFacetWriter.setDayMeta({_ymd(twoAgo): <String, dynamic>{}});
       // The server stores only the one day; the gap days live in memory.
       patchResponse = {
         _ymd(twoAgo): {'note': 'hi'}
@@ -301,10 +301,10 @@ void main() {
         _ymd(twoAgo): {'note': 'hi'}
       });
 
-      expect(n.dayMeta.keys, contains(_ymd(today)));
-      expect(n.dayMeta.keys,
+      expect(n.itemsFacet.dayMeta.keys, contains(_ymd(today)));
+      expect(n.itemsFacet.dayMeta.keys,
           contains(_ymd(today.subtract(const Duration(days: 1)))));
-      expect(n.dayMeta[_ymd(twoAgo)]?['note'], 'hi');
+      expect(n.itemsFacet.dayMeta[_ymd(twoAgo)]?['note'], 'hi');
     });
 
     test('a failed PATCH reloads day-meta and sets the error', () async {
@@ -317,7 +317,7 @@ void main() {
         '2026-06-13': {'note': 'optimistic'}
       });
 
-      expect(n.dayMeta['2026-06-13']?['note'], 'server copy');
+      expect(n.itemsFacet.dayMeta['2026-06-13']?['note'], 'server copy');
       expect(n.error, isNotNull);
       expect(dayMetaWrites.where((w) => w.method == 'PUT'), isEmpty);
     });
@@ -336,7 +336,7 @@ void main() {
       final sent = puts.single.body['day_meta'] as Map<String, dynamic>;
       expect(sent['2026-06-13'], {'note': 'kept'});
       expect(sent.keys, isNot(contains('2026-06-14')));
-      expect(n.dayMeta['2026-06-13']?['note'], 'kept');
+      expect(n.itemsFacet.dayMeta['2026-06-13']?['note'], 'kept');
       expect(n.error, isNull);
     });
 
@@ -354,7 +354,7 @@ void main() {
       // What load() does synchronously, then trip B's /meta lands.
       n
         ..ref = const ProjectRef(name: 'Other')
-        ..dayMeta = _days({'2026-07-01': [], '2026-07-02': []});
+        ..itemsFacetWriter.setDayMeta(_days({'2026-07-01': [], '2026-07-02': []}));
       patchGate!.complete();
       await save;
 
@@ -368,8 +368,8 @@ void main() {
       expect(sent.keys, isNot(contains('2026-07-01')));
       expect(sent.keys, isNot(contains('2026-07-02')));
       // B's state is left alone.
-      expect(n.dayMeta.keys, containsAll(['2026-07-01', '2026-07-02']));
-      expect(n.dayMeta.keys, isNot(contains('2026-06-13')));
+      expect(n.itemsFacet.dayMeta.keys, containsAll(['2026-07-01', '2026-07-02']));
+      expect(n.itemsFacet.dayMeta.keys, isNot(contains('2026-06-13')));
     });
 
     test("a 405 after another account signed in sends no PUT (I1-R3-2)",
