@@ -259,7 +259,7 @@ void main() {
       },
     ]);
 
-    expect(_moved(before, _versions(n)), {'items', 'activities'});
+    expect(_moved(before, _versions(n)), {'items', 'activities', 'elevation'});
     expect(n.itemsFacet.items, same(list));
     expect(n.itemsFacet.activities.single['elevation_profile'], hasLength(3));
   });

@@ -54,9 +54,9 @@ void main() {
     await notifier.buildFullTrack();
 
     final expected = buildFullTrackResult((geo: geo, activities: activities));
-    expect(notifier.fullTrack, expected.fullTrack);
-    expect(notifier.perActivityTracks['1'], expected.perActivityTracks['1']);
-    expect(notifier.fullTrack, isNotEmpty);
+    expect(notifier.elevationFacet.fullTrack, expected.fullTrack);
+    expect(notifier.elevationFacet.perActivityTracks['1'], expected.perActivityTracks['1']);
+    expect(notifier.elevationFacet.fullTrack, isNotEmpty);
   });
 
   test('_buildFullTrackGen is bumped on every call, inline branch included',
@@ -109,14 +109,14 @@ void main() {
     await notifier.buildFullTrack();
 
     final expectedSmall = buildFullTrackResult((geo: smallGeo, activities: smallActivities));
-    expect(notifier.fullTrack, expectedSmall.fullTrack,
+    expect(notifier.elevationFacet.fullTrack, expectedSmall.fullTrack,
         reason: 'the inline call must win immediately');
 
     // Now let the stale large-trip compute() resolve.
     await stalePending;
-    expect(notifier.fullTrack, expectedSmall.fullTrack,
+    expect(notifier.elevationFacet.fullTrack, expectedSmall.fullTrack,
         reason: 'the stale large-trip result must not overwrite the newer '
             'small-trip one once it resolves');
-    expect(notifier.perActivityTracks.containsKey('large'), isFalse);
+    expect(notifier.elevationFacet.perActivityTracks.containsKey('large'), isFalse);
   });
 }

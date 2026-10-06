@@ -488,10 +488,10 @@ class _SharedProjectViewState extends State<_SharedProjectView>
                               activities: notifier.itemsFacet.activities,
                               selectedActivityId: selectedId,
                               track: selectedId == null
-                                  ? notifier.fullTrack
-                                  : notifier.perActivityTracks[
+                                  ? notifier.elevationFacet.fullTrack
+                                  : notifier.elevationFacet.perActivityTracks[
                                           selectedId.toString()] ??
-                                      notifier.fullTrack,
+                                      notifier.elevationFacet.fullTrack,
                               onCursorChanged: (pos) =>
                                   notifier.elevationCursorNotifier.value = pos,
                               mapCursorNotifier: notifier.mapCursorDistNotifier,

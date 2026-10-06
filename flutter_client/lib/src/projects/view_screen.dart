@@ -645,9 +645,9 @@ class _ViewLayout extends StatelessWidget {
                 notifier.elevationCursorNotifier.value = pos,
             mapCursorNotifier: notifier.mapCursorDistNotifier,
             track: selActId != null
-                ? notifier.perActivityTracks[selActId.toString()] ??
-                    notifier.fullTrack
-                : notifier.fullTrack,
+                ? notifier.elevationFacet.perActivityTracks[selActId.toString()] ??
+                    notifier.elevationFacet.fullTrack
+                : notifier.elevationFacet.fullTrack,
             color: notifier.styleFacet.effectiveElevationChartColor,
           )
         : const ElevationLoadingPlaceholder();
