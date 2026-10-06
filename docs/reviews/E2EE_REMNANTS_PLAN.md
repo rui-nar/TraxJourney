@@ -473,3 +473,26 @@ Owner decisions (2026-10-06): integrated-review table approved as is; the plan's
 - Outcome: open
 
 Owner decision (2026-10-06): keep shared rides readable — decision 15 added (server refuses envelopes on rows another user's trip references; client skips and repairs). Units U16 (wave 6), U17 + U10 second fix (wave 7).
+
+## Integrated diff, round 3 — 2026-10-06, reviewed 05e0df37..1c28a8da (decision 15 fixes only)
+
+### I3-1 — The shared-row repair never runs from a friend's trip; an already-encrypted ride imported there stays ciphertext (permanently if the importer drops it from their own trip)
+- Trigger: encrypted C has ride R enveloped in own trip T1 → C imports R into O's trip T2 → row kept enveloped → O sees ciphertext until C opens T1 unlocked; if C removes R from T1, nothing ever repairs it
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=L/shared (triage-corrected), confidence=verified
+- Decision: Fix now (D6) — needs the repair in the non-owner branch and a CAS on a trip the caller edits but does not own (a write without CAS would break decision 13)
+- Override: —
+- Outcome: open
+
+### I3-2 — Enable-screen notice counts shared rows as "imported by another traveller"
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6)
+- Override: —
+- Outcome: open
+
+### I3-3 — ENCRYPTION.md case 3 quotes the pre-U17 notice wording
+- Scores: trigger=concrete, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Override: —
+- Outcome: open
+
+Round 3 is the integrated review's last round under the cap (REVIEW.md §6); a fourth needs the owner's request.
