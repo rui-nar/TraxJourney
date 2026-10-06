@@ -172,7 +172,12 @@ trip you own. The pass:
   `project` (the trip's name), `owner` (the trip owner's id) and `lock_version`,
   so they are a compare-and-swap on that trip, which you may edit as a member
   (editor or above; any other caller gets 404). Envelopes under another key are
-  left alone, and a trip whose rows were already checked is not read again;
+  left alone. A checked row is remembered only for the current app session, per
+  user and activity, against the row's `/meta` signature (the static
+  `_sharedChecked` map): a changed row is read again, and so is every row after
+  a restart, including one with no polyline or profile, which is read once per
+  app session. A write a friend's trip refuses (404) is remembered the same way,
+  for that trip;
 - writes every row as a compare-and-swap on the trip's `lock_version`:
   `PUT /api/activities/{id}`, `PUT /api/memories/{id}` and
   `PUT /api/journal/{id}` take an optional `lock_version` (and, for activities,
