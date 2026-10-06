@@ -2391,14 +2391,16 @@ def update_activity_fields(
         # Bust the full-res geo cache for every project this activity appears
         # in — same as every other activity-mutating endpoint above — so a
         # subsequent (non-E2EE-client) geo load doesn't serve a stale cached
-        # response built from the pre-migration plaintext.
-        project_names = sess.exec(
-            select(DBProject.name).where(DBProject.id.in_(project_ids))
+        # response built from the pre-migration plaintext. Each trip is cached
+        # under its own owner, who may not be the caller (decision 15, I3-1).
+        holders = sess.exec(
+            select(DBProject.user_info_id, DBProject.name)
+            .where(DBProject.id.in_(project_ids))
         ).all() if project_ids else []
 
-    for pname in project_names:
-        bust_geo_cache(user_info_id, pname)
-        queue_stats_refresh(background_tasks, user_info_id, pname)
+    for trip_owner, pname in holders:
+        bust_geo_cache(trip_owner, pname)
+        queue_stats_refresh(background_tasks, trip_owner, pname)
 
     if cas_project_id is not None:
         return {"id": activity_id, "lock_version": expected_version + 1}

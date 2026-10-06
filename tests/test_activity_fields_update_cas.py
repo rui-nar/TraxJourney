@@ -282,6 +282,27 @@ def test_project_without_owner_stays_the_callers_own_trip(env):
     assert resp.json() == {"id": 111, "lock_version": 4}
 
 
+def test_repair_refreshes_each_trip_under_its_owner(env, monkeypatch):
+    """The friend's map and stats are cached under the friend's id: the
+    repair must refresh them there, not under the caller's."""
+    import api.activities as activities_mod
+    client, engine, ids = env
+    _join(engine, ids, ids["bobs"], "editor")
+    calls = []
+    monkeypatch.setattr(activities_mod, "bust_geo_cache",
+                        lambda owner, name: calls.append(("geo", owner, name)))
+    monkeypatch.setattr(activities_mod, "queue_stats_refresh",
+                        lambda bt, owner, name: calls.append(("stats", owner, name)))
+    resp = client.put("/api/activities/111",
+                      json={"summary_polyline": "abc", "project": "Bobs",
+                            "owner": ids["bob"], "lock_version": 20})
+    assert resp.status_code == 200, resp.text
+    assert sorted(calls) == sorted([
+        ("geo", ids["alice"], "Trip"), ("stats", ids["alice"], "Trip"),
+        ("geo", ids["bob"], "Bobs"), ("stats", ids["bob"], "Bobs"),
+    ])
+
+
 @pytest.mark.parametrize("cas", [{}, {"lock_version": 20}],
                          ids=["owner-alone", "owner-and-lock-version"])
 def test_owner_without_project_is_422(env, cas):
