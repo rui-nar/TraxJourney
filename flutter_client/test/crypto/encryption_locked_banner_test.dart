@@ -1,6 +1,7 @@
 /// The trip screen's encryption banner also says, on an unlocked device, how
 /// many of the trip's activities stay unencrypted because another traveller
-/// imported them (E2EE remnants decisions 6 and 14).
+/// imported them or their trip also holds them (E2EE remnants decisions 6, 14
+/// and 15).
 library;
 
 import 'package:flutter/material.dart';
@@ -14,7 +15,7 @@ import 'package:traxjourney_client/src/projects/project_service.dart';
 
 import 'encryption_service_test.dart' show FakeDeviceKeyStore, FakeEncryptionApi;
 
-const _one = '1 activity was imported by another traveller and stays unencrypted.';
+const _one = '1 activity is also used by another traveller and stays unencrypted.';
 
 Future<void> _pump(WidgetTester tester, Widget banner) => tester.pumpWidget(
     MaterialApp(home: Scaffold(body: Column(children: [banner]))));
@@ -38,7 +39,7 @@ void main() {
     count.value = 3;
     await tester.pump();
     expect(
-        find.text('3 activities were imported by another traveller and stay '
+        find.text('3 activities are also used by another traveller and stay '
             'unencrypted.'),
         findsOneWidget);
   });

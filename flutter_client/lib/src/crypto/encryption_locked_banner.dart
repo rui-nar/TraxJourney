@@ -4,8 +4,10 @@
 /// ([EncryptionBlockedNote]).
 ///
 /// On an unlocked device it instead says how many of the trip's activities
-/// could not be encrypted (E2EE remnants decisions 6 and 14): rows imported by
-/// another traveller, which the server will not let this account encrypt.
+/// could not be encrypted (E2EE remnants decisions 6, 14 and 15): rows
+/// imported by another traveller, which the server will not let this account
+/// encrypt, and rows another traveller's trip also holds, which stay readable
+/// to that trip.
 ///
 /// The trip screen mounts [EncryptionLockedBanner] unconditionally; the
 /// banner decides on its own whether it shows, from the service's state.
@@ -75,8 +77,9 @@ class EncryptionLockedBanner extends StatelessWidget {
   }
 }
 
-/// "N activities were imported by another traveller and stay unencrypted",
-/// while N > 0.
+/// "N activities are also used by another traveller and stay unencrypted",
+/// while N > 0: one wording for both reasons, a ride they imported or one in
+/// their trip.
 class _UnencryptableNotice extends StatelessWidget {
   final ValueListenable<int> count;
 
@@ -91,9 +94,9 @@ class _UnencryptableNotice extends StatelessWidget {
         return MaterialBanner(
           padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
           content: Text(n == 1
-              ? '1 activity was imported by another traveller and stays '
+              ? '1 activity is also used by another traveller and stays '
                   'unencrypted.'
-              : '$n activities were imported by another traveller and stay '
+              : '$n activities are also used by another traveller and stay '
                   'unencrypted.'),
           leading: Icon(Icons.lock_open, size: 20, color: _warning(context)),
           // A MaterialBanner needs an action; there is nothing to do here.
