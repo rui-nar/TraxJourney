@@ -266,7 +266,7 @@ class ProjectDataCache {
   Future<bool> hasFullGeoOnDisk(ProjectRef ref) =>
       store.cacheStoreHasFullGeo(_key(ref));
 
-  /// The geometry writes take [lockVersion], [lockVersionOf] as read before
+  /// The geometry and details writes take [lockVersion], [lockVersionOf] as read before
   /// the fetch, and are dropped when the cache no longer holds that version.
   void writeLowResGeo(ProjectRef ref, Map<String, dynamic> data,
           {int? scope, int? lockVersion}) =>
@@ -274,8 +274,9 @@ class ProjectDataCache {
   void writeFullGeo(ProjectRef ref, Map<String, dynamic> data,
           {int? scope, int? lockVersion}) =>
       _writeHeavy(ref, 'fullGeo', data, scope, lockVersion);
-  void writeFullDetails(ProjectRef ref, Map<String, dynamic> data, {int? scope}) =>
-      _writeHeavy(ref, 'fullDetails', data, scope, null);
+  void writeFullDetails(ProjectRef ref, Map<String, dynamic> data,
+          {int? scope, int? lockVersion}) =>
+      _writeHeavy(ref, 'fullDetails', data, scope, lockVersion);
 
   /// Records [data] as the offline full-res geo for [ref] on disk **only**,
   /// deliberately not in L1 (issue #317).

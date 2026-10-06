@@ -87,6 +87,8 @@ class ProjectService {
       if (cached != null) return cached;
     }
     return _dedupFetch('details:${ref.ownerId ?? 0}:${ref.name}', () async {
+      // The version the answer is for, read before the request (issue #379).
+      final lockVersion = projectDataCache.lockVersionOf(ref);
       // Bytes, then a worker-isolate parse: this is the ~12 MB payload whose
       // inline jsonDecode is the single largest UI-isolate stall of a cold
       // open (issue #292). _dedupFetch's own doc comment above already named
@@ -97,7 +99,8 @@ class ProjectService {
       perfSpans.note('details', perfSizeLabel(bytes.length));
       final data = await perfSpans.stage(
           'decode_details', () => heavy.decodeJsonMapOffIsolate(bytes));
-      projectDataCache.writeFullDetails(ref, data, scope: scope);
+      projectDataCache.writeFullDetails(ref, data,
+          scope: scope, lockVersion: lockVersion);
       return data;
     });
   }
