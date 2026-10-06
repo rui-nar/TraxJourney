@@ -30,7 +30,7 @@ from src.models.track_edit import TrackPoint, recompute_track_metrics
 from src.project.project_repo import ProjectRepo
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
-_PREV_REV = "87200bcb9342"      # down_revision of the migration
+_PREV_REV = "4b9d2e7a1c63"      # down_revision of the migration
 _REV = "c4e2a9f1b7d3"
 
 ENV = "v1.a2V5.Y2lwaGVy"

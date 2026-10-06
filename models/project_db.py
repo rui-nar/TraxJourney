@@ -412,6 +412,11 @@ class DBMemory(sqlmodel.SQLModel, table=True):
             sqlite_where=text("polarsteps_step_id IS NOT NULL"),
             postgresql_where=text("polarsteps_step_id IS NOT NULL"),
         ),
+        # AUTOINCREMENT: SQLite would otherwise hand a deleted memory's id to
+        # the next one created, and a photo write still in flight for the
+        # deleted one would land in it (#237/#511 plan D4c). No effect on
+        # Postgres, whose sequences never reuse.
+        {"sqlite_autoincrement": True},
     )
 
     id: Optional[int] = sqlmodel.Field(default=None, primary_key=True)
@@ -426,6 +431,9 @@ class DBMemory(sqlmodel.SQLModel, table=True):
     time: Optional[str] = sqlmodel.Field(default=None)   # "HH:MM"
     description: Optional[str] = sqlmodel.Field(default=None)
     photos_json: str = sqlmodel.Field(default="[]")  # JSON array of base UUID strings
+    # Photo placement state {"epoch": int, "ranks": {uuid: int}}; NULL reads as
+    # epoch 0, no ranks. See api/photo_order.py.
+    photo_order_json: Optional[str] = sqlmodel.Field(default=None)
     geo_mode: str = sqlmodel.Field(default="start_of_day")
     lat: Optional[float] = sqlmodel.Field(default=None)
     lon: Optional[float] = sqlmodel.Field(default=None)
@@ -460,6 +468,9 @@ class DBJournalEntry(sqlmodel.SQLModel, table=True):
             sqlite_where=text("client_token IS NOT NULL"),
             postgresql_where=text("client_token IS NOT NULL"),
         ),
+        # AUTOINCREMENT: as for DBMemory, a deleted entry's id must never be
+        # handed to the next one (#237/#511 plan D4c).
+        {"sqlite_autoincrement": True},
     )
 
     id: Optional[int] = sqlmodel.Field(default=None, primary_key=True)
@@ -469,6 +480,9 @@ class DBJournalEntry(sqlmodel.SQLModel, table=True):
     time: Optional[str] = sqlmodel.Field(default=None)
     description: Optional[str] = sqlmodel.Field(default=None)
     photos_json: str = sqlmodel.Field(default="[]")
+    # Photo placement state {"epoch": int, "ranks": {uuid: int}}; NULL reads as
+    # epoch 0, no ranks. See api/photo_order.py.
+    photo_order_json: Optional[str] = sqlmodel.Field(default=None)
     geo_mode: str = sqlmodel.Field(default="start_of_day")
     lat: Optional[float] = sqlmodel.Field(default=None)
     lon: Optional[float] = sqlmodel.Field(default=None)
