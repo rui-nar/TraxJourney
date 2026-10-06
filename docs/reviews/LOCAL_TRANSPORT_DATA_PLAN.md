@@ -320,3 +320,23 @@ Answer (owner, 2026-10-06): 20 GB free on the VPS, so bus for all 49 regions is 
 - Guard: —
 - Override: user: Fix now — the rollback steps belong in §9 before part 2 ships, as for R2-6
 - Outcome: open
+
+## Integrated review — Round 3 — 2026-10-06, reviewed at 60b630ae (F10 only; last round under the cap)
+
+### I3-1 — §9 case 1 says the plain fetch is all it takes to roll back to part 1, but with ferry/bus published it rebuilds Germany's bus store with the pre-F3 builder
+- Trigger: RAIL_PUBLISH_LAYERS includes ferry/bus, a refresh has run, the image is rolled back to part 1 and the case-1 command run → part 1 rebuilds ferry/bus stores too → Germany bus OOM in the 768 MB `docker compose run` → manifest never rewritten, rail stores after Germany stay schema 4 and refused → those trains stay on Overpass
+- Scores: trigger=plausible, impact=degraded-ux, detect=logged (triager: corrected from user-visible), later=cheap, fix=S/local, confidence=inferred
+- Decision: Defer (D10) — not a D2 duplicate of I1-2 or I2-1
+- Revisit when: before RAIL_PUBLISH_LAYERS is switched to include ferry or bus, when a rollback from part 2 to part 1 is considered, or a part-1 fetch logs an OOM on a bus store — case 1 needs `--tag <last release with no ferry/bus entries>`
+- Guard: —
+- Override: —
+- Outcome: open
+
+### I3-2 — §9 case 2 ties `--tag` to "releases with ferry and bus layers", but part 2's workflow writes manifest schema 3 for every release
+- Trigger: part 2 on main with RAIL_PUBLISH_LAYERS unset; rollback to a pre-U8 image; fetch run without `--tag` → "manifest schema 3, expected 2", nothing installed, trains on Overpass until the operator finds the condition is wrong
+- Scores: trigger=plausible, impact=degraded-ux (triager: corrected from wrong-visible), detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: before part 2 merges to main, or a rollback to a store-schema-2 image is considered — reword to "once part 2's workflow has published any release"
+- Guard: —
+- Override: —
+- Outcome: open
