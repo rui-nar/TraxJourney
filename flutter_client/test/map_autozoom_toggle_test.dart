@@ -116,7 +116,7 @@ void _suite(String name, _Build build) {
 
       await tester.pumpWidget(build(n, c, false));
       await _settle(tester);
-      n.selectedDays = {'2026-05-02'};
+      n.selectionFacetWriter.setSelectedDays({'2026-05-02'});
       n.notifyListeners();
       await _settle(tester);
       // Auto-zoom is off: selecting does not move the camera.
@@ -157,7 +157,7 @@ void _suite(String name, _Build build) {
 
       await tester.pumpWidget(build(n, c, true));
       await _settle(tester);
-      n.selectedDays = {'2026-05-02'};
+      n.selectionFacetWriter.setSelectedDays({'2026-05-02'});
       n.notifyListeners();
       await _settle(tester);
       final before = c.mapController.camera;

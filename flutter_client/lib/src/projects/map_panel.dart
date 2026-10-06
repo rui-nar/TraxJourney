@@ -941,12 +941,12 @@ class SelectionStatsData {
 /// single-activity case (distance in metres → km, elevation already in metres).
 @visibleForTesting
 SelectionStatsData? computeSelectionStats(ProjectNotifier notifier) {
-  final selActId = notifier.selectedActivityId;
+  final selActId = notifier.selectionFacet.selectedActivityId;
   // Multi-select takes priority over single-day selection, same as the
   // polyline-highlighting "effectiveDays" logic below.
-  final selDays = notifier.selectedDays.isNotEmpty
-      ? notifier.selectedDays
-      : (notifier.selectedDay != null ? {notifier.selectedDay!} : <String>{});
+  final selDays = notifier.selectionFacet.selectedDays.isNotEmpty
+      ? notifier.selectionFacet.selectedDays
+      : (notifier.selectionFacet.selectedDay != null ? {notifier.selectionFacet.selectedDay!} : <String>{});
   if (selActId == null && selDays.isEmpty) return null;
 
   final orderedDays = notifier.orderedDayKeys();
@@ -1575,13 +1575,13 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
 
     // Recompute polylines only when geo, selection, or track style changes.
     final geo = notifier.geoFacet.geo;
-    final selActId = notifier.selectedActivityId;
-    final selSegId = notifier.selectedSegmentId;
-    final selDay = notifier.selectedDay;
-    final selDays = notifier.selectedDays;
-    final selMemId = notifier.selectedMemoryId;
-    final selJournalId = notifier.selectedJournalId;
-    final showJournals = notifier.showJournals;
+    final selActId = notifier.selectionFacet.selectedActivityId;
+    final selSegId = notifier.selectionFacet.selectedSegmentId;
+    final selDay = notifier.selectionFacet.selectedDay;
+    final selDays = notifier.selectionFacet.selectedDays;
+    final selMemId = notifier.selectionFacet.selectedMemoryId;
+    final selJournalId = notifier.selectionFacet.selectedJournalId;
+    final showJournals = notifier.selectionFacet.showJournals;
     final items = notifier.items;
     final trackColor = notifier.trackColor;
     final trackSecondaryColor = notifier.trackSecondaryColor;
@@ -1879,7 +1879,7 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
             ..._keyedMarkerLayer('segment-layer', true, _cachedSegmentMarkers),
             ..._keyedMarkerLayer(
                 'memories-layer', _showMemories, _cachedMemoryMarkers),
-            ..._keyedMarkerLayer('journal-layer', notifier.showJournals,
+            ..._keyedMarkerLayer('journal-layer', notifier.selectionFacet.showJournals,
                 _cachedJournalMarkers),
             ..._keyedMarkerLayer(
                 'encounters-layer',
@@ -2373,11 +2373,11 @@ class ManageMapPanelState extends State<ManageMapPanel>
     // Initialise "last" selection state from the current notifier values so that
     // a spurious selectionChanged2=true (which resets the fit flag) is never
     // triggered when this state is (re)created while a fit has already happened.
-    _lastSelectedId = widget.notifier.selectedActivityId;
-    _lastSelectedSegId = widget.notifier.selectedSegmentId;
-    _lastSelectedDay = widget.notifier.selectedDay;
-    _lastSelectedDays = Set.from(widget.notifier.selectedDays);
-    _lastSelectedMemId = widget.notifier.selectedMemoryId;
+    _lastSelectedId = widget.notifier.selectionFacet.selectedActivityId;
+    _lastSelectedSegId = widget.notifier.selectionFacet.selectedSegmentId;
+    _lastSelectedDay = widget.notifier.selectionFacet.selectedDay;
+    _lastSelectedDays = Set.from(widget.notifier.selectionFacet.selectedDays);
+    _lastSelectedMemId = widget.notifier.selectionFacet.selectedMemoryId;
   }
 
   @override
@@ -2568,13 +2568,13 @@ class ManageMapPanelState extends State<ManageMapPanel>
     var perfRebuiltLayers = false;
     final notifier = widget.notifier;
     final geo = notifier.geoFacet.geo;
-    final selActId = notifier.selectedActivityId;
-    final selSegId = notifier.selectedSegmentId;
-    final selDay = notifier.selectedDay;
-    final selDays = notifier.selectedDays;
-    final selMemId = notifier.selectedMemoryId;
-    final selJournalId2 = notifier.selectedJournalId;
-    final showJournals2 = notifier.showJournals;
+    final selActId = notifier.selectionFacet.selectedActivityId;
+    final selSegId = notifier.selectionFacet.selectedSegmentId;
+    final selDay = notifier.selectionFacet.selectedDay;
+    final selDays = notifier.selectionFacet.selectedDays;
+    final selMemId = notifier.selectionFacet.selectedMemoryId;
+    final selJournalId2 = notifier.selectionFacet.selectedJournalId;
+    final showJournals2 = notifier.selectionFacet.showJournals;
     final items = notifier.items;
     final trackColor = notifier.trackColor;
     final trackSecondaryColor2 = notifier.trackSecondaryColor;
@@ -2801,7 +2801,7 @@ class ManageMapPanelState extends State<ManageMapPanel>
             ..._keyedMarkerLayer('segment-layer', true, _cachedSegmentMarkers),
             ..._keyedMarkerLayer(
                 'memories-layer', _showMemories, _cachedMemoryMarkers),
-            ..._keyedMarkerLayer('journal-layer', notifier.showJournals,
+            ..._keyedMarkerLayer('journal-layer', notifier.selectionFacet.showJournals,
                 _cachedJournalMarkers),
             ..._keyedMarkerLayer(
                 'encounters-layer', true, _cachedEncounterMarkers),

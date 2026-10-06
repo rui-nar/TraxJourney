@@ -414,8 +414,8 @@ class _ActivityPanelState extends State<ActivityPanel> {
   @override
   void initState() {
     super.initState();
-    _prevSelectedActivityIdStr = widget.notifier.selectedActivityId?.toString();
-    _prevSelectedSegmentIdStr = widget.notifier.selectedSegmentId?.toString();
+    _prevSelectedActivityIdStr = widget.notifier.selectionFacet.selectedActivityId?.toString();
+    _prevSelectedSegmentIdStr = widget.notifier.selectionFacet.selectedSegmentId?.toString();
     widget.notifier.addListener(_onNotifierChanged);
     _refreshActivityById(widget.notifier.activities);
     _rebuildDisplayList(widget.notifier.items, widget.notifier.tripStart, widget.notifier.dayMeta);
@@ -433,8 +433,8 @@ class _ActivityPanelState extends State<ActivityPanel> {
     if (oldWidget.notifier != widget.notifier) {
       oldWidget.notifier.removeListener(_onNotifierChanged);
       widget.notifier.addListener(_onNotifierChanged);
-      _prevSelectedActivityIdStr = widget.notifier.selectedActivityId?.toString();
-      _prevSelectedSegmentIdStr = widget.notifier.selectedSegmentId?.toString();
+      _prevSelectedActivityIdStr = widget.notifier.selectionFacet.selectedActivityId?.toString();
+      _prevSelectedSegmentIdStr = widget.notifier.selectionFacet.selectedSegmentId?.toString();
     }
     _refreshActivityById(widget.notifier.activities);
     _rebuildDisplayList(widget.notifier.items, widget.notifier.tripStart, widget.notifier.dayMeta);
@@ -453,22 +453,22 @@ class _ActivityPanelState extends State<ActivityPanel> {
   /// then activity). No-op when nothing is selected. Used to reveal a selection
   /// that was made while the panel was hidden on narrow layouts.
   void _revealCurrentSelection() {
-    final segId = widget.notifier.selectedSegmentId?.toString();
+    final segId = widget.notifier.selectionFacet.selectedSegmentId?.toString();
     if (segId != null) {
       _expandAndScrollToSegment(segId);
       return;
     }
-    final actId = widget.notifier.selectedActivityId?.toString();
+    final actId = widget.notifier.selectionFacet.selectedActivityId?.toString();
     if (actId != null) _expandAndScrollToActivity(actId);
   }
 
   void _onNotifierChanged() {
-    final actId = widget.notifier.selectedActivityId?.toString();
+    final actId = widget.notifier.selectionFacet.selectedActivityId?.toString();
     if (actId != _prevSelectedActivityIdStr) {
       _prevSelectedActivityIdStr = actId;
       if (actId != null) _expandAndScrollToActivity(actId);
     }
-    final segId = widget.notifier.selectedSegmentId?.toString();
+    final segId = widget.notifier.selectionFacet.selectedSegmentId?.toString();
     if (segId != _prevSelectedSegmentIdStr) {
       _prevSelectedSegmentIdStr = segId;
       if (segId != null) _expandAndScrollToSegment(segId);
@@ -990,7 +990,7 @@ class _ActivityPanelState extends State<ActivityPanel> {
                   context,
                   notifier,
                   insertAfterIndex: insertAfterIndex,
-                  preselectedStartActivityId: notifier.selectedActivityId,
+                  preselectedStartActivityId: notifier.selectionFacet.selectedActivityId,
                 );
               },
             ),
@@ -1363,11 +1363,11 @@ class _ActivityPanelState extends State<ActivityPanel> {
               ),
               IconButton(
                 icon: Icon(
-                  notifier.showJournals ? Icons.book : Icons.book_outlined,
+                  notifier.selectionFacet.showJournals ? Icons.book : Icons.book_outlined,
                   size: 20,
-                  color: notifier.showJournals ? theme.colorScheme.primary : null,
+                  color: notifier.selectionFacet.showJournals ? theme.colorScheme.primary : null,
                 ),
-                tooltip: notifier.showJournals ? 'Hide journals' : 'Show journals',
+                tooltip: notifier.selectionFacet.showJournals ? 'Hide journals' : 'Show journals',
                 visualDensity: VisualDensity.compact,
                 onPressed: () => notifier.toggleJournals(),
               ),
@@ -1389,24 +1389,24 @@ class _ActivityPanelState extends State<ActivityPanel> {
                 )
               : Builder(builder: (context) {
                   _rebuildDisplayList(items, notifier.tripStart, notifier.dayMeta);
-                  final hasFilter    = notifier.hasActiveFilter;
-                  final selectedDays = notifier.selectedDays;
+                  final hasFilter    = notifier.selectionFacet.hasActiveFilter;
+                  final selectedDays = notifier.selectionFacet.selectedDays;
                   // Recompute filtered list only when inputs actually change.
                   if (!identical(_displayList, _cachedBaseList) ||
                       _lastHasFilter != hasFilter ||
                       !identical(_lastSelectedDays, selectedDays) ||
                       _lastMemoriesOnly != _memoriesOnly ||
-                      _lastShowJournals != notifier.showJournals) {
+                      _lastShowJournals != notifier.selectionFacet.showJournals) {
                     var dl = _displayList;
                     if (hasFilter) dl = _applyDayFilter(dl, selectedDays);
                     if (_memoriesOnly) dl = _applyMemoriesFilter(dl);
-                    if (!notifier.showJournals) dl = _removeJournals(dl);
+                    if (!notifier.selectionFacet.showJournals) dl = _removeJournals(dl);
                     _cachedBaseList     = _displayList;
                     _cachedFilteredList = dl;
                     _lastHasFilter      = hasFilter;
                     _lastSelectedDays   = selectedDays;
                     _lastMemoriesOnly   = _memoriesOnly;
-                    _lastShowJournals   = notifier.showJournals;
+                    _lastShowJournals   = notifier.selectionFacet.showJournals;
                   }
                   final displayList = _cachedFilteredList!;
                   return ListView.builder(
@@ -1684,7 +1684,7 @@ class _ActivityPanelState extends State<ActivityPanel> {
                           child: Selector<ProjectNotifier, bool>(
                             selector: (_, n) =>
                                 activityId?.toString() ==
-                                n.selectedActivityId?.toString(),
+                                n.selectionFacet.selectedActivityId?.toString(),
                             builder: (_, isSelected, __) => ListTile(
                               dense: true,
                               tileColor: isSelected
@@ -1827,7 +1827,7 @@ class _ActivityPanelState extends State<ActivityPanel> {
                           },
                           child: Selector<ProjectNotifier, bool>(
                             selector: (_, n) =>
-                                n.selectedMemoryId?.toString() == memId,
+                                n.selectionFacet.selectedMemoryId?.toString() == memId,
                             builder: (_, isSelected, __) {
                               final commentCount =
                                   (mem['comment_count'] as num?)?.toInt() ?? 0;
@@ -1977,7 +1977,7 @@ class _ActivityPanelState extends State<ActivityPanel> {
                           },
                           child: Selector<ProjectNotifier, bool>(
                             selector: (_, n) =>
-                                n.selectedJournalId?.toString() == jId,
+                                n.selectionFacet.selectedJournalId?.toString() == jId,
                             builder: (_, isSelected, __) => ListTile(
                               dense: true,
                               tileColor: isSelected
@@ -2100,7 +2100,7 @@ class _ActivityPanelState extends State<ActivityPanel> {
                           },
                           child: Selector<ProjectNotifier, bool>(
                             selector: (_, n) =>
-                                n.selectedSegmentId?.toString() == segId,
+                                n.selectionFacet.selectedSegmentId?.toString() == segId,
                             builder: (_, isSelected, __) {
                               // Segments stay grey unless the project has opted
                               // into per-type colouring (issue #95) — matches
@@ -2404,23 +2404,23 @@ class FilterSheet extends StatelessWidget {
         // narrowed with nothing here to untick. A non-empty filter also keeps
         // its section on screen when the trip holds nothing else in it.
         final tags       = _withSelected(
-            notifier.availableTags, notifier.tagFilter);
+            notifier.availableTags, notifier.selectionFacet.tagFilter);
         final sleeping   = _withSelected(
-            notifier.availableSleepingModes, notifier.sleepingFilter,
+            notifier.availableSleepingModes, notifier.selectionFacet.sleepingFilter,
             last: 'No data');
         final actTypes   = _withSelected(
-            notifier.availableActivityTypes, notifier.activityTypeFilter);
+            notifier.availableActivityTypes, notifier.selectionFacet.activityTypeFilter);
         final transport  = _withSelected(
-            notifier.availableTransportationMeans, notifier.transportFilter);
+            notifier.availableTransportationMeans, notifier.selectionFacet.transportFilter);
         final sources    = notifier.availableSources;
         // What the trip holds, plus anything already filtered on. A source
         // whose last activity has since been deleted has to keep the chip that
         // turns it off: without it the list stays empty and nothing in this
         // sheet says why.
-        final sourceOptions = <String>{...sources, ...notifier.sourceFilter}
+        final sourceOptions = <String>{...sources, ...notifier.selectionFacet.sourceFilter}
             .toList()
           ..sort();
-        final hasAny     = notifier.hasActiveFilter;
+        final hasAny     = notifier.selectionFacet.hasActiveFilter;
 
         return SingleChildScrollView(
           padding: EdgeInsets.fromLTRB(
@@ -2452,7 +2452,7 @@ class FilterSheet extends StatelessWidget {
                 const SizedBox(height: 8),
                 _chips(
                   options:  tags,
-                  selected: notifier.tagFilter,
+                  selected: notifier.selectionFacet.tagFilter,
                   label:    (t) => t,
                   onToggle: (next) => notifier.setFilters(tags: next),
                 ),
@@ -2465,7 +2465,7 @@ class FilterSheet extends StatelessWidget {
                 const SizedBox(height: 8),
                 _chips(
                   options:  sleeping,
-                  selected: notifier.sleepingFilter,
+                  selected: notifier.selectionFacet.sleepingFilter,
                   label:    (s) => s,
                   onToggle: (next) => notifier.setFilters(sleeping: next),
                 ),
@@ -2478,7 +2478,7 @@ class FilterSheet extends StatelessWidget {
                 const SizedBox(height: 8),
                 _chips(
                   options:  actTypes,
-                  selected: notifier.activityTypeFilter,
+                  selected: notifier.selectionFacet.activityTypeFilter,
                   label:    _capitalize,
                   onToggle: (next) => notifier.setFilters(activityTypes: next),
                 ),
@@ -2492,13 +2492,13 @@ class FilterSheet extends StatelessWidget {
               // is a live, counted filter whose union is one option, and
               // without this it would sit on with no chip to untick.
               if (sourceOptions.length > 1 ||
-                  notifier.sourceFilter.isNotEmpty) ...[
+                  notifier.selectionFacet.sourceFilter.isNotEmpty) ...[
                 const SizedBox(height: 16),
                 Text('Source', style: theme.textTheme.labelMedium),
                 const SizedBox(height: 8),
                 _chips(
                   options:  sourceOptions,
-                  selected: notifier.sourceFilter,
+                  selected: notifier.selectionFacet.sourceFilter,
                   label:    (s) => _sourceLabels[s] ?? _capitalize(s),
                   onToggle: (next) => notifier.setFilters(sources: next),
                 ),
@@ -2511,7 +2511,7 @@ class FilterSheet extends StatelessWidget {
                 const SizedBox(height: 8),
                 _chips(
                   options:  transport,
-                  selected: notifier.transportFilter,
+                  selected: notifier.selectionFacet.transportFilter,
                   label:    (t) => _transportLabels[t] ?? _capitalize(t),
                   onToggle: (next) => notifier.setFilters(transport: next),
                 ),

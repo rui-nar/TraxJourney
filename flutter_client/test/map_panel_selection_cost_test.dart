@@ -103,7 +103,7 @@ void main() {
     expect(perfSpans.blockingSpans['all_points'], hasLength(1));
 
     for (var d = 1; d <= _acts; d++) {
-      notifier.selectedDays = {'2026-06-0$d'};
+      notifier.selectionFacetWriter.setSelectedDays({'2026-06-0$d'});
       notifier.notifyListeners();
       await tester.pump();
     }

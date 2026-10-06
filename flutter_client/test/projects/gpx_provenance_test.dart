@@ -103,10 +103,10 @@ void main() {
       ]);
 
       notifier.setFilters(sources: {'strava'});
-      expect(notifier.selectedDays, {'2024-06-01'});
+      expect(notifier.selectionFacet.selectedDays, {'2024-06-01'});
 
       notifier.setFilters(sources: {'gpx'});
-      expect(notifier.selectedDays, {'2024-06-02'});
+      expect(notifier.selectionFacet.selectedDays, {'2024-06-02'});
     });
 
     test('an empty string is treated the same as null', () {
@@ -114,7 +114,7 @@ void main() {
 
       notifier.setFilters(sources: {'strava'});
 
-      expect(notifier.selectedDays, {'2024-06-01'});
+      expect(notifier.selectionFacet.selectedDays, {'2024-06-01'});
     });
 
     test('a day holding both sources matches either', () {
@@ -124,10 +124,10 @@ void main() {
       ]);
 
       notifier.setFilters(sources: {'gpx'});
-      expect(notifier.selectedDays, {'2024-06-01'});
+      expect(notifier.selectionFacet.selectedDays, {'2024-06-01'});
 
       notifier.setFilters(sources: {'strava'});
-      expect(notifier.selectedDays, {'2024-06-01'});
+      expect(notifier.selectionFacet.selectedDays, {'2024-06-01'});
     });
 
     test('selecting both is not the same as selecting neither', () {
@@ -137,11 +137,11 @@ void main() {
       ]);
 
       notifier.setFilters(sources: {'strava', 'gpx'});
-      expect(notifier.selectedDays, {'2024-06-01', '2024-06-02'});
+      expect(notifier.selectionFacet.selectedDays, {'2024-06-01', '2024-06-02'});
 
       notifier.setFilters(sources: {});
-      expect(notifier.selectedDays, isEmpty);
-      expect(notifier.hasActiveFilter, isFalse);
+      expect(notifier.selectionFacet.selectedDays, isEmpty);
+      expect(notifier.selectionFacet.hasActiveFilter, isFalse);
     });
 
     test('it narrows alongside another dimension rather than replacing it', () {
@@ -154,7 +154,7 @@ void main() {
 
       // Day 1 is a ride but from Strava; day 2 is GPX but a hike. Each arm is
       // an AND across dimensions, so neither day satisfies both.
-      expect(notifier.selectedDays, isEmpty);
+      expect(notifier.selectionFacet.selectedDays, isEmpty);
     });
 
     test('a saved source the trip no longer holds is dropped on restore', () {
@@ -166,9 +166,9 @@ void main() {
 
       notifier.restoreFilters(const ProjectFilters(sources: {'gpx'}));
 
-      expect(notifier.sourceFilter, isEmpty);
-      expect(notifier.hasActiveFilter, isFalse);
-      expect(notifier.selectedDays, isEmpty);
+      expect(notifier.selectionFacet.sourceFilter, isEmpty);
+      expect(notifier.selectionFacet.hasActiveFilter, isFalse);
+      expect(notifier.selectionFacet.selectedDays, isEmpty);
     });
 
     test('a saved source the trip does hold is applied', () {
@@ -179,8 +179,8 @@ void main() {
 
       notifier.restoreFilters(const ProjectFilters(sources: {'gpx'}));
 
-      expect(notifier.sourceFilter, {'gpx'});
-      expect(notifier.selectedDays, {'2024-06-02'});
+      expect(notifier.selectionFacet.sourceFilter, {'gpx'});
+      expect(notifier.selectionFacet.selectedDays, {'2024-06-02'});
     });
 
     test('the guard reaches every dimension, not the source alone', () {
@@ -201,12 +201,12 @@ void main() {
       ));
 
       expect(pruned, isTrue);
-      expect(notifier.tagFilter, isEmpty);
-      expect(notifier.sleepingFilter, isEmpty);
-      expect(notifier.activityTypeFilter, isEmpty);
-      expect(notifier.transportFilter, isEmpty);
-      expect(notifier.sourceFilter, isEmpty);
-      expect(notifier.hasActiveFilter, isFalse);
+      expect(notifier.selectionFacet.tagFilter, isEmpty);
+      expect(notifier.selectionFacet.sleepingFilter, isEmpty);
+      expect(notifier.selectionFacet.activityTypeFilter, isEmpty);
+      expect(notifier.selectionFacet.transportFilter, isEmpty);
+      expect(notifier.selectionFacet.sourceFilter, isEmpty);
+      expect(notifier.selectionFacet.hasActiveFilter, isFalse);
     });
 
     test('and reports nothing pruned when every value still resolves', () {
@@ -220,8 +220,8 @@ void main() {
       ));
 
       expect(pruned, isFalse);
-      expect(notifier.activeFilterCount, 3);
-      expect(notifier.selectedDays, {'2024-06-01'});
+      expect(notifier.selectionFacet.activeFilterCount, 3);
+      expect(notifier.selectionFacet.selectedDays, {'2024-06-01'});
     });
 
     test('clearing every filter clears the source too', () {
@@ -230,8 +230,8 @@ void main() {
 
       notifier.clearAllFilters();
 
-      expect(notifier.sourceFilter, isEmpty);
-      expect(notifier.hasActiveFilter, isFalse);
+      expect(notifier.selectionFacet.sourceFilter, isEmpty);
+      expect(notifier.selectionFacet.hasActiveFilter, isFalse);
     });
   });
 }

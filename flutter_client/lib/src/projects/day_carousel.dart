@@ -92,9 +92,9 @@ class _DayCarouselState extends State<DayCarousel> {
   int _followGen = 0;
 
   int _activeIndex(List<String> days) {
-    final active = widget.notifier.selectedDays.isNotEmpty
-        ? widget.notifier.selectedDays.first
-        : widget.notifier.selectedDay;
+    final active = widget.notifier.selectionFacet.selectedDays.isNotEmpty
+        ? widget.notifier.selectionFacet.selectedDays.first
+        : widget.notifier.selectionFacet.selectedDay;
     if (active == null) return 0;
     final i = days.indexOf(active);
     return i >= 0 ? i : 0;
@@ -106,8 +106,8 @@ class _DayCarouselState extends State<DayCarousel> {
     _scrollController = FixedExtentScrollController(
       initialItem: _activeIndex(widget.notifier.orderedDayKeys()),
     );
-    _prevSelectedActivityIdStr = widget.notifier.selectedActivityId?.toString();
-    _prevSelectedSegmentIdStr = widget.notifier.selectedSegmentId?.toString();
+    _prevSelectedActivityIdStr = widget.notifier.selectionFacet.selectedActivityId?.toString();
+    _prevSelectedSegmentIdStr = widget.notifier.selectionFacet.selectedSegmentId?.toString();
     widget.notifier.addListener(_onNotifierChanged);
     _scheduleRetract();
   }
@@ -115,8 +115,8 @@ class _DayCarouselState extends State<DayCarousel> {
   /// Issue #322: a tap on the map selects an activity/segment; the wheel
   /// follows it so the strip shows the day that activity belongs to.
   void _onNotifierChanged() {
-    final actId = widget.notifier.selectedActivityId?.toString();
-    final segId = widget.notifier.selectedSegmentId?.toString();
+    final actId = widget.notifier.selectionFacet.selectedActivityId?.toString();
+    final segId = widget.notifier.selectionFacet.selectedSegmentId?.toString();
     final changed = actId != _prevSelectedActivityIdStr ||
         segId != _prevSelectedSegmentIdStr;
     _prevSelectedActivityIdStr = actId;
@@ -132,7 +132,7 @@ class _DayCarouselState extends State<DayCarousel> {
     final day = dayForSelection(
       widget.notifier.items,
       widget.notifier.activities,
-      activityId: widget.notifier.selectedActivityId,
+      activityId: widget.notifier.selectionFacet.selectedActivityId,
       segmentId: segId,
     );
     // Unscheduled, or a day the strip doesn't list: same, leave the wheel be.
@@ -179,8 +179,8 @@ class _DayCarouselState extends State<DayCarousel> {
       oldWidget.notifier.removeListener(_onNotifierChanged);
       widget.notifier.addListener(_onNotifierChanged);
       _prevSelectedActivityIdStr =
-          widget.notifier.selectedActivityId?.toString();
-      _prevSelectedSegmentIdStr = widget.notifier.selectedSegmentId?.toString();
+          widget.notifier.selectionFacet.selectedActivityId?.toString();
+      _prevSelectedSegmentIdStr = widget.notifier.selectionFacet.selectedSegmentId?.toString();
       if (_scrollController.hasClients) {
         _scrollController
             .jumpToItem(_activeIndex(widget.notifier.orderedDayKeys()));
