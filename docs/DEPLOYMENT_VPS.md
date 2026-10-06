@@ -1036,13 +1036,17 @@ was built at as well as the asset digest, so a bump rebuilds every region even
 though the published extract has not changed. Expect `49 installed, 0 up to
 date` rather than the usual near-total skip, and roughly the time of a first
 install. It is not urgent and there is no window to plan around — the reader
-accepts the previous schema as well as the current one, so the box keeps
-serving the stores it already has until each is replaced. Issue #359 was the
-first such bump (schema 1 → 2, member roles and stop sequences); the image that
-taught the stores layers is the second (schema 2 → 3, `way.rail` becomes the
-`way.cls` class mask), and its first scheduled or manual refresh rebuilds every
-rail store this way. Rolling the image back past it afterwards needs the
-recovery under *Rollback*.
+still serves the rail stores of older schemas, so the box keeps serving the
+stores it already has until each is replaced. The one exception is a ferry or
+bus store older than schema 4, which the reader refuses: that region's ferry or
+bus resolves go to Overpass until the store is rebuilt, which is a fallback, not
+an outage. Issue #359 was the first such bump (schema 1 → 2, member roles and
+stop sequences); the image that taught the stores layers is the second (schema
+2 → 3, `way.rail` becomes the `way.cls` class mask); the image that resolves
+ferry and bus locally is the third (schema 3 → 4, same table layout, recording
+that a ferry or bus store locates its relations' stops). The first scheduled or
+manual refresh after each rebuilds every store this way. Rolling the image back
+past any of them afterwards needs the recovery under *Rollback*.
 
 **No restart is needed and none is wanted.** Every file is built elsewhere and
 moved into place with an atomic rename, so a worker mid-resolve keeps reading
@@ -1114,24 +1118,30 @@ sed -i 's/^RAIL_SOURCE=local/RAIL_SOURCE=overpass/' /opt/traxjourney/.env
 docker compose up -d
 ```
 
-**Rolling the image back past the store schema 3 change** (the image that taught
-the stores layers) is the one rollback that needs a data step. Once that image
-has run a refresh, every store on the box is schema 3, which an older image's
-reader refuses — so after the rollback **every train resolve goes to Overpass**
-until the stores are rebuilt. The rolled-back image rebuilds them itself: its
-sidecar check sees schema 3 where it expects 2 and rebuilds every region at its
-own schema. Run, with the rolled-back image:
+**Rolling the image back past a store schema change** is the one rollback that
+needs a data step. Once a newer image has run a refresh, every store on the box
+is at its schema, which an older image's reader refuses — so after the rollback
+**every train resolve goes to Overpass** (and every ferry and bus resolve, once
+there are such stores) until the stores are rebuilt. The rolled-back image
+rebuilds them itself: its sidecar check sees the newer schema where it expects
+its own and rebuilds every region, in either direction. Run, with the
+rolled-back image:
 
 ```bash
 docker compose run --rm --entrypoint python traxjourney \
     scripts/fetch_rail_data.py --dest /app/data/rail
 ```
 
-Expect `N installed, 0 up to date`. Once the workflow publishes releases with
-ferry and bus layers (manifest schema 3), the older image refuses those
-manifests outright (`manifest schema 3, expected 2`) and installs nothing — add
-`--tag <the last release whose manifest is schema 2>` to the command. To find
-it, newest first:
+Expect `N installed, 0 up to date`. Two cases:
+
+- **Back from the ferry/bus image (store schema 4) to the layers image (schema
+  3).** The command above is all it takes: the layers image reads manifest
+  schemas 2 and 3, so no `--tag` is needed.
+- **Back past the layers image as well, to an image at store schema 2.** Once
+  the workflow publishes releases with ferry and bus layers (manifest schema 3),
+  that older image refuses those manifests outright (`manifest schema 3,
+  expected 2`) and installs nothing — add `--tag <the last release whose
+  manifest is schema 2>` to the command. To find it, newest first:
 
 ```bash
 for t in $(gh release list --repo rui-nar/TraxJourney --limit 100 \
