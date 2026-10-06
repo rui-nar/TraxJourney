@@ -202,24 +202,28 @@ def build_store(
     conn.execute("PRAGMA synchronous = OFF")
     conn.executescript(_SCHEMA)
 
-    ways: list[tuple] = []
-    boxes: list[tuple] = []
-    stations: list[tuple] = []
-    station_boxes: list[tuple] = []
-    relations: list[tuple] = []
-    rel_ways: list[tuple] = []
-    rel_nodes: list[tuple] = []
-    rel_uics: list[tuple] = []
+    # Every row goes to SQLite in batches as it is read, never held for the
+    # whole file: Germany's bus layer names 8.8M relation members, and holding
+    # them as tuples peaked at 2.1 GB against the box's 1 GB build worker. Each
+    # table's rows still go in in read order, so the store is what it was.
+    pending: dict[str, list[tuple]] = {}
+
+    def put(sql: str, row: tuple) -> None:
+        rows = pending.setdefault(sql, [])
+        rows.append(row)
+        if len(rows) >= _BATCH:
+            conn.executemany(sql, rows)
+            rows.clear()
+
+    def flush() -> None:
+        for sql, rows in pending.items():
+            conn.executemany(sql, rows)
+            rows.clear()
+
     # Station relations resolve after the way pass: a multipolygon station's
     # centre is the centre of its members, and those are in the database by then.
+    # Held, because they are few and are needed after the pass.
     pending_rel_stations: list[tuple] = []
-    # Which ways the file actually holds. Relation membership is recorded in
-    # full even when a member is not held — a route relation names platforms and
-    # service tracks that the way filter drops (Phase 1 measured 32% of
-    # Denmark's route=train member ways falling outside it) — and a reader that
-    # cannot tell "member we do not hold" from "not a member" has no way to
-    # report a partially reconstructed relation.
-    way_ids: set[int] = set()
     # Every node carrying a uic_ref, whatever else it is tagged: strategy A asks
     # Overpass for `node["uic_ref"=X]` with no railway filter, and route
     # relations reference the stop node rather than the station node.
@@ -254,18 +258,18 @@ def build_store(
     referenced_nodes = 0   # node slots across every way, located or not
     extent = [90.0, 180.0, -90.0, -180.0]  # min_lat, min_lon, max_lat, max_lon
 
-    def flush() -> None:
-        conn.executemany("INSERT INTO way VALUES (?, ?, ?)", ways)
-        conn.executemany("INSERT INTO way_bbox VALUES (?, ?, ?, ?, ?)", boxes)
-        ways.clear()
-        boxes.clear()
-
     def add_station(osm_type: str, osm_id: int, lat: float, lon: float, uic: str) -> None:
-        sid = len(stations) + 1
-        stations.append((sid, osm_type, osm_id, lat, lon, uic))
-        station_boxes.append((sid, lon, lon, lat, lat))
         counts["stations"] += 1
+        sid = counts["stations"]
+        put("INSERT INTO station VALUES (?, ?, ?, ?, ?, ?)", (sid, osm_type, osm_id, lat, lon, uic))
+        put("INSERT INTO station_pos VALUES (?, ?, ?, ?, ?)", (sid, lon, lon, lat, lat))
 
+    # libosmium decodes ahead of this loop and queues up to 20 decoded blocks by
+    # default; the loop is Python and far slower than the decoder, so the queue
+    # stays full, and on Germany's bus layer it held ~250 MB of ways. Two keep
+    # the decoder busy at no measured cost. Read from the environment when the
+    # reader opens, so an operator's own setting still wins.
+    os.environ.setdefault("OSMIUM_MAX_OSMDATA_QUEUE_SIZE", "2")
     # Nodes, then ways, then relations — PBF order, so the uic map is complete
     # by the time relations need it and one pass is enough.
     for obj in osmium.FileProcessor(str(pbf_path)).with_locations():
@@ -293,14 +297,13 @@ def build_store(
             # is added in one UPDATE once they have been read.
             cls = ((CLS_ROUTE if _route_class(layer, tags) else 0)
                    | (CLS_FERRY_YES if tags.get("ferry") == "yes" else 0))
-            ways.append((obj.id, cls, encode_geometry(pts)))
-            way_ids.add(obj.id)
+            put("INSERT INTO way VALUES (?, ?, ?)", (obj.id, cls, encode_geometry(pts)))
             counts["nodes"] += len(pts)
             counts["ways" if cls & CLS_ROUTE else "member_ways"] += 1
             lats = [p[0] for p in pts]
             lons = [p[1] for p in pts]
             box = (obj.id, min(lons), max(lons), min(lats), max(lats))
-            boxes.append(box)
+            put("INSERT INTO way_bbox VALUES (?, ?, ?, ?, ?)", box)
             if cls & routable:
                 extent[0] = min(extent[0], box[3])
                 extent[1] = min(extent[1], box[1])
@@ -310,8 +313,6 @@ def build_store(
                 # Overpass's `out center` is the centre of the element's
                 # bounding box, so a polygon station lands where Overpass puts it.
                 add_station("way", obj.id, (box[3] + box[4]) / 2, (box[1] + box[2]) / 2, uic)
-            if len(ways) >= _BATCH:
-                flush()
         else:
             if is_station:
                 pending_rel_stations.append((
@@ -322,15 +323,16 @@ def build_store(
                 ))
             if tags.get("route") not in routes:
                 continue
-            relations.append((obj.id, tags["route"], tags.get("name")))
+            put("INSERT INTO relation VALUES (?, ?, ?)", (obj.id, tags["route"], tags.get("name")))
             counts["relations"] += 1
             seq = 0
             node_seq = 0
             seen_uic = set()
             for member in obj.members:
                 if member.type == "w":
-                    rel_ways.append((obj.id, member.ref, seq, member.role or ""))
-                    counts["relation_ways_held"] += member.ref in way_ids
+                    put("INSERT INTO relation_way VALUES (?, ?, ?, ?)",
+                        (obj.id, member.ref, seq, member.role or ""))
+                    counts["relation_ways"] += 1
                     seq += 1
                 elif member.type == "n":
                     member_uic = node_uic.get(member.ref)
@@ -340,17 +342,19 @@ def build_store(
                     # unchanged and still deduplicated: strategy A's pair query
                     # is indexed on it, and this table is not a replacement for
                     # it but the answer to a different question.
-                    rel_nodes.append((
+                    put("INSERT INTO relation_node VALUES (?, ?, ?, ?, ?, ?, ?)", (
                         obj.id, member.ref, node_seq, member.role or "",
                         member_uic or "",
                         loc[0] if loc else None, loc[1] if loc else None,
                     ))
+                    counts["relation_nodes"] += 1
                     node_seq += 1
                     counts["relation_nodes_located"] += loc is not None
                     if member_uic and member_uic not in seen_uic:
                         seen_uic.add(member_uic)
-                        rel_uics.append((obj.id, member_uic))
+                        put("INSERT INTO relation_uic VALUES (?, ?)", (obj.id, member_uic))
 
+    # The station relations below read way_bbox back.
     flush()
 
     # Station relations: centre of the bounding box of the members we hold,
@@ -367,15 +371,17 @@ def build_store(
         if held < total:
             counts["stations_partial"] += 1
         add_station("relation", rel_id, (box[0] + box[2]) / 2, (box[1] + box[3]) / 2, uic)
+    flush()
 
-    conn.executemany("INSERT INTO station VALUES (?, ?, ?, ?, ?, ?)", stations)
-    conn.executemany("INSERT INTO station_pos VALUES (?, ?, ?, ?, ?)", station_boxes)
-    conn.executemany("INSERT INTO relation VALUES (?, ?, ?)", relations)
-    conn.executemany("INSERT INTO relation_way VALUES (?, ?, ?, ?)", rel_ways)
-    counts["relation_ways"] = len(rel_ways)
-    conn.executemany("INSERT INTO relation_node VALUES (?, ?, ?, ?, ?, ?, ?)", rel_nodes)
-    counts["relation_nodes"] = len(rel_nodes)
-    conn.executemany("INSERT INTO relation_uic VALUES (?, ?)", rel_uics)
+    # Relation membership is recorded in full even when a member is not held —
+    # a route relation names platforms and service tracks that the way filter
+    # drops (Phase 1 measured 32% of Denmark's route=train member ways falling
+    # outside it) — and a reader that cannot tell "member we do not hold" from
+    # "not a member" has no way to report a partially reconstructed relation.
+    # How many are held is counted here rather than against a set of every way
+    # id kept through the pass.
+    counts["relation_ways_held"] = conn.execute(
+        "SELECT COUNT(*) FROM relation_way rw JOIN way w ON w.id = rw.way_id").fetchone()[0]
 
     # Bit 2: every held way a kept route relation names, whatever its role.
     conn.execute("UPDATE way SET cls = cls | ? WHERE id IN "
