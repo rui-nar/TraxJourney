@@ -67,11 +67,18 @@ _STATUS_OK = "ok"
 _STATUS_EMPTY = "empty"
 _STATUS_INVALID = "invalid"
 
+# The gauge's layer label: the three layers a manifest entry may carry, and
+# `other` for any value outside them (no `layer` at all is `rail`).
+_LAYERS = ("rail", "ferry", "bus", "other")
 
-def _publish(age: float | None, counts: dict[str, int]) -> None:
+
+def _publish(age: float | None, counts: dict[tuple[str, str], int]) -> None:
     RAIL_DATA_AGE_DAYS.set(math.nan if age is None else age)
-    for status in (_STATUS_OK, _STATUS_EMPTY, _STATUS_INVALID):
-        RAIL_DATA_REGIONS.labels(status=status).set(counts.get(status, 0))
+    # Every combination is written, so a layer that left the manifest reads 0.
+    for layer in _LAYERS:
+        for status in (_STATUS_OK, _STATUS_EMPTY, _STATUS_INVALID):
+            RAIL_DATA_REGIONS.labels(status=status, layer=layer).set(
+                counts.get((layer, status), 0))
 
 
 def _read_manifest(path: str) -> dict:
@@ -114,11 +121,16 @@ def _check(directory: str | None, local: bool) -> float | None:
         return None
 
     today = datetime.now(timezone.utc).date()
-    counts = {_STATUS_OK: 0, _STATUS_EMPTY: 0, _STATUS_INVALID: 0}
+    counts: dict[tuple[str, str], int] = {}
+
+    def count(layer: object, status: str) -> None:
+        key = (layer if layer in _LAYERS[:3] else "other", status)
+        counts[key] = counts.get(key, 0) + 1
+
     oldest: tuple[date, str] | None = None
     for entry in manifest.get("regions", []):
         if not isinstance(entry, dict):
-            counts[_STATUS_INVALID] += 1
+            count("rail", _STATUS_INVALID)
             continue
         region = entry.get("region")
         layer = entry.get("layer", "rail")
@@ -127,10 +139,10 @@ def _check(directory: str | None, local: bool) -> float | None:
         region = region if layer == "rail" else f"{region} {layer}"
         status = entry.get("status", _STATUS_OK)
         if status == _STATUS_EMPTY:
-            counts[_STATUS_EMPTY] += 1
+            count(layer, _STATUS_EMPTY)
             continue
         if status != _STATUS_OK:
-            counts[_STATUS_INVALID] += 1
+            count(layer, _STATUS_INVALID)
             warn("rail manifest entry %r has unknown status %r", region, status)
             continue
         try:
@@ -138,11 +150,11 @@ def _check(directory: str | None, local: bool) -> float | None:
         except ValueError:
             # An ok region whose age nobody can tell must not quietly drop out
             # of the oldest-region figure: it is exactly the kind that goes stale.
-            counts[_STATUS_INVALID] += 1
+            count(layer, _STATUS_INVALID)
             warn("rail manifest entry %r has no usable source_date (%r)",
                  region, entry.get("source_date"))
             continue
-        counts[_STATUS_OK] += 1
+        count(layer, _STATUS_OK)
         if oldest is None or source_date < oldest[0]:
             oldest = (source_date, region)
 

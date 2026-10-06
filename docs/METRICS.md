@@ -139,13 +139,16 @@ is a request that Overpass answered.
 | Metric | Labels |
 |---|---|
 | `traxjourney_rail_data_age_days` | — |
-| `traxjourney_rail_data_regions` | `status` (`ok`\|`empty`\|`invalid`) |
+| `traxjourney_rail_data_regions` | `status` (`ok`\|`empty`\|`invalid`), `layer` (`rail`\|`ferry`\|`bus`\|`other`) |
 
 Set by the daily `rail_data_age` job (05:15 UTC, and once at start-up) from
 `RAIL_DATA_DIR/manifest.json`. The age is days since the **oldest** `ok`
 region's `source_date`, not the manifest's `generated_at`, which a partial
 refresh leaves unchanged. It is NaN while the manifest is missing, unreadable
-or lists no usable region. `invalid` counts entries the check could not read
+or lists no usable region. `rail_data_regions` counts manifest **entries**, one per region per layer, by
+`layer` and `status`: an entry with no `layer` is `rail`, and a `layer` outside
+`rail`, `ferry` and `bus` is `other`. Every combination is exported, `0` when
+the manifest has none. `invalid` counts entries the check could not read
 (an unknown status, or an `ok` region with no usable `source_date`). While
 `RAIL_SOURCE=local` the job also logs a `WARNING` each run that the data is
 over 40 days old (naming the oldest region and its date) or the manifest

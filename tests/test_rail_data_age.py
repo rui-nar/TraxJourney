@@ -38,8 +38,8 @@ def _warnings(caplog) -> list[str]:
             if r.name == _LOGGER and r.levelno >= logging.WARNING]
 
 
-def _regions(status: str) -> float:
-    return RAIL_DATA_REGIONS.labels(status=status)._value.get()
+def _regions(status: str, layer: str = "rail") -> float:
+    return RAIL_DATA_REGIONS.labels(status=status, layer=layer)._value.get()
 
 
 @pytest.fixture
@@ -216,3 +216,40 @@ def test_a_stale_rail_entry_message_is_unchanged(local, caplog):
     assert _warnings(caplog) == [
         "rail data is %d days old (over %d): oldest region europe/france, "
         "source date %s" % (stale_age, RAIL_DATA_MAX_AGE_DAYS, _days_ago(stale_age))]
+
+
+def _layered(region: str, layer: str | None) -> dict:
+    entry = _ok(region, 3)
+    if layer is not None:
+        entry["layer"] = layer
+    return entry
+
+
+def test_regions_gauge_counts_entries_per_layer(local):
+    _write(local, [_layered(r, layer) for r in ("europe/denmark", "europe/france")
+                   for layer in ("rail", "ferry", "bus")])
+    check_rail_data_age()
+    for layer in ("rail", "ferry", "bus"):
+        assert _regions("ok", layer) == 2
+    assert _regions("ok", "other") == 0
+
+
+def test_regions_gauge_entry_without_layer_is_rail(local):
+    _write(local, [_layered("europe/denmark", None)])
+    check_rail_data_age()
+    assert _regions("ok", "rail") == 1
+
+
+def test_regions_gauge_unknown_layer_is_other(local):
+    _write(local, [_layered("europe/denmark", "tram")])
+    check_rail_data_age()
+    assert _regions("ok", "other") == 1 and _regions("ok", "rail") == 0
+
+
+def test_regions_gauge_resets_a_layer_that_left_the_manifest(local):
+    _write(local, [_layered("europe/denmark", "ferry")])
+    check_rail_data_age()
+    assert _regions("ok", "ferry") == 1
+    _write(local, [_layered("europe/denmark", None)])
+    check_rail_data_age()
+    assert _regions("ok", "ferry") == 0 and _regions("ok", "rail") == 1

@@ -356,8 +356,9 @@ RAIL_DATA_AGE_DAYS = Gauge(
 
 RAIL_DATA_REGIONS = Gauge(
     "traxjourney_rail_data_regions",
-    "Regions in the installed rail manifest, by status.",
-    ["status"],  # ok | empty | invalid
+    "Entries in the installed rail-data manifest, by layer and status "
+    "(one per region per layer).",
+    ["status", "layer"],  # status: ok | empty | invalid; layer: rail | ferry | bus | other
     multiprocess_mode="mostrecent",
 )
 
