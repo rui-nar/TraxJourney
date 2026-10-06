@@ -2271,6 +2271,9 @@ class ActivityFieldsUpdate(BaseModel):
     # Given together or not at all; neither is written to the row.
     project: Optional[str] = None
     lock_version: Optional[int] = None
+    # The trip owner's id, only beside ``project``: the CAS trip is then that
+    # user's, which the caller edits as a member (decision 15, I3-1).
+    owner: Optional[int] = None
 
     # A value that is not a ciphertext envelope is plaintext the export parses
     # and writes as the activity's start, end or profile, so it must be one
@@ -2310,7 +2313,9 @@ def update_activity_fields(
     (``activity_e2ee_writable_by``). With ``project`` and ``lock_version`` the
     write is a compare-and-swap on that trip: 404 unless it holds the row,
     409 ``stale_write`` (nothing written) on a mismatch, and the response
-    carries the trip's new ``lock_version``. An envelope ``name`` also clears
+    carries the trip's new ``lock_version``. ``owner`` (only with ``project``)
+    names another user's trip the caller edits as a member, editor or above;
+    any other caller gets the same 404. An envelope ``name`` also clears
     ``split_base_name``, the plaintext name the row had before it was split.
     A body storing any envelope on a row another user's trip holds is refused
     with 409 ``shared_with_other_trip``, nothing written (decision 15);
@@ -2320,10 +2325,16 @@ def update_activity_fields(
     data = body.model_dump(exclude_unset=True)
     cas_project = data.pop("project", None)
     expected_version = data.pop("lock_version", None)
+    cas_owner = data.pop("owner", None)
     if (cas_project is None) != (expected_version is None):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="project and lock_version are given together or not at all",
+        )
+    if cas_owner is not None and cas_project is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="owner is given only with project",
         )
     stores_envelope = any(is_well_formed_envelope(v) for v in data.values())
     with get_session() as sess:
@@ -2343,10 +2354,13 @@ def update_activity_fields(
         ).all()
         cas_project_id = None
         if cas_project is not None:
-            cas_project_id = sess.exec(select(DBProject.id).where(
-                DBProject.user_info_id == user_info_id,
-                DBProject.name == cas_project,
-            )).first()
+            try:
+                cas_project_id = resolve_project(sess, user_info_id, cas_project,
+                                                 cas_owner, min_role="editor").id
+            except HTTPException:
+                # Missing trip, no membership or a viewer one: one answer,
+                # as for a trip that does not hold the row.
+                cas_project_id = None
             if cas_project_id is None or cas_project_id not in project_ids:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                                     detail="Activity not in project")
