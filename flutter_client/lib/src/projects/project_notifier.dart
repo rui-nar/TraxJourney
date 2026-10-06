@@ -576,32 +576,8 @@ class ProjectNotifier extends ChangeNotifier
   bool degradedRouteUpgradeAvailable = false;
 
   // ── Track style ───────────────────────────────────────────────────────────
-  // Named so [clear] puts back the same defaults a fresh notifier starts with.
-  static const _kDefaultTrackColor = Color(0xFF6B7280); // gray-500 — shown while project loads
-  static const _kDefaultTrackWidth = 2.5;
-  Color trackColor = _kDefaultTrackColor;
-  Color? trackSecondaryColor; // null = auto-derive from primary
-  double trackWidth = _kDefaultTrackWidth;
-  bool alternatingTrackColors = false;
-  Color? elevationChartColor; // null = "auto" → match the map track line (#22)
-  bool elevationChartShowLine = true;
-
-  /// Opt-in per-type colouring (issue #95). Off by default so existing
-  /// projects keep today's flat trackColor line rendering unchanged.
-  bool colorByType = false;
-  /// Per-bucket overrides, keyed by activity bucket ("ride"/"run"/"hike"/
-  /// "other") or segment type ("flight"/"train"/"bus"/"boat"). Each value
-  /// e.g. {"color": "#RRGGBB", "style": "solid"|"dashed"|"dotted"}. Missing
-  /// bucket = built-in default (see design_tokens.dart resolveTypeStyle).
-  Map<String, Map<String, dynamic>> typeStyles = {};
-
-  /// Colour the elevation chart actually renders with: the user's explicit
-  /// override, or — when unset ("auto") — the map track line colour, so the
-  /// chart matches the line on the map by default (issue #22).
-  Color get effectiveElevationChartColor => elevationChartColor ?? trackColor;
-
-  // ── Translation languages ─────────────────────────────────────────────────
-  List<String> languages = [];
+  // The style fields (track colours, width, type styles, languages) live in
+  // [styleFacet] (#294).
 
   Future<void> setTrackStyle({
     Color? color,
@@ -613,14 +589,16 @@ class ProjectNotifier extends ChangeNotifier
     bool? colorByTypeEnabled,
     Map<String, Map<String, dynamic>>? typeStyleOverrides,
   }) async {
-    if (color != null) trackColor = color;
-    if (secondaryColor != _kUnset) trackSecondaryColor = secondaryColor as Color?;
-    if (width != null) trackWidth = width;
-    if (alternating != null) alternatingTrackColors = alternating;
-    if (elevationColor != _kUnset) elevationChartColor = elevationColor as Color?;
-    if (elevationShowLine != null) elevationChartShowLine = elevationShowLine;
-    if (colorByTypeEnabled != null) colorByType = colorByTypeEnabled;
-    if (typeStyleOverrides != null) typeStyles = typeStyleOverrides;
+    styleFacetWriter.setTrackStyle(
+      color: color,
+      secondaryColor: secondaryColor,
+      width: width,
+      alternating: alternating,
+      elevationColor: elevationColor,
+      elevationShowLine: elevationShowLine,
+      colorByTypeEnabled: colorByTypeEnabled,
+      typeStyleOverrides: typeStyleOverrides,
+    );
     notifyListeners();
     final ref = this.ref;
     if (ref == null) return;
@@ -646,10 +624,10 @@ class ProjectNotifier extends ChangeNotifier
     }
   }
 
-  static const Object _kUnset = Object();
+  static const Object _kUnset = StyleFacetWriter.unset;
 
   Future<void> saveLanguages(List<String> langs) async {
-    languages = List<String>.from(langs);
+    styleFacetWriter.setLanguages(langs);
     notifyListeners();
     final ref = this.ref;
     if (ref == null) return;
@@ -1186,33 +1164,7 @@ class ProjectNotifier extends ChangeNotifier
       counters = rawCounters is List
           ? rawCounters.map((c) => Map<String, dynamic>.from(c as Map)).toList()
           : [];
-      final rawColor = details['track_color'] as String?;
-      if (rawColor != null && rawColor.length == 7 && rawColor.startsWith('#')) {
-        trackColor = Color(int.parse(rawColor.substring(1), radix: 16) | 0xFF000000);
-      }
-      final rawSecColor = details['track_secondary_color'] as String?;
-      trackSecondaryColor = (rawSecColor != null && rawSecColor.length == 7 && rawSecColor.startsWith('#'))
-          ? Color(int.parse(rawSecColor.substring(1), radix: 16) | 0xFF000000)
-          : null;
-      final rawWidth = details['track_width'] as num?;
-      if (rawWidth != null) trackWidth = rawWidth.toDouble();
-      final rawAlt = details['alternating_track_colors'] as bool?;
-      if (rawAlt != null) alternatingTrackColors = rawAlt;
-      final rawElColor = details['elevation_chart_color'] as String?;
-      elevationChartColor = (rawElColor != null && rawElColor.length == 7 && rawElColor.startsWith('#'))
-          ? Color(int.parse(rawElColor.substring(1), radix: 16) | 0xFF000000)
-          : null;
-      final rawElLine = details['elevation_chart_show_line'] as bool?;
-      if (rawElLine != null) elevationChartShowLine = rawElLine;
-      final rawLangs = details['languages'];
-      if (rawLangs is List) languages = rawLangs.cast<String>();
-      final rawColorByType = details['color_by_type'] as bool?;
-      if (rawColorByType != null) colorByType = rawColorByType;
-      final rawTypeStyles = details['type_styles'];
-      typeStyles = rawTypeStyles is Map
-          ? rawTypeStyles.map((k, v) =>
-              MapEntry(k as String, Map<String, dynamic>.from(v as Map)))
-          : {};
+      styleFacetWriter.applyDetails(details, includeSecondary: true);
       _updateStats();
       if (encryption.isUnlocked) {
         // Decrypted activities/items are ready now — build the low-res map
@@ -2331,15 +2283,6 @@ class ProjectNotifier extends ChangeNotifier
     lastStravaSyncAt = null;
     lastPsSyncAt = null;
     pendingSync = null;
-    trackColor = _kDefaultTrackColor;
-    trackSecondaryColor = null;
-    trackWidth = _kDefaultTrackWidth;
-    alternatingTrackColors = false;
-    elevationChartColor = null;
-    elevationChartShowLine = true;
-    colorByType = false;
-    typeStyles = {};
-    languages = [];
     quotaError = null;
     polarstepsOverlaySteps = [];
     polarstepsOverlayLabel = null;
@@ -3777,29 +3720,7 @@ class ProjectNotifier extends ChangeNotifier
       role: details['caller_role'] as String? ?? ref.role,
     );
     tripStart   = details['trip_start'] as String?;
-    final rawColor = details['track_color'] as String?;
-    if (rawColor != null && rawColor.length == 7 && rawColor.startsWith('#')) {
-      trackColor = Color(int.parse(rawColor.substring(1), radix: 16) | 0xFF000000);
-    }
-    final rawWidth = details['track_width'] as num?;
-    if (rawWidth != null) trackWidth = rawWidth.toDouble();
-    final rawAlt = details['alternating_track_colors'] as bool?;
-    if (rawAlt != null) alternatingTrackColors = rawAlt;
-    final rawElColor = details['elevation_chart_color'] as String?;
-    elevationChartColor = (rawElColor != null && rawElColor.length == 7 && rawElColor.startsWith('#'))
-        ? Color(int.parse(rawElColor.substring(1), radix: 16) | 0xFF000000)
-        : null;
-    final rawElLine = details['elevation_chart_show_line'] as bool?;
-    if (rawElLine != null) elevationChartShowLine = rawElLine;
-    final rawLangs = details['languages'];
-    if (rawLangs is List) languages = rawLangs.cast<String>();
-    final rawColorByType = details['color_by_type'] as bool?;
-    if (rawColorByType != null) colorByType = rawColorByType;
-    final rawTypeStyles = details['type_styles'];
-    typeStyles = rawTypeStyles is Map
-        ? rawTypeStyles.map((k, v) =>
-            MapEntry(k as String, Map<String, dynamic>.from(v as Map)))
-        : {};
+    styleFacetWriter.applyDetails(details, includeSecondary: false);
     tripEnd     = details['trip_end']   as String?;
     activities = nextActivities;
     items = nextItems;

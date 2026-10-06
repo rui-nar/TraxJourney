@@ -29,6 +29,8 @@
 /// notifies each of them once, together, as it did before facets existed.
 library;
 
+import 'dart:ui' show Color;
+
 import 'package:flutter/foundation.dart';
 
 import '../geo_viewport.dart' show GeoBox;

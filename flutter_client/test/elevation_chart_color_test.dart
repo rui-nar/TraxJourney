@@ -9,16 +9,16 @@ void main() {
   group('effectiveElevationChartColor', () {
     test('auto (unset) → matches the map track colour', () {
       final n = ProjectNotifier(ProjectService());
-      n.trackColor = const Color(0xFF112233);
-      n.elevationChartColor = null;
-      expect(n.effectiveElevationChartColor, const Color(0xFF112233));
+      n.styleFacetWriter.setTrackColor(const Color(0xFF112233));
+      n.styleFacetWriter.setElevationChartColor(null);
+      expect(n.styleFacet.effectiveElevationChartColor, const Color(0xFF112233));
     });
 
     test('explicit override wins over the track colour', () {
       final n = ProjectNotifier(ProjectService());
-      n.trackColor = const Color(0xFF112233);
-      n.elevationChartColor = const Color(0xFFAABBCC);
-      expect(n.effectiveElevationChartColor, const Color(0xFFAABBCC));
+      n.styleFacetWriter.setTrackColor(const Color(0xFF112233));
+      n.styleFacetWriter.setElevationChartColor(const Color(0xFFAABBCC));
+      expect(n.styleFacet.effectiveElevationChartColor, const Color(0xFFAABBCC));
     });
   });
 }

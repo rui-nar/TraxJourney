@@ -556,7 +556,7 @@ class _MemoryDetailModalState extends State<_MemoryDetailModal> {
   ) {
     final name        = _displayName;
     final description = _displayDescription;
-    final langs       = widget.notifier.languages;
+    final langs       = widget.notifier.styleFacet.languages;
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(16),
@@ -793,7 +793,7 @@ class _MemoryDetailModalState extends State<_MemoryDetailModal> {
     final name        = _displayName;
     final dateStr     = _current['date'] as String?;
     final description = _displayDescription;
-    final langs       = widget.notifier.languages;
+    final langs       = widget.notifier.styleFacet.languages;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,

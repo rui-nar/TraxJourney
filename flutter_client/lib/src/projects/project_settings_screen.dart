@@ -138,16 +138,16 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
         .toList();
     _autoSync = n.autoSyncEnabled;
     _linkedPsTripId = n.linkedPsTripId;
-    _trackColor = n.trackColor;
-    _trackSecondaryColor = n.trackSecondaryColor;
-    _trackWidth = n.trackWidth;
-    _alternating = n.alternatingTrackColors;
-    _elevationChartColor = n.elevationChartColor;
-    _elevationChartShowLine = n.elevationChartShowLine;
-    _languages = List<String>.from(n.languages);
-    _colorByType = n.colorByType;
+    _trackColor = n.styleFacet.trackColor;
+    _trackSecondaryColor = n.styleFacet.trackSecondaryColor;
+    _trackWidth = n.styleFacet.trackWidth;
+    _alternating = n.styleFacet.alternatingTrackColors;
+    _elevationChartColor = n.styleFacet.elevationChartColor;
+    _elevationChartShowLine = n.styleFacet.elevationChartShowLine;
+    _languages = List<String>.from(n.styleFacet.languages);
+    _colorByType = n.styleFacet.colorByType;
     _typeStyles = {
-      for (final e in n.typeStyles.entries) e.key: Map<String, dynamic>.from(e.value)
+      for (final e in n.styleFacet.typeStyles.entries) e.key: Map<String, dynamic>.from(e.value)
     };
     _dayMeta = {
       for (final e in n.dayMeta.entries)

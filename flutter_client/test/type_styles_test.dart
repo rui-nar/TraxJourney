@@ -88,8 +88,8 @@ void main() {
   group('ProjectNotifier per-type style state', () {
     test('colorByType and typeStyles default to off/empty', () {
       final n = ProjectNotifier(ProjectService());
-      expect(n.colorByType, false);
-      expect(n.typeStyles, <String, Map<String, dynamic>>{});
+      expect(n.styleFacet.colorByType, false);
+      expect(n.styleFacet.typeStyles, <String, Map<String, dynamic>>{});
     });
 
     test('setTrackStyle updates state locally with no project loaded', () async {
@@ -98,8 +98,8 @@ void main() {
         colorByTypeEnabled: true,
         typeStyleOverrides: {'ride': {'color': '#FF0000'}},
       );
-      expect(n.colorByType, true);
-      expect(n.typeStyles, {'ride': {'color': '#FF0000'}});
+      expect(n.styleFacet.colorByType, true);
+      expect(n.styleFacet.typeStyles, {'ride': {'color': '#FF0000'}});
     });
   });
 }
