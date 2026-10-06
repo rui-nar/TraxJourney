@@ -1426,6 +1426,25 @@ LOD (#294, #379)**
 - **Escalate if:** X3.
 - **Depends on:** U10.
 
+**U10b — The trip-details save checks the trip version (owner, 2026-10-06)**
+- **Goal:** the same race U10 closed for geometry, for the full trip-details
+  payload: a `getDetails` fetch started before an edit can no longer be stored
+  under the trip's new `lock_version`.
+- **Scope:** `project_service.dart` (`getDetails`), `project_data_cache.dart`
+  (`writeFullDetails`), `project_notifier.dart` only if a caller must pass the
+  version, `test/project_data_cache_test.dart`, a new
+  `test/details_lock_version_test.dart`.
+- **Context:** U10's second commit (`lockVersionOf`, the optional
+  `lockVersion` on the geometry writes, `offline_seed_lock_version_test.dart`)
+  is the pattern to copy exactly.
+- **Do:** `getDetails` reads `lockVersionOf(ref)` before its request and passes
+  it to `writeFullDetails`, which refuses the write when the cache holds a
+  different version. Also amend nothing else.
+- **Acceptance:** a details fetch in flight across an edit's `/meta` stores
+  nothing; an unchanged version still stores; existing cache tests pass;
+  flutter analyze + test.
+- **Latitude:** none. **Depends on:** U10, U11.
+
 **U12 — `SelectionFacet` (#294)**
 - **Goal:** the selection ids, `selectedDays`, filters and `showJournals`
   move into `SelectionFacet`.
