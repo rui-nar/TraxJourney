@@ -91,7 +91,7 @@ def env(monkeypatch, tmp_path):
 
 
 def _concurrent_day_meta_write(client, name: str, payload: dict):
-    """Another request's PUT /day-meta committing right now — the REAL
+    """Another request's PATCH /day-meta committing right now — the REAL
     endpoint, not a stand-in.
 
     An earlier version of this helper wrote the row by hand and bumped
@@ -99,8 +99,8 @@ def _concurrent_day_meta_write(client, name: str, payload: dict):
     the tests certified a compare-and-swap that could never fire in
     production. Drive the real route or prove nothing.
     """
-    r = client.put(f"/api/projects/{name}/day-meta", json={"day_meta": payload})
-    assert r.status_code == 204, r.text
+    r = client.patch(f"/api/projects/{name}/day-meta", json={"days": payload})
+    assert r.status_code == 200, r.text
 
 
 def _stored_day_meta(engine, name):
@@ -313,17 +313,34 @@ def test_every_direct_project_write_advances_the_lock_past_a_concurrent_bump(
 
     monkeypatch.setattr(projects_mod, "bump_lock_version", _bump_after_someone_else)
 
+    # PATCH /day-meta advances the counter by compare-and-set, not a blind
+    # bump: land the other writer's bump in front of its first one. It loses
+    # that attempt and retries on a fresh read.
+    real_cas = projects_mod.check_and_bump_lock_version
+    cas_raced = {"done": False}
+
+    def _cas_after_someone_else(sess, project_id, expected_version):
+        if not cas_raced["done"]:
+            cas_raced["done"] = True
+            with Session(engine) as other:
+                real(other, project_id)
+                other.commit()
+        real_cas(sess, project_id, expected_version)
+
+    monkeypatch.setattr(projects_mod, "check_and_bump_lock_version",
+                        _cas_after_someone_else)
+
     writes = {
-        "day-meta": (f"/api/projects/{name}/day-meta",
-                     {"day_meta": {"2024-06-05": {"note": "a"}}}),
-        "trip dates": (f"/api/projects/{name}", {"trip_start": "2024-06-01"}),
-        "track style": (f"/api/projects/{name}/track-style",
+        "day-meta": ("PATCH", f"/api/projects/{name}/day-meta",
+                     {"days": {"2024-06-05": {"note": "a"}}}),
+        "trip dates": ("PUT", f"/api/projects/{name}", {"trip_start": "2024-06-01"}),
+        "track style": ("PUT", f"/api/projects/{name}/track-style",
                         {"track_color": "#ff0000"}),
-        "languages": (f"/api/projects/{name}/languages", {"languages": ["fr"]}),
+        "languages": ("PUT", f"/api/projects/{name}/languages", {"languages": ["fr"]}),
     }
-    for label, (url, body) in writes.items():
+    for label, (method, url, body) in writes.items():
         before = lock_version()
-        r = client.put(url, json=body)
+        r = client.request(method, url, json=body)
         assert r.status_code in (200, 204), f"{label}: {r.text}"
         assert lock_version() == before + 2, (
             f"{label}: counter went {before} -> {lock_version()}; one of the two "

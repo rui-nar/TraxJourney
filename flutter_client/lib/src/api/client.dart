@@ -35,10 +35,9 @@ class ApiClient {
   /// with no token or one that does not parse. Not verified — the server does
   /// that on every request; this only says whose session the device holds.
   ///
-  /// Read from the token rather than the profile because it is there the
-  /// moment a session is restored, offline included, while the profile's id
-  /// is not: a restored session starts as `User.restored` (id ''), and
-  /// /api/auth/me echoes the JWT payload, which has no `id` claim either.
+  /// Read from the token because it is there the moment a session is
+  /// restored, offline included — which is also where `User.restored` takes
+  /// its id from until /api/auth/me answers (issue #418).
   int? get tokenUserId {
     final parts = _token?.split('.');
     if (parts == null || parts.length != 3) return null;
@@ -76,11 +75,21 @@ class ApiClient {
   /// Error bodies deliberately stay on the string path: they are small, and
   /// [ApiException] carries the text.
   Future<Uint8List> getBytes(String path,
+          {Duration timeout = _kDefaultTimeout}) async =>
+      (await getBytesWithHeaders(path, timeout: timeout)).bytes;
+
+  /// [getBytes], also returning the response headers (lower-cased keys, as
+  /// `package:http` gives them). The simplified-geometry fetches read
+  /// `Server-Timing` and `X-Cache` from them (issue #401).
+  Future<({Uint8List bytes, Map<String, String> headers})> getBytesWithHeaders(
+      String path,
       {Duration timeout = _kDefaultTimeout}) async {
     final res = await _client
         .get(Uri.parse('$baseUrl$path'), headers: _headers)
         .timeout(timeout);
-    if (res.statusCode >= 200 && res.statusCode < 300) return res.bodyBytes;
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      return (bytes: res.bodyBytes, headers: res.headers);
+    }
     throw ApiException(res.statusCode, res.body,
         location: res.headers['location']);
   }
@@ -103,6 +112,17 @@ class ApiClient {
   Future<dynamic> put(String path, Map<String, dynamic> body, {Duration timeout = _kDefaultTimeout}) async {
     final res = await _client
         .put(
+          Uri.parse('$baseUrl$path'),
+          headers: _headers,
+          body: jsonEncode(body),
+        )
+        .timeout(timeout);
+    return _handle(res);
+  }
+
+  Future<dynamic> patch(String path, Map<String, dynamic> body, {Duration timeout = _kDefaultTimeout}) async {
+    final res = await _client
+        .patch(
           Uri.parse('$baseUrl$path'),
           headers: _headers,
           body: jsonEncode(body),

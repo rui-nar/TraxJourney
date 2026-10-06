@@ -16,7 +16,7 @@ class _FakeNotifier extends ProjectNotifier {
 
   @override
   Future<Map<String, dynamic>?> fetchPerson(int personId) async =>
-      people.firstWhere((p) => p['id'] == personId);
+      itemsFacet.people.firstWhere((p) => p['id'] == personId);
 
   @override
   Future<List<Map<String, dynamic>>?> fetchPersonPolarstepsTrips(
@@ -41,9 +41,9 @@ class _FakeNotifier extends ProjectNotifier {
 
 _FakeNotifier _notifier() {
   final n = _FakeNotifier()..ref = const ProjectRef(name: 'Trip');
-  n.people = [
+  n.itemsFacetWriter.setPeople([
     {'id': 1, 'name': 'Alice', 'polarsteps': 'alice'},
-  ];
+  ]);
   return n;
 }
 
@@ -104,7 +104,7 @@ void main() {
       home: Builder(
         builder: (context) => ElevatedButton(
           onPressed: () =>
-              showPersonDetailSheet(context, notifier, notifier.people.first),
+              showPersonDetailSheet(context, notifier, notifier.itemsFacet.people.first),
           child: const Text('map pin'),
         ),
       ),

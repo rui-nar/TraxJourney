@@ -24,22 +24,49 @@ stored in ``polarstepstoken`` (see scripts/inspect_polarsteps_steps.py) — no
 credentials need to be supplied, but the server's CREDENTIALS_ENCRYPTION_KEY
 must be set, since the stored token is encrypted.
 
+Only memories imported before the fix are touched: ``--imported-before
+YYYY-MM-DD`` (required) selects a memory when its oldest stored full-res
+file was written before that date (UTC). ``memory`` has no creation
+timestamp, and an import writes every photo file at import time, so the
+oldest file's mtime is the import date; photos added by hand later are newer
+and do not move it. A memory with no stored file is not selected (nothing to
+reorder). ``--project ID`` (repeatable) narrows the run to those projects.
+``<deploy-date>`` below is the day the #239 fix (v0.48.0) reached the server.
+
 A memory is left untouched (flagged for manual review, not guessed at) when
-too many of its source downloads fail or too few of its local photos match
-any source photo by content — that usually means the trip changed on
-Polarsteps since import, not that this script's logic is wrong.
+any of its source downloads fails — a photo that could not be compared would
+otherwise be moved to the end, scrambling a memory that may be correct — or
+when none or too few of its local photos match any source photo by content,
+which usually means the trip changed on Polarsteps since import, not that
+this script's logic is wrong. "already in correct order" is only reported for
+a memory that was compared and found in order.
+
+What it writes (issue #237's rank model, see api/photo_order.py): a dense
+``photos_json`` (no ``null`` slots, which the reader below already skips) and
+``photo_order_json`` reset to ``{"epoch": <unchanged>, "ranks": {}}`` — the
+repaired list is the order now, and old ranks would place the next import
+photo against the scrambled one. The epoch is kept so a download queued
+before a re-import is still dropped. A DB not yet migrated to that column is
+refused.
+
+It may run with the API live: each memory is written and committed on its
+own, and only if neither column changed since the run read it; a memory
+edited meanwhile is skipped and reported, never overwritten.
 
 DRY-RUN BY DEFAULT — prints the plan and changes nothing. Pass --apply to write.
-Always run against a copy first.
+Always take a DB copy first (docs/RELEASING.md, post-deploy owner actions).
 
 Usage:
-    python scripts/reorder_polarsteps_memory_photos.py --db "traxjourney.db" --data-dir data
-    python scripts/reorder_polarsteps_memory_photos.py --db copy.db --data-dir data --apply
+    python scripts/reorder_polarsteps_memory_photos.py --db "traxjourney.db" --data-dir data \\
+        --imported-before <deploy-date>
+    python scripts/reorder_polarsteps_memory_photos.py --db copy.db --data-dir data \\
+        --imported-before <deploy-date> --apply
 
     # a project that was imported once and never linked for auto-sync needs
-    # an explicit trip id (repeatable, one per project):
+    # an explicit trip id (repeatable, one per project); --project limits the
+    # run to the given projects (repeatable):
     python scripts/reorder_polarsteps_memory_photos.py --db copy.db --data-dir data \\
-        --project-trip 42:9876543210
+        --imported-before <deploy-date> --project 42 --project-trip 42:9876543210
 """
 from __future__ import annotations
 
@@ -49,8 +76,9 @@ import json
 import os
 import sqlite3
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 # Allow running as a plain script: put the project root on sys.path so the
 # `src` package imports (same convention as scripts/dedupe_polarsteps_memories.py).
@@ -58,6 +86,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.api.polarsteps_client import PolarstepsClient, format_step  # noqa: E402
 from src.auth.credentials_crypto import CredentialDecryptError, decrypt_credential  # noqa: E402
 from src.utils.photo_paths import photo_file, photo_folder  # noqa: E402
+from api.photo_order import dump_state, load_state  # noqa: E402
 
 ClientFactory = Callable[[str], "object"]
 Downloader = Callable[[str], bytes]
@@ -101,28 +130,29 @@ def plan_memory_reorder(
     hash_to_uuid = {h: u for u, h in local_hashes.items()}
     matched: List[str] = []
     seen: set = set()
-    failures = 0
-    attempted = 0
     for photo in source_photos:
         url = photo.get("url")
         if not url:
             continue
-        attempted += 1
+        # Any failure flags the whole memory: the photo it would have matched
+        # would land among the unmatched at the end, a partial reorder that
+        # can scramble a memory already in the right order (U7R1-1).
         try:
             data = download(url)
-        except Exception:
-            failures += 1
-            continue
+        except Exception as exc:
+            return None, f"flagged for manual review: source download failed ({type(exc).__name__}: {exc})"
         uuid = hash_to_uuid.get(_sha256(data))
         if uuid and uuid not in seen:
             matched.append(uuid)
             seen.add(uuid)
 
-    if attempted and failures > attempted / 2:
-        return None, f"flagged for manual review: {failures}/{attempted} source downloads failed"
+    # Nothing matched means nothing was compared: the stored order says
+    # nothing about the source, so this is neither "in order" nor fixable.
+    if not matched:
+        return None, "flagged for manual review: no photo matched the source; not compared"
 
     unmatched = [u for u in current_uuids if u not in seen]
-    if matched and len(unmatched) > len(current_uuids) / 2:
+    if len(unmatched) > len(current_uuids) / 2:
         return None, (
             f"flagged for manual review: only {len(matched)}/{len(current_uuids)} "
             "local photos matched a source photo by content"
@@ -134,6 +164,35 @@ def plan_memory_reorder(
     return new_order, f"{current_uuids} -> {new_order}"
 
 
+def _has_photo_order_column(con: sqlite3.Connection) -> bool:
+    """True once migration 4b9d2e7a1c63 has added ``memory.photo_order_json``."""
+    return any(r[1] == "photo_order_json" for r in con.execute("PRAGMA table_info(memory)"))
+
+
+def _write_reorder(con: sqlite3.Connection, memory, new_order: List[str]) -> bool:
+    """Store *new_order* with ranks reset and the epoch kept; commit at once.
+
+    Compare-and-set against the values the plan was computed from, so a live
+    API edit made since then is never overwritten. Committing per memory holds
+    the write lock for one statement instead of the whole network-bound run.
+    Returns False when the memory changed (or was deleted) and was left alone.
+    """
+    state = load_state(memory["photo_order_json"])
+    cur = con.execute(
+        "UPDATE memory SET photos_json=?, photo_order_json=? "
+        "WHERE id=? AND photos_json IS ? AND photo_order_json IS ?",
+        (
+            json.dumps(new_order),
+            dump_state({"epoch": state["epoch"], "ranks": {}}),
+            memory["id"],
+            memory["photos_json"],
+            memory["photo_order_json"],
+        ),
+    )
+    con.commit()
+    return cur.rowcount == 1
+
+
 def _parse_project_trip_overrides(pairs: List[str]) -> Dict[int, int]:
     overrides: Dict[int, int] = {}
     for pair in pairs:
@@ -142,25 +201,65 @@ def _parse_project_trip_overrides(pairs: List[str]) -> Dict[int, int]:
     return overrides
 
 
+def _parse_cutoff(value: str) -> float:
+    """``YYYY-MM-DD`` -> POSIX timestamp of that day's 00:00 UTC."""
+    try:
+        day = datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected YYYY-MM-DD, got {value!r}")
+    return day.replace(tzinfo=timezone.utc).timestamp()
+
+
+def _oldest_original_mtime(data_dir: Path, owner_id: int, memory_id: int, uuids: List[str]) -> Optional[float]:
+    """mtime of the memory's oldest stored full-res file, or None if none is on disk."""
+    base = photo_folder(data_dir, owner_id, "memories", memory_id)
+    mtimes = []
+    for u in uuids:
+        f = photo_file(base, u)
+        if f is not None and f.exists():
+            mtimes.append(f.stat().st_mtime)
+    return min(mtimes) if mtimes else None
+
+
+def _http_download(url: str) -> bytes:
+    import requests as _req
+    resp = _req.get(url, timeout=30)
+    # An error page is a failed download, not a photo that matches nothing.
+    resp.raise_for_status()
+    return resp.content
+
+
 def run(
     con: sqlite3.Connection,
     data_dir: Path,
     apply: bool,
     overrides: Dict[int, int],
+    *,
+    imported_before: float,
+    projects: Optional[Iterable[int]] = None,
     client_factory: Optional[ClientFactory] = None,
     download: Optional[Downloader] = None,
 ) -> int:
-    """Return the number of memories whose photos_json was (or would be) corrected."""
+    """Return the number of memories whose photos_json was (or would be) corrected.
+
+    Only memories whose oldest stored original predates *imported_before* (a
+    POSIX timestamp) are considered, and only in *projects* when given.
+    """
     if client_factory is None:
         client_factory = PolarstepsClient  # resolved at call time so tests can monkeypatch it
     if download is None:
-        import requests as _req
-        download = lambda url: _req.get(url, timeout=30).content  # noqa: E731
+        download = _http_download
 
-    memories = con.execute(
-        "SELECT id, project_id, photos_json, polarsteps_step_id FROM memory "
-        "WHERE polarsteps_step_id IS NOT NULL ORDER BY project_id, id"
-    ).fetchall()
+    sql = (
+        "SELECT id, project_id, photos_json, photo_order_json, polarsteps_step_id FROM memory "
+        "WHERE polarsteps_step_id IS NOT NULL"
+    )
+    params: List[int] = []
+    if projects:
+        project_ids = sorted(set(projects))
+        sql += f" AND project_id IN ({','.join('?' * len(project_ids))})"
+        params.extend(project_ids)
+    memories = con.execute(sql + " ORDER BY project_id, id", params).fetchall()
     if not memories:
         print("No Polarsteps-imported memories found. Nothing to do.")
         return 0
@@ -178,6 +277,19 @@ def run(
             print(f"• project {project_id}: not found, skipping {len(project_memories)} memory(ies)")
             continue
         owner_id = proj["user_info_id"]
+
+        selected = []
+        for m in project_memories:
+            uuids = [u for u in json.loads(m["photos_json"] or "[]") if u]
+            oldest = _oldest_original_mtime(data_dir, owner_id, m["id"], uuids)
+            if oldest is not None and oldest < imported_before:
+                selected.append(m)
+        if len(selected) < len(project_memories):
+            print(f"• project {project_id}: {len(project_memories) - len(selected)} memory(ies) "
+                  "imported on or after --imported-before (or with no stored photo), not selected")
+        if not selected:
+            continue
+        project_memories = selected
 
         trip_id = overrides.get(project_id)
         if trip_id is None:
@@ -229,15 +341,11 @@ def run(
                 continue
 
             print(f"    memory {m['id']}: {note}")
+            if apply and not _write_reorder(con, m, new_order):
+                print(f"    memory {m['id']}: changed or deleted during the run, left untouched")
+                continue
             changed += 1
-            if apply:
-                con.execute(
-                    "UPDATE memory SET photos_json=? WHERE id=?",
-                    (json.dumps(new_order), m["id"]),
-                )
 
-    if apply:
-        con.commit()
     return changed
 
 
@@ -246,6 +354,15 @@ def main() -> int:
     ap.add_argument("--db", required=True, help="Path to the SQLite database file")
     ap.add_argument("--data-dir", required=True, help="Path to the data/ dir holding user photo files")
     ap.add_argument("--apply", action="store_true", help="Write changes (default: dry-run)")
+    ap.add_argument(
+        "--imported-before", required=True, type=_parse_cutoff, metavar="YYYY-MM-DD",
+        help="Only memories whose oldest stored photo file predates this day (00:00 UTC): "
+             "the date the #239 fix (v0.48.0) reached the server",
+    )
+    ap.add_argument(
+        "--project", action="append", type=int, default=[], metavar="ID",
+        help="Only memories of this project (repeatable; default: every project)",
+    )
     ap.add_argument(
         "--project-trip", action="append", default=[], metavar="PROJECT_ID:TRIP_ID",
         help="Explicit trip id for a project with no linked_ps_trip_id (repeatable)",
@@ -265,10 +382,20 @@ def main() -> int:
 
     con = sqlite3.connect(str(db_path))
     con.row_factory = sqlite3.Row
+    if not _has_photo_order_column(con):
+        print(
+            "ERROR: memory.photo_order_json is missing: this DB predates migration "
+            "4b9d2e7a1c63. Start the new API image once (it runs `alembic upgrade head`) "
+            "and run this script against the migrated DB.",
+            file=sys.stderr,
+        )
+        con.close()
+        return 2
 
     mode = "APPLY" if args.apply else "DRY-RUN"
     print(f"=== Polarsteps memory photo-order backfill [{mode}] — {db_path} ===")
-    changed = run(con, data_dir, args.apply, overrides)
+    changed = run(con, data_dir, args.apply, overrides,
+                  imported_before=args.imported_before, projects=args.project)
 
     if args.apply:
         print(f"\nAPPLIED: corrected {changed} memory(ies).")

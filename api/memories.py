@@ -48,6 +48,8 @@ from api.project_access import (
     translate_insert_after,
 )
 from api.photo_locks import photo_lock
+from api.photo_order import clear as clear_order, dump_state, load_state, place
+from api.photo_order import remove as remove_from_order, replace as replace_in_order
 from api.project_shared import bust_project_payloads, project_cache_ref
 from api.translations import translate_text
 from models.project_db import DBMemory, DBMemoryComment, DBMemoryLike, DBMemoryTranslation, DBProject, DBProjectItem
@@ -271,20 +273,30 @@ def _adopt_and_refresh(sess, user_id: str, mem_row: DBMemory, body: "MemoryBody"
     """Adopt an existing memory for a Polarsteps re-import: backfill the step id,
     overwrite scalar fields from the step (Polarsteps is source of truth), and
     clear photos so the client's re-upload repopulates a fresh set. Returns the
-    memory id; never creates a second row or project item."""
+    memory id; never creates a second row or project item.
+
+    The photo lock is held from before the clear until after the commit, so no
+    photo placement can land between the two (#237): one that waits on the
+    lock lands after the commit, where the clear's epoch bump decides its fate.
+    Nothing inside the window takes ``photo_lock`` again (it is not re-entrant).
+    """
     lat, lon = _resolve_body_geo(sess, mem_row.project_id, body)
-    mem_row.name = body.name
-    mem_row.date = body.date
-    mem_row.time = body.time
-    mem_row.description = body.description
-    mem_row.geo_mode = body.geo_mode
-    mem_row.lat = lat
-    mem_row.lon = lon
-    mem_row.polarsteps_step_id = body.polarsteps_step_id
-    _clear_memory_photos(sess, user_id, mem_row)
-    sess.add(mem_row)
-    cache_ref = project_cache_ref(sess, mem_row.project_id)
-    sess.commit()
+    with photo_lock("memory", mem_row.id):
+        # The row was read before the lock: a photo placed since then must be
+        # in the list the clear deletes, or its files would be orphaned.
+        sess.refresh(mem_row)
+        mem_row.name = body.name
+        mem_row.date = body.date
+        mem_row.time = body.time
+        mem_row.description = body.description
+        mem_row.geo_mode = body.geo_mode
+        mem_row.lat = lat
+        mem_row.lon = lon
+        mem_row.polarsteps_step_id = body.polarsteps_step_id
+        _clear_memory_photos(sess, user_id, mem_row)
+        sess.add(mem_row)
+        cache_ref = project_cache_ref(sess, mem_row.project_id)
+        sess.commit()
     bust_project_payloads(cache_ref)
     return mem_row.id
 
@@ -465,13 +477,20 @@ def delete_memory(
 ):
     """Delete a memory and all its photos from disk."""
     user_info_id = int(current_user["sub"])
-    with get_session() as sess:
+    # Under the photo lock from before the list is read until after the
+    # commit, so no placement lands in between (it lands before, and goes
+    # with the memory, or finds it gone and removes its own files).
+    with photo_lock("memory", memory_id), get_session() as sess:
         mem_row = _get_owned_memory(sess, memory_id, user_info_id)
 
         photos: List[str] = json.loads(mem_row.photos_json or "[]")
         owner_dir = _owner_dir_id(sess, mem_row)
         photo_path = photo_folder(_DATA_DIR, owner_dir, "memories", memory_id)
-        _delete_photo_files(owner_dir, memory_id, photos)
+        # Also the photos on disk the list does not name: those of a
+        # placement waiting on the lock, written and counted. The rmtree below
+        # would take them uncounted, and their own cleanup then finds nothing.
+        on_disk = {p.stem.removesuffix("_thumb") for p in photo_path.glob("*.jpg")}
+        _delete_photo_files(owner_dir, memory_id, photos + [n for n in on_disk if n not in photos])
         # The memory is gone, so its directory goes whatever is left in it: a
         # share copy a concurrent first serve landed after the unlink above,
         # or the temp file of one (issue #430).
@@ -532,52 +551,65 @@ def _delete_photo_files(user_id: str, memory_id: int, photo_uuids: List[str]) ->
 
 
 def _clear_memory_photos(sess, user_id: str, mem_row: DBMemory) -> None:
-    """Drop all photos from *mem_row*: delete files and reset ``photos_json``.
+    """Drop all photos from *mem_row*: delete files, empty the list and ranks,
+    and bump the epoch so downloads queued before the clear are dropped.
 
     Used when a Polarsteps re-import adopts an existing memory and refreshes it,
     so the client's subsequent ``from-url`` uploads repopulate a clean set rather
-    than appending duplicates onto the previously imported photos.
+    than appending duplicates onto the previously imported photos. The caller
+    holds ``photo_lock`` through its commit; this does not take it.
     """
-    existing: List[str] = json.loads(mem_row.photos_json or "[]")
+    existing: List[str] = [p for p in json.loads(mem_row.photos_json or "[]") if p]
     if existing:
         _delete_photo_files(user_id, mem_row.id, existing)
     mem_row.photos_json = "[]"
+    mem_row.photo_order_json = dump_state(clear_order(load_state(mem_row.photo_order_json)))
 
 
-def _write_memory_photo(memory_id: int, uuid_str: str, order: Optional[int] = None) -> None:
-    """Add *uuid_str* to a memory's photo list, at *order* if given, else appended.
+def _write_memory_photo(
+    memory_id: int, uuid_str: str, order: Optional[int] = None, epoch: Optional[int] = None,
+    *, owner_dir: Optional[str] = None,
+) -> bool:
+    """Place *uuid_str*, whose files are already written under *owner_dir*, in
+    a memory's photo list. Returns False when it could not be placed.
+
+    Every caller that wrote files passes *owner_dir*, so a photo that cannot
+    be placed takes its files with it; without it there is nothing to clean.
+
+    *order* is the photo's rank (e.g. its index in a Polarsteps step): the
+    photo is inserted among the ranked ones by rank, never over another
+    photo; with no *order* it is appended (``api/photo_order.py``). The list
+    stays dense — no placeholders.
 
     Guarded by a per-memory lock (issue #237): Polarsteps import fires many
-    of these concurrently as background downloads complete, so without
-    synchronizing this read-modify-write of ``photos_json`` two overlapping
-    calls could clobber each other's update. *order* is the photo's intended
-    position (e.g. its index in the source album) — placing it there instead
-    of always appending means the final list reflects that intended order
-    even when downloads complete out of order. A gap left by a
-    still-in-flight or failed slot is a falsy placeholder, filtered out
-    wherever photos_json is read back for a client.
+    of these concurrently as background downloads complete. When the memory
+    is gone (deleted while the files were written; ids are never reused), or
+    *epoch* is given and a re-import has bumped the stored one since the
+    download was queued, the photo's files are deleted — and uncounted —
+    instead.
     """
     with photo_lock("memory", memory_id):
         with get_session() as sess:
             mem_row = sess.get(DBMemory, memory_id)
-            if mem_row is None:
-                return
-            photos: List[Optional[str]] = json.loads(mem_row.photos_json or "[]")
-            if order is None:
-                photos.append(uuid_str)
-            else:
-                if len(photos) <= order:
-                    photos.extend([None] * (order + 1 - len(photos)))
-                photos[order] = uuid_str
+            state = load_state(mem_row.photo_order_json) if mem_row is not None else None
+            if mem_row is None or (epoch is not None and state["epoch"] != epoch):
+                if owner_dir is not None:
+                    _delete_photo_files(owner_dir, memory_id, [uuid_str])
+                return False
+            photos = [p for p in json.loads(mem_row.photos_json or "[]") if p]
+            photos, state = place(photos, state, uuid_str, order)
             mem_row.photos_json = json.dumps(photos)
+            mem_row.photo_order_json = dump_state(state)
             sess.add(mem_row)
             cache_ref = project_cache_ref(sess, mem_row.project_id)
             sess.commit()
             bust_project_payloads(cache_ref)
+    return True
 
 
 def _download_photo_from_url(
-    memory_id: int, url: str, user_id: str, project_id: Optional[int] = None, order: Optional[int] = None,
+    memory_id: int, url: str, user_id: str, project_id: Optional[int] = None,
+    order: Optional[int] = None, epoch: Optional[int] = None,
 ) -> None:
     try:
         # The client picks this URL: fetch it only from a public address
@@ -599,15 +631,16 @@ def _download_photo_from_url(
         return
     uuid_str = str(uuid_lib.uuid4())
     _save_photo_files(user_id, memory_id, uuid_str, content)
-    _write_memory_photo(memory_id, uuid_str, order)
+    _write_memory_photo(memory_id, uuid_str, order, epoch, owner_dir=user_id)
 
 
 class PhotoFromUrlIn(BaseModel):
     url: str = Field(description="Public URL of the image to download")
     order: Optional[int] = Field(
-        None, description="Intended position of this photo within the memory's photo list "
-                           "(e.g. its index in a Polarsteps step); preserved even if concurrent "
-                           "downloads complete out of order. Omit to append.",
+        None, ge=0, le=9999,
+        description="Intended position of this photo within the memory's photo list "
+                    "(e.g. its index in a Polarsteps step); preserved even if concurrent "
+                    "downloads complete out of order. Omit to append.",
     )
 
 
@@ -640,7 +673,8 @@ async def upload_photo(
     # semaphore comment above — but here via FastAPI's thread pool instead of
     # a sync route, since the rest of this handler needs to stay async).
     await run_in_threadpool(_save_photo_files, owner_dir, memory_id, photo_uuid, raw)
-    _write_memory_photo(memory_id, photo_uuid)
+    if not _write_memory_photo(memory_id, photo_uuid, owner_dir=owner_dir):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Memory not found")
     return {"uuid": photo_uuid}
 
 
@@ -658,8 +692,11 @@ async def queue_photo_from_url(
         mem_row = _get_owned_memory(sess, memory_id, user_info_id)
         owner_dir = _owner_dir_id(sess, mem_row)
         project_id = mem_row.project_id
+        # A re-import that clears the memory before this download lands bumps
+        # the epoch, and the download is then dropped (#237).
+        epoch = load_state(mem_row.photo_order_json)["epoch"]
     background_tasks.add_task(
-        _download_photo_from_url, memory_id, body.url, owner_dir, project_id, body.order,
+        _download_photo_from_url, memory_id, body.url, owner_dir, project_id, body.order, epoch,
     )
     return {"queued": True}
 
@@ -681,8 +718,9 @@ def delete_photo(
 
         _delete_photo_files(_owner_dir_id(sess, mem_row), memory_id, [photo_uuid])
 
-        photos.remove(photo_uuid)
+        photos, state = remove_from_order(photos, load_state(mem_row.photo_order_json), photo_uuid)
         mem_row.photos_json = json.dumps(photos)
+        mem_row.photo_order_json = dump_state(state)
         sess.add(mem_row)
         cache_ref = project_cache_ref(sess, mem_row.project_id)
         sess.commit()
@@ -719,16 +757,27 @@ async def replace_photo(
 
     with photo_lock("memory", memory_id), get_session() as sess:
         mem_row = sess.get(DBMemory, memory_id)
-        photos: List[str] = json.loads(mem_row.photos_json or "[]")
-        # In-place index replacement, not remove+append: photos_json order is display order.
-        photos[photos.index(old_uuid)] = new_uuid
+        # Same position and rank, not remove+append: photos_json order is
+        # display order. None when the old photo was deleted meanwhile.
+        replaced = None if mem_row is None else replace_in_order(
+            [p for p in json.loads(mem_row.photos_json or "[]") if p],
+            load_state(mem_row.photo_order_json), old_uuid, new_uuid,
+        )
+        if replaced is None:
+            # The memory or the old photo went while the new files were
+            # written: they have nowhere to go (#237).
+            _delete_photo_files(owner_dir, memory_id, [new_uuid])
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
+        photos, state = replaced
         mem_row.photos_json = json.dumps(photos)
+        mem_row.photo_order_json = dump_state(state)
         sess.add(mem_row)
         cache_ref = project_cache_ref(sess, mem_row.project_id)
         sess.commit()
         bust_project_payloads(cache_ref)
-
-    _delete_photo_files(owner_dir, memory_id, [old_uuid])
+        # Still under the lock: a delete_memory's folder sweep would otherwise
+        # size these same files and uncount them a second time.
+        _delete_photo_files(owner_dir, memory_id, [old_uuid])
     return {"uuid": new_uuid}
 
 

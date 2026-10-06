@@ -19,20 +19,20 @@ import 'package:traxjourney_client/src/projects/project_service.dart';
 /// A trip with a ride, no transport, no tags, and a hotel night.
 ProjectNotifier _notifier() {
   final n = ProjectNotifier(ProjectService());
-  n.activities = [
+  n.itemsFacetWriter.setActivities([
     {
       'id': 1,
       'name': 'Morning ride',
       'type': 'Ride',
       'start_date_local': '2026-06-01T09:00:00',
     },
-  ];
-  n.items = [
+  ]);
+  n.itemsFacetWriter.setItems([
     {'item_type': 'activity', 'activity_id': 1},
-  ];
-  n.dayMeta = {
+  ]);
+  n.itemsFacetWriter.setDayMeta({
     '2026-06-01': {'sleeping': 'Hotel'},
-  };
+  });
   return n;
 }
 
@@ -55,7 +55,7 @@ Future<void> _untick(WidgetTester tester, ProjectNotifier notifier,
   await tester.tap(finder);
   await tester.pumpAndSettle();
 
-  expect(notifier.hasActiveFilter, isFalse);
+  expect(notifier.selectionFacet.hasActiveFilter, isFalse);
 }
 
 void main() {
@@ -87,7 +87,7 @@ void main() {
 
     // One hotel night and one unset: the trip offers [Hotel, No data].
     final notifier = _notifier()
-      ..dayMeta['2026-06-02'] = <String, dynamic>{}
+      ..itemsFacet.dayMeta['2026-06-02'] = <String, dynamic>{}
       ..setFilters(sleeping: {'Camping'});
     await _pumpSheet(tester, notifier);
 
@@ -98,7 +98,7 @@ void main() {
     // even after a stale mode that sorts after it: sorted with the other
     // stale values it would land before 'Shelter'.
     notifier
-      ..dayMeta['2026-06-02'] = {'sleeping': 'Hostel'}
+      ..itemsFacet.dayMeta['2026-06-02'] = {'sleeping': 'Hostel'}
       ..setFilters(sleeping: {'Shelter', 'No data'});
     await tester.pumpAndSettle();
 

@@ -76,32 +76,32 @@ void main() {
   test('a failed delete puts the segment back at its original index', () async {
     api = _failingDelete(409);
     final notifier = _notifier()
-      ..items = [_activityItem('a'), _segmentItem('s1'), _activityItem('b')]
-      ..geo = _geoWith(['s1']);
+      ..itemsFacetWriter.setItems([_activityItem('a'), _segmentItem('s1'), _activityItem('b')])
+      ..geoFacetWriter.replaceKeepingLod(_geoWith(['s1']));
 
     notifier.removeSegmentLocally('s1');
-    expect(notifier.items.map((i) => i['item_type']), ['activity', 'activity']);
+    expect(notifier.itemsFacet.items.map((i) => i['item_type']), ['activity', 'activity']);
 
     await notifier.deleteSegment('s1');
 
-    expect(notifier.items.map((i) => i['item_type']),
+    expect(notifier.itemsFacet.items.map((i) => i['item_type']),
         ['activity', 'segment', 'activity'],
         reason: 'the server still has it, so the timeline must show it again');
-    expect(notifier.items[1]['segment']['id'], 's1');
+    expect(notifier.itemsFacet.items[1]['segment']['id'], 's1');
   });
 
   test('a failed delete restores the map feature too', () async {
     api = _failingDelete(500);
     final notifier = _notifier()
-      ..items = [_segmentItem('s1')]
-      ..geo = _geoWith(['s1']);
+      ..itemsFacetWriter.setItems([_segmentItem('s1')])
+      ..geoFacetWriter.replaceKeepingLod(_geoWith(['s1']));
 
     notifier.removeSegmentLocally('s1');
-    expect((notifier.geo!['features'] as List), isEmpty);
+    expect((notifier.geoFacet.geo!['features'] as List), isEmpty);
 
     await notifier.deleteSegment('s1');
 
-    final ids = (notifier.geo!['features'] as List)
+    final ids = (notifier.geoFacet.geo!['features'] as List)
         .map((f) => (f as Map)['properties']['segment_id'])
         .toList();
     expect(ids, ['s1'],
@@ -111,8 +111,8 @@ void main() {
   test('a failed delete leaves an error for the caller to surface', () async {
     api = _failingDelete(409);
     final notifier = _notifier()
-      ..items = [_segmentItem('s1')]
-      ..geo = _geoWith(['s1']);
+      ..itemsFacetWriter.setItems([_segmentItem('s1')])
+      ..geoFacetWriter.replaceKeepingLod(_geoWith(['s1']));
 
     var notified = false;
     notifier.addListener(() => notified = true);
@@ -127,14 +127,14 @@ void main() {
   test('a 404 means it is already gone — the removal stands', () async {
     api = _failingDelete(404);
     final notifier = _notifier()
-      ..items = [_segmentItem('s1')]
-      ..geo = _geoWith(['s1']);
+      ..itemsFacetWriter.setItems([_segmentItem('s1')])
+      ..geoFacetWriter.replaceKeepingLod(_geoWith(['s1']));
 
     notifier.removeSegmentLocally('s1');
 
     await notifier.deleteSegment('s1');
 
-    expect(notifier.items, isEmpty);
+    expect(notifier.itemsFacet.items, isEmpty);
     expect(notifier.error, isNull);
   });
 
@@ -143,13 +143,13 @@ void main() {
         baseUrl: '',
         httpClient: MockClient((_) async => http.Response('', 204)));
     final notifier = _notifier()
-      ..items = [_segmentItem('s1'), _segmentItem('s2')]
-      ..geo = _geoWith(['s1', 's2']);
+      ..itemsFacetWriter.setItems([_segmentItem('s1'), _segmentItem('s2')])
+      ..geoFacetWriter.replaceKeepingLod(_geoWith(['s1', 's2']));
 
     notifier.removeSegmentLocally('s1');
     await notifier.deleteSegment('s1');
 
-    expect(notifier.items.map((i) => i['segment']['id']), ['s2']);
+    expect(notifier.itemsFacet.items.map((i) => i['segment']['id']), ['s2']);
     expect(notifier.error, isNull);
   });
 
@@ -157,16 +157,16 @@ void main() {
       () async {
     api = _failingDelete(409);
     final notifier = _notifier()
-      ..items = [_segmentItem('s1')]
-      ..geo = _geoWith(['s1']);
+      ..itemsFacetWriter.setItems([_segmentItem('s1')])
+      ..geoFacetWriter.replaceKeepingLod(_geoWith(['s1']));
 
     notifier.removeSegmentLocally('s1');
     // Something else (an Undo, a poll) reloaded the list from the server while
     // the DELETE was in flight.
-    notifier.items = [_segmentItem('s1')];
+    notifier.itemsFacetWriter.setItems([_segmentItem('s1')]);
 
     await notifier.deleteSegment('s1');
 
-    expect(notifier.items, hasLength(1));
+    expect(notifier.itemsFacet.items, hasLength(1));
   });
 }

@@ -105,6 +105,14 @@ class _PollService extends ProjectService {
     geoCalls++;
     return {'type': 'FeatureCollection', 'features': <dynamic>[]};
   }
+
+  /// The refresh after the re-fetch asks for its own request (issue #379).
+  @override
+  Future<Map<String, dynamic>> getSimplifiedGeoFresh(ProjectRef ref, double zoom,
+      {Object? bbox}) async {
+    geoCalls++;
+    return {'type': 'FeatureCollection', 'features': <dynamic>[]};
+  }
 }
 
 /// A notifier with [ref] set, bypassing load()'s network calls.
@@ -138,8 +146,8 @@ void main() {
       expect(service.triggerCalls, 1);
       expect(service.metaCalls, 3);
       expect(service.detailsCalls, 1, reason: 'one heavy fetch after the verdict');
-      expect(n.activities.single['name'], 'Fresh name');
-      expect(n.activities.single['map']['summary_polyline'], 'abc');
+      expect(n.itemsFacet.activities.single['name'], 'Fresh name');
+      expect(n.itemsFacet.activities.single['map']['summary_polyline'], 'abc');
     });
 
     test('failed verdict surfaces the server error message', () async {

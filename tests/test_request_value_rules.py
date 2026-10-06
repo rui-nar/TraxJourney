@@ -85,12 +85,12 @@ def test_the_check_covers_every_route(app):  # noqa: F811
     """A body the models type loosely (a style's width, a day's counters)
     is checked too."""
     client, _ = app
-    for url, body in [
-        ("/api/projects/Trip/track-style", '{"track_width": NaN}'),
-        ("/api/projects/Trip/day-meta",
-         '{"day_meta": {"2024-06-01": {"counters": [{"name": "Coffee", "value": Infinity}]}}}'),
+    for method, url, body in [
+        ("PUT", "/api/projects/Trip/track-style", '{"track_width": NaN}'),
+        ("PATCH", "/api/projects/Trip/day-meta",
+         '{"days": {"2024-06-01": {"counters": [{"name": "Coffee", "value": Infinity}]}}}'),
     ]:
-        r = _raw(client, "PUT", url, body)
+        r = _raw(client, method, url, body)
         assert r.status_code == 422, (url, r.text)
 
 
@@ -149,7 +149,7 @@ def test_an_out_of_range_coordinate_is_refused_everywhere(app, lat, lon):  # noq
 def test_a_day_note_of_the_wrong_type_is_refused(app, day):  # noqa: F811
     client, engine = app
 
-    r = client.put("/api/projects/Trip/day-meta", json={"day_meta": {"2024-06-01": day}})
+    r = client.patch("/api/projects/Trip/day-meta", json={"days": {"2024-06-01": day}})
 
     assert r.status_code == 422, r.text
     with Session(engine) as sess:
@@ -159,11 +159,11 @@ def test_a_day_note_of_the_wrong_type_is_refused(app, day):  # noqa: F811
 def test_a_well_formed_day_note_still_goes_through(app):  # noqa: F811
     client, _ = app
 
-    r = client.put("/api/projects/Trip/day-meta", json={"day_meta": {"2024-06-01": {
+    r = client.patch("/api/projects/Trip/day-meta", json={"days": {"2024-06-01": {
         "journal": "Big day", "tags": ["alps"], "sleeping": "Hut",
         "difficulty": "hard", "weather": "clear", "counters": [{"name": "Coffee", "value": 2}]}}})
 
-    assert r.status_code == 204, r.text
+    assert r.status_code == 200, r.text
 
 
 # ── Activities a client adds, and their encrypted fields ────────────────────
@@ -254,8 +254,8 @@ def test_a_trip_written_through_the_api_exports_and_imports_back(app, monkeypatc
     assert client.post("/api/projects/Trip/activities", json={"activities": [
         _strava(elev_high=65535.0)]}).status_code == 200
     _upload_gpx(client, [100.0, "NaN", 99999.0, 130.0])
-    assert client.put("/api/projects/Trip/day-meta", json={"day_meta": {"2024-06-01": {
-        "journal": "Big day", "tags": ["alps"]}}}).status_code == 204
+    assert client.patch("/api/projects/Trip/day-meta", json={"days": {"2024-06-01": {
+        "journal": "Big day", "tags": ["alps"]}}}).status_code == 200
 
     exported = client.get("/api/projects/Trip/export-traxj")
     assert exported.status_code == 200, exported.text
@@ -280,11 +280,11 @@ def test_a_stored_legacy_day_does_not_block_a_save(app):  # noqa: F811
     client, engine = app
     _store_day_meta(engine, {"2024-05-01": {"journal": 5, "tags": "old", "sleeping": "Hut"}})
 
-    r = client.put("/api/projects/Trip/day-meta", json={"day_meta": {
+    r = client.patch("/api/projects/Trip/day-meta", json={"days": {
         "2024-05-01": {"journal": 5, "tags": "old", "sleeping": "Hut"},
         "2024-06-01": {"journal": "Big day", "tags": ["alps"]}}})
 
-    assert r.status_code == 204, r.text
+    assert r.status_code == 200, r.text
 
 
 def test_a_changed_field_of_a_legacy_day_is_still_checked(app):  # noqa: F811
@@ -292,13 +292,13 @@ def test_a_changed_field_of_a_legacy_day_is_still_checked(app):  # noqa: F811
     _store_day_meta(engine, {"2024-05-01": {"journal": 5, "sleeping": "Hut"}})
 
     # The untouched field passes; the one being written is judged.
-    r = client.put("/api/projects/Trip/day-meta", json={"day_meta": {
+    r = client.patch("/api/projects/Trip/day-meta", json={"days": {
         "2024-05-01": {"journal": 5, "sleeping": ["Tent"]}}})
     assert r.status_code == 422, r.text
 
-    r = client.put("/api/projects/Trip/day-meta", json={"day_meta": {
+    r = client.patch("/api/projects/Trip/day-meta", json={"days": {
         "2024-05-01": {"journal": 5, "sleeping": "Tent"}}})
-    assert r.status_code == 204, r.text
+    assert r.status_code == 200, r.text
 
 
 def test_a_changed_type_is_a_change(app):  # noqa: F811
@@ -307,7 +307,7 @@ def test_a_changed_type_is_a_change(app):  # noqa: F811
     client, engine = app
     _store_day_meta(engine, {"2024-05-01": {"journal": 1}})
 
-    r = client.put("/api/projects/Trip/day-meta", json={"day_meta": {
+    r = client.patch("/api/projects/Trip/day-meta", json={"days": {
         "2024-05-01": {"journal": True}}})
 
     assert r.status_code == 422, r.text

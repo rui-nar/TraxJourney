@@ -12,7 +12,8 @@ the Flutter client's stale-pending recovery — five minutes late, and only if
 someone reopened the project.
 
 :func:`sweep_orphaned_jobs` runs at API startup and re-queues anything left
-non-terminal.
+non-terminal. :func:`warn_stuck_route_jobs` runs hourly and logs any job left
+unfinished for too long while the API stays up.
 """
 from __future__ import annotations
 
@@ -95,6 +96,12 @@ RESOLVER_VERSION = 1
 MAX_STALE_RESOLVES_PER_SWEEP = 3
 
 TERMINAL = ("done", "failed")
+
+# How long a route job may stay pending/running before warn_stuck_route_jobs
+# reports it. A resolve normally finishes in well under a minute and its worst
+# case — every Overpass query timing out — is a few minutes, so half an hour
+# means the job is lost, not slow.
+STUCK_JOB_AFTER_S = 30 * 60
 
 
 def create_job(
@@ -227,6 +234,59 @@ def sweep_orphaned_jobs() -> int:
     if requeued:
         _log.info("re-queued %d orphaned route job(s) at startup", requeued)
     return requeued
+
+
+def warn_stuck_route_jobs() -> int:
+    """Log one WARNING per route job still unfinished after
+    :data:`STUCK_JOB_AFTER_S`. Returns how many. Changes nothing.
+
+    :func:`sweep_orphaned_jobs` only runs at startup, so a worker killed
+    mid-resolve while the API stays up leaves its job — and the segment's
+    "pending" — in place until the next restart, with every open session
+    polling ``/meta`` for it meanwhile. Nothing re-queues it here (re-queueing a
+    job that may still be running would duplicate it); this only makes the stall
+    visible in the logs.
+
+    Age is counted from ``started_at`` (the attempt's token, stamped when the
+    resolve was requested), or from ``created_at`` when that is missing or
+    unparsable.
+    """
+    now = time.time()
+    stuck: list = []
+    try:
+        with get_session() as sess:
+            rows = sess.exec(
+                select(DBRouteJob).where(DBRouteJob.status.notin_(TERMINAL))
+            ).all()
+            for job in rows:
+                since = _started_epoch(job.started_at)
+                if since is None:
+                    since = job.created_at
+                age = now - since
+                if age > STUCK_JOB_AFTER_S:
+                    stuck.append((job.id, job.status, job.project_id,
+                                  job.segment_id, age))
+    except Exception:  # noqa: BLE001 — a broken check must not take the scheduler down
+        _log.exception("stuck route job check failed to read jobs")
+        return 0
+
+    for job_id, status, project_id, seg_id, age in stuck:
+        _log.warning("route job %s still %s after %d min (project=%s seg=%s)",
+                     job_id, status, age // 60, project_id, seg_id)
+    return len(stuck)
+
+
+def _started_epoch(started_at: Optional[str]) -> Optional[float]:
+    """A job's ISO-8601 ``started_at`` as epoch seconds; naive means UTC."""
+    if not started_at:
+        return None
+    try:
+        dt = datetime.fromisoformat(started_at)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
 
 
 def _fail_segment_for(

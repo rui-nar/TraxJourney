@@ -59,6 +59,8 @@ _EXEMPT = {
     # Delegates its write (and the bust) to a helper in the same module.
     "upload_photo": "busts via _append_photo/_append_photo_to_memory",
     "queue_photo_from_url": "background task busts via _append_photo",
+    # The whole-map day-meta PUT, retired for PATCH /day-meta.
+    "update_day_meta": "retired (#397): answers 426 and writes nothing",
 }
 
 _BUST_CALLS = ("bust_geo_cache", "bust_project_cache", "bust_project_payloads")

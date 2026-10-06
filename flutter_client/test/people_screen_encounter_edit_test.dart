@@ -56,10 +56,10 @@ class _FakeNotifier extends ProjectNotifier {
 
 _FakeNotifier _notifierWithGroupEncounter({String description = 'karaoke'}) {
   final n = _FakeNotifier()..ref = const ProjectRef(name: 'Trip');
-  n.groups = [
+  n.itemsFacetWriter.setGroups([
     {'id': 5, 'name': 'Crew', 'nationalities': [], 'socials': []},
-  ];
-  n.items = [
+  ]);
+  n.itemsFacetWriter.setItems([
     {
       'item_type': 'encounter',
       'encounter': {
@@ -74,7 +74,7 @@ _FakeNotifier _notifierWithGroupEncounter({String description = 'karaoke'}) {
         'lon': 2.0,
       },
     },
-  ];
+  ]);
   return n;
 }
 
@@ -87,7 +87,7 @@ Future<void> _openGroupSheet(WidgetTester tester, _FakeNotifier n) async {
   await tester.pumpWidget(MaterialApp(
     home: Builder(
       builder: (context) => ElevatedButton(
-        onPressed: () => showGroupDetailSheet(context, n, n.groups.first),
+        onPressed: () => showGroupDetailSheet(context, n, n.itemsFacet.groups.first),
         child: const Text('open'),
       ),
     ),
@@ -155,7 +155,7 @@ void main() {
     await _openGroupSheet(tester, n);
     expect(find.text('before'), findsOneWidget);
 
-    n.items.first['encounter']['description'] = 'after';
+    n.itemsFacet.items.first['encounter']['description'] = 'after';
     n.notifyListeners();
     await tester.pumpAndSettle();
 
@@ -169,12 +169,12 @@ void main() {
     // inherited encounter with group_id and a null person_id — the dialog has
     // to open on the group, and saving must keep it a group encounter.
     final n = _FakeNotifier()..ref = const ProjectRef(name: 'Trip');
-    n.groups = [
+    n.itemsFacetWriter.setGroups([
       {'id': 5, 'name': 'Crew', 'nationalities': [], 'socials': []},
-    ];
-    n.people = [
+    ]);
+    n.itemsFacetWriter.setPeople([
       {'id': 9, 'name': 'Alice', 'group_id': 5, 'nationalities': [], 'socials': []},
-    ];
+    ]);
     n.personPayload = {
       'id': 9,
       'name': 'Alice',
@@ -201,7 +201,7 @@ void main() {
     await tester.pumpWidget(MaterialApp(
       home: Builder(
         builder: (context) => ElevatedButton(
-          onPressed: () => showPersonDetailSheet(context, n, n.people.first),
+          onPressed: () => showPersonDetailSheet(context, n, n.itemsFacet.people.first),
           child: const Text('open'),
         ),
       ),

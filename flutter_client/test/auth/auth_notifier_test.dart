@@ -19,14 +19,15 @@ import 'package:traxjourney_client/src/auth/auth_notifier.dart';
 import 'package:traxjourney_client/src/auth/auth_service.dart';
 import 'package:traxjourney_client/src/api/client.dart';
 
-/// Builds an unsigned (test-only) JWT carrying just an `exp` claim. Nothing
-/// in AuthNotifier verifies the signature client-side — only the payload's
-/// `exp` is read — so a dummy signature segment is fine here.
+/// Builds an unsigned (test-only) JWT for account 1 carrying an `exp` claim,
+/// as the server mints them. Nothing in AuthNotifier verifies the signature
+/// client-side — only the payload's `exp` and `sub` are read — so a dummy
+/// signature segment is fine here.
 String _fakeJwt(DateTime exp) {
   String seg(Object payload) =>
       base64Url.encode(utf8.encode(jsonEncode(payload))).replaceAll('=', '');
   final header = seg({'alg': 'none', 'typ': 'JWT'});
-  final body = seg({'exp': exp.millisecondsSinceEpoch ~/ 1000});
+  final body = seg({'sub': '1', 'exp': exp.millisecondsSinceEpoch ~/ 1000});
   return '$header.$body.sig';
 }
 
@@ -123,8 +124,8 @@ void main() {
     expect(notifier.isLoading, isFalse);
     expect(notifier.user, isNotNull,
         reason: 'restored optimistically from the local token');
-    expect(notifier.user!.id, isEmpty,
-        reason: 'the User.restored sentinel, not yet the real profile');
+    expect(notifier.user!.id, '1',
+        reason: "the token's account, before /me has answered (issue #418)");
     expect(service.getMeCalls, 1,
         reason: 'getMe() is still fired — just not blocked on');
     expect(service.appOpenedCalls, ['resumed'],

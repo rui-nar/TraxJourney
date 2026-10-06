@@ -6,122 +6,27 @@ library;
 
 import 'package:flutter/foundation.dart';
 
+import 'facets/project_facet.dart';
 import 'project_filters.dart';
 
 mixin ProjectFilterMixin on ChangeNotifier {
-  // ── Abstract: project data (provided by ProjectNotifier fields) ──────────
-  List<Map<String, dynamic>> get activities;
-  List<Map<String, dynamic>> get items;
-  Map<String, Map<String, dynamic>> get dayMeta;
+  // ── Abstract: project data (the notifier's ItemsFacet) ──────────────────
+  ItemsFacetWriter get itemsFacetWriter;
 
-  // ── Abstract: selection state (provided by ProjectNotifier fields) ────────
+  // ── Abstract: selection state (the notifier's SelectionFacet) ────────────
   // setFilters clears item selection so a filtered-out item isn't left active.
-  String? get selectedDay;
-  set selectedDay(String? v);
-  dynamic get selectedActivityId;
-  set selectedActivityId(dynamic v);
-  dynamic get selectedSegmentId;
-  set selectedSegmentId(dynamic v);
-  dynamic get selectedMemoryId;
-  set selectedMemoryId(dynamic v);
-  Set<String> get selectedDays;
-  set selectedDays(Set<String> v);
+  SelectionFacetWriter get selectionFacetWriter;
 
   // ── Abstract: UI-state persistence hook (issue #76 follow-up) ─────────────
   // Implemented by ProjectNotifier — persists selection + filter state to
   // shared_preferences so a forced reload doesn't lose it.
   void saveUiState();
 
-  // ── Filter state (owned by this mixin) ───────────────────────────────────
-  ProjectFilters _filters = ProjectFilters.empty;
+  // ── Filter state (held by the SelectionFacet) ────────────────────────────
+  ProjectFilters get _filters => selectionFacetWriter.facet.filters;
 
-  ProjectFilters get filters => _filters;
-
-  // Backwards-compat shims — all 31 widget call sites remain unchanged.
-  Set<String> get tagFilter          => _filters.tags;
-  Set<String> get sleepingFilter     => _filters.sleeping;
-  Set<String> get activityTypeFilter => _filters.activityTypes;
-  Set<String> get sourceFilter       => _filters.sources;
-  Set<String> get transportFilter    => _filters.transport;
-  int  get activeFilterCount         => _filters.activeCount;
-  bool get hasActiveFilter           => _filters.hasActive;
-  bool get hasFilterableContent      =>
-      availableTags.isNotEmpty || availableSleepingModes.isNotEmpty ||
-      availableActivityTypes.isNotEmpty || availableTransportationMeans.isNotEmpty;
-
-  // ── Available options (derived from project data) ─────────────────────────
-
-  List<String> get availableTags {
-    final s = <String>{};
-    for (final m in dayMeta.values) {
-      final t = m['tags'];
-      if (t is List) s.addAll(t.cast<String>());
-    }
-    return s.toList()..sort();
-  }
-
-  /// Tags shown for [dateKey] under the "inherit from the previous day" rule
-  /// (issue #18): a day with its own tags keeps them; a day with none falls
-  /// back to the nearest strictly-earlier day that has tags. See
-  /// [effectiveDayTags] for the gap-skipping semantics.
-  List<String> effectiveTagsFor(String dateKey) =>
-      effectiveDayTags(dayMeta, dateKey);
-
-  /// Whether [dateKey] carries tags of its own (vs only inherited ones) — true
-  /// for an explicit empty set too, since that means "no tags, don't inherit"
-  /// rather than "no data" (issue #203). Lets the UI render inherited tags
-  /// faded and distinguish them from real ones.
-  bool dayHasOwnTags(String dateKey) => _hasOwnTagsKey(dayMeta, dateKey);
-
-  List<String> get availableSleepingModes {
-    final s = <String>{};
-    bool hasNoData = false;
-    for (final m in dayMeta.values) {
-      final v = m['sleeping'] as String?;
-      if (v != null && v.isNotEmpty) {
-        s.add(v);
-      } else {
-        hasNoData = true;
-      }
-    }
-    final result = s.toList()..sort();
-    if (hasNoData) result.add('No data');
-    return result;
-  }
-
-  List<String> get availableActivityTypes {
-    final s = <String>{};
-    for (final a in activities) {
-      final t = (a['type'] as String? ?? '').toLowerCase();
-      if (t.isNotEmpty) s.add(t);
-    }
-    return s.toList()..sort();
-  }
-
-  /// The sources this trip's activities actually came from.
-  ///
-  /// An activity with no `source` is a Strava sync — the column arrived with
-  /// GPX import and was left NULL for everything already there, so absence is
-  /// the answer rather than missing data. Returns a single entry for a trip
-  /// that came from one place, which is how the filter sheet knows not to ask.
-  List<String> get availableSources {
-    final s = <String>{};
-    for (final a in activities) {
-      final source = a['source'] as String?;
-      s.add(source == null || source.isEmpty ? 'strava' : source);
-    }
-    return s.toList()..sort();
-  }
-
-  List<String> get availableTransportationMeans {
-    final s = <String>{};
-    for (final item in items) {
-      if (item['item_type'] != 'segment') continue;
-      final t = (item['segment'] as Map?)?['segment_type'] as String?;
-      if (t != null && t.isNotEmpty) s.add(t);
-    }
-    return s.toList()..sort();
-  }
+  // The trip's content, and the filter options derived from it (#294).
+  ItemsFacet get _content => itemsFacetWriter.facet;
 
   // ── Mutators ──────────────────────────────────────────────────────────────
 
@@ -132,18 +37,15 @@ mixin ProjectFilterMixin on ChangeNotifier {
     Set<String>? transport,
     Set<String>? sources,
   }) {
-    _filters = _filters.copyWith(
+    final next = _filters.copyWith(
       tags: tags,
       sleeping: sleeping,
       activityTypes: activityTypes,
       transport: transport,
       sources: sources,
     );
-    _recomputeSelectedDays();
-    selectedDay = null;
-    selectedActivityId = null;
-    selectedSegmentId = null;
-    selectedMemoryId = null;
+    selectionFacetWriter.setFilters(next, _matchingDays(next));
+    selectionFacetWriter.clearItemSelection();
     saveUiState();
     notifyListeners();
   }
@@ -153,8 +55,7 @@ mixin ProjectFilterMixin on ChangeNotifier {
 
   /// Resets filter state to empty. Called by ProjectNotifier.clear().
   void resetFilters() {
-    _filters = ProjectFilters.empty;
-    selectedDays = {};
+    selectionFacetWriter.setFilters(ProjectFilters.empty, {});
   }
 
   /// Applies a filter set restored from shared_preferences (issue #76
@@ -168,8 +69,7 @@ mixin ProjectFilterMixin on ChangeNotifier {
   /// that cannot be trusted to say what the trip holds (an offline snapshot).
   bool restoreFilters(ProjectFilters restored, {bool prune = true}) {
     if (!prune) {
-      _filters = restored;
-      _recomputeSelectedDays();
+      selectionFacetWriter.setFilters(restored, _matchingDays(restored));
       return false;
     }
 
@@ -191,28 +91,26 @@ mixin ProjectFilterMixin on ChangeNotifier {
     Set<String> held(Set<String> saved, List<String> available) =>
         saved.where(available.contains).toSet();
 
-    _filters = restored.copyWith(
-      tags: held(restored.tags, availableTags),
-      sleeping: held(restored.sleeping, availableSleepingModes),
-      activityTypes: held(restored.activityTypes, availableActivityTypes),
-      transport: held(restored.transport, availableTransportationMeans),
-      sources: held(restored.sources, availableSources),
+    final kept = restored.copyWith(
+      tags: held(restored.tags, _content.availableTags),
+      sleeping: held(restored.sleeping, _content.availableSleepingModes),
+      activityTypes: held(restored.activityTypes, _content.availableActivityTypes),
+      transport: held(restored.transport, _content.availableTransportationMeans),
+      sources: held(restored.sources, _content.availableSources),
     );
-    _recomputeSelectedDays();
+    selectionFacetWriter.setFilters(kept, _matchingDays(kept));
     // Every dimension only ever shrinks, so the count moves iff something went.
-    return _filters.activeCount != restored.activeCount;
+    return kept.activeCount != restored.activeCount;
   }
 
   // ── Internal ──────────────────────────────────────────────────────────────
 
-  void _recomputeSelectedDays() {
-    if (!_filters.hasActive) {
-      selectedDays = {};
-      return;
-    }
+  /// The days [filters] match; empty when none is set.
+  Set<String> _matchingDays(ProjectFilters filters) {
+    if (!filters.hasActive) return {};
 
     final actByDay = <String, Set<String>>{};
-    for (final a in activities) {
+    for (final a in _content.activities) {
       final d = (a['start_date_local'] as String?)?.substring(0, 10);
       final t = (a['type'] as String? ?? '').toLowerCase();
       if (d != null && t.isNotEmpty) (actByDay[d] ??= {}).add(t);
@@ -223,7 +121,7 @@ mixin ProjectFilterMixin on ChangeNotifier {
     // for everything that already existed, so absence is the answer
     // rather than missing data.
     final srcByDay = <String, Set<String>>{};
-    for (final a in activities) {
+    for (final a in _content.activities) {
       final d = (a['start_date_local'] as String?)?.substring(0, 10);
       if (d == null) continue;
       final source = a['source'] as String?;
@@ -232,7 +130,7 @@ mixin ProjectFilterMixin on ChangeNotifier {
     }
 
     final trByDay = <String, Set<String>>{};
-    for (final item in items) {
+    for (final item in _content.items) {
       if (item['item_type'] != 'segment') continue;
       final seg = item['segment'] as Map?;
       final d = seg?['date'] as String?;
@@ -241,33 +139,33 @@ mixin ProjectFilterMixin on ChangeNotifier {
     }
 
     final matching = <String>{};
-    for (final dk in dayMeta.keys) {
-      if (_filters.tags.isNotEmpty) {
+    for (final dk in _content.dayMeta.keys) {
+      if (filters.tags.isNotEmpty) {
         // Match on *effective* tags so days that only inherit a tag from an
         // earlier day still satisfy the tag filter (issue #18).
-        final tags = effectiveDayTags(dayMeta, dk).toSet();
-        if (!tags.any(_filters.tags.contains)) continue;
+        final tags = effectiveDayTags(_content.dayMeta, dk).toSet();
+        if (!tags.any(filters.tags.contains)) continue;
       }
-      if (_filters.sleeping.isNotEmpty) {
-        final s = dayMeta[dk]?['sleeping'] as String?;
+      if (filters.sleeping.isNotEmpty) {
+        final s = _content.dayMeta[dk]?['sleeping'] as String?;
         final label = (s == null || s.isEmpty) ? 'No data' : s;
-        if (!_filters.sleeping.contains(label)) continue;
+        if (!filters.sleeping.contains(label)) continue;
       }
-      if (_filters.activityTypes.isNotEmpty) {
+      if (filters.activityTypes.isNotEmpty) {
         final types = actByDay[dk] ?? const {};
-        if (!types.any(_filters.activityTypes.contains)) continue;
+        if (!types.any(filters.activityTypes.contains)) continue;
       }
-      if (_filters.transport.isNotEmpty) {
+      if (filters.transport.isNotEmpty) {
         final types = trByDay[dk] ?? const {};
-        if (!types.any(_filters.transport.contains)) continue;
+        if (!types.any(filters.transport.contains)) continue;
       }
-      if (_filters.sources.isNotEmpty) {
+      if (filters.sources.isNotEmpty) {
         final sources = srcByDay[dk] ?? const {};
-        if (!sources.any(_filters.sources.contains)) continue;
+        if (!sources.any(filters.sources.contains)) continue;
       }
       matching.add(dk);
     }
-    selectedDays = matching;
+    return matching;
   }
 }
 
@@ -309,7 +207,8 @@ List<String> _ownDayTags(
 ///
 /// Inherited tags are never persisted: they vanish the moment the source day's
 /// tags change, and a day only "owns" tags once the user edits it.
-@visibleForTesting
+///
+/// `ItemsFacet.effectiveTagsFor` is its caller in the app.
 List<String> effectiveDayTags(
   Map<String, Map<String, dynamic>> dayMeta,
   String dateKey,

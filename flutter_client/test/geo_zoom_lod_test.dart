@@ -126,7 +126,7 @@ ApiClient _api(_Calls calls,
 /// Point count of the first feature, or 0 while geo is still the empty
 /// low-res placeholder the load starts from.
 int _points(ProjectNotifier n) {
-  final features = n.geo?['features'] as List?;
+  final features = n.geoFacet.geo?['features'] as List?;
   if (features == null || features.isEmpty) return 0;
   return (features.first['geometry']['coordinates'] as List?)?.length ?? 0;
 }
@@ -236,7 +236,7 @@ void main() {
     // not fire a refetch against a stale bucket.
     n.setMapZoom(15);
     await Future<void>.delayed(const Duration(milliseconds: 60));
-    expect(n.geo, isNotNull);
+    expect(n.geoFacet.geo, isNotNull);
   });
 
   test('clear() disarms zoom refetching', () async {
@@ -569,7 +569,7 @@ void main() {
       expect(await _waitFor(() => _points(n) == 999), isTrue);
       final before = calls.fullGeo;
 
-      expect(await n.fullResGeoForExport(), same(n.geo));
+      expect(await n.fullResGeoForExport(), same(n.geoFacet.geo));
       expect(calls.fullGeo, before, reason: 'no second request');
     });
 
@@ -583,7 +583,7 @@ void main() {
       expect(await _waitFor(() => _points(n) == 9), isTrue);
       calls.failFullGeo = true;
 
-      expect(await n.fullResGeoForExport(), same(n.geo));
+      expect(await n.fullResGeoForExport(), same(n.geoFacet.geo));
     });
   });
 }

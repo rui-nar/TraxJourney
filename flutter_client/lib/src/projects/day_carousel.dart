@@ -16,6 +16,7 @@ import 'dart:ui' show lerpDouble;
 import 'package:flutter/material.dart';
 
 import '../core/design_tokens.dart' show kShadow2, monoStyle;
+import 'facets/project_facet.dart' show ItemsFacet, SelectionFacet;
 import 'map_panel.dart' show dayForSelection;
 import 'project_notifier.dart';
 
@@ -91,10 +92,17 @@ class _DayCarouselState extends State<DayCarousel> {
   int? _followingIndex;
   int _followGen = 0;
 
+  // The facets this carousel listens to (#294), kept so a notifier swap
+  // unsubscribes from exactly what was subscribed: the selection, which the
+  // wheel follows, and the items, which the cards draw. Geometry and style
+  // are not read here, so a change to them does not rebuild a card.
+  late SelectionFacet _selection;
+  late ItemsFacet _itemsFacet;
+
   int _activeIndex(List<String> days) {
-    final active = widget.notifier.selectedDays.isNotEmpty
-        ? widget.notifier.selectedDays.first
-        : widget.notifier.selectedDay;
+    final active = widget.notifier.selectionFacet.selectedDays.isNotEmpty
+        ? widget.notifier.selectionFacet.selectedDays.first
+        : widget.notifier.selectionFacet.selectedDay;
     if (active == null) return 0;
     final i = days.indexOf(active);
     return i >= 0 ? i : 0;
@@ -104,19 +112,35 @@ class _DayCarouselState extends State<DayCarousel> {
   void initState() {
     super.initState();
     _scrollController = FixedExtentScrollController(
-      initialItem: _activeIndex(widget.notifier.orderedDayKeys()),
+      initialItem: _activeIndex(widget.notifier.itemsFacet.orderedDayKeys()),
     );
-    _prevSelectedActivityIdStr = widget.notifier.selectedActivityId?.toString();
-    _prevSelectedSegmentIdStr = widget.notifier.selectedSegmentId?.toString();
-    widget.notifier.addListener(_onNotifierChanged);
+    _bindFacets();
     _scheduleRetract();
   }
 
+  // Subscribes to [widget.notifier]'s facets and takes their current
+  // selection as already followed.
+  void _bindFacets() {
+    _selection = widget.notifier.selectionFacet
+      ..addListener(_onSelectionChanged);
+    _itemsFacet = widget.notifier.itemsFacet..addListener(_onItemsChanged);
+    _prevSelectedActivityIdStr = _selection.selectedActivityId?.toString();
+    _prevSelectedSegmentIdStr = _selection.selectedSegmentId?.toString();
+  }
+
+  void _unbindFacets() {
+    _selection.removeListener(_onSelectionChanged);
+    _itemsFacet.removeListener(_onItemsChanged);
+  }
+
+  // The day list and each card's stats come from the items.
+  void _onItemsChanged() => setState(() {});
+
   /// Issue #322: a tap on the map selects an activity/segment; the wheel
   /// follows it so the strip shows the day that activity belongs to.
-  void _onNotifierChanged() {
-    final actId = widget.notifier.selectedActivityId?.toString();
-    final segId = widget.notifier.selectedSegmentId?.toString();
+  void _onSelectionChanged() {
+    final actId = _selection.selectedActivityId?.toString();
+    final segId = _selection.selectedSegmentId?.toString();
     final changed = actId != _prevSelectedActivityIdStr ||
         segId != _prevSelectedSegmentIdStr;
     _prevSelectedActivityIdStr = actId;
@@ -130,14 +154,14 @@ class _DayCarouselState extends State<DayCarousel> {
     // scroll debounce, and selectDays() would clear it — drop the older one.
     _selectDebounce?.cancel();
     final day = dayForSelection(
-      widget.notifier.items,
-      widget.notifier.activities,
-      activityId: widget.notifier.selectedActivityId,
+      widget.notifier.itemsFacet.items,
+      widget.notifier.itemsFacet.activities,
+      activityId: widget.notifier.selectionFacet.selectedActivityId,
       segmentId: segId,
     );
     // Unscheduled, or a day the strip doesn't list: same, leave the wheel be.
     if (day == null) return;
-    final index = widget.notifier.orderedDayKeys().indexOf(day);
+    final index = widget.notifier.itemsFacet.orderedDayKeys().indexOf(day);
     if (index < 0 || !_scrollController.hasClients) return;
     // Where the wheel will end up, not where it happens to be right now: a
     // follow already in flight has not reached its own target yet.
@@ -176,21 +200,20 @@ class _DayCarouselState extends State<DayCarousel> {
     // wheel on the new notifier's active day instead of leaving the old
     // project's scroll position/index behind.
     if (!identical(widget.notifier, oldWidget.notifier)) {
-      oldWidget.notifier.removeListener(_onNotifierChanged);
-      widget.notifier.addListener(_onNotifierChanged);
-      _prevSelectedActivityIdStr =
-          widget.notifier.selectedActivityId?.toString();
-      _prevSelectedSegmentIdStr = widget.notifier.selectedSegmentId?.toString();
+      // The new notifier brings new facets; the old ones may already be
+      // disposed, which removeListener allows.
+      _unbindFacets();
+      _bindFacets();
       if (_scrollController.hasClients) {
         _scrollController
-            .jumpToItem(_activeIndex(widget.notifier.orderedDayKeys()));
+            .jumpToItem(_activeIndex(widget.notifier.itemsFacet.orderedDayKeys()));
       }
     }
   }
 
   @override
   void dispose() {
-    widget.notifier.removeListener(_onNotifierChanged);
+    _unbindFacets();
     _idleTimer?.cancel();
     _selectDebounce?.cancel();
     _scrollController.dispose();
@@ -228,7 +251,7 @@ class _DayCarouselState extends State<DayCarousel> {
 
   @override
   Widget build(BuildContext context) {
-    final days = widget.notifier.orderedDayKeys();
+    final days = widget.notifier.itemsFacet.orderedDayKeys();
     if (days.isEmpty) return const SizedBox.shrink();
 
     final cs = Theme.of(context).colorScheme;
@@ -345,8 +368,8 @@ class _DayCarouselState extends State<DayCarousel> {
                             // offset that often.
                             final dateKey = days[index];
                             final n = dayTripNumbering(
-                                dateKey, days, widget.notifier.tripStart);
-                            final stats = widget.notifier.dayStats(dateKey);
+                                dateKey, days, widget.notifier.itemsFacet.tripStart);
+                            final stats = widget.notifier.itemsFacet.dayStats(dateKey);
                             return AnimatedBuilder(
                               // Rebuilds this card every scroll tick so its
                               // scale/offset/"Day N" state tracks the live

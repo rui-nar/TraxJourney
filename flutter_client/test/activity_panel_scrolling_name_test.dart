@@ -20,10 +20,10 @@ void main() {
 
   ProjectNotifier buildNotifier() {
     final n = ProjectNotifier(ProjectService());
-    n.people = [
+    n.itemsFacetWriter.setPeople([
       {'id': 1, 'name': longPersonName},
-    ];
-    n.activities = [
+    ]);
+    n.itemsFacetWriter.setActivities([
       {
         'id': 1,
         'type': 'Run',
@@ -32,8 +32,8 @@ void main() {
         'moving_time': 1800,
         'start_date_local': '2026-06-01T08:00:00',
       },
-    ];
-    n.items = [
+    ]);
+    n.itemsFacetWriter.setItems([
       {'item_type': 'activity', 'activity_id': 1},
       {
         'item_type': 'memory',
@@ -43,7 +43,7 @@ void main() {
         'item_type': 'encounter',
         'encounter': {'id': 'e1', 'person_id': 1, 'date': '2026-06-01'},
       },
-    ];
+    ]);
     return n;
   }
 

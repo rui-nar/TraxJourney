@@ -93,7 +93,7 @@ class _Service extends ProjectService {
 /// (it flags a degraded upgrade, not completion) and so would make every
 /// wait below pass instantly and vacuously.
 bool _upgraded(ProjectNotifier n) {
-  final features = n.geo?['features'] as List?;
+  final features = n.geoFacet.geo?['features'] as List?;
   if (features == null || features.isEmpty) return false;
   return (features.first['geometry']['coordinates'] as List).length == 12;
 }
@@ -117,9 +117,11 @@ void main() {
     final notifier = ProjectNotifier(_Service());
 
     // Record the identity of every distinct geo object listeners are shown.
+    // The geometry facet's listeners are the ones told of a geo change; the
+    // root's are not (#294).
     final seen = <Map<String, dynamic>>[];
-    notifier.addListener(() {
-      final g = notifier.geo;
+    notifier.geoFacet.addListener(() {
+      final g = notifier.geoFacet.geo;
       if (g == null) return;
       if (seen.isEmpty || !identical(seen.last, g)) seen.add(g);
     });
@@ -138,7 +140,7 @@ void main() {
     // And the swap really did deliver full resolution, so the count above
     // cannot be satisfied by simply never upgrading.
     final coords =
-        (notifier.geo!['features'] as List).first['geometry']['coordinates'] as List;
+        (notifier.geoFacet.geo!['features'] as List).first['geometry']['coordinates'] as List;
     expect(coords, hasLength(12));
   });
 

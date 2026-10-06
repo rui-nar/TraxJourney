@@ -85,6 +85,9 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
   // Local deep-copy of dayMeta so tag edits are applied immediately and
   // passed to saveDayMeta on Save without touching the notifier until then.
   late Map<String, Map<String, dynamic>> _dayMeta;
+  // What the screen opened with: the diff base, so a save sends only the days
+  // it changed (issue #397).
+  late Map<String, Map<String, dynamic>> _initialDayMeta;
 
   static const _allSectionLabels = [
     (icon: Icons.tune,          label: 'General',      key: 0),
@@ -123,41 +126,49 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
     });
     final n = context.read<ProjectNotifier>();
     _nameCtrl = TextEditingController(text: n.projectName ?? '');
-    final ts = n.tripStart;
+    final ts = n.itemsFacet.tripStart;
     if (ts != null) _tripStart = DateTime.tryParse(ts);
-    final te = n.tripEnd;
+    final te = n.itemsFacet.tripEnd;
     if (te != null) _tripEnd = DateTime.tryParse(te);
-    _optCtrls = n.sleepingOptions
+    _optCtrls = n.itemsFacet.sleepingOptions
         .map((opt) => TextEditingController(text: opt))
         .toList();
-    _optGroups = n.sleepingOptions
-        .map((opt) => n.sleepingOptionGroups[opt] ?? 'Other')
+    _optGroups = n.itemsFacet.sleepingOptions
+        .map((opt) => n.itemsFacet.sleepingOptionGroups[opt] ?? 'Other')
         .toList();
     _autoSync = n.autoSyncEnabled;
     _linkedPsTripId = n.linkedPsTripId;
-    _trackColor = n.trackColor;
-    _trackSecondaryColor = n.trackSecondaryColor;
-    _trackWidth = n.trackWidth;
-    _alternating = n.alternatingTrackColors;
-    _elevationChartColor = n.elevationChartColor;
-    _elevationChartShowLine = n.elevationChartShowLine;
-    _languages = List<String>.from(n.languages);
-    _colorByType = n.colorByType;
+    _trackColor = n.styleFacet.trackColor;
+    _trackSecondaryColor = n.styleFacet.trackSecondaryColor;
+    _trackWidth = n.styleFacet.trackWidth;
+    _alternating = n.styleFacet.alternatingTrackColors;
+    _elevationChartColor = n.styleFacet.elevationChartColor;
+    _elevationChartShowLine = n.styleFacet.elevationChartShowLine;
+    _languages = List<String>.from(n.styleFacet.languages);
+    _colorByType = n.styleFacet.colorByType;
     _typeStyles = {
-      for (final e in n.typeStyles.entries) e.key: Map<String, dynamic>.from(e.value)
+      for (final e in n.styleFacet.typeStyles.entries) e.key: Map<String, dynamic>.from(e.value)
     };
     _dayMeta = {
-      for (final e in n.dayMeta.entries)
+      for (final e in n.itemsFacet.dayMeta.entries)
         e.key: {
           ...e.value,
           if (e.value['tags'] is List)
             'tags': List<String>.from((e.value['tags'] as List).cast<String>()),
         }
     };
-    _counterNameCtrls = n.counters
+    _initialDayMeta = {
+      for (final e in _dayMeta.entries)
+        e.key: {
+          ...e.value,
+          if (e.value['tags'] is List)
+            'tags': List<String>.from(e.value['tags'] as List),
+        }
+    };
+    _counterNameCtrls = n.itemsFacet.counters
         .map((c) => TextEditingController(text: c['name'] as String? ?? ''))
         .toList();
-    _counterStartCtrls = n.counters
+    _counterStartCtrls = n.itemsFacet.counters
         .map((c) => TextEditingController(text: (c['start'] ?? 0).toString()))
         .toList();
   }
@@ -253,6 +264,19 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
     }
   }
 
+  /// Structural equality for decoded-JSON values (maps, lists, scalars).
+  static bool _sameValue(Object? a, Object? b) {
+    if (a is Map && b is Map) {
+      return a.length == b.length &&
+          a.keys.every((k) => b.containsKey(k) && _sameValue(a[k], b[k]));
+    }
+    if (a is List && b is List) {
+      return a.length == b.length &&
+          List.generate(a.length, (i) => i).every((i) => _sameValue(a[i], b[i]));
+    }
+    return a == b;
+  }
+
   Future<void> _save() async {
     setState(() => _saving = true);
 
@@ -281,10 +305,10 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
       // When the server can't be reached, every candidate counts as pinned:
       // nothing is deleted and the dialog says why. Falling back to the
       // caller-local set there is the bug itself.
-      final localPinned = contentDayKeys(n.activities, n.items);
+      final localPinned = contentDayKeys(n.itemsFacet.activities, n.itemsFacet.items);
       final localCandidates = {
         ..._dayMeta.keys,
-        ...n.orderedDayKeys(),
+        ...n.itemsFacet.orderedDayKeys(),
         ...localPinned,
       };
       // Days that can actually be removed are worth confirming on every save —
@@ -292,7 +316,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
       // once, when the end date is set or moved: nothing the dialog offers can
       // clear them, so raising it on an unrelated save (a colour tweak, say)
       // would nag forever and throw the edit away if the user cancels.
-      final endMoved = tripEndStr != n.tripEnd?.split('T').first;
+      final endMoved = tripEndStr != n.itemsFacet.tripEnd?.split('T').first;
       // Skip the round trip when its answer cannot matter: the end date hasn't
       // moved (so the stay-only half is suppressed) and nothing local sits past
       // it (so there is nothing to delete either). Otherwise every settings
@@ -402,11 +426,27 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
       _tripStart == null ? null : _toIso(_tripStart!),
       tripEndStr,
     );
+    // Only what changed goes to the server: the days whose content differs
+    // from what the screen opened with, the pruned days, and the options and
+    // counters when they moved.
+    final changedDays = <String, Map<String, dynamic>>{
+      for (final e in dayMetaToSave.entries)
+        if (!_sameValue(e.value, _initialDayMeta[e.key])) e.key: e.value,
+    };
+    final deletedDays = [
+      for (final k in _initialDayMeta.keys)
+        if (!dayMetaToSave.containsKey(k)) k,
+    ];
+    final optionsChanged = !_sameValue(updatedOpts, n.itemsFacet.sleepingOptions) ||
+        updatedOpts.any((o) =>
+            updatedGroups[o] != (n.itemsFacet.sleepingOptionGroups[o] ?? 'Other'));
+    final countersChanged = !_sameValue(updatedCounters, n.itemsFacet.counters);
     n.saveDayMeta(
-      newDayMeta: dayMetaToSave,
-      newSleepingOptions: updatedOpts,
-      newSleepingOptionGroups: updatedGroups,
-      newCounters: updatedCounters,
+      days: changedDays,
+      delete: deletedDays,
+      newSleepingOptions: optionsChanged ? updatedOpts : null,
+      newSleepingOptionGroups: optionsChanged ? updatedGroups : null,
+      newCounters: countersChanged ? updatedCounters : null,
     );
     n.setTrackStyle(
       color: _trackColor,
@@ -1251,24 +1291,10 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
   }
 
   Future<void> _showRenameTagDialog(String current) async {
-    final ctrl = TextEditingController(text: current);
     final result = await showDialog<String>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Rename tag'),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: 'New name'),
-          onSubmitted: (v) => Navigator.of(context).pop(v),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.of(context).pop(ctrl.text), child: const Text('Rename')),
-        ],
-      ),
+      builder: (_) => _RenameTagDialog(current: current),
     );
-    ctrl.dispose();
     if (result != null) _renameTag(current, result);
   }
 
@@ -2236,6 +2262,44 @@ class _ColorPickerRow extends StatelessWidget {
             child: const Icon(Icons.colorize, size: 16, color: Colors.white70),
           ),
         ),
+      ],
+    );
+  }
+}
+
+/// Owns the rename field's controller so it is disposed with the dialog's
+/// route, after the exit animation, not when the dialog future completes.
+class _RenameTagDialog extends StatefulWidget {
+  final String current;
+  const _RenameTagDialog({required this.current});
+
+  @override
+  State<_RenameTagDialog> createState() => _RenameTagDialogState();
+}
+
+class _RenameTagDialogState extends State<_RenameTagDialog> {
+  late final TextEditingController _ctrl =
+      TextEditingController(text: widget.current);
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Rename tag'),
+      content: TextField(
+        controller: _ctrl,
+        autofocus: true,
+        decoration: const InputDecoration(hintText: 'New name'),
+        onSubmitted: (v) => Navigator.of(context).pop(v),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
+        FilledButton(onPressed: () => Navigator.of(context).pop(_ctrl.text), child: const Text('Rename')),
       ],
     );
   }

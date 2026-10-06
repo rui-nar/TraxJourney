@@ -37,6 +37,11 @@ class _FakeApi implements EncryptionApi {
   Future<void> approveDevice(String a, String b, String c) async {}
   @override
   Future<RecoveryWrapData?> fetchRecoveryWrap(String m) async => null;
+  @override
+  Future<void> confirmRecovery(String method, String wrappedCmkB64) async {}
+  @override
+  Future<String> replaceRecoveryKey(String wrappedCmkB64, String saltB64) async =>
+      wrappedCmkB64;
 }
 
 void main() {

@@ -39,7 +39,7 @@ Map<String, dynamic> _geo() => {
 ProjectNotifier _notifier({required bool loading}) =>
     ProjectNotifier(ProjectService())
       ..ref = const ProjectRef(name: 'Trip')
-      ..geo = _geo()
+      ..geoFacetWriter.replaceKeepingLod(_geo())
       ..isLoading = loading;
 
 /// Mirrors view_screen.dart: MapPanel doesn't listen to the notifier itself,

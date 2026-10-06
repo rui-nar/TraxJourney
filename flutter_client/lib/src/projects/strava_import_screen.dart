@@ -46,11 +46,11 @@ class _StravaImportScreenState extends State<StravaImportScreen> {
     DateTime? end;
 
     // Start: prefer tripStart, else min of existing activity dates.
-    if (pn.tripStart != null) {
-      start = DateTime.tryParse(pn.tripStart!);
+    if (pn.itemsFacet.tripStart != null) {
+      start = DateTime.tryParse(pn.itemsFacet.tripStart!);
     }
     if (start == null) {
-      for (final a in pn.activities) {
+      for (final a in pn.itemsFacet.activities) {
         final raw = (a['start_date_local'] as String?)?.split('T').first;
         if (raw != null) {
           final dt = DateTime.tryParse(raw);
@@ -62,8 +62,8 @@ class _StravaImportScreenState extends State<StravaImportScreen> {
     }
 
     // End: prefer tripEnd, else today when there is a start reference.
-    if (pn.tripEnd != null) {
-      end = DateTime.tryParse(pn.tripEnd!);
+    if (pn.itemsFacet.tripEnd != null) {
+      end = DateTime.tryParse(pn.itemsFacet.tripEnd!);
     }
     if (end == null && start != null) {
       final now = DateTime.now();

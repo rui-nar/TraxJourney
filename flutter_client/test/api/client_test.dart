@@ -5,6 +5,7 @@
 // "ApiException(308): ".
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -33,6 +34,68 @@ void main() {
 
       client.setToken('a.%%%.c');
       expect(client.tokenUserId, isNull);
+    });
+  });
+
+  group('ApiClient.getBytesWithHeaders', () {
+    test('returns the body and the response headers', () async {
+      final client = ApiClient(
+        baseUrl: '',
+        httpClient: MockClient((_) async => http.Response('abc', 200,
+            headers: {'server-timing': 'total;dur=1.0', 'x-cache': 'HIT'})),
+      );
+      final r = await client.getBytesWithHeaders('/x');
+      expect(r.bytes, [97, 98, 99]);
+      expect(r.headers['server-timing'], 'total;dur=1.0');
+      expect(r.headers['x-cache'], 'HIT');
+    });
+
+    test('throws ApiException on a non-2xx', () async {
+      final client = ApiClient(
+        baseUrl: '',
+        httpClient: MockClient((_) async => http.Response('nope', 500)),
+      );
+      await expectLater(client.getBytesWithHeaders('/x'),
+          throwsA(isA<ApiException>()));
+    });
+  });
+
+  group('ApiClient.patch', () {
+    test('sends PATCH with the JSON body and returns the decoded reply',
+        () async {
+      late http.Request seen;
+      final client = ApiClient(
+        baseUrl: '',
+        httpClient: MockClient((req) async {
+          seen = req;
+          return http.Response('{"ok":true}', 200);
+        }),
+      );
+      final r = await client.patch('/x', {'a': 1});
+      expect(seen.method, 'PATCH');
+      expect(jsonDecode(seen.body), {'a': 1});
+      expect(r, {'ok': true});
+    });
+
+    test('handles an error status like put does', () async {
+      final client = ApiClient(
+        baseUrl: '',
+        httpClient: MockClient((_) async => http.Response('nope', 409)),
+      );
+      Object? patchErr, putErr;
+      try {
+        await client.patch('/x', {});
+      } catch (e) {
+        patchErr = e;
+      }
+      try {
+        await client.put('/x', {});
+      } catch (e) {
+        putErr = e;
+      }
+      expect(patchErr, isA<ApiException>());
+      expect((patchErr as ApiException).statusCode, 409);
+      expect(patchErr.toString(), putErr.toString());
     });
   });
 
