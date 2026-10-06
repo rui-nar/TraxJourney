@@ -389,6 +389,8 @@ class _SharedProjectViewState extends State<_SharedProjectView>
   /// Opens the deep-linked memory once the project has loaded. Matches on the
   /// stable public_id; if not found (e.g. the memory was removed), it silently
   /// leaves the reader at the trip root.
+  // root-listener-audit: allow — reads the items once, on the root change
+  // that marks the meta loaded, which the same load's items arrive with.
   void _maybeOpenDeepLinkedMemory(ProjectNotifier pn) {
     if (_deepLinkHandled || widget.initialMemoryPublicId == null) return;
     if (!pn.isMetaLoaded) return;
@@ -418,13 +420,23 @@ class _SharedProjectViewState extends State<_SharedProjectView>
 
   @override
   Widget build(BuildContext context) {
-    final notifier = context.watch<SharedProjectNotifier>();
-    final pn = notifier as ProjectNotifier;
-    _maybeOpenDeepLinkedMemory(pn);
     final theme = Theme.of(context);
     final authUser = context.watch<AuthNotifier>().user;
     final isAnonymous = authUser == null;
 
+    // Rebuilds on the root state this screen reads (name, meta loaded,
+    // error) and that the map panel reads through this rebuild (loading,
+    // overlay, photo headers, share key). The list and the chart listen to
+    // the facets they draw (#294).
+    return Consumer<SharedProjectNotifier>(
+        builder: (context, notifier, _) => _buildScaffold(
+            context, notifier, theme, isAnonymous));
+  }
+
+  Widget _buildScaffold(BuildContext context, SharedProjectNotifier notifier,
+      ThemeData theme, bool isAnonymous) {
+    final pn = notifier as ProjectNotifier;
+    _maybeOpenDeepLinkedMemory(pn);
     return Scaffold(
       appBar: AppBar(
         title: Text(
@@ -482,20 +494,23 @@ class _SharedProjectViewState extends State<_SharedProjectView>
                         basemapStyleUri: kActiveViewStyleUri,
                       );
                       final activityList = _ReadOnlyActivityList(notifier: pn);
-                      final selectedId = notifier.selectionFacet.selectedActivityId;
                       final elevChart = notifier.isElevationLoaded
-                          ? ElevationChart(
-                              activities: notifier.itemsFacet.activities,
-                              selectedActivityId: selectedId,
-                              track: selectedId == null
-                                  ? notifier.elevationFacet.fullTrack
-                                  : notifier.elevationFacet.perActivityTracks[
-                                          selectedId.toString()] ??
-                                      notifier.elevationFacet.fullTrack,
-                              onCursorChanged: (pos) =>
-                                  notifier.elevationCursorNotifier.value = pos,
-                              mapCursorNotifier: notifier.mapCursorDistNotifier,
-                              color: pn.styleFacet.effectiveElevationChartColor,
+                          ? ListenableBuilder(
+                              listenable: Listenable.merge([
+                                pn.itemsFacet,
+                                pn.selectionFacet,
+                                pn.styleFacet,
+                              ]),
+                              builder: (_, __) => ElevationChart(
+                                activities: pn.itemsFacet.activities,
+                                selectedActivityId:
+                                    pn.selectionFacet.selectedActivityId,
+                                elevation: pn.elevationFacet,
+                                onCursorChanged: (pos) =>
+                                    notifier.elevationCursorNotifier.value = pos,
+                                mapCursorNotifier: notifier.mapCursorDistNotifier,
+                                color: pn.styleFacet.effectiveElevationChartColor,
+                              ),
                             )
                           : const ElevationLoadingPlaceholder();
 
@@ -644,7 +659,13 @@ class _ReadOnlyActivityList extends StatelessWidget {
   const _ReadOnlyActivityList({required this.notifier});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ListenableBuilder(
+        listenable:
+            Listenable.merge([notifier.itemsFacet, notifier.selectionFacet]),
+        builder: (context, _) => _buildList(context),
+      );
+
+  Widget _buildList(BuildContext context) {
     final theme = Theme.of(context);
     final activities = notifier.itemsFacet.activities;
 
