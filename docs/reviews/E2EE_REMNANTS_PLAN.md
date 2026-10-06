@@ -544,5 +544,5 @@ Conflict resolution of merging main (Package C facets, recovery-key confirmation
 - Decision: Defer (D10)
 - Revisit when: a report of a user blocked by "waiting to be approved" or a wrong encryption state after switching accounts on one device; shared-device or quick account switching becomes a supported flow; or the next change touching unlock()/prepareForSession() (add the generation check before every `_state` write and before registerThisDevice())
 - Guard: —
-- Override: —
-- Outcome: open
+- Override: user: Fix now (2026-10-06) — no reason given
+- Outcome: fixed

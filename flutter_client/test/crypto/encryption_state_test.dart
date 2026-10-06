@@ -4,6 +4,7 @@
 /// used, and the server's encryption refusals read as plain words.
 library;
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -24,6 +25,29 @@ class _StatusApi extends FakeEncryptionApi {
     final s = status;
     if (s == null) throw Exception('offline');
     return s;
+  }
+}
+
+/// Holds every status request until [gate] completes, then answers
+/// encryption on and this device not approved; counts registrations.
+class _HeldStatusApi extends FakeEncryptionApi {
+  final gate = Completer<void>();
+  int registrations = 0;
+
+  @override
+  Future<EncryptionStatus> fetchStatus(String? devicePublicKeyB64) async {
+    await gate.future;
+    return const EncryptionStatus(
+        enabled: true,
+        recoveryMethods: ['recovery_key'],
+        deviceRegistered: false,
+        deviceApproved: false);
+  }
+
+  @override
+  Future<void> registerDevice(String publicKeyB64, String label) async {
+    registrations++;
+    await super.registerDevice(publicKeyB64, label);
   }
 }
 
@@ -123,6 +147,42 @@ void main() {
 
       expect(await svc.recoverWithRecoveryKey(secret), isTrue);
       expect(svc.state.value, EncryptionState.unlocked);
+    });
+
+    // M1-1: a status that lands after lock() belongs to the ended session;
+    // it must not set the next session's write gate or register this device.
+    test('a status unlock() receives after lock() changes nothing', () async {
+      final store = FakeDeviceKeyStore();
+      await store.save(await generateDeviceKeyPair());
+      final api = _HeldStatusApi();
+      final svc = EncryptionService(store, api);
+
+      final preparing = svc.prepareForSession();
+      await pumpEventQueue(); // unlock() is waiting on the server
+      svc.lock(); // the session ends meanwhile
+      api.gate.complete();
+
+      expect(await preparing, isFalse);
+      expect(svc.state.value, EncryptionState.disabled);
+      expect(svc.writeBlockedMessage, isNull);
+      expect(api.registrations, 0);
+    });
+
+    test("a status prepareForSession() receives after lock() changes nothing",
+        () async {
+      // No stored key pair: unlock() returns at once, and the wait is on
+      // prepareForSession's own status request.
+      final api = _HeldStatusApi();
+      final svc = EncryptionService(FakeDeviceKeyStore(), api);
+
+      final preparing = svc.prepareForSession();
+      await pumpEventQueue();
+      svc.lock();
+      api.gate.complete();
+
+      expect(await preparing, isFalse);
+      expect(svc.state.value, EncryptionState.disabled);
+      expect(api.registrations, 0);
     });
   });
 

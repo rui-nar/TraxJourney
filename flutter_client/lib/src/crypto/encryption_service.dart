@@ -452,6 +452,8 @@ class EncryptionService {
 
     final pub = await keyPair.extractPublicKey();
     final status = await _api.fetchStatus(base64.encode(pub.bytes));
+    // The ended session's status: the next session's state is its own.
+    if (generation != _lockGeneration) return false;
     if (!status.enabled) {
       _state.value = EncryptionState.disabled;
       return false;
@@ -490,6 +492,7 @@ class EncryptionService {
   /// status can't be read it stays [EncryptionState.disabled] (unknown), and
   /// the server's refusals stand in for the client's gate.
   Future<bool> prepareForSession() async {
+    final generation = _lockGeneration;
     if (!isUnlocked) _state.value = EncryptionState.disabled;
     if (await unlock()) return true;
     final keyPair = await _store.load();
@@ -497,6 +500,9 @@ class EncryptionService {
         ? null
         : base64.encode((await keyPair.extractPublicKey()).bytes);
     final status = await _api.fetchStatus(pubB64);
+    // Locked meanwhile: neither set the next session's state nor register
+    // this device for an account that has signed out.
+    if (generation != _lockGeneration) return false;
     if (!status.enabled) {
       _state.value = EncryptionState.disabled;
     } else if (!status.deviceApproved) {
