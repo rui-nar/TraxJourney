@@ -498,3 +498,21 @@ Owner decision (2026-10-06): keep shared rides readable — decision 15 added (s
 Round 3 is the integrated review's last round under the cap (REVIEW.md §6); a fourth needs the owner's request.
 
 Owner decision (2026-10-06): fix I3-1 now (units U18, U19, U10 third fix) and run a fourth integrated review round past the cap. Final branch before this wave: server 6321 passed / 39 skipped; flutter 2224 passed, analyze clean.
+
+## Integrated diff, round 4 — 2026-10-06, reviewed e84a93f9..8333b416 (I3 fixes) and the origin/main merge ffe702a8 (fourth round at the owner's request)
+
+The origin/main merge (photos package; migration re-parented onto 4b9d2e7a1c63) came back clean: U1's guards and CAS still cover every memory/journal path.
+
+### I4-1 — Non-owner pass re-reads, once per app session, every activity in a friend's trip with a NULL E2EE column
+- Trigger: encrypted editor opens a friend's plaintext trip with track-less activities → one GET …/track per such row at every launch; nothing written
+- Scores: trigger=concrete, impact=degraded-ux, detect=silent, later=cheap, fix=M/local, confidence=verified
+- Decision: Defer (D8)
+- Revisit when: logs show repeated GET …/track?owner= on the same activity across sessions; a user reports slow opening of a friend's trip; /meta gains a per-row owner or has-envelope flag; R4-8 is reworked; or the catch-up runs more than once per session
+- Override: —
+- Outcome: open
+
+### I4-2 — ENCRYPTION.md says a checked trip "is not read again"; the memo is per row and per app session
+- Scores: trigger=concrete, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Override: —
+- Outcome: open
