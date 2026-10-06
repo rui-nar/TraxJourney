@@ -58,7 +58,7 @@ class RouteSource(ABC):
 
     @abstractmethod
     def ways_in_bbox(self, mode: str, cls_mask: int, bbox: Box) -> list[dict]:
-        """The *mode* layer's ways of class *cls_mask* overlapping *bbox*."""
+        """The *mode* layer's ways of class *cls_mask* whose geometry meets *bbox*."""
 
 
 def _relation_ids_in_bbox(store: RailStore, mode: str, bbox: Box) -> list[int]:
@@ -134,8 +134,57 @@ class LocalRouteSource(RouteSource):
     def ways_in_bbox(self, mode: str, cls_mask: int, bbox: Box) -> list[dict]:
         """Merged and deduplicated by way id, under rail's merged vertex ceiling.
 
+        The store selects by *extent* overlap; only the ways whose *geometry*
+        meets the box are kept, which is what Overpass's ``way(bbox)`` returns.
+        The difference is not a harmless superset here as it is for rail:
+        strategies B and C snap each end to the nearest node with no distance
+        limit, so a long crossing whose extent merely covers the box — the
+        Ancona - Greece lines over the Bay of Naples — is a route to them, where
+        Overpass has no ways and the leg falls back.
+
         Raises ``RailSourceOverload`` when the merged result is over the
         ceiling, which the resolver straight-lines rather than asking Overpass
-        (see ``LocalRailSource.ways_in_bbox``).
+        (see ``LocalRailSource.ways_in_bbox``). The ceiling is charged for the
+        candidates, before this filter, because the candidates are what is
+        decoded and held.
         """
-        return self._layer(mode).ways_in_bbox(*bbox, cls_mask=cls_mask)
+        box = tuple(bbox)
+        return [way for way in self._layer(mode).ways_in_bbox(*box, cls_mask=cls_mask)
+                if _meets_box(way["geometry"], box)]
+
+
+def _meets_box(geometry: list[dict], box: Box) -> bool:
+    """Whether a way's polyline has a vertex in *box* or a segment crossing it.
+
+    Plain lat/lon, as Overpass tests it. A single-vertex way is its vertex.
+    """
+    if len(geometry) == 1:
+        point = geometry[0]
+        return _segment_meets_box(point, point, box)
+    return any(_segment_meets_box(a, b, box) for a, b in zip(geometry, geometry[1:]))
+
+
+def _segment_meets_box(a: dict, b: dict, box: Box) -> bool:
+    """Liang-Barsky: does the segment *a*-*b* have any point in *box*?
+
+    Covers an end inside the box and a segment passing through it with both
+    ends outside alike; a point on the boundary counts as inside.
+    """
+    min_lat, min_lon, max_lat, max_lon = box
+    lat, lon = a["lat"], a["lon"]
+    d_lat, d_lon = b["lat"] - lat, b["lon"] - lon
+    enter, leave = 0.0, 1.0
+    for p, q in ((-d_lon, lon - min_lon), (d_lon, max_lon - lon),
+                 (-d_lat, lat - min_lat), (d_lat, max_lat - lat)):
+        if p == 0:
+            if q < 0:           # parallel to this edge and outside it
+                return False
+            continue
+        t = q / p
+        if p < 0:
+            enter = max(enter, t)
+        else:
+            leave = min(leave, t)
+        if enter > leave:
+            return False
+    return True
