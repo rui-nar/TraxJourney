@@ -86,6 +86,24 @@ alongside prod and val on 40 GB. Build the artifact in CI and ship only the resu
 
   Verify any change to this table against `src/services/overpass_service.py`
   directly — the queries there are the specification, not this document.
+
+  **Ferry and bus** (docs/LOCAL_TRANSPORT_DATA_PLAN.md, Decision 7) are two
+  more layers filtered from the same download into files of their own, so that
+  a bus road never joins the rail graph. Their selections mirror
+  `_get_route_geometry`'s three strategies:
+
+  | | ferry | bus | serves |
+  |---|---|---|---|
+  | relations | `route=ferry`, with **every** member way | `route=bus`, with **every** member way | strategy A, `_via_route_relation_type` (`out geom`) |
+  | ways | `route=ferry` | `route=bus` | strategy B, `_via_way_type_fallback` |
+  | ways | `ferry=yes` | — | strategy C, `_via_ferry_yes_fallback` |
+
+  No node or station row: neither mode looks anything up by UIC code, so a
+  layer's nodes are its kept ways' and nothing else. Each layer has a
+  **routable set**, by the store's `way.cls` bits (bit 0 the row "ways" above,
+  bit 1 `ferry=yes`, bit 2 a member of a kept relation): rail bit 0, ferry
+  bits 0, 1 or 2, bus bits 0 or 2. It decides `empty` below, the store
+  builder's refusal and the bbox — one table for both phases.
 - Publish per-region, versioned by the source extract's date, with a manifest
   recording region, source date, checksum and size.
 
@@ -108,18 +126,24 @@ the mounted volume, so data and code move independently.
 
 Fixed here so the two phases can be built independently and in parallel.
 
-**Phase 1 produces**, per region, and publishes as a versioned artifact:
+**Phase 1 produces**, per region and layer, and publishes as a versioned artifact:
 
-- `<region>-rail.osm.pbf` — the filtered extract.
-- `manifest.json` — one entry per region:
+- `<region>-<layer>.osm.pbf` — the filtered extract: `germany-rail.osm.pbf`,
+  `germany-ferry.osm.pbf`, `germany-bus.osm.pbf`. Rail's name is the one every
+  release before layers published.
+- `manifest.json` — one entry per region **and layer**, sorted by region then
+  layer (so rail comes last within a region). Schema 3 added `layer`; a schema
+  2 entry has none and is rail. For ferry and bus, `ways` is the routable set
+  and `stations` is 0:
 
 ```json
 {
-  "schema": 2,
+  "schema": 3,
   "generated_at": "2026-09-06T18:00:00Z",
   "regions": [
     {
       "region": "europe/germany",
+      "layer": "rail",
       "status": "ok",
       "file": "germany-rail.osm.pbf",
       "source": "https://download.geofabrik.de/europe/germany-latest.osm.pbf",
@@ -133,6 +157,7 @@ Fixed here so the two phases can be built independently and in parallel.
     },
     {
       "region": "europe/andorra",
+      "layer": "rail",
       "status": "empty",
       "source": "https://download.geofabrik.de/europe/andorra-latest.osm.pbf",
       "source_date": "2026-09-05"
@@ -158,6 +183,13 @@ side**: the pipeline ran correctly and the region holds **no rail ways**.
 - `failed` — anything else. The job exits non-zero and the region is simply
   absent from the manifest.
 
+The same three outcomes hold per layer, with the layer's routable set in place
+of "rail ways". **Completeness is rail's alone**: a region without a rail entry
+refuses the publish, while a missing ferry or bus entry — a layer the build
+job's size guard dropped (ferry 20 MB, bus 300 MB, rail 100 MB) — is a warning,
+and that region's ferry or bus keeps resolving through Overpass. The `manifest`
+command also merges into a schema 2 base, carrying its entries as `rail`.
+
 The discriminator is rail ways and nothing else, which is the same predicate
 `src/rail/builder.py` refuses a store on (`no railway ways — not a rail
 extract`). The two must agree or Phase 1 publishes files Phase 2 rejects: four
@@ -178,7 +210,8 @@ the release it patches rather than replacing it.
 required for an `ok` region and must be the extract's true extent, not the
 country's nominal one. It is `[min_lon, min_lat, max_lon, max_lat]` **over the
 nodes of the rail ways only** — the same extent `src/rail/builder.py` writes to
-the store's `meta` and `RailStore.bbox` reports. Bare `uic_ref` nodes and
+the store's `meta` and `RailStore.bbox` reports. A ferry or bus entry's box is
+over its layer's routable set, as its store's is. Bare `uic_ref` nodes and
 platform or siding geometry are excluded from it deliberately: they are in the
 file for other reasons and would claim coverage the routable data does not have.
 
@@ -516,6 +549,10 @@ question arises. The operational procedure is in `docs/DEPLOYMENT_VPS.md`, §9.
 ---
 
 ## Phase 4 — Comparison and cutover
+
+> **Superseded (2026-10-04)** for phases 4–6 by `docs/LOCAL_TRANSPORT_DATA_PLAN.md`:
+> the cutover happened, ferry and bus still depend on Overpass, and what follows
+> was written before either was known.
 
 Do not switch on faith. For a period, resolve through both sources and record where
 they differ — strategy chosen, point count, path length, degraded flag.

@@ -47,6 +47,25 @@ assertion pass vacuously, and those keep each row of the contract represented.
 ``rail_mannheim_filtered.osm.pbf`` beside it is this box put through the
 filter: the selection's expected output, checked in so that a change to what is
 selected has to be shown in a diff rather than only in a count.
+
+The ferry and bus layers (docs/LOCAL_TRANSPORT_DATA_PLAN.md, U7) are filtered
+from the same box. Its bus data is real — 11 ``route=bus`` relations, 128 of
+whose member roads lie inside it, and 21 of whose stop nodes do — and Mannheim
+has no ferry, so the rest is **synthetic** again, ids
+9000000000101-9000000000121 north of the light-rail line, each element one row
+of the ferry and bus selections:
+
+- 9000000000111, a ``route=ferry`` way (ferry strategy B);
+- 9000000000112, a ``ferry=yes`` road with no route (ferry strategy C);
+- 9000000000121, a ``route=ferry`` relation (strategy A) whose only way member,
+  9000000000113, carries no tags at all — kept for the relation alone. Its
+  node members are its stops: 9000000000109, a ``public_transport=
+  stop_position`` beside the way, and 9000000000199, which the box does not
+  hold — a stop across a border (F5);
+- 9000000000114, a ``route=bus`` way (bus strategy B), the rare mapping.
+
+None of them is rail, so the rail selection — and the published filtered file
+— did not change when they were added.
 """
 from __future__ import annotations
 
@@ -93,12 +112,25 @@ EXPECTED_MEMBER_SLOTS_MISSING = 64562
 EXPECTED_MEMBER_SLOTS = 64632
 
 
+def _select_rail(source: Path, dest: Path):
+    """The rail layer alone, for the tests that are about nothing else."""
+    return rail.select(source, {"rail": dest})["rail"]
+
+
 @pytest.fixture(scope="module")
-def filtered(tmp_path_factory):
-    """The fixture box put through the exact selection."""
-    out = tmp_path_factory.mktemp("rail") / "mannheim-rail.osm.pbf"
-    selection = rail.select(FIXTURE, out)
-    return out, selection
+def layered(tmp_path_factory):
+    """The fixture box put through every layer's selection in one call:
+    {layer: (path, selection)}."""
+    out = tmp_path_factory.mktemp("layers")
+    paths = {layer: out / rail.extract_name("mannheim", layer) for layer in rail.LAYERS}
+    selections = rail.select(FIXTURE, paths)
+    return {layer: (paths[layer], selections[layer]) for layer in rail.LAYERS}
+
+
+@pytest.fixture(scope="module")
+def filtered(layered):
+    """The rail layer: the fixture box put through the exact rail selection."""
+    return layered["rail"]
 
 
 @pytest.fixture(scope="module")
@@ -285,13 +317,13 @@ def test_the_published_filtered_fixture_is_what_this_filter_produces():
     "regenerate the fixture", which is the wrong diagnosis and pins the file to
     whoever last regenerated it.
 
-        python -c "import ...; select(FIXTURE, PUBLISHED)"
+        python -c "import ...; select(FIXTURE, {'rail': PUBLISHED})"
     """
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
         regenerated = Path(tmp) / "check.osm.pbf"
-        rail.select(FIXTURE, regenerated)
+        _select_rail(FIXTURE, regenerated)
         assert _elements(regenerated) == _elements(PUBLISHED), (
             "tests/fixtures/rail_mannheim_filtered.osm.pbf is stale — "
             "regenerate it from tests/fixtures/rail_mannheim.osm.pbf"
@@ -507,7 +539,7 @@ def test_bbox_ignores_nodes_that_are_not_on_track(tmp_path):
         id=10, nodes=[1, 2], tags={"railway": "rail"}))
     writer.close()
 
-    selection = rail.select(source, tmp_path / "out.osm.pbf")
+    selection = _select_rail(source, tmp_path / "out.osm.pbf")
 
     assert selection.bbox == [8.0, 49.0, 8.1, 49.1]
 
@@ -522,7 +554,7 @@ def test_bbox_is_not_the_starting_sentinel_when_no_rail_node_is_located(tmp_path
         id=10, nodes=[1, 2], tags={"railway": "rail"}))
     writer.close()
 
-    selection = rail.select(source, tmp_path / "out.osm.pbf")
+    selection = _select_rail(source, tmp_path / "out.osm.pbf")
 
     assert selection.ways == 1
     assert selection.bbox == []
@@ -566,7 +598,7 @@ def test_an_extract_with_no_rail_ways_is_empty_not_an_error(tmp_path):
         tags={"railway": "station", "uic_ref": "8509000"}))
     writer.close()
 
-    selection = rail.select(source, tmp_path / "out.osm.pbf")
+    selection = _select_rail(source, tmp_path / "out.osm.pbf")
 
     assert selection.ways == 0
     assert selection.stations == 1
@@ -583,21 +615,448 @@ def test_metadata_is_dropped(filtered):
 
 
 # ---------------------------------------------------------------------------
+# The ferry and bus layers (docs/LOCAL_TRANSPORT_DATA_PLAN.md, U7)
+# ---------------------------------------------------------------------------
+
+FERRY_WAY = 9000000000111       # route=ferry
+FERRY_YES_WAY = 9000000000112   # ferry=yes, no route
+FERRY_MEMBER = 9000000000113    # untagged, in FERRY_RELATION
+BUS_WAY = 9000000000114         # route=bus
+FERRY_RELATION = 9000000000121  # route=ferry
+FERRY_STOP = 9000000000109      # FERRY_RELATION's stop, beside FERRY_MEMBER
+FERRY_STOP_ABSENT = 9000000000199  # FERRY_RELATION's stop the box does not hold
+
+
+def _layer_contents(layered, layer):
+    path, _ = layered[layer]
+    return _elements(path)
+
+
+def _ids(elements, kind):
+    return {ref for k, ref in elements if k == kind}
+
+
+@pytest.mark.parametrize("tags,ferry,ferry_yes,bus", [
+    ({"route": "ferry"}, True, False, False),
+    ({"ferry": "yes"}, False, True, False),
+    ({"ferry": "yes", "highway": "unclassified"}, False, True, False),
+    ({"route": "ferry", "ferry": "yes"}, True, True, False),
+    ({"route": "bus"}, False, False, True),
+    # Overpass compares the values exactly.
+    ({"ferry": "no"}, False, False, False),
+    ({"route": "trolleybus"}, False, False, False),
+    ({"route": "train"}, False, False, False),
+    ({"highway": "bus_stop"}, False, False, False),
+])
+def test_ferry_and_bus_predicates(tags, ferry, ferry_yes, bus):
+    """Mirrors rel|way["route"="ferry"], way["ferry"="yes"] and
+    rel|way["route"="bus"] — _get_route_geometry's three strategies."""
+    assert rail.is_ferry_route(tags) is ferry
+    assert rail.is_ferry_yes(tags) is ferry_yes
+    assert rail.is_bus_route(tags) is bus
+
+
+def test_the_layer_table_is_the_stores():
+    """Decision 9's routable sets, and the layer names, are one table used by
+    this script and src/rail/builder.py alike (R2-3): if they drift, CI
+    publishes `ok` a file the builder refuses, or a bbox the store disagrees
+    with. The two phases share no code, so the agreement is pinned here."""
+    from src.rail import store
+
+    assert rail.LAYERS == store.LAYERS
+    assert (rail.CLS_ROUTE, rail.CLS_FERRY_YES, rail.CLS_MEMBER) == (
+        store.CLS_ROUTE, store.CLS_FERRY_YES, store.CLS_MEMBER)
+    assert rail.ROUTABLE == dict(store.ROUTABLE)
+
+
+def test_each_layer_holds_exactly_its_selection(layered):
+    """Every way in a layer is there for that layer's reason, and only for it."""
+    for layer in rail.LAYERS:
+        elements = _layer_contents(layered, layer)
+        members = {ref for (kind, _), (_, refs) in elements.items() if kind == "r"
+                   for mkind, ref, _ in refs if mkind == "w"}
+        for (kind, ref), (tags, _) in elements.items():
+            if kind == "w":
+                assert rail.keeps_way(layer, tags, ref in members), (layer, ref, tags)
+            elif kind == "r":
+                assert rail.keeps_relation(layer, tags), (layer, ref, tags)
+
+
+def test_a_bus_routes_road_is_in_bus_and_not_in_rail(layered):
+    """Bus routes run over ordinary roads, which are kept only because a bus
+    relation names them — and must never reach the rail graph, where a
+    Dijkstra would happily take a high street."""
+    bus = _layer_contents(layered, "bus")
+    rail_ways = _ids(_layer_contents(layered, "rail"), "w")
+    # The bus file no longer carries `highway`, so the roads are named from
+    # the raw box.
+    raw = _elements(FIXTURE)
+    roads = [ref for ref in _ids(bus, "w")
+             if raw[("w", ref)][0].get("highway") in ("primary", "trunk", "secondary")]
+    assert roads, "the fixture's bus relations hold no road inside the box"
+    assert not set(roads) & rail_ways
+    assert BUS_WAY in _ids(bus, "w")
+    assert {tags.get("route") for (kind, _), (tags, _) in bus.items() if kind == "r"} \
+        == {"bus"}
+
+
+def test_the_ferry_layer_holds_all_three_strategies(layered):
+    ferry = _layer_contents(layered, "ferry")
+    assert {FERRY_WAY, FERRY_YES_WAY, FERRY_MEMBER} == _ids(ferry, "w")
+    assert {FERRY_RELATION} == _ids(ferry, "r")
+    for layer in ("rail", "bus"):
+        assert FERRY_YES_WAY not in _ids(_layer_contents(layered, layer), "w")
+
+
+def test_the_layer_counts_are_pinned(layered):
+    """The same purpose as the rail pin above: a selection change fails loudly.
+    `ways` is the routable set — for bus, the 128 member roads and the one
+    route=bus way."""
+    got = {layer: (sel.ways, sel.relations, sel.member_ways, sel.stations,
+                   sel.uic_nodes)
+           for layer, (_, sel) in layered.items()}
+    assert got == {
+        "rail": (EXPECTED_WAYS, EXPECTED_RELATIONS, EXPECTED_MEMBER_WAYS,
+                 EXPECTED_STATIONS, EXPECTED_UIC_NODES),
+        "ferry": (3, 1, 1, 0, 0),
+        "bus": (129, 11, 128, 0, 0),
+    }
+
+
+def _stops(elements) -> set[int]:
+    """The node members of every relation in *elements*."""
+    return {ref for (kind, _), (_, refs) in elements.items() if kind == "r"
+            for mkind, ref, _ in refs if mkind == "n"}
+
+
+def test_layer_files_keep_their_way_nodes_and_stops_and_nothing_else(layered):
+    """Ferry and bus have no node row: no UIC lookup, no station. Every node is
+    a kept way's or a kept relation's stop, every kept way has all of its, and
+    every stop the source holds is there."""
+    raw_nodes = _ids(_elements(FIXTURE), "n")
+    for layer in ("ferry", "bus"):
+        elements = _layer_contents(layered, layer)
+        referenced = {ref for (kind, _), (_, refs) in elements.items() if kind == "w"
+                      for ref in refs}
+        stops = _stops(elements) & raw_nodes
+        assert stops - referenced, f"{layer}: no stop off the ways to test with"
+        assert _ids(elements, "n") == referenced | stops, layer
+
+
+def test_ferry_and_bus_stops_are_written_where_the_source_has_them(layered):
+    """What strategy A's bridge reads off Overpass's `out geom`: each stop's
+    position. A stop the source does not hold cannot be written, and is not
+    invented (F5)."""
+    raw = _elements(FIXTURE)
+    ferry = _layer_contents(layered, "ferry")
+    assert ferry[("n", FERRY_STOP)][1] == raw[("n", FERRY_STOP)][1]
+    # Its tags are stripped like any node's: nothing reads them.
+    assert ferry[("n", FERRY_STOP)][0] == {}
+    assert ("n", FERRY_STOP_ABSENT) not in ferry
+    assert ("n", FERRY_STOP_ABSENT) not in raw
+    bus = _layer_contents(layered, "bus")
+    bus_stops = _stops(bus) & _ids(raw, "n")
+    assert len(bus_stops) == 21
+    for ref in bus_stops:
+        assert bus[("n", ref)][1] == raw[("n", ref)][1], ref
+    # The stops do not reach the rail file by this route — rail's are #570, and
+    # its published fixture pins it.
+    assert FERRY_STOP not in _ids(_layer_contents(layered, "rail"), "n")
+
+
+def test_the_stop_counts_are_pinned(layered):
+    """Distinct stop nodes written; a broken stop closure reads 0 here."""
+    assert {layer: sel.stop_nodes for layer, (_, sel) in layered.items()} == {
+        "rail": 0, "ferry": 1, "bus": 21}
+
+
+def test_ferry_and_bus_stores_locate_every_stop_the_file_holds(layered, tmp_path):
+    """The builder half of F5: every relation node member the layer file holds
+    is located in the store, at the file's position, with or without a
+    uic_ref — and comes back from `relation_geometry`, the path strategy A
+    reads, as Overpass's `out geom` would return it."""
+    from src.rail.builder import build_store
+    from src.rail.store import RailStore
+
+    for layer in ("ferry", "bus"):
+        path, _ = layered[layer]
+        elements = _elements(path)
+        held = _ids(elements, "n")
+        store_path = tmp_path / f"{layer}.sqlite"
+        stats = build_store(path, store_path, region="europe/germany", layer=layer)
+        slots = [(rel, ref) for (kind, rel), (_, refs) in elements.items()
+                 if kind == "r" for mkind, ref, _ in refs if mkind == "n"]
+        assert stats["relation_nodes"] == len(slots), layer
+        assert stats["relation_nodes_located"] == sum(ref in held for _, ref in slots), layer
+        with RailStore(store_path) as store:
+            for rel in {rel for rel, _ in slots}:
+                (geometry,) = store.relation_geometry([rel])
+                for member in geometry["members"]:
+                    if member["type"] != "node":
+                        continue
+                    if member["ref"] in held:
+                        x, y = elements[("n", member["ref"])][1]
+                        assert (member["lon"], member["lat"]) == pytest.approx(
+                            (x / 1e7, y / 1e7), abs=1e-7), (layer, rel, member)
+                    else:
+                        assert not member["held"] and "lat" not in member
+    with RailStore(tmp_path / "ferry.sqlite") as store:
+        stops = store.relation_stops(FERRY_RELATION)
+    assert [(s["ref"], s["role"], s["lat"] is not None) for s in stops] == [
+        (FERRY_STOP, "stop", True), (FERRY_STOP_ABSENT, "stop", False)]
+
+
+def test_bbox_per_layer_is_the_extent_of_its_routable_set(layered):
+    """Over bits 0|1|2 for ferry and 0|2 for bus, as for rail over bit 0."""
+    for layer in ("ferry", "bus"):
+        elements = _layer_contents(layered, layer)
+        _, selection = layered[layer]
+        members = {ref for (kind, _), (_, refs) in elements.items() if kind == "r"
+                   for mkind, ref, _ in refs if mkind == "w"}
+        routable = {node for (kind, ref), (tags, refs) in elements.items()
+                    if kind == "w"
+                    and rail.way_class(layer, tags, ref in members) & rail.ROUTABLE[layer]
+                    for node in refs}
+        xs = [elements[("n", n)][1] for n in routable]
+        lons = [x / 1e7 for x, _ in xs]
+        lats = [y / 1e7 for _, y in xs]
+        assert selection.bbox == pytest.approx(
+            [min(lons), min(lats), max(lons), max(lats)], abs=1e-5), layer
+
+
+def test_bbox_per_layer_agrees_with_the_store(layered, tmp_path):
+    """U8's builder measures each store's extent over the same routable set,
+    and refuses none of the three files CI calls `ok`."""
+    from src.rail.builder import build_store
+    from src.rail.store import RailStore
+
+    for layer, (path, selection) in layered.items():
+        store_path = tmp_path / f"{layer}.sqlite"
+        stats = build_store(path, store_path, region="europe/germany", layer=layer)
+        assert stats["routable_ways"] == selection.ways, layer
+        with RailStore(store_path) as store:
+            min_lat, min_lon, max_lat, max_lon = store.bbox
+        assert selection.bbox == pytest.approx(
+            [min_lon, min_lat, max_lon, max_lat], abs=1e-5), layer
+
+
+def _write_source(path: Path, ways=(), relations=()):
+    """A tiny extract: two nodes per way, laid out from (8.0, 49.0)."""
+    writer = osmium.SimpleWriter(str(path))
+    for i, _ in enumerate(ways):
+        writer.add_node(osmium.osm.mutable.Node(id=2 * i + 1, location=(8.0 + i, 49.0)))
+        writer.add_node(osmium.osm.mutable.Node(id=2 * i + 2, location=(8.1 + i, 49.1)))
+    for i, (way_id, tags) in enumerate(ways):
+        writer.add_way(osmium.osm.mutable.Way(id=way_id, nodes=[2 * i + 1, 2 * i + 2],
+                                              tags=tags))
+    for rel_id, members, tags in relations:
+        writer.add_relation(osmium.osm.mutable.Relation(
+            id=rel_id, members=[("w", m, "") for m in members], tags=tags))
+    writer.close()
+
+
+def _select_all(source: Path, out: Path):
+    return rail.select(source, {layer: out / f"x-{layer}.osm.pbf" for layer in rail.LAYERS})
+
+
+def test_a_layer_with_nothing_routable_is_empty(tmp_path):
+    """A rail-only region: ferry and bus are `empty`, with nothing to cover."""
+    source = tmp_path / "src.osm.pbf"
+    _write_source(source, ways=[(10, {"railway": "rail"})])
+
+    selections = _select_all(source, tmp_path)
+
+    assert selections["rail"].ways == 1
+    for layer in ("ferry", "bus"):
+        assert selections[layer].ways == 0
+        assert selections[layer].bbox == []
+
+
+def test_a_ferry_layer_of_only_ferry_yes_ways_is_not_empty(tmp_path):
+    """The Åland island hoppers: no route=ferry anywhere, and strategy C is
+    the only one that finds them. Bit 0 alone would call this region empty."""
+    source = tmp_path / "src.osm.pbf"
+    _write_source(source, ways=[(10, {"ferry": "yes", "highway": "unclassified"})])
+
+    selection = _select_all(source, tmp_path)["ferry"]
+
+    assert selection.ways == 1
+    assert selection.bbox == [8.0, 49.0, 8.1, 49.1]
+
+
+def test_a_bus_layer_of_only_relation_members_is_not_empty(tmp_path):
+    """How bus is mapped nearly everywhere: relations over untagged-for-bus
+    roads, no route=bus way at all (R2-3)."""
+    from src.rail.builder import build_store
+
+    source = tmp_path / "src.osm.pbf"
+    _write_source(source, ways=[(10, {"highway": "primary"})],
+                  relations=[(20, [10], {"type": "route", "route": "bus"})])
+
+    selection = _select_all(source, tmp_path)["bus"]
+
+    assert selection.ways == 1
+    assert selection.bbox == [8.0, 49.0, 8.1, 49.1]
+    # …and the builder agrees: a store, not a refusal.
+    stats = build_store(tmp_path / "x-bus.osm.pbf", tmp_path / "bus.sqlite", layer="bus")
+    assert stats["routable_ways"] == 1
+
+
+def test_a_road_no_bus_route_names_is_in_no_layer(tmp_path):
+    source = tmp_path / "src.osm.pbf"
+    _write_source(source, ways=[(10, {"highway": "primary"})])
+
+    assert all(s.ways == 0 for s in _select_all(source, tmp_path).values())
+
+
+# ---------------------------------------------------------------------------
+# Ferry and bus carry only the tags the builder reads (U7, owner decision)
+# ---------------------------------------------------------------------------
+
+def test_ferry_and_bus_carry_only_the_tags_the_builder_reads(layered):
+    """A bus layer is roads, and a road's `highway`, `surface` and `name` are
+    most of what it weighs. Nothing reads them, so they are not published."""
+    for layer in ("ferry", "bus"):
+        for (kind, ref), (tags, _) in _layer_contents(layered, layer).items():
+            assert set(tags) <= rail.LAYER_TAGS[kind], (layer, kind, ref, tags)
+
+
+def test_stripping_drops_what_nothing_reads_and_keeps_what_it_does(layered):
+    raw = _elements(FIXTURE)
+    bus = _layer_contents(layered, "bus")
+    relation = next(ref for kind, ref in bus if kind == "r"
+                    and {"ref", "operator", "network", "name"} <= set(raw[("r", ref)][0]))
+    road = next(ref for kind, ref in bus if kind == "w"
+                and {"highway", "surface"} <= set(raw[("w", ref)][0]))
+    rel_tags, road_tags = bus[("r", relation)][0], bus[("w", road)][0]
+    assert not {"ref", "operator", "network", "type"} & set(rel_tags)
+    assert rel_tags == {"route": "bus", "name": raw[("r", relation)][0]["name"]}
+    assert not {"highway", "surface", "name"} & set(road_tags)
+    ferry = _layer_contents(layered, "ferry")
+    assert ferry[("w", FERRY_WAY)][0]["route"] == "ferry"
+    assert ferry[("w", FERRY_YES_WAY)][0] == {"ferry": "yes"}
+    assert ferry[("r", FERRY_RELATION)][0]["route"] == "ferry"
+    # Selected and untagged is still written: the member is what the relation
+    # is drawn along.
+    assert ferry[("w", FERRY_MEMBER)][0] == {}
+    # Members, roles and node lists are untouched.
+    for layer in ("ferry", "bus"):
+        for key, (_, refs) in _layer_contents(layered, layer).items():
+            if key[0] != "n":
+                assert refs == raw[key][1], (layer, key)
+
+
+def test_the_rail_layer_keeps_every_tag(layered):
+    """Rail is not stripped: its published fixture pins the file as it is."""
+    raw = _elements(FIXTURE)
+    for key, (tags, _) in _layer_contents(layered, "rail").items():
+        assert tags == raw[key][0], key
+
+
+def _tables(path: Path) -> dict:
+    """Every row of every table in a store, but the two meta values that are
+    the build's own clock."""
+    import sqlite3
+
+    conn = sqlite3.connect(path)
+    try:
+        names = [n for (n,) in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")]
+        tables = {n: sorted(conn.execute(f'SELECT * FROM "{n}"').fetchall(), key=repr)
+                  for n in names}
+    finally:
+        conn.close()
+    tables["meta"] = [row for row in tables["meta"]
+                      if row[0] not in ("built_at", "build_seconds")]
+    return tables
+
+
+def test_a_stripped_layer_builds_the_same_store(layered, tmp_path, monkeypatch):
+    """The point of the keep-list: the store is what matters, and stripping
+    must not change a row of it. Built with the builder's own command, from
+    each stripped file and from the same selection written with every tag."""
+    import subprocess
+
+    monkeypatch.setattr(rail, "_strip", lambda obj, keep: obj)
+    full_dir = tmp_path / "full"
+    full_dir.mkdir()
+    rail.select(FIXTURE, {layer: full_dir / layered[layer][0].name
+                          for layer in ("ferry", "bus")})
+    for layer in ("ferry", "bus"):
+        stripped = layered[layer][0]
+        full = full_dir / stripped.name
+        assert full.stat().st_size > stripped.stat().st_size, layer
+        stores = []
+        for pbf, name in ((stripped, "stripped"), (full, "full")):
+            store = tmp_path / f"{layer}-{name}.sqlite"
+            subprocess.run(
+                [sys.executable, "-m", "src.rail.builder", str(pbf), str(store),
+                 "--region", "europe/germany", "--layer", layer],
+                cwd=ROOT, check=True, capture_output=True)
+            stores.append(_tables(store))
+        assert stores[0] == stores[1], layer
+
+
+def test_the_keep_list_covers_every_tag_the_builder_reads():
+    """If the builder starts reading a tag the keep-list drops, ferry and bus
+    stores lose it silently — the equality test above only sees what the
+    fixture happens to exercise. `service` is read for rail alone."""
+    import re
+
+    source = (ROOT / "src" / "rail" / "builder.py").read_text(encoding="utf-8")
+    read = set(re.findall(r'tags(?:\.get\(|\[)"(\w+)"', source))
+    read |= set(re.findall(r'"(\w+)" (?:not )?in tags\b', source))
+    assert read, "the pattern no longer finds the builder's tag reads"
+    kept = set().union(*rail.LAYER_TAGS.values())
+    assert read - kept == {"service"}
+
+
+def _matches(expression: str, kind: str, tags) -> bool:
+    """Does one `osmium tags-filter` expression (``t/key`` or ``t/key=v1,v2``)
+    match an object of *kind* with *tags*?"""
+    types, _, rest = expression.partition("/")
+    key, _, values = rest.partition("=")
+    if kind not in types or key not in tags:
+        return False
+    return not values or tags[key] in values.split(",")
+
+
+def test_the_prefilter_lets_every_layer_through(layered):
+    """`select` can only narrow what the osmium CLI's pass keeps, so a layer
+    the prefilter forgets is empty in every region — silently, since an empty
+    layer is a normal outcome. Checked against what each layer actually kept:
+    everything held for its own tags must match an expression. What is held by
+    reference — a relation's member ways, a way's nodes — tags-filter keeps
+    without being asked."""
+    expressions = rail.prefilter_expressions()
+    for layer in rail.LAYERS:
+        for (kind, ref), (tags, _) in _layer_contents(layered, layer).items():
+            own = {
+                "n": lambda: rail.is_uic_node(tags),
+                "w": lambda: rail.keeps_way(layer, tags, member=False),
+                "r": lambda: rail.keeps_relation(layer, tags),
+            }[kind]()
+            if own:
+                assert any(_matches(e, kind, tags) for e in expressions), \
+                    (layer, kind, ref, tags)
+
+
+# ---------------------------------------------------------------------------
 # The manifest — the phase 1 / phase 2 contract
 # ---------------------------------------------------------------------------
 
 CONTRACT_KEYS = {
-    "region", "status", "file", "source", "source_date", "sha256", "bytes",
-    "ways", "relations", "stations", "bbox",
+    "region", "layer", "status", "file", "source", "source_date", "sha256",
+    "bytes", "ways", "relations", "stations", "bbox",
 }
-# An `empty` region has no file, so no checksum, size or extent either.
-EMPTY_CONTRACT_KEYS = {"region", "status", "source", "source_date"}
+# An `empty` layer has no file, so no checksum, size or extent either.
+EMPTY_CONTRACT_KEYS = {"region", "layer", "status", "source", "source_date"}
 
 
 @pytest.fixture(scope="module")
 def entry(filtered):
     path, selection = filtered
-    return rail.manifest_entry("europe/germany", path, selection, "2026-09-05")
+    return rail.manifest_entry("europe/germany", "rail", path, selection, "2026-09-05")
 
 
 def test_entry_has_exactly_the_contract_keys(entry):
@@ -641,7 +1100,7 @@ def test_an_undated_source_is_an_error(tmp_path):
 def test_merge_orders_regions_and_stamps_the_schema(entry):
     other = {**entry, "region": "europe/austria"}
     manifest = rail.merge_manifest([entry, other], generated_at="2026-09-06T18:00:00Z")
-    assert manifest["schema"] == rail.MANIFEST_SCHEMA == 2
+    assert manifest["schema"] == rail.MANIFEST_SCHEMA == 3
     assert manifest["generated_at"] == "2026-09-06T18:00:00Z"
     assert [r["region"] for r in manifest["regions"]] == [
         "europe/austria", "europe/germany"
@@ -690,7 +1149,7 @@ def test_collect_writes_and_verifies_the_published_manifest(filtered, entry, tmp
     """What the publish job runs: entry files in, verified manifest.json out."""
     path, _ = filtered
     (tmp_path / path.name).write_bytes(path.read_bytes())
-    (tmp_path / f"germany{rail.ENTRY_SUFFIX}").write_text(json.dumps(entry))
+    (tmp_path / rail.entry_name("germany", "rail")).write_text(json.dumps(entry))
 
     manifest = rail.collect_manifest(tmp_path)
 
@@ -711,13 +1170,13 @@ def test_collect_refuses_to_publish_nothing(tmp_path):
 # ---------------------------------------------------------------------------
 
 def _entry_file(directory: Path, slug: str, entry: dict) -> None:
-    (directory / f"{slug}{rail.ENTRY_SUFFIX}").write_text(json.dumps(entry))
+    (directory / rail.entry_name(slug, entry["layer"])).write_text(json.dumps(entry))
 
 
 def test_an_empty_region_is_recorded_without_a_file(entry, tmp_path):
     """It is in the manifest so phase 3 can tell "no rail here" from "we never
     built it", and so the completeness check counts it as accounted for."""
-    empty = rail.empty_entry("europe/andorra", "2026-09-05")
+    empty = rail.empty_entry("europe/andorra", "rail", "2026-09-05")
     assert set(empty) == EMPTY_CONTRACT_KEYS
     assert empty["status"] == rail.STATUS_EMPTY
 
@@ -749,7 +1208,7 @@ def test_a_subset_rebuild_keeps_the_regions_it_did_not_touch(entry, filtered, tm
     base = rail.merge_manifest([
         {**entry, "region": "europe/denmark", "file": "denmark-rail.osm.pbf"},
         {**entry, "region": "europe/germany", "source_date": "2026-01-01"},
-        rail.empty_entry("europe/andorra", "2026-01-01"),
+        rail.empty_entry("europe/andorra", "rail", "2026-01-01"),
     ])
 
     manifest = rail.collect_manifest(tmp_path, base=base)
@@ -846,7 +1305,7 @@ def test_a_base_manifest_of_another_schema_is_refused(entry, filtered, tmp_path)
     entries nothing has validated. Schema 1 had no ``status``, and merging one
     in produces a file whose own verifier raises ``KeyError`` rather than the
     ``ValueError`` it is written to raise. Refuse the base instead: this is the
-    path a future schema 3 walks, and it must not fail open.
+    path a future schema 4 walks, and it must not fail open.
     """
     path, _ = filtered
     (tmp_path / path.name).write_bytes(path.read_bytes())
@@ -855,7 +1314,7 @@ def test_a_base_manifest_of_another_schema_is_refused(entry, filtered, tmp_path)
     old = rail.merge_manifest(
         [{**entry, "region": "europe/denmark", "file": "denmark-rail.osm.pbf"}]
     )
-    old["schema"] = rail.MANIFEST_SCHEMA - 1
+    old["schema"] = 1
     base.write_text(json.dumps(old))
 
     with pytest.raises(SystemExit) as excinfo:
@@ -865,7 +1324,7 @@ def test_a_base_manifest_of_another_schema_is_refused(entry, filtered, tmp_path)
             "--expect", json.dumps(["europe/germany"]),
         ])
 
-    assert str(rail.MANIFEST_SCHEMA - 1) in str(excinfo.value)
+    assert "schema 1" in str(excinfo.value)
     assert not (tmp_path / rail.MANIFEST_NAME).exists()
 
 
@@ -880,6 +1339,189 @@ def test_a_missing_base_manifest_is_not_an_error(entry, filtered, tmp_path):
         "--base", str(tmp_path / "nothing-here.json"),
         "--expect", json.dumps(["europe/germany"]),
     ]) == 0
+
+
+# ---------------------------------------------------------------------------
+# Layers in the manifest: rail is completeness, ferry and bus are not
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def layer_dir(layered, tmp_path):
+    """A publish directory holding this run's Germany, all three layers."""
+    out = tmp_path / "dist"
+    out.mkdir()
+    for layer, (path, selection) in layered.items():
+        target = out / rail.extract_name("germany", layer)
+        target.write_bytes(path.read_bytes())
+        _entry_file(out, "germany", rail.manifest_entry(
+            "europe/germany", layer, target, selection, "2026-09-05"))
+    return out
+
+
+def _manifest_argv(out: Path, *extra: str) -> list[str]:
+    return ["build_rail_extract.py", "manifest", "--out-dir", str(out),
+            "--expect", json.dumps(["europe/germany"]), *extra]
+
+
+def test_every_layer_is_published_and_ordered_rail_last(layer_dir):
+    """Rail sorts last within a region — the installed manifest's order too —
+    so a reader from before layers, keying by region and keeping the last,
+    lands on rail."""
+    manifest = rail.collect_manifest(layer_dir)
+    assert [(e["region"], e["layer"]) for e in manifest["regions"]] == [
+        ("europe/germany", "bus"), ("europe/germany", "ferry"),
+        ("europe/germany", "rail")]
+
+
+def test_a_missing_bus_layer_warns_and_publishes(layer_dir, capsys):
+    """Step 4: a broken bus layer — dropped by the size guard — must not cost
+    the region its rail. That region's bus keeps going to Overpass."""
+    (layer_dir / "germany-bus.osm.pbf").unlink()
+    (layer_dir / rail.entry_name("germany", "bus")).unlink()
+
+    assert rail.main(_manifest_argv(layer_dir)) == 0
+
+    out = capsys.readouterr().out
+    assert "::warning::europe/germany bus: no entry" in out
+    assert "::error::" not in out
+    written = json.loads((layer_dir / rail.MANIFEST_NAME).read_text())
+    assert {e["layer"] for e in written["regions"]} == {"rail", "ferry"}
+
+
+def test_an_empty_layer_is_an_answer_not_a_warning(layer_dir, capsys):
+    (layer_dir / "germany-ferry.osm.pbf").unlink()
+    _entry_file(layer_dir, "germany",
+                rail.empty_entry("europe/germany", "ferry", "2026-09-05"))
+
+    assert rail.main(_manifest_argv(layer_dir)) == 0
+    assert "::warning::" not in capsys.readouterr().out
+
+
+def test_a_missing_rail_layer_refuses(layer_dir, capsys):
+    """Rail is what completeness means: ferry and bus entries do not make a
+    region covered."""
+    (layer_dir / "germany-rail.osm.pbf").unlink()
+    (layer_dir / rail.entry_name("germany", "rail")).unlink()
+
+    assert rail.main(_manifest_argv(layer_dir)) == 1
+    assert "europe/germany" in capsys.readouterr().out
+
+
+def test_a_schema_2_base_merges_as_rail(layer_dir):
+    """R1-10: the first subset recovery after this ships patches a schema 2
+    release. Its entries are rail entries without the word; refusing it would
+    leave no recovery until the next full run."""
+    base = layer_dir / "released.json"
+    denmark = {"region": "europe/denmark", "status": "ok",
+               "file": "denmark-rail.osm.pbf", "source": "x", "source_date": "2026-09-02",
+               "sha256": "0" * 64, "bytes": 1, "ways": 1, "relations": 0,
+               "stations": 0, "bbox": [0, 0, 1, 1]}
+    base.write_text(json.dumps({
+        "schema": 2, "generated_at": "2026-09-02T00:00:00Z",
+        "regions": [denmark,
+                    {"region": "europe/andorra", "status": "empty",
+                     "source": "x", "source_date": "2026-09-02"},
+                    # Rebuilt by this run: replaced, not merged.
+                    {**denmark, "region": "europe/germany",
+                     "file": "germany-rail.osm.pbf"}],
+    }))
+
+    assert rail.main(_manifest_argv(layer_dir, "--base", str(base))) == 0
+
+    written = json.loads((layer_dir / rail.MANIFEST_NAME).read_text())
+    assert written["schema"] == 3
+    entries = {(e["region"], e["layer"]): e for e in written["regions"]}
+    assert set(entries) == {
+        ("europe/andorra", "rail"), ("europe/denmark", "rail"),
+        ("europe/germany", "bus"), ("europe/germany", "ferry"),
+        ("europe/germany", "rail")}
+    assert entries[("europe/denmark", "rail")] == {**denmark, "layer": "rail"}
+    assert entries[("europe/germany", "rail")]["source_date"] == "2026-09-05"
+
+
+def test_a_schema_3_base_carries_every_layer(layer_dir):
+    base = layer_dir / "released.json"
+    carried = [rail.empty_entry("europe/denmark", layer, "2026-09-02")
+               for layer in rail.LAYERS]
+    base.write_text(json.dumps(rail.merge_manifest(carried)))
+
+    assert rail.main(_manifest_argv(layer_dir, "--base", str(base))) == 0
+
+    written = json.loads((layer_dir / rail.MANIFEST_NAME).read_text())
+    assert sorted(e["layer"] for e in written["regions"]
+                  if e["region"] == "europe/denmark") == ["bus", "ferry", "rail"]
+
+
+# ---------------------------------------------------------------------------
+# Only the published layers (RAIL_PUBLISH_LAYERS, I1-2)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text, layers", [
+    (None, ["rail"]),
+    ("", ["rail"]),
+    ("ferry", ["rail", "ferry"]),
+    ("bus, rail", ["rail", "bus"]),
+    ("bus ferry rail", ["rail", "ferry", "bus"]),
+])
+def test_rail_is_always_published_and_the_order_is_fixed(text, layers):
+    assert rail.parse_layers(text) == layers
+
+
+@pytest.mark.parametrize("text", ["tram", "rail Bus", "ferry;bus"])
+def test_a_name_that_is_not_a_layer_is_refused(text):
+    with pytest.raises(ValueError, match="unknown layer"):
+        rail.parse_layers(text)
+
+
+def test_a_layer_not_published_is_neither_entered_nor_warned_about(layer_dir, capsys):
+    """Its files may be on disk; the manifest still holds rail alone, and the
+    absence of a layer the run does not publish is not a missing layer."""
+    assert rail.main(_manifest_argv(layer_dir, "--layers", "rail")) == 0
+
+    assert "::warning::" not in capsys.readouterr().out
+    written = json.loads((layer_dir / rail.MANIFEST_NAME).read_text())
+    assert {e["layer"] for e in written["regions"]} == {"rail"}
+
+
+def test_a_published_layer_that_is_missing_still_warns(layer_dir, capsys):
+    (layer_dir / "germany-ferry.osm.pbf").unlink()
+    (layer_dir / rail.entry_name("germany", "ferry")).unlink()
+
+    assert rail.main(_manifest_argv(layer_dir, "--layers", "rail ferry")) == 0
+
+    out = capsys.readouterr().out
+    assert "::warning::europe/germany ferry: no entry" in out
+    assert "bus: no entry" not in out
+
+
+def test_a_layer_switched_off_leaves_the_patched_release_too(layer_dir):
+    """A subset run carrying a release that has Denmark's bus does not carry
+    it once bus is off: switching a layer off takes it out of the manifest the
+    boxes install, not only out of this run's builds."""
+    base = layer_dir / "released.json"
+    base.write_text(json.dumps(rail.merge_manifest(
+        [rail.empty_entry("europe/denmark", layer, "2026-09-02")
+         for layer in rail.LAYERS])))
+
+    assert rail.main(_manifest_argv(layer_dir, "--base", str(base),
+                                    "--layers", "rail ferry")) == 0
+
+    written = json.loads((layer_dir / rail.MANIFEST_NAME).read_text())
+    assert sorted((e["region"], e["layer"]) for e in written["regions"]) == [
+        ("europe/denmark", "ferry"), ("europe/denmark", "rail"),
+        ("europe/germany", "ferry"), ("europe/germany", "rail")]
+
+
+def test_the_manifest_command_refuses_an_unknown_layer(layer_dir):
+    with pytest.raises(ValueError, match="unknown layer"):
+        rail.main(_manifest_argv(layer_dir, "--layers", "rail tram"))
+
+
+def test_verify_rejects_an_unknown_layer(entry, filtered):
+    path, _ = filtered
+    with pytest.raises(ValueError, match="unknown layer"):
+        rail.verify_manifest(rail.merge_manifest([{**entry, "layer": "tram"}]),
+                             path.parent)
 
 
 # ---------------------------------------------------------------------------
@@ -916,14 +1558,48 @@ def test_build_publishes_the_extract_and_deletes_the_raw_source(monkeypatch, tmp
     monkeypatch.setattr(rail, "source_date", lambda pbf: "2026-09-05")
     out_dir, work_dir = tmp_path / "out", tmp_path / "work"
 
-    entry = rail.build("europe/germany", out_dir, work_dir)
+    entries = rail.build("europe/germany", out_dir, work_dir)
 
-    assert entry["status"] == rail.STATUS_OK
+    assert {layer: e["status"] for layer, e in entries.items()} == {
+        "rail": rail.STATUS_OK, "ferry": rail.STATUS_OK, "bus": rail.STATUS_OK}
     assert list(work_dir.iterdir()) == []
+    # Rail's names are the ones every release before layers published.
     assert sorted(p.name for p in out_dir.iterdir()) == [
+        "germany-bus.entry.json", "germany-bus.osm.pbf",
+        "germany-ferry.entry.json", "germany-ferry.osm.pbf",
         "germany-rail.entry.json", "germany-rail.osm.pbf",
     ]
-    assert entry["bytes"] < FIXTURE.stat().st_size
+    for layer, entry in entries.items():
+        assert entry["layer"] == layer
+        assert entry["file"] == f"germany-{layer}.osm.pbf"
+        assert entry["bytes"] < FIXTURE.stat().st_size
+
+
+def test_build_selects_only_the_layers_it_publishes(monkeypatch, tmp_path):
+    """A layer the run does not publish is not selected at all — no file, no
+    entry — which is what saves Germany's bus pass while bus is off."""
+    monkeypatch.setattr(rail, "download", _fake_download(FIXTURE))
+    monkeypatch.setattr(rail, "prefilter", _fake_prefilter)
+    monkeypatch.setattr(rail, "source_date", lambda pbf: "2026-09-05")
+    selected = []
+    real_select = rail.select
+
+    def spy(source, dests):
+        selected.append(sorted(dests))
+        return real_select(source, dests)
+
+    monkeypatch.setattr(rail, "select", spy)
+    out_dir, work_dir = tmp_path / "out", tmp_path / "work"
+
+    assert rail.main(["build_rail_extract.py", "build", "europe/germany",
+                      "--out-dir", str(out_dir), "--work-dir", str(work_dir),
+                      "--layers", "ferry"]) == 0
+
+    assert selected == [["ferry", "rail"]]
+    assert sorted(p.name for p in out_dir.iterdir()) == [
+        "germany-ferry.entry.json", "germany-ferry.osm.pbf",
+        "germany-rail.entry.json", "germany-rail.osm.pbf",
+    ]
 
 
 @pytest.mark.parametrize("tags", [
@@ -950,11 +1626,14 @@ def test_build_of_a_region_with_no_rail_publishes_nothing_and_succeeds(
     monkeypatch.setattr(rail, "source_date", lambda pbf: "2026-09-05")
     out_dir, work_dir = tmp_path / "out", tmp_path / "work"
 
-    entry = rail.build("europe/andorra", out_dir, work_dir)
+    entries = rail.build("europe/andorra", out_dir, work_dir)
 
-    assert entry["status"] == rail.STATUS_EMPTY
-    assert set(entry) == EMPTY_CONTRACT_KEYS
-    assert [p.name for p in out_dir.iterdir()] == ["andorra-rail.entry.json"]
+    for entry in entries.values():
+        assert entry["status"] == rail.STATUS_EMPTY
+        assert set(entry) == EMPTY_CONTRACT_KEYS
+    assert sorted(p.name for p in out_dir.iterdir()) == [
+        "andorra-bus.entry.json", "andorra-ferry.entry.json",
+        "andorra-rail.entry.json"]
 
 
 # ---------------------------------------------------------------------------

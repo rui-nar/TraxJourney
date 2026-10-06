@@ -910,6 +910,30 @@ The stores are not in the image and nothing fetches them at boot: they are a
 deployment step, run here, against the `rail-data-<date>` prereleases the
 `Rail extract` workflow publishes on GitHub.
 
+A release only reaches GitHub after the route corpus (`config/route_corpus.yml`)
+has passed against stores built from it: before uploading anything, the
+workflow builds every region the corpus names — from that run's extracts, or
+from the release it patches for the regions a subset run carries — and runs
+`scripts/route_corpus.py` on them. A leg that routes wrong fails the run and
+nothing is uploaded; the corpus lines are in the log of the publish job's
+"Check the route corpus" step. Dispatching with `force_publish` skips the gate
+and the run says so in a warning — use it only knowing which leg failed and
+why it is acceptable, because the box installs whatever is published.
+
+Which layers a run publishes is the repository variable `RAIL_PUBLISH_LAYERS`
+(GitHub → Settings → Secrets and variables → Actions → Variables): space or
+comma separated, from `rail ferry bus`. Unset or empty means `rail` alone, and
+rail is always published; any other word fails the run. A layer that is off is
+not built, not in the manifest and not uploaded, and its corpus legs are
+skipped with a notice. **Switch ferry and bus on only once part 2 of #345 is
+deployed to both boxes** — a box still on part 1 builds Germany's bus store
+with the old builder, which does not fit in its worker, and every refresh
+fails: `gh variable set RAIL_PUBLISH_LAYERS --body "rail ferry bus"` (or
+`"rail ferry"`). Verify it on the next run: its release's `manifest.json` has
+`ferry` / `bus` entries, and the plan job's "Resolve the layers to publish"
+step prints the layers it used. Deleting the variable switches them off again,
+from the next run on, including in the release a subset run patches.
+
 Everything below is `docker compose run --rm` in the **prod** stack
 (`/opt/traxjourney`); val is the same with `-f` pointed at `/opt/traxjourney-val`.
 Starting a second refresh of the same directory is harmless: it takes an
@@ -953,18 +977,58 @@ installs and older images do not have — `docker compose pull` first if
 
 ### Refresh
 
-The same command. It re-reads the newest release, skips every region whose
-store it already holds at that release's checksum, and fetches only what
-changed:
+**The box does this on its own, monthly.** Once `RAIL_SOURCE=local` is set,
+the API queues a refresh at 04:10 UTC on day `RAIL_AUTO_REFRESH_DAY` of each
+month (default the 5th) and a `default`-queue worker runs the same command as
+below — the workflow rebuilds on the 2nd, so that installs the newest release a
+few days after it is published. **Val sets the 4th** in its `.env`, so a bad
+release reaches val a day before prod and the two stacks never build at once on
+this shared host:
+
+```bash
+echo 'RAIL_AUTO_REFRESH_DAY=4' >> /opt/traxjourney-val/.env   # val only
+cd /opt/traxjourney-val && docker compose up -d
+```
+
+It needs the job queue (`REDIS_URL` and a worker, see §3). Without one it does
+not run in the API process — 49 store builds inside the API's memory limit is
+what it exists to avoid — and logs a `WARNING` that the refresh is manual on
+this deployment, every month, until it is. `RAIL_AUTO_REFRESH=0` turns it off.
+The worker's log carries the step's per-region lines; a refused region fails
+the RQ job, and `traxjourney_rail_data_age_days` is re-checked as soon as it
+finishes, so the gauge moves that same day.
+
+By hand it is the same command — the recovery path when a scheduled run
+failed, and the way to refresh outside the schedule. It re-reads the newest
+release, skips every region whose store it already holds at that release's
+checksum, and fetches only what changed:
 
 ```bash
 docker compose run --rm --entrypoint python traxjourney \
     scripts/fetch_rail_data.py --dest /app/data/rail
 ```
 
-Monthly is ample — rail alignments change over years, and the workflow rebuilds
-on the 2nd of each month. There is deliberately no timer installed: scheduling
-and data-age alerting are Phase 5 of `docs/LOCAL_RAIL_DATA_PLAN.md`.
+A manual run during a scheduled one is harmless (the lock above). Monthly is
+ample — rail alignments change over years.
+
+A line starting `WARNING: [<region>] is installed but <tag> does not publish
+it` means the new release left a country — or one of its layers, named
+`[<region> ferry]` / `[<region> bus]` — out. What happens next is in the line:
+
+- **carried** — its store is on disk, so it stays in the installed manifest for
+  this one release, marked `"carried": true`, and keeps routing; the age gauge
+  keeps seeing it age. A layer that failed to build in CI one month is back the
+  next.
+- **retired** — a later release left it out *again*, so it leaves the installed
+  manifest and its routes go to Overpass. This is what removing a region or
+  layer from `config/rail_regions.yml` looks like on the box; nothing has to be
+  done by hand.
+- **leaves the installed manifest** — there was no store on disk to keep
+  (an `empty` entry, or a store someone deleted), so it goes at once.
+
+Re-running the same release does not count as "again". If a carried or retired
+entry should not have been left out, find out why that release lacks it, and
+roll back (below).
 
 **A release that bumps the store schema also needs one of these runs**, and the
 step notices on its own: the sidecar beside each store records the schema it
@@ -972,9 +1036,17 @@ was built at as well as the asset digest, so a bump rebuilds every region even
 though the published extract has not changed. Expect `49 installed, 0 up to
 date` rather than the usual near-total skip, and roughly the time of a first
 install. It is not urgent and there is no window to plan around — the reader
-accepts the previous schema as well as the current one, so the box keeps
-serving the stores it already has until each is replaced. Issue #359 is the
-first such bump: schema 1 → 2, adding member roles and stop sequences.
+still serves the rail stores of older schemas, so the box keeps serving the
+stores it already has until each is replaced. The one exception is a ferry or
+bus store older than schema 4, which the reader refuses: that region's ferry or
+bus resolves go to Overpass until the store is rebuilt, which is a fallback, not
+an outage. Issue #359 was the first such bump (schema 1 → 2, member roles and
+stop sequences); the image that taught the stores layers is the second (schema
+2 → 3, `way.rail` becomes the `way.cls` class mask); the image that resolves
+ferry and bus locally is the third (schema 3 → 4, same table layout, recording
+that a ferry or bus store locates its relations' stops). The first scheduled or
+manual refresh after each rebuilds every store this way. Rolling the image back
+past any of them afterwards needs the recovery under *Rollback*.
 
 **No restart is needed and none is wanted.** Every file is built elsewhere and
 moved into place with an atomic rename, so a worker mid-resolve keeps reading
@@ -987,11 +1059,13 @@ rebuilds its view of the directory at most every five minutes
 The step exits non-zero if any region was refused, and names them. Otherwise:
 
 ```bash
-# 1. Every ok region in the manifest has a store beside it.
+# 1. Every ok rail region in the manifest has a store beside it (entries with
+#    no "layer" are rail; ferry and bus stores are *.ferry.sqlite, *.bus.sqlite).
 ls /opt/traxjourney/data/rail/*.rail.sqlite | wc -l
 python3 -c "import json;m=json.load(open('/opt/traxjourney/data/rail/manifest.json'));\
-print(sum(1 for e in m['regions'] if e['status']=='ok'), 'ok', \
-      sum(1 for e in m['regions'] if e['status']=='empty'), 'empty')"
+r=[e for e in m['regions'] if e.get('layer','rail')=='rail'];\
+print(sum(1 for e in r if e['status']=='ok'), 'ok', \
+      sum(1 for e in r if e['status']=='empty'), 'empty')"
 
 # 2. How old the data is — per region, which is the number that matters.
 python3 -c "import json;m=json.load(open('/opt/traxjourney/data/rail/manifest.json'));\
@@ -1009,9 +1083,11 @@ A count of ok regions that is lower than the manifest's is the failure that
 looks like success: those countries silently fall back to Overpass. Re-run the
 step; it retries only them.
 
-`docker compose run` inherits the API service's memory limit (768 MB), and
-`build_store` peaks around 32 MB on Luxembourg — extrapolating to ~230 MB for
-Germany, so the headroom is real but not enormous. An **OOM kill is the one
+`docker compose run` inherits the API service's memory limit (768 MB); the
+scheduled refresh runs inside a worker's (1 GB), beside that worker's own
+process. A full install of `rail-data-2026-10-05` (45 stores, 4 empty regions)
+measured **361 MB peak RSS**, 162 s and 304 MB on disk on Linux, and a month
+with nothing new 54 MB and 1.5 s — so the headroom is real but not enormous. An **OOM kill is the one
 failure the step cannot clean up after itself**: everything else deletes its
 own extract and part-built store on the way out. It costs nothing —
 `RAIL_DATA_DIR` still holds only whole files, and the next run clears
@@ -1041,6 +1117,53 @@ The other rollback, when the data itself is suspect rather than one region's:
 sed -i 's/^RAIL_SOURCE=local/RAIL_SOURCE=overpass/' /opt/traxjourney/.env
 docker compose up -d
 ```
+
+**Rolling the image back past a store schema change** is the one rollback that
+needs a data step. Once a newer image has run a refresh, every store on the box
+is at its schema, which an older image's reader refuses — so after the rollback
+**every train resolve goes to Overpass** (and every ferry and bus resolve, once
+there are such stores) until the stores are rebuilt. The rolled-back image
+rebuilds them itself: its sidecar check sees the newer schema where it expects
+its own and rebuilds every region, in either direction. Run, with the
+rolled-back image:
+
+```bash
+docker compose run --rm --entrypoint python traxjourney \
+    scripts/fetch_rail_data.py --dest /app/data/rail
+```
+
+Expect `N installed, 0 up to date`. Two cases:
+
+- **Back from the ferry/bus image (store schema 4) to the layers image (schema
+  3).** While no release with ferry or bus entries has been published
+  (`RAIL_PUBLISH_LAYERS` still `rail`), the command above is all it takes: the
+  layers image reads manifest schemas 2 and 3. Once ferry or bus are published,
+  add `--tag <the last release with no ferry or bus entries>` — otherwise the
+  layers image installs every layer of the latest manifest and tries to build
+  Germany's bus store with the old builder, which runs out of memory — and
+  switch the variable back so the next scheduled release does not reintroduce
+  them: `gh variable set RAIL_PUBLISH_LAYERS --body rail`. The layers image
+  never resolves ferry or bus locally, so it loses nothing by not installing
+  them.
+- **Back past the layers image as well, to an image at store schema 2.** Once
+  part 2's workflow has published any release (it writes manifest schema 3,
+  rail-only releases included), that older image refuses those manifests
+  outright (`manifest schema 3, expected 2`) and installs nothing — add `--tag
+  <the last release whose manifest is schema 2>` to the command.
+
+To find the tag for either case, run the loop below, newest first. It prints
+each release's manifest schema and the layers it carries: for the first case
+take the newest release whose layers are only `['rail']`, for the second the
+newest whose schema is 2.
+
+```bash
+for t in $(gh release list --repo rui-nar/TraxJourney --limit 100            --json tagName -q '.[].tagName' | grep '^rail-data-'); do
+  echo "$t $(gh release download "$t" --repo rui-nar/TraxJourney               -p manifest.json -O - | python3 -c 'import json,sys;m=json.load(sys.stdin);print(m["schema"], sorted({e.get("layer","rail") for e in m["regions"]}))')"
+done
+```
+
+The ferry and bus stores stay on disk, unread by the older image, as a dropped
+region's do (below).
 
 Note that a region dropped from a newer manifest keeps its old store file on
 disk, unreferenced and unread — and so does a region that goes from `ok` to

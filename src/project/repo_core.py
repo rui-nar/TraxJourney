@@ -808,8 +808,11 @@ def _compute_low_res_geo(project: Project) -> str:
 
     Each activity is represented as a 2-point straight line from
     ``start_latlng`` to ``end_latlng`` — no polyline decoding required.
-    Connecting segments use the same 50-point great-circle arcs as the
-    full-res endpoint (they're already cheap to compute).
+    Connecting segments are drawn exactly as the full-res endpoint draws them:
+    the stored route for rail, ferry and bus, else a great-circle arc.
+
+    A share link's low-res payload is this same builder (#380), so the owner
+    and anyone holding the link see the same placeholder.
 
     Encrypted geometry (issue #29) needs no extra guard here: ActivityMixin.
     _row_to_activity() already leaves start_latlng/end_latlng as None (instead
@@ -817,7 +820,7 @@ def _compute_low_res_geo(project: Project) -> str:
     envelope, so such an activity is already skipped by the None check below —
     the same "no geometry" fallback as an activity that never had latlng data.
     """
-    from src.models.great_circle import great_circle_points
+    from src.video.legs import feature_coords
 
     features = []
     for item in project.items:
@@ -841,16 +844,10 @@ def _compute_low_res_geo(project: Project) -> str:
             })
         elif item.item_type == "segment" and item.segment is not None:
             seg = item.segment
-            if seg.route_mode in ("rail", "ferry", "bus") and seg.route_polyline:
-                coords = json.loads(seg.route_polyline)
-            else:
-                pts = great_circle_points(
-                    seg.start.lat, seg.start.lon,
-                    seg.end.lat,   seg.end.lon,
-                    n_points=50,
-                )
-                coords = [[lon, lat] for lat, lon in pts]
-            if len(coords) < 2:
+            # The rule every other drawing of a segment uses, so a routed ferry
+            # or bus leg is not a straight line here alone (#380).
+            coords = feature_coords(seg)
+            if coords is None:
                 continue
             features.append({
                 "type": "Feature",

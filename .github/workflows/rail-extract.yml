@@ -1,6 +1,13 @@
 name: Rail extract
 
-# Builds the rail-only OSM artifacts route resolution runs on (issue #345).
+# Builds the OSM artifacts route resolution runs on (issue #345): per region, a
+# rail, a ferry and a bus extract, filtered from one download.
+#
+# Which of those layers a run publishes is the repository variable
+# RAIL_PUBLISH_LAYERS (space or comma separated, from `rail ferry bus`); unset
+# or empty means rail alone, and rail is always published. Ferry and bus stay
+# off until every box runs the code that builds their stores within its
+# worker's memory — docs/DEPLOYMENT_VPS.md §9.
 #
 # This is on a runner and not on the VPS because of one number: the raw Europe
 # extract is 34.9 GB and the box has 40 GB in total, prod and val included.
@@ -40,6 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       regions: ${{ steps.regions.outputs.regions }}
+      layers: ${{ steps.layers.outputs.layers }}
     steps:
       - uses: actions/checkout@v7
 
@@ -63,6 +71,19 @@ jobs:
           fi
           echo "regions=$regions" >> "$GITHUB_OUTPUT"
           echo "$regions"
+
+      - name: Resolve the layers to publish
+        id: layers
+        # Read once, here, and validated: every later job takes this output,
+        # never the variable. A name that is not a layer fails the run rather
+        # than switching that layer off in silence. Through the environment
+        # like the input above — a variable is text, not script.
+        env:
+          REQUESTED_LAYERS: ${{ vars.RAIL_PUBLISH_LAYERS }}
+        run: |
+          layers=$(python scripts/build_rail_extract.py layers "$REQUESTED_LAYERS")
+          echo "layers=$layers" >> "$GITHUB_OUTPUT"
+          echo "publishing: $layers"
 
   build:
     needs: plan
@@ -94,22 +115,53 @@ jobs:
       - run: pip install osmium requests PyYAML
 
       - name: Filter ${{ matrix.region }}
+        # A layer this run does not publish is not built: it would only be
+        # dropped later, and Germany's bus layer is most of the pass.
         env:
           REGION: ${{ matrix.region }}
+          LAYERS: ${{ needs.plan.outputs.layers }}
         run: |
           python scripts/build_rail_extract.py build "$REGION" \
             --out-dir dist/rail \
-            --work-dir "$RUNNER_TEMP/rail-work"
+            --work-dir "$RUNNER_TEMP/rail-work" \
+            --layers "$LAYERS"
 
       - name: Guard — nothing raw leaves this job
         # The script deletes the source extract as soon as it has been filtered,
-        # so this is a tripwire on that promise rather than the mechanism: a
-        # filtered country is single-digit megabytes, and the biggest raw one is
-        # 4.83 GB. Anything over 100 MB in the published directory is a raw or
-        # half-filtered extract about to be uploaded.
+        # so this is a tripwire on that promise rather than the mechanism: the
+        # biggest raw country is 4.83 GB, and each layer has a ceiling well
+        # under it and well over what it holds — rail single-digit megabytes
+        # (100 MB), ferry well under one (20 MB), bus ~125 MB for Germany
+        # (300 MB). A file over its layer's ceiling is a raw or half-filtered
+        # extract about to be uploaded.
+        #
+        # Rail, or any file that is not a ferry or bus extract, over 100 MB
+        # stops the job. A ferry or bus extract over its ceiling is deleted
+        # with its entry instead: nothing raw leaves either way, and a broken
+        # bus layer must not cost the region its rail — the manifest step then
+        # warns that the layer is missing, and that mode keeps going to
+        # Overpass.
         run: |
-          if find dist/rail -size +100M | grep .; then
-            echo "::error::an unfiltered extract reached the publish directory"
+          shopt -s nullglob
+          failed=0
+          for file in dist/rail/*; do
+            case "$file" in
+              *-ferry.osm.pbf) layer=ferry limit=20 ;;
+              *-bus.osm.pbf) layer=bus limit=300 ;;
+              *) layer="" limit=100 ;;
+            esac
+            if [ -z "$(find "$file" -size +"$limit"M)" ]; then
+              continue
+            fi
+            if [ -n "$layer" ]; then
+              echo "::warning::$file is over the $layer layer's $limit MB ceiling — dropped, the region publishes without its $layer layer"
+              rm -f "$file" "${file%.osm.pbf}.entry.json"
+            else
+              echo "::error::$file is over $limit MB — an unfiltered extract reached the publish directory"
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
             exit 1
           fi
           if find "$RUNNER_TEMP/rail-work" -name '*-source.osm.pbf' | grep .; then
@@ -144,6 +196,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      # What this job actually patched, for notify — which has no `contents`
+      # permission to look the release up with, and should not second-guess it.
+      tag: ${{ steps.release.outputs.tag }}
     steps:
       - uses: actions/checkout@v7
 
@@ -151,7 +207,10 @@ jobs:
         with:
           python-version: "3.14"
 
-      - run: pip install osmium requests PyYAML
+      # Everything, not the builder's three: the corpus gate below resolves
+      # legs with the server's own resolver, which imports what the server
+      # imports, and a hand-picked list breaks on its next new import.
+      - run: pip install -r requirements.txt
 
       - uses: actions/download-artifact@v4
         with:
@@ -221,9 +280,11 @@ jobs:
         # upload fails here rather than on the box at boot; merges the regions
         # this run did not rebuild in from the release's own manifest; and
         # refuses to publish one that covers fewer regions than the run was
-        # supposed to produce.
+        # supposed to produce. Only the layers this run publishes are entered,
+        # and only their absence warns.
         env:
           EXPECTED: ${{ needs.plan.outputs.regions }}
+          LAYERS: ${{ needs.plan.outputs.layers }}
           FORCE: ${{ inputs.force_publish }}
         run: |
           force=""
@@ -233,25 +294,181 @@ jobs:
           python scripts/build_rail_extract.py manifest \
             --out-dir dist/rail \
             --base released/manifest.json \
-            --expect "$EXPECTED" $force
+            --expect "$EXPECTED" \
+            --layers "$LAYERS" $force
+
+      - name: Check the route corpus
+        # A manifest can be complete and checksummed and still describe data
+        # that routes Toulouse to Paris through Bordeaux. So before anything is
+        # uploaded, every corpus region the manifest holds is built into a
+        # store, for each layer its legs read (rail, ferry, bus), exactly as
+        # the box will build it, and config/route_corpus.yml is resolved
+        # against them; a FAIL or a known-bad leg that moved stops the job
+        # here.
+        #
+        # The whole release is gated, not just what this run rebuilt: a
+        # subset run fetches the regions it carries from the release it is
+        # patching, because that release, as a whole, is what the box
+        # installs — and the resolver may have changed since they were last
+        # checked. A full run passes --require-all, since every corpus region
+        # and layer was just built; a subset run lets a leg skip only when the
+        # release does not hold its region's layer at all (seeding coverage a
+        # country at a time).
+        #
+        # A leg whose mode is a layer this run does not publish is left out
+        # of the corpus the runner reads, and named in a notice: there is no
+        # store to check it against and nothing of that layer is uploaded, so
+        # it is skipped, not failed — while --require-all still holds every
+        # leg of a layer that is published.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          REQUESTED: ${{ inputs.regions }}
+          FORCE: ${{ inputs.force_publish }}
+          LAYERS: ${{ needs.plan.outputs.layers }}
+        run: |
+          if [ "$FORCE" = "true" ]; then
+            echo "::warning::force_publish: the route corpus gate was skipped"
+            exit 0
+          fi
+          stores="$RUNNER_TEMP/rail-stores"
+          carried="$RUNNER_TEMP/rail-carried"
+          mkdir -p "$stores" "$carried"
+          cp dist/rail/manifest.json "$stores/"
+          # region, layer, file, sha256, store name: each region and layer a
+          # corpus leg names — a leg's mode is the layer it reads — that the
+          # manifest lists as ok. Only those: a region's other layers are not
+          # built, so Denmark's bus store is built only while a bus leg names
+          # Denmark, and Germany's (minutes, hundreds of MB) only if one names
+          # Germany. An entry without `layer` is rail. A file, not a pipe, so
+          # `-e` sees a failure in it. The legs of the published layers go to
+          # their own corpus file, which is the one the runner reads.
+          corpus="$RUNNER_TEMP/route-corpus.yml"
+          python -c '
+          import json, os, sys, yaml
+          from src.rail.store import store_filename
+          layers = os.environ["LAYERS"].split()
+          corpus = yaml.safe_load(open("config/route_corpus.yml", encoding="utf-8"))
+          legs = [leg for leg in corpus["legs"] if leg["mode"] in layers]
+          for leg in corpus["legs"]:
+              if leg["mode"] not in layers:
+                  name, mode = leg.get("name"), leg["mode"]
+                  print(f"::notice::corpus leg {name} skipped: the {mode} layer "
+                        f"is not published (RAIL_PUBLISH_LAYERS)", file=sys.stderr)
+          with open(sys.argv[1], "w", encoding="utf-8") as out:
+              yaml.safe_dump({**corpus, "legs": legs}, out, sort_keys=False,
+                             allow_unicode=True)
+          named = {(region, leg["mode"]) for leg in legs for region in leg["regions"]}
+          for e in json.load(open("dist/rail/manifest.json", encoding="utf-8"))["regions"]:
+              layer = e.get("layer", "rail")
+              if (e["region"], layer) in named and e.get("status", "ok") == "ok":
+                  print(e["region"], layer, e["file"], e["sha256"],
+                        store_filename(e["region"], layer), sep="\t")
+          ' "$corpus" > "$RUNNER_TEMP/corpus-regions.tsv"
+          while IFS=$'\t' read -r region layer file sha store; do
+            pbf="dist/rail/$file"
+            if [ ! -f "$pbf" ]; then
+              gh release download "$TAG" --pattern "$file" --dir "$carried" --clobber
+              pbf="$carried/$file"
+              echo "$sha  $pbf" | sha256sum -c -
+            fi
+            echo "building $region $layer from $pbf"
+            python -m src.rail.builder "$pbf" "$stores/$store" --region "$region" --layer "$layer"
+          done < "$RUNNER_TEMP/corpus-regions.tsv"
+          require_all=""
+          if [ -z "$REQUESTED" ]; then
+            require_all="--require-all"
+          fi
+          python scripts/route_corpus.py "$stores" --corpus "$corpus" $require_all
 
       - name: Publish the release
         # A release asset, not a Docker layer: baking the data into the image
         # would couple a data refresh to a code release and inflate every image
         # by the size of Europe's railways. Marked pre-release so it never
         # displaces the app's own latest release.
+        #
+        # Only the published layers' files: the manifest names no other, and
+        # an asset the manifest does not name is one nobody checked.
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
+          LAYERS: ${{ needs.plan.outputs.layers }}
         run: |
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" \
               --prerelease \
               --title "Rail extracts $TAG" \
-              --notes "Rail-only OSM extracts built by .github/workflows/rail-extract.yml from Geofabrik country extracts. Coverage, checksums and per-region source dates are in manifest.json."
+              --notes "Rail, ferry and bus OSM extracts built by .github/workflows/rail-extract.yml from Geofabrik country extracts. Coverage, checksums and per-region, per-layer source dates are in manifest.json."
           fi
-          # A region with no rail publishes no .pbf, so the glob can be empty.
+          # A layer that is empty publishes no .pbf, so a glob can be empty.
           shopt -s nullglob
-          extracts=(dist/rail/*-rail.osm.pbf)
+          extracts=()
+          for layer in $LAYERS; do
+            extracts+=(dist/rail/*-"$layer".osm.pbf)
+          done
           gh release upload "$TAG" \
             "${extracts[@]}" dist/rail/manifest.json --clobber
+
+  # A monthly job nobody watches fails silently, and the box keeps serving last
+  # month's data — or none, for a region that never built — without anyone
+  # knowing. So a failure files one `rail-data` issue (commented on, not
+  # duplicated, by the runs that keep failing) and the next good run closes it.
+  # Issues only: this job never touches the release, so it gets no `contents`.
+  notify:
+    needs: [plan, build, publish]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # No checkout, so gh has no git remote to infer the repository from.
+      GH_REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Report the failure
+        # A cancelled run is someone's decision, not a fault; it reports nothing.
+        if: contains(needs.*.result, 'failure')
+        env:
+          PLAN: ${{ needs.plan.result }}
+          BUILD: ${{ needs.build.result }}
+          PUBLISH: ${{ needs.publish.result }}
+        run: |
+          failed=$(printf '%s\n' "plan=$PLAN" "build=$BUILD" "publish=$PUBLISH" \
+            | sed -n 's/=failure$//p' | paste -sd, - | sed 's/,/, /g')
+          body="Rail extract run $RUN_URL failed in: $failed"
+          number=$(gh issue list --label rail-data --state open \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "Rail extract failed" --label rail-data --body "$body"
+          fi
+
+      - name: Close the failure report
+        if: >-
+          needs.plan.result == 'success' &&
+          needs.build.result == 'success' &&
+          needs.publish.result == 'success'
+        env:
+          TAG: ${{ needs.publish.outputs.tag }}
+          REQUESTED: ${{ inputs.regions }}
+        run: |
+          # A subset rebuild patches the latest release, whatever month it is
+          # from. Green then reads as "this month's data is out" when no
+          # release exists for this month, so say so where it is seen.
+          note=""
+          month=$(date -u +%Y-%m)
+          tag_date=${TAG#rail-data-}
+          if [ -n "$REQUESTED" ] && [ "${tag_date:0:7}" != "$month" ]; then
+            note="subset run patched $TAG; no rail-data release exists for $month"
+            echo "::warning::$note"
+          fi
+          body="Rail extract run $RUN_URL succeeded."
+          if [ -n "$note" ]; then
+            body="$body"$'\n\n'"$note"
+          fi
+          for number in $(gh issue list --label rail-data --state open \
+                            --json number --jq '.[].number'); do
+            gh issue close "$number" --comment "$body"
+          done

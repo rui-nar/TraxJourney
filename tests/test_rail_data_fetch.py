@@ -30,6 +30,7 @@ import os
 import socket
 import sys
 from pathlib import Path
+from typing import Callable
 
 import pytest
 
@@ -370,6 +371,204 @@ def test_partial_failure_keeps_the_other_regions_usable(tmp_path):
     assert written["generated_at"] == "2026-10-06T18:00:00Z"
 
 
+def _warnings(capsys) -> list[str]:
+    return [line for line in capsys.readouterr().out.splitlines()
+            if line.startswith("WARNING")]
+
+
+def _installed(dest: Path) -> dict:
+    """The installed manifest's entries by (region, layer)."""
+    return {(e["region"], e.get("layer", "rail")): e for e in
+            json.loads((dest / "manifest.json").read_text())["regions"]}
+
+
+def written_generated_at(dest: Path) -> str:
+    return json.loads((dest / "manifest.json").read_text())["generated_at"]
+
+
+def _release(entries: list[dict], pbfs: dict, tag: str) -> Callable:
+    """A fake transport serving *entries* as release *tag*; *pbfs*: file -> pbf."""
+    bodies, _ = _world(entries, tag=tag)
+    for entry in entries:
+        if entry.get("status") == "ok":
+            _with_asset(bodies, entry, pbfs[entry["file"]], tag=tag)
+    return _transport(bodies)[0]
+
+
+def test_a_region_the_new_release_drops_is_named_in_a_warning(tmp_path, capsys):
+    """Review finding R1-6: a region leaving the release must say so.
+
+    Germany's store is on disk, so it is carried for this one release (R2-2)
+    and still routes; the empty entry has no store and leaves. Either way the
+    line is what tells the operator the release changed shape.
+    """
+    lux, de = _lux(), _de()
+    bodies, _ = _world([lux, de, _empty()])
+    _with_asset(bodies, lux, LUXEMBOURG)
+    _with_asset(bodies, de, MANNHEIM)
+    get, _ = _transport(bodies)
+    assert fetch.refresh(tmp_path, get=get) == 0
+    assert "WARNING" not in capsys.readouterr().out
+
+    lux2 = _lux("2026-10-05")
+    bodies2, _ = _world([lux2], tag="rail-data-2026-10-06")
+    _with_asset(bodies2, lux2, LUXEMBOURG, tag="rail-data-2026-10-06")
+    get, _ = _transport(bodies2)
+    assert fetch.refresh(tmp_path, get=get) == 0
+
+    warnings = _warnings(capsys)
+    # Both: an empty entry dropped is as much a coverage change as an ok one.
+    assert len(warnings) == 2
+    assert "[europe/andorra]" in warnings[0] and "rail-data-2026-10-06" in warnings[0]
+    assert "leaves the installed manifest" in warnings[0]
+    assert "[europe/germany]" in warnings[1] and "carried" in warnings[1]
+    regions = [e["region"] for e in
+               json.loads((tmp_path / "manifest.json").read_text())["regions"]]
+    assert regions == ["europe/germany", "europe/luxembourg"]
+
+    # Said once, when it happens — not on every later run. A re-run of the same
+    # release (the retry after a refused region) is not "the next release", so
+    # it keeps carrying Germany rather than retiring it.
+    get, _ = _transport(bodies2)
+    assert fetch.refresh(tmp_path, get=get) == 0
+    assert "WARNING" not in capsys.readouterr().out
+    assert _installed(tmp_path)[("europe/germany", "rail")]["carried"] is True
+
+
+def test_an_omitted_region_is_carried_while_its_store_is_on_disk(tmp_path, capsys):
+    """R2-2: kept, as a failed install is kept — routing, and visibly ageing."""
+    get = _release([_lux(), _de()], {"luxembourg-rail.osm.pbf": LUXEMBOURG,
+                                     "germany-rail.osm.pbf": MANNHEIM},
+                   "rail-data-2026-09-06")
+    assert fetch.refresh(tmp_path, get=get) == 0
+    de_ways = _ways(tmp_path, "europe/germany")
+    capsys.readouterr()
+
+    get = _release([_lux("2026-10-05")], {"luxembourg-rail.osm.pbf": LUXEMBOURG},
+                   "rail-data-2026-10-06")
+    assert fetch.refresh(tmp_path, get=get) == 0
+
+    carried = _installed(tmp_path)[("europe/germany", "rail")]
+    assert carried["carried"] is True
+    assert carried["omitted_by"] == "rail-data-2026-10-06"
+    # The entry is the one that describes the store on disk, source date and all,
+    # so the age check keeps seeing it age.
+    assert carried["source_date"] == "2026-09-05"
+    assert sorted(r for r, _ in load_coverage(str(tmp_path))) == [
+        "europe/germany", "europe/luxembourg"]
+    assert _ways(tmp_path, "europe/germany") == de_ways
+    # Carrying is not a refusal: the run converged on what the release holds.
+    assert written_generated_at(tmp_path) == "2026-10-06T18:00:00Z"
+
+
+def test_an_omitted_region_with_no_store_on_disk_is_dropped(tmp_path, capsys):
+    """Nothing to keep serving, so nothing to carry: it leaves, and says so."""
+    get = _release([_lux(), _de()], {"luxembourg-rail.osm.pbf": LUXEMBOURG,
+                                     "germany-rail.osm.pbf": MANNHEIM},
+                   "rail-data-2026-09-06")
+    assert fetch.refresh(tmp_path, get=get) == 0
+    (tmp_path / store_filename("europe/germany")).unlink()
+    capsys.readouterr()
+
+    get = _release([_lux("2026-10-05")], {"luxembourg-rail.osm.pbf": LUXEMBOURG},
+                   "rail-data-2026-10-06")
+    assert fetch.refresh(tmp_path, get=get) == 0
+
+    warnings = _warnings(capsys)
+    assert len(warnings) == 1
+    assert "[europe/germany]" in warnings[0]
+    assert "leaves the installed manifest" in warnings[0]
+    assert list(_installed(tmp_path)) == [("europe/luxembourg", "rail")]
+
+
+def test_a_region_omitted_by_two_releases_in_a_row_is_retired(tmp_path, capsys):
+    """R3-1: carrying lasts one release.
+
+    A layer that failed in CI one month comes back the next; one removed from
+    config/rail_regions.yml must leave without anyone editing the box.
+    """
+    get = _release([_lux(), _de()], {"luxembourg-rail.osm.pbf": LUXEMBOURG,
+                                     "germany-rail.osm.pbf": MANNHEIM},
+                   "rail-data-2026-09-06")
+    assert fetch.refresh(tmp_path, get=get) == 0
+    get = _release([_lux("2026-10-05")], {"luxembourg-rail.osm.pbf": LUXEMBOURG},
+                   "rail-data-2026-10-06")
+    assert fetch.refresh(tmp_path, get=get) == 0
+    assert ("europe/germany", "rail") in _installed(tmp_path)
+    capsys.readouterr()
+
+    get = _release([_lux("2026-11-05")], {"luxembourg-rail.osm.pbf": LUXEMBOURG},
+                   "rail-data-2026-11-06")
+    assert fetch.refresh(tmp_path, get=get) == 0
+
+    warnings = _warnings(capsys)
+    assert len(warnings) == 1
+    assert "[europe/germany]" in warnings[0]
+    assert "retired" in warnings[0]
+    assert "rail-data-2026-10-06" in warnings[0] and "rail-data-2026-11-06" in warnings[0]
+    assert list(_installed(tmp_path)) == [("europe/luxembourg", "rail")]
+    assert [r for r, _ in load_coverage(str(tmp_path))] == ["europe/luxembourg"]
+
+    # Gone is gone: the next run has nothing left to say about it.
+    get = _release([_lux("2026-11-05")], {"luxembourg-rail.osm.pbf": LUXEMBOURG},
+                   "rail-data-2026-11-06")
+    assert fetch.refresh(tmp_path, get=get) == 0
+    assert _warnings(capsys) == []
+
+
+def test_a_carried_region_that_reappears_is_installed_and_loses_its_mark(
+        tmp_path, capsys):
+    """Back in the next release: installed as any region is, no longer carried."""
+    get = _release([_lux(), _de()], {"luxembourg-rail.osm.pbf": LUXEMBOURG,
+                                     "germany-rail.osm.pbf": MANNHEIM},
+                   "rail-data-2026-09-06")
+    assert fetch.refresh(tmp_path, get=get) == 0
+    get = _release([_lux("2026-10-05")], {"luxembourg-rail.osm.pbf": LUXEMBOURG},
+                   "rail-data-2026-10-06")
+    assert fetch.refresh(tmp_path, get=get) == 0
+    assert _installed(tmp_path)[("europe/germany", "rail")]["carried"] is True
+    capsys.readouterr()
+
+    de3 = _de(pbf=LUXEMBOURG, source_date="2026-11-05")
+    get = _release([_lux("2026-11-05"), de3],
+                   {"luxembourg-rail.osm.pbf": LUXEMBOURG,
+                    "germany-rail.osm.pbf": LUXEMBOURG},
+                   "rail-data-2026-11-06")
+    assert fetch.refresh(tmp_path, get=get) == 0
+
+    assert _warnings(capsys) == []
+    entry = _installed(tmp_path)[("europe/germany", "rail")]
+    assert entry == de3
+    assert "carried" not in entry and "omitted_by" not in entry
+    assert fetch.installed_build(tmp_path, "europe/germany") == (
+        de3["sha256"], SCHEMA_VERSION)
+
+
+def test_a_carried_region_whose_reinstall_fails_keeps_its_store_unmarked(tmp_path):
+    """Published again but refused this run: the failed-install rule, not carrying.
+
+    The release does publish it, so it is not omitted and cannot be retired by
+    the release after; it keeps the entry describing the store on disk.
+    """
+    get = _release([_lux(), _de()], {"luxembourg-rail.osm.pbf": LUXEMBOURG,
+                                     "germany-rail.osm.pbf": MANNHEIM},
+                   "rail-data-2026-09-06")
+    assert fetch.refresh(tmp_path, get=get) == 0
+    get = _release([_lux("2026-10-05")], {"luxembourg-rail.osm.pbf": LUXEMBOURG},
+                   "rail-data-2026-10-06")
+    assert fetch.refresh(tmp_path, get=get) == 0
+
+    de3 = _de(pbf=LUXEMBOURG, source_date="2026-11-05")
+    bodies, _ = _world([_lux("2026-11-05"), de3], tag="rail-data-2026-11-06")
+    _with_asset(bodies, _lux("2026-11-05"), LUXEMBOURG, tag="rail-data-2026-11-06")
+    get, _ = _transport(bodies)          # Germany's asset is missing: refused
+    assert fetch.refresh(tmp_path, get=get) == 1
+
+    entry = _installed(tmp_path)[("europe/germany", "rail")]
+    assert entry["source_date"] == "2026-09-05"
+    assert "carried" not in entry and "omitted_by" not in entry
+
+
 def test_an_unknown_manifest_schema_is_refused(tmp_path):
     lux = _lux()
     bodies, _ = _world([lux])
@@ -379,7 +578,8 @@ def test_an_unknown_manifest_schema_is_refused(tmp_path):
     before = sorted(p.name for p in tmp_path.iterdir())
 
     future = _lux("2026-10-05")
-    bodies2, _ = _world([future], tag="rail-data-2026-10-06", schema=3)
+    bodies2, _ = _world([future], tag="rail-data-2026-10-06",
+                        schema=max(fetch.RELEASE_SCHEMAS) + 1)
     _with_asset(bodies2, future, MANNHEIM, tag="rail-data-2026-10-06")
     get, calls = _transport(bodies2)
 
@@ -568,6 +768,220 @@ def test_the_digest_is_recorded_only_after_the_store_lands(tmp_path, monkeypatch
     assert [c for c in calls if c.endswith(".osm.pbf")] == [
         f"{BASE}/rail-data-2026-10-06/{new['file']}"]
     assert fetch.installed_build(tmp_path, "europe/luxembourg") == (new["sha256"], SCHEMA_VERSION)
+
+
+def test_the_schema_3_bump_rebuilds_a_rail_store_a_previous_version_installed(
+        tmp_path, capsys):
+    """What a box still on schema 2 holds the first time this version
+    refreshes: a schema 2 store whose sidecar says so. The release has not
+    changed, and the store is rebuilt anyway — at the current schema, by the
+    new builder."""
+    from tests.test_rail_store_schema2 import _downgrade_to_schema_2
+
+    lux = _lux()
+    bodies, _ = _world([lux])
+    _with_asset(bodies, lux, LUXEMBOURG)
+    get, _ = _transport(bodies)
+    assert fetch.refresh(tmp_path, get=get) == 0
+
+    store = tmp_path / store_filename("europe/luxembourg")
+    old = tmp_path / "old.sqlite"
+    _downgrade_to_schema_2(str(store), str(old))
+    os.replace(old, store)
+    sidecar = tmp_path / (store_filename("europe/luxembourg") + fetch.SHA_SUFFIX)
+    sidecar.write_text(f"{lux['sha256']} 2\n", encoding="utf-8")
+    with RailStore(store) as before:
+        assert before.schema == 2
+        ways = before.ways_in_bbox(*before.bbox)
+    capsys.readouterr()
+
+    get, calls = _transport(bodies)
+    assert fetch.refresh(tmp_path, get=get) == 0
+
+    assert "1 installed, 0 up to date" in capsys.readouterr().out
+    assert [c for c in calls if c.endswith(".osm.pbf")] == [
+        f"{BASE}/rail-data-2026-09-06/{lux['file']}"]
+    assert fetch.installed_build(tmp_path, "europe/luxembourg") == (
+        lux["sha256"], SCHEMA_VERSION)
+    with RailStore(store) as after:
+        assert after.schema == SCHEMA_VERSION
+        assert after.ways_in_bbox(*after.bbox) == ways
+
+
+# ---------------------------------------------------------------------------
+# Layers
+# ---------------------------------------------------------------------------
+
+def _layer_entry(region: str, layer: str, pbf: Path, source_date: str,
+                 bbox: list) -> dict:
+    entry = _entry(region, pbf, source_date, bbox)
+    entry["layer"] = layer
+    entry["file"] = region.rsplit("/", 1)[-1] + f"-{layer}.osm.pbf"
+    return entry
+
+
+@pytest.fixture
+def layer_pbfs(tmp_path_factory):
+    from tests.test_rail_store_schema3 import (
+        write_bus_members_only_extract,
+        write_ferry_extract,
+    )
+
+    d = tmp_path_factory.mktemp("layers")
+    return {"ferry": write_ferry_extract(d / "ferry.osm.pbf"),
+            "bus": write_bus_members_only_extract(d / "bus.osm.pbf")}
+
+
+def _layered_release(layer_pbfs, tag="rail-data-2026-09-06", layers=("ferry", "bus"),
+                     schema=3, extra=()):
+    """A schema 3 release: Luxembourg's rail entry plus its *layers*."""
+    lux = _lux()
+    lux["layer"] = "rail"
+    entries = [lux] + [
+        _layer_entry("europe/luxembourg", layer, layer_pbfs[layer], "2026-09-05",
+                     [9.0, 54.0, 13.0, 58.0]) for layer in layers] + list(extra)
+    bodies, manifest = _world(entries, tag=tag, schema=schema)
+    _with_asset(bodies, lux, LUXEMBOURG, tag=tag)
+    for entry in entries[1:]:
+        if entry.get("layer") in layer_pbfs:
+            _with_asset(bodies, entry, layer_pbfs[entry["layer"]], tag=tag)
+    return bodies, manifest
+
+
+def test_a_schema_3_release_installs_every_layers_store(tmp_path, layer_pbfs):
+    bodies, manifest = _layered_release(layer_pbfs)
+    get, _ = _transport(bodies)
+
+    assert fetch.refresh(tmp_path, get=get) == 0
+
+    for layer in ("rail", "ferry", "bus"):
+        path = tmp_path / store_filename("europe/luxembourg", layer)
+        with RailStore(path) as store:
+            assert store.layer == layer
+        # One sidecar per (region, layer), each recording its own asset.
+        entry = next(e for e in manifest["regions"] if e["layer"] == layer)
+        assert fetch.installed_build(tmp_path, "europe/luxembourg", layer) == (
+            entry["sha256"], SCHEMA_VERSION)
+    # Rail keeps its names: the same store and sidecar a schema 2 box holds.
+    assert (tmp_path / "europe-luxembourg.rail.sqlite").is_file()
+    assert (tmp_path / "europe-luxembourg.rail.sqlite.sha256").is_file()
+
+    written = json.loads((tmp_path / "manifest.json").read_text())
+    assert written["schema"] == 2           # what the age check reads
+    assert [(e["region"], e["layer"]) for e in written["regions"]] == [
+        ("europe/luxembourg", "bus"), ("europe/luxembourg", "ferry"),
+        ("europe/luxembourg", "rail")]
+    assert load_coverage(str(tmp_path)) == [
+        ("europe/luxembourg", (LUX_BBOX[1], LUX_BBOX[0], LUX_BBOX[3], LUX_BBOX[2]))]
+
+
+def test_the_schema_4_bump_rebuilds_every_store_a_schema_3_fetch_installed(
+        tmp_path, layer_pbfs, capsys):
+    """What a box holds when part 1 of #345 reached it first: rail, ferry and
+    bus stores built at schema 3, whose ferry and bus stops are not located,
+    each with a sidecar saying 3. The release has not changed, and all three
+    are rebuilt anyway — a ferry or bus store kept would answer strategy A
+    differently from Overpass, and the reader would have no way to tell."""
+    from tests.test_rail_store_schema3 import _downgrade_to_schema_3
+
+    bodies, manifest = _layered_release(layer_pbfs)
+    get, _ = _transport(bodies)
+    assert fetch.refresh(tmp_path, get=get) == 0
+
+    for entry in manifest["regions"]:
+        layer = entry["layer"]
+        store = tmp_path / store_filename("europe/luxembourg", layer)
+        old = tmp_path / "old.sqlite"
+        _downgrade_to_schema_3(str(store), str(old))
+        os.replace(old, store)
+        sidecar = tmp_path / (store_filename("europe/luxembourg", layer) + fetch.SHA_SUFFIX)
+        sidecar.write_text(f"{entry['sha256']} 3\n", encoding="utf-8")
+        assert fetch.installed_build(tmp_path, "europe/luxembourg", layer) == (
+            entry["sha256"], 3)
+    capsys.readouterr()
+
+    get, calls = _transport(bodies)
+    assert fetch.refresh(tmp_path, get=get) == 0
+
+    assert "3 installed, 0 up to date" in capsys.readouterr().out
+    assert len([c for c in calls if c.endswith(".osm.pbf")]) == 3
+    for entry in manifest["regions"]:
+        layer = entry["layer"]
+        assert fetch.installed_build(tmp_path, "europe/luxembourg", layer) == (
+            entry["sha256"], SCHEMA_VERSION)
+        with RailStore(tmp_path / store_filename("europe/luxembourg", layer)) as store:
+            assert store.schema == SCHEMA_VERSION == 4
+
+    # And having rebuilt once, it converges at schema 4.
+    get, calls = _transport(bodies)
+    assert fetch.refresh(tmp_path, get=get) == 0
+    assert [c for c in calls if c.endswith(".osm.pbf")] == []
+
+
+def test_rail_installs_the_same_from_a_schema_2_or_a_schema_3_release(
+        tmp_path, layer_pbfs):
+    """Both ship orders: the rail a box ends up with does not depend on which
+    release format brought it."""
+    two, three = tmp_path / "two", tmp_path / "three"
+    bodies, _ = _world([_lux()])
+    _with_asset(bodies, _lux(), LUXEMBOURG)
+    get, _ = _transport(bodies)
+    assert fetch.refresh(two, get=get) == 0
+    get, _ = _transport(_layered_release(layer_pbfs)[0])
+    assert fetch.refresh(three, get=get) == 0
+
+    assert load_coverage(str(two)) == load_coverage(str(three))
+    assert _ways(two, "europe/luxembourg") == _ways(three, "europe/luxembourg")
+    assert sorted(p.name for p in two.glob("*.rail.sqlite*")) == sorted(
+        p.name for p in three.glob("*.rail.sqlite*"))
+
+
+def test_a_layer_this_version_does_not_know_is_ignored_with_a_warning(
+        tmp_path, layer_pbfs, capsys):
+    tram = _layer_entry("europe/luxembourg", "tram", LUXEMBOURG, "2026-09-05",
+                        LUX_BBOX)
+    bodies, _ = _layered_release(layer_pbfs, layers=(), extra=[tram])
+    _with_asset(bodies, tram, LUXEMBOURG)
+    get, calls = _transport(bodies)
+
+    assert fetch.refresh(tmp_path, get=get) == 0
+
+    warnings = _warnings(capsys)
+    assert len(warnings) == 1 and "'tram'" in warnings[0] and "ignored" in warnings[0]
+    assert f"{BASE}/rail-data-2026-09-06/{tram['file']}" not in calls
+    assert list(_installed(tmp_path)) == [("europe/luxembourg", "rail")]
+    assert not list(tmp_path.glob("*tram*"))
+
+
+def test_an_omitted_layer_is_carried_then_retired_beside_its_rail(
+        tmp_path, layer_pbfs, capsys):
+    """The carry rule is per (region, layer): a ferry layer CI failed to build
+    is carried while the region's rail installs as usual, and retired if the
+    next release lacks it too."""
+    get, _ = _transport(_layered_release(layer_pbfs)[0])
+    assert fetch.refresh(tmp_path, get=get) == 0
+    capsys.readouterr()
+
+    get, _ = _transport(_layered_release(layer_pbfs, tag="rail-data-2026-10-06",
+                                         layers=("bus",))[0])
+    assert fetch.refresh(tmp_path, get=get) == 0
+    warnings = _warnings(capsys)
+    assert len(warnings) == 1
+    assert "[europe/luxembourg ferry]" in warnings[0] and "carried" in warnings[0]
+    installed = _installed(tmp_path)
+    assert installed[("europe/luxembourg", "ferry")]["carried"] is True
+    assert "carried" not in installed[("europe/luxembourg", "rail")]
+    assert [r for r, _ in load_coverage(str(tmp_path), "ferry")] == ["europe/luxembourg"]
+
+    get, _ = _transport(_layered_release(layer_pbfs, tag="rail-data-2026-11-06",
+                                         layers=("bus",))[0])
+    assert fetch.refresh(tmp_path, get=get) == 0
+    warnings = _warnings(capsys)
+    assert len(warnings) == 1
+    assert "[europe/luxembourg ferry]" in warnings[0] and "retired" in warnings[0]
+    assert sorted(_installed(tmp_path)) == [
+        ("europe/luxembourg", "bus"), ("europe/luxembourg", "rail")]
+    assert load_coverage(str(tmp_path), "ferry") == []
 
 
 # ---------------------------------------------------------------------------

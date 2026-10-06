@@ -63,10 +63,11 @@ def _compute_segment_geometry(
     """Run the (slow) HAFAS + Overpass lookups for a segment.
 
     Returns ``(polyline, stop_count, degraded, strategy)``.  ``degraded`` is True
-    only for rail when every Overpass strategy failed and the result is a straight
-    endpoint chord — the line is approximate, not real track.  Ferry/bus raise
-    ``OverpassError`` on failure (never degrade), so their ``degraded`` is always
-    False.  ``strategy`` names how the geometry was obtained (for logging).
+    when the result is a straight endpoint chord — the line is approximate, not
+    real track: for rail when every strategy failed, for ferry/bus only when the
+    local stores refused the box as too large to hold.  Ferry/bus raise
+    ``OverpassError`` when no route is found.  ``strategy`` names how the
+    geometry was obtained (for logging).
 
     Side effect: also sets ``seg.route_hafas_failed`` — True when a train's HAFAS
     stop lookup failed and resolution fell through to the generic two-point OSM
@@ -86,6 +87,7 @@ def _compute_segment_geometry(
         get_ferry_geometry,
         get_rail_geometry,
     )
+    from src.utils.metrics import ROUTE_RESOLVES
 
     seg.route_hafas_failed = False
     seg.route_error = None
@@ -114,6 +116,7 @@ def _compute_segment_geometry(
                 # The trip carries its own real track, so Overpass is skipped
                 # entirely for a matched train — the whole point of the move.
                 if len(route.polyline) >= 2:
+                    ROUTE_RESOLVES.labels("train", "motis", "false").inc()
                     return route.polyline, len(stops), False, "motis_trip"
             except HafasError as exc:
                 _log.warning(
@@ -124,17 +127,23 @@ def _compute_segment_geometry(
                 seg.route_hafas_failed = True
                 seg.route_error = f"Train lookup failed: {exc}"[:200]
         rail = get_rail_geometry(stops)
+        ROUTE_RESOLVES.labels(
+            "train", rail.source, str(rail.degraded).lower()).inc()
         return rail.polyline, len(stops), rail.degraded, rail.strategy
 
     if seg.segment_type == "boat":
-        polyline = get_ferry_geometry(
+        ferry = get_ferry_geometry(
             seg.start.lat, seg.start.lon, seg.end.lat, seg.end.lon)
-        return polyline, 2, False, "ferry"
+        ROUTE_RESOLVES.labels(
+            "boat", ferry.source, str(ferry.degraded).lower()).inc()
+        return ferry.polyline, 2, ferry.degraded, "ferry"
 
     if seg.segment_type == "bus":
-        polyline = get_bus_geometry(
+        bus = get_bus_geometry(
             seg.start.lat, seg.start.lon, seg.end.lat, seg.end.lon)
-        return polyline, 2, False, "bus"
+        ROUTE_RESOLVES.labels(
+            "bus", bus.source, str(bus.degraded).lower()).inc()
+        return bus.polyline, 2, bus.degraded, "bus"
 
     raise ValueError("Route resolution only supported for train, boat, and bus segments")
 

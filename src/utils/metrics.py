@@ -252,6 +252,24 @@ EXTERNAL_DURATION = Histogram(
     ["service", "endpoint"],
 )
 
+# Overpass is the one upstream whose quota we are asked to spend sparingly
+# (issue #345), so it is counted per attempt, by what the query was for. Each
+# call to ``_overpass`` records the outcome of every endpoint it tries, so one
+# call can count more than once. Both label sets are closed.
+OVERPASS_REQUESTS = Counter(
+    "traxjourney_overpass_requests_total",
+    "Overpass queries by purpose and what became of each attempt.",
+    ["purpose", "outcome"],
+)
+
+# One increment per route resolve, whichever source answered it.
+ROUTE_RESOLVES = Counter(
+    "traxjourney_route_resolves_total",
+    "Route resolves by segment mode, the source that answered, and whether the "
+    "result is a degraded straight line.",
+    ["mode", "source", "degraded"],
+)
+
 # Strava's quotas belong to the application, and the limiters enforcing them are
 # process-wide (issue #130), which is what makes these worth exporting.
 # Scrape-time: the limiter lives in the API process, the only one that calls
@@ -322,6 +340,26 @@ PREPARED_GEOMETRY_OUTCOMES = Counter(
     "traxjourney_prepared_geometry_outcomes_total",
     "Rows the backfill sweep examined, by outcome.",
     ["outcome"],  # prepared | unpreparable | error
+)
+
+# The installed local rail data (issue #345), set by the daily rail_data_age job.
+# Age is the oldest ``ok`` region's ``source_date``, not the manifest's
+# ``generated_at``: a partial refresh keeps the old ``generated_at``, and one
+# region failing month after month would otherwise hide behind its neighbours.
+# NaN while there is no usable manifest, so a stale value never stands in for one.
+RAIL_DATA_AGE_DAYS = Gauge(
+    "traxjourney_rail_data_age_days",
+    "Days since the oldest installed rail region's source date. NaN when the "
+    "manifest is missing, unreadable or lists no usable region.",
+    multiprocess_mode="mostrecent",
+)
+
+RAIL_DATA_REGIONS = Gauge(
+    "traxjourney_rail_data_regions",
+    "Entries in the installed rail-data manifest, by layer and status "
+    "(one per region per layer).",
+    ["status", "layer"],  # status: ok | empty | invalid; layer: rail | ferry | bus | other
+    multiprocess_mode="mostrecent",
 )
 
 # ── Database ──────────────────────────────────────────────────────────────────
