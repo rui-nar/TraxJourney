@@ -3,12 +3,15 @@
 /// never encrypts it, counts it as staying unencrypted, and writes back in
 /// plaintext the envelopes the user's key can open (left by the shipped
 /// migration or an earlier pass). The gain recompute of decision 12 leaves
-/// it alone.
+/// it alone. On a trip the user does not own, the pass writes back the
+/// envelopes their key opens on any activity of that trip (I3-1), and still
+/// encrypts none.
 ///
 /// Every test runs [EncryptionMigration.encryptTrip] against [_Server], which
 /// stores rows the way the database does, builds `/meta` (with
 /// `shared_with_others`) and `GET …/track` from them, and refuses an envelope
-/// on a shared row with 409 `shared_with_other_trip` as U16's server does.
+/// on a shared row with 409 `shared_with_other_trip` as U16's server does; on a
+/// friend's trip, a write names the trip owner as U18's server expects.
 library;
 
 import 'dart:convert';
@@ -88,6 +91,16 @@ class _Server {
   /// trip takes them while the pass runs.
   final Set<int> sharedLater = {};
 
+  /// The caller's role, and the owner id a write must name: set for a trip
+  /// the user does not own, where `/meta` says so and the CAS needs the
+  /// owner (U18).
+  String role = 'owner';
+  int? tripOwner;
+
+  /// Rows this user does not own: the server will not let them write the
+  /// E2EE fields (404).
+  final Set<int> notMine = {};
+
   /// Every request is refused with 401 from then on.
   bool unauthorized = false;
 
@@ -142,7 +155,7 @@ class _Server {
   Map<String, dynamic> meta() => {
         'name': 'Trip',
         'lock_version': lockVersion,
-        'caller_role': 'owner',
+        'caller_role': role,
         'activities': [
           for (final id in activities.keys)
             {
@@ -218,6 +231,11 @@ class _Server {
       final id = int.parse(a.group(1)!);
       final cas = body.remove('lock_version');
       expect(body.remove('project'), 'Trip');
+      expect(body.remove('owner'), tripOwner,
+          reason: "a friend's trip is named by its owner");
+      if (notMine.contains(id)) {
+        return http.Response('{"detail":"Activity not found"}', 404);
+      }
       if (_isShared(id) && body.values.any(_isEnv)) return _sharedRefusal(id);
       final refusal = _cas(cas);
       if (refusal != null) return refusal;
@@ -270,11 +288,27 @@ late EncryptionService _enc;
 late EncryptionService _other;
 late EncryptionMigration _migration;
 
+/// Called after every GET when set: another account signs in mid-pass.
+void Function()? _switchTo;
+
 /// One catch-up pass over the trip as the server holds it now.
 Future<CatchUpResult> _pass() {
   final trip = CatchUpPayload.of(_server.meta());
   return _migration.encryptTrip(_trip, trip,
       role: 'owner', lockVersion: trip.lockVersion!);
+}
+
+/// A trip owned by user 7, where this user (1) is an editor.
+const _friendTrip = ProjectRef(name: 'Trip', ownerId: 7, role: 'editor');
+
+/// One catch-up pass over the trip as [_friendTrip]'s editor.
+Future<CatchUpResult> _friendPass({ProjectRef ref = _friendTrip}) {
+  _server
+    ..role = 'editor'
+    ..tripOwner = 7;
+  final trip = CatchUpPayload.of(_server.meta());
+  return _migration.encryptTrip(ref, trip,
+      role: trip.role!, lockVersion: trip.lockVersion!);
 }
 
 void main() {
@@ -288,6 +322,7 @@ void main() {
     await _other.enable(const RecoveryKeyChoice());
     _migration = EncryptionMigration(api, _enc);
     EncryptionMigration.resetConvergedForTest();
+    _switchTo = null;
   });
 
   test('a shared plaintext row is not encrypted, not read, and counted', () async {
@@ -543,5 +578,200 @@ void main() {
     expect([for (final a in payload.sharedActivities) a.id], [-5]);
     expect(payload.sharedActivities.single.mayHoldEnvelope, isTrue,
         reason: 'no polyline listed: null or an envelope');
+  });
+
+  group('on a trip the user does not own (I3-1)', () {
+    test('my enveloped rides are written back in plaintext, naming the trip '
+        'owner, in the CAS chain; nothing is encrypted', () async {
+      // -5 is only in the friend's trip (dropped from mine), -6 in mine too.
+      _server.activities[-5] = await _encrypted(_plainEdited('Ride with Ana'), _enc);
+      _server.activities[-6] = await _encrypted(_plainActivity('Ride to the lake'), _enc);
+      _server.shared.add(-6);
+      // The owner's own ride, plaintext: never encrypted from here.
+      _server.activities[-7] = _plainActivity("Ana's ride");
+      _server.notMine.add(-7);
+      _server.memories[1] = {
+        'name': await _enc.encryptText('Summit'),
+        'date': '2026-01-01',
+      };
+
+      final result = await _friendPass();
+
+      final row = _server.activities[-5]!;
+      final expected = _plainEdited('Ride with Ana');
+      for (final c in _columns.where((c) => c != 'elevation_profile_low_res_json')) {
+        expect(row[c], expected[c], reason: c);
+      }
+      expect(_server.plainFields(row), _columns);
+      expect(_server.plainFields(_server.activities[-6]!), hasLength(6));
+      expect(_server.activities[-7], _plainActivity("Ana's ride"));
+      expect(_server.memories[1]!['name'], 'Summit');
+
+      expect(_server.writePaths,
+          ['/api/activities/-5', '/api/activities/-6', '/api/memories/1']);
+      final bodies = [for (final w in _server.writes) jsonDecode(w.body) as Map];
+      expect([for (final b in bodies) b['lock_version']], [10, 11, 12]);
+      for (final b in bodies.take(2)) {
+        expect(b['project'], 'Trip');
+        expect(b['owner'], 7);
+        expect(b.values.where(_isEnv), isEmpty, reason: 'plaintext only');
+      }
+      expect(_server.trackGets, [
+        '/api/projects/Trip/activities/-5/track',
+        '/api/projects/Trip/activities/-6/track',
+      ]);
+      expect([
+        for (final r in _server.log)
+          if (r.method == 'GET') r.url.queryParameters['owner']
+      ], ['7', '7']);
+      expect(result.written, 3);
+      expect(result.unencryptable, 0,
+          reason: 'nothing here is for this user to encrypt');
+      expect(result.complete, isTrue);
+
+      // Nothing left: the next load neither reads nor writes.
+      _server.log.clear();
+      await _friendPass();
+      expect(_server.log, isEmpty);
+    });
+
+    test("the trip owner's envelopes are left alone and not read again",
+        () async {
+      final foreign = await _encrypted(_plainActivity("Ana's ride"), _other);
+      _server.activities[-5] = {...foreign};
+      _server.notMine.add(-5);
+
+      final result = await _friendPass();
+
+      expect(_server.writes, isEmpty);
+      expect(_server.activities[-5], foreign);
+      expect(_server.trackGets, hasLength(1));
+      expect(result.skipped, 0);
+      expect(result.unencryptable, 0);
+
+      _server.log.clear();
+      await _friendPass();
+      expect(_server.log, isEmpty, reason: 'found with nothing to decrypt');
+    });
+
+    test('a row my key opens but the server will not let me write (404) is '
+        'left, not counted, and not tried again', () async {
+      // My track edit on the owner's row: my envelopes, the owner's row.
+      _server.activities[-5] = await _encrypted(_plainActivity("Ana's ride"), _enc);
+      _server.notMine.add(-5);
+      _server.memories[1] = {
+        'name': await _enc.encryptText('Summit'),
+        'date': '2026-01-01',
+      };
+
+      final result = await _friendPass();
+
+      expect(_server.writePaths, ['/api/activities/-5', '/api/memories/1']);
+      expect([for (final w in _server.writes) jsonDecode(w.body)['lock_version']],
+          [10, 10], reason: 'the refused write advanced nothing');
+      expect(_isEnv(_server.activities[-5]!['name']), isTrue);
+      expect(result.unencryptable, 0);
+      expect(result.skipped, 0);
+      expect(result.ended, 0);
+
+      _server.log.clear();
+      await _friendPass();
+      expect(_server.log, isEmpty);
+    });
+
+    test('a stale_write on the repair ends the pass', () async {
+      _server.activities[-5] = await _encrypted(_plainActivity('Ride with Ana'), _enc);
+      _server.memories[1] = {
+        'name': await _enc.encryptText('Summit'),
+        'date': '2026-01-01',
+      };
+      _server.staleNext = true;
+
+      final result = await _friendPass();
+
+      expect(_server.writePaths, ['/api/activities/-5']);
+      expect(_isEnv(_server.memories[1]!['name']), isTrue);
+      expect(result.ended, 1);
+
+      // Retried on the next load, from fresh data.
+      await _friendPass();
+      expect(_server.activities[-5]!['name'], 'Ride with Ana');
+    });
+
+    test('a 401 on the repair read ends the pass with the session', () async {
+      _server.activities[-5] = await _encrypted(_plainActivity('Ride with Ana'), _enc);
+      _server.unauthorized = true;
+
+      final result = await _friendPass();
+
+      expect(result.sessionEnded, isTrue);
+      expect(_server.writes, isEmpty);
+    });
+
+    test('another account signed in mid-pass: the pass ends before writing',
+        () async {
+      _server.activities[-5] = await _encrypted(_plainActivity('Ride with Ana'), _enc);
+      final api = ApiClient(baseUrl: '', httpClient: MockClient((r) async {
+        final response = await _server.handle(r);
+        if (r.method == 'GET') _switchTo?.call();
+        return response;
+      }))
+        ..setToken(_token(1));
+      _switchTo = () => api.setToken(_token(2));
+      _migration = EncryptionMigration(api, _enc);
+
+      final result = await _friendPass();
+
+      expect(result.sessionEnded, isTrue);
+      expect(_server.trackGets, hasLength(1));
+      expect(_server.writes, isEmpty);
+    });
+
+    test('a trip ref without its owner id runs no repair', () async {
+      // The CAS could not name the trip: it would resolve one of my own.
+      _server.activities[-5] = await _encrypted(_plainActivity('Ride with Ana'), _enc);
+
+      await _friendPass(ref: const ProjectRef(name: 'Trip', role: 'editor'));
+
+      expect(_server.log, isEmpty);
+    });
+
+    test('a viewer runs no repair', () async {
+      _server.activities[-5] = await _encrypted(_plainActivity('Ride with Ana'), _enc);
+      _server.role = 'viewer';
+      final trip = CatchUpPayload.of(_server.meta());
+
+      await _migration.encryptTrip(
+          const ProjectRef(name: 'Trip', ownerId: 7, role: 'viewer'), trip,
+          role: 'viewer', lockVersion: 10);
+
+      expect(_server.log, isEmpty);
+    });
+
+    test('CatchUpPayload lists every row that may hold an envelope, shared or '
+        'not', () {
+      final payload = CatchUpPayload.of({
+        'lock_version': 1,
+        'activities': [
+          {'id': -5, 'plain_fields': <String>[], 'name': 'Ride'},
+          {
+            'id': -6,
+            'plain_fields': ['name'],
+            'shared_with_others': true,
+            'name': 'Ride',
+          },
+          // Every column /meta can clear is plaintext: nothing to read.
+          {
+            'id': -7,
+            'plain_fields': [
+              'name', 'summary_polyline', 'start_latlng_json', 'end_latlng_json',
+              'elevation_profile_json', 'elevation_profile_low_res_json',
+            ],
+            'name': 'Ride',
+          },
+        ],
+      });
+      expect([for (final a in payload.envelopeActivities) a.id], [-5, -6]);
+    });
   });
 }

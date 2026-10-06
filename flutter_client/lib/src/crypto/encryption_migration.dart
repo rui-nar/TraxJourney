@@ -87,6 +87,13 @@ class CatchUpPayload {
   final List<({Object id, List<String> fields, bool mayHoldEnvelope, String signature})>
       sharedActivities;
 
+  /// Every activity, shared or not, that may hold an envelope
+  /// ([_mayHoldEnvelope]), with its `plain_fields` and the signature
+  /// [sharedActivities] keeps: what a pass on a trip the user does not own
+  /// repairs (I3-1), since that trip is another user's by definition.
+  final List<({Object id, List<String> fields, String signature})>
+      envelopeActivities;
+
   /// Activities whose stored gain the pass re-measures (decision 12): the
   /// legacy rows the pre-#374 sentinel and the unsmoothed gain could reach —
   /// GPX imports, and edits made before #386 (no gain snapshot; an absent
@@ -104,8 +111,8 @@ class CatchUpPayload {
   final List<Map<String, dynamic>> journals;
 
   const CatchUpPayload._(this.name, this.lockVersion, this.role,
-      this.plainActivities, this.sharedActivities, this.gainActivities,
-      this.memories, this.journals);
+      this.plainActivities, this.sharedActivities, this.envelopeActivities,
+      this.gainActivities, this.memories, this.journals);
 
   factory CatchUpPayload.of(Map details) {
     final plainActivities = <({Object id, List<String> fields})>[];
@@ -115,25 +122,33 @@ class CatchUpPayload {
       bool mayHoldEnvelope,
       String signature
     })>[];
+    final envelopeActivities =
+        <({Object id, List<String> fields, String signature})>[];
     final gainActivities = <({Object id, String? profile, double? gain})>[];
     for (final raw in (details['activities'] as List?) ?? const []) {
       final act = raw as Map;
       final id = act['id'];
       final fields = act['plain_fields'];
+      final plain = fields is List ? fields.cast<String>() : const <String>[];
+      final mayHoldEnvelope = _mayHoldEnvelope(act, plain);
+      final signature = jsonEncode([
+        plain,
+        act['name'],
+        act['start_latlng_enc'],
+        act['end_latlng_enc'],
+        act['elevation_profile_enc'],
+        act['is_edited'],
+      ]);
+      if (id != null && mayHoldEnvelope) {
+        envelopeActivities
+            .add((id: id as Object, fields: plain, signature: signature));
+      }
       if (id != null && act['shared_with_others'] == true) {
-        final plain = fields is List ? fields.cast<String>() : const <String>[];
         sharedActivities.add((
           id: id as Object,
           fields: plain,
-          mayHoldEnvelope: _mayHoldEnvelope(act, plain),
-          signature: jsonEncode([
-            plain,
-            act['name'],
-            act['start_latlng_enc'],
-            act['end_latlng_enc'],
-            act['elevation_profile_enc'],
-            act['is_edited'],
-          ]),
+          mayHoldEnvelope: mayHoldEnvelope,
+          signature: signature,
         ));
         continue;
       }
@@ -177,6 +192,7 @@ class CatchUpPayload {
       details['caller_role'] as String?,
       plainActivities,
       sharedActivities,
+      envelopeActivities,
       gainActivities,
       memories,
       journals,
@@ -301,10 +317,14 @@ class EncryptionMigration {
   ///   activity a trip owned by someone else also holds is never encrypted,
   ///   and counted; its envelopes under the user's key are decrypted back
   ///   (decision 15, [_repairShared]).
-  /// - Anyone else: the user's own plaintext journal entries are encrypted
-  ///   (author key, decision 1), and every memory whose envelope decrypts
-  ///   under the user's key is written back in plaintext — it was encrypted
-  ///   under the wrong key (#505, decision 2).
+  /// - Anyone else: nothing is encrypted but the user's own plaintext journal
+  ///   entries (author key, decision 1). Every activity that may hold an
+  ///   envelope ([CatchUpPayload.envelopeActivities]) has those its key
+  ///   opens written back in plaintext — the trip is another user's, who
+  ///   cannot read them (decision 15, I3-1) — each write naming the trip by
+  ///   its owner ([_repairShared]); and so has every memory whose envelope
+  ///   decrypts under the user's key — it was encrypted under the wrong key
+  ///   (#505, decision 2).
   ///
   /// Then, as owner, the encrypted profile of every legacy GPX or edited
   /// activity is re-measured and its gain corrected (decision 12, see
@@ -363,6 +383,16 @@ class EncryptionMigration {
           expected = await _encryptMemory(mem, expected, result);
         }
       } else {
+        // Without the owner's id the CAS would name a trip of the user's own.
+        final owner = ref.ownerId;
+        if (owner != null) {
+          final tripName = trip.name ?? ref.name;
+          for (final act in trip.envelopeActivities) {
+            _checkSession();
+            expected = await _repairShared(ref, tripName, act.id, act.fields,
+                act.signature, expected, result, owner: owner);
+          }
+        }
         for (final mem in trip.memories) {
           _checkSession();
           expected = await _restoreMemory(mem, expected, result);
@@ -568,25 +598,40 @@ class EncryptionMigration {
 
   /// The shared rows found holding nothing this user can decrypt, by session
   /// user and activity id, with the `/meta` signature they were found at
-  /// ([CatchUpPayload.sharedActivities]). Static for the reason
-  /// [_converged] is: a row with another traveller's envelopes, or a column
-  /// `/meta` cannot clear, would otherwise be read in full on every load. A
-  /// shared row cannot gain an envelope while it stays shared (the server
-  /// refuses it), and any change `/meta` shows changes the signature.
+  /// ([CatchUpPayload.sharedActivities], [CatchUpPayload.envelopeActivities]).
+  /// Static for the reason [_converged] is: a row with another traveller's
+  /// envelopes, or a column `/meta` cannot clear, would otherwise be read in
+  /// full on every load. A shared row cannot gain an envelope while it stays
+  /// shared (the server refuses it), and any change `/meta` shows changes the
+  /// signature. Also, keyed by the trip as well, the rows a friend's trip
+  /// refused to let this user write (404): see [_repairShared].
   static final Map<String, String> _sharedChecked = {};
 
-  /// Write back in plaintext every E2EE field of a shared row (decision 15)
-  /// that holds an envelope under this user's key: the shipped migration or
-  /// an earlier pass encrypted it before another traveller's trip took it,
-  /// and that trip cannot read it. All fields, the four `original_*`
+  /// Write back in plaintext every E2EE field of a row another user's trip
+  /// holds (decision 15) that holds an envelope under this user's key: the
+  /// shipped migration or an earlier pass encrypted it before that trip took
+  /// it, and that trip cannot read it. All fields, the four `original_*`
   /// snapshots included, read from `GET …/track`. Another account's
-  /// envelopes are left as they are. The row is already counted, so a
-  /// refusal adds nothing to the count; other answers are [_write]'s.
+  /// envelopes are left as they are. A refusal adds nothing to the count:
+  /// the owner's pass counted the row already, and on a friend's trip there
+  /// is nothing for this user to encrypt. Other answers are [_write]'s.
+  ///
+  /// [owner] names the trip when the user does not own it (U18's `owner`
+  /// beside `project`; I3-1). There a 404 means this user may not write the
+  /// row — another traveller's, with envelopes under this key from a track
+  /// edit — or the trip no longer holds it: retrying would read and refuse
+  /// it again on every load, so it is remembered for that trip, at that
+  /// signature, for the app session. Only for that trip: the user's own
+  /// trip, where the row may be writable, still repairs it.
   Future<int> _repairShared(ProjectRef ref, String tripName, Object id,
       List<String> plainFields, String signature, int expected,
-      CatchUpResult result) async {
+      CatchUpResult result, {int? owner}) async {
     final memoKey = '$_sessionUser|$id';
+    final refusedKey = '$memoKey|$owner/$tripName';
     if (_sharedChecked[memoKey] == signature) return expected;
+    if (owner != null && _sharedChecked[refusedKey] == signature) {
+      return expected;
+    }
     final track = await _readTrack(ref, id, expected, result);
     if (track == null) return expected;
     final body = await _plaintextBody(track, plainFields);
@@ -594,11 +639,20 @@ class EncryptionMigration {
       _sharedChecked[memoKey] = signature;
       return expected;
     }
-    return _write('/api/activities/$id', {
+    final written = result.written, skipped = result.skipped;
+    final next = await _write('/api/activities/$id', {
       ...body,
       'project': tripName,
+      if (owner != null) 'owner': owner,
       'lock_version': expected,
     }, expected, result, activity: true, counted: true);
+    // Neither written nor skipped: refused as not this user's to write.
+    if (owner != null &&
+        result.written == written &&
+        result.skipped == skipped) {
+      _sharedChecked[refusedKey] = signature;
+    }
+    return next;
   }
 
   /// The plaintext of every E2EE field [track] holds as an envelope under
