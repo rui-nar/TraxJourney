@@ -309,3 +309,14 @@ Answer (owner, 2026-10-06): 20 GB free on the VPS, so bus for all 49 regions is 
 - U10: no Croatian crossing reaches strategy C (every ferry=yes-only way there is a pier outline), so the strategy-C leg is Västervik → Visby. It found that the local ferry/bus source returned bbox-overlapping ways where Overpass tests geometry (Napoli → Capri on Croatia's data: an invented 525 km line, accepted locally — a silent wrong result); fixed by F6 (Liang–Barsky clip in route_source.py; every other ferry/bus leg's polyline unchanged). Corpus: 20 pass, 1 known-bad (Hamburg → Munich). Gate adds ~10 s; Germany's bus store is never needed. Rail's own local ways_in_bbox keeps bbox-overlap semantics (rail strategy C rejects implausible lengths) — not changed here.
 - Wave 7 integration (c7ac29dc): full suite 6308 passed, 39 skipped.
 - Integrated review round 1: 4 findings (I1-1 Fix now D3, I1-4 Fix now D7, I1-2 owner override Fix now, I1-3 Defer); Open decision 3 decided (bus for all 49 regions; 20 GB free). Fix wave F7/F8/F9 verified first time, merged at fb4f57c4.
+
+## Integrated review — Round 2 — 2026-10-06, reviewed at fb4f57c4 (fixes only, 553e62a5..fb4f57c4)
+
+### I2-1 — §9 still calls schema 3 the only rollback that needs a data step, after F7's schema 4
+- Trigger: owner deploys part 2, a refresh rebuilds every rail store as schema 4, then rolls back to part 1 (reader 1–3) → all rail stores refused → every train goes to Overpass; §9 says no data step is needed, so it persists until the next refresh or a manual fetch with the old image
+- Scores: trigger=plausible, impact=degraded-ux, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10) — not a D2 duplicate of R2-6 (that settled the 2→3 text; F7's bump is new evidence)
+- Revisit when: before part 2 is deployed to val or prod, or when a rollback past F7 is considered — generalise §9 so rolling back past any store-schema bump needs the fetch step with the rolled-back image, naming 3→4 as well as 2→3
+- Guard: —
+- Override: —
+- Outcome: open
