@@ -67,6 +67,14 @@ class _Server extends ProjectService {
     geoCalls++;
     return heldGeo.future;
   }
+
+  /// The resync's geometry, which asks for its own request (issue #379).
+  @override
+  Future<Map<String, dynamic>> getSimplifiedGeoFresh(ProjectRef ref, double zoom,
+      {Object? bbox}) {
+    geoCalls++;
+    return heldGeo.future;
+  }
 }
 
 /// Signs in as [userId] the way AuthNotifier does: token, cache scope, and the
@@ -92,8 +100,8 @@ void main() {
     _session(n, 1);
     n
       ..ref = _trip
-      ..items = [_segmentItem]
-      ..geo = _geo(1);
+      ..itemsFacetWriter.setItems([_segmentItem])
+      ..geoFacetWriter.replaceKeepingLod(_geo(1));
 
     final save = n.updateSegment('s1',
         segmentType: 'flight',
@@ -113,13 +121,13 @@ void main() {
     final bGeo = _geo(5);
     n
       ..ref = _trip
-      ..items = [_segmentItem]
-      ..geo = bGeo;
+      ..itemsFacetWriter.setItems([_segmentItem])
+      ..geoFacetWriter.replaceKeepingLod(bGeo);
 
     server.heldGeo.complete(_geo(9)); // A's geometry
     await save;
 
-    expect(n.geo, same(bGeo), reason: "A's geometry must not land on B's trip");
+    expect(n.geoFacet.geo, same(bGeo), reason: "A's geometry must not land on B's trip");
     expect(n.error, isNull, reason: "A's conflict message is not B's");
     n.dispose();
   });

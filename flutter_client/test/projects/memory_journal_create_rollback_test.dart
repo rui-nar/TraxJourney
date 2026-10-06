@@ -51,7 +51,7 @@ void main() {
       );
 
       expect(ok, isFalse);
-      expect(notifier.items, isEmpty,
+      expect(notifier.itemsFacet.items, isEmpty,
           reason: 'the optimistic placeholder must not survive a failed create');
       expect(notifier.error, isNotNull);
     });
@@ -73,8 +73,8 @@ void main() {
       // Both async calls run synchronously up to their first `await`, so by
       // this point (still before either network call resolves) both
       // placeholders are already in `items`.
-      expect(notifier.items.length, 2);
-      final ids = notifier.items
+      expect(notifier.itemsFacet.items.length, 2);
+      final ids = notifier.itemsFacet.items
           .map((i) => i['memory']?['id']?.toString())
           .toSet();
       expect(ids.length, 2,
@@ -83,7 +83,7 @@ void main() {
 
       gate.complete();
       await Future.wait([f1, f2]);
-      expect(notifier.items, isEmpty); // both creates failed → both rolled back
+      expect(notifier.itemsFacet.items, isEmpty); // both creates failed → both rolled back
     });
   });
 
@@ -102,7 +102,7 @@ void main() {
       );
 
       expect(ok, isFalse);
-      expect(notifier.items, isEmpty,
+      expect(notifier.itemsFacet.items, isEmpty,
           reason: 'the optimistic placeholder must not survive a failed create');
       expect(notifier.error, isNotNull);
     });
@@ -120,8 +120,8 @@ void main() {
       final f1 = notifier.createJournal(date: '2026-01-01', geoMode: 'start_of_day');
       final f2 = notifier.createJournal(date: '2026-01-02', geoMode: 'start_of_day');
 
-      expect(notifier.items.length, 2);
-      final ids = notifier.items
+      expect(notifier.itemsFacet.items.length, 2);
+      final ids = notifier.itemsFacet.items
           .map((i) => i['journal']?['id']?.toString())
           .toSet();
       expect(ids.length, 2,
@@ -130,7 +130,7 @@ void main() {
 
       gate.complete();
       await Future.wait([f1, f2]);
-      expect(notifier.items, isEmpty);
+      expect(notifier.itemsFacet.items, isEmpty);
     });
   });
 
@@ -166,7 +166,7 @@ void main() {
     final ok = await notifier.createMemory(date: '2026-01-01', geoMode: 'start_of_day');
 
     expect(ok, isTrue);
-    expect(notifier.items, hasLength(1));
-    expect(notifier.items.single['memory']['id'], 'mem-real-1');
+    expect(notifier.itemsFacet.items, hasLength(1));
+    expect(notifier.itemsFacet.items.single['memory']['id'], 'mem-real-1');
   });
 }

@@ -85,14 +85,14 @@ ProjectNotifier _notifier(_Server server) => ProjectNotifier(server)
   ..zoomRefetchDebounce = const Duration(hours: 1);
 
 String? _drawnMode(ProjectNotifier n, String segId) {
-  for (final f in (n.geo?['features'] as List? ?? const [])) {
+  for (final f in (n.geoFacet.geo?['features'] as List? ?? const [])) {
     final props = (f as Map)['properties'] as Map;
     if (props['segment_id'] == segId) return props['route_mode'] as String?;
   }
   return null;
 }
 
-String? _itemStatus(ProjectNotifier n, String segId) => n.items
+String? _itemStatus(ProjectNotifier n, String segId) => n.itemsFacet.items
     .map((i) => i['segment'] as Map)
     .firstWhere((s) => s['id'] == segId)['route_status'] as String?;
 

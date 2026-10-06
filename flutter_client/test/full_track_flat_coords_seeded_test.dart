@@ -74,8 +74,8 @@ void main() {
     final activities = _activities(acts, 50);
 
     final notifier = ProjectNotifier(ProjectService());
-    notifier.activities = activities;
-    notifier.geo = geo;
+    notifier.itemsFacetWriter.setActivities(activities);
+    notifier.geoFacetWriter.replaceKeepingLod(geo);
 
     flatCoordsConversionCount = 0;
     await notifier.buildFullTrack();
@@ -84,10 +84,10 @@ void main() {
             'the coordinates again is exactly the 22.6 ms stall #337 removes');
 
     // And the track is real, not an empty one bought by skipping the work.
-    expect(notifier.fullTrack, isNotEmpty);
-    expect(notifier.perActivityTracks, hasLength(acts));
+    expect(notifier.elevationFacet.fullTrack, isNotEmpty);
+    expect(notifier.elevationFacet.perActivityTracks, hasLength(acts));
     final expected = buildFullTrackResult((geo: geo, activities: activities));
-    expect(notifier.fullTrack, expected.fullTrack);
+    expect(notifier.elevationFacet.fullTrack, expected.fullTrack);
   });
 
   test('a geo built on the client, which no worker ever saw, still builds the '
@@ -100,19 +100,19 @@ void main() {
     final activities = _activities(acts, 50);
 
     final notifier = ProjectNotifier(ProjectService());
-    notifier.activities = activities;
-    notifier.geo = geo;
+    notifier.itemsFacetWriter.setActivities(activities);
+    notifier.geoFacetWriter.replaceKeepingLod(geo);
 
     flatCoordsConversionCount = 0;
     await notifier.buildFullTrack();
     expect(flatCoordsConversionCount, acts,
         reason: 'unseeded geometry must flatten on demand, once per activity');
-    expect(notifier.fullTrack, isNotEmpty);
-    expect(notifier.perActivityTracks, hasLength(acts));
+    expect(notifier.elevationFacet.fullTrack, isNotEmpty);
+    expect(notifier.elevationFacet.perActivityTracks, hasLength(acts));
 
     final viaWorker = await decodeGeoOffIsolate(_bytes(_geo(acts, pointsPer)));
     final expected = buildFullTrackResult((geo: viaWorker, activities: activities));
-    expect(notifier.fullTrack, expected.fullTrack,
+    expect(notifier.elevationFacet.fullTrack, expected.fullTrack,
         reason: 'seeded and unseeded geometry must produce identical tracks');
   });
 
@@ -122,12 +122,12 @@ void main() {
     final small = _bytes(_geo(2, 10));
     final geo = await decodeGeoOffIsolate(small);
     final notifier = ProjectNotifier(ProjectService());
-    notifier.activities = _activities(2, 5);
-    notifier.geo = geo;
+    notifier.itemsFacetWriter.setActivities(_activities(2, 5));
+    notifier.geoFacetWriter.replaceKeepingLod(geo);
 
     flatCoordsConversionCount = 0;
     await notifier.buildFullTrack();
     expect(flatCoordsConversionCount, 0);
-    expect(notifier.fullTrack, isNotEmpty);
+    expect(notifier.elevationFacet.fullTrack, isNotEmpty);
   });
 }

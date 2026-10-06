@@ -91,6 +91,7 @@ class ProjectDataCache {
     _mem.clear();
     _currentUserId = null;
     diskRead = store.cacheStoreRead;
+    diskWrite = store.cacheStoreWrite;
   }
 
   /// The disk read [_readDisk] makes — a seam, since no sqflite backend runs
@@ -98,6 +99,12 @@ class ProjectDataCache {
   @visibleForTesting
   Future<Map<String, dynamic>?> Function(String key) diskRead =
       store.cacheStoreRead;
+
+  /// The disk write [_storeWrite] makes — a seam, for a test to see what
+  /// would reach the store.
+  @visibleForTesting
+  Future<void> Function(String key, Map<String, dynamic> row) diskWrite =
+      store.cacheStoreWrite;
 
   /// The keys held in memory, for a test to see what a read promoted.
   @visibleForTesting
@@ -125,6 +132,23 @@ class ProjectDataCache {
   /// True when [scope] was read under a user that is no longer current.
   bool _stale(int? scope) => scope != null && scope != _scope;
 
+  /// The lock_version this cache holds for [ref], or null when it holds
+  /// nothing for it.
+  ///
+  /// A geometry fetch reads it before its request and hands it to the write
+  /// that stores the response (issue #379). An edit made while the request
+  /// was in flight bumps the version, and its reload records the new one; the
+  /// response, from before the edit, would otherwise be stored under the new
+  /// version, where no later `/meta` could tell it was stale.
+  int? lockVersionOf(ProjectRef ref) => _mem[_key(ref)]?.lockVersion;
+
+  /// True when [lockVersion] was read for [key] and the cache no longer holds
+  /// that version: the data was fetched for a version of the trip that is
+  /// gone. Null — nothing was on file before the fetch — checks nothing, as
+  /// before.
+  bool _outdated(String key, int? lockVersion) =>
+      lockVersion != null && _mem[key]?.lockVersion != lockVersion;
+
   /// Every disk write, counted so a test can see that a dropped one never
   /// reached the store.
   @visibleForTesting
@@ -132,7 +156,7 @@ class ProjectDataCache {
 
   void _storeWrite(String key, Map<String, dynamic> row) {
     storeWrites++;
-    store.cacheStoreWrite(key, row);
+    diskWrite(key, row);
   }
 
   /// Drops every cached entry, in memory and on disk — call on sign-out, and
@@ -221,10 +245,13 @@ class ProjectDataCache {
 
   /// Records [data] in L1 only — for a caller that just decoded bytes this
   /// cache handed it, so rewriting the identical blob to disk would be pure
-  /// churn.
-  void promoteFullGeo(ProjectRef ref, Map<String, dynamic> data, {int? scope}) {
+  /// churn. [lockVersion] is [lockVersionOf] as read before the bytes were:
+  /// see [_outdated].
+  void promoteFullGeo(ProjectRef ref, Map<String, dynamic> data,
+      {int? scope, int? lockVersion}) {
     if (_stale(scope)) return;
     final key = _key(ref);
+    if (_outdated(key, lockVersion)) return;
     (_mem[key] ??= _Entry(0)).fullGeo = data;
   }
   Future<Map<String, dynamic>?> readFullDetails(ProjectRef ref) =>
@@ -239,12 +266,17 @@ class ProjectDataCache {
   Future<bool> hasFullGeoOnDisk(ProjectRef ref) =>
       store.cacheStoreHasFullGeo(_key(ref));
 
-  void writeLowResGeo(ProjectRef ref, Map<String, dynamic> data, {int? scope}) =>
-      _writeHeavy(ref, 'lowResGeo', data, scope);
-  void writeFullGeo(ProjectRef ref, Map<String, dynamic> data, {int? scope}) =>
-      _writeHeavy(ref, 'fullGeo', data, scope);
-  void writeFullDetails(ProjectRef ref, Map<String, dynamic> data, {int? scope}) =>
-      _writeHeavy(ref, 'fullDetails', data, scope);
+  /// The geometry and details writes take [lockVersion], [lockVersionOf] as read before
+  /// the fetch, and are dropped when the cache no longer holds that version.
+  void writeLowResGeo(ProjectRef ref, Map<String, dynamic> data,
+          {int? scope, int? lockVersion}) =>
+      _writeHeavy(ref, 'lowResGeo', data, scope, lockVersion);
+  void writeFullGeo(ProjectRef ref, Map<String, dynamic> data,
+          {int? scope, int? lockVersion}) =>
+      _writeHeavy(ref, 'fullGeo', data, scope, lockVersion);
+  void writeFullDetails(ProjectRef ref, Map<String, dynamic> data,
+          {int? scope, int? lockVersion}) =>
+      _writeHeavy(ref, 'fullDetails', data, scope, lockVersion);
 
   /// Records [data] as the offline full-res geo for [ref] on disk **only**,
   /// deliberately not in L1 (issue #317).
@@ -257,11 +289,14 @@ class ProjectDataCache {
   ///
   /// Skipped when nothing is on file for [ref]: without a lock_version
   /// confirmed by a live `/meta`, a row would be written that no later load
-  /// could tell was stale.
-  void seedFullGeoToDisk(ProjectRef ref, Map<String, dynamic> data) {
+  /// could tell was stale. Skipped too when the version on file is no longer
+  /// [lockVersion], [lockVersionOf] as read before the seed's fetch: an edit
+  /// landed meanwhile, and the fetched geometry is from before it.
+  void seedFullGeoToDisk(ProjectRef ref, Map<String, dynamic> data,
+      {required int lockVersion}) {
     final key = _key(ref);
     final entry = _mem[key];
-    if (entry == null) return;
+    if (entry == null || entry.lockVersion != lockVersion) return;
     _storeWrite(key, {
       'lockVersion': entry.lockVersion,
       'schemaVersion': _kSchemaVersion,
@@ -283,10 +318,11 @@ class ProjectDataCache {
     return disk == null ? null : pick(disk);
   }
 
-  void _writeHeavy(
-      ProjectRef ref, String field, Map<String, dynamic> data, int? scope) {
+  void _writeHeavy(ProjectRef ref, String field, Map<String, dynamic> data,
+      int? scope, int? lockVersion) {
     if (_stale(scope)) return;
     final key = _key(ref);
+    if (_outdated(key, lockVersion)) return;
     final entry = _mem.putIfAbsent(key, () => _Entry(0));
     switch (field) {
       case 'lowResGeo':

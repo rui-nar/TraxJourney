@@ -442,12 +442,12 @@ void main() {
 
     ProjectNotifier notifier() => ProjectNotifier(ProjectService())
       ..ref = const ProjectRef(name: 'Trip')
-      ..tripStart = '2026-06-01'
-      ..tripEnd = '2026-06-20'
-      ..dayMeta = {
+      ..itemsFacetWriter.setTripStart('2026-06-01')
+      ..itemsFacetWriter.setTripEnd('2026-06-20')
+      ..itemsFacetWriter.setDayMeta({
         '2026-06-13': {'note': 'untouched'},
         '2026-06-14': {'difficulty': 'hard'},
-      };
+      });
 
     testWidgets('an edit sends its one day', (tester) async {
       final n = notifier();

@@ -58,7 +58,7 @@ void main() {
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 
-    final notifier = _FailingNotifier()..languages = ['fr'];
+    final notifier = _FailingNotifier()..styleFacetWriter.setLanguages(['fr']);
     final memory = {
       'id': 1,
       'date': '2025-06-01',
@@ -103,7 +103,7 @@ void main() {
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 
-    final notifier = _EncryptedMemoryNotifier()..languages = ['fr'];
+    final notifier = _EncryptedMemoryNotifier()..styleFacetWriter.setLanguages(['fr']);
     final memory = {
       'id': 1,
       'date': '2025-06-01',
@@ -148,7 +148,7 @@ void main() {
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 
-    final notifier = _FailingNotifier()..languages = ['fr'];
+    final notifier = _FailingNotifier()..styleFacetWriter.setLanguages(['fr']);
     final memory = {
       'id': 1,
       'date': '2025-06-01',

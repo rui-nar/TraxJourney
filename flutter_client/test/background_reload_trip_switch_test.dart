@@ -36,7 +36,7 @@ Map<String, dynamic> _segment(String id) => {
     };
 
 List<String> _ids(ProjectNotifier n) =>
-    [for (final i in n.items) (i['segment'] as Map)['id'] as String];
+    [for (final i in n.itemsFacet.items) (i['segment'] as Map)['id'] as String];
 
 const _emptyGeo = {'type': 'FeatureCollection', 'features': <dynamic>[]};
 
@@ -93,7 +93,7 @@ class _Notifier extends ProjectNotifier {
 /// T is open with two segments.
 _Notifier _openOnT(_Server server) => _Notifier(server)
   ..ref = _t
-  ..items = [_segment('T-1'), _segment('T-2')];
+  ..itemsFacetWriter.setItems([_segment('T-1'), _segment('T-2')]);
 
 /// Signs in with a server whose [method] request waits on the returned
 /// completer; every other request answers `{}` at once. [sent] is completed
@@ -165,7 +165,9 @@ void main() {
       final server = _Server()..tItems = ['T-2'];
       final n = _openOnT(server);
       var notified = 0;
-      n.addListener(() => notified++);
+      // Both change the item list, which the content facet's listeners hear
+      // of (#294).
+      n.itemsFacet.addListener(() => notified++);
 
       await n.removeItem(0);
 

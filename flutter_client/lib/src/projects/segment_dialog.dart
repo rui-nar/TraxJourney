@@ -80,7 +80,7 @@ class _SegmentDialogState extends State<SegmentDialog> {
     _routeMode     = (seg?['route_mode'] as String?) ?? 'great_circle';
     _trainNumberCtrl = TextEditingController(
         text: seg?['train_number'] as String? ?? '');
-    _activityList = List<Map<String, dynamic>>.from(widget.notifier.activities)
+    _activityList = List<Map<String, dynamic>>.from(widget.notifier.itemsFacet.activities)
       ..sort((a, b) {
         final da = (a['start_date_local'] as String?) ?? '';
         final db = (b['start_date_local'] as String?) ?? '';
@@ -128,8 +128,8 @@ class _SegmentDialogState extends State<SegmentDialog> {
   }
 
   void _autoPopulate() {
-    final items = widget.notifier.items;
-    final activities = widget.notifier.activities;
+    final items = widget.notifier.itemsFacet.items;
+    final activities = widget.notifier.itemsFacet.activities;
     final insertAfter = widget.insertAfterIndex;
 
     Map<String, dynamic>? actById(dynamic id) {
@@ -251,7 +251,7 @@ class _SegmentDialogState extends State<SegmentDialog> {
         title: title,
         initialLat: double.tryParse(latCtrl.text.trim()),
         initialLon: double.tryParse(lonCtrl.text.trim()),
-        geo: widget.notifier.geo,
+        geo: widget.notifier.geoFacet.geo,
         previewArcNotifier: widget.notifier.previewArcNotifier,
         otherLat: double.tryParse(otherLatCtrl.text.trim()),
         otherLon: double.tryParse(otherLonCtrl.text.trim()),
@@ -361,9 +361,9 @@ class _SegmentDialogState extends State<SegmentDialog> {
     if (label.isEmpty) {
       // Resolve trip start — explicit setting first, then earliest activity date
       // (mirrors the activity panel's _buildDisplayList fallback logic).
-      String? tripStartStr = widget.notifier.tripStart;
+      String? tripStartStr = widget.notifier.itemsFacet.tripStart;
       if (tripStartStr == null) {
-        for (final a in widget.notifier.activities) {
+        for (final a in widget.notifier.itemsFacet.activities) {
           final ds = (a['start_date_local'] as String?)?.split('T').first;
           if (ds != null && (tripStartStr == null || ds.compareTo(tripStartStr) < 0)) {
             tripStartStr = ds;
@@ -378,7 +378,7 @@ class _SegmentDialogState extends State<SegmentDialog> {
         dayNum = segDate.difference(tripStartDate).inDays + 1;
       }
       final currentSegId = widget.editSegment?['id'] as String?;
-      final siblingsOnDay = widget.notifier.items.where((item) {
+      final siblingsOnDay = widget.notifier.itemsFacet.items.where((item) {
         if (item['item_type'] != 'segment') return false;
         final seg = item['segment'] as Map?;
         if (seg?['date'] != dateStr) return false;
@@ -398,7 +398,7 @@ class _SegmentDialogState extends State<SegmentDialog> {
     // so it sits between the start and end activities in the panel.
     int? insertAfterIndex = widget.insertAfterIndex;
     if (_startActivityId != null) {
-      final notifierItems = widget.notifier.items;
+      final notifierItems = widget.notifier.itemsFacet.items;
       for (int i = 0; i < notifierItems.length; i++) {
         if (notifierItems[i]['item_type'] == 'activity' &&
             notifierItems[i]['activity_id'] == _startActivityId) {

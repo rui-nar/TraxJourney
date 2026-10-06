@@ -139,7 +139,7 @@ void main() {
 
   ProjectNotifier notifier() => ProjectNotifier(ProjectService())
     ..ref = const ProjectRef(name: 'Trip')
-    ..tripStart = '2026-06-01';
+    ..itemsFacetWriter.setTripStart('2026-06-01');
 
   testWidgets('a refused rename says why and keeps the screen open',
       (tester) async {
@@ -164,13 +164,13 @@ void main() {
     // kept open, moving the end date back and saving again raised no dialog
     // and sent the pruned map: the notes on those days were deleted.
     final n = notifier()
-      ..tripEnd = '2026-06-14'
-      ..dayMeta = {
+      ..itemsFacetWriter.setTripEnd('2026-06-14')
+      ..itemsFacetWriter.setDayMeta({
         for (final k in ['2026-06-13', '2026-06-14', '2026-06-15', '2026-06-16'])
           k: <String, dynamic>{'note': 'note for $k'},
-      };
+      });
     storedDayMeta = {
-      for (final e in n.dayMeta.entries) e.key: Map<String, dynamic>.from(e.value)
+      for (final e in n.itemsFacet.dayMeta.entries) e.key: Map<String, dynamic>.from(e.value)
     };
     await _pumpSettings(tester, n);
 
@@ -197,7 +197,7 @@ void main() {
     expect(putDayMeta, isEmpty);
     expect(storedDayMeta.keys.toSet(),
         {'2026-06-13', '2026-06-14', '2026-06-15', '2026-06-16'});
-    expect(n.dayMeta['2026-06-15']?['note'], 'note for 2026-06-15');
+    expect(n.itemsFacet.dayMeta['2026-06-15']?['note'], 'note for 2026-06-15');
   });
 
   testWidgets('an accepted rename saves the rest and closes', (tester) async {

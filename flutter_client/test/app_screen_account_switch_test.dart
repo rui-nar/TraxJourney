@@ -212,7 +212,7 @@ void main() {
     expect(h.notifier.loadCallCount, 1);
     h.notifier.setFilters(sleeping: {'Hotel'});
     await h.settle();
-    expect(h.notifier.sleepingFilter, {'Hotel'});
+    expect(h.notifier.selectionFacet.sleepingFilter, {'Hotel'});
 
     await tester.runAsync(auth.logout);
     await h.go('/other');
@@ -221,8 +221,8 @@ void main() {
 
     expect(h.notifier.loadCallCount, 2,
         reason: "account 2 must get its own trip, not account 1's");
-    expect(h.notifier.sleepingFilter, isEmpty);
-    expect(h.notifier.hasActiveFilter, isFalse);
+    expect(h.notifier.selectionFacet.sleepingFilter, isEmpty);
+    expect(h.notifier.selectionFacet.hasActiveFilter, isFalse);
   });
 
   testWidgets('the same holds after a 401 forces the logout', (tester) async {
@@ -246,8 +246,8 @@ void main() {
     await h.go(_japan());
 
     expect(h.notifier.loadCallCount, 2);
-    expect(h.notifier.sleepingFilter, isEmpty);
-    expect(h.notifier.hasActiveFilter, isFalse);
+    expect(h.notifier.selectionFacet.sleepingFilter, isEmpty);
+    expect(h.notifier.selectionFacet.hasActiveFilter, isFalse);
   });
 
   testWidgets(
@@ -291,7 +291,7 @@ void main() {
     await h.pump();
     await tester.runAsync(() => auth.loginWithPassword('1', 'pw'));
     await h.go(_japan());
-    expect(h.notifier.sleepingFilter, isEmpty);
+    expect(h.notifier.selectionFacet.sleepingFilter, isEmpty);
 
     // View mode: its own notifier, the same account's saved state.
     await h.go('/other');
@@ -305,7 +305,7 @@ void main() {
     await h.go(_japan());
     await h.settle();
     expect(h.notifier.loadCallCount, 1, reason: 'still reused, not reloaded');
-    expect(h.notifier.sleepingFilter, {'Hotel'});
+    expect(h.notifier.selectionFacet.sleepingFilter, {'Hotel'});
 
     h.notifier.selectDay(_day1);
     await h.settle();
@@ -339,7 +339,7 @@ void main() {
     await h.go(_japan());
     await h.settle();
     expect(h.notifier.loadCallCount, 1, reason: 'still reused, not reloaded');
-    expect(h.notifier.selectedActivityId, '5');
-    expect(h.notifier.selectedDay, isNull);
+    expect(h.notifier.selectionFacet.selectedActivityId, '5');
+    expect(h.notifier.selectionFacet.selectedDay, isNull);
   });
 }

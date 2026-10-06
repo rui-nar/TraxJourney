@@ -9,6 +9,16 @@
 // either be written by clear() — directly, or in a method of these files that
 // clear() calls, at any depth — or be on [_allowlist] below with the reason it
 // survives a clear.
+//
+// The same goes for the state that has moved into the notifier's facets
+// (issue #294, Decision 19 of docs/CLIENT_STATE_MAP_PLAN.md): a facet's
+// fields must be written by a method of its own that clear() reaches, through
+// the notifier's `…FacetWriter.reset()`. Methods are keyed by class, so a
+// facet's `reset` is only reached through a field of that facet's type.
+//
+// Root fields are private behind setters that mark the root changed (issue
+// #294, Decision 17): an assignment `name = …` runs the setter `set name`, so
+// clear() resets `_name` by assigning `name`.
 
 import 'dart:io';
 
@@ -25,6 +35,21 @@ const _declarations = {
   'mixin ProjectMemoryCrudMixin': '$_dir/project_memory_crud_mixin.dart',
   'mixin ProjectPeopleCrudMixin': '$_dir/project_people_crud_mixin.dart',
   'mixin ProjectSegmentCrudMixin': '$_dir/project_segment_crud_mixin.dart',
+};
+
+/// The facets whose state has moved out of the notifier, each with its writer
+/// (issue #294). Their fields are reported as `Class.field`.
+const _facetDeclarations = {
+  'final class GeoFacet': '$_dir/facets/geo_facet.dart',
+  'final class GeoFacetWriter': '$_dir/facets/geo_facet.dart',
+  'final class SelectionFacet': '$_dir/facets/selection_facet.dart',
+  'final class SelectionFacetWriter': '$_dir/facets/selection_facet.dart',
+  'final class StyleFacet': '$_dir/facets/style_facet.dart',
+  'final class StyleFacetWriter': '$_dir/facets/style_facet.dart',
+  'final class ItemsFacet': '$_dir/facets/items_facet.dart',
+  'final class ItemsFacetWriter': '$_dir/facets/items_facet.dart',
+  'final class ElevationFacet': '$_dir/facets/elevation_facet.dart',
+  'final class ElevationFacetWriter': '$_dir/facets/elevation_facet.dart',
 };
 
 /// Fields clear() deliberately leaves alone, each with why.
@@ -56,7 +81,7 @@ void main() {
 
   setUpAll(() {
     sources = {
-      for (final e in _declarations.entries)
+      for (final e in {..._declarations, ..._facetDeclarations}.entries)
         e.key: File(e.value).readAsStringSync(),
     };
   });
@@ -75,16 +100,63 @@ void main() {
     expect(
         scan.fields,
         containsAll([
-          'people', 'groups', 'selectedDays', '_heldStateKey', 'pendingSync',
-          'shareToken', '_photoPollingTimer', '_degradedRouteCheckTimer',
-          '_fullTrack', 'members', '_filters', 'quotaError',
-          'polarstepsOverlaySteps',
+          '_heldStateKey', '_pendingSync',
+          '_shareToken', '_photoPollingTimer', '_degradedRouteCheckTimer',
+          '_members', '_quotaError',
+          '_polarstepsOverlaySteps', '_isLoading', '_error', '_ref',
           '_pendingSegmentPatches', '_segmentTombstones', '_removedSegments',
+          'geoFacetWriter',
+          'GeoFacet._geo', 'GeoFacet._lod', 'GeoFacet._servedFrom',
+          'GeoFacet._isLoaded',
+          'selectionFacetWriter',
+          'SelectionFacet._activityId', 'SelectionFacet._segmentId',
+          'SelectionFacet._memoryId', 'SelectionFacet._journalId',
+          'SelectionFacet._showJournals', 'SelectionFacet._day',
+          'SelectionFacet._days', 'SelectionFacet._filters',
+          'styleFacetWriter',
+          'StyleFacet._trackColor', 'StyleFacet._trackSecondaryColor',
+          'StyleFacet._trackWidth', 'StyleFacet._alternatingTrackColors',
+          'StyleFacet._elevationChartColor',
+          'StyleFacet._elevationChartShowLine', 'StyleFacet._colorByType',
+          'StyleFacet._typeStyles', 'StyleFacet._languages',
+          'itemsFacetWriter',
+          'ItemsFacet._activities', 'ItemsFacet._items', 'ItemsFacet._people',
+          'ItemsFacet._groups', 'ItemsFacet._undecrypted',
+          'ItemsFacet._tripStart', 'ItemsFacet._tripEnd', 'ItemsFacet._dayMeta',
+          'ItemsFacet._sleepingOptions', 'ItemsFacet._sleepingOptionGroups',
+          'ItemsFacet._counters', 'ItemsFacet._dayStatsCache',
+          'ItemsFacet._orderedDayKeysCache', 'ItemsFacet._listVersion',
+          'ItemsFacet._dayMetaVersion',
+          'elevationFacetWriter',
+          'ElevationFacet._fullTrack', 'ElevationFacet._perActivityTracks',
+          'ElevationFacet._totalDistanceM', 'ElevationFacet._totalMovingSeconds',
+          'ElevationFacet._totalElevationGainM',
         ]));
     // Neither another class in the same file nor a mixin's abstract getters.
     expect(scan.fields, isNot(contains('_token'))); // _SupersessionTrack's
     expect(scan.fields, isNot(contains('index'))); // _RemovedSegment's
     expect(scan.fields, isNot(contains('projectRef'))); // abstract getter
+    // A root field's setter is not a field: the private one behind it is.
+    expect(scan.fields, isNot(contains('shareToken')));
+    expect(scan.fields, isNot(contains('quotaError'))); // abstract in a mixin
+    // The fields that moved to the geometry facet are its, not the notifier's.
+    for (final moved in [
+      'geo', 'isGeoLoaded', '_loadedZoomBucket', '_loadedGeoBox',
+      'selectedActivityId', 'selectedSegmentId', 'selectedMemoryId',
+      'selectedJournalId', 'showJournals', 'selectedDay', 'selectedDays',
+      '_filters',
+      'trackColor', 'trackSecondaryColor', 'trackWidth',
+      'alternatingTrackColors', 'elevationChartColor',
+      'elevationChartShowLine', 'colorByType', 'typeStyles', 'languages',
+      'activities', 'items', 'people', 'groups', 'undecryptedFields',
+      'tripStart', 'tripEnd', 'dayMeta', 'sleepingOptions',
+      'sleepingOptionGroups', 'counters', '_dayStatsCache',
+      '_orderedDayKeysCache',
+      '_fullTrack', '_perActivityTracks', 'totalDistanceM',
+      'totalMovingSeconds', 'totalElevationGainM',
+    ]) {
+      expect(scan.fields, isNot(contains(moved)));
+    }
   });
 
   test('every allowlist entry is a field that exists', () {
@@ -95,7 +167,8 @@ void main() {
 
   test('removing a reset from clear() fails the scan', () {
     for (final (field, line) in [
-      ('people', 'people = [];'),
+      ('_shareToken', 'shareToken = null;'),
+      ('_members', 'members = [];'),
       ('_heldStateKey', '_heldStateKey = null;'),
       ('_removedSegments', 'resetSegmentState();'),
     ]) {
@@ -109,10 +182,111 @@ void main() {
       expect(scan.unreset(), contains(field));
     }
   });
+
+  test("removing a facet field's reset fails the scan", () {
+    const facet = 'final class GeoFacet';
+    const line = '_servedFrom = 0;';
+    final geo = sources[facet]!;
+    final resetAt = geo.indexOf('  void _reset() {');
+    final lineAt = geo.indexOf(line, resetAt);
+    expect(resetAt, isNonNegative);
+    expect(lineAt, isNonNegative, reason: '$line is not in _reset()');
+    final scan = _Scan(
+        {...sources, facet: geo.replaceRange(lineAt, lineAt + line.length, '')});
+    expect(scan.unreset(), {'GeoFacet._servedFrom'});
+  });
+
+  test("removing a selection field's reset fails the scan", () {
+    const facet = 'final class SelectionFacet';
+    const line = '_days = {};';
+    final selection = sources[facet]!;
+    final resetAt = selection.indexOf('  void _reset() {');
+    final lineAt = selection.indexOf(line, resetAt);
+    expect(resetAt, isNonNegative);
+    expect(lineAt, isNonNegative, reason: '$line is not in _reset()');
+    final scan = _Scan({
+      ...sources,
+      facet: selection.replaceRange(lineAt, lineAt + line.length, ''),
+    });
+    expect(scan.unreset(), {'SelectionFacet._days'});
+  });
+
+  test("removing a style field's reset fails the scan", () {
+    const facet = 'final class StyleFacet';
+    const line = '_languages = [];';
+    final style = sources[facet]!;
+    final resetAt = style.indexOf('  void _reset() {');
+    final lineAt = style.indexOf(line, resetAt);
+    expect(resetAt, isNonNegative);
+    expect(lineAt, isNonNegative, reason: '$line is not in _reset()');
+    final scan = _Scan({
+      ...sources,
+      facet: style.replaceRange(lineAt, lineAt + line.length, ''),
+    });
+    expect(scan.unreset(), {'StyleFacet._languages'});
+  });
+
+  test("removing an items field's reset fails the scan", () {
+    const facet = 'final class ItemsFacet';
+    const line = '_people = [];';
+    final items = sources[facet]!;
+    final resetAt = items.indexOf('  void _reset() {');
+    final lineAt = items.indexOf(line, resetAt);
+    expect(resetAt, isNonNegative);
+    expect(lineAt, isNonNegative, reason: '$line is not in _reset()');
+    final scan = _Scan({
+      ...sources,
+      facet: items.replaceRange(lineAt, lineAt + line.length, ''),
+    });
+    expect(scan.unreset(), {'ItemsFacet._people'});
+  });
+
+  test("removing an elevation field's reset fails the scan", () {
+    const facet = 'final class ElevationFacet';
+    const line = '_totalMovingSeconds = 0;';
+    final elevation = sources[facet]!;
+    final resetAt = elevation.indexOf('  void _reset() {');
+    final lineAt = elevation.indexOf(line, resetAt);
+    expect(resetAt, isNonNegative);
+    expect(lineAt, isNonNegative, reason: '$line is not in _reset()');
+    final scan = _Scan({
+      ...sources,
+      facet: elevation.replaceRange(lineAt, lineAt + line.length, ''),
+    });
+    expect(scan.unreset(), {'ElevationFacet._totalMovingSeconds'});
+  });
+
+  test("clear() not resetting the facet fails the scan for all of its fields, "
+      "whatever other facet it resets", () {
+    // Methods are keyed by class: the other facets' `reset()` calls left in
+    // clear() must not reach GeoFacetWriter.reset, as a bare-name call graph
+    // would.
+    const line = 'geoFacetWriter.reset();';
+    final notifier = sources['class ProjectNotifier']!;
+    final at = notifier.indexOf(line, notifier.indexOf('  void clear() {'));
+    expect(at, isNonNegative, reason: '$line is not in clear()');
+    final mutated = notifier.replaceRange(at, at + line.length, '');
+    expect(mutated, contains('selectionFacetWriter.reset();'));
+    final scan = _Scan({...sources, 'class ProjectNotifier': mutated});
+    expect(
+        scan.unreset(),
+        containsAll([
+          'geoFacetWriter', 'GeoFacet._geo', 'GeoFacet._lod',
+          'GeoFacet._servedFrom', 'GeoFacet._isLoaded',
+        ]));
+  });
 }
 
 /// The fields and methods of the declarations in [sources], read from source
 /// with comments and string contents blanked out.
+///
+/// ProjectNotifier and its mixins are one object, so they form one group: a
+/// call in any of them reaches the methods of that name in all of them, and a
+/// field of any of them counts as written when a reached method of the group
+/// writes it. Every other declaration (a facet, a facet writer) is a group of
+/// its own, whose fields are named `Class.field`. A call `field.method(` on a
+/// field whose declared type is one of the declarations reaches that type's
+/// method only.
 class _Scan {
   _Scan(Map<String, String> sources) {
     for (final e in sources.entries) {
@@ -120,30 +294,85 @@ class _Scan {
       final start = code.indexOf('${e.key} ');
       if (start < 0) throw StateError('${e.key} not found');
       final open = code.indexOf('{', start);
-      _members(code.substring(open + 1, _matching(code, open)));
+      final cls = e.key.split(' ').last;
+      // A facet writer's `facet` is the facet its type argument names.
+      final facet = RegExp(r'extends\s+ProjectFacetWriter<(\w+)>')
+          .firstMatch(code.substring(start, open));
+      if (facet != null) (_fieldTypes[cls] ??= {})['facet'] = facet.group(1)!;
+      _members(cls, code.substring(open + 1, _matching(code, open)));
     }
   }
 
+  static const _self = 'ProjectNotifier';
+
+  /// The group of declaration [cls]: [_self] for the notifier and its mixins,
+  /// its own name otherwise.
+  static String _groupOf(String cls) =>
+      cls == _self || cls.endsWith('Mixin') ? _self : cls;
+
+  static String _label(String group, String field) =>
+      group == _self ? field : '$group.$field';
+
+  /// Every field: bare for the notifier's group, `Class.field` otherwise.
   final Set<String> fields = {};
+
+  /// Method bodies by `Class.method`.
   final Map<String, String> methods = {};
+
+  /// Each group's fields, by bare name.
+  final Map<String, Set<String>> _fieldsOf = {};
+
+  /// Each declaration's fields whose declared type is a plain name.
+  final Map<String, Map<String, String>> _fieldTypes = {};
 
   /// Fields neither written by clear() nor allowlisted.
   Set<String> unreset() {
-    final reached = <String>{'clear'};
-    final queue = ['clear'];
-    final text = StringBuffer();
+    const root = '$_self.clear';
+    final reached = <String>{root};
+    final queue = [root];
+    final text = <String, StringBuffer>{};
     while (queue.isNotEmpty) {
-      final body = methods[queue.removeLast()]!;
-      text.writeln(body);
-      for (final m in RegExp(r'\b([A-Za-z_]\w*)\s*\(').allMatches(body)) {
-        final name = m.group(1)!;
-        if (methods.containsKey(name) && reached.add(name)) queue.add(name);
+      final key = queue.removeLast();
+      final group = _groupOf(key.split('.').first);
+      final body = methods[key]!;
+      (text[group] ??= StringBuffer()).writeln(body);
+      final types = {
+        for (final e in _fieldTypes.entries)
+          if (_groupOf(e.key) == group) ...e.value,
+      };
+      final calls =
+          RegExp(r'(?:\b(\w+)\s*\??\.\s*)?\b([A-Za-z_]\w*)\s*\(').allMatches(body);
+      for (final m in calls) {
+        final name = m.group(2)!;
+        final type = types[m.group(1)];
+        final targets = type != null
+            ? ['$type.$name']
+            : methods.keys.where((k) =>
+                k.endsWith('.$name') && _groupOf(k.split('.').first) == group);
+        for (final t in targets) {
+          if (methods.containsKey(t) && reached.add(t)) queue.add(t);
+        }
+      }
+      // An assignment to a name, or to `this.` a name, runs its setter. A
+      // local declaration (`final ref = this.ref;`) does not.
+      final assigns = RegExp(
+              r'(?<!\b(?:final|var|late)\s+)(?:(?<![\w.])|(?<=(?<![\w.])this\.))'
+              r'([A-Za-z_]\w*)\s*(?:=(?![=>])|\?\?=)')
+          .allMatches(body);
+      for (final m in assigns) {
+        final setter = '${m.group(1)!}=';
+        for (final t in methods.keys.where((k) =>
+            k.endsWith('.$setter') && _groupOf(k.split('.').first) == group)) {
+          if (reached.add(t)) queue.add(t);
+        }
       }
     }
-    final reset = text.toString();
     return {
-      for (final f in fields)
-        if (!_allowlist.containsKey(f) && !_written(f, reset)) f,
+      for (final e in _fieldsOf.entries)
+        for (final f in e.value)
+          if (!_allowlist.containsKey(_label(e.key, f)) &&
+              !_written(f, text[e.key]?.toString() ?? ''))
+            _label(e.key, f),
     };
   }
 
@@ -158,8 +387,10 @@ class _Scan {
         .hasMatch(text);
   }
 
-  /// Splits a class body into members and records each field and method.
-  void _members(String body) {
+  /// Splits the body of declaration [cls] into members and records each field
+  /// and method.
+  void _members(String cls, String body) {
+    final group = _groupOf(cls);
     var i = 0;
     while (i < body.length) {
       // One member: up to a `;` at depth 0, or a block body.
@@ -192,12 +423,31 @@ class _Scan {
       if (text.isEmpty) continue;
       if (blockBody != null) {
         final name = _methodName(text.substring(0, text.indexOf('{')));
-        if (name != null) methods[name] = blockBody;
-      } else {
-        final field = _fieldName(text);
-        if (field != null) fields.add(field);
+        if (name != null) methods['$cls.$name'] = blockBody;
+        continue;
+      }
+      final field = _fieldName(text);
+      if (field != null) {
+        (_fieldsOf[group] ??= {}).add(field);
+        fields.add(_label(group, field));
+        final type = _fieldType(text, field);
+        if (type != null) (_fieldTypes[cls] ??= {})[field] = type;
+      } else if (text.contains('=>')) {
+        // An expression body: `void reset() => facet._reset();`.
+        final arrow = text.indexOf('=>');
+        final name = _methodName(text.substring(0, arrow));
+        if (name != null) methods['$cls.$name'] = text.substring(arrow + 2);
       }
     }
+  }
+
+  /// The declared type of [field] in its declaration [member], when it is a
+  /// plain name.
+  static String? _fieldType(String member, String field) {
+    final head = member.replaceAll(RegExp(r'@\w+(\([^)]*\))?'), ' ');
+    return RegExp('(\\w+)\\??\\s+${RegExp.escape(field)}\\b')
+        .firstMatch(head)
+        ?.group(1);
   }
 
   /// The declared name when [member] (ending in `;`) is an instance field.
@@ -215,8 +465,11 @@ class _Scan {
     return RegExp(r'(_?[A-Za-z]\w*)$').firstMatch(head)?.group(1);
   }
 
-  /// The name of the method or constructor whose header is [head].
+  /// The name of the method or constructor whose header is [head]; a setter's
+  /// is its name followed by `=`, so it is not taken for its getter.
   static String? _methodName(String head) {
+    final setter = RegExp(r'\bset\s+(\w+)\s*\(').firstMatch(head);
+    if (setter != null) return '${setter.group(1)}=';
     // The parameter list is the last bracket group at depth 0.
     var depth = 0;
     var open = -1;

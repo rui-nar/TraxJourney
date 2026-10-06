@@ -12,7 +12,7 @@ import 'package:traxjourney_client/src/projects/project_service.dart';
 void main() {
   ProjectNotifier notifierWithOneActivity() {
     final n = ProjectNotifier(ProjectService());
-    n.activities = [
+    n.itemsFacetWriter.setActivities([
       {
         'id': 1,
         'type': 'Run',
@@ -21,10 +21,10 @@ void main() {
         'moving_time': 1800,
         'start_date_local': '2026-06-01T08:00:00',
       },
-    ];
-    n.items = [
+    ]);
+    n.itemsFacetWriter.setItems([
       {'item_type': 'activity', 'activity_id': 1},
-    ];
+    ]);
     return n;
   }
 

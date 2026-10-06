@@ -85,7 +85,7 @@ void main() {
     final n2 = _TestProjectNotifier(_FakeProjectService(details));
     await n2.load(const ProjectRef(name: 'Trip'));
 
-    expect(n2.selectedDay, '2026-05-10');
+    expect(n2.selectionFacet.selectedDay, '2026-05-10');
   });
 
   test('a selectedActivityId for a since-deleted activity is not restored',
@@ -105,7 +105,7 @@ void main() {
     final n2 = _TestProjectNotifier(_FakeProjectService(detailsAfterDelete));
     await n2.load(const ProjectRef(name: 'Trip'));
 
-    expect(n2.selectedActivityId, isNull);
+    expect(n2.selectionFacet.selectedActivityId, isNull);
   });
 
   test('a selectedDay no longer present in day_meta is not restored',
@@ -121,7 +121,7 @@ void main() {
     final n2 = _TestProjectNotifier(_FakeProjectService(detailsNoDay));
     await n2.load(const ProjectRef(name: 'Trip'));
 
-    expect(n2.selectedDay, isNull);
+    expect(n2.selectionFacet.selectedDay, isNull);
   });
 
   test('filters persist and are restored by a fresh notifier', () async {
@@ -137,6 +137,6 @@ void main() {
     final n2 = _TestProjectNotifier(_FakeProjectService(details));
     await n2.load(const ProjectRef(name: 'Trip'));
 
-    expect(n2.tagFilter, {'norway'});
+    expect(n2.selectionFacet.tagFilter, {'norway'});
   });
 }

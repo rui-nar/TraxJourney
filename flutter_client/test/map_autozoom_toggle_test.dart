@@ -37,15 +37,15 @@ Map<String, dynamic> _geo() => {
 
 ProjectNotifier _notifier() => ProjectNotifier(ProjectService())
   ..ref = const ProjectRef(name: 'Trip')
-  ..geo = _geo()
-  ..activities = [
+  ..geoFacetWriter.replaceKeepingLod(_geo())
+  ..itemsFacetWriter.setActivities([
     {'id': '1', 'start_date_local': '2026-05-01T08:00:00'},
     {'id': '2', 'start_date_local': '2026-05-02T08:00:00'},
-  ]
-  ..items = [
+  ])
+  ..itemsFacetWriter.setItems([
     {'item_type': 'activity', 'activity_id': '1'},
     {'item_type': 'activity', 'activity_id': '2'},
-  ]
+  ])
   ..isLoading = false;
 
 const _basemap = 'https://example.invalid/{z}/{x}/{y}.png';
@@ -116,7 +116,7 @@ void _suite(String name, _Build build) {
 
       await tester.pumpWidget(build(n, c, false));
       await _settle(tester);
-      n.selectedDays = {'2026-05-02'};
+      n.selectionFacetWriter.setSelectedDays({'2026-05-02'});
       n.notifyListeners();
       await _settle(tester);
       // Auto-zoom is off: selecting does not move the camera.
@@ -157,7 +157,7 @@ void _suite(String name, _Build build) {
 
       await tester.pumpWidget(build(n, c, true));
       await _settle(tester);
-      n.selectedDays = {'2026-05-02'};
+      n.selectionFacetWriter.setSelectedDays({'2026-05-02'});
       n.notifyListeners();
       await _settle(tester);
       final before = c.mapController.camera;

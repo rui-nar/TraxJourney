@@ -49,14 +49,14 @@ void main() {
     expect(totalElevationProfilePoints(activities), greaterThan(kInlineFullTrackThreshold));
 
     final notifier = ProjectNotifier(ProjectService());
-    notifier.activities = activities;
-    notifier.geo = geo;
+    notifier.itemsFacetWriter.setActivities(activities);
+    notifier.geoFacetWriter.replaceKeepingLod(geo);
     await notifier.buildFullTrack();
 
     final expected = buildFullTrackResult((geo: geo, activities: activities));
-    expect(notifier.fullTrack, expected.fullTrack);
-    expect(notifier.perActivityTracks['1'], expected.perActivityTracks['1']);
-    expect(notifier.fullTrack, isNotEmpty);
+    expect(notifier.elevationFacet.fullTrack, expected.fullTrack);
+    expect(notifier.elevationFacet.perActivityTracks['1'], expected.perActivityTracks['1']);
+    expect(notifier.elevationFacet.fullTrack, isNotEmpty);
   });
 
   test('_buildFullTrackGen is bumped on every call, inline branch included',
@@ -67,8 +67,8 @@ void main() {
     final notifier = ProjectNotifier(ProjectService());
     final genBefore = notifier.buildFullTrackGen;
 
-    notifier.activities = [_activity('1', 2)]; // well under the threshold
-    notifier.geo = _geo([_geoFeature('1', 2, 7.0)]);
+    notifier.itemsFacetWriter.setActivities([_activity('1', 2)]); // well under the threshold
+    notifier.geoFacetWriter.replaceKeepingLod(_geo([_geoFeature('1', 2, 7.0)]));
     await notifier.buildFullTrack();
     expect(notifier.buildFullTrackGen, genBefore + 1);
 
@@ -95,8 +95,8 @@ void main() {
     final smallGeo = _geo([_geoFeature('small', 2, 20.0)]);
 
     final notifier = ProjectNotifier(ProjectService());
-    notifier.activities = largeActivities;
-    notifier.geo = largeGeo;
+    notifier.itemsFacetWriter.setActivities(largeActivities);
+    notifier.geoFacetWriter.replaceKeepingLod(largeGeo);
     // Start the large-trip build but don't await it yet — it's now in flight
     // on a background isolate.
     final stalePending = notifier.buildFullTrack();
@@ -104,19 +104,19 @@ void main() {
     // The notifier gets reused for a different (small) project before that
     // finishes — its own _buildFullTrack() call takes the inline branch and
     // must still bump the generation counter (bug fix under test).
-    notifier.activities = smallActivities;
-    notifier.geo = smallGeo;
+    notifier.itemsFacetWriter.setActivities(smallActivities);
+    notifier.geoFacetWriter.replaceKeepingLod(smallGeo);
     await notifier.buildFullTrack();
 
     final expectedSmall = buildFullTrackResult((geo: smallGeo, activities: smallActivities));
-    expect(notifier.fullTrack, expectedSmall.fullTrack,
+    expect(notifier.elevationFacet.fullTrack, expectedSmall.fullTrack,
         reason: 'the inline call must win immediately');
 
     // Now let the stale large-trip compute() resolve.
     await stalePending;
-    expect(notifier.fullTrack, expectedSmall.fullTrack,
+    expect(notifier.elevationFacet.fullTrack, expectedSmall.fullTrack,
         reason: 'the stale large-trip result must not overwrite the newer '
             'small-trip one once it resolves');
-    expect(notifier.perActivityTracks.containsKey('large'), isFalse);
+    expect(notifier.elevationFacet.perActivityTracks.containsKey('large'), isFalse);
   });
 }

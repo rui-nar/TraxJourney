@@ -29,6 +29,7 @@ import 'memory_detail_modal.dart';
 import 'people_screen.dart' show showGroupDetailSheet, showPersonDetailSheet;
 import 'people_search.dart' show classifyEncounterPin;
 import 'photo_thumb_cache.dart';
+import 'facets/project_facet.dart' show SelectionFacet;
 import 'project_notifier.dart';
 
 // Existing callers (and map_geometry_memo_test.dart) import this helper from
@@ -723,11 +724,11 @@ List<Marker> buildEncounterMarkers(
   // group ("People") icon (the individual is masked); an ungrouped person
   // shows a person icon (issue #50).
   final peopleById = {
-    for (final p in notifier.people)
+    for (final p in notifier.itemsFacet.people)
       if (p['id'] is int) p['id'] as int: p,
   };
   final groupsById = {
-    for (final g in notifier.groups)
+    for (final g in notifier.itemsFacet.groups)
       if (g['id'] is int) g['id'] as int: g,
   };
 
@@ -912,6 +913,78 @@ mixin _PolarstepsOverlayFit<T extends StatefulWidget> on State<T> {
   }
 }
 
+// Shared by _MapPanelState and ManageMapPanelState: rebuilds the panel when a
+// facet it draws from changes — geometry, selection, style, items — rather
+// than on every change to the notifier (issue #294, Decision 9 of
+// docs/CLIENT_STATE_MAP_PLAN.md). Whether a rebuild redoes any work is decided
+// by the version keys in build(), not here. The root state the panels also
+// read (isLoading, the Polarsteps overlay, photo headers) still reaches them
+// through the parent screen's rebuild.
+mixin _MapFacetListener<T extends StatefulWidget> on State<T> {
+  Listenable? _facets;
+
+  // Called from initState, and from didUpdateWidget when the notifier is
+  // swapped (an account change brings a new notifier with new facets).
+  void listenToFacets(ProjectNotifier notifier) {
+    _facets?.removeListener(_onFacetChanged);
+    _facets = Listenable.merge([
+      notifier.geoFacet,
+      notifier.selectionFacet,
+      notifier.styleFacet,
+      notifier.itemsFacet,
+    ])..addListener(_onFacetChanged);
+  }
+
+  void _onFacetChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    _facets?.removeListener(_onFacetChanged);
+    super.dispose();
+  }
+}
+
+// What a selection points at — the activity, segment, memory, journal entry,
+// day or days — compared by value. The selection facet's version says the
+// facet was written, which is enough to restyle; this says whether the write
+// actually moved the selection, which is what auto-zoom acts on: toggling
+// journals or re-applying the same filters writes the facet but must not move
+// the camera. Compares as the per-field guards it replaced did: the activity id
+// as is, the other ids by their string form.
+@immutable
+class _SelectionTarget {
+  _SelectionTarget(SelectionFacet s)
+      : activity = s.selectedActivityId,
+        segment = s.selectedSegmentId?.toString(),
+        day = s.selectedDay,
+        days = Set.of(s.selectedDays),
+        memory = s.selectedMemoryId?.toString(),
+        journal = s.selectedJournalId?.toString();
+
+  final dynamic activity;
+  final String? segment;
+  final String? day;
+  final Set<String> days;
+  final String? memory;
+  final String? journal;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _SelectionTarget &&
+      other.activity == activity &&
+      other.segment == segment &&
+      other.day == day &&
+      ManageMapPanelState.setEquals(other.days, days) &&
+      other.memory == memory &&
+      other.journal == journal;
+
+  @override
+  int get hashCode =>
+      Object.hash(activity, segment, day, days.length, memory, journal);
+}
+
 // ── Selection stats overlay (issue #74) ──────────────────────────────────────
 //
 // Shows the distance/climb/day-number of the current activity or day(s)
@@ -941,20 +1014,20 @@ class SelectionStatsData {
 /// single-activity case (distance in metres → km, elevation already in metres).
 @visibleForTesting
 SelectionStatsData? computeSelectionStats(ProjectNotifier notifier) {
-  final selActId = notifier.selectedActivityId;
+  final selActId = notifier.selectionFacet.selectedActivityId;
   // Multi-select takes priority over single-day selection, same as the
   // polyline-highlighting "effectiveDays" logic below.
-  final selDays = notifier.selectedDays.isNotEmpty
-      ? notifier.selectedDays
-      : (notifier.selectedDay != null ? {notifier.selectedDay!} : <String>{});
+  final selDays = notifier.selectionFacet.selectedDays.isNotEmpty
+      ? notifier.selectionFacet.selectedDays
+      : (notifier.selectionFacet.selectedDay != null ? {notifier.selectionFacet.selectedDay!} : <String>{});
   if (selActId == null && selDays.isEmpty) return null;
 
-  final orderedDays = notifier.orderedDayKeys();
+  final orderedDays = notifier.itemsFacet.orderedDayKeys();
 
   if (selDays.isEmpty) {
     // Single activity selected.
     Map<String, dynamic>? activity;
-    for (final a in notifier.activities) {
+    for (final a in notifier.itemsFacet.activities) {
       if (a['id']?.toString() == selActId.toString()) {
         activity = a;
         break;
@@ -966,15 +1039,15 @@ SelectionStatsData? computeSelectionStats(ProjectNotifier notifier) {
     final dateKey = (activity['start_date_local'] as String?)?.split('T').first;
     final dayLabel = dateKey == null
         ? ''
-        : 'Day ${dayTripNumbering(dateKey, orderedDays, notifier.tripStart).dayNumber}';
+        : 'Day ${dayTripNumbering(dateKey, orderedDays, notifier.itemsFacet.tripStart).dayNumber}';
     return SelectionStatsData(
         distanceKm: distanceKm, elevationM: elevationM, dayLabel: dayLabel);
   }
 
   if (selDays.length == 1) {
     final dateKey = selDays.first;
-    final stats = notifier.dayStats(dateKey);
-    final n = dayTripNumbering(dateKey, orderedDays, notifier.tripStart);
+    final stats = notifier.itemsFacet.dayStats(dateKey);
+    final n = dayTripNumbering(dateKey, orderedDays, notifier.itemsFacet.tripStart);
     return SelectionStatsData(
         distanceKm: stats.distanceKm,
         elevationM: stats.elevationM,
@@ -984,7 +1057,7 @@ SelectionStatsData? computeSelectionStats(ProjectNotifier notifier) {
   // Multiple days selected: sum distance/climb across every selected date.
   double distanceKm = 0, elevationM = 0;
   for (final d in selDays) {
-    final s = notifier.dayStats(d);
+    final s = notifier.itemsFacet.dayStats(d);
     distanceKm += s.distanceKm;
     elevationM += s.elevationM;
   }
@@ -994,8 +1067,8 @@ SelectionStatsData? computeSelectionStats(ProjectNotifier notifier) {
       indices.last - indices.first + 1 == indices.length;
   final String dayLabel;
   if (contiguous) {
-    final first = dayTripNumbering(sortedDays.first, orderedDays, notifier.tripStart).dayNumber;
-    final last = dayTripNumbering(sortedDays.last, orderedDays, notifier.tripStart).dayNumber;
+    final first = dayTripNumbering(sortedDays.first, orderedDays, notifier.itemsFacet.tripStart).dayNumber;
+    final last = dayTripNumbering(sortedDays.last, orderedDays, notifier.itemsFacet.tripStart).dayNumber;
     dayLabel = 'Days $first–$last';
   } else {
     dayLabel = '${selDays.length} days selected';
@@ -1321,7 +1394,8 @@ int totalMapTapPoints(Map<String, dynamic>? geo, List<(double, GeoPoint)> track)
 /// perfectly synchronous/instant.
 const _kInlineHitTestThreshold = 20000;
 
-class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
+class _MapPanelState extends State<MapPanel>
+    with _PolarstepsOverlayFit, _MapFacetListener {
   // Seeded true when an initial camera position was carried over from the
   // other mode (view/edit toggle) — skips the fit-all-bounds animation.
   // Seeded in initState, NOT lazily: `_fitBoundsOnce` isn't called until the
@@ -1336,21 +1410,17 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
   // Set when autoZoom flips off -> on (issue #478); the next build treats it as
   // a selection change so the current selection is fitted.
   bool _autoZoomJustEnabled = false;
-  // Polyline + bounds cache — only rebuilt when geo, selection, or style changes.
-  Map<String, dynamic>? _lastGeo;
-  dynamic _lastSelectedId = _sentinel;
-  dynamic _lastSelectedSegId = _sentinel;
-  String? _lastSelectedDay = '';   // '' = sentinel (distinct from null)
-  Set<String> _lastSelectedDays = const {};
-  dynamic _lastSelectedMemId = _sentinel;
-  dynamic _lastSelectedJournalId = _sentinel;
-  List<Map<String, dynamic>>? _lastItems;
-  Color? _lastTrackColor;
-  double? _lastTrackWidth;
-  bool? _lastAlternating;
-  bool? _lastShowJournals;
-  bool? _lastColorByType;
-  Map<String, Map<String, dynamic>>? _lastTypeStyles;
+  // Polyline + marker cache keys (issue #294, Decision 9). Each holds the
+  // facets it was built from and their versions, so an equal key means
+  // nothing it reads has changed — and a notifier swapped on an account
+  // change, whose new facets start their versions again, never matches.
+  // The specs: geometry, style, the item list and whether journals show.
+  Object? _specKey;
+  // The restyle: the selection facet and its version.
+  Object? _selectionKey;
+  // What the selection pointed at when it was last read; null before the
+  // first build, so the first build counts as a selection change.
+  _SelectionTarget? _selectionTarget;
   // Selection-independent geometry/style specs — rebuilt only when geo,
   // items, or track style changes (never by a day/activity/segment/memory
   // selection alone). See buildDayIndex's doc comment for why this split
@@ -1373,22 +1443,19 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
   // every other marker type above), so they get their own narrower cache
   // check — see the encounter-cache block in build() — instead of riding
   // along with geoOrStyleChanged/selectionChanged, which used to rebuild
-  // them on every selection change for no reason.
-  List<Map<String, dynamic>>? _lastEncounterItems;
-  List<Map<String, dynamic>>? _lastEncounterPeople;
-  List<Map<String, dynamic>>? _lastEncounterGroups;
-  bool? _lastEncounterShowEncounters;
+  // them on every selection change for no reason. Keyed on the item list and
+  // people versions only: a day-note save or an elevation merge leaves them.
+  Object? _encounterKey;
   bool _showMemories = true;
   bool _showEncounters = true;
   bool _showActivities = true;
   NetworkTileProvider? _tileProvider;
   Style? _vectorStyle;
 
-  static const _sentinel = Object(); // distinct from null
-
   @override
   void initState() {
     super.initState();
+    listenToFacets(widget.notifier);
     _fittedBounds = widget.initialLat != null;
     if (widget.basemapStyleUri != null) {
       () async {
@@ -1457,6 +1524,7 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
     // Reset fit flag when a different notifier instance is passed (new project).
     if (oldWidget.notifier != widget.notifier) {
       _fittedBounds = false;
+      listenToFacets(widget.notifier);
     }
     if (!oldWidget.autoZoom && widget.autoZoom) _autoZoomJustEnabled = true;
   }
@@ -1529,7 +1597,7 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
 
   void _onMapTap(LatLng latlng) {
     widget.onClearFocusedLocation?.call();
-    final geo = widget.notifier.geo;
+    final geo = widget.notifier.geoFacet.geo;
     final zoom = widget.mapController.mapController.camera.zoom;
     final pixelDeg = 360.0 / (pow(2.0, zoom) * 256.0);
     final args = (
@@ -1537,7 +1605,7 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
       tapLat: latlng.latitude,
       tapLon: latlng.longitude,
       thresholdSq: pow(15.0 * pixelDeg, 2).toDouble(),
-      track: widget.notifier.fullTrack,
+      track: widget.notifier.elevationFacet.fullTrack,
     );
     // See hitTestMapTap's doc comment: most taps are cheap enough to just
     // handle inline (instant selection/cursor feedback); only a trip large
@@ -1572,55 +1640,54 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
   @override
   Widget build(BuildContext context) {
     final notifier = widget.notifier;
+    final geoFacet = notifier.geoFacet;
+    final selection = notifier.selectionFacet;
+    final style = notifier.styleFacet;
+    final itemsFacet = notifier.itemsFacet;
 
     // Recompute polylines only when geo, selection, or track style changes.
-    final geo = notifier.geo;
-    final selActId = notifier.selectedActivityId;
-    final selSegId = notifier.selectedSegmentId;
-    final selDay = notifier.selectedDay;
-    final selDays = notifier.selectedDays;
-    final selMemId = notifier.selectedMemoryId;
-    final selJournalId = notifier.selectedJournalId;
-    final showJournals = notifier.showJournals;
-    final items = notifier.items;
-    final trackColor = notifier.trackColor;
-    final trackSecondaryColor = notifier.trackSecondaryColor;
-    final trackWidth = notifier.trackWidth;
-    final alternating = notifier.alternatingTrackColors;
-    final selectionChanged = selActId != _lastSelectedId ||
-        selSegId?.toString() != _lastSelectedSegId?.toString() ||
-        selDay != _lastSelectedDay ||
-        !ManageMapPanelState.setEquals(selDays, _lastSelectedDays) ||
-        selMemId?.toString() != _lastSelectedMemId?.toString() ||
-        selJournalId?.toString() != _lastSelectedJournalId?.toString();
+    final geo = geoFacet.geo;
+    final selActId = selection.selectedActivityId;
+    final selSegId = selection.selectedSegmentId;
+    final selDay = selection.selectedDay;
+    final selDays = selection.selectedDays;
+    final selMemId = selection.selectedMemoryId;
+    final selJournalId = selection.selectedJournalId;
+    final showJournals = selection.showJournals;
+    final items = itemsFacet.items;
+    final trackColor = style.trackColor;
+    final trackSecondaryColor = style.trackSecondaryColor;
+    final trackWidth = style.trackWidth;
+    final alternating = style.alternatingTrackColors;
+    // Any write to the selection restyles; only a write that moved it counts
+    // as a selection change for auto-zoom (see _SelectionTarget).
+    final selectionKey = (selection, selection.version);
+    final selectionWritten = selectionKey != _selectionKey;
+    var selectionChanged = false;
+    if (selectionWritten) {
+      _selectionKey = selectionKey;
+      final target = _SelectionTarget(selection);
+      selectionChanged = target != _selectionTarget;
+      _selectionTarget = target;
+    }
     final refitSelection = _autoZoomJustEnabled;
     _autoZoomJustEnabled = false;
-    final styleChanged = trackColor != _lastTrackColor ||
-        trackWidth != _lastTrackWidth || alternating != _lastAlternating ||
-        notifier.colorByType != _lastColorByType ||
-        !identical(notifier.typeStyles, _lastTypeStyles);
     // Geometry (points, base colours, icons — everything a day/activity/
     // segment/memory selection doesn't change) only needs rebuilding when
-    // geo, items, or track style actually change. A selection change alone
-    // now only re-styles the specs already cached below — see buildDayIndex's
-    // doc comment for why this split exists.
-    final geoOrStyleChanged = !identical(geo, _lastGeo) || styleChanged ||
-        !identical(items, _lastItems) || showJournals != _lastShowJournals;
-    if (geoOrStyleChanged || selectionChanged || refitSelection) {
-      _lastGeo = geo;
-      _lastSelectedId = selActId;
-      _lastSelectedSegId = selSegId;
-      _lastSelectedDay = selDay;
-      _lastSelectedDays = Set.from(selDays);
-      _lastSelectedMemId = selMemId;
-      _lastSelectedJournalId = selJournalId;
-      _lastItems = items;
-      _lastTrackColor = trackColor;
-      _lastTrackWidth = trackWidth;
-      _lastAlternating = alternating;
-      _lastShowJournals = showJournals;
-      _lastColorByType = notifier.colorByType;
-      _lastTypeStyles = notifier.typeStyles;
+    // geo, the item list, or track style actually change. A selection change
+    // alone only re-styles the specs already cached below — see
+    // buildDayIndex's doc comment for why this split exists. The item list's
+    // own version, not the facet's: a day-note save or an elevation merge
+    // changes nothing drawn here (Decision 23).
+    final specKey = (
+      geoFacet, geoFacet.version,
+      style, style.version,
+      itemsFacet, itemsFacet.listVersion,
+      showJournals,
+    );
+    final geoOrStyleChanged = specKey != _specKey;
+    if (geoOrStyleChanged || selectionWritten || refitSelection) {
+      _specKey = specKey;
       final tilesActive = widget.trackTileUrlTemplate != null;
       // Multi-select takes priority over single-day selection, mirroring
       // ManageMapPanel's day-highlighting (issue #199 view-mode carousel).
@@ -1630,22 +1697,22 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
       if (geoOrStyleChanged) {
         perfSpans.blocking('build_specs', () {
         final actById = <dynamic, Map<String, dynamic>>{
-          for (final a in notifier.activities) a['id']: a
+          for (final a in notifier.itemsFacet.activities) a['id']: a
         };
         _dayIndex = buildDayIndex(items, actById);
         _polylineSpecs = geo != null
             ? _buildPolylineSpecs(geo, items, trackColor,
                 trackSecondaryColor: trackSecondaryColor, alternating: alternating,
-                colorByType: notifier.colorByType, typeStyles: notifier.typeStyles)
+                colorByType: notifier.styleFacet.colorByType, typeStyles: notifier.styleFacet.typeStyles)
             : const [];
         _maybeDecimatePolylines(_polylineSpecs);
         _activityMarkerSpecs = geo != null
             ? _buildActivityMarkerSpecs(geo, trackColor,
-                colorByType: notifier.colorByType, typeStyles: notifier.typeStyles)
+                colorByType: notifier.styleFacet.colorByType, typeStyles: notifier.styleFacet.typeStyles)
             : const [];
         _segmentMarkerSpecs = geo != null
             ? _buildSegmentMarkerSpecs(geo, trackColor,
-                colorByType: notifier.colorByType, typeStyles: notifier.typeStyles)
+                colorByType: notifier.styleFacet.colorByType, typeStyles: notifier.styleFacet.typeStyles)
             : const [];
         _cachedDayBreakpointMarkers = geo != null
             ? buildDayBreakpointMarkers(
@@ -1703,14 +1770,12 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
     // other marker type above) — checked independently of
     // geoOrStyleChanged/selectionChanged so a day/activity/segment/memory
     // selection never redoes this classification pass for nothing.
-    if (!identical(items, _lastEncounterItems) ||
-        !identical(notifier.people, _lastEncounterPeople) ||
-        !identical(notifier.groups, _lastEncounterGroups) ||
-        widget.showEncounters != _lastEncounterShowEncounters) {
-      _lastEncounterItems = items;
-      _lastEncounterPeople = notifier.people;
-      _lastEncounterGroups = notifier.groups;
-      _lastEncounterShowEncounters = widget.showEncounters;
+    final encounterKey = (
+      itemsFacet, itemsFacet.listVersion, itemsFacet.peopleVersion,
+      widget.showEncounters,
+    );
+    if (encounterKey != _encounterKey) {
+      _encounterKey = encounterKey;
       _cachedEncounterMarkers = widget.showEncounters
           ? buildEncounterMarkers(items, context, notifier,
               onLocationTap: widget.onLocationTap)
@@ -1879,7 +1944,7 @@ class _MapPanelState extends State<MapPanel> with _PolarstepsOverlayFit {
             ..._keyedMarkerLayer('segment-layer', true, _cachedSegmentMarkers),
             ..._keyedMarkerLayer(
                 'memories-layer', _showMemories, _cachedMemoryMarkers),
-            ..._keyedMarkerLayer('journal-layer', notifier.showJournals,
+            ..._keyedMarkerLayer('journal-layer', notifier.selectionFacet.showJournals,
                 _cachedJournalMarkers),
             ..._keyedMarkerLayer(
                 'encounters-layer',
@@ -2296,19 +2361,14 @@ class ManageMapPanel extends StatefulWidget {
 }
 
 class ManageMapPanelState extends State<ManageMapPanel>
-    with _PolarstepsOverlayFit {
+    with _PolarstepsOverlayFit, _MapFacetListener {
   NetworkTileProvider? _tileProvider;
   Style? _vectorStyle;
 
-  // Polyline + marker cache — only rebuilt when geo or selection changes.
-  Map<String, dynamic>? _lastGeo;
-  dynamic _lastSelectedId = _sentinel;
-  dynamic _lastSelectedSegId = _sentinel;
-  String? _lastSelectedDay = '';   // '' = sentinel (distinct from null)
-  Set<String> _lastSelectedDays = const {};
-  dynamic _lastSelectedMemId = _sentinel;
-  dynamic _lastSelectedJournalId = _sentinel;
-  List<Map<String, dynamic>>? _lastItems;
+  // Polyline + marker cache keys — see the matching fields on _MapPanelState.
+  Object? _specKey;
+  Object? _selectionKey;
+  _SelectionTarget? _selectionTarget;
   // Selection-independent geometry/style specs — see the matching fields on
   // _MapPanelState and buildDayIndex's doc comment for why this is split
   // from the final, selection-styled Polyline/Marker lists below.
@@ -2329,24 +2389,13 @@ class ManageMapPanelState extends State<ManageMapPanel>
   // every other marker type above), so they get their own narrower cache
   // check — see the encounter-cache block in build() — instead of riding
   // along with geoOrStyleChanged2/selectionChanged2.
-  List<Map<String, dynamic>>? _lastEncounterItems;
-  List<Map<String, dynamic>>? _lastEncounterPeople;
-  List<Map<String, dynamic>>? _lastEncounterGroups;
+  Object? _encounterKey;
   bool _showMemories = true;
   // Points queued for auto-zoom on the next frame; null = nothing pending.
   List<LatLng>? _pendingAutoZoomPts;
   // Set when autoZoom flips off -> on (issue #478); the next build treats it as
   // a selection change so the current selection is fitted.
   bool _autoZoomJustEnabled = false;
-  // Track-style cache fields.
-  Color? _lastTrackColor;
-  double? _lastTrackWidth;
-  bool? _lastAlternating;
-  bool? _lastShowJournals;
-  bool? _lastColorByType;
-  Map<String, Map<String, dynamic>>? _lastTypeStyles;
-
-  static const _sentinel = Object();
 
   static bool setEquals(Set<String> a, Set<String> b) =>
       a.length == b.length && a.containsAll(b);
@@ -2370,25 +2419,14 @@ class ManageMapPanelState extends State<ManageMapPanel>
     } else {
       _tileProvider = NetworkTileProvider();
     }
-    // Initialise "last" selection state from the current notifier values so that
-    // a spurious selectionChanged2=true (which resets the fit flag) is never
-    // triggered when this state is (re)created while a fit has already happened.
-    _lastSelectedId = widget.notifier.selectedActivityId;
-    _lastSelectedSegId = widget.notifier.selectedSegmentId;
-    _lastSelectedDay = widget.notifier.selectedDay;
-    _lastSelectedDays = Set.from(widget.notifier.selectedDays);
-    _lastSelectedMemId = widget.notifier.selectedMemoryId;
+    listenToFacets(widget.notifier);
   }
 
   @override
   void didUpdateWidget(ManageMapPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.notifier != widget.notifier) listenToFacets(widget.notifier);
     if (!oldWidget.autoZoom && widget.autoZoom) _autoZoomJustEnabled = true;
-  }
-
-  @override
-  void dispose() {
-    super.dispose();
   }
 
   void _fitBoundsOnce(List<LatLng> points) {
@@ -2482,7 +2520,7 @@ class ManageMapPanelState extends State<ManageMapPanel>
 
   void _onMapTap(LatLng latlng) {
     widget.onClearFocusedLocation?.call();
-    final geo = widget.notifier.geo;
+    final geo = widget.notifier.geoFacet.geo;
     final zoom = widget.mapController.mapController.camera.zoom;
     final pixelDeg = 360.0 / (pow(2.0, zoom) * 256.0);
     final args = (
@@ -2490,7 +2528,7 @@ class ManageMapPanelState extends State<ManageMapPanel>
       tapLat: latlng.latitude,
       tapLon: latlng.longitude,
       thresholdSq: pow(15.0 * pixelDeg, 2).toDouble(),
-      track: widget.notifier.fullTrack,
+      track: widget.notifier.elevationFacet.fullTrack,
     );
     // See hitTestMapTap's doc comment: most taps are cheap enough to just
     // handle inline (instant selection/cursor feedback); only a trip large
@@ -2567,80 +2605,74 @@ class ManageMapPanelState extends State<ManageMapPanel>
     final perfSw = kPerfTiming ? (Stopwatch()..start()) : null;
     var perfRebuiltLayers = false;
     final notifier = widget.notifier;
-    final geo = notifier.geo;
-    final selActId = notifier.selectedActivityId;
-    final selSegId = notifier.selectedSegmentId;
-    final selDay = notifier.selectedDay;
-    final selDays = notifier.selectedDays;
-    final selMemId = notifier.selectedMemoryId;
-    final selJournalId2 = notifier.selectedJournalId;
-    final showJournals2 = notifier.showJournals;
-    final items = notifier.items;
-    final trackColor = notifier.trackColor;
-    final trackSecondaryColor2 = notifier.trackSecondaryColor;
-    final trackWidth = notifier.trackWidth;
-    final alternating = notifier.alternatingTrackColors;
-    final selectionChanged2 = selActId != _lastSelectedId ||
-        selSegId?.toString() != _lastSelectedSegId?.toString() ||
-        selDay != _lastSelectedDay ||
-        !setEquals(selDays, _lastSelectedDays) ||
-        selMemId?.toString() != (_lastSelectedMemId as dynamic)?.toString() ||
-        selJournalId2?.toString() != _lastSelectedJournalId?.toString();
+    final geoFacet = notifier.geoFacet;
+    final selection = notifier.selectionFacet;
+    final style = notifier.styleFacet;
+    final itemsFacet = notifier.itemsFacet;
+    final geo = geoFacet.geo;
+    final selActId = selection.selectedActivityId;
+    final selSegId = selection.selectedSegmentId;
+    final selDay = selection.selectedDay;
+    final selDays = selection.selectedDays;
+    final selMemId = selection.selectedMemoryId;
+    final selJournalId2 = selection.selectedJournalId;
+    final showJournals2 = selection.showJournals;
+    final items = itemsFacet.items;
+    final trackColor = style.trackColor;
+    final trackSecondaryColor2 = style.trackSecondaryColor;
+    final trackWidth = style.trackWidth;
+    final alternating = style.alternatingTrackColors;
+    // Version keys — see _MapPanelState.build for what each covers.
+    final selectionKey = (selection, selection.version);
+    final selectionWritten2 = selectionKey != _selectionKey;
+    var selectionChanged2 = false;
+    if (selectionWritten2) {
+      _selectionKey = selectionKey;
+      final target = _SelectionTarget(selection);
+      selectionChanged2 = target != _selectionTarget;
+      _selectionTarget = target;
+    }
     final refitSelection2 = _autoZoomJustEnabled;
     _autoZoomJustEnabled = false;
-    final styleChanged2 = trackColor != _lastTrackColor ||
-        trackWidth != _lastTrackWidth || alternating != _lastAlternating ||
-        notifier.colorByType != _lastColorByType ||
-        !identical(notifier.typeStyles, _lastTypeStyles);
-    final perfGeoChg = !identical(geo, _lastGeo);
-    final perfItemsChg = !identical(items, _lastItems);
-    final perfJournalsChg = showJournals2 != _lastShowJournals;
     // Geometry (points, base colours, icons) only needs rebuilding when geo,
-    // items, or track style actually change — a selection change alone just
-    // re-styles the specs already cached below. See buildDayIndex's doc
-    // comment for why this split exists.
-    final geoOrStyleChanged2 =
-        perfGeoChg || perfItemsChg || styleChanged2 || perfJournalsChg;
-    if (geoOrStyleChanged2 || selectionChanged2 || refitSelection2) {
+    // the item list, or track style actually change — a selection change
+    // alone just re-styles the specs already cached below. See
+    // buildDayIndex's doc comment for why this split exists.
+    final specKey = (
+      geoFacet, geoFacet.version,
+      style, style.version,
+      itemsFacet, itemsFacet.listVersion,
+      showJournals2,
+    );
+    final geoOrStyleChanged2 = specKey != _specKey;
+    if (geoOrStyleChanged2 || selectionWritten2 || refitSelection2) {
       perfRebuiltLayers = true;
       if (selectionChanged2 && widget.autoZoom) widget.fittedNotifier.value = false;
-      _lastGeo = geo;
-      _lastSelectedId = selActId;
-      _lastSelectedSegId = selSegId;
-      _lastSelectedDay = selDay;
-      _lastSelectedDays = Set.from(selDays);
-      _lastSelectedMemId = selMemId;
-      _lastSelectedJournalId = selJournalId2;
-      _lastItems = items;
-      _lastTrackColor = trackColor;
-      _lastTrackWidth = trackWidth;
-      _lastAlternating = alternating;
-      _lastShowJournals = showJournals2;
-      _lastColorByType = notifier.colorByType;
-      _lastTypeStyles = notifier.typeStyles;
+      _specKey = specKey;
       // Multi-select takes priority over single-day selection.
       final effectiveDays = selDays.isNotEmpty
           ? selDays
           : (selDay != null ? {selDay} : <String>{});
       if (geoOrStyleChanged2) {
+        perfSpans.blocking('build_specs', () {
         // Build activityById for the day index below.
         final actById = <dynamic, Map<String, dynamic>>{
-          for (final a in notifier.activities) a['id']: a
+          for (final a in notifier.itemsFacet.activities) a['id']: a
         };
         _dayIndex = buildDayIndex(items, actById);
         _polylineSpecs = geo != null
             ? _buildPolylineSpecs(geo, items, trackColor,
                 trackSecondaryColor: trackSecondaryColor2, alternating: alternating,
-                colorByType: notifier.colorByType, typeStyles: notifier.typeStyles)
+                colorByType: notifier.styleFacet.colorByType, typeStyles: notifier.styleFacet.typeStyles)
             : const [];
         _maybeDecimatePolylines(_polylineSpecs);
         _activityMarkerSpecs = geo != null
             ? _buildActivityMarkerSpecs(geo, trackColor,
-                colorByType: notifier.colorByType, typeStyles: notifier.typeStyles)
+                colorByType: notifier.styleFacet.colorByType, typeStyles: notifier.styleFacet.typeStyles)
             : const [];
         _segmentMarkerSpecs = geo != null
             ? _buildSegmentMarkerSpecs(geo, trackColor,
-                colorByType: notifier.colorByType, typeStyles: notifier.typeStyles)
+                colorByType: notifier.styleFacet.colorByType, typeStyles: notifier.styleFacet.typeStyles)
             : const [];
         _cachedDayBreakpointMarkers = geo != null
             ? buildDayBreakpointMarkers(
@@ -2648,6 +2680,7 @@ class ManageMapPanelState extends State<ManageMapPanel>
             : const [];
         _memoryMarkerSpecs = _buildMemoryMarkerSpecs(items, notifier);
         _journalMarkerSpecs = _buildJournalMarkerSpecs(items);
+        });
       }
       // For day selection, union ids across all selected days.
       Set<String>? dayActIds;
@@ -2662,6 +2695,7 @@ class ManageMapPanelState extends State<ManageMapPanel>
           daySegIds.addAll(r.segIds);
         }
       }
+      perfSpans.blocking('style_markers', () {
       _cachedPolylines = _stylePolylines(_polylineSpecs, selActId, selSegId, trackWidth,
           dayActIds: dayActIds, daySegIds: daySegIds);
       final hasSelection = selActId != null || selSegId != null ||
@@ -2677,6 +2711,7 @@ class ManageMapPanelState extends State<ManageMapPanel>
           (mem) => showMemoryDetail(context, notifier, mem));
       _cachedJournalMarkers = _styleJournalMarkers(
           _journalMarkerSpecs, selJournalId2, hasSelection, notifier);
+      });
 
       // Queue auto-zoom only when selection genuinely changed (not on geo updates
       // from progressive loading) so it doesn't fight _fitBoundsOnce mid-load.
@@ -2692,12 +2727,10 @@ class ManageMapPanelState extends State<ManageMapPanel>
     // other marker type above) — checked independently of
     // geoOrStyleChanged2/selectionChanged2 so a day/activity/segment/memory
     // selection never redoes this classification pass for nothing.
-    if (!identical(items, _lastEncounterItems) ||
-        !identical(notifier.people, _lastEncounterPeople) ||
-        !identical(notifier.groups, _lastEncounterGroups)) {
-      _lastEncounterItems = items;
-      _lastEncounterPeople = notifier.people;
-      _lastEncounterGroups = notifier.groups;
+    final encounterKey =
+        (itemsFacet, itemsFacet.listVersion, itemsFacet.peopleVersion);
+    if (encounterKey != _encounterKey) {
+      _encounterKey = encounterKey;
       _cachedEncounterMarkers = buildEncounterMarkers(items, context,
           widget.notifier, onLocationTap: widget.onLocationTap);
     }
@@ -2801,7 +2834,7 @@ class ManageMapPanelState extends State<ManageMapPanel>
             ..._keyedMarkerLayer('segment-layer', true, _cachedSegmentMarkers),
             ..._keyedMarkerLayer(
                 'memories-layer', _showMemories, _cachedMemoryMarkers),
-            ..._keyedMarkerLayer('journal-layer', notifier.showJournals,
+            ..._keyedMarkerLayer('journal-layer', notifier.selectionFacet.showJournals,
                 _cachedJournalMarkers),
             ..._keyedMarkerLayer(
                 'encounters-layer', true, _cachedEncounterMarkers),
@@ -2906,8 +2939,8 @@ class ManageMapPanelState extends State<ManageMapPanel>
             _cachedMemoryMarkers.length +
             _cachedJournalMarkers.length;
         debugPrint('[perf] ManageMapPanel.build ${ms}ms '
-            'rebuilt=$perfRebuiltLayers geoChg=$perfGeoChg selChg=$selectionChanged2 '
-            'itemsChg=$perfItemsChg styleChg=$styleChanged2 jrnChg=$perfJournalsChg '
+            'rebuilt=$perfRebuiltLayers specChg=$geoOrStyleChanged2 '
+            'selWritten=$selectionWritten2 selChg=$selectionChanged2 '
             'markers=$markers polys=${_cachedPolylines.length}');
       }
     }

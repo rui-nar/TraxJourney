@@ -159,33 +159,35 @@ Map<String, Object?> _state(ProjectNotifier n) => {
       'canEditContent': n.canEditContent,
       'canManageTrip': n.canManageTrip,
       'isProjectOwner': n.isProjectOwner,
-      'activities': n.activities,
-      'items': n.items,
-      'people': n.people,
-      'groups': n.groups,
-      'geo': n.geo,
+      'activities': n.itemsFacet.activities,
+      'items': n.itemsFacet.items,
+      'people': n.itemsFacet.people,
+      'groups': n.itemsFacet.groups,
+      'geo': n.geoFacet.geo,
+      'geoLod': n.geoFacet.lod,
+      'geoServedFrom': n.geoFacet.servedFrom,
       'isLoading': n.isLoading,
       'error': n.error,
       'loadErrorStatus': n.loadErrorStatus,
       'offlineFromCache': n.offlineFromCache,
       'isMetaLoaded': n.isMetaLoaded,
       'isElevationLoaded': n.isElevationLoaded,
-      'isGeoLoaded': n.isGeoLoaded,
+      'isGeoLoaded': n.geoFacet.isLoaded,
       'isSyncMetaLoaded': n.isSyncMetaLoaded,
-      'selectedActivityId': n.selectedActivityId,
-      'selectedSegmentId': n.selectedSegmentId,
-      'selectedMemoryId': n.selectedMemoryId,
-      'selectedJournalId': n.selectedJournalId,
-      'showJournals': n.showJournals,
-      'selectedDay': n.selectedDay,
-      'selectedDays': n.selectedDays,
-      'tripStart': n.tripStart,
-      'tripEnd': n.tripEnd,
-      'dayMeta': n.dayMeta,
-      'orderedDayKeys': n.orderedDayKeys(),
-      'sleepingOptions': n.sleepingOptions,
-      'sleepingOptionGroups': n.sleepingOptionGroups,
-      'counters': n.counters,
+      'selectedActivityId': n.selectionFacet.selectedActivityId,
+      'selectedSegmentId': n.selectionFacet.selectedSegmentId,
+      'selectedMemoryId': n.selectionFacet.selectedMemoryId,
+      'selectedJournalId': n.selectionFacet.selectedJournalId,
+      'showJournals': n.selectionFacet.showJournals,
+      'selectedDay': n.selectionFacet.selectedDay,
+      'selectedDays': n.selectionFacet.selectedDays,
+      'tripStart': n.itemsFacet.tripStart,
+      'tripEnd': n.itemsFacet.tripEnd,
+      'dayMeta': n.itemsFacet.dayMeta,
+      'orderedDayKeys': n.itemsFacet.orderedDayKeys(),
+      'sleepingOptions': n.itemsFacet.sleepingOptions,
+      'sleepingOptionGroups': n.itemsFacet.sleepingOptionGroups,
+      'counters': n.itemsFacet.counters,
       'shareToken': n.shareToken,
       'shareTokenNoMemories': n.shareTokenNoMemories,
       'autoSyncEnabled': n.autoSyncEnabled,
@@ -194,22 +196,22 @@ Map<String, Object?> _state(ProjectNotifier n) => {
       'lastPsSyncAt': n.lastPsSyncAt,
       'pendingSync': n.pendingSync,
       'degradedRouteUpgradeAvailable': n.degradedRouteUpgradeAvailable,
-      'trackColor': n.trackColor,
-      'trackSecondaryColor': n.trackSecondaryColor,
-      'trackWidth': n.trackWidth,
-      'alternatingTrackColors': n.alternatingTrackColors,
-      'elevationChartColor': n.elevationChartColor,
-      'effectiveElevationChartColor': n.effectiveElevationChartColor,
-      'elevationChartShowLine': n.elevationChartShowLine,
-      'colorByType': n.colorByType,
-      'typeStyles': n.typeStyles,
-      'languages': n.languages,
-      'totalDistanceM': n.totalDistanceM,
-      'totalMovingSeconds': n.totalMovingSeconds,
-      'totalElevationGainM': n.totalElevationGainM,
-      'dayStats': n.dayStats(_day1),
-      'fullTrack': n.fullTrack,
-      'perActivityTracks': n.perActivityTracks,
+      'trackColor': n.styleFacet.trackColor,
+      'trackSecondaryColor': n.styleFacet.trackSecondaryColor,
+      'trackWidth': n.styleFacet.trackWidth,
+      'alternatingTrackColors': n.styleFacet.alternatingTrackColors,
+      'elevationChartColor': n.styleFacet.elevationChartColor,
+      'effectiveElevationChartColor': n.styleFacet.effectiveElevationChartColor,
+      'elevationChartShowLine': n.styleFacet.elevationChartShowLine,
+      'colorByType': n.styleFacet.colorByType,
+      'typeStyles': n.styleFacet.typeStyles,
+      'languages': n.styleFacet.languages,
+      'totalDistanceM': n.elevationFacet.totalDistanceM,
+      'totalMovingSeconds': n.elevationFacet.totalMovingSeconds,
+      'totalElevationGainM': n.elevationFacet.totalElevationGainM,
+      'dayStats': n.itemsFacet.dayStats(_day1),
+      'fullTrack': n.elevationFacet.fullTrack,
+      'perActivityTracks': n.elevationFacet.perActivityTracks,
       'previewArc': n.previewArcNotifier.value,
       'elevationCursor': n.elevationCursorNotifier.value,
       'mapCursorDist': n.mapCursorDistNotifier.value,
@@ -220,20 +222,20 @@ Map<String, Object?> _state(ProjectNotifier n) => {
       'quotaError': n.quotaError,
       'polarstepsOverlaySteps': n.polarstepsOverlaySteps,
       'polarstepsOverlayLabel': n.polarstepsOverlayLabel,
-      'tagFilter': n.tagFilter,
-      'sleepingFilter': n.sleepingFilter,
-      'activityTypeFilter': n.activityTypeFilter,
-      'sourceFilter': n.sourceFilter,
-      'transportFilter': n.transportFilter,
-      'activeFilterCount': n.activeFilterCount,
-      'hasActiveFilter': n.hasActiveFilter,
-      'hasFilterableContent': n.hasFilterableContent,
-      'availableTags': n.availableTags,
-      'availableSleepingModes': n.availableSleepingModes,
+      'tagFilter': n.selectionFacet.tagFilter,
+      'sleepingFilter': n.selectionFacet.sleepingFilter,
+      'activityTypeFilter': n.selectionFacet.activityTypeFilter,
+      'sourceFilter': n.selectionFacet.sourceFilter,
+      'transportFilter': n.selectionFacet.transportFilter,
+      'activeFilterCount': n.selectionFacet.activeFilterCount,
+      'hasActiveFilter': n.selectionFacet.hasActiveFilter,
+      'hasFilterableContent': n.itemsFacet.hasFilterableContent,
+      'availableTags': n.itemsFacet.availableTags,
+      'availableSleepingModes': n.itemsFacet.availableSleepingModes,
       // The durable segment overlay, read through the only door it has: a
       // stale server snapshot still carrying the tombstoned segment, merged.
       'segmentOverlay': n.mergePendingSegmentPatches([_segmentFeature('s1')]),
-      'undecrypted': n.undecryptedFields.contains('journal', 'j1', 'name'),
+      'undecrypted': n.itemsFacet.undecryptedFields.contains('journal', 'j1', 'name'),
     };
 
 void main() {
@@ -275,7 +277,7 @@ void main() {
           ..zoomRefetchDebounce = const Duration(hours: 1)
           ..degradedRouteCheckInterval = const Duration(hours: 1);
         await n.load(_ref);
-        for (var i = 0; i < 50 && !(n.isSyncMetaLoaded && n.isGeoLoaded); i++) {
+        for (var i = 0; i < 50 && !(n.isSyncMetaLoaded && n.geoFacet.isLoaded); i++) {
           await Future<void>.delayed(const Duration(milliseconds: 10));
         }
         await pumpEventQueue();
@@ -287,7 +289,7 @@ void main() {
         n.toggleJournals();
         n.removeSegmentFromGeo('s1'); // a tombstone
         n.upsertSegmentInGeo('s2', _segmentFeature('s2')); // a pending patch
-        n.undecryptedFields.mark('journal', 'j1', 'name');
+        n.itemsFacet.undecryptedFields.mark('journal', 'j1', 'name');
         n.pendingSync = (strava: [<String, dynamic>{'id': 9}], polarsteps: []);
         n.degradedRouteUpgradeAvailable = true;
         n.offlineFromCache = true;
@@ -362,7 +364,7 @@ void main() {
     });
     await loading;
 
-    expect(n.geo, isNull);
+    expect(n.geoFacet.geo, isNull);
   });
 }
 

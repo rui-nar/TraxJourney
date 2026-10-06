@@ -25,6 +25,7 @@ import 'basemaps.dart';
 import 'geo_viewport.dart';
 import 'day_carousel.dart';
 import 'elevation_chart.dart';
+import 'facets/project_facet_providers.dart';
 import 'map_panel.dart';
 import 'people_screen.dart';
 import 'project_add_fab.dart';
@@ -63,9 +64,7 @@ class ViewProjectNotifier extends ProjectNotifier {
   }
 
   Future<void> loadView(ProjectRef ref) async {
-    isMetaLoaded = false;
-    isElevationLoaded = false;
-    isGeoLoaded = false;
+    resetProgressiveFlags();
 
     // Phase 1: load() calls _viewSvc.getDetailsMeta() (inherited, unoverridden
     // — a view-mode ref addresses a real project, so the base implementation
@@ -136,12 +135,14 @@ class ViewScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return ChangeNotifierProvider(
       create: (_) => ViewProjectNotifier(),
-      child: _ViewBody(
-        projectName: projectName,
-        ownerId: ownerId,
-        initialLat: initialLat,
-        initialLng: initialLng,
-        initialZoom: initialZoom,
+      child: ProjectFacetProviders<ViewProjectNotifier>(
+        child: _ViewBody(
+          projectName: projectName,
+          ownerId: ownerId,
+          initialLat: initialLat,
+          initialLng: initialLng,
+          initialZoom: initialZoom,
+        ),
       ),
     );
   }
@@ -337,6 +338,10 @@ class _ViewBodyState extends State<_ViewBody> with TickerProviderStateMixin {
       (n) => n.projectName ?? widget.projectName,
     );
     final isLoading = context.select<ViewProjectNotifier, bool>((n) => n.isLoading);
+    // The notifier itself, for the facet listeners below; its notifies do
+    // not rebuild this.
+    final notifier =
+        context.select<ViewProjectNotifier, ViewProjectNotifier>((n) => n);
 
     return Scaffold(
       floatingActionButton:
@@ -415,26 +420,30 @@ class _ViewBodyState extends State<_ViewBody> with TickerProviderStateMixin {
             },
           ),
 
-          Consumer<ViewProjectNotifier>(
-            builder: (_, n, __) {
-              final active = n.tagFilter.isNotEmpty;
+          // What is ticked (selection) and the tags the trip offers (items)
+          // (#294).
+          ListenableBuilder(
+            listenable: Listenable.merge(
+                [notifier.selectionFacet, notifier.itemsFacet]),
+            builder: (_, __) {
+              final active = notifier.selectionFacet.tagFilter.isNotEmpty;
               return IconButton(
                 icon: Badge(
                   isLabelVisible: active,
-                  label: Text('${n.tagFilter.length}'),
+                  label: Text('${notifier.selectionFacet.tagFilter.length}'),
                   child: Icon(
                     Icons.label_outline,
                     color: active ? Theme.of(context).colorScheme.primary : null,
                   ),
                 ),
                 tooltip: 'Filter by tag',
-                onPressed: n.availableTags.isEmpty
+                onPressed: notifier.itemsFacet.availableTags.isEmpty
                     ? null
                     : () => showModalBottomSheet<void>(
                           context: context,
                           useRootNavigator: true,
                           builder: (_) => TagFilterSheet(
-                              notifier: n, readOnly: true),
+                              notifier: notifier, readOnly: true),
                         ),
               );
             },
@@ -561,39 +570,45 @@ class _ViewBodyState extends State<_ViewBody> with TickerProviderStateMixin {
             },
           ),
           Expanded(
+            // The root state the layout reads (meta loaded, error, and what
+            // the map panel reads through this rebuild: loading, overlay)...
             child: Consumer<ViewProjectNotifier>(
-              builder: (context, notifier, _) {
-                if (!notifier.isMetaLoaded && notifier.geo == null) {
-                  if (notifier.error != null) {
-                    return Center(
-                      child: Padding(
-                        padding: const EdgeInsets.all(24),
-                        child: Text(
-                          notifier.error!,
-                          style: TextStyle(
-                              color: Theme.of(context).colorScheme.error),
-                          textAlign: TextAlign.center,
+              builder: (context, notifier, _) => ListenableBuilder(
+                // ...and the geometry, which can arrive before the meta.
+                listenable: notifier.geoFacet,
+                builder: (context, _) {
+                  if (!notifier.isMetaLoaded && notifier.geoFacet.geo == null) {
+                    if (notifier.error != null) {
+                      return Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: Text(
+                            notifier.error!,
+                            style: TextStyle(
+                                color: Theme.of(context).colorScheme.error),
+                            textAlign: TextAlign.center,
+                          ),
                         ),
-                      ),
-                    );
+                      );
+                    }
+                    return const Center(child: CircularProgressIndicator());
                   }
-                  return const Center(child: CircularProgressIndicator());
-                }
-                return _ViewLayout(
-                  notifier: notifier,
-                  mapController: _mapController,
-                  autoZoom: _autoZoom,
-                  initialLat: widget.initialLat,
-                  initialLng: widget.initialLng,
-                  initialZoom: widget.initialZoom,
-                  focusedLatLng: _focusedLatLng,
-                  onLocationTap: _focusLocation,
-                  onClearFocusedLocation: _clearFocusedLocation,
-                  hereLatLng: _hereLatLng,
-                  locatingHere: _locatingHere,
-                  onLocateMe: _locateMe,
-                );
-              },
+                  return _ViewLayout(
+                    notifier: notifier,
+                    mapController: _mapController,
+                    autoZoom: _autoZoom,
+                    initialLat: widget.initialLat,
+                    initialLng: widget.initialLng,
+                    initialZoom: widget.initialZoom,
+                    focusedLatLng: _focusedLatLng,
+                    onLocationTap: _focusLocation,
+                    onClearFocusedLocation: _clearFocusedLocation,
+                    hereLatLng: _hereLatLng,
+                    locatingHere: _locatingHere,
+                    onLocateMe: _locateMe,
+                  );
+                },
+              ),
             ),
           ),
         ],
@@ -635,19 +650,22 @@ class _ViewLayout extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final selActId = notifier.selectedActivityId;
     final elevChart = notifier.isElevationLoaded
-        ? ElevationChart(
-            activities: notifier.activities,
-            selectedActivityId: selActId,
-            onCursorChanged: (pos) =>
-                notifier.elevationCursorNotifier.value = pos,
-            mapCursorNotifier: notifier.mapCursorDistNotifier,
-            track: selActId != null
-                ? notifier.perActivityTracks[selActId.toString()] ??
-                    notifier.fullTrack
-                : notifier.fullTrack,
-            color: notifier.effectiveElevationChartColor,
+        ? ListenableBuilder(
+            listenable: Listenable.merge([
+              notifier.itemsFacet,
+              notifier.selectionFacet,
+              notifier.styleFacet,
+            ]),
+            builder: (_, __) => ElevationChart(
+              activities: notifier.itemsFacet.activities,
+              selectedActivityId: notifier.selectionFacet.selectedActivityId,
+              onCursorChanged: (pos) =>
+                  notifier.elevationCursorNotifier.value = pos,
+              mapCursorNotifier: notifier.mapCursorDistNotifier,
+              elevation: notifier.elevationFacet,
+              color: notifier.styleFacet.effectiveElevationChartColor,
+            ),
           )
         : const ElevationLoadingPlaceholder();
 

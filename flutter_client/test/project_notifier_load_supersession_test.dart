@@ -90,6 +90,12 @@ class _RacingService extends ProjectService {
     return c.future;
   }
 
+  /// A reload's own geometry (issue #379): fetched fresh, not under test.
+  @override
+  Future<Map<String, dynamic>> getSimplifiedGeoFresh(ProjectRef ref, double zoom,
+          {Object? bbox}) async =>
+      _emptyGeo();
+
   @override
   Future<Map<String, dynamic>> getDetails(ProjectRef ref, {bool bypassCache = false}) {
     final c = Completer<Map<String, dynamic>>();
@@ -141,33 +147,33 @@ void main() {
     // Call A: Phase 1 completes fast; Phase 2's getGeo() is held on
     // geoCalls[0].
     await notifier.load(_ref);
-    notifier.isGeoLoaded = false;
+    notifier.geoFacetWriter.setLoaded(false);
     await _pumpUntil(() => svc.geoCalls.length == 1);
     expect(svc.geoCalls, hasLength(1));
-    expect(notifier.isGeoLoaded, isFalse);
+    expect(notifier.geoFacet.isLoaded, isFalse);
 
     // Call B: a second concurrent load() for the *same* ref — the exact
     // "mashing Retry" scenario the issue describes. Its own Phase 2 getGeo()
     // is held on geoCalls[1].
     await notifier.load(_ref);
-    notifier.isGeoLoaded = false;
+    notifier.geoFacetWriter.setLoaded(false);
     await _pumpUntil(() => svc.geoCalls.length == 2);
     expect(svc.geoCalls, hasLength(2));
-    expect(notifier.isGeoLoaded, isFalse);
+    expect(notifier.geoFacet.isLoaded, isFalse);
 
     // Resolve A's (stale) fetch first. Before the fix, `_loadKey == ref`
     // still held (same ref!) so this alone used to flip isGeoLoaded even
     // though B — the call actually in flight now — hasn't delivered anything.
     svc.geoCalls[0].complete(_emptyGeo());
     await _pumpUntil(() => false, maxTicks: 5); // let the continuation run
-    expect(notifier.isGeoLoaded, isFalse,
+    expect(notifier.geoFacet.isLoaded, isFalse,
         reason: 'a stale same-ref load must not be able to mark geo loaded '
             'for the call that actually superseded it');
 
     // Now resolve B's (current) fetch — this is the one that should count.
     svc.geoCalls[1].complete(_emptyGeo());
-    await _pumpUntil(() => notifier.isGeoLoaded);
-    expect(notifier.isGeoLoaded, isTrue);
+    await _pumpUntil(() => notifier.geoFacet.isLoaded);
+    expect(notifier.geoFacet.isLoaded, isTrue);
 
     // Both geo fetches finishing chains into _loadElevationData's own
     // getDetails() call (via whenComplete) — drain those too so nothing is
@@ -189,7 +195,7 @@ void main() {
     // load()'s Phase 2 geo fetch is held open — it is genuinely still in
     // flight for a large trip when the details-only reload below fires.
     await notifier.load(_ref);
-    notifier.isGeoLoaded = false;
+    notifier.geoFacetWriter.setLoaded(false);
     await _pumpUntil(() => svc.geoCalls.length == 1);
 
     // A completely unrelated mutation (e.g. the user drag-reordering an
@@ -204,8 +210,8 @@ void main() {
     // land normally — the unrelated details-only reload must not have
     // superseded it.
     svc.geoCalls[0].complete(_emptyGeo());
-    await _pumpUntil(() => notifier.isGeoLoaded);
-    expect(notifier.isGeoLoaded, isTrue,
+    await _pumpUntil(() => notifier.geoFacet.isLoaded);
+    expect(notifier.geoFacet.isLoaded, isTrue,
         reason: 'an unrelated details-only reload must not be able to '
             'starve an in-flight load()\'s own progressive geo fetch, which '
             'has no other way to ever complete');
@@ -228,7 +234,7 @@ void main() {
     // load()'s Phase 2 geo fetch is held open — it is genuinely still in
     // flight for a large trip when the unrelated CRUD reload below fires.
     await notifier.load(_ref);
-    notifier.isGeoLoaded = false;
+    notifier.geoFacetWriter.setLoaded(false);
     await _pumpUntil(() => svc.geoCalls.length == 1);
 
     // A completely unrelated mutation (resetting an activity's track)
@@ -246,8 +252,8 @@ void main() {
     // land normally — the unrelated _silentReload must not have superseded
     // it.
     svc.geoCalls[0].complete(_emptyGeo());
-    await _pumpUntil(() => notifier.isGeoLoaded);
-    expect(notifier.isGeoLoaded, isTrue,
+    await _pumpUntil(() => notifier.geoFacet.isLoaded);
+    expect(notifier.geoFacet.isLoaded, isTrue,
         reason: 'an unrelated _silentReload (CRUD mutation) must not be '
             'able to starve an in-flight load()\'s own progressive geo '
             'fetch, which has no other way to ever complete');
@@ -269,7 +275,7 @@ void main() {
     final notifier = ProjectNotifier(svc);
 
     await notifier.load(_ref);
-    expect(notifier.activities.first['name'], 'meta');
+    expect(notifier.itemsFacet.activities.first['name'], 'meta');
 
     // Switch to holding getDetailsMeta() so the two reloadDetailsOnly()
     // calls below can be raced deterministically against each other —
@@ -287,7 +293,7 @@ void main() {
     // B's (current) response lands first with the real data.
     svc.metaCalls![1].complete(_metaNamed('CURRENT'));
     await callB;
-    expect(notifier.activities.first['name'], 'CURRENT');
+    expect(notifier.itemsFacet.activities.first['name'], 'CURRENT');
 
     // A's (stale) response lands late. Before this fix,
     // _silentReloadDetailsOnly guarded only its own trailing notify/error,
@@ -297,7 +303,7 @@ void main() {
     // fixed for.
     svc.metaCalls![0].complete(_metaNamed('STALE'));
     await callA;
-    expect(notifier.activities.first['name'], 'CURRENT',
+    expect(notifier.itemsFacet.activities.first['name'], 'CURRENT',
         reason: 'a stale reloadDetailsOnly() call must not be able to '
             'overwrite a newer one\'s already-applied data');
 
@@ -336,15 +342,15 @@ void main() {
 
     // B's (current) details land first with the real data.
     svc.detailsCalls[1].complete(_detailsNamed('CURRENT'));
-    await _pumpUntil(() => notifier.activities.first['name'] == 'CURRENT');
-    expect(notifier.activities.first['name'], 'CURRENT');
+    await _pumpUntil(() => notifier.itemsFacet.activities.first['name'] == 'CURRENT');
+    expect(notifier.itemsFacet.activities.first['name'], 'CURRENT');
 
     // A's (stale) details land late. Pre-fix, `_loadKey != ref` was the only
     // guard here and — same ref — it wouldn't have caught this: the merge
     // would silently overwrite 'CURRENT' with 'STALE'.
     svc.detailsCalls[0].complete(_detailsNamed('STALE'));
     await _pumpUntil(() => false, maxTicks: 10);
-    expect(notifier.activities.first['name'], 'CURRENT',
+    expect(notifier.itemsFacet.activities.first['name'], 'CURRENT',
         reason: 'the stale same-ref load\'s details fetch must not clobber '
             'the current load\'s already-merged activities');
   });
@@ -359,18 +365,18 @@ void main() {
     final svc = _RacingService();
     final notifier = _ExposedNotifier(svc);
     await notifier.load(_ref);
-    notifier.activities = [
+    notifier.itemsFacetWriter.setActivities([
       {'id': '1', 'name': 'OLD'}
-    ];
+    ]);
     final staleToken = notifier.token;
 
     // A second concurrent load() for the *same* ref supersedes staleToken —
     // currentLoadKey would still equal the ref (structural equality), so
     // only the token can tell these two calls apart.
     await notifier.load(_ref);
-    notifier.activities = [
+    notifier.itemsFacetWriter.setActivities([
       {'id': '1', 'name': 'CURRENT'}
-    ];
+    ]);
 
     // Applying with the stale token must be rejected outright — not even the
     // activities merge should run (bug #3: it used to mutate unconditionally
@@ -378,13 +384,13 @@ void main() {
     await notifier.apply([
       {'id': '1', 'name': 'STALE'}
     ], ref: _ref, token: staleToken);
-    expect(notifier.activities.first['name'], 'CURRENT');
+    expect(notifier.itemsFacet.activities.first['name'], 'CURRENT');
 
     // Applying with the current token still works normally.
     await notifier.apply([
       {'id': '1', 'name': 'FRESH'}
     ], ref: _ref, token: notifier.token);
-    expect(notifier.activities.first['name'], 'FRESH');
+    expect(notifier.itemsFacet.activities.first['name'], 'FRESH');
 
     // Drain both load() calls' still-pending Phase 2 fetches so nothing is
     // left hanging past the end of the test. getGeo() first — getDetails()

@@ -386,3 +386,106 @@ Process notes:
 - Automatic agent worktrees start from `main`; worktrees were created by hand from the feature branch, and orchestration ran from a separate worktree because the main checkout is shared.
 - Test runs used per-unit folders inside the persistent Flutter and Python containers. A Docker Desktop engine hang lost the Python container mid-delivery; it was rebuilt from `python:3.14-slim` (plus `libexpat1`, `git`).
 - Three API session-limit interruptions; every interrupted agent was resumed from its transcript without losing work.
+
+## Part 2 amendment, round 1 — 2026-10-06, reviewed at 491c5459
+
+### P2-R1-1 — The post-mutation fetch is not ordered against geo requests already in flight
+- Trigger: zoom refetch or LOD request in flight → user deletes an activity → the post-mutation fetch lands first → the older response lands and is assigned → the deleted activity is drawn again until the next bucket crossing
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10); flagged: same request-ordering class the owner overrode in I1-R1-1/I1-R3-3; pre-existing on main
+- Revisit when: the owner applies that override to geo writers, or a deleted activity is seen drawn after an in-flight zoom
+- Outcome: open
+
+### P2-R1-2 — Derived root getters (hasActiveFilter …) hide facet reads from U18's audit
+- Trigger: after U19, ticking a tag does not rebuild the filter badge's Consumer
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6): U12 removes or moves the derived getters with the field
+- Outcome: open
+
+### P2-R1-3 — U19's root dirty flag has no completeness mechanism
+- Trigger: a root field written without marking dirty → its Consumer never updates (banner, spinner)
+- Scores (corrected by triage): trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6): private root fields behind marking setters + a completeness scan test
+- Outcome: open
+
+### P2-R1-4 — listVersion bumps on day-meta/people/groups and rebuilds the specs
+- Trigger: a day-note save re-runs every spec builder although items and geo did not change
+- Scores: trigger=concrete, impact=degraded-ux, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7): day-meta, people, groups out of the spec key; people/groups in the encounter key
+- Outcome: open
+
+### P2-R1-5 — The two subclass isGeoLoaded writers break the mutator convention
+- Trigger: U10 moves view_screen.dart:68 / shared_project_screen.dart:216 into the facet → the restriction rejects both → X3
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Outcome: open
+
+### P2-R1-6 — joinInFlight breaks seven test fakes outside U10's Scope
+- Trigger: the new named parameter makes every getSimplifiedGeo override fail to compile → X3
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7): a separate non-dedup service method; U10's Scope lists the fakes that must override it
+- Outcome: open
+
+Owner (2026-10-06): both approved (P2-R2-1 overridden to Fix now); round 3 requested.
+
+## Part 2 amendment, round 2 — 2026-10-06, reviewed at 9dec4cdd (fixes since 491c5459)
+
+### P2-R2-1 — Decision 24 stamps geometry with the oldest in-flight start, so the race it targets stays open
+- Trigger: zoom refetch R1 in flight → delete an activity → the post-mutation fetch R2 is stamped with R1's start → R2 lands first, R1 lands with an equal stamp and is applied → the deleted activity is drawn again
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=M/shared, confidence=verified
+- Decision: Defer (D10); flagged: defect in the owner's Decision 24 override; U10's acceptance cannot pass as written
+- Revisit when: the owner applies the P2-R1-1 override here, or U10 cannot pass its Decision 24 test
+- Override: user: Fix now — stamp each answer with the start of the request that produced it
+- Outcome: fixed in plan
+
+### P2-R2-2 — hasFilterableContent and the available* getters derive from items, not selection
+- Trigger: first activity added to an empty trip → only ItemsFacet bumps → the filter button, now on SelectionFacet, stays greyed out until a selection change
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6); introduced by the P2-R1-2 fix
+- Outcome: fixed in plan
+
+## Part 2 amendment, round 3 — 2026-10-06, reviewed at 49a74d90 (fixes since 9dec4cdd)
+
+Clean: no findings. Notes (not findings): `_silentReload`'s record cast (project_notifier.dart:3474-3475) must change when `fetchServerGeo` gains `servedFrom` (U10 rewrites that block; background_reload_trip_switch_test covers it). Pre-existing, outside Part 2: a pan during an in-flight same-bucket refetch disarms the viewport-box branch for the session (1386, 1470-1472).
+
+## Integrated review Part 2, round 1 — 2026-10-07, reviewed at 51ef06b5 (code since 0c803f60)
+
+### I2-R1-1 — After an edit, the trip's offline full-res geometry is gone until the next online open
+- Trigger: edit a trip online → leave it or the app is killed → open it offline → "showing last saved version" with no map and a load error
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10). Introduced by Part 2: the old post-edit full-res reload rewrote the disk row; #379's simplified refresh writes nothing
+- Revisit when: the owner wants offline geometry current straight after an edit, or a user reports an edited trip opening offline with no map
+- Override: user: Fix now — refill the offline copy in the background after an edit (F7); verifier only, then close
+- Outcome: fixed (F7, e9755c27)
+
+## Integrated review Part 2 — closed 2026-10-07
+
+Closed by the owner after F7's verification (verifier only). Notes left by F7's verifier (not findings, not regressions):
+- If `clear()` is followed by a reopen of the same trip while the old seed loop runs, the old loop's `finally` can reset the new loop's coalescing state, allowing one extra concurrent seed.
+- `fullResGeoForExport` and the seed share the `geoFullUncached` dedup key; a seed that joins an export fetch started before an edit stores pre-edit geometry under the new version. The load's seed already had this exposure.
+
+## Delivery — Part 2
+
+Part 2 (waves 5-9: #294 facet split, #379, #401 hysteresis) on `feat/package-c-part2`, stacked on Part 1 (#564). Plan amended first (Part 2 amendment, Decisions 17-24, three review rounds, clean at round 3).
+
+| Unit | Goal | Route | Rule | Attempts | Escalated | Verified first time | Findings traced |
+|---|---|---|---|---|---|---|---|
+| U9 | Facet base, notify flush, providers | Opus | S2 | 1 | — | yes | — |
+| U10 | GeoFacet, #379 refresh at the current LOD, request-ordered geometry, offline-seed version check | Opus | S2 | 2 | escalate (offline-seed race; owner: cache checks the version, Scope widened to project_data_cache.dart) | yes | — |
+| U10b | Trip-details save checks the trip version (owner) | Sonnet | — | 1 | — | yes | — |
+| U11 | Zoom-bucket hysteresis | Sonnet | — | 1 | — | yes | — |
+| U12 | SelectionFacet | Sonnet | — | 1 | — | yes | — |
+| U13 | StyleFacet | Sonnet | — | 1 | — | yes | — |
+| U14 | ItemsFacet (four versions) | Opus | S2 | 1 | — | yes | — |
+| U15 | ElevationFacet | Sonnet | — | 1 | — | yes | — |
+| U16 | Map panels on facets; version keys replace 35 guards | Opus | S2 | 1 | — | yes | — |
+| U17 | Side panels on facets (closes R2-2) | Opus | S2 | 1 | — | yes | — |
+| U18 | Screens on facets + root-listener audit | Opus | S2 | 2 | — | no (account-swap test missing) | — |
+| U19 | Root fields behind marking setters; the root notifies only for its own state | Opus | S2 | 1 | — | yes | — |
+| F7 | Refill the offline map after an edit | Sonnet | — | 2 | escalate (requirement change hit the #379 tests; Scope widened to two tests) | yes | I2-R1-1 |
+
+Integration: after merging `origin/main` (photo-order migration `4b9d2e7a1c63` on the same parent as Part 1's `021d2d9e3a22`) there were two Alembic heads; `021d2d9e3a22` was re-parented onto `4b9d2e7a1c63` on Part 1 (commit 8a6341bd, pushed to #564), then Part 1 merged into Part 2. One head.
+
+Final checks on the Part 2 head (main and Part 1 merged, 2026-10-07): flutter analyze clean; flutter test 2289 passed; pytest CI command 6341 passed, 47 skipped; the two git-dependent tests run natively in the worktree: passed.
+
+Follow-ups noted during Part 2 (not defects of this delivery): `_applyDetails` never reads `track_secondary_color` (U13, pre-existing); with auto-zoom on, opening the edit map refits the whole trip and drops a viewport carried over from view mode (U16, pre-existing); the two F7 verifier notes above; #568 (pan during an in-flight refetch).

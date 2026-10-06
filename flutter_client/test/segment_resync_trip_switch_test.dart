@@ -84,7 +84,7 @@ class _Notifier extends ProjectNotifier {
 Future<void> _editOnT(ProjectNotifier n) {
   n
     ..ref = _t
-    ..items = [_segment('T-seg')];
+    ..itemsFacetWriter.setItems([_segment('T-seg')]);
   return n.updateSegment('T-seg',
       segmentType: 'flight',
       label: 'edited',
@@ -96,7 +96,7 @@ Future<void> _editOnT(ProjectNotifier n) {
 
 void _expectOnX(ProjectNotifier n) {
   expect(n.ref?.name, 'X', reason: 'the user opened X; T must not come back');
-  expect(n.items.map((i) => (i['segment'] as Map)['id']), ['X-seg']);
+  expect(n.itemsFacet.items.map((i) => (i['segment'] as Map)['id']), ['X-seg']);
   expect(n.error, isNull, reason: "T's conflict message is not X's");
 }
 

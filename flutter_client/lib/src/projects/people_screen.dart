@@ -56,8 +56,11 @@ class _PeopleScreenState extends State<PeopleScreen> {
         icon: Icon(_showGroups ? Icons.group_add : Icons.person_add_alt_1),
         label: Text(_showGroups ? 'Add group' : 'Add person'),
       ),
+      // The people, groups and encounters (items), and the root state the
+      // rows read (photo headers, permissions) (#294).
       body: AnimatedBuilder(
-        animation: widget.notifier,
+        animation:
+            Listenable.merge([widget.notifier, widget.notifier.itemsFacet]),
         builder: (context, _) {
           return Column(
             children: [
@@ -91,11 +94,11 @@ class _PeopleScreenState extends State<PeopleScreen> {
 
   Widget _peopleBody(ThemeData theme) {
     final notesByPerson =
-        encounterNotesByPerson(widget.notifier.items, widget.notifier.people);
+        encounterNotesByPerson(widget.notifier.itemsFacet.items, widget.notifier.itemsFacet.people);
     final counts =
-        encounterCountByPerson(widget.notifier.items, widget.notifier.people);
+        encounterCountByPerson(widget.notifier.itemsFacet.items, widget.notifier.itemsFacet.people);
     final filtered =
-        filterPeople(widget.notifier.people, _search.text, notesByPerson);
+        filterPeople(widget.notifier.itemsFacet.people, _search.text, notesByPerson);
     return Column(
       children: [
         Padding(
@@ -117,7 +120,7 @@ class _PeopleScreenState extends State<PeopleScreen> {
           ),
         ),
         Expanded(
-          child: widget.notifier.people.isEmpty
+          child: widget.notifier.itemsFacet.people.isEmpty
               ? _empty(theme, 'No people yet',
                   'Add someone you met, or log an encounter on a day.')
               : filtered.isEmpty
@@ -136,13 +139,13 @@ class _PeopleScreenState extends State<PeopleScreen> {
   }
 
   Widget _groupsBody(ThemeData theme) {
-    final groups = widget.notifier.groups;
+    final groups = widget.notifier.itemsFacet.groups;
     if (groups.isEmpty) {
       return _empty(theme, 'No groups yet',
           'Group people you met — e.g. a hostel crew or a family.');
     }
-    final counts = memberCountByGroup(widget.notifier.people);
-    final encCounts = encounterCountByGroup(widget.notifier.items);
+    final counts = memberCountByGroup(widget.notifier.itemsFacet.people);
+    final encCounts = encounterCountByGroup(widget.notifier.itemsFacet.items);
     return ListView.builder(
       itemCount: groups.length,
       itemBuilder: (_, i) => _GroupTile(
@@ -880,7 +883,7 @@ class _GroupDetailSheet extends StatelessWidget {
         (group['nationalities'] as List?)?.cast<String>() ?? const [];
     final socials =
         (group['socials'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
-    final members = membersOfGroup(notifier.people, _groupId);
+    final members = membersOfGroup(notifier.itemsFacet.people, _groupId);
     return Padding(
       padding: EdgeInsets.only(
         left: 16, right: 16, top: 4,
@@ -973,11 +976,11 @@ class _GroupDetailSheet extends StatelessWidget {
           const SizedBox(height: 4),
           // Listens, unlike the rest of this sheet: editing or deleting an
           // encounter in place (issue #175) has to repaint this list, and the
-          // rows come straight off notifier.items.
+          // rows come straight off the items facet.
           ListenableBuilder(
-            listenable: notifier,
+            listenable: Listenable.merge([notifier, notifier.itemsFacet]),
             builder: (context, _) {
-              final encounters = encountersForGroup(notifier.items, _groupId);
+              final encounters = encountersForGroup(notifier.itemsFacet.items, _groupId);
               if (encounters.isEmpty) {
                 return Padding(
                   padding: const EdgeInsets.symmetric(vertical: 8),

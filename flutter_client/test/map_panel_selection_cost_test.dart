@@ -49,14 +49,14 @@ Map<String, dynamic> _geo() => {
 
 ProjectNotifier _notifier() => ProjectNotifier(ProjectService())
   ..ref = const ProjectRef(name: 'Trip')
-  ..geo = _geo()
-  ..activities = [
+  ..geoFacetWriter.replaceKeepingLod(_geo())
+  ..itemsFacetWriter.setActivities([
     for (var a = 0; a < _acts; a++)
       {'id': a, 'start_date_local': '2026-06-0${a + 1}T08:00:00'}
-  ]
-  ..items = [
+  ])
+  ..itemsFacetWriter.setItems([
     for (var a = 0; a < _acts; a++) {'item_type': 'activity', 'activity_id': a}
-  ]
+  ])
   ..isLoading = false;
 
 void main() {
@@ -103,7 +103,7 @@ void main() {
     expect(perfSpans.blockingSpans['all_points'], hasLength(1));
 
     for (var d = 1; d <= _acts; d++) {
-      notifier.selectedDays = {'2026-06-0$d'};
+      notifier.selectionFacetWriter.setSelectedDays({'2026-06-0$d'});
       notifier.notifyListeners();
       await tester.pump();
     }
@@ -146,7 +146,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 600));
 
-    notifier.geo = _geo(); // the low-res -> full-res upgrade
+    notifier.geoFacetWriter.replaceKeepingLod(_geo()); // the low-res -> full-res upgrade
     notifier.notifyListeners();
     await tester.pump();
 

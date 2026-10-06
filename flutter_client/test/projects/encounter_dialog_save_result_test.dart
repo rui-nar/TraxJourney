@@ -63,9 +63,9 @@ void main() {
             (req) async => http.Response('{"detail":"Server exploded"}', 500)));
     final notifier = ProjectNotifier(ProjectService())
       ..ref = _ref
-      ..people = [
+      ..itemsFacetWriter.setPeople([
         {'id': 1, 'name': 'Alice'},
-      ];
+      ]);
 
     await tester.pumpWidget(_harness(notifier));
     await tester.tap(find.text('open'));
@@ -91,7 +91,7 @@ void main() {
     // ...and not as a SnackBar (which would render behind the modal barrier).
     expect(find.widgetWithText(SnackBar, 'Server exploded'), findsNothing);
     // The optimistic placeholder must have been rolled back.
-    expect(notifier.items, isEmpty);
+    expect(notifier.itemsFacet.items, isEmpty);
     // Save/Cancel must be re-enabled so the user can actually retry.
     expect(
       tester
@@ -120,9 +120,9 @@ void main() {
         }));
     final notifier = ProjectNotifier(ProjectService())
       ..ref = _ref
-      ..people = [
+      ..itemsFacetWriter.setPeople([
         {'id': 1, 'name': 'Alice'},
-      ];
+      ]);
 
     await tester.pumpWidget(_harness(notifier));
     await tester.tap(find.text('open'));
@@ -137,7 +137,7 @@ void main() {
     await _settle(tester);
 
     expect(find.byType(AlertDialog), findsNothing);
-    expect(notifier.items, hasLength(1));
-    expect(notifier.items.single['encounter']['id'], 'enc-real-1');
+    expect(notifier.itemsFacet.items, hasLength(1));
+    expect(notifier.itemsFacet.items.single['encounter']['id'], 'enc-real-1');
   });
 }

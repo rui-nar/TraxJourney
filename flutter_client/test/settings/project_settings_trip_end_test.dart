@@ -91,11 +91,11 @@ ProjectNotifier _notifier({
   };
   final n = ProjectNotifier(ProjectService())
     ..ref = const ProjectRef(name: 'Trip')
-    ..tripStart = '2026-06-01'
-    ..tripEnd = tripEnd
-    ..dayMeta = dayMeta
-    ..activities = List<Map<String, dynamic>>.from(activities)
-    ..items = List<Map<String, dynamic>>.from(items);
+    ..itemsFacetWriter.setTripStart('2026-06-01')
+    ..itemsFacetWriter.setTripEnd(tripEnd)
+    ..itemsFacetWriter.setDayMeta(dayMeta)
+    ..itemsFacetWriter.setActivities(List<Map<String, dynamic>>.from(activities))
+    ..itemsFacetWriter.setItems(List<Map<String, dynamic>>.from(items));
   return n;
 }
 
@@ -208,7 +208,7 @@ void main() {
     }
     expect(putDayMeta.single['delete'], ['2026-06-15', '2026-06-16']);
     expect(storedDays(), {'2026-06-13', '2026-06-14'});
-    expect(n.dayMeta.keys, isNot(contains('2026-06-15')));
+    expect(n.itemsFacet.dayMeta.keys, isNot(contains('2026-06-15')));
   });
 
   testWidgets('cancelling the warning writes no day-meta at all', (tester) async {
@@ -223,7 +223,7 @@ void main() {
     await _frames(tester);
 
     expect(putDayMeta, isEmpty);
-    expect(n.dayMeta.keys, contains('2026-06-15'));
+    expect(n.itemsFacet.dayMeta.keys, contains('2026-06-15'));
   });
 
   testWidgets('a day after the end date pinned by an activity is reported as staying',
@@ -389,7 +389,7 @@ void main() {
     await _frames(tester);
 
     expect(storedDays(), {'2026-06-14', '2026-06-16'});
-    expect(n.dayMeta.keys, contains('2026-06-16'));
+    expect(n.itemsFacet.dayMeta.keys, contains('2026-06-16'));
   });
 
   testWidgets('a failed content check deletes nothing', (tester) async {
