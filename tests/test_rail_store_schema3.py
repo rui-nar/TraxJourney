@@ -188,6 +188,59 @@ def test_a_bus_store_of_only_relation_members_is_built_with_an_extent(tmp_path):
         assert store.relation_geometry([300])[0]["missing_members"] == 1
 
 
+# ---------------------------------------------------------------------------
+# Relation stops (F5): ferry and bus place every stop the file holds
+# ---------------------------------------------------------------------------
+
+def _route_with_stops(route):
+    """A *route* relation over one way, calling at node 3 (no uic_ref, off the
+    way), node 4 (a uic_ref) and node 99 (not in the file)."""
+    def write(path):
+        writer = osmium.SimpleWriter(str(path))
+        for node_id, (lat, lon) in {1: (55.60, 12.50), 2: (55.70, 12.60),
+                                    3: (55.61, 12.49), 4: (55.69, 12.61)}.items():
+            writer.add_node(mutable.Node(id=node_id, location=(lon, lat),
+                                         tags={"uic_ref": "8600001"} if node_id == 4 else {}))
+        writer.add_way(mutable.Way(id=30, nodes=[1, 2], tags={"railway": "rail"}
+                                   if route == "train" else {}))
+        writer.add_relation(mutable.Relation(id=300, members=[
+            ("n", 3, "stop"), ("w", 30, ""), ("n", 4, "stop"), ("n", 99, "stop")],
+            tags={"route": route}))
+        writer.close()
+        return path
+    return write
+
+
+@pytest.mark.parametrize("layer,route", [("bus", "bus"), ("ferry", "ferry")])
+def test_a_ferry_or_bus_store_locates_every_stop_the_file_holds(tmp_path, layer, route):
+    """Strategy A bridges a broken relation only towards a stop it can place,
+    and Overpass places every stop. A stop with no uic_ref is placed like one
+    with; a stop the file lacks stays named and unlocated."""
+    out, stats = _build(tmp_path, _route_with_stops(route), layer)
+    assert (stats["relation_nodes"], stats["relation_nodes_located"]) == (3, 2)
+    with RailStore(out) as store:
+        stops = store.relation_stops(300)
+        nodes = [m for m in store.relation_geometry([300])[0]["members"]
+                 if m["type"] == "node"]
+    assert [(s["ref"], s["uic"], s["lat"], s["lon"]) for s in stops] == [
+        (3, "", pytest.approx(55.61), pytest.approx(12.49)),
+        (4, "8600001", pytest.approx(55.69), pytest.approx(12.61)),
+        (99, "", None, None)]
+    assert [(m["ref"], m["held"], m.get("lat")) for m in nodes] == [
+        (3, True, pytest.approx(55.61)), (4, True, pytest.approx(55.69)),
+        (99, False, None)]
+
+
+def test_a_rail_store_still_locates_only_its_uic_stops(tmp_path):
+    """Rail's stops are #570, and a rail store must not change under F5: the
+    same relation shape places the uic_ref stop and not the plain one."""
+    out, stats = _build(tmp_path, _route_with_stops("train"), "rail")
+    assert (stats["relation_nodes"], stats["relation_nodes_located"]) == (3, 1)
+    with RailStore(out) as store:
+        assert [(s["ref"], s["lat"] is not None) for s in store.relation_stops(300)] \
+            == [(3, False), (4, True), (99, False)]
+
+
 def test_a_layer_with_nothing_routable_is_refused(tmp_path):
     def roads_only(path):
         return write_extract(path, {1: (55.6, 12.5), 2: (55.7, 12.6)},

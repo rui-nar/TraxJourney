@@ -50,14 +50,18 @@ selected has to be shown in a diff rather than only in a count.
 
 The ferry and bus layers (docs/LOCAL_TRANSPORT_DATA_PLAN.md, U7) are filtered
 from the same box. Its bus data is real — 11 ``route=bus`` relations, 128 of
-whose member roads lie inside it — and Mannheim has no ferry, so the rest is
-**synthetic** again, ids 9000000000101-9000000000121 north of the light-rail
-line, each element one row of the ferry and bus selections:
+whose member roads lie inside it, and 21 of whose stop nodes do — and Mannheim
+has no ferry, so the rest is **synthetic** again, ids
+9000000000101-9000000000121 north of the light-rail line, each element one row
+of the ferry and bus selections:
 
 - 9000000000111, a ``route=ferry`` way (ferry strategy B);
 - 9000000000112, a ``ferry=yes`` road with no route (ferry strategy C);
-- 9000000000121, a ``route=ferry`` relation (strategy A) whose only member,
-  9000000000113, carries no tags at all — kept for the relation alone;
+- 9000000000121, a ``route=ferry`` relation (strategy A) whose only way member,
+  9000000000113, carries no tags at all — kept for the relation alone. Its
+  node members are its stops: 9000000000109, a ``public_transport=
+  stop_position`` beside the way, and 9000000000199, which the box does not
+  hold — a stop across a border (F5);
 - 9000000000114, a ``route=bus`` way (bus strategy B), the rare mapping.
 
 None of them is rail, so the rail selection — and the published filtered file
@@ -619,6 +623,8 @@ FERRY_YES_WAY = 9000000000112   # ferry=yes, no route
 FERRY_MEMBER = 9000000000113    # untagged, in FERRY_RELATION
 BUS_WAY = 9000000000114         # route=bus
 FERRY_RELATION = 9000000000121  # route=ferry
+FERRY_STOP = 9000000000109      # FERRY_RELATION's stop, beside FERRY_MEMBER
+FERRY_STOP_ABSENT = 9000000000199  # FERRY_RELATION's stop the box does not hold
 
 
 def _layer_contents(layered, layer):
@@ -717,14 +723,87 @@ def test_the_layer_counts_are_pinned(layered):
     }
 
 
-def test_layer_files_keep_all_their_way_nodes_and_nothing_else(layered):
+def _stops(elements) -> set[int]:
+    """The node members of every relation in *elements*."""
+    return {ref for (kind, _), (_, refs) in elements.items() if kind == "r"
+            for mkind, ref, _ in refs if mkind == "n"}
+
+
+def test_layer_files_keep_their_way_nodes_and_stops_and_nothing_else(layered):
     """Ferry and bus have no node row: no UIC lookup, no station. Every node is
-    a kept way's, and every kept way has all of its."""
+    a kept way's or a kept relation's stop, every kept way has all of its, and
+    every stop the source holds is there."""
+    raw_nodes = _ids(_elements(FIXTURE), "n")
     for layer in ("ferry", "bus"):
         elements = _layer_contents(layered, layer)
         referenced = {ref for (kind, _), (_, refs) in elements.items() if kind == "w"
                       for ref in refs}
-        assert _ids(elements, "n") == referenced, layer
+        stops = _stops(elements) & raw_nodes
+        assert stops - referenced, f"{layer}: no stop off the ways to test with"
+        assert _ids(elements, "n") == referenced | stops, layer
+
+
+def test_ferry_and_bus_stops_are_written_where_the_source_has_them(layered):
+    """What strategy A's bridge reads off Overpass's `out geom`: each stop's
+    position. A stop the source does not hold cannot be written, and is not
+    invented (F5)."""
+    raw = _elements(FIXTURE)
+    ferry = _layer_contents(layered, "ferry")
+    assert ferry[("n", FERRY_STOP)][1] == raw[("n", FERRY_STOP)][1]
+    # Its tags are stripped like any node's: nothing reads them.
+    assert ferry[("n", FERRY_STOP)][0] == {}
+    assert ("n", FERRY_STOP_ABSENT) not in ferry
+    assert ("n", FERRY_STOP_ABSENT) not in raw
+    bus = _layer_contents(layered, "bus")
+    bus_stops = _stops(bus) & _ids(raw, "n")
+    assert len(bus_stops) == 21
+    for ref in bus_stops:
+        assert bus[("n", ref)][1] == raw[("n", ref)][1], ref
+    # The stops do not reach the rail file by this route — rail's are #570, and
+    # its published fixture pins it.
+    assert FERRY_STOP not in _ids(_layer_contents(layered, "rail"), "n")
+
+
+def test_the_stop_counts_are_pinned(layered):
+    """Distinct stop nodes written; a broken stop closure reads 0 here."""
+    assert {layer: sel.stop_nodes for layer, (_, sel) in layered.items()} == {
+        "rail": 0, "ferry": 1, "bus": 21}
+
+
+def test_ferry_and_bus_stores_locate_every_stop_the_file_holds(layered, tmp_path):
+    """The builder half of F5: every relation node member the layer file holds
+    is located in the store, at the file's position, with or without a
+    uic_ref — and comes back from `relation_geometry`, the path strategy A
+    reads, as Overpass's `out geom` would return it."""
+    from src.rail.builder import build_store
+    from src.rail.store import RailStore
+
+    for layer in ("ferry", "bus"):
+        path, _ = layered[layer]
+        elements = _elements(path)
+        held = _ids(elements, "n")
+        store_path = tmp_path / f"{layer}.sqlite"
+        stats = build_store(path, store_path, region="europe/germany", layer=layer)
+        slots = [(rel, ref) for (kind, rel), (_, refs) in elements.items()
+                 if kind == "r" for mkind, ref, _ in refs if mkind == "n"]
+        assert stats["relation_nodes"] == len(slots), layer
+        assert stats["relation_nodes_located"] == sum(ref in held for _, ref in slots), layer
+        with RailStore(store_path) as store:
+            for rel in {rel for rel, _ in slots}:
+                (geometry,) = store.relation_geometry([rel])
+                for member in geometry["members"]:
+                    if member["type"] != "node":
+                        continue
+                    if member["ref"] in held:
+                        x, y = elements[("n", member["ref"])][1]
+                        assert (member["lon"], member["lat"]) == pytest.approx(
+                            (x / 1e7, y / 1e7), abs=1e-7), (layer, rel, member)
+                    else:
+                        assert not member["held"] and "lat" not in member
+    with RailStore(tmp_path / "ferry.sqlite") as store:
+        stops = store.relation_stops(FERRY_RELATION)
+    assert [(s["ref"], s["role"], s["lat"] is not None) for s in stops] == [
+        (FERRY_STOP, "stop", True), (FERRY_STOP_ABSENT, "stop", False)]
 
 
 def test_bbox_per_layer_is_the_extent_of_its_routable_set(layered):
