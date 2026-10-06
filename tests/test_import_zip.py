@@ -309,7 +309,6 @@ def test_replace_places_the_photos_the_trip_lacks(env):
     assert r.status_code == 201, r.text
     assert r.json() == {"name": "Alps", "outcome": "replaced"}
     m, j = _rows(engine, ids["other"], "Alps")
-    assert m.id == kept[0].id
     assert json.loads(m.photos_json) == mem and json.loads(j.photos_json) == jnl
     placed = (_placed(data, ids["other"], "memories", m.id, mem)
               + _placed(data, ids["other"], "journal", j.id, jnl))
@@ -341,13 +340,14 @@ def test_replace_with_the_trip_s_own_zip_leaves_its_photos_alone(env, monkeypatc
     assert json.loads(m.photos_json) == mem and json.loads(j.photos_json) == jnl
 
 
-def test_replace_keeps_a_photo_placed_in_a_reused_row_id(env):
-    """Review U2R1-1. Replacing trip X with the ZIP of its Keep-both copy
-    deletes X's memory and journal entry (the copy's have other public ids
-    and ids) and creates new ones. While X's rows hold the highest ids,
-    SQLite gives the new rows those same ids, with the same photo names: a
-    removal and a placement then name the same files, and only removing
-    before placing leaves the photos in place."""
+def test_replace_with_a_copy_s_zip_gives_new_ids_and_keeps_its_photos(env):
+    """Replacing trip X with the ZIP of its Keep-both copy deletes X's memory
+    and journal entry (the copy's have other public ids and ids) and creates
+    new ones. Review U2R1-1's case — SQLite handing the new rows the deleted
+    rows' ids, so a removal and a placement name the same files — can no
+    longer happen: memory and journal ids are never reused (AUTOINCREMENT,
+    #237/#511 plan D4c). This proves the replace still places every photo
+    and counts storage exactly under the fresh ids."""
     client, engine, ids, act_as, data = env
     archive, mid, jid, mem, jnl = _source(client, act_as)
     assert _import_zip(client, "Alps.zip", archive, on_conflict="copy").status_code == 201
@@ -362,7 +362,8 @@ def test_replace_keeps_a_photo_placed_in_a_reused_row_id(env):
     assert r.status_code == 201, r.text
     assert r.json()["outcome"] == "replaced"
     m, j = _rows(engine, ids["owner"], "Alps")
-    assert (m.id, j.id) == (mid, jid)  # the ids were reused: the case under test
+    # AUTOINCREMENT (plan D4c): a replaced row never gets a deleted row's id.
+    assert m.id != mid and j.id != jid
     assert json.loads(m.photos_json) == mem and json.loads(j.photos_json) == jnl
     _placed(data, ids["owner"], "memories", m.id, mem)
     _placed(data, ids["owner"], "journal", j.id, jnl)
