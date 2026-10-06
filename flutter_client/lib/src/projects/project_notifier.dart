@@ -1839,6 +1839,10 @@ class ProjectNotifier extends ChangeNotifier
       // so it waits for the camera like every other heavy apply here does.
       await _waitForCameraIdle();
       if (!_isCurrent(token, ref)) return;
+      // The version the geometry is fetched for: an edit landing during the
+      // fetch makes it stale, and the cache then refuses it (issue #379).
+      final lockVersion = projectDataCache.lockVersionOf(ref);
+      if (lockVersion == null) return; // nothing on file to seed beside
       final full = await _service.fetchFullGeoUncached(ref);
       if (!_isCurrent(token, ref)) return;
       // Noted either way: "does this trip have offline geometry, and if not
@@ -1848,7 +1852,7 @@ class ProjectNotifier extends ChangeNotifier
         perfSpans.note('geo_offline_seed', 'skipped, $coords coords');
         return;
       }
-      projectDataCache.seedFullGeoToDisk(ref, full);
+      projectDataCache.seedFullGeoToDisk(ref, full, lockVersion: lockVersion);
       perfSpans.note('geo_offline_seed', '$coords coords');
     } on Object {
       // Best effort by construction: a failed seed costs the user nothing

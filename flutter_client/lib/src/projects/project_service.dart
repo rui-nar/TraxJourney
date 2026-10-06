@@ -173,11 +173,15 @@ class ProjectService {
     // Ask the geometry, not the cache: L1 residency does not imply the decode
     // hop ever ran over this Map (see geoGeometrySeeded).
     if (cached != null && geoGeometrySeeded(cached)) return cached;
+    // Read before the bytes: an edit's /meta landing during the decode makes
+    // them stale, and they must not become L1's answer (issue #379).
+    final lockVersion = projectDataCache.lockVersionOf(ref);
     final bytes = await projectDataCache.readFullGeoBytes(ref);
     if (bytes != null) {
       final geo = await perfSpans.stage(
           'decode_geo_cached', () => heavy.decodeGeoOffIsolate(bytes));
-      projectDataCache.promoteFullGeo(ref, geo, scope: scope);
+      projectDataCache.promoteFullGeo(ref, geo,
+          scope: scope, lockVersion: lockVersion);
       return geo;
     }
     return cached;
@@ -200,8 +204,11 @@ class ProjectService {
       if (cached != null) return cached;
     }
     return _dedupFetch('geo:${ref.ownerId ?? 0}:${ref.name}', () async {
+      // The version the answer is for, read before the request (issue #379).
+      final lockVersion = projectDataCache.lockVersionOf(ref);
       final expanded = await _fetchFullGeo(ref);
-      projectDataCache.writeFullGeo(ref, expanded, scope: scope);
+      projectDataCache.writeFullGeo(ref, expanded,
+          scope: scope, lockVersion: lockVersion);
       return expanded;
     });
   }
@@ -333,6 +340,8 @@ class ProjectService {
     final cached = await projectDataCache.readLowResGeo(ref);
     if (cached != null) return cached;
     return _dedupFetch('lowResGeo:${ref.ownerId ?? 0}:${ref.name}', () async {
+      // The version the answer is for, read before the request (issue #379).
+      final lockVersion = projectDataCache.lockVersionOf(ref);
       final encoded = Uri.encodeComponent(ref.name);
       final bytes = await perfSpans.stage(
           'fetch_low_res_geo',
@@ -346,7 +355,8 @@ class ProjectService {
       // it needs the same derive-and-seed treatment as the full-res geo.
       final data = await perfSpans.stage(
           'decode_low_res_geo', () => heavy.decodeGeoOffIsolate(bytes));
-      projectDataCache.writeLowResGeo(ref, data, scope: scope);
+      projectDataCache.writeLowResGeo(ref, data,
+          scope: scope, lockVersion: lockVersion);
       return data;
     });
   }
