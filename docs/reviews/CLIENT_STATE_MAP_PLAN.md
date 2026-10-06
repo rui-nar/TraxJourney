@@ -447,3 +447,13 @@ Owner (2026-10-06): both approved (P2-R2-1 overridden to Fix now); round 3 reque
 ## Part 2 amendment, round 3 — 2026-10-06, reviewed at 49a74d90 (fixes since 9dec4cdd)
 
 Clean: no findings. Notes (not findings): `_silentReload`'s record cast (project_notifier.dart:3474-3475) must change when `fetchServerGeo` gains `servedFrom` (U10 rewrites that block; background_reload_trip_switch_test covers it). Pre-existing, outside Part 2: a pan during an in-flight same-bucket refetch disarms the viewport-box branch for the session (1386, 1470-1472).
+
+## Integrated review Part 2, round 1 — 2026-10-07, reviewed at 51ef06b5 (code since 0c803f60)
+
+### I2-R1-1 — After an edit, the trip's offline full-res geometry is gone until the next online open
+- Trigger: edit a trip online → leave it or the app is killed → open it offline → "showing last saved version" with no map and a load error
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10). Introduced by Part 2: the old post-edit full-res reload rewrote the disk row; #379's simplified refresh writes nothing
+- Revisit when: the owner wants offline geometry current straight after an edit, or a user reports an edited trip opening offline with no map
+- Override: user: Fix now — refill the offline copy in the background after an edit (F7); verifier only, then close
+- Outcome: open
