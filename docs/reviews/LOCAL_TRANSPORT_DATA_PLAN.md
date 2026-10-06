@@ -260,3 +260,43 @@ Reviewer hand-off note: `.github/workflows/rail-extract.yml:284` (U5's gate) cal
 - U9 attempt 1 failed verification: the local ferry/bus attempt caught only OverpassError/RailSourceOverload, so any other local exception escaped with no fallback (binding wide-guard convention). Attempt 2 added the wide guard and a test; passed. Local vs Overpass identical on Rødby–Puttgarden, Helsingør–Helsingborg, Hirtshals–Kristiansand and bus 19; Copenhagen bus resolve 68 MB (R1-2 stays deferred). Non-blocking: route_source.py reads RailStore._query (private) — a public relation box query in store.py would be cleaner. Stale docstrings in store.py (relation_geometry/relation_stops say stops are unlocated — now rail-only).
 - F5 + U9 integration (b5091c4d): full suite 6284 passed, 39 skipped.
 - U10 re-routed Sonnet → Opus (S3): adding ferry/bus legs needs the CI corpus gate (rail-extract.yml) to build ferry/bus stores too, or `--require-all` fails every full run; Scope widened to the gate step and its tests.
+
+## Integrated review — Round 1 — 2026-10-06, reviewed at c7ac29dc (cc52978b..c7ac29dc, DELIVERY.md §5 point 2)
+
+Envelope question (to owner): Open decision 3 was never recorded as decided. Germany's bus store is 660 MB from a 112 MB file (5.9×, not the 3× the plan assumed); over 49 regions that projects to ~3–3.8 GB of bus stores per stack, over the plan's 3 GB per-stack budget, ×2 stacks on the 40 GB host, plus retired layers' files left on disk.
+
+### I1-1 — F5 changed what a ferry/bus store holds without bumping the store schema
+- Trigger: the cron publishes ferry/bus layers after part 2 is on main but before it is deployed → a part-1 box builds bus stores with no stop positions, sidecar "<digest> 3" → part 2 is deployed and reads them as current → bus legs resolve silently wrong (38/730 Danish relations), no fallback, until a new digest
+- Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=S/shared, confidence=verified
+- Decision: Fix now (D3)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
+
+### I1-2 — Nothing enforces "the first ferry/bus release waits until part 2 is on prod"
+- Trigger: part 2 merged before the 2nd, deployed after the 5th → the cron publishes germany-bus → a part-1 box's refresh is OOM-killed building it (unbounded builder) → the run fails, regions after Germany stay stale, repeats until part 2 is deployed
+- Scores: trigger=plausible, impact=degraded-ux, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10) — not a D2 duplicate of R1-7 (that was the builder's memory, fixed by F3)
+- Revisit when: part 2 is about to merge while either box still runs part 1 and a scheduled run could fall between merge and deploy, or a part-1 box logs a refresh killed/OOM on a ferry/bus layer — gate ferry/bus publishing behind a repo variable or an explicit checkpoint
+- Guard: —
+- Override: —
+- Outcome: open
+
+### I1-3 — The refresh timeout (55 min) was sized from a rail-only install
+- Trigger: the first three-layer install on the VPS exceeds 3,300 s → SIGKILL, manifest not written, one lost month (no corruption)
+- Scores: trigger=plausible, impact=degraded-ux, detect=logged, later=cheap, fix=S/local, confidence=inferred
+- Decision: Defer (D10)
+- Revisit when: the first full rail+ferry+bus install on val takes more than 1,650 s, or any refresh logs the subprocess timeout — set both timeouts from that measurement
+- Guard: —
+- Override: —
+- Outcome: open
+
+### I1-4 — traxjourney_rail_data_regions counts entries, not regions, once layers exist
+- Trigger: an operator reads the ok count after the first schema-3 refresh → ~3× the configured regions against help text and docs that say "regions"
+- Scores: trigger=concrete, impact=cosmetic, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
