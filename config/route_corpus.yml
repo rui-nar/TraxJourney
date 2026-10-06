@@ -4,13 +4,23 @@
 #     python scripts/route_corpus.py <store dir> [--require-all]
 #
 # Each leg is resolved as production resolves it under RAIL_SOURCE=local, with
-# no Overpass fallback, against only the regions it names. `regions` is every
-# region whose rail box reaches within 25 km of either endpoint (what the
-# station and relation lookups ask) plus any the route itself runs through, so
-# the answer here is the answer production's merged stores give.
+# no Overpass fallback, against only the regions it names, in its own mode's
+# layer: a ferry leg reads ferry stores and nothing else. For rail, `regions`
+# is every region whose rail box reaches within 25 km of either endpoint (what
+# the station and relation lookups ask) plus any the route itself runs
+# through, so the answer here is the answer production's merged stores give.
+#
+# For ferry and bus, `regions` is the countries the endpoints and the route
+# lie in. A ferry layer's box is every sea its routes reach — Denmark's runs
+# from the Faroes to Finland, Croatia's from Venice to Patras — so "every box
+# that overlaps" would name half of Europe's ferry layers for each leg; the
+# crossing's own countries hold the whole relation between them (Decision 8).
+# Checked where it can be: Copenhagen's bus 19 lies inside Sweden's bus box,
+# and Helsingør -> Helsingborg inside Germany's ferry box; adding those
+# regions changes neither result.
 #
 # Leg format:
-#   name, mode: rail, from/to: {label, lat, lon}, regions: [...]
+#   name, mode: rail|ferry|bus, from/to: {label, lat, lon}, regions: [...]
 #   expect:
 #     max_endpoint_km    both ends of the line within this of the stations
 #     length_km          [min, max]
@@ -18,10 +28,17 @@
 #     avoid              [{label, lat, lon, within_km}]  must not pass this close
 #     strategy_not       [straight, ...]
 #     degraded           false
+#     local_miss         true, alone: ferry and bus only. The local stores must
+#                        find no route — production then asks Overpass — and
+#                        must not invent one. Any other leg that misses fails.
 #   known_bad: <reason>  the leg is wrong today; `expect` says what right looks
 #   current: {...}       like and `current` (same keys) pins today's wrong
 #                        outcome. Either one moving fails the run, so a fix
 #                        flips the entry in its own diff.
+#
+# A ferry or bus line found by way Dijkstra (way_dijkstra, ferry_yes_dijkstra)
+# starts and ends at the query points themselves, so `max_endpoint_km` is met
+# by construction there: a snap to a far-off way shows as length and `via`.
 #
 # Measured 2026-10-05 against stores built locally with `python -m
 # src.rail.builder` from the `rail-data-2026-09-08` extracts (france, germany,
@@ -282,5 +299,177 @@ legs:
         - {label: Nyborg, lat: 55.3137, lon: 10.7962, within_km: 2}
       avoid:
         - {label: Kalundborg, lat: 55.6820, lon: 11.0884, within_km: 15}
+      strategy_not: [straight]
+      degraded: false
+
+  # -- Ferry -------------------------------------------------------------------
+  # Measured 2026-10-06 against ferry and bus stores built locally with
+  # `python -m src.rail.builder --layer ferry|bus` from that day's Geofabrik
+  # extracts (source dates 2026-10-03/04) filtered by
+  # `scripts/build_rail_extract.py build` — denmark, sweden, croatia and
+  # germany — current resolver, no fallback; each line's length checked
+  # against the crow-fly crossing and its course against the channel and
+  # town points recorded below. Bands as for rail, but
+  # a crossing of a few km gets its length band rounded to 0.5 km, not 5, and
+  # a via a 1 km floor, not 2. Endpoints are the ferry relation's own stops
+  # where one exists, else the end nodes of the crossing's way: the berths.
+  - name: Rodby -> Puttgarden
+    mode: ferry
+    from: {label: Rodby Faergehavn, lat: 54.6535587, lon: 11.3515647}
+    to: {label: Puttgarden, lat: 54.5025487, lon: 11.2280161}
+    regions: [europe/denmark, europe/germany]
+    # Cross-border, DK/DE. Each extract holds the relation whole, and the
+    # merge counts it once: either region alone gives the same line.
+    # measured: relation, 18.87 km, ends 0.00/0.00 km; mid-Belt 0.72,
+    # Gedser 38.1
+    expect:
+      max_endpoint_km: 1
+      length_km: [17.5, 20]
+      via:
+        - {label: Fehmarn Belt, lat: 54.5780, lon: 11.2900, within_km: 2.5}
+      avoid:
+        - {label: Gedser, lat: 54.5747, lon: 11.9283, within_km: 15}
+      strategy_not: [straight]
+      degraded: false
+
+  - name: Helsingor -> Helsingborg
+    mode: ferry
+    from: {label: Helsingor, lat: 56.032946, lon: 12.6160047}
+    to: {label: Helsingborg, lat: 56.0433107, lon: 12.6915204}
+    regions: [europe/denmark, europe/sweden]
+    # Cross-border, DK/SE. measured: relation, 5.23 km, ends 0.00/0.00 km;
+    # mid-Oresund 0.32
+    expect:
+      max_endpoint_km: 1
+      length_km: [4.5, 5.5]
+      via:
+        - {label: Oresund narrows, lat: 56.0380, lon: 12.6540, within_km: 1}
+      strategy_not: [straight]
+      degraded: false
+
+  - name: Split -> Supetar
+    mode: ferry
+    from: {label: Split ferry port, lat: 43.5026, lon: 16.4417}
+    to: {label: Supetar, lat: 43.3859, lon: 16.5549}
+    regions: [europe/croatia]
+    # No relation of its own: strategy B over the line's route=ferry ways.
+    # measured: way_dijkstra, 16.76 km; mid-channel 0.47, Milna 10.7
+    # (Split - Milna is a different line)
+    expect:
+      max_endpoint_km: 1
+      length_km: [15.5, 18]
+      via:
+        - {label: Brac channel, lat: 43.4450, lon: 16.5000, within_km: 1.5}
+      avoid:
+        - {label: Milna, lat: 43.3262, lon: 16.4497, within_km: 5}
+      strategy_not: [straight]
+      degraded: false
+
+  - name: Prizna -> Zigljen
+    mode: ferry
+    from: {label: Prizna, lat: 44.6019, lon: 14.9702}
+    to: {label: Zigljen (Pag), lat: 44.5806, lon: 14.9487}
+    regions: [europe/croatia]
+    # The Croatian island hopper. Its crossing is tagged ferry=yes as well as
+    # route=ferry, so strategy B finds it before C is asked. No Croatian leg
+    # reaches strategy C today: every ferry=yes-only way in the croatia
+    # extract is a closed pier outline. Vastervik -> Visby is the C leg.
+    # measured: way_dijkstra, 3.03 km; mid-crossing 0.08
+    expect:
+      max_endpoint_km: 1
+      length_km: [2.5, 3.5]
+      via:
+        - {label: Velebit channel, lat: 44.5910, lon: 14.9590, within_km: 1}
+      strategy_not: [straight]
+      degraded: false
+
+  - name: Vastervik -> Visby
+    mode: ferry
+    from: {label: Vastervik, lat: 57.7494, lon: 16.6758}
+    to: {label: Visby, lat: 57.6358, lon: 18.2766}
+    regions: [europe/sweden]
+    # Strategy C: the crossing is one ferry=yes way, with no route=ferry tag
+    # and no relation. measured: ferry_yes_dijkstra, 98.66 km; mid-crossing
+    # 0.53, Oskarshamn 53.9 (Oskarshamn - Visby is the other Gotland line)
+    expect:
+      max_endpoint_km: 1
+      length_km: [90, 105]
+      via:
+        - {label: Mid crossing, lat: 57.70, lon: 17.45, within_km: 2}
+      avoid:
+        - {label: Oskarshamn, lat: 57.2640, lon: 16.4480, within_km: 25}
+      strategy_not: [straight]
+      degraded: false
+
+  - name: Split -> Trogir
+    mode: ferry
+    from: {label: Split ferry port, lat: 43.5026, lon: 16.4417}
+    to: {label: Trogir, lat: 43.5163, lon: 16.2505}
+    regions: [europe/croatia]
+    # The leg that must fall back. The seasonal Split - Trogir boats are not
+    # mapped as a ferry route, so the stores have no route here and production
+    # asks Overpass. measured: A finds no relation, B no path between the two
+    # ends' nearest ferry ways, C no ferry=yes way in the box.
+    expect:
+      local_miss: true
+
+  - name: Napoli -> Capri, Croatia's data only
+    mode: ferry
+    from: {label: Napoli Molo Beverello, lat: 40.8380, lon: 14.2560}
+    to: {label: Capri Marina Grande, lat: 40.5560, lon: 14.2400}
+    regions: [europe/croatia]
+    known_bad: >-
+      the local source answers strategy B with every way whose bounding box
+      overlaps the query, and the Ancona - Greece crossings' boxes cover the
+      Bay of Naples though no vertex comes within 200 km; B snaps both ends to
+      one node in the mid-Adriatic and returns a 525 km line. Overpass tests
+      the geometry and returns none of those ways, so this leg should be a
+      local miss and fall back
+    # Croatia's ferry box runs from Venice to Patras, so production asks its
+    # store for this leg (Italy's store, when present, answers A first).
+    # measured: way_dijkstra, 525.43 km, both ends snapped to (42.9939,
+    # 15.0136), 247/278 km from the ports
+    expect:
+      local_miss: true
+    current:
+      length_km: [500, 550]
+      via:
+        - {label: mid-Adriatic snap, lat: 42.9939, lon: 15.0136, within_km: 2}
+      degraded: false
+
+  # -- Bus ---------------------------------------------------------------------
+  - name: Bus 19 Glostrup -> Valbyparken
+    mode: bus
+    from: {label: Glostrup, lat: 55.6634846, lon: 12.3982163}
+    to: {label: Valbyparken, lat: 55.648728, lon: 12.5336911}
+    regions: [europe/denmark]
+    # The city line. measured: relation, 17.45 km, ends 0.00/0.00 km on the
+    # line's stops (and 17.45 km via Overpass); Rodovre 0.01, Hvidovre 3.8
+    expect:
+      max_endpoint_km: 1
+      length_km: [16.5, 18.5]
+      via:
+        - {label: Rodovre, lat: 55.6806, lon: 12.4537, within_km: 1}
+      avoid:
+        - {label: Hvidovre, lat: 55.6426, lon: 12.4740, within_km: 2}
+      strategy_not: [straight]
+      degraded: false
+
+  - name: Bus 973X Frederikshavn -> Aalborg
+    mode: bus
+    from: {label: Frederikshavn, lat: 57.4411329, lon: 10.5407039}
+    to: {label: Aalborg Busterminal, lat: 57.0413348, lon: 9.918738}
+    regions: [europe/denmark]
+    # The regional line, from its first stop to its last. measured: relation,
+    # 66.50 km, ends 0.00/0.00 km; Saeby 0.47, Hjorring 29.7, Bronderslev 17.0
+    # (the railway's corridor)
+    expect:
+      max_endpoint_km: 1
+      length_km: [60, 70]
+      via:
+        - {label: Saeby, lat: 57.3330, lon: 10.5230, within_km: 1.5}
+      avoid:
+        - {label: Hjorring, lat: 57.4642, lon: 9.9823, within_km: 15}
+        - {label: Bronderslev, lat: 57.2700, lon: 9.9410, within_km: 8}
       strategy_not: [straight]
       degraded: false

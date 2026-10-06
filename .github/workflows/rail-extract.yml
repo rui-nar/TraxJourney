@@ -274,18 +274,19 @@ jobs:
         # A manifest can be complete and checksummed and still describe data
         # that routes Toulouse to Paris through Bordeaux. So before anything is
         # uploaded, every corpus region the manifest holds is built into a
-        # store exactly as the box will build it, and config/route_corpus.yml
-        # is resolved against them; a FAIL or a known-bad leg that moved
-        # stops the job here.
+        # store, for each layer its legs read (rail, ferry, bus), exactly as
+        # the box will build it, and config/route_corpus.yml is resolved
+        # against them; a FAIL or a known-bad leg that moved stops the job
+        # here.
         #
         # The whole release is gated, not just what this run rebuilt: a
         # subset run fetches the regions it carries from the release it is
         # patching, because that release, as a whole, is what the box
         # installs — and the resolver may have changed since they were last
         # checked. A full run passes --require-all, since every corpus region
-        # was just built; a subset run lets a leg skip only when the release
-        # does not hold its region at all (seeding coverage a country at a
-        # time).
+        # and layer was just built; a subset run lets a leg skip only when the
+        # release does not hold its region's layer at all (seeding coverage a
+        # country at a time).
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
@@ -300,31 +301,33 @@ jobs:
           carried="$RUNNER_TEMP/rail-carried"
           mkdir -p "$stores" "$carried"
           cp dist/rail/manifest.json "$stores/"
-          # region, file, sha256, store name: each corpus region the manifest
-          # lists as ok, rail entries only — the corpus is rail legs, and a
-          # ferry or bus entry for the same region names another file. An
-          # entry without `layer` is rail. A file, not a pipe, so `-e` sees a
-          # failure in it.
+          # region, layer, file, sha256, store name: each region and layer a
+          # corpus leg names — a leg's mode is the layer it reads — that the
+          # manifest lists as ok. Only those: a region's other layers are not
+          # built, so Denmark's bus store is built only while a bus leg names
+          # Denmark, and Germany's (minutes, hundreds of MB) only if one names
+          # Germany. An entry without `layer` is rail. A file, not a pipe, so
+          # `-e` sees a failure in it.
           python -c '
           import json, yaml
           from src.rail.store import store_filename
           legs = yaml.safe_load(open("config/route_corpus.yml", encoding="utf-8"))["legs"]
-          named = {region for leg in legs for region in leg["regions"]}
+          named = {(region, leg["mode"]) for leg in legs for region in leg["regions"]}
           for e in json.load(open("dist/rail/manifest.json", encoding="utf-8"))["regions"]:
-              if (e["region"] in named and e.get("layer", "rail") == "rail"
-                      and e.get("status", "ok") == "ok"):
-                  print(e["region"], e["file"], e["sha256"],
-                        store_filename(e["region"], "rail"), sep="\t")
+              layer = e.get("layer", "rail")
+              if (e["region"], layer) in named and e.get("status", "ok") == "ok":
+                  print(e["region"], layer, e["file"], e["sha256"],
+                        store_filename(e["region"], layer), sep="\t")
           ' > "$RUNNER_TEMP/corpus-regions.tsv"
-          while IFS=$'\t' read -r region file sha store; do
+          while IFS=$'\t' read -r region layer file sha store; do
             pbf="dist/rail/$file"
             if [ ! -f "$pbf" ]; then
               gh release download "$TAG" --pattern "$file" --dir "$carried" --clobber
               pbf="$carried/$file"
               echo "$sha  $pbf" | sha256sum -c -
             fi
-            echo "building $region from $pbf"
-            python -m src.rail.builder "$pbf" "$stores/$store" --region "$region" --layer rail
+            echo "building $region $layer from $pbf"
+            python -m src.rail.builder "$pbf" "$stores/$store" --region "$region" --layer "$layer"
           done < "$RUNNER_TEMP/corpus-regions.tsv"
           require_all=""
           if [ -z "$REQUESTED" ]; then

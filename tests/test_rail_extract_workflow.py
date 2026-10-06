@@ -639,7 +639,10 @@ def _run_corpus_step(tmp_path, jobs, *, requested="", force="",
     and the runner are faked and log their arguments.
 
     *layered* makes it a schema 3 manifest: every entry gets `layer: rail`,
-    and Denmark and Sweden gain `ok` ferry and bus entries of their own.
+    and Denmark and Sweden gain `ok` ferry and bus entries of their own —
+    Denmark's built by this run, Sweden's carried like its rail. The corpus
+    then gains a ferry leg naming both and a bus leg naming France, which has
+    no bus entry.
     """
     script = _step(jobs["publish"], CORPUS_STEP)["run"]
     work = tmp_path / "work"
@@ -647,8 +650,10 @@ def _run_corpus_step(tmp_path, jobs, *, requested="", force="",
     (work / "config").mkdir()
     (work / "config" / "route_corpus.yml").write_text(
         "legs:\n"
-        "  - {name: a, regions: [europe/denmark, europe/sweden]}\n"
-        "  - {name: b, regions: [europe/andorra]}\n",
+        "  - {name: a, mode: rail, regions: [europe/denmark, europe/sweden]}\n"
+        "  - {name: b, mode: rail, regions: [europe/andorra]}\n"
+        + ("  - {name: c, mode: ferry, regions: [europe/denmark, europe/sweden]}\n"
+           "  - {name: d, mode: bus, regions: [europe/france]}\n" if layered else ""),
         encoding="utf-8",
     )
     (work / "dist" / "rail" / "denmark-rail.osm.pbf").write_bytes(b"built")
@@ -664,11 +669,12 @@ def _run_corpus_step(tmp_path, jobs, *, requested="", force="",
                {"region": "europe/andorra", "status": "empty"}]
     if layered:
         regions = [{**e, "layer": "rail"} for e in regions]
-        for slug in ("denmark", "sweden"):
-            for layer in ("ferry", "bus"):
-                (work / "dist" / "rail" / f"{slug}-{layer}.osm.pbf").write_bytes(b"x")
-                regions.append({**ok(f"europe/{slug}", f"{slug}-{layer}.osm.pbf"),
-                                "layer": layer})
+        for layer in ("ferry", "bus"):
+            (work / "dist" / "rail" / f"denmark-{layer}.osm.pbf").write_bytes(b"x")
+            regions.append({**ok("europe/denmark", f"denmark-{layer}.osm.pbf"),
+                            "layer": layer})
+            regions.append({**ok("europe/sweden", f"sweden-{layer}.osm.pbf", sha),
+                            "layer": layer})
     (work / "dist" / "rail" / "manifest.json").write_text(json.dumps({
         "schema": 3 if layered else 2, "regions": regions,
     }), encoding="utf-8")
@@ -757,20 +763,50 @@ def test_the_corpus_runs_on_built_and_carried_stores(jobs, tmp_path,
 
 
 @pytest.mark.skipif(BASH is None, reason="needs a working POSIX shell")
-@pytest.mark.parametrize("requested", ["", "europe/denmark"],
+@pytest.mark.parametrize("requested, require_all",
+                         [("", True), ("europe/denmark", False)],
                          ids=["full run", "subset run"])
-def test_the_corpus_builds_only_rail_from_a_layered_manifest(jobs, tmp_path, requested):
-    """The corpus is rail legs. A ferry or bus entry names another file for
-    the same region, and building it as that region's rail store would gate
-    the release on the wrong data — or overwrite the rail store with it."""
+def test_the_corpus_builds_each_layer_its_legs_name(jobs, tmp_path, requested,
+                                                    require_all):
+    """A ferry leg's regions get ferry stores, from this run's extract or the
+    release's, each under its own layer's name: building a ferry extract as a
+    rail store would gate the release on the wrong data, or overwrite the
+    rail store with it."""
     code, output, calls, temp = _run_corpus_step(tmp_path, jobs, layered=True,
                                                  requested=requested)
     assert code == 0, output
+    stores = f"{temp.as_posix()}/rail-stores"
+    carried = f"{temp.as_posix()}/rail-carried"
     builds = [line for line in calls.splitlines() if "src.rail.builder" in line]
-    assert len(builds) == 2, builds
-    assert all(line.endswith("--layer rail") for line in builds), builds
-    assert all("-rail.osm.pbf " in line and ".rail.sqlite " in line for line in builds)
-    assert "-ferry.osm.pbf" not in calls and "-bus.osm.pbf" not in calls
+    assert sorted(builds) == sorted([
+        f"python -m src.rail.builder dist/rail/denmark-rail.osm.pbf "
+        f"{stores}/europe-denmark.rail.sqlite --region europe/denmark --layer rail",
+        f"python -m src.rail.builder {carried}/sweden-rail.osm.pbf "
+        f"{stores}/europe-sweden.rail.sqlite --region europe/sweden --layer rail",
+        f"python -m src.rail.builder dist/rail/denmark-ferry.osm.pbf "
+        f"{stores}/europe-denmark.ferry.sqlite --region europe/denmark --layer ferry",
+        f"python -m src.rail.builder {carried}/sweden-ferry.osm.pbf "
+        f"{stores}/europe-sweden.ferry.sqlite --region europe/sweden --layer ferry",
+    ]), builds
+    assert ("gh release download rail-data-2026-10-05 --pattern "
+            f"sweden-ferry.osm.pbf --dir {carried}") in calls
+    corpus = [line for line in calls.splitlines() if "route_corpus.py" in line]
+    assert corpus == [f"python scripts/route_corpus.py {stores}"
+                      + (" --require-all" if require_all else "")]
+
+
+@pytest.mark.skipif(BASH is None, reason="needs a working POSIX shell")
+def test_a_layer_no_corpus_leg_names_is_never_built(jobs, tmp_path):
+    """Denmark and Sweden publish bus, but no bus leg names either, and the
+    bus leg's France publishes rail only: no bus store is built or fetched,
+    and France's rail is not built for a bus leg. A gate that built every
+    layer of every corpus region would build Germany's bus store — minutes
+    and hundreds of MB — for its rail legs."""
+    code, output, calls, _ = _run_corpus_step(tmp_path, jobs, layered=True)
+    assert code == 0, output
+    assert "-bus.osm.pbf" not in calls
+    assert ".bus.sqlite" not in calls
+    assert "france-rail.osm.pbf" not in calls
 
 
 @pytest.mark.skipif(BASH is None, reason="needs a working POSIX shell")
