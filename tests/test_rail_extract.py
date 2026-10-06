@@ -1452,6 +1452,71 @@ def test_a_schema_3_base_carries_every_layer(layer_dir):
                   if e["region"] == "europe/denmark") == ["bus", "ferry", "rail"]
 
 
+# ---------------------------------------------------------------------------
+# Only the published layers (RAIL_PUBLISH_LAYERS, I1-2)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text, layers", [
+    (None, ["rail"]),
+    ("", ["rail"]),
+    ("ferry", ["rail", "ferry"]),
+    ("bus, rail", ["rail", "bus"]),
+    ("bus ferry rail", ["rail", "ferry", "bus"]),
+])
+def test_rail_is_always_published_and_the_order_is_fixed(text, layers):
+    assert rail.parse_layers(text) == layers
+
+
+@pytest.mark.parametrize("text", ["tram", "rail Bus", "ferry;bus"])
+def test_a_name_that_is_not_a_layer_is_refused(text):
+    with pytest.raises(ValueError, match="unknown layer"):
+        rail.parse_layers(text)
+
+
+def test_a_layer_not_published_is_neither_entered_nor_warned_about(layer_dir, capsys):
+    """Its files may be on disk; the manifest still holds rail alone, and the
+    absence of a layer the run does not publish is not a missing layer."""
+    assert rail.main(_manifest_argv(layer_dir, "--layers", "rail")) == 0
+
+    assert "::warning::" not in capsys.readouterr().out
+    written = json.loads((layer_dir / rail.MANIFEST_NAME).read_text())
+    assert {e["layer"] for e in written["regions"]} == {"rail"}
+
+
+def test_a_published_layer_that_is_missing_still_warns(layer_dir, capsys):
+    (layer_dir / "germany-ferry.osm.pbf").unlink()
+    (layer_dir / rail.entry_name("germany", "ferry")).unlink()
+
+    assert rail.main(_manifest_argv(layer_dir, "--layers", "rail ferry")) == 0
+
+    out = capsys.readouterr().out
+    assert "::warning::europe/germany ferry: no entry" in out
+    assert "bus: no entry" not in out
+
+
+def test_a_layer_switched_off_leaves_the_patched_release_too(layer_dir):
+    """A subset run carrying a release that has Denmark's bus does not carry
+    it once bus is off: switching a layer off takes it out of the manifest the
+    boxes install, not only out of this run's builds."""
+    base = layer_dir / "released.json"
+    base.write_text(json.dumps(rail.merge_manifest(
+        [rail.empty_entry("europe/denmark", layer, "2026-09-02")
+         for layer in rail.LAYERS])))
+
+    assert rail.main(_manifest_argv(layer_dir, "--base", str(base),
+                                    "--layers", "rail ferry")) == 0
+
+    written = json.loads((layer_dir / rail.MANIFEST_NAME).read_text())
+    assert sorted((e["region"], e["layer"]) for e in written["regions"]) == [
+        ("europe/denmark", "ferry"), ("europe/denmark", "rail"),
+        ("europe/germany", "ferry"), ("europe/germany", "rail")]
+
+
+def test_the_manifest_command_refuses_an_unknown_layer(layer_dir):
+    with pytest.raises(ValueError, match="unknown layer"):
+        rail.main(_manifest_argv(layer_dir, "--layers", "rail tram"))
+
+
 def test_verify_rejects_an_unknown_layer(entry, filtered):
     path, _ = filtered
     with pytest.raises(ValueError, match="unknown layer"):
@@ -1508,6 +1573,33 @@ def test_build_publishes_the_extract_and_deletes_the_raw_source(monkeypatch, tmp
         assert entry["layer"] == layer
         assert entry["file"] == f"germany-{layer}.osm.pbf"
         assert entry["bytes"] < FIXTURE.stat().st_size
+
+
+def test_build_selects_only_the_layers_it_publishes(monkeypatch, tmp_path):
+    """A layer the run does not publish is not selected at all — no file, no
+    entry — which is what saves Germany's bus pass while bus is off."""
+    monkeypatch.setattr(rail, "download", _fake_download(FIXTURE))
+    monkeypatch.setattr(rail, "prefilter", _fake_prefilter)
+    monkeypatch.setattr(rail, "source_date", lambda pbf: "2026-09-05")
+    selected = []
+    real_select = rail.select
+
+    def spy(source, dests):
+        selected.append(sorted(dests))
+        return real_select(source, dests)
+
+    monkeypatch.setattr(rail, "select", spy)
+    out_dir, work_dir = tmp_path / "out", tmp_path / "work"
+
+    assert rail.main(["build_rail_extract.py", "build", "europe/germany",
+                      "--out-dir", str(out_dir), "--work-dir", str(work_dir),
+                      "--layers", "ferry"]) == 0
+
+    assert selected == [["ferry", "rail"]]
+    assert sorted(p.name for p in out_dir.iterdir()) == [
+        "germany-ferry.entry.json", "germany-ferry.osm.pbf",
+        "germany-rail.entry.json", "germany-rail.osm.pbf",
+    ]
 
 
 @pytest.mark.parametrize("tags", [

@@ -920,6 +920,20 @@ nothing is uploaded; the corpus lines are in the log of the publish job's
 and the run says so in a warning — use it only knowing which leg failed and
 why it is acceptable, because the box installs whatever is published.
 
+Which layers a run publishes is the repository variable `RAIL_PUBLISH_LAYERS`
+(GitHub → Settings → Secrets and variables → Actions → Variables): space or
+comma separated, from `rail ferry bus`. Unset or empty means `rail` alone, and
+rail is always published; any other word fails the run. A layer that is off is
+not built, not in the manifest and not uploaded, and its corpus legs are
+skipped with a notice. **Switch ferry and bus on only once part 2 of #345 is
+deployed to both boxes** — a box still on part 1 builds Germany's bus store
+with the old builder, which does not fit in its worker, and every refresh
+fails: `gh variable set RAIL_PUBLISH_LAYERS --body "rail ferry bus"` (or
+`"rail ferry"`). Verify it on the next run: its release's `manifest.json` has
+`ferry` / `bus` entries, and the plan job's "Resolve the layers to publish"
+step prints the layers it used. Deleting the variable switches them off again,
+from the next run on, including in the release a subset run patches.
+
 Everything below is `docker compose run --rm` in the **prod** stack
 (`/opt/traxjourney`); val is the same with `-f` pointed at `/opt/traxjourney-val`.
 Starting a second refresh of the same directory is harmless: it takes an

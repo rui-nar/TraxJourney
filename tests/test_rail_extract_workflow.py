@@ -152,9 +152,10 @@ def test_only_filtered_artifacts_are_uploaded(jobs):
     assert [step["with"]["path"] for step in upload] == ["dist/rail/"]
 
     publish = _steps_text(jobs["publish"])
-    # One file per layer; rail's name is the one every earlier release used.
-    for layer in rail.LAYERS:
-        assert f"dist/rail/*-{layer}.osm.pbf" in publish
+    # One file per published layer (RAIL_PUBLISH_LAYERS; run for real under
+    # "Which layers are published", below); rail's name is the one every
+    # earlier release used.
+    assert 'dist/rail/*-"$layer".osm.pbf' in publish
     assert "dist/rail/manifest.json" in publish
 
 
@@ -263,6 +264,9 @@ def test_only_the_publish_job_can_write(workflow, jobs):
         == {"notify"}
     assert not any({"contents", "issues"} <= scopes for scopes in writers.values())
     assert "permissions" not in jobs["build"]
+    # The plan job reads RAIL_PUBLISH_LAYERS; reading a variable takes no
+    # permission, so it gains none.
+    assert "permissions" not in jobs["plan"]
 
 
 # ---------------------------------------------------------------------------
@@ -629,7 +633,8 @@ CARRIED_BYTES = b"carried sweden\n"
 
 
 def _run_corpus_step(tmp_path, jobs, *, requested="", force="",
-                     corpus_exit=0, carried_sha=None, layered=False):
+                     corpus_exit=0, carried_sha=None, layered=False,
+                     layers="rail ferry bus", real_corpus=False):
     """Run the corpus step for real against a fake `gh` and `python`.
 
     The manifest holds Denmark (built by this run, in dist/rail), Sweden (ok
@@ -643,19 +648,27 @@ def _run_corpus_step(tmp_path, jobs, *, requested="", force="",
     Denmark's built by this run, Sweden's carried like its rail. The corpus
     then gains a ferry leg naming both and a bus leg naming France, which has
     no bus entry.
+
+    *layers* is the plan job's output: the layers this run publishes.
+    *real_corpus* swaps the corpus for config/route_corpus.yml itself, and
+    empties the manifest.
     """
     script = _step(jobs["publish"], CORPUS_STEP)["run"]
     work = tmp_path / "work"
     (work / "dist" / "rail").mkdir(parents=True)
     (work / "config").mkdir()
-    (work / "config" / "route_corpus.yml").write_text(
-        "legs:\n"
-        "  - {name: a, mode: rail, regions: [europe/denmark, europe/sweden]}\n"
-        "  - {name: b, mode: rail, regions: [europe/andorra]}\n"
-        + ("  - {name: c, mode: ferry, regions: [europe/denmark, europe/sweden]}\n"
-           "  - {name: d, mode: bus, regions: [europe/france]}\n" if layered else ""),
-        encoding="utf-8",
-    )
+    if real_corpus:
+        shutil.copy(ROOT / "config" / "route_corpus.yml",
+                    work / "config" / "route_corpus.yml")
+    else:
+        (work / "config" / "route_corpus.yml").write_text(
+            "legs:\n"
+            "  - {name: a, mode: rail, regions: [europe/denmark, europe/sweden]}\n"
+            "  - {name: b, mode: rail, regions: [europe/andorra]}\n"
+            + ("  - {name: c, mode: ferry, regions: [europe/denmark, europe/sweden]}\n"
+               "  - {name: d, mode: bus, regions: [europe/france]}\n" if layered else ""),
+            encoding="utf-8",
+        )
     (work / "dist" / "rail" / "denmark-rail.osm.pbf").write_bytes(b"built")
     sha = carried_sha or hashlib.sha256(CARRIED_BYTES).hexdigest()
 
@@ -675,6 +688,10 @@ def _run_corpus_step(tmp_path, jobs, *, requested="", force="",
                             "layer": layer})
             regions.append({**ok("europe/sweden", f"sweden-{layer}.osm.pbf", sha),
                             "layer": layer})
+    if real_corpus:
+        # Its legs name regions these entries do not stand in for; what the
+        # caller checks is the corpus file the step writes, not the builds.
+        regions = []
     (work / "dist" / "rail" / "manifest.json").write_text(json.dumps({
         "schema": 3 if layered else 2, "regions": regions,
     }), encoding="utf-8")
@@ -705,6 +722,7 @@ def _run_corpus_step(tmp_path, jobs, *, requested="", force="",
             f'  -c) "{Path(sys.executable).as_posix()}" "$@" | tr -d "\\r" ;;',
             '  -m) [ -f "$3" ] || exit 3; : > "$4" ;;',
             '  scripts/route_corpus.py) [ -f "$2/manifest.json" ] || exit 4;'
+            '   [ "$3" = --corpus ] && [ -f "$4" ] || exit 6;'
             f" exit {corpus_exit} ;;",
             "  *) exit 5 ;;",
             "esac",
@@ -724,7 +742,7 @@ def _run_corpus_step(tmp_path, jobs, *, requested="", force="",
         env={**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
              "PYTHONPATH": str(ROOT), "RUNNER_TEMP": runner_temp.as_posix(),
              "TAG": "rail-data-2026-10-05", "REQUESTED": requested,
-             "FORCE": force},
+             "FORCE": force, "LAYERS": layers},
         capture_output=True, text=True,
     )
     calls = log.read_text(encoding="utf-8") if log.exists() else ""
@@ -757,7 +775,8 @@ def test_the_corpus_runs_on_built_and_carried_stores(jobs, tmp_path,
     assert calls.count("src.rail.builder") == 2
     assert "denmark-rail.osm.pbf --dir" not in calls
     corpus = [line for line in calls.splitlines() if "route_corpus.py" in line]
-    assert corpus == [f"python scripts/route_corpus.py {stores}"
+    assert corpus == [f"python scripts/route_corpus.py {stores} "
+                      f"--corpus {temp.as_posix()}/route-corpus.yml"
                       + (" --require-all" if require_all else "")]
     assert calls.rindex("src.rail.builder") < calls.index("route_corpus.py")
 
@@ -791,7 +810,8 @@ def test_the_corpus_builds_each_layer_its_legs_name(jobs, tmp_path, requested,
     assert ("gh release download rail-data-2026-10-05 --pattern "
             f"sweden-ferry.osm.pbf --dir {carried}") in calls
     corpus = [line for line in calls.splitlines() if "route_corpus.py" in line]
-    assert corpus == [f"python scripts/route_corpus.py {stores}"
+    assert corpus == [f"python scripts/route_corpus.py {stores} "
+                      f"--corpus {temp.as_posix()}/route-corpus.yml"
                       + (" --require-all" if require_all else "")]
 
 
@@ -835,3 +855,232 @@ def test_force_publish_skips_the_corpus_and_says_so(jobs, tmp_path):
     assert code == 0, output
     assert "::warning::force_publish: the route corpus gate was skipped" in output
     assert calls == ""
+
+
+@pytest.mark.skipif(BASH is None, reason="needs a working POSIX shell")
+@pytest.mark.parametrize("layers, built, skipped", [
+    ("rail", ["rail"], ["c", "d"]),
+    ("rail ferry", ["rail", "ferry"], ["d"]),
+], ids=["rail only", "rail and ferry"])
+def test_legs_of_a_layer_not_published_are_skipped_not_failed(
+    jobs, tmp_path, layers, built, skipped
+):
+    """I1-2: with ferry or bus off, a full run must not fail its gate on
+    their legs under --require-all — there is no store to check them against,
+    and nothing of that layer is uploaded. They leave the corpus the runner
+    reads, each named in a notice, and no store of theirs is built or fetched."""
+    code, output, calls, temp = _run_corpus_step(tmp_path, jobs, layered=True,
+                                                 layers=layers)
+    assert code == 0, output
+    built_layers = {line.rsplit("--layer ", 1)[1]
+                    for line in calls.splitlines() if "src.rail.builder" in line}
+    assert built_layers == set(built)
+    for layer in {"ferry", "bus"} - set(built):
+        assert f"-{layer}.osm.pbf" not in calls
+    written = yaml.safe_load((temp / "route-corpus.yml").read_text(encoding="utf-8"))
+    assert {leg["name"] for leg in written["legs"]} == \
+        {"a", "b", "c", "d"} - set(skipped)
+    for name in skipped:
+        assert f"::notice::corpus leg {name} skipped" in output
+    corpus = [line for line in calls.splitlines() if "route_corpus.py" in line]
+    assert len(corpus) == 1 and corpus[0].endswith(" --require-all")
+
+
+@pytest.mark.skipif(BASH is None, reason="needs a working POSIX shell")
+def test_legs_of_a_published_layer_are_still_required(jobs, tmp_path):
+    """Bus on: the bus leg naming France stays in the corpus a full run
+    checks with --require-all, although France publishes no bus layer — so
+    the runner fails it as absent, as it did before a layer could be off."""
+    code, output, calls, temp = _run_corpus_step(tmp_path, jobs, layered=True,
+                                                 layers="rail bus")
+    assert code == 0, output
+    written = yaml.safe_load((temp / "route-corpus.yml").read_text(encoding="utf-8"))
+    assert [leg["name"] for leg in written["legs"]] == ["a", "b", "d"]
+    corpus = [line for line in calls.splitlines() if "route_corpus.py" in line]
+    assert len(corpus) == 1 and corpus[0].endswith(" --require-all")
+
+
+@pytest.mark.skipif(BASH is None, reason="needs a working POSIX shell")
+@pytest.mark.parametrize("layers", ["rail", "rail ferry bus"])
+def test_the_filtered_corpus_is_the_real_one_minus_disabled_legs(jobs, tmp_path,
+                                                                  layers):
+    """The file the runner reads is written by the step, not checked in: it
+    must hold the real corpus's legs of the published layers, unchanged, and
+    pass the runner's own validation."""
+    code, output, _, temp = _run_corpus_step(tmp_path, jobs, layers=layers,
+                                             real_corpus=True)
+    assert code == 0, output
+    real = yaml.safe_load((ROOT / "config" / "route_corpus.yml")
+                          .read_text(encoding="utf-8"))["legs"]
+    written = temp / "route-corpus.yml"
+    legs = yaml.safe_load(written.read_text(encoding="utf-8"))["legs"]
+    assert legs == [leg for leg in real if leg["mode"] in layers.split()]
+    spec = importlib.util.spec_from_file_location(
+        "route_corpus_for_workflow", ROOT / "scripts" / "route_corpus.py")
+    route_corpus = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(route_corpus)
+    assert route_corpus.load_corpus(written) == legs
+
+
+# ---------------------------------------------------------------------------
+# Which layers are published: RAIL_PUBLISH_LAYERS (I1-2)
+# ---------------------------------------------------------------------------
+#
+# Once ferry and bus are on main, the monthly run would publish them at once,
+# and a box still on the code before them builds Germany's bus store with a
+# builder that peaks at 2.1 GB in a 1 GB worker — every refresh fails. So the
+# layers are a repository variable, off until every box can take them.
+
+LAYERS_STEP = "Resolve the layers to publish"
+
+
+def _python_shim(fake_bin: Path) -> None:
+    """`python` in a step is the runner's; here it is this interpreter. A
+    shim, not PATH, because Git Bash may find another python or none."""
+    (fake_bin / "python").write_text(
+        f'#!/bin/sh\nexec "{Path(sys.executable).as_posix()}" "$@"\n',
+        encoding="utf-8", newline="\n",
+    )
+    (fake_bin / "python").chmod(0o755)
+
+
+def _run_layers_step(jobs, tmp_path, variable: str | None):
+    """Run the plan job's layers step for real; return (exit, output, layers)."""
+    script = _step(jobs["plan"], LAYERS_STEP)["run"]
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _python_shim(fake_bin)
+    github_output = tmp_path / "github_output"
+    github_output.write_text("", encoding="utf-8")
+    env = {**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+           "GITHUB_OUTPUT": github_output.as_posix()}
+    env.pop("REQUESTED_LAYERS", None)
+    if variable is not None:
+        env["REQUESTED_LAYERS"] = variable
+    result = subprocess.run([BASH, "-e", "-o", "pipefail", "-c", script],
+                            cwd=ROOT, env=env, capture_output=True, text=True)
+    outputs = dict(line.split("=", 1) for line in
+                   github_output.read_text(encoding="utf-8").splitlines() if line)
+    return result.returncode, result.stdout + result.stderr, outputs.get("layers")
+
+
+def test_the_variable_is_read_once_in_the_plan_job(jobs):
+    """Every step that acts on the layers takes the plan job's validated
+    output; the variable itself appears in one place, through `env`."""
+    step = _step(jobs["plan"], LAYERS_STEP)
+    assert step["env"] == {"REQUESTED_LAYERS": "${{ vars.RAIL_PUBLISH_LAYERS }}"}
+    assert jobs["plan"]["outputs"]["layers"] == "${{ steps.layers.outputs.layers }}"
+    assert WORKFLOW.read_text(encoding="utf-8").count("vars.RAIL_PUBLISH_LAYERS") == 1
+    filter_step = "Filter ${{ matrix.region }}"
+    for job, name in [("build", filter_step),
+                      ("publish", "Build and verify the manifest"),
+                      ("publish", CORPUS_STEP),
+                      ("publish", "Publish the release")]:
+        assert _step(jobs[job], name)["env"]["LAYERS"] == \
+            "${{ needs.plan.outputs.layers }}", (job, name)
+    assert '--layers "$LAYERS"' in _step(jobs["build"], filter_step)["run"]
+    assert '--layers "$LAYERS"' in \
+        _step(jobs["publish"], "Build and verify the manifest")["run"]
+
+
+def test_no_expression_is_interpolated_into_a_shell(jobs):
+    """Inputs and variables reach the shell through `env` only: `${{ }}`
+    inside `run:` is script injection, from a dispatch form or a variable."""
+    for name, job in jobs.items():
+        for step in job["steps"]:
+            assert "${{" not in step.get("run", ""), (name, step.get("name"))
+
+
+@pytest.mark.skipif(BASH is None, reason="needs a working POSIX shell")
+@pytest.mark.parametrize("variable, layers", [
+    (None, "rail"),
+    ("", "rail"),
+    ("rail ferry", "rail ferry"),
+    ("bus", "rail bus"),
+    ("bus,ferry", "rail ferry bus"),
+    (" ferry ,  rail ", "rail ferry"),
+], ids=["unset", "empty", "rail ferry", "bus alone adds rail",
+        "comma separated, any order", "stray spaces"])
+def test_the_plan_job_resolves_the_layers(jobs, tmp_path, variable, layers):
+    code, output, resolved = _run_layers_step(jobs, tmp_path, variable)
+    assert code == 0, output
+    assert resolved == layers
+
+
+@pytest.mark.skipif(BASH is None, reason="needs a working POSIX shell")
+@pytest.mark.parametrize("variable", ["rail tram", "Ferry", "rail;bus"])
+def test_an_unknown_layer_fails_the_run(jobs, tmp_path, variable):
+    """A typo must not quietly keep a layer off."""
+    code, output, resolved = _run_layers_step(jobs, tmp_path, variable)
+    assert code != 0
+    assert "::error::RAIL_PUBLISH_LAYERS: unknown layer(s)" in output
+    assert resolved is None
+
+
+def _ok_entry(dist: Path, slug: str, layer: str) -> None:
+    """One built layer, as the build job leaves it: the extract and its entry."""
+    extract = dist / rail.extract_name(slug, layer)
+    extract.write_bytes(f"{slug} {layer}".encode())
+    (dist / rail.entry_name(slug, layer)).write_text(json.dumps({
+        "region": f"europe/{slug}", "layer": layer, "status": "ok",
+        "file": extract.name, "source": "x", "source_date": "2026-10-02",
+        "sha256": rail.sha256_file(extract), "bytes": extract.stat().st_size,
+        "ways": 1, "relations": 0, "stations": 0, "bbox": [0, 0, 1, 1],
+    }), encoding="utf-8")
+
+
+@pytest.mark.skipif(BASH is None, reason="needs a working POSIX shell")
+@pytest.mark.parametrize("variable, published", [
+    (None, {"rail"}),
+    ("rail ferry", {"rail", "ferry"}),
+    ("bus", {"rail", "bus"}),
+    ("rail ferry bus", {"rail", "ferry", "bus"}),
+], ids=["unset", "rail ferry", "bus", "all"])
+def test_only_the_published_layers_reach_the_manifest_and_the_release(
+    jobs, tmp_path, variable, published
+):
+    """The plan job's answer, through the manifest step and the upload, run
+    for real against a fake `gh`. Every layer's files are on disk — the
+    build job would not have made the others, but nothing downstream may
+    rely on that: what is not published is neither entered nor uploaded,
+    and its absence is not a warning."""
+    code, output, layers = _run_layers_step(jobs, tmp_path, variable)
+    assert code == 0, output
+
+    work = tmp_path / "work"
+    dist = work / "dist" / "rail"
+    dist.mkdir(parents=True)
+    for layer in rail.LAYERS:
+        _ok_entry(dist, "denmark", layer)
+    # The steps run `python scripts/...` from the checkout.
+    (work / "scripts").mkdir()
+    shutil.copy(ROOT / "scripts" / "build_rail_extract.py", work / "scripts")
+    (work / "config").mkdir()
+    shutil.copy(ROOT / "config" / "rail_regions.yml", work / "config")
+
+    fake_bin = tmp_path / "bin"
+    log = tmp_path / "gh.log"
+    (fake_bin / "gh").write_text(
+        f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{log.as_posix()}"\nexit 0\n',
+        encoding="utf-8", newline="\n",
+    )
+    (fake_bin / "gh").chmod(0o755)
+    env = {**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+           "LAYERS": layers, "EXPECTED": '["europe/denmark"]', "FORCE": "",
+           "GH_TOKEN": "x", "TAG": "rail-data-2026-10-02"}
+
+    for name in ("Build and verify the manifest", "Publish the release"):
+        result = subprocess.run(
+            [BASH, "-e", "-o", "pipefail", "-c", _step(jobs["publish"], name)["run"]],
+            cwd=work, env=env, capture_output=True, text=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "::warning::" not in result.stdout + result.stderr
+
+    manifest = json.loads((dist / rail.MANIFEST_NAME).read_text(encoding="utf-8"))
+    assert {e["layer"] for e in manifest["regions"]} == published
+    upload = [line for line in log.read_text(encoding="utf-8").splitlines()
+              if line.startswith("release upload")]
+    assert len(upload) == 1
+    uploaded = set(upload[0].split()[3:]) - {"--clobber"}
+    assert uploaded == {f"dist/rail/denmark-{layer}.osm.pbf" for layer in published} \
+        | {"dist/rail/manifest.json"}
