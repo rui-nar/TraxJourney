@@ -404,6 +404,21 @@ class _SupersessionTrack {
   bool isCurrent(int token, ProjectRef ref) => token == _token && _ref == ref;
 }
 
+/// How far past a zoom bucket's edge the camera must go before the loaded
+/// geometry counts as the wrong level (issue #401). Without it a pinch that
+/// hovers around an integer zoom refetches on every crossing.
+const double kZoomBucketMargin = 0.3;
+
+/// Whether geometry loaded for bucket [loaded] — which holds zooms in
+/// (loaded - 1, loaded] — is stale at [zoom].
+///
+/// Requests still go out at `ceil(zoom)`, which always lands inside the
+/// margin, so a refetch always makes this false (the #332 lesson).
+@visibleForTesting
+bool isZoomBucketStale(int loaded, double zoom) =>
+    zoom > loaded + kZoomBucketMargin ||
+    zoom <= loaded - 1 - kZoomBucketMargin;
+
 class ProjectNotifier extends ChangeNotifier
     with ProjectFilterMixin, ProjectQuotaMixin, ProjectJournalCrudMixin, ProjectMemoryCrudMixin, ProjectPeopleCrudMixin, ProjectSegmentCrudMixin {
   final ProjectService _service;
@@ -1374,6 +1389,12 @@ class ProjectNotifier extends ChangeNotifier
 
   int _bucketOf(double zoom) => zoom.ceil();
 
+  /// Whether the geometry loaded for [loaded] is the wrong level for [zoom].
+  /// See [isZoomBucketStale]: requests stay at [_bucketOf], only the decision
+  /// to ask again has a margin.
+  bool _bucketIsStale(int loaded, double zoom) =>
+      isZoomBucketStale(loaded, zoom);
+
   /// Whether the geometry on hand is the wrong geometry for where the camera
   /// is now. False while nothing has been loaded, so a camera event during a
   /// load — or one carrying a bucket left over from the previous project —
@@ -1381,7 +1402,7 @@ class ProjectNotifier extends ChangeNotifier
   bool _geoIsStaleForCamera() {
     final lod = geoFacet.lod;
     if (lod.kind != GeoLodKind.level) return false;
-    if (_bucketOf(_mapZoom) != lod.bucket) return true;
+    if (_bucketIsStale(lod.bucket!, _mapZoom)) return true;
     final loaded = lod.box;
     final viewport = _mapViewport;
     // No box means whole-trip geometry: nothing the camera does makes that
@@ -1482,12 +1503,14 @@ class ProjectNotifier extends ChangeNotifier
       if (!_refetchIsCurrent(token, r)) return;
       // Re-read the bucket: the user may have kept zooming while this was in
       // flight, in which case a newer refetch is already scheduled and this
-      // result is for a level nobody is looking at. The BOX is deliberately
+      // result is for a level nobody is looking at. The same hysteresis as
+      // the trigger applies, so a wobble across a boundary keeps a result
+      // that is still fresh. The BOX is deliberately
       // not re-checked: a result for the right level but a stale region is
       // still better than the older geometry it replaces, and if the camera
       // has left the box, the pan events that took it there have already
       // scheduled the next refetch.
-      if (_bucketOf(_mapZoom) != bucket) return;
+      if (_bucketIsStale(bucket, _mapZoom)) return;
       reconcileSegmentOverlay(next, requestedAt: fetched.requestedAt);
       // Not applied when a newer answer is already on screen — the refresh
       // after a write that started while this was in flight (issue #379,
