@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart' show compute, kIsWeb, visibleForTesting
 import 'package:flutter/material.dart';
 import '../map/geo_point.dart';
 import '../map/polyline_decoder.dart';
+import 'facets/project_facet.dart' show ElevationFacet;
 
 /// Maximum number of FlSpot points rendered by fl_chart.
 /// LTTB downsampling preserves visual shape; cursor uses the full-resolution
@@ -194,7 +195,15 @@ class ElevationChart extends StatefulWidget {
   /// Built by ProjectNotifier from GeoJSON so Flutter never needs to decode
   /// the polyline.  Pass fullTrack when no activity is selected, or the
   /// per-activity track (0-based distances) when one is selected.
+  /// Ignored when [elevation] is given.
   final List<(double, GeoPoint)> track;
+
+  /// A trip's elevation facet (#294). When given, the chart takes its track
+  /// from it — the full track, or [selectedActivityId]'s own — and rebuilds
+  /// whenever the notifier rebuilds the tracks, so the cursor never maps
+  /// through a track the notifier has since replaced. Null for a chart of a
+  /// track that is not a trip's (the track editor's, an export's).
+  final ElevationFacet? elevation;
 
   /// Color of the chart line and fill. Defaults to black when null.
   final Color? color;
@@ -205,7 +214,8 @@ class ElevationChart extends StatefulWidget {
   const ElevationChart({
     super.key,
     required this.activities,
-    required this.track,
+    this.track = const [],
+    this.elevation,
     this.selectedActivityId,
     this.onCursorChanged,
     this.mapCursorNotifier,
@@ -231,6 +241,7 @@ class _ElevationChartState extends State<ElevationChart> {
     super.initState();
     _compute(widget.activities, widget.selectedActivityId);
     widget.mapCursorNotifier?.addListener(_onMapCursor);
+    widget.elevation?.addListener(_onElevation);
   }
 
   @override
@@ -239,6 +250,12 @@ class _ElevationChartState extends State<ElevationChart> {
     if (oldWidget.mapCursorNotifier != widget.mapCursorNotifier) {
       oldWidget.mapCursorNotifier?.removeListener(_onMapCursor);
       widget.mapCursorNotifier?.addListener(_onMapCursor);
+    }
+    // A notifier swap (an account change) brings a new facet; the old one may
+    // already be disposed, which removeListener allows.
+    if (!identical(oldWidget.elevation, widget.elevation)) {
+      oldWidget.elevation?.removeListener(_onElevation);
+      widget.elevation?.addListener(_onElevation);
     }
     if (!identical(oldWidget.activities, widget.activities) ||
         oldWidget.selectedActivityId?.toString() !=
@@ -250,10 +267,24 @@ class _ElevationChartState extends State<ElevationChart> {
   @override
   void dispose() {
     widget.mapCursorNotifier?.removeListener(_onMapCursor);
+    widget.elevation?.removeListener(_onElevation);
     super.dispose();
   }
 
   void _onMapCursor() => setState(() {});
+
+  void _onElevation() => setState(() {});
+
+  /// The track the cursor maps through: [ElevationChart.elevation]'s current
+  /// one when given, else [ElevationChart.track].
+  List<(double, GeoPoint)> get _track {
+    final e = widget.elevation;
+    if (e == null) return widget.track;
+    final id = widget.selectedActivityId;
+    return id != null
+        ? e.perActivityTracks[id.toString()] ?? e.fullTrack
+        : e.fullTrack;
+  }
 
   static Widget _elevLeftTitle(double value, TitleMeta meta) =>
       Text('${value.toInt()} m', style: const TextStyle(fontSize: 9));
@@ -333,7 +364,7 @@ class _ElevationChartState extends State<ElevationChart> {
     // the mouse off the chart.
     final spots = response?.lineBarSpots;
     if (spots == null || spots.isEmpty) return;
-    final pos = latLonAtDistance(widget.track, spots.first.x);
+    final pos = latLonAtDistance(_track, spots.first.x);
     if (pos != null) widget.onCursorChanged?.call(pos);
   }
 

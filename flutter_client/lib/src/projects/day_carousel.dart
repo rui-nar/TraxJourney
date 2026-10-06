@@ -16,6 +16,7 @@ import 'dart:ui' show lerpDouble;
 import 'package:flutter/material.dart';
 
 import '../core/design_tokens.dart' show kShadow2, monoStyle;
+import 'facets/project_facet.dart' show ItemsFacet, SelectionFacet;
 import 'map_panel.dart' show dayForSelection;
 import 'project_notifier.dart';
 
@@ -91,6 +92,13 @@ class _DayCarouselState extends State<DayCarousel> {
   int? _followingIndex;
   int _followGen = 0;
 
+  // The facets this carousel listens to (#294), kept so a notifier swap
+  // unsubscribes from exactly what was subscribed: the selection, which the
+  // wheel follows, and the items, which the cards draw. Geometry and style
+  // are not read here, so a change to them does not rebuild a card.
+  late SelectionFacet _selection;
+  late ItemsFacet _itemsFacet;
+
   int _activeIndex(List<String> days) {
     final active = widget.notifier.selectionFacet.selectedDays.isNotEmpty
         ? widget.notifier.selectionFacet.selectedDays.first
@@ -106,17 +114,33 @@ class _DayCarouselState extends State<DayCarousel> {
     _scrollController = FixedExtentScrollController(
       initialItem: _activeIndex(widget.notifier.itemsFacet.orderedDayKeys()),
     );
-    _prevSelectedActivityIdStr = widget.notifier.selectionFacet.selectedActivityId?.toString();
-    _prevSelectedSegmentIdStr = widget.notifier.selectionFacet.selectedSegmentId?.toString();
-    widget.notifier.addListener(_onNotifierChanged);
+    _bindFacets();
     _scheduleRetract();
   }
 
+  // Subscribes to [widget.notifier]'s facets and takes their current
+  // selection as already followed.
+  void _bindFacets() {
+    _selection = widget.notifier.selectionFacet
+      ..addListener(_onSelectionChanged);
+    _itemsFacet = widget.notifier.itemsFacet..addListener(_onItemsChanged);
+    _prevSelectedActivityIdStr = _selection.selectedActivityId?.toString();
+    _prevSelectedSegmentIdStr = _selection.selectedSegmentId?.toString();
+  }
+
+  void _unbindFacets() {
+    _selection.removeListener(_onSelectionChanged);
+    _itemsFacet.removeListener(_onItemsChanged);
+  }
+
+  // The day list and each card's stats come from the items.
+  void _onItemsChanged() => setState(() {});
+
   /// Issue #322: a tap on the map selects an activity/segment; the wheel
   /// follows it so the strip shows the day that activity belongs to.
-  void _onNotifierChanged() {
-    final actId = widget.notifier.selectionFacet.selectedActivityId?.toString();
-    final segId = widget.notifier.selectionFacet.selectedSegmentId?.toString();
+  void _onSelectionChanged() {
+    final actId = _selection.selectedActivityId?.toString();
+    final segId = _selection.selectedSegmentId?.toString();
     final changed = actId != _prevSelectedActivityIdStr ||
         segId != _prevSelectedSegmentIdStr;
     _prevSelectedActivityIdStr = actId;
@@ -176,11 +200,10 @@ class _DayCarouselState extends State<DayCarousel> {
     // wheel on the new notifier's active day instead of leaving the old
     // project's scroll position/index behind.
     if (!identical(widget.notifier, oldWidget.notifier)) {
-      oldWidget.notifier.removeListener(_onNotifierChanged);
-      widget.notifier.addListener(_onNotifierChanged);
-      _prevSelectedActivityIdStr =
-          widget.notifier.selectionFacet.selectedActivityId?.toString();
-      _prevSelectedSegmentIdStr = widget.notifier.selectionFacet.selectedSegmentId?.toString();
+      // The new notifier brings new facets; the old ones may already be
+      // disposed, which removeListener allows.
+      _unbindFacets();
+      _bindFacets();
       if (_scrollController.hasClients) {
         _scrollController
             .jumpToItem(_activeIndex(widget.notifier.itemsFacet.orderedDayKeys()));
@@ -190,7 +213,7 @@ class _DayCarouselState extends State<DayCarousel> {
 
   @override
   void dispose() {
-    widget.notifier.removeListener(_onNotifierChanged);
+    _unbindFacets();
     _idleTimer?.cancel();
     _selectDebounce?.cancel();
     _scrollController.dispose();
