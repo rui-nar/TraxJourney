@@ -167,5 +167,24 @@ void main() {
       projectDataCache.writeFullGeo(ref, {'v': 1});
       expect(await projectDataCache.readFullGeo(ref), {'v': 1});
     });
+
+    test('details fetched before an edit are not stored', () async {
+      final before = fetchedThenEdited();
+      projectDataCache.writeFullDetails(ref, {'v': 1}, lockVersion: before);
+      expect(rows, isEmpty);
+      expect(await projectDataCache.readFullDetails(ref), isNull);
+    });
+
+    test('details fetched at the version on file are stored', () async {
+      projectDataCache.onMetaFetched(ref, {'lock_version': 2});
+      projectDataCache.writeFullDetails(ref, {'v': 2}, lockVersion: 2);
+      expect(await projectDataCache.readFullDetails(ref), {'v': 2});
+    });
+
+    test('details fetched when nothing was on file are stored, as before',
+        () async {
+      projectDataCache.writeFullDetails(ref, {'v': 1});
+      expect(await projectDataCache.readFullDetails(ref), {'v': 1});
+    });
   });
 }
