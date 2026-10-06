@@ -496,3 +496,5 @@ Owner decision (2026-10-06): keep shared rides readable — decision 15 added (s
 - Outcome: open
 
 Round 3 is the integrated review's last round under the cap (REVIEW.md §6); a fourth needs the owner's request.
+
+Owner decision (2026-10-06): fix I3-1 now (units U18, U19, U10 third fix) and run a fourth integrated review round past the cap. Final branch before this wave: server 6321 passed / 39 skipped; flutter 2224 passed, analyze clean.

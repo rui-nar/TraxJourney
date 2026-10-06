@@ -419,6 +419,13 @@ investigation for this plan found three more.
     writes the plaintext back (all E2EE fields, originals included), with
     the pass's lock-version chain and session checks. Rules out letting the
     owner's key win (the friend's trip loses the ride until #108).
+    The repair also runs from a trip the user does not own (I3-1, owner
+    decision 2026-10-06): on a friend's trip, the non-owner pass decrypts
+    back the user's own envelopes on activities in that trip, because that
+    trip is another user's by definition. Its writes carry the CAS of that
+    trip: `PUT /api/activities/{id}` accepts an optional `owner` (the trip
+    owner's id) beside `project`, resolving a trip the caller may edit as a
+    member (editor or above), as the other `?owner=` routes do.
 
 ## Review envelope
 
@@ -1265,6 +1272,62 @@ REVIEW.md defaults apply, with:
   `tests/test_encryption_doc_coverage.py` passes; every cited location
   exists. **Latitude:** none. **Depends on:** U16 (merged), U17 in the same
   wave (cite the names U17's report gives; escalate if unsure).
+
+### Wave 8 — repair from a friend's trip (I3-1)
+
+#### U18 — Server: CAS on a trip the caller edits but does not own
+
+- **Goal:** the catch-up can write a row back with compare-and-swap on a
+  friend's trip it is a member of.
+- **Scope:** `api/activities.py` (`ActivityFieldsUpdate` and the CAS lookup
+  in `update_activity_fields` only), `tests/test_activity_fields_update_cas.py`.
+- **Context:** decision 15 (last paragraph), decision 13; the CAS lookup
+  (`api/activities.py` ~2321-2356); `resolve_project(sess, user, name,
+  owner, min_role=...)` used by the `?owner=` routes; U2's CAS tests.
+- **Do:** optional `owner: int` in the body, only with `project`; when set,
+  resolve the trip by (owner, name) with the caller's membership role at
+  least editor (`resolve_project`), else 404; the trip must hold the row;
+  then the same `check_and_bump_lock_version`. Without `owner`, unchanged.
+- **Acceptance:** tests: member editor repairs own row in owner's trip with
+  current version → 200 and version+1; stale → 409 `stale_write`, row
+  unchanged; viewer member → 404; non-member → 404; trip not holding the
+  row → 404; `owner` without `project` → 422; existing CAS tests pass.
+- **Latitude:** local design. **Escalate if:** a file outside Scope is
+  needed. **Depends on:** —
+
+### Wave 9 — client repair from a friend's trip, docs
+
+#### U19 — Client: the non-owner pass repairs the user's own envelopes; enable-screen wording
+
+- **Goal:** on a trip the user does not own, activities whose envelopes the
+  user's key opens are written back as plaintext; the enable-screen notice
+  matches the banner (I3-2).
+- **Scope:** `flutter_client/lib/src/crypto/encryption_migration.dart`,
+  `flutter_client/lib/src/crypto/enable_encryption_screen.dart` (notice
+  wording only), `flutter_client/test/crypto/encryption_shared_rows_test.dart`,
+  `flutter_client/test/crypto/enable_encryption_screen_test.dart`.
+- **Context:** decision 15; U17's `_repairShared`, `_readTrack`,
+  `_sharedChecked` memo, `CatchUpPayload._mayHoldEnvelope`; the non-owner
+  branch of `encryptTrip` (memory repair, journal); U18's `owner` field.
+- **Do:** in the non-owner branch, for activities that may hold envelopes,
+  run the same repair as U17 (decrypt with the user's key, write plaintext
+  back, foreign envelopes untouched, memoised), with CAS `project` = the
+  trip's name and `owner` = its owner id, through `_write` (session checks,
+  chain). The enable-screen notice uses the banner's wording.
+- **Acceptance:** tests: companion's own enveloped ride in the owner's trip
+  → plaintext written back with project+owner+lock_version; owner's own
+  envelopes on that trip → untouched; second load → no reads (memo); stale
+  → pass ends; enable-screen notice wording; existing `test/crypto/` pass.
+- **Latitude:** local design. **Escalate if:** a file outside Scope is
+  needed. **Depends on:** U18.
+
+#### U10 (third fix) — ENCRYPTION.md: notice wording (I3-3) and repair from friends' trips
+
+- **Do:** case 3 quotes the current notice wording (or stops quoting it);
+  case 5 / "When it happens" say the repair also runs from a friend's trip
+  (U19), with code locations. **Scope:** `docs/ENCRYPTION.md`.
+  **Latitude:** none. **Depends on:** U18; U19 in the same wave (cite files
+  and behaviour, not names U19 has not reported).
 
 ## Definition of done
 
