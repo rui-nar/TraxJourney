@@ -361,6 +361,40 @@ class TestLocalMiss:
         assert ov.get_ferry_geometry(*WEST, *EAST).source == "overpass"
         assert transport.call_count == 1
 
+    @pytest.mark.parametrize("question,error", [
+        ("relations_in_bbox", KeyError("region")),
+        ("ways_in_bbox", ValueError("bad blob")),
+    ])
+    def test_any_local_failure_falls_back_to_overpass_once(
+            self, whole_crossing, configure, monkeypatch, metric, caplog,
+            question, error):
+        """Not only what ``_ask`` and the store cache absorb: whatever the local
+        attempt raises is a local miss. Let out, it would reach RQ's retry and
+        meet the same file again — every ferry resolve failing while it sits
+        there. The far leg has no local relation, so strategy A finds nothing
+        and B asks ``ways_in_bbox``: each question fails in its own case."""
+        far = {1: (57.60, 18.30), 2: (57.60, 18.70)}
+        ways = {90: ([far[1], (57.61, 18.50), far[2]], {})}
+        transport = Mock(return_value={"elements": [overpass_relation(900, ways, far)]})
+        monkeypatch.setattr(ov, "_overpass", transport)
+
+        def broken(*args, **kwargs):
+            raise error
+        monkeypatch.setattr(LocalRouteSource, question, broken)
+        configure(whole_crossing)
+        labels = dict(mode="boat", source="overpass", degraded="false")
+        before = metric(_RESOLVES, **labels)
+
+        with caplog.at_level(logging.WARNING, logger="src.services.overpass_service"):
+            polyline, _, degraded, _ = _compute_segment_geometry(
+                _segment("boat", far[1], far[2]), {})
+        assert transport.call_count == 1
+        assert metric(_RESOLVES, **labels) == before + 1
+        assert degraded is False
+        assert _reaches(polyline, far[1], far[2])
+        assert "local ferry source failed" in caplog.text
+        assert type(error).__name__ in caplog.text   # the traceback is logged
+
     def test_an_unusable_manifest_stays_on_overpass(
             self, tmp_path, configure, monkeypatch, caplog):
         (tmp_path / MANIFEST_NAME).write_text("[1, 2, 3]", encoding="utf-8")

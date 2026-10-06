@@ -1306,9 +1306,10 @@ def _get_route_geometry(
     """Resolve a ferry or bus leg: the local stores first, then Overpass.
 
     With the local source configured, the whole strategy chain runs against it
-    first, and against Overpass only when that found no route — a store can
-    hold a region and not this leg (an open-sea crossing outside every extract),
-    and a local miss must never be the reason a real route is lost. Raises
+    first, and against Overpass only when that found no route or failed in any
+    way — a store can hold a region and not this leg (an open-sea crossing
+    outside every extract), and a local miss must never be the reason a real
+    route is lost. Raises
     ``OverpassError`` when Overpass finds none either, as it always has: ferry
     and bus do not degrade to a straight line on a miss.
 
@@ -1332,6 +1333,13 @@ def _get_route_geometry(
         except OverpassError as exc:
             _log.info("local %s source found no route (%s) — retrying via Overpass",
                       route_tag, exc)
+        except Exception:  # noqa: BLE001 — any local failure is a local miss
+            # A store is a file someone else wrote, and what a bad one raises is
+            # not ours to enumerate. Letting it out sends the job into RQ's
+            # retry, which meets the same file — so every ferry or bus resolve
+            # would fail while it sat there. Overpass answers instead.
+            _log.warning("local %s source failed — retrying via Overpass",
+                         route_tag, exc_info=True)
     if result is None:
         try:
             poly, strategy = _resolve_route(
