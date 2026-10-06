@@ -530,6 +530,6 @@ The origin/main merge (photos package; migration re-parented onto 4b9d2e7a1c63) 
 - 19 units (16 Opus, 3 Sonnet) across 9 waves; every unit verified before integration; unit reviews for U2, U4, U7, U8, U12, U14; integrated diff reviewed in 4 rounds (fourth at the owner's request).
 - Owner decisions during delivery: trip editors may edit any track (U12 envelope); legacy companion memories accepted until #108 (U7); #366 gain recompute limited to legacy rows (U15, U8); shared rides stay readable (decision 15, U16/U17); repair from friends' trips (I3-1, U18/U19); plan DoD amended.
 - Integration: origin/main (photos package) merged at ffe702a8; this package's migration c4e2a9f1b7d3 re-parented onto 4b9d2e7a1c63 (single head).
-- Checks on the final branch: flutter analyze clean, flutter test 2233 passed (container); server suite — see the line below.
+- Checks on the final branch: flutter analyze clean, flutter test 2233 passed (container); server suite 6558 passed, 39 skipped (container, on ffe702a8; only docs changed after).
 - Deferred, with revisit triggers above: R1-8, R1-10, R4-5, R4-8, U7-R1-2, U7-R1-3, U14-R1-2, I1-1, I1-2, I1-3, I4-1.
 - Session notes: two API session-limit interruptions (all agents resumed from their worktrees, no work lost); one Docker Desktop restart mid-run; local Windows full-suite runs hang, so full server checks ran in the traxjourney-py314-citest container.
