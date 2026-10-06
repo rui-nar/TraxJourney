@@ -257,6 +257,27 @@ def keeps_way(layer: str, tags: Mapping[str, str], member: bool) -> bool:
     return bool(way_class(layer, tags, member) & ROUTABLE[layer])
 
 
+# The tags src/rail/builder.py reads, by element kind — the only tags a ferry
+# or bus file carries. A bus layer is millions of road nodes and ways whose
+# `highway`, `surface`, `maxspeed` and `name` nothing reads: Germany's went
+# from 160 MB to 112 MB without them, Denmark's from 3.6 to 2.8 MB. `uic_ref`
+# and `railway` are there because the builder asks every element of every layer
+# whether it is a station, so dropping them could change a store. Rail keeps
+# every tag: its published fixture pins the file.
+LAYER_TAGS = {
+    "n": frozenset({"uic_ref", "railway"}),
+    "w": frozenset({"route", "ferry", "uic_ref", "railway"}),
+    "r": frozenset({"route", "name", "uic_ref", "railway"}),
+}
+
+
+def _strip(obj, keep: frozenset):
+    """*obj* with only the tags in *keep*: itself if it has no others."""
+    if all(tag.k in keep for tag in obj.tags):
+        return obj
+    return obj.replace(tags={tag.k: tag.v for tag in obj.tags if tag.k in keep})
+
+
 @dataclass(frozen=True)
 class Selection:
     """What one layer's filtered extract contains, and where it actually reaches."""
@@ -488,7 +509,8 @@ def select(source: Path, dests: Mapping[str, Path]) -> dict[str, Selection]:
     they keep nothing else.
 
     Per-object OSM metadata (version, timestamp, changeset, user) is dropped:
-    nothing downstream reads it and it is ~15 % of the file.
+    nothing downstream reads it and it is ~15 % of the file. Ferry and bus
+    also drop every tag but ``LAYER_TAGS``; rail keeps its tags.
 
     A layer with an empty routable set is not an error here — see
     ``STATUS_EMPTY``. The caller decides; ``ways`` is the discriminator,
@@ -547,6 +569,8 @@ def select(source: Path, dests: Mapping[str, Path]) -> dict[str, Selection]:
     try:
         for obj in osmium.FileProcessor(str(source)):
             tags = obj.tags
+            # The tag-stripped copy ferry and bus write, made once for both.
+            stripped = None
             if obj.is_node():
                 for layer in layers:
                     # Rail's node row: every uic_ref, wherever it is.
@@ -556,7 +580,11 @@ def select(source: Path, dests: Mapping[str, Path]) -> dict[str, Selection]:
                     if layer == RAIL:
                         counts[layer]["uic_nodes"] += uic
                         counts[layer]["stations"] += is_station(tags)
-                    writers[layer].add_node(obj)
+                        writers[layer].add_node(obj)
+                    else:
+                        if stripped is None:
+                            stripped = _strip(obj, LAYER_TAGS["n"])
+                        writers[layer].add_node(stripped)
                     if obj.id in routable_nodes[layer]:
                         lon, lat = obj.location.lon, obj.location.lat
                         box = extents[layer]
@@ -576,7 +604,11 @@ def select(source: Path, dests: Mapping[str, Path]) -> dict[str, Selection]:
                     counts[layer]["member_ways"] += member and not cls & CLS_ROUTE
                     if layer == RAIL:
                         counts[layer]["stations"] += is_station(tags)
-                    writers[layer].add_way(obj)
+                        writers[layer].add_way(obj)
+                    else:
+                        if stripped is None:
+                            stripped = _strip(obj, LAYER_TAGS["w"])
+                        writers[layer].add_way(stripped)
             else:
                 for layer in layers:
                     if not keeps_relation(layer, tags):
@@ -586,7 +618,12 @@ def select(source: Path, dests: Mapping[str, Path]) -> dict[str, Selection]:
                     # Every ferry and bus relation kept is a route; a rail one
                     # may be a station instead.
                     counts[layer]["relations"] += layer != RAIL or is_route_relation(tags)
-                    writers[layer].add_relation(obj)
+                    if layer == RAIL:
+                        writers[layer].add_relation(obj)
+                    else:
+                        if stripped is None:
+                            stripped = _strip(obj, LAYER_TAGS["r"])
+                        writers[layer].add_relation(stripped)
     finally:
         for writer in writers.values():
             writer.close()

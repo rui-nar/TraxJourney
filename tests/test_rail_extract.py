@@ -682,8 +682,11 @@ def test_a_bus_routes_road_is_in_bus_and_not_in_rail(layered):
     Dijkstra would happily take a high street."""
     bus = _layer_contents(layered, "bus")
     rail_ways = _ids(_layer_contents(layered, "rail"), "w")
-    roads = [ref for (kind, ref), (tags, _) in bus.items()
-             if kind == "w" and tags.get("highway") in ("primary", "trunk", "secondary")]
+    # The bus file no longer carries `highway`, so the roads are named from
+    # the raw box.
+    raw = _elements(FIXTURE)
+    roads = [ref for ref in _ids(bus, "w")
+             if raw[("w", ref)][0].get("highway") in ("primary", "trunk", "secondary")]
     assert roads, "the fixture's bus relations hold no road inside the box"
     assert not set(roads) & rail_ways
     assert BUS_WAY in _ids(bus, "w")
@@ -825,6 +828,108 @@ def test_a_road_no_bus_route_names_is_in_no_layer(tmp_path):
     _write_source(source, ways=[(10, {"highway": "primary"})])
 
     assert all(s.ways == 0 for s in _select_all(source, tmp_path).values())
+
+
+# ---------------------------------------------------------------------------
+# Ferry and bus carry only the tags the builder reads (U7, owner decision)
+# ---------------------------------------------------------------------------
+
+def test_ferry_and_bus_carry_only_the_tags_the_builder_reads(layered):
+    """A bus layer is roads, and a road's `highway`, `surface` and `name` are
+    most of what it weighs. Nothing reads them, so they are not published."""
+    for layer in ("ferry", "bus"):
+        for (kind, ref), (tags, _) in _layer_contents(layered, layer).items():
+            assert set(tags) <= rail.LAYER_TAGS[kind], (layer, kind, ref, tags)
+
+
+def test_stripping_drops_what_nothing_reads_and_keeps_what_it_does(layered):
+    raw = _elements(FIXTURE)
+    bus = _layer_contents(layered, "bus")
+    relation = next(ref for kind, ref in bus if kind == "r"
+                    and {"ref", "operator", "network", "name"} <= set(raw[("r", ref)][0]))
+    road = next(ref for kind, ref in bus if kind == "w"
+                and {"highway", "surface"} <= set(raw[("w", ref)][0]))
+    rel_tags, road_tags = bus[("r", relation)][0], bus[("w", road)][0]
+    assert not {"ref", "operator", "network", "type"} & set(rel_tags)
+    assert rel_tags == {"route": "bus", "name": raw[("r", relation)][0]["name"]}
+    assert not {"highway", "surface", "name"} & set(road_tags)
+    ferry = _layer_contents(layered, "ferry")
+    assert ferry[("w", FERRY_WAY)][0]["route"] == "ferry"
+    assert ferry[("w", FERRY_YES_WAY)][0] == {"ferry": "yes"}
+    assert ferry[("r", FERRY_RELATION)][0]["route"] == "ferry"
+    # Selected and untagged is still written: the member is what the relation
+    # is drawn along.
+    assert ferry[("w", FERRY_MEMBER)][0] == {}
+    # Members, roles and node lists are untouched.
+    for layer in ("ferry", "bus"):
+        for key, (_, refs) in _layer_contents(layered, layer).items():
+            if key[0] != "n":
+                assert refs == raw[key][1], (layer, key)
+
+
+def test_the_rail_layer_keeps_every_tag(layered):
+    """Rail is not stripped: its published fixture pins the file as it is."""
+    raw = _elements(FIXTURE)
+    for key, (tags, _) in _layer_contents(layered, "rail").items():
+        assert tags == raw[key][0], key
+
+
+def _tables(path: Path) -> dict:
+    """Every row of every table in a store, but the two meta values that are
+    the build's own clock."""
+    import sqlite3
+
+    conn = sqlite3.connect(path)
+    try:
+        names = [n for (n,) in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")]
+        tables = {n: sorted(conn.execute(f'SELECT * FROM "{n}"').fetchall(), key=repr)
+                  for n in names}
+    finally:
+        conn.close()
+    tables["meta"] = [row for row in tables["meta"]
+                      if row[0] not in ("built_at", "build_seconds")]
+    return tables
+
+
+def test_a_stripped_layer_builds_the_same_store(layered, tmp_path, monkeypatch):
+    """The point of the keep-list: the store is what matters, and stripping
+    must not change a row of it. Built with the builder's own command, from
+    each stripped file and from the same selection written with every tag."""
+    import subprocess
+
+    monkeypatch.setattr(rail, "_strip", lambda obj, keep: obj)
+    full_dir = tmp_path / "full"
+    full_dir.mkdir()
+    rail.select(FIXTURE, {layer: full_dir / layered[layer][0].name
+                          for layer in ("ferry", "bus")})
+    for layer in ("ferry", "bus"):
+        stripped = layered[layer][0]
+        full = full_dir / stripped.name
+        assert full.stat().st_size > stripped.stat().st_size, layer
+        stores = []
+        for pbf, name in ((stripped, "stripped"), (full, "full")):
+            store = tmp_path / f"{layer}-{name}.sqlite"
+            subprocess.run(
+                [sys.executable, "-m", "src.rail.builder", str(pbf), str(store),
+                 "--region", "europe/germany", "--layer", layer],
+                cwd=ROOT, check=True, capture_output=True)
+            stores.append(_tables(store))
+        assert stores[0] == stores[1], layer
+
+
+def test_the_keep_list_covers_every_tag_the_builder_reads():
+    """If the builder starts reading a tag the keep-list drops, ferry and bus
+    stores lose it silently — the equality test above only sees what the
+    fixture happens to exercise. `service` is read for rail alone."""
+    import re
+
+    source = (ROOT / "src" / "rail" / "builder.py").read_text(encoding="utf-8")
+    read = set(re.findall(r'tags(?:\.get\(|\[)"(\w+)"', source))
+    read |= set(re.findall(r'"(\w+)" (?:not )?in tags\b', source))
+    assert read, "the pattern no longer finds the builder's tag reads"
+    kept = set().union(*rail.LAYER_TAGS.values())
+    assert read - kept == {"service"}
 
 
 def _matches(expression: str, kind: str, tags) -> bool:
