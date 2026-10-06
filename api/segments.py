@@ -63,10 +63,11 @@ def _compute_segment_geometry(
     """Run the (slow) HAFAS + Overpass lookups for a segment.
 
     Returns ``(polyline, stop_count, degraded, strategy)``.  ``degraded`` is True
-    only for rail when every Overpass strategy failed and the result is a straight
-    endpoint chord — the line is approximate, not real track.  Ferry/bus raise
-    ``OverpassError`` on failure (never degrade), so their ``degraded`` is always
-    False.  ``strategy`` names how the geometry was obtained (for logging).
+    when the result is a straight endpoint chord — the line is approximate, not
+    real track: for rail when every strategy failed, for ferry/bus only when the
+    local stores refused the box as too large to hold.  Ferry/bus raise
+    ``OverpassError`` when no route is found.  ``strategy`` names how the
+    geometry was obtained (for logging).
 
     Side effect: also sets ``seg.route_hafas_failed`` — True when a train's HAFAS
     stop lookup failed and resolution fell through to the generic two-point OSM
@@ -131,16 +132,18 @@ def _compute_segment_geometry(
         return rail.polyline, len(stops), rail.degraded, rail.strategy
 
     if seg.segment_type == "boat":
-        polyline = get_ferry_geometry(
+        ferry = get_ferry_geometry(
             seg.start.lat, seg.start.lon, seg.end.lat, seg.end.lon)
-        ROUTE_RESOLVES.labels("boat", "overpass", "false").inc()
-        return polyline, 2, False, "ferry"
+        ROUTE_RESOLVES.labels(
+            "boat", ferry.source, str(ferry.degraded).lower()).inc()
+        return ferry.polyline, 2, ferry.degraded, "ferry"
 
     if seg.segment_type == "bus":
-        polyline = get_bus_geometry(
+        bus = get_bus_geometry(
             seg.start.lat, seg.start.lon, seg.end.lat, seg.end.lon)
-        ROUTE_RESOLVES.labels("bus", "overpass", "false").inc()
-        return polyline, 2, False, "bus"
+        ROUTE_RESOLVES.labels(
+            "bus", bus.source, str(bus.degraded).lower()).inc()
+        return bus.polyline, 2, bus.degraded, "bus"
 
     raise ValueError("Route resolution only supported for train, boat, and bus segments")
 
