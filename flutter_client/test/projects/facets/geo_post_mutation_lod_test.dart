@@ -49,6 +49,12 @@ class _Server {
   /// Requests for full-resolution geometry.
   int fullGeo = 0;
 
+  /// Full-resolution fetches through the map's path ([ProjectService.getGeo]),
+  /// which keep the payload in L1, and through the offline seed's
+  /// ([ProjectService.fetchFullGeoUncached]), which does not (see [_Service]).
+  int mapPathFullGeo = 0;
+  int seedFullGeo = 0;
+
   /// While true, each simplified request waits on its own entry in [held].
   bool hold = false;
   final held = <Completer<void>>[];
@@ -148,6 +154,26 @@ class _Server {
       );
 }
 
+/// Tells the two ways to full-resolution geometry apart, which share one
+/// endpoint: the map's, and the offline seed's disk-only one (I2-R1-1).
+class _Service extends ProjectService {
+  final _Server server;
+  _Service(this.server);
+
+  @override
+  Future<Map<String, dynamic>> getGeo(ProjectRef ref,
+      {bool bypassCache = false}) {
+    server.mapPathFullGeo++;
+    return super.getGeo(ref, bypassCache: bypassCache);
+  }
+
+  @override
+  Future<Map<String, dynamic>> fetchFullGeoUncached(ProjectRef ref) {
+    server.seedFullGeo++;
+    return super.fetchFullGeoUncached(ref);
+  }
+}
+
 /// The write stamp of the geometry on screen.
 int? _v(ProjectNotifier n) {
   final features = n.geoFacet.geo?['features'] as List?;
@@ -174,7 +200,7 @@ Future<void> _settle() => Future<void>.delayed(const Duration(milliseconds: 30))
 /// A notifier with the trip loaded at zoom 9 and the camera on [_vp].
 Future<ProjectNotifier> _loaded(_Server server) async {
   api = server.api();
-  final n = ProjectNotifier(ProjectService())
+  final n = ProjectNotifier(_Service(server))
     ..loadRetryBackoff = const []
     ..zoomRefetchDebounce = const Duration(milliseconds: 10)
     ..setMapZoom(9);
@@ -220,7 +246,8 @@ void main() {
         final n = await _loaded(server);
         if (e.key == 'a segment 409') server.segmentConflict = true;
         final before = server.simplified.length;
-        final fullBefore = server.fullGeo;
+        final mapPathBefore = server.mapPathFullGeo;
+        final seedsBefore = server.seedFullGeo;
 
         await e.value(n);
         await _settle();
@@ -231,8 +258,11 @@ void main() {
             [(zoom: '9.0', bbox: box.param)],
             reason: 'one simplified request, at the level and box on screen');
         expect(_v(n), server.version, reason: 'the server\'s state after it');
-        expect(server.fullGeo, fullBefore,
-            reason: 'no full-resolution request');
+        expect(server.mapPathFullGeo, mapPathBefore,
+            reason: "no full-resolution fetch through the map's path");
+        expect(server.seedFullGeo - seedsBefore, lessThanOrEqualTo(1),
+            reason: 'the only full-resolution request is the offline seed '
+                '(I2-R1-1), at most one per edit');
         expect(await projectDataCache.readFullGeo(_ref), isNull,
             reason: 'and no full-resolution geometry in L1');
         n.dispose();
@@ -269,7 +299,7 @@ void main() {
       test(e.key, () async {
         final server = _Server();
         api = server.api();
-        final n = ProjectNotifier(ProjectService())
+        final n = ProjectNotifier(_Service(server))
           ..loadRetryBackoff = const []
           ..setMapZoom(9, viewport: _vp);
         await n.load(_ref);
@@ -285,6 +315,7 @@ void main() {
         expect(server.simplified, isEmpty,
             reason: 'the server cannot build an E2EE trip\'s geometry');
         expect(server.fullGeo, 0);
+        expect(server.seedFullGeo, 0, reason: 'no offline seed for E2EE');
         n.dispose();
       });
     }
@@ -298,7 +329,7 @@ void main() {
     Future<(ProjectNotifier, Future<void>, Completer<void>, Completer<void>)>
         zoomThenWrite(_Server server) async {
       api = server.api();
-      final n = ProjectNotifier(ProjectService())
+      final n = ProjectNotifier(_Service(server))
         ..loadRetryBackoff = const []
         ..zoomRefetchDebounce = const Duration(milliseconds: 10)
         ..setMapZoom(9);
@@ -359,7 +390,7 @@ void main() {
         loadThenWrite(_Server server) async {
       api = server.api();
       server.hold = true;
-      final n = ProjectNotifier(ProjectService())
+      final n = ProjectNotifier(_Service(server))
         ..loadRetryBackoff = const []
         ..setMapZoom(9);
       await n.load(_ref);
