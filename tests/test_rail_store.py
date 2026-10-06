@@ -546,6 +546,69 @@ def test_a_station_relation_placed_from_part_of_its_members_says_so(tmp_path):
     assert stats["stations_unlocatable"] == 0
 
 
+def _store_contents(path):
+    """Every table's rows in rowid order, and the meta a rebuild reproduces."""
+    conn = sqlite3.connect(path)
+    tables = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")]
+    out = {t: conn.execute(f'SELECT * FROM "{t}" ORDER BY rowid').fetchall()
+           for t in tables if t != "meta"}
+    out["meta"] = conn.execute(
+        "SELECT key, value FROM meta WHERE key NOT IN ('built_at', 'build_seconds') "
+        "ORDER BY key").fetchall()
+    conn.close()
+    return out
+
+
+@pytest.mark.parametrize("extract", ["luxembourg", "synthetic"])
+def test_the_batch_size_does_not_change_the_store(tmp_path, monkeypatch, extract):
+    """Rows go to SQLite in batches as they are read (F3). One row per batch
+    puts every batch boundary everywhere — a station relation read back before
+    its member's box is written would move or lose it, a station id taken out
+    of order would renumber the rest — and must build the same store."""
+    import src.rail.builder as builder
+
+    if extract == "luxembourg":
+        pbf = FIXTURE
+    else:
+        pbf = tmp_path / "synth-rail.osm.pbf"
+        _write_synthetic(pbf)
+    build_store(pbf, tmp_path / "default.sqlite", region="europe/test")
+    monkeypatch.setattr(builder, "_BATCH", 1)
+    build_store(pbf, tmp_path / "one.sqlite", region="europe/test")
+    assert _store_contents(tmp_path / "one.sqlite") == _store_contents(tmp_path / "default.sqlite")
+
+
+def test_the_builder_holds_no_row_per_relation_member(tmp_path):
+    """Germany's bus layer names 8.8M relation members; holding a tuple for
+    each until the end peaked at 2.1 GB against the box's 1 GB build worker.
+    200,000 members here: held, they cost tens of MB of Python heap; streamed,
+    no more than a batch."""
+    import osmium
+    from osmium.osm import mutable
+
+    pbf = tmp_path / "members-rail.osm.pbf"
+    w = osmium.SimpleWriter(str(pbf))
+    w.add_node(mutable.Node(id=1, location=(6.10, 49.60)))
+    w.add_node(mutable.Node(id=2, location=(6.20, 49.70)))
+    w.add_way(mutable.Way(id=10, nodes=[1, 2], tags={"railway": "rail"}))
+    for rel in range(20):
+        members = [("w", 10, "")] + [("w", 100_000 + rel * 10_000 + i, "")
+                                     for i in range(9_999)]
+        w.add_relation(mutable.Relation(id=1000 + rel, members=members,
+                                        tags={"route": "train"}))
+    w.close()
+
+    tracemalloc.start()
+    stats = build_store(pbf, tmp_path / store_filename("europe/members"))
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+
+    assert stats["relation_ways"] == 200_000
+    assert stats["relation_ways_held"] == 20   # way 10, once per relation
+    assert peak < 8 * 1024 * 1024, f"build held {peak / 1e6:.1f} MB"
+
+
 # ---------------------------------------------------------------------------
 # Resource bounds
 # ---------------------------------------------------------------------------
