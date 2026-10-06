@@ -292,6 +292,66 @@ class TestLocalHit:
 
 
 # ---------------------------------------------------------------------------
+# Way selection is by geometry, as Overpass's way(bbox) is (F6)
+# ---------------------------------------------------------------------------
+
+# Strategy B's box for WEST -> EAST: the two ports, buffered by 0.25 degrees.
+B_BOX = (54.75, 10.75, 55.25, 11.65)
+# A crossing far to the north and east whose extent covers B_BOX entirely, and
+# not one vertex or segment of which comes near it: the Ancona - Greece lines
+# over the Bay of Naples, in miniature.
+AROUND = [(56.0, 10.0), (56.0, 12.0), (54.0, 12.0)]
+
+
+class TestWaySelection:
+    @pytest.mark.parametrize("mode", ["ferry", "bus"])
+    def test_a_way_is_returned_only_when_its_geometry_meets_the_box(self, tmp_path, mode):
+        pbf = write_layer(tmp_path / f"{mode}.osm.pbf", {
+            # extent overlaps the box, geometry does not
+            90: (AROUND, {"route": mode}),
+            # a vertex inside
+            91: ([(55.0, 11.2), (56.0, 11.2)], {"route": mode}),
+            # crosses the box with both ends, and every vertex, outside
+            92: ([(54.0, 11.2), (56.0, 11.2)], {"route": mode}),
+            # crosses one corner only, ends outside on two different sides
+            93: ([(55.05, 10.6), (55.35, 10.90)], {"route": mode}),
+            # passes the same corner outside it, its extent overlapping the box
+            94: ([(55.20, 10.6), (55.40, 10.80)], {"route": mode}),
+        })
+        write_manifest(str(tmp_path), [build_region(str(tmp_path), "test/g", mode, pbf)])
+        source = LocalRouteSource(str(tmp_path))
+        assert sorted(w["id"] for w in source.ways_in_bbox(mode, CLS_ROUTE, B_BOX)) == [
+            91, 92, 93]
+
+    def test_ferry_yes_ways_are_selected_the_same_way(self, tmp_path):
+        """Strategy C's question goes through the same filter as B's."""
+        pbf = write_layer(tmp_path / "c.osm.pbf", {
+            95: (AROUND, {"ferry": "yes"}),
+            96: ([(54.0, 11.2), (56.0, 11.2)], {"ferry": "yes"}),
+        })
+        write_manifest(str(tmp_path), [build_region(str(tmp_path), "test/c", "ferry", pbf)])
+        source = LocalRouteSource(str(tmp_path))
+        assert [w["id"] for w in source.ways_in_bbox("ferry", CLS_FERRY_YES, B_BOX)] == [96]
+
+    def test_a_crossing_whose_extent_alone_covers_the_leg_is_a_local_miss(
+            self, tmp_path, configure, monkeypatch):
+        """Napoli -> Capri with only Croatia's data: the store's extent match
+        hands B a far-off crossing, B snaps both ends to it and invents a
+        route. Overpass would return no ways, so the local answer is a miss and
+        production asks Overpass, once."""
+        pbf = write_layer(tmp_path / "far.osm.pbf", {
+            90: (AROUND, {"route": "ferry", "ferry": "yes"})})
+        write_manifest(str(tmp_path), [build_region(str(tmp_path), "test/far", "ferry", pbf)])
+        configure(tmp_path)
+        transport = _overpass_answer()
+        monkeypatch.setattr(ov, "_overpass", transport)
+
+        result = ov.get_ferry_geometry(*WEST, *EAST)
+        assert (result.strategy, result.source) == ("relation", "overpass")
+        assert transport.call_count == 1
+
+
+# ---------------------------------------------------------------------------
 # Local misses — every one of them ends at Overpass
 # ---------------------------------------------------------------------------
 

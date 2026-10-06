@@ -418,24 +418,14 @@ legs:
     from: {label: Napoli Molo Beverello, lat: 40.8380, lon: 14.2560}
     to: {label: Capri Marina Grande, lat: 40.5560, lon: 14.2400}
     regions: [europe/croatia]
-    known_bad: >-
-      the local source answers strategy B with every way whose bounding box
-      overlaps the query, and the Ancona - Greece crossings' boxes cover the
-      Bay of Naples though no vertex comes within 200 km; B snaps both ends to
-      one node in the mid-Adriatic and returns a 525 km line. Overpass tests
-      the geometry and returns none of those ways, so this leg should be a
-      local miss and fall back
     # Croatia's ferry box runs from Venice to Patras, so production asks its
-    # store for this leg (Italy's store, when present, answers A first).
-    # measured: way_dijkstra, 525.43 km, both ends snapped to (42.9939,
-    # 15.0136), 247/278 km from the ports
+    # store for this leg (Italy's store, when present, answers A first). The
+    # Ancona - Greece crossings' extents cover the Bay of Naples though no
+    # vertex comes within 200 km; Overpass tests the geometry and returns none
+    # of them, and so must the local source, or B snaps both ends to one node
+    # in the mid-Adriatic and returns a 525 km line (issue #345, F6).
     expect:
       local_miss: true
-    current:
-      length_km: [500, 550]
-      via:
-        - {label: mid-Adriatic snap, lat: 42.9939, lon: 15.0136, within_km: 2}
-      degraded: false
 
   # -- Bus ---------------------------------------------------------------------
   - name: Bus 19 Glostrup -> Valbyparken
