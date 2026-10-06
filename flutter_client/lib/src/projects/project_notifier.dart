@@ -542,9 +542,12 @@ class ProjectNotifier extends ChangeNotifier
   bool degradedRouteUpgradeAvailable = false;
 
   // ── Track style ───────────────────────────────────────────────────────────
-  Color trackColor = const Color(0xFF6B7280); // gray-500 — shown while project loads
+  // Named so [clear] puts back the same defaults a fresh notifier starts with.
+  static const _kDefaultTrackColor = Color(0xFF6B7280); // gray-500 — shown while project loads
+  static const _kDefaultTrackWidth = 2.5;
+  Color trackColor = _kDefaultTrackColor;
   Color? trackSecondaryColor; // null = auto-derive from primary
-  double trackWidth = 2.5;
+  double trackWidth = _kDefaultTrackWidth;
   bool alternatingTrackColors = false;
   Color? elevationChartColor; // null = "auto" → match the map track line (#22)
   bool elevationChartShowLine = true;
@@ -775,6 +778,10 @@ class ProjectNotifier extends ChangeNotifier
   /// the store refuses (a full localStorage, a failed Android commit) still
   /// reads back until the next page load.
   Future<bool> _saveUiState() async {
+    // A discarded notifier's state is not the signed-in account's to save:
+    // the key is built from the token, which may be the next account's
+    // (issue #418).
+    if (_isDisposed) return false;
     final ref = this.ref;
     if (ref == null) return false;
     final key = _uiStateKey(ref);
@@ -916,6 +923,25 @@ class ProjectNotifier extends ChangeNotifier
     }
   }
 
+  /// Re-reads the saved selection and filters into a notifier that is reused
+  /// without a reload (issue #418, second comment). Another notifier — view
+  /// mode's — may have changed them since this one last read them, and the
+  /// next tap here would save this one's stale copy over that change.
+  Future<void> restoreSavedUiState() async {
+    final loadRef = _loadTrack.ref;
+    if (loadRef == null) return;
+    final token = _loadTrack.token;
+    // Cleared first, as load() does: the restore applies only what was saved,
+    // so a selection this notifier made would survive beside the one view
+    // mode saved since (U5-R1-4).
+    selectedDay = null;
+    selectedActivityId = null;
+    selectedSegmentId = null;
+    selectedMemoryId = null;
+    await _restoreUiState(token, loadRef);
+    if (_isCurrent(token, loadRef)) notifyListeners();
+  }
+
   // Cached aggregate stats — computed once in load(), not on every build.
   double totalDistanceM = 0;
   int totalMovingSeconds = 0;
@@ -1000,6 +1026,13 @@ class ProjectNotifier extends ChangeNotifier
     final name = ref.name;
     _stopPhotoPolling();
     final token = _loadTrack.begin(ref);
+    // A reload still in flight — full or details-only, a segment conflict's
+    // resync among them — sets the open trip when it lands, so one for the
+    // trip the user is leaving would bring it back (I1-R4-3, I1-R5-1). Dropped
+    // for this trip too: this load fetches its details afresh. One begun after
+    // this line checks the open trip itself.
+    _reloadTrack.invalidate();
+    _detailsOnlyReloadTrack.invalidate();
     this.ref = ref;
     // Filters are kept only while they belong to the same saved state: the
     // same account's view of the same trip. This notifier is app-wide and
@@ -1085,17 +1118,23 @@ class ProjectNotifier extends ChangeNotifier
       lowResFuture?.ignore();
 
       if (lowResFuture != null) {
+        Map<String, dynamic>? lowRes;
         try {
-          geo = await lowResFuture;
+          lowRes = await lowResFuture;
         } on Object catch (_) {
           // Non-fatal: fall back to whatever low-res geo is on file (may be
           // null, e.g. a project never opened on this device before) and let
           // the /meta fallback below decide whether this load can proceed at
           // all — a bare map with no track is still better than an error
           // screen when offline and a fuller cache entry exists.
-          geo = await projectDataCache.readLowResGeo(ref);
+          lowRes = await projectDataCache.readLowResGeo(ref);
         }
-        if (_isCurrent(token, ref)) notifyListeners(); // map visible at ~2.2s
+        // Checked before assigning: a load superseded or cleared meanwhile —
+        // an account change among them — must not put its geometry back
+        // (U5-R1-3).
+        if (!_isCurrent(token, ref)) return;
+        geo = lowRes;
+        notifyListeners(); // map visible at ~2.2s
       }
 
       Map<String, dynamic> details;
@@ -1189,6 +1228,10 @@ class ProjectNotifier extends ChangeNotifier
       // _buildFullTrack() was hopping through compute() could still mutate
       // dayMeta/activities below for a project the user has since left.
       if (!_isCurrent(token, ref)) return;
+      // A resolve started before this load — earlier in the session, before
+      // the app was closed, or on another device — is still polled for, so its
+      // route reaches the map without reopening the trip (issue #278).
+      resumeSegmentResolves();
       _autoFillDaysToToday();  // fill missing dates in-memory before first render
       await _restoreUiState(token, ref);  // issue #76 follow-up: reapply persisted selection/filters
       // Catch Object, not just Exception: retryFetch rethrows whatever the last
@@ -1320,7 +1363,7 @@ class ProjectNotifier extends ChangeNotifier
     if (viewport != null) _mapViewport = viewport;
     // Client-built geometry (E2EE) has no server counterpart to refetch.
     if (encryption.isUnlocked) return;
-    if (!_geoIsStaleForCamera()) return;
+    if (_isDisposed || !_geoIsStaleForCamera()) return;
     _zoomRefetchTimer?.cancel();
     _zoomRefetchTimer = Timer(zoomRefetchDebounce, () {
       final r = ref;
@@ -1388,7 +1431,9 @@ class ProjectNotifier extends ChangeNotifier
     final box = viewport == null ? null : fetchBoxFor(viewport, bucket);
     final token = _loadTrack.token;
     try {
-      final next = await _service.getSimplifiedGeo(r, _mapZoom, bbox: box);
+      final fetched = await fetchServerGeo(
+          () => _service.getSimplifiedGeo(r, _mapZoom, bbox: box));
+      final next = fetched.geo;
       if (!_refetchIsCurrent(token, r)) return;
       // See the load path: a response with no feature list is not an empty
       // trip. Keep what is on screen rather than blanking it.
@@ -1403,7 +1448,7 @@ class ProjectNotifier extends ChangeNotifier
       // has left the box, the pan events that took it there have already
       // scheduled the next refetch.
       if (_bucketOf(_mapZoom) != bucket) return;
-      reconcileSegmentOverlay(next);
+      reconcileSegmentOverlay(next, requestedAt: fetched.requestedAt);
       geo = {
         'type': 'FeatureCollection',
         'features': mergePendingSegmentPatches(
@@ -1477,13 +1522,23 @@ class ProjectNotifier extends ChangeNotifier
   /// make the upgrade's arrival depend on the frame pipeline having spare
   /// time, which is exactly what a busy map does not have.
   Future<void> _waitForCameraIdle() async {
-    if (!_mapCameraActive) return;
+    if (!_mapCameraActive || _isDisposed) return;
     final waiter = _cameraIdleWaiter ??= Completer<void>();
-    await Future.any([
-      waiter.future,
-      Future<void>.delayed(cameraIdleTimeout),
-    ]);
+    // A Timer rather than Future.delayed, so dispose() can cancel it: a
+    // discarded notifier keeps no timer running (issue #418).
+    final timedOut = Completer<void>();
+    final timeout = Timer(cameraIdleTimeout, timedOut.complete);
+    _cameraIdleTimeouts.add(timeout);
+    try {
+      await Future.any([waiter.future, timedOut.future]);
+    } finally {
+      timeout.cancel();
+      _cameraIdleTimeouts.remove(timeout);
+    }
   }
+
+  /// The timeouts of the [_waitForCameraIdle] calls outstanding.
+  final Set<Timer> _cameraIdleTimeouts = {};
 
   /// Fetches full-res GeoJSON and progressively replaces each activity's
   /// straight-line approximation with its real GPS trace (last activity first).
@@ -1528,7 +1583,9 @@ class ProjectNotifier extends ChangeNotifier
       // stamp a level that was never fetched — and then never refetch it.
       final requestedZoom = _mapZoom;
       final requestedBucket = _bucketOf(requestedZoom);
-      final lod = await _service.getSimplifiedGeo(ref, requestedZoom);
+      final fetched = await fetchServerGeo(
+          () => _service.getSimplifiedGeo(ref, requestedZoom));
+      final lod = fetched.geo;
       if (!_isCurrent(token, ref)) return;
       // A 200 carrying no feature list is not an empty trip, it is a response
       // this code did not ask for — an older server answering some catch-all,
@@ -1538,7 +1595,7 @@ class ProjectNotifier extends ChangeNotifier
       if (lod['features'] is! List) {
         throw StateError('simplified geo response carried no features');
       }
-      reconcileSegmentOverlay(lod);
+      reconcileSegmentOverlay(lod, requestedAt: fetched.requestedAt);
       final lodFeatures = mergePendingSegmentPatches(
           List<dynamic>.from(lod['features'] as List? ?? []));
       await _waitForCameraIdle();
@@ -1580,7 +1637,8 @@ class ProjectNotifier extends ChangeNotifier
     if (cachedFullGeo != null) {
       if (!_isCurrent(token, ref)) return;
       try {
-        reconcileSegmentOverlay(cachedFullGeo);
+        // Older than every patch, however recently it was read.
+        reconcileSegmentOverlay(cachedFullGeo, requestedAt: 0);
         final features = mergePendingSegmentPatches(
             List<dynamic>.from(cachedFullGeo['features'] as List? ?? []));
         geo = {'type': 'FeatureCollection', 'features': features};
@@ -1604,9 +1662,12 @@ class ProjectNotifier extends ChangeNotifier
     // warm cache. A persistent failure is surfaced (not swallowed) so the user
     // isn't left silently looking at low-res straight lines.
     Map<String, dynamic>? fullGeo;
+    var fullGeoRequestedAt = 0;
     for (int attempt = 0; attempt < 2; attempt++) {
       try {
-        fullGeo = await _service.getGeo(ref);
+        final fetched = await fetchServerGeo(() => _service.getGeo(ref));
+        fullGeo = fetched.geo;
+        fullGeoRequestedAt = fetched.requestedAt;
         break;
       } on Object catch (e) {
         // Catch Object (not just Exception): a decode failure can throw an
@@ -1628,7 +1689,7 @@ class ProjectNotifier extends ChangeNotifier
     try {
       // Drop overlay entries the server geo already reflects, so the durable
       // overlay self-cleans once the backend has caught up.
-      reconcileSegmentOverlay(fullGeo);
+      reconcileSegmentOverlay(fullGeo, requestedAt: fullGeoRequestedAt);
 
       if (!_isCurrent(token, ref)) return;
       // One atomic swap: rebuild authoritatively from the server geo
@@ -2165,24 +2226,108 @@ class ProjectNotifier extends ChangeNotifier
   @visibleForTesting
   int get buildFullTrackGen => _buildFullTrackGen;
 
+  // ── Account (issue #418) ───────────────────────────────────────────────────
+
+  /// The account [onAuthChanged] last saw: a user id, null for none, or
+  /// [_kUnset] before its first call.
+  Object? _authUserId = _kUnset;
+
+  /// Called by the [ChangeNotifierProxyProvider] over `AuthNotifier` on every
+  /// auth change. The account owns this notifier's lifetime: whenever the
+  /// signed-in user id changes — including to or from no account — this
+  /// returns true, and the provider (`accountScopedProjectNotifier` in
+  /// main.dart) replaces this notifier with a fresh one and disposes it. One
+  /// check here covers logout, the 401s that force one, account deletion and
+  /// any later way to switch account; a call at each exit is what missed the
+  /// 401 paths (issue #418).
+  ///
+  /// Everything held is also dropped with [clear] first, so work still in
+  /// flight here finds its load invalidated and its trip gone.
+  ///
+  /// [restoring] is true while `AuthNotifier` restores the session at app
+  /// start. Nothing is recorded then: the restored token is already the
+  /// session's, so a trip opened under the splash belongs to the account the
+  /// restore is about to name, and the null-to-id step that ends the restore
+  /// must not clear it. The first account seen is not a change either.
+  bool onAuthChanged(String? userId, {bool restoring = false}) {
+    if (restoring) return false;
+    final previous = _authUserId;
+    _authUserId = userId;
+    if (identical(previous, _kUnset) || previous == userId) return false;
+    clear();
+    return true;
+  }
+
+  /// Drops everything a load, and the session since, put in this notifier,
+  /// leaving it as a freshly constructed one would be (issue #418).
+  ///
+  /// Every instance field of this class and its mixins is either reset here,
+  /// in a method called from here, or on the allowlist of
+  /// project_notifier_clear_scan_test.dart with the reason it survives — the
+  /// test fails on a field that is neither.
   void clear() {
     _zoomRefetchTimer?.cancel();
     _loadedZoomBucket = null;
     _loadedGeoBox = null;
     _mapViewport = null;
+    _stopPhotoPolling();
+    stopDegradedRouteWatch();
+    _lastDegradedRouteCount = null;
+    degradedRouteUpgradeAvailable = false;
     ref = null;
+    // The saved state the filters belong to: a held key would let the next
+    // load of the same key keep filters this clear has just dropped.
+    _heldStateKey = null;
     activities = [];
     items = [];
+    people = [];
+    groups = [];
+    undecryptedFields.reset();
     geo = null;
+    resetSegmentState();
     selectedActivityId = null;
     selectedSegmentId = null;
     selectedMemoryId = null;
+    selectedJournalId = null;
     selectedDay = null;
+    showJournals = true;
     resetFilters();
     tripStart = null;
     tripEnd = null;
     dayMeta = {};
     sleepingOptions = [];
+    sleepingOptionGroups = {};
+    counters = [];
+    shareToken = null;
+    shareTokenNoMemories = null;
+    autoSyncEnabled = true;
+    linkedPsTripId = null;
+    lastStravaSyncAt = null;
+    lastPsSyncAt = null;
+    pendingSync = null;
+    trackColor = _kDefaultTrackColor;
+    trackSecondaryColor = null;
+    trackWidth = _kDefaultTrackWidth;
+    alternatingTrackColors = false;
+    elevationChartColor = null;
+    elevationChartShowLine = true;
+    colorByType = false;
+    typeStyles = {};
+    languages = [];
+    quotaError = null;
+    polarstepsOverlaySteps = [];
+    polarstepsOverlayLabel = null;
+    _immichConnectedCheckedAt = null;
+    _immichConnectedCached = false;
+    // Memos keyed on the identity of the lists dropped above. They would
+    // miss anyway, but holding them kept the last trip alive in memory.
+    _dayStatsCache = null;
+    _dayStatsCacheItems = null;
+    _dayStatsCacheActivities = null;
+    _orderedDayKeysCache = null;
+    _orderedDayKeysCacheDayMeta = null;
+    _orderedDayKeysCacheActivities = null;
+    _orderedDayKeysCacheItems = null;
     members = [];
     pendingInvites = [];
     memberInviteToken = null;
@@ -2207,6 +2352,12 @@ class ProjectNotifier extends ChangeNotifier
     totalElevationGainM = 0;
     isLoading = false;
     error = null;
+    loadErrorStatus = null;
+    offlineFromCache = false;
+    isMetaLoaded = true;
+    isElevationLoaded = true;
+    isGeoLoaded = true;
+    isSyncMetaLoaded = true;
     notifyListeners();
   }
 
@@ -2343,6 +2494,7 @@ class ProjectNotifier extends ChangeNotifier
   Duration degradedRouteCheckInterval = const Duration(minutes: 15);
 
   void startDegradedRouteWatch(ProjectRef ref) {
+    if (_isDisposed) return;
     _degradedRouteCheckTimer?.cancel();
     _lastDegradedRouteCount = null; // re-establish the baseline against fresh data
     _degradedRouteCheckTimer =
@@ -2692,6 +2844,7 @@ class ProjectNotifier extends ChangeNotifier
   void startPhotoPolling(ProjectRef ref,
       {Duration interval = const Duration(seconds: 3), int maxTicks = 60}) {
     _stopPhotoPolling();
+    if (_isDisposed) return;
     var remainingTicks = maxTicks;
     _photoPollingTimer = Timer.periodic(interval, (_) async {
       if (remainingTicks <= 0 || this.ref != ref) {
@@ -2762,6 +2915,7 @@ class ProjectNotifier extends ChangeNotifier
   /// Whether this notifier is still mounted (not disposed). Background tasks
   /// (e.g. segment route polling) check this before touching captured UI such
   /// as a ScaffoldMessenger.
+  @override
   bool get isAlive => !_isDisposed;
 
   @override
@@ -2769,12 +2923,31 @@ class ProjectNotifier extends ChangeNotifier
     if (!_isDisposed) super.notifyListeners();
   }
 
+  /// Discarded — by its screen, or by the provider when the account changes
+  /// (issue #418). Work still in flight lands here afterwards, so this leaves
+  /// it nothing to do: its loads and reloads are invalidated, no timer runs,
+  /// and the guards on [_saveUiState] and the timer starts keep it from
+  /// writing shared state or starting another.
   @override
   void dispose() {
     _isDisposed = true;
+    _loadTrack.invalidate();
+    _reloadTrack.invalidate();
+    _detailsOnlyReloadTrack.invalidate();
+    _buildFullTrackGen++;
     _stopPhotoPolling();
     _zoomRefetchTimer?.cancel();
+    for (final timeout in _cameraIdleTimeouts) {
+      timeout.cancel();
+    }
+    _cameraIdleTimeouts.clear();
+    // Released rather than left hanging: the waits resume, find their load
+    // invalidated above, and return.
+    final idle = _cameraIdleWaiter;
+    _cameraIdleWaiter = null;
+    if (idle != null && !idle.isCompleted) idle.complete();
     stopDegradedRouteWatch(); // usually already stopped by the owning screen's dispose()
+    stopSegmentResolvePolling();
     previewArcNotifier.dispose();
     elevationCursorNotifier.dispose();
     mapCursorDistNotifier.dispose();
@@ -2910,9 +3083,21 @@ class ProjectNotifier extends ChangeNotifier
     await _buildFullTrack();
     if (!_reloadTrack.isCurrent(token, ref)) return;
     // Refresh GeoJSON so the map polylines reflect the updated track.
-    geo = encryption.isUnlocked
-        ? client_geo.buildFullGeo(items, client_geo.activitiesById(activities))
-        : await _service.getGeo(ref, bypassCache: true);
+    if (encryption.isUnlocked) {
+      geo = client_geo.buildFullGeo(items, client_geo.activitiesById(activities));
+    } else {
+      final fetched = await fetchServerGeo(
+          () => _service.getGeo(ref, bypassCache: true));
+      if (!_reloadTrack.isCurrent(token, ref)) return;
+      // Through the overlay like every other server geo, so a patch this
+      // answer supersedes cannot come back at the next rebuild (I1-R2-2).
+      reconcileSegmentOverlay(fetched.geo, requestedAt: fetched.requestedAt);
+      geo = {
+        'type': 'FeatureCollection',
+        'features': mergePendingSegmentPatches(
+            List<dynamic>.from(fetched.geo['features'] as List? ?? [])),
+      };
+    }
     if (!_reloadTrack.isCurrent(token, ref)) return;
     notifyListeners();
   }
@@ -3080,33 +3265,119 @@ class ProjectNotifier extends ChangeNotifier
 
   // ── Internal helpers ───────────────────────────────────────────────────────
 
-  /// Reloads project data from the API without clearing existing state first.
+  /// Saves only the day-meta that changed (issue #397): [days] are set,
+  /// [delete] are removed, every other day is left to the server's copy.
+  /// Sleeping options, groups and counters go along only when given.
+  ///
+  /// The edit shows at once. On 200 the server's merged map is adopted, so days
+  /// another device changed arrive here; on failure day-meta is reloaded
+  /// instead of keeping a copy the server never accepted.
   Future<void> saveDayMeta({
-    required Map<String, Map<String, dynamic>> newDayMeta,
+    Map<String, Map<String, dynamic>> days = const {},
+    List<String> delete = const [],
     List<String>? newSleepingOptions,
     Map<String, String>? newSleepingOptionGroups,
     List<Map<String, dynamic>>? newCounters,
   }) async {
     final ref = this.ref;
     if (ref == null) return;
-    dayMeta = newDayMeta;
+    if (days.isEmpty &&
+        delete.isEmpty &&
+        newSleepingOptions == null &&
+        newSleepingOptionGroups == null &&
+        newCounters == null) {
+      return;
+    }
+    // The whole map, built now: the 405 fallback below runs after an await,
+    // by which time another trip may have replaced dayMeta. The account too,
+    // for the same fallback: by then another one may hold the token.
+    final account = api.tokenUserId;
+    final merged = {
+      for (final e in dayMeta.entries)
+        if (!delete.contains(e.key)) e.key: e.value,
+      ...days,
+    };
+    dayMeta = {...merged};
+    _autoFillDaysToToday();
     if (newSleepingOptions != null) sleepingOptions = newSleepingOptions;
     if (newSleepingOptionGroups != null) sleepingOptionGroups = newSleepingOptionGroups;
     if (newCounters != null) counters = newCounters;
     notifyListeners();
     try {
-      await api.put(
-        ref.path('/day-meta'),
-        {
-          'day_meta': newDayMeta,
+      Object? res;
+      try {
+        res = await api.patch(ref.path('/day-meta'), {
+          'days': days,
+          'delete': delete,
           if (newSleepingOptions != null) 'sleeping_options': newSleepingOptions,
           if (newSleepingOptionGroups != null) 'sleeping_option_groups': newSleepingOptionGroups,
           if (newCounters != null) 'counters': newCounters,
-        },
-      );
+        });
+      } on ApiException catch (e) {
+        if (e.statusCode != 405) rethrow;
+        // A server that predates the PATCH (the tag publishes the APK before
+        // the server is deployed): its PUT still takes the whole map. No trip
+        // check here: [merged] and [ref] are this trip's, captured before the
+        // await, so a trip opened since must not cost this save (I1-R2-1).
+        // An account change does: the PUT would carry the next account's
+        // token to its trip of the same name and replace its days (I1-R3-2).
+        if (api.tokenUserId != account) return;
+        await api.put(ref.path('/day-meta'), {
+          'day_meta': merged,
+          if (newSleepingOptions != null) 'sleeping_options': newSleepingOptions,
+          if (newSleepingOptionGroups != null) 'sleeping_option_groups': newSleepingOptionGroups,
+          if (newCounters != null) 'counters': newCounters,
+        });
+        return;
+      }
+      if (this.ref != ref) return;
+      final raw = res is Map ? res['day_meta'] : null;
+      if (raw is Map) {
+        final server = raw.map(
+            (k, v) => MapEntry(k as String, Map<String, dynamic>.from(v as Map)));
+        // The server's value wins for every day it returns. A day it no longer
+        // has stays only when it is an empty gap-fill day, which exists in
+        // memory alone.
+        dayMeta = {
+          for (final e in dayMeta.entries)
+            if (!server.containsKey(e.key) && e.value.isEmpty) e.key: e.value,
+          ...server,
+        };
+        _autoFillDaysToToday();
+        notifyListeners();
+      }
     } on Exception catch (e) {
+      await _reloadDayMeta(ref);
+      if (this.ref != ref) return;
       error = _msg(e);
       notifyListeners();
+    }
+  }
+
+  /// Restores what a rejected [saveDayMeta] had applied optimistically.
+  Future<void> _reloadDayMeta(ProjectRef ref) async {
+    try {
+      final details = await _service.getDetailsMeta(ref);
+      if (this.ref != ref) return;
+      final rawDm = details['day_meta'];
+      dayMeta = rawDm is Map
+          ? rawDm.map((k, v) => MapEntry(k as String, Map<String, dynamic>.from(v as Map)))
+          : {};
+      final rawOpts = details['sleeping_options'];
+      final optList = rawOpts is List ? List<String>.from(rawOpts) : <String>[];
+      sleepingOptions = optList.isNotEmpty ? optList : List<String>.from(_defaultSleepingOptions);
+      final rawGroups = details['sleeping_option_groups'];
+      sleepingOptionGroups = rawGroups is Map
+          ? Map<String, String>.from(rawGroups.cast<String, String>())
+          : { for (final n in sleepingOptions) n: _defaultSleepingGroups[n] ?? 'Other' };
+      final rawCounters = details['counters'];
+      counters = rawCounters is List
+          ? rawCounters.map((c) => Map<String, dynamic>.from(c as Map)).toList()
+          : [];
+      _autoFillDaysToToday();
+    } on Exception {
+      // The caller reports the save failure; a failed reload leaves the
+      // optimistic copy, as before.
     }
   }
 
@@ -3170,30 +3441,52 @@ class ProjectNotifier extends ChangeNotifier
     // against the ref this call started with (frozen at begin()), not the
     // live `this.ref` field _applyDetails reassigns mid-call — see
     // _SupersessionTrack's doc for why that matters.
+    //
+    // A reload for a trip the user has left would make it the open trip
+    // again (I1-R5-1): not started once another trip is open, and dropped if
+    // one opens during any of its awaits. load() invalidates this track, but
+    // a reload begun after it gets a fresh token, hence the trip check too.
+    if (!isOpenTrip(ref)) return;
     final token = _reloadTrack.begin(ref);
-    bool stale() => !_reloadTrack.isCurrent(token, ref);
-    // Set false only by the staleness check right after _buildFullTrack
-    // below, so a navigation that lands during that now-async call (issue
-    // #276 follow-up) suppresses the notify — every other path (success or
-    // the catch below) keeps notifying exactly as before.
+    bool stale() => !_reloadTrack.isCurrent(token, ref) || !isOpenTrip(ref);
+    // Set false only by the staleness checks below, so a navigation that
+    // lands during an await (issue #276 follow-up) suppresses the notify —
+    // every other path (success or the catch below) keeps notifying exactly
+    // as before.
     var notify = true;
     try {
       if (encryption.isUnlocked) {
         // The server can't build geo for encrypted activities (issue #29) —
         // build it client-side from the just-reloaded, decrypted activities.
         final details = await _service.getDetailsMeta(ref);
-        await _applyDetails(details, ref);
+        if (!await _applyDetails(details, ref, stale)) {
+          notify = false;
+          return;
+        }
         _autoFillDaysToToday();
         geo = client_geo.buildFullGeo(items, client_geo.activitiesById(activities));
       } else {
-        final results = await Future.wait([
+        final results = await Future.wait<Object>([
           _service.getDetailsMeta(ref),
-          _service.getGeo(ref, bypassCache: true),
+          fetchServerGeo(() => _service.getGeo(ref, bypassCache: true)),
         ]);
-        final details = results[0];
-        await _applyDetails(details, ref);
+        final details = results[0] as Map<String, dynamic>;
+        final fetched =
+            results[1] as ({Map<String, dynamic> geo, int requestedAt});
+        if (!await _applyDetails(details, ref, stale)) {
+          notify = false;
+          return;
+        }
         _autoFillDaysToToday();
-        geo = results[1];
+        // Through the overlay like every other server geo: assigned as is, it
+        // showed the server's route but left a patch it supersedes to come
+        // back at the next rebuild (I1-R2-2).
+        reconcileSegmentOverlay(fetched.geo, requestedAt: fetched.requestedAt);
+        geo = {
+          'type': 'FeatureCollection',
+          'features': mergePendingSegmentPatches(
+              List<dynamic>.from(fetched.geo['features'] as List? ?? [])),
+        };
       }
       _updateStats();
       await _buildFullTrack();
@@ -3227,8 +3520,14 @@ class ProjectNotifier extends ChangeNotifier
     // (see its doc above) rather than _loadTrack/_reloadTrack, since this
     // reload has no geo/details of its own to offer in exchange for
     // superseding whoever it cancels.
+    //
+    // The open-trip check is _silentReload's (I1-R5-2): a memory, journal or
+    // people save, a sort or a reorder can return after another trip opened,
+    // and its reload then begins after load() invalidated this track.
+    if (!isOpenTrip(ref)) return;
     final token = _detailsOnlyReloadTrack.begin(ref);
-    bool stale() => !_detailsOnlyReloadTrack.isCurrent(token, ref);
+    bool stale() =>
+        !_detailsOnlyReloadTrack.isCurrent(token, ref) || !isOpenTrip(ref);
     try {
       final details = await _service.getDetailsMeta(ref);
       // Checked before _applyDetails mutates activities/items/dayMeta/ref,
@@ -3238,7 +3537,7 @@ class ProjectNotifier extends ChangeNotifier
       // slower, superseded one (the same bug class applyFullActivities was
       // fixed for — issue #283 review finding).
       if (stale()) return;
-      await _applyDetails(details, ref);
+      if (!await _applyDetails(details, ref, stale)) return;
       _autoFillDaysToToday();
       _updateStats();
     } on Exception catch (e) {
@@ -3254,26 +3553,46 @@ class ProjectNotifier extends ChangeNotifier
   /// or another account's key (#466). It resets that record, so pass the whole
   /// item list. Idempotent: text already revealed is not a well-formed
   /// envelope, so it is neither decrypted nor marked again.
-  Future<void> _revealItems(List<Map<String, dynamic>> list) async {
-    undecryptedFields.reset();
+  Future<void> _revealItems(List<Map<String, dynamic>> list) async =>
+      _recordUndecrypted(await _revealItemText(list));
+
+  /// [_revealItems] without the record: decrypts [list] in place and returns
+  /// the fields it left as ciphertext, touching no notifier state, for a
+  /// caller that may still drop [list] after the awaits (see [_applyDetails]).
+  Future<List<(String, String, String)>> _revealItemText(
+      List<Map<String, dynamic>> list) async {
+    final undecrypted = <(String, String, String)>[];
     for (final item in list) {
       switch (item['item_type']) {
         case 'memory':
           final m = item['memory'];
           if (m is Map) {
-            m['name'] = await _revealField('memory', m, 'name');
-            m['description'] = await _revealField('memory', m, 'description');
+            m['name'] = await _revealField('memory', m, 'name', undecrypted);
+            m['description'] =
+                await _revealField('memory', m, 'description', undecrypted);
           }
         case 'journal':
           final j = item['journal'];
           if (j is Map) {
-            j['description'] = await _revealField('journal', j, 'description');
+            j['description'] =
+                await _revealField('journal', j, 'description', undecrypted);
           }
       }
     }
+    return undecrypted;
   }
 
-  Future<String?> _revealField(String kind, Map entry, String field) async {
+  /// Replaces [undecryptedFields] with [undecrypted], as [_revealItemText]
+  /// returned it.
+  void _recordUndecrypted(List<(String, String, String)> undecrypted) {
+    undecryptedFields.reset();
+    for (final (kind, id, field) in undecrypted) {
+      undecryptedFields.mark(kind, id, field);
+    }
+  }
+
+  Future<String?> _revealField(String kind, Map entry, String field,
+      List<(String, String, String)> undecrypted) async {
     final stored = entry[field] as String?;
     final revealed = await encryption.reveal(stored);
     final id = entry['id']?.toString();
@@ -3281,7 +3600,7 @@ class ProjectNotifier extends ChangeNotifier
         stored != null &&
         revealed == stored &&
         EncryptedField.isWellFormed(stored)) {
-      undecryptedFields.mark(kind, id, field);
+      undecrypted.add((kind, id, field));
     }
     return revealed;
   }
@@ -3348,7 +3667,27 @@ class ProjectNotifier extends ChangeNotifier
     }
   }
 
-  Future<void> _applyDetails(dynamic details, ProjectRef ref) async {
+  /// Adopts [details] for [ref] unless [stale] says it no longer should, and
+  /// returns whether it did. Everything that awaits — the reveals — runs on
+  /// the response's own lists first; [stale] is checked once they are done,
+  /// and the open trip, its items, people and day meta are then all assigned
+  /// with no await between. Assigning `ref` before the reveals left a window
+  /// in which the open trip was the reload's but the items still another
+  /// trip's, so an index-addressed save such as reorderItems or removeItem
+  /// went to the wrong trip (I1-R5-1).
+  Future<bool> _applyDetails(
+      dynamic details, ProjectRef ref, bool Function() stale) async {
+    final rawActivities = details['activities'];
+    final List<Map<String, dynamic>> nextActivities = rawActivities is List
+        ? rawActivities.cast<Map<String, dynamic>>()
+        : [];
+    await _revealActivities(nextActivities);
+    final rawItems = details['items'];
+    final List<Map<String, dynamic>> nextItems = rawItems is List
+        ? rawItems.cast<Map<String, dynamic>>()
+        : [];
+    final undecrypted = await _revealItemText(nextItems);
+    if (stale()) return false;
     this.ref = ref.copyWith(
       name: details['name'] as String? ?? ref.name,
       role: details['caller_role'] as String? ?? ref.role,
@@ -3378,15 +3717,9 @@ class ProjectNotifier extends ChangeNotifier
             MapEntry(k as String, Map<String, dynamic>.from(v as Map)))
         : {};
     tripEnd     = details['trip_end']   as String?;
-    final rawActivities = details['activities'];
-    activities = rawActivities is List
-        ? rawActivities.cast<Map<String, dynamic>>()
-        : [];
-    await _revealActivities(activities);
-    final rawItems = details['items'];
-    items = rawItems is List
-        ? rawItems.cast<Map<String, dynamic>>()
-        : [];
+    activities = nextActivities;
+    items = nextItems;
+    _recordUndecrypted(undecrypted);
     final rawPeople = details['people'];
     people = rawPeople is List
         ? rawPeople.cast<Map<String, dynamic>>()
@@ -3403,7 +3736,7 @@ class ProjectNotifier extends ChangeNotifier
     sleepingOptions = rawOpts is List
         ? List<String>.from(rawOpts)
         : List<String>.from(_defaultSleepingOptions);
-    await _revealItems(items);
+    return true;
   }
 
   // ── Mixin delegates (forward private helpers to ProjectMemoryCrudMixin) ────

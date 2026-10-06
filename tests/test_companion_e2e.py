@@ -85,11 +85,11 @@ def test_full_companion_journey(env):
     assert entries[0]["owner_name"] == "Owner"
 
     # Companion adds a counter with a per-day value...
-    r = client.put(f"/api/projects/Japan 2026/day-meta{owner_q}", json={
-        "day_meta": {"2026-07-01": {"counters": {"km": 42}}},
+    r = client.patch(f"/api/projects/Japan 2026/day-meta{owner_q}", json={
+        "days": {"2026-07-01": {"counters": {"km": 42}}},
         "counters": [{"name": "km", "start": 0}],
     })
-    assert r.status_code == 204
+    assert r.status_code == 200
 
     # ...a memory (shared trip content)...
     r = client.post(f"/api/memories/{owner_q}", json={

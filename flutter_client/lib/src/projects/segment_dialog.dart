@@ -109,6 +109,7 @@ class _SegmentDialogState extends State<SegmentDialog> {
   }
 
   void _updatePreview() {
+    if (!widget.notifier.isAlive) return; // see dispose()
     final lat1 = double.tryParse(_startLatCtrl.text.trim());
     final lon1 = double.tryParse(_startLonCtrl.text.trim());
     final lat2 = double.tryParse(_endLatCtrl.text.trim());
@@ -221,7 +222,9 @@ class _SegmentDialogState extends State<SegmentDialog> {
     // locked during unmount (finalizeTree / lockState).
     final notifier = widget.notifier;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      notifier.previewArcNotifier.value = null;
+      // Unless the notifier went first: the provider disposes it when the
+      // account changes, and a disposed ValueNotifier asserts (issue #418).
+      if (notifier.isAlive) notifier.previewArcNotifier.value = null;
     });
     _labelCtrl.dispose();
     _startLatCtrl.dispose();
@@ -484,14 +487,6 @@ class _SegmentDialogState extends State<SegmentDialog> {
       final status = result['route_status'] as String? ?? 'resolved';
       if (status == 'cancelled') return; // navigated away / deleted — stay silent
       if (!notifier.isAlive) return;     // page gone — don't touch the messenger
-      if (status == 'pending') {
-        // Background job still running past the poll window — it'll appear later.
-        messenger.showSnackBar(const SnackBar(
-          content: Text('Still resolving route — it will appear shortly'),
-          duration: Duration(seconds: 5),
-        ));
-        return;
-      }
       final stopCount = result['stop_count'] as int? ?? 0;
       final degraded = result['degraded'] == true;
       final hafasFailed = result['hafas_failed'] == true;

@@ -872,3 +872,7 @@ class DBRecoveryWrap(sqlmodel.SQLModel, table=True):
     kdf_params_json: Optional[str] = sqlmodel.Field(default=None)
     version: int = sqlmodel.Field(default=1)
     created_at: float = sqlmodel.Field(default_factory=time.time)
+    # False while a method="recovery_key" wrap's one-time key has not been
+    # confirmed as saved; the user can then replace it (Decision 16). Every
+    # other method is typed by the user and stored confirmed.
+    confirmed: bool = sqlmodel.Field(default=True)

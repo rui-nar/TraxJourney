@@ -272,6 +272,29 @@ determines who else can. Set at enable time:
 The recovery key is shown **once** at setup — save it (password manager / print).
 The app keeps only the *encrypted* copy, never the plaintext key.
 
+### Unconfirmed recovery keys
+
+Because the key is shown only once, the server records whether you confirmed
+saving it:
+
+- A new recovery key is stored **unconfirmed**. Ticking "I've saved my recovery
+  key" confirms it (`POST /api/encryption/recovery/confirm`). A passphrase or
+  security answers are typed by you, so they are stored confirmed.
+- The confirmation names the exact encrypted copy the screen was showing. If
+  another device has replaced the key since, nothing is confirmed and the app
+  tells you the key on screen is no longer your recovery key.
+- If setup was interrupted, or you left the screen without confirming, the app
+  offers to create a **new** recovery key after your next unlock
+  (`PUT /api/encryption/recovery/recovery_key`). The new key replaces the old
+  one, is shown once, and must be confirmed the same way.
+- Only an unconfirmed key can be replaced. Once confirmed, it cannot be
+  overwritten, even by someone holding your signed-in session. Changing a
+  confirmed recovery key is not available yet.
+- Recovery keys created before this check existed count as confirmed.
+- Someone holding your signed-in session while your key is still unconfirmed
+  could replace it with one you don't have. Your own confirmation then fails,
+  which shows that it happened.
+
 ## Status / limitations (pre-release)
 
 - **Scope**: memory and journal text, plus activity name, track, endpoints and

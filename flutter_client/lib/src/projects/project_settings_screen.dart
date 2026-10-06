@@ -85,6 +85,9 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
   // Local deep-copy of dayMeta so tag edits are applied immediately and
   // passed to saveDayMeta on Save without touching the notifier until then.
   late Map<String, Map<String, dynamic>> _dayMeta;
+  // What the screen opened with: the diff base, so a save sends only the days
+  // it changed (issue #397).
+  late Map<String, Map<String, dynamic>> _initialDayMeta;
 
   static const _allSectionLabels = [
     (icon: Icons.tune,          label: 'General',      key: 0),
@@ -152,6 +155,14 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
           ...e.value,
           if (e.value['tags'] is List)
             'tags': List<String>.from((e.value['tags'] as List).cast<String>()),
+        }
+    };
+    _initialDayMeta = {
+      for (final e in _dayMeta.entries)
+        e.key: {
+          ...e.value,
+          if (e.value['tags'] is List)
+            'tags': List<String>.from(e.value['tags'] as List),
         }
     };
     _counterNameCtrls = n.counters
@@ -251,6 +262,19 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
     } catch (_) {
       return (days: null, failure: ContentCheckFailure.unreachable);
     }
+  }
+
+  /// Structural equality for decoded-JSON values (maps, lists, scalars).
+  static bool _sameValue(Object? a, Object? b) {
+    if (a is Map && b is Map) {
+      return a.length == b.length &&
+          a.keys.every((k) => b.containsKey(k) && _sameValue(a[k], b[k]));
+    }
+    if (a is List && b is List) {
+      return a.length == b.length &&
+          List.generate(a.length, (i) => i).every((i) => _sameValue(a[i], b[i]));
+    }
+    return a == b;
   }
 
   Future<void> _save() async {
@@ -402,11 +426,27 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
       _tripStart == null ? null : _toIso(_tripStart!),
       tripEndStr,
     );
+    // Only what changed goes to the server: the days whose content differs
+    // from what the screen opened with, the pruned days, and the options and
+    // counters when they moved.
+    final changedDays = <String, Map<String, dynamic>>{
+      for (final e in dayMetaToSave.entries)
+        if (!_sameValue(e.value, _initialDayMeta[e.key])) e.key: e.value,
+    };
+    final deletedDays = [
+      for (final k in _initialDayMeta.keys)
+        if (!dayMetaToSave.containsKey(k)) k,
+    ];
+    final optionsChanged = !_sameValue(updatedOpts, n.sleepingOptions) ||
+        updatedOpts.any((o) =>
+            updatedGroups[o] != (n.sleepingOptionGroups[o] ?? 'Other'));
+    final countersChanged = !_sameValue(updatedCounters, n.counters);
     n.saveDayMeta(
-      newDayMeta: dayMetaToSave,
-      newSleepingOptions: updatedOpts,
-      newSleepingOptionGroups: updatedGroups,
-      newCounters: updatedCounters,
+      days: changedDays,
+      delete: deletedDays,
+      newSleepingOptions: optionsChanged ? updatedOpts : null,
+      newSleepingOptionGroups: optionsChanged ? updatedGroups : null,
+      newCounters: countersChanged ? updatedCounters : null,
     );
     n.setTrackStyle(
       color: _trackColor,
@@ -1251,24 +1291,10 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
   }
 
   Future<void> _showRenameTagDialog(String current) async {
-    final ctrl = TextEditingController(text: current);
     final result = await showDialog<String>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Rename tag'),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: 'New name'),
-          onSubmitted: (v) => Navigator.of(context).pop(v),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.of(context).pop(ctrl.text), child: const Text('Rename')),
-        ],
-      ),
+      builder: (_) => _RenameTagDialog(current: current),
     );
-    ctrl.dispose();
     if (result != null) _renameTag(current, result);
   }
 
@@ -2236,6 +2262,44 @@ class _ColorPickerRow extends StatelessWidget {
             child: const Icon(Icons.colorize, size: 16, color: Colors.white70),
           ),
         ),
+      ],
+    );
+  }
+}
+
+/// Owns the rename field's controller so it is disposed with the dialog's
+/// route, after the exit animation, not when the dialog future completes.
+class _RenameTagDialog extends StatefulWidget {
+  final String current;
+  const _RenameTagDialog({required this.current});
+
+  @override
+  State<_RenameTagDialog> createState() => _RenameTagDialogState();
+}
+
+class _RenameTagDialogState extends State<_RenameTagDialog> {
+  late final TextEditingController _ctrl =
+      TextEditingController(text: widget.current);
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Rename tag'),
+      content: TextField(
+        controller: _ctrl,
+        autofocus: true,
+        decoration: const InputDecoration(hintText: 'New name'),
+        onSubmitted: (v) => Navigator.of(context).pop(v),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
+        FilledButton(onPressed: () => Navigator.of(context).pop(_ctrl.text), child: const Text('Rename')),
       ],
     );
   }

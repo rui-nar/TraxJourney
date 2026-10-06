@@ -43,9 +43,20 @@ Future<Map<String, dynamic>> _dedupFetch(
   // unlistened-to and surface a failed fetch as an unhandled async error the
   // moment `future` rejects. .ignore() marks that deliberate (see the same
   // pattern in ProjectNotifier.load()).
-  future.whenComplete(() => _inFlightFetches.remove(key)).ignore();
+  //
+  // Removed only while it is still this fetch's entry: after a
+  // [resetInFlightFetches] the key may already hold the next account's.
+  future.whenComplete(() {
+    if (identical(_inFlightFetches[key], future)) _inFlightFetches.remove(key);
+  }).ignore();
   return future;
 }
+
+/// Forgets every fetch in flight, so the next caller starts its own. Called
+/// when the session ends (issue #418): the keys name a trip, not an account,
+/// so the next account to open a trip of the same name would otherwise be
+/// handed the previous one's response.
+void resetInFlightFetches() => _inFlightFetches.clear();
 
 /// Human-readable payload size for a [PerfSpans.note]. Shared with the
 /// shared-project service, which records the same notes for its own endpoints.
@@ -68,6 +79,9 @@ class ProjectService {
   /// a local write needs the server's actual post-write state, not whatever
   /// was last confirmed valid.
   Future<Map<String, dynamic>> getDetails(ProjectRef ref, {bool bypassCache = false}) async {
+    // Read before anything awaits: the response is cached for the account
+    // that asked, not whoever is signed in when it lands (U5-R1-1).
+    final scope = projectDataCache.scope;
     if (!bypassCache) {
       final cached = await projectDataCache.readFullDetails(ref);
       if (cached != null) return cached;
@@ -83,7 +97,7 @@ class ProjectService {
       perfSpans.note('details', perfSizeLabel(bytes.length));
       final data = await perfSpans.stage(
           'decode_details', () => heavy.decodeJsonMapOffIsolate(bytes));
-      projectDataCache.writeFullDetails(ref, data);
+      projectDataCache.writeFullDetails(ref, data, scope: scope);
       return data;
     });
   }
@@ -101,6 +115,7 @@ class ProjectService {
   /// whether the heavier payloads it may be holding are still valid, so it
   /// would be circular for this call itself to skip the network.
   Future<Map<String, dynamic>> getDetailsMeta(ProjectRef ref) async {
+    final scope = projectDataCache.scope; // see getDetails
     // Routed through the same seam as the heavier payloads: /meta is 10-15x
     // smaller than getDetails but still hundreds of KB on a large trip, and
     // unlike them it lands *before* the spinner clears, where the user is
@@ -111,7 +126,7 @@ class ProjectService {
     perfSpans.note('meta', perfSizeLabel(metaBytes.length));
     final data = await perfSpans.stage(
         'decode_meta', () => heavy.decodeJsonMapOffIsolate(metaBytes));
-    projectDataCache.onMetaFetched(ref, data);
+    projectDataCache.onMetaFetched(ref, data, scope: scope);
     return data;
   }
 
@@ -153,6 +168,7 @@ class ProjectService {
   /// ANR watchdog mid-pan. L1 is preferred when present: that Map is the very
   /// object the decode hop already seeded this session.
   Future<Map<String, dynamic>?> readCachedGeo(ProjectRef ref) async {
+    final scope = projectDataCache.scope; // see getDetails
     final cached = await projectDataCache.readFullGeo(ref);
     // Ask the geometry, not the cache: L1 residency does not imply the decode
     // hop ever ran over this Map (see geoGeometrySeeded).
@@ -161,7 +177,7 @@ class ProjectService {
     if (bytes != null) {
       final geo = await perfSpans.stage(
           'decode_geo_cached', () => heavy.decodeGeoOffIsolate(bytes));
-      projectDataCache.promoteFullGeo(ref, geo);
+      projectDataCache.promoteFullGeo(ref, geo, scope: scope);
       return geo;
     }
     return cached;
@@ -178,13 +194,14 @@ class ProjectService {
   /// See [getDetails] for [bypassCache] — a post-mutation reload must always
   /// hit the network.
   Future<Map<String, dynamic>> getGeo(ProjectRef ref, {bool bypassCache = false}) async {
+    final scope = projectDataCache.scope; // see getDetails
     if (!bypassCache) {
       final cached = await readCachedGeo(ref);
       if (cached != null) return cached;
     }
     return _dedupFetch('geo:${ref.ownerId ?? 0}:${ref.name}', () async {
       final expanded = await _fetchFullGeo(ref);
-      projectDataCache.writeFullGeo(ref, expanded);
+      projectDataCache.writeFullGeo(ref, expanded, scope: scope);
       return expanded;
     });
   }
@@ -276,12 +293,10 @@ class ProjectService {
       ProjectRef ref, double zoom, GeoBox? bbox) async {
     final encoded = Uri.encodeComponent(ref.name);
     final box = bbox == null ? '' : '&bbox=${bbox.param}';
-    final bytes = await perfSpans.stage(
-        'fetch_geo_lod',
-        () => api.getBytes(
-            ref.withOwner(
-                '/api/geo/project/simplified?name=$encoded&zoom=$zoom$box'),
-            timeout: const Duration(seconds: 90)));
+    final bytes = await perfSpans.geoLodFetch(() => api.getBytesWithHeaders(
+        ref.withOwner(
+            '/api/geo/project/simplified?name=$encoded&zoom=$zoom$box'),
+        timeout: const Duration(seconds: 90)));
     perfSpans.note('geo_lod', perfSizeLabel(bytes.length));
     // Same hop as the full-res path, so the geometry caches are seeded and
     // the map's first build after the swap does no O(points) work.
@@ -300,6 +315,7 @@ class ProjectService {
   /// Fetches pre-computed low-res GeoJSON (straight lines per activity) for [ref].
   /// GET /api/geo/project/low-res?name={name}
   Future<Map<String, dynamic>> getLowResGeo(ProjectRef ref) async {
+    final scope = projectDataCache.scope; // see getDetails
     final cached = await projectDataCache.readLowResGeo(ref);
     if (cached != null) return cached;
     return _dedupFetch('lowResGeo:${ref.ownerId ?? 0}:${ref.name}', () async {
@@ -316,7 +332,7 @@ class ProjectService {
       // it needs the same derive-and-seed treatment as the full-res geo.
       final data = await perfSpans.stage(
           'decode_low_res_geo', () => heavy.decodeGeoOffIsolate(bytes));
-      projectDataCache.writeLowResGeo(ref, data);
+      projectDataCache.writeLowResGeo(ref, data, scope: scope);
       return data;
     });
   }

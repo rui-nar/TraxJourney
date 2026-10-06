@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:cryptography_plus/cryptography_plus.dart';
@@ -77,6 +78,133 @@ class FakeEncryptionApi implements EncryptionApi {
       String publicKeyB64, String wrappedCmkB64, String ephemeralPublicKeyB64) async {
     _devices[publicKeyB64] = _FakeDev(true, wrappedCmkB64, ephemeralPublicKeyB64);
   }
+  @override
+  Future<void> confirmRecovery(String method, String wrappedCmkB64) async {}
+  @override
+  Future<String> replaceRecoveryKey(String wrappedCmkB64, String saltB64) async =>
+      wrappedCmkB64;
+}
+
+/// Holds the enable call until [gate] completes; [called] completes when it
+/// arrives.
+class _SlowEnableApi extends FakeEncryptionApi {
+  final called = Completer<void>();
+  final gate = Completer<void>();
+
+  @override
+  Future<void> enable(Map<String, dynamic> payload) async {
+    called.complete();
+    await gate.future;
+    return super.enable(payload);
+  }
+}
+
+/// Holds every key-pair load until [gate] completes; [called] completes when
+/// the first arrives.
+class _SlowLoadStore extends FakeDeviceKeyStore {
+  final called = Completer<void>();
+  final gate = Completer<void>();
+
+  @override
+  Future<SimpleKeyPair?> load() async {
+    if (!called.isCompleted) called.complete();
+    await gate.future;
+    return super.load();
+  }
+}
+
+/// Holds every recovery-wrap answer until [gate] completes.
+class _SlowRecoveryApi extends FakeEncryptionApi {
+  final gate = Completer<void>();
+
+  @override
+  Future<RecoveryWrapData?> fetchRecoveryWrap(String method) async {
+    await gate.future;
+    return super.fetchRecoveryWrap(method);
+  }
+}
+
+/// Holds every status answer until [gate] completes.
+class _SlowStatusApi extends FakeEncryptionApi {
+  final gate = Completer<void>();
+
+  @override
+  Future<EncryptionStatus> fetchStatus(String? devicePublicKeyB64) async {
+    await gate.future;
+    return super.fetchStatus(devicePublicKeyB64);
+  }
+}
+
+/// A Decision 16 server: a `recovery_key` wrap starts unconfirmed, confirm and
+/// replace are compare-and-sets, and enable answers with the stored wrap.
+class _RecoveryServerApi extends FakeEncryptionApi {
+  final unconfirmed = <String>{};
+  final confirmCalls = <String>[];
+  final replaceCalls = <String>[];
+  int statusCalls = 0;
+
+  /// When set, confirm throws it instead of answering.
+  Object? confirmError;
+
+  /// The replaced `recovery_key` wrap and its salt, once there is one.
+  RecoveryWrapData? _replaced;
+
+  @override
+  Future<String?> enable(Map<String, dynamic> payload) async {
+    await super.enable(payload);
+    final r = payload['recovery'] as Map<String, dynamic>;
+    if (r['method'] == 'recovery_key') unconfirmed.add('recovery_key');
+    return r['wrapped_cmk'] as String;
+  }
+
+  @override
+  Future<EncryptionStatus> fetchStatus(String? devicePublicKeyB64) async {
+    statusCalls++;
+    final s = await super.fetchStatus(devicePublicKeyB64);
+    return EncryptionStatus(
+      enabled: s.enabled,
+      recoveryMethods: s.recoveryMethods,
+      deviceRegistered: s.deviceRegistered,
+      deviceApproved: s.deviceApproved,
+      wrappedCmkB64: s.wrappedCmkB64,
+      ephemeralPublicKeyB64: s.ephemeralPublicKeyB64,
+      unconfirmedRecoveryMethods: unconfirmed.toList(),
+    );
+  }
+
+  @override
+  Future<RecoveryWrapData?> fetchRecoveryWrap(String method) async {
+    final replaced = _replaced;
+    if (method == 'recovery_key' && replaced != null) return replaced;
+    return super.fetchRecoveryWrap(method);
+  }
+
+  @override
+  Future<void> confirmRecovery(String method, String wrappedCmkB64) async {
+    confirmCalls.add(wrappedCmkB64);
+    if (confirmError != null) throw confirmError!;
+    final stored = await fetchRecoveryWrap(method);
+    if (stored?.wrappedCmkB64 != wrappedCmkB64) throw const RecoveryKeyConflict();
+    unconfirmed.remove(method);
+  }
+
+  @override
+  Future<String> replaceRecoveryKey(String wrappedCmkB64, String saltB64) async {
+    replaceCalls.add(wrappedCmkB64);
+    if (!unconfirmed.contains('recovery_key')) throw const RecoveryKeyConflict();
+    _replaced = RecoveryWrapData(wrappedCmkB64, saltB64, null);
+    return wrappedCmkB64;
+  }
+}
+
+/// A trusted device that turned encryption on with a recovery key it never
+/// confirmed, signed in again on [api]: unlocked, with the replacement due.
+Future<EncryptionService> _signedInUnconfirmed(_RecoveryServerApi api) async {
+  final store = FakeDeviceKeyStore();
+  await EncryptionService(store, api).enable(const RecoveryKeyChoice());
+  final svc = EncryptionService(store, api);
+  expect(await svc.prepareForSession(), isTrue);
+  return svc;
 }
 
 void main() {
@@ -154,6 +282,71 @@ void main() {
       final api = FakeEncryptionApi()..enablePayload = null;
       final svc = EncryptionService(FakeDeviceKeyStore(), api);
       expect(await svc.unlock(), isFalse);
+    });
+
+    test(
+        'a lock() while enable() is still building keys sends and saves '
+        'nothing (U5-R3-1)', () async {
+      final api = FakeEncryptionApi();
+      final store = _SlowLoadStore();
+      final svc = EncryptionService(store, api);
+      final enabling = svc.enable(const RecoveryKeyChoice());
+      await store.called.future; // client-side, nothing sent yet
+      svc.lock(); // the session ends meanwhile
+      store.gate.complete();
+
+      await expectLater(enabling, throwsA(isA<EncryptionSessionEnded>()));
+      expect(api.enablePayload, isNull, reason: 'the server was never asked');
+      expect(await store.load(), isNull, reason: 'no device key was saved');
+      expect(svc.isUnlocked, isFalse);
+    });
+
+    test('a lock() while enable() is waiting is not undone (U5-R2-1)',
+        () async {
+      final api = _SlowEnableApi();
+      final svc = EncryptionService(FakeDeviceKeyStore(), api);
+      final enabling = svc.enable(const RecoveryKeyChoice());
+      await api.called.future; // now waiting on the server
+      svc.lock(); // the session ends meanwhile
+      api.gate.complete();
+
+      final result = await enabling;
+      expect(svc.isUnlocked, isFalse);
+      expect(result.recoverySecret, isNotNull,
+          reason: 'the server is enabled; its only recovery secret is kept');
+    });
+
+    test('a lock() while recovery is waiting is not undone (U5-R2-1)',
+        () async {
+      final api = _SlowRecoveryApi();
+      final secret = (await EncryptionService(FakeDeviceKeyStore(), api)
+              .enable(const RecoveryKeyChoice()))
+          .recoverySecret!;
+
+      final svc = EncryptionService(FakeDeviceKeyStore(), api);
+      final recovering = svc.recoverWithRecoveryKey(secret);
+      await pumpEventQueue(); // now waiting on the server
+      svc.lock(); // the session ends meanwhile
+      api.gate.complete();
+
+      expect(await recovering, isFalse);
+      expect(svc.isUnlocked, isFalse);
+    });
+
+    test('a lock() while unlock() is waiting is not undone (U5-R1-2)',
+        () async {
+      final api = _SlowStatusApi();
+      final store = FakeDeviceKeyStore();
+      await EncryptionService(store, api).enable(const RecoveryKeyChoice());
+
+      final svc = EncryptionService(store, api);
+      final unlocking = svc.unlock();
+      await pumpEventQueue(); // now waiting on the server
+      svc.lock(); // the session ends meanwhile
+      api.gate.complete();
+
+      expect(await unlocking, isFalse);
+      expect(svc.isUnlocked, isFalse);
     });
 
     test('registered but not yet approved -> cannot unlock', () async {
@@ -311,6 +504,154 @@ void main() {
         final protectedVal = await svc.protect(value);
         expect(protectedVal, isNot(value));
         expect(await svc.decryptText(protectedVal!), value);
+      }
+    });
+  });
+
+  group('recovery key confirm or replace (Decision 16)', () {
+    test('enable hands back the stored wrap to confirm, and confirm records it',
+        () async {
+      final api = _RecoveryServerApi();
+      final svc = EncryptionService(FakeDeviceKeyStore(), api);
+      final result = await svc.enable(const RecoveryKeyChoice());
+      final sent = (api.enablePayload!['recovery'] as Map)['wrapped_cmk'];
+      expect(result.confirmation!.wrappedCmkB64, sent);
+
+      expect(await svc.confirmRecoveryKey(result.confirmation!),
+          RecoveryConfirmOutcome.confirmed);
+      expect(api.confirmCalls, [sent]);
+      expect(api.unconfirmed, isEmpty);
+    });
+
+    test('enable against an older server confirms the wrap it sent', () async {
+      final api = FakeEncryptionApi(); // its enable answers nothing
+      final svc = EncryptionService(FakeDeviceKeyStore(), api);
+      final result = await svc.enable(const RecoveryKeyChoice());
+      expect(result.confirmation!.wrappedCmkB64,
+          (api.enablePayload!['recovery'] as Map)['wrapped_cmk']);
+    });
+
+    test('a passphrase has nothing to confirm', () async {
+      final svc = EncryptionService(FakeDeviceKeyStore(), _RecoveryServerApi());
+      final result = await svc
+          .enable(const PassphraseChoice('correct horse battery staple'));
+      expect(result.confirmation, isNull);
+    });
+
+    test('an unconfirmed recovery key needs replacing only while unlocked',
+        () async {
+      final api = _RecoveryServerApi();
+      final svc = await _signedInUnconfirmed(api);
+      var changes = 0;
+      svc.changes.listen((_) => changes++);
+
+      expect(svc.needsRecoveryKeyReplacement, isTrue);
+      svc.lock();
+      expect(svc.needsRecoveryKeyReplacement, isFalse);
+      await pumpEventQueue();
+      expect(changes, 1, reason: 'the banner hears the lock');
+    });
+
+    test('a status without the field reads as nothing unconfirmed', () async {
+      final store = FakeDeviceKeyStore();
+      final api = FakeEncryptionApi(); // an older server's status
+      await EncryptionService(store, api).enable(const RecoveryKeyChoice());
+      final svc = EncryptionService(store, api);
+      expect(await svc.prepareForSession(), isTrue);
+      expect(svc.needsRecoveryKeyReplacement, isFalse);
+    });
+
+    test('a confirmed recovery key is not offered for replacement', () async {
+      final store = FakeDeviceKeyStore();
+      final api = _RecoveryServerApi();
+      final first = EncryptionService(store, api);
+      final result = await first.enable(const RecoveryKeyChoice());
+      await first.confirmRecoveryKey(result.confirmation!);
+
+      final svc = EncryptionService(store, api);
+      expect(await svc.prepareForSession(), isTrue);
+      expect(svc.needsRecoveryKeyReplacement, isFalse);
+    });
+
+    test('replace sends one wrap, the new key recovers, and confirm clears it',
+        () async {
+      final api = _RecoveryServerApi();
+      final svc = await _signedInUnconfirmed(api);
+
+      final key = await svc.replaceRecoveryKey();
+      expect(api.replaceCalls, hasLength(1));
+      expect(key.confirmation.wrappedCmkB64, api.replaceCalls.single);
+      expect(await svc.confirmRecoveryKey(key.confirmation),
+          RecoveryConfirmOutcome.confirmed);
+      expect(api.confirmCalls.last, api.replaceCalls.single);
+      expect(svc.needsRecoveryKeyReplacement, isFalse);
+
+      // The key shown is the one the server holds.
+      final elsewhere = EncryptionService(FakeDeviceKeyStore(), api);
+      expect(await elsewhere.recoverWithRecoveryKey(key.secret), isTrue);
+    });
+
+    test('a lock() before the replacement is sent sends nothing', () async {
+      final api = _RecoveryServerApi();
+      final svc = await _signedInUnconfirmed(api);
+
+      final replacing = svc.replaceRecoveryKey(); // still wrapping, client-side
+      svc.lock(); // the session ends meanwhile
+      await expectLater(replacing, throwsA(isA<EncryptionSessionEnded>()));
+      expect(api.replaceCalls, isEmpty);
+    });
+
+    test('a confirm after the session ended sends nothing', () async {
+      final api = _RecoveryServerApi();
+      final svc = await _signedInUnconfirmed(api);
+      final key = await svc.replaceRecoveryKey();
+      svc.lock();
+      expect(await svc.confirmRecoveryKey(key.confirmation),
+          RecoveryConfirmOutcome.failed);
+      expect(api.confirmCalls, isEmpty);
+    });
+
+    test('replacing a confirmed key is refused and refetches the status',
+        () async {
+      final api = _RecoveryServerApi();
+      final svc = await _signedInUnconfirmed(api);
+      api.unconfirmed.clear(); // another device confirmed it meanwhile
+      final before = api.statusCalls;
+
+      await expectLater(
+          svc.replaceRecoveryKey(), throwsA(isA<RecoveryKeyConflict>()));
+      expect(api.statusCalls, before + 1);
+      expect(svc.needsRecoveryKeyReplacement, isFalse);
+    });
+
+    test('confirming a key replaced elsewhere is a conflict (U5b-R1-1)',
+        () async {
+      final api = _RecoveryServerApi();
+      final a = await _signedInUnconfirmed(api);
+      final shownOnA = await a.replaceRecoveryKey();
+      await a.replaceRecoveryKey(); // stands in for device B's replace
+      final before = api.statusCalls;
+
+      expect(await a.confirmRecoveryKey(shownOnA.confirmation),
+          RecoveryConfirmOutcome.conflict);
+      expect(api.unconfirmed, contains('recovery_key'),
+          reason: 'nothing was confirmed');
+      expect(api.statusCalls, before + 1, reason: 'the status is refetched');
+      expect(a.needsRecoveryKeyReplacement, isTrue);
+    });
+
+    test('a failed confirm keeps the key unconfirmed, for the next sign-in',
+        () async {
+      for (final error in <Object>[
+        Exception('405 Method Not Allowed'),
+        StateError('network down'),
+      ]) {
+        final api = _RecoveryServerApi()..confirmError = error;
+        final svc = await _signedInUnconfirmed(api);
+        final key = await svc.replaceRecoveryKey();
+        expect(await svc.confirmRecoveryKey(key.confirmation),
+            RecoveryConfirmOutcome.failed);
+        expect(svc.needsRecoveryKeyReplacement, isTrue);
       }
     });
   });

@@ -166,7 +166,7 @@ def test_viewer_can_read_but_not_write(env):
     q = f"?owner={ids['owner']}"
     assert client.get(f"/api/projects/Trip/meta{q}").status_code == 200
     assert client.get(f"/api/projects/Trip/members{q}").status_code == 200
-    r = client.put(f"/api/projects/Trip/day-meta{q}", json={"day_meta": {}})
+    r = client.patch(f"/api/projects/Trip/day-meta{q}", json={"days": {}})
     assert r.status_code == 403
     r = client.put(f"/api/projects/Trip{q}", json={"trip_start": "2026-01-01"})
     assert r.status_code == 403
