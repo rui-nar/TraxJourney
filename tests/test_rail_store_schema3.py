@@ -8,14 +8,15 @@ selection: bit 0 the layer's routable class (strategy B), bit 1 `ferry=yes`
 
 Three things are under test, in the order they matter:
 
-* **rail answers do not move.** v1, v2 and v3 rail stores answer the same rail
-  queries, and a rail store's extent is still its track's;
+* **rail answers do not move.** v1, v2, v3 and v4 rail stores answer the same
+  rail queries, and a rail store's extent is still its track's;
 * each layer's store holds its own selection, and is refused or measured over
   its **routable set**, not over bit 0 alone — or the bus layer, mapped as
   relations over ordinary roads, would be refused everywhere;
 * the names: rail stores keep theirs.
 """
 import os
+import shutil
 import sqlite3
 
 import osmium
@@ -298,18 +299,41 @@ def test_the_builder_cli_takes_a_layer(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Rail answers do not move — v1, v2 and v3
+# Rail answers do not move — v1, v2, v3 and v4
 # ---------------------------------------------------------------------------
+
+def _downgrade_to_schema_3(src, dst):
+    """The same store as the schema 3 builder wrote it, before F5.
+
+    The tables are 4's. What differs is that a ferry or bus store located a
+    relation's stop only when it carried a uic_ref, so the rest are unlocated
+    here as they were on the box. A rail store located exactly those then too,
+    so for rail only the version number moves.
+    """
+    shutil.copy(src, dst)
+    conn = sqlite3.connect(dst)
+    layer = conn.execute("SELECT value FROM meta WHERE key = 'layer'").fetchone()[0]
+    if layer != "rail":
+        conn.execute("UPDATE relation_node SET lat = NULL, lon = NULL WHERE uic = ''")
+    conn.executescript("""
+        UPDATE meta SET value = '3' WHERE key = 'schema';
+        PRAGMA user_version = 3;
+    """)
+    conn.commit()
+    conn.close()
+    return dst
+
 
 @pytest.fixture(scope="module")
 def three_versions(tmp_path_factory):
-    """The Luxembourg fixture as a v3 store, and the same data as v2 and v1."""
+    """The Luxembourg fixture as a v4 store, and the same data as v3, v2 and v1."""
     d = tmp_path_factory.mktemp("versions")
-    v3 = d / "v3.rail.sqlite"
-    build_store(LUXEMBOURG, v3, region="europe/luxembourg", source_date="2026-09-05")
-    v2 = _downgrade_to_schema_2(str(v3), str(d / "v2.rail.sqlite"))
-    v1 = _downgrade_to_schema_1(str(v3), str(d / "v1.rail.sqlite"))
-    stores = {3: RailStore(v3), 2: RailStore(v2), 1: RailStore(v1)}
+    v4 = d / "v4.rail.sqlite"
+    build_store(LUXEMBOURG, v4, region="europe/luxembourg", source_date="2026-09-05")
+    v3 = _downgrade_to_schema_3(str(v4), str(d / "v3.rail.sqlite"))
+    v2 = _downgrade_to_schema_2(str(v4), str(d / "v2.rail.sqlite"))
+    v1 = _downgrade_to_schema_1(str(v4), str(d / "v1.rail.sqlite"))
+    stores = {4: RailStore(v4), 3: RailStore(v3), 2: RailStore(v2), 1: RailStore(v1)}
     yield stores
     for store in stores.values():
         store.close()
@@ -321,15 +345,15 @@ def test_the_downgraded_files_are_what_the_old_builders_wrote(three_versions):
         conn = sqlite3.connect(store.path)
         columns = [r[1] for r in conn.execute("PRAGMA table_info(way)")]
         conn.close()
-        assert columns == (["id", "cls", "geom"] if version == 3 else ["id", "rail", "geom"])
+        assert columns == (["id", "cls", "geom"] if version >= 3 else ["id", "rail", "geom"])
         assert store.layer == "rail"
 
 
-def test_v1_v2_and_v3_rail_stores_answer_the_same_rail_queries(three_versions):
-    v3 = three_versions[3]
-    min_lat, min_lon, max_lat, max_lon = v3.bbox
+def test_v1_v2_v3_and_v4_rail_stores_answer_the_same_rail_queries(three_versions):
+    v4 = three_versions[4]
+    min_lat, min_lon, max_lat, max_lon = v4.bbox
     mid_lat, mid_lon = (min_lat + max_lat) / 2, (min_lon + max_lon) / 2
-    boxes = [v3.bbox, (min_lat, min_lon, mid_lat, mid_lon),
+    boxes = [v4.bbox, (min_lat, min_lon, mid_lat, mid_lon),
              (mid_lat, mid_lon, max_lat, max_lon), (49.58, 6.10, 49.62, 6.16)]
     points = [(49.6, 6.13), (mid_lat, mid_lon), (49.8, 5.95), (50.1, 6.1)]
 
@@ -344,8 +368,9 @@ def test_v1_v2_and_v3_rail_stores_answer_the_same_rail_queries(three_versions):
             "uic_pair": store.relations_for_uic_pair("8200100", "8200710"),
         }
 
-    want = answers(v3)
+    want = answers(v4)
     assert want["ways"][0] and want["uic_pair"]
+    assert answers(three_versions[3]) == want
     assert answers(three_versions[2]) == want
     assert answers(three_versions[1]) == want
 
@@ -362,7 +387,7 @@ def test_a_v1_or_v2_store_has_no_other_class(three_versions):
 def test_the_rail_store_holds_what_schema_2_held(three_versions):
     """Same track count, member count and extent as the v2 builder wrote — the
     meta keys every report since Phase 2 has quoted."""
-    meta = three_versions[3].meta
+    meta = three_versions[4].meta
     assert int(meta["ways"]) == 1167
     assert int(meta["member_ways"]) == 989
     assert int(meta["routable_ways"]) == 1167
@@ -370,8 +395,8 @@ def test_the_rail_store_holds_what_schema_2_held(three_versions):
 
 
 def test_the_supported_set_spans_every_schema_a_box_can_hold():
-    assert SCHEMA_VERSION == 3
-    assert _SUPPORTED_SCHEMAS == (1, 2, 3)
+    assert SCHEMA_VERSION == 4
+    assert _SUPPORTED_SCHEMAS == (1, 2, 3, 4)
 
 
 # ---------------------------------------------------------------------------

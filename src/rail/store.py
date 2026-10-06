@@ -39,7 +39,7 @@ from collections import OrderedDict
 from typing import Iterable, Optional
 
 # Bump when the schema changes shape. What the *builder* writes.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # What the reader accepts. An explicit set, never a `>=` comparison: the point
 # of refusing a version is that a file we only half understand returns wrong
@@ -62,10 +62,24 @@ SCHEMA_VERSION = 3
 #      and nothing else, which is exactly what the flag meant: a v1/v2 file is
 #      a rail store, it answers a bit-0 query as it always did, and any other
 #      bit with nothing.
-#   3  current: `way.cls`, the class bitmask below, so one store format serves
-#      the rail, ferry and bus layers (docs/LOCAL_TRANSPORT_DATA_PLAN.md,
+#   3  `way.cls`, the class bitmask below, so one store format serves the
+#      rail, ferry and bus layers (docs/LOCAL_TRANSPORT_DATA_PLAN.md,
 #      Decision 9).
-_SUPPORTED_SCHEMAS = (1, 2, 3)
+#   4  current. Same tables as 3; the number records that a ferry or bus store
+#      locates every stop its relations name, not only uic_ref ones. A rail
+#      store is unchanged from 3 and read as one. A schema 3 ferry or bus store
+#      is refused — see _LOCATED_STOPS_SCHEMA.
+_SUPPORTED_SCHEMAS = (1, 2, 3, 4)
+
+# The first schema whose ferry and bus stores place their relations' stops.
+# Strategy A bridges a broken relation only towards a stop it can place, so an
+# older ferry/bus store does not fail, it answers *differently* from Overpass
+# (38 of Denmark's 730 bus relations) — and nothing downstream can tell. Refused
+# here, it is "region not covered" and the leg goes to Overpass until the first
+# refresh rebuilds it, which the sidecar's schema field forces. Rail stores are
+# exempt: theirs did not change, and refusing them would be the outage
+# _SUPPORTED_SCHEMAS exists to prevent.
+_LOCATED_STOPS_SCHEMA = 4
 
 # The layers a region can publish a store for, one file each — never one graph:
 # bus ways are roads, and a joint graph would let a rail Dijkstra walk down a
@@ -243,6 +257,12 @@ class RailStore:
         self.meta = {
             k: v for k, v in self._conn.execute("SELECT key, value FROM meta")
         }
+        if self.layer != DEFAULT_LAYER and version < _LOCATED_STOPS_SCHEMA:
+            self._conn.close()
+            raise RailStoreError(
+                f"{self.path}: a schema {version} {self.layer} store does not "
+                f"locate its stops, rebuild it at schema {_LOCATED_STOPS_SCHEMA}"
+            )
 
     # ------------------------------------------------------------------
     # Region identity

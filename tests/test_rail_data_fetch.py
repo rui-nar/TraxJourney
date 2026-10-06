@@ -772,9 +772,10 @@ def test_the_digest_is_recorded_only_after_the_store_lands(tmp_path, monkeypatch
 
 def test_the_schema_3_bump_rebuilds_a_rail_store_a_previous_version_installed(
         tmp_path, capsys):
-    """What each box holds the first time this version refreshes: a schema 2
-    store whose sidecar says so. The release has not changed, and the store is
-    rebuilt anyway — at schema 3, by the new builder."""
+    """What a box still on schema 2 holds the first time this version
+    refreshes: a schema 2 store whose sidecar says so. The release has not
+    changed, and the store is rebuilt anyway — at the current schema, by the
+    new builder."""
     from tests.test_rail_store_schema2 import _downgrade_to_schema_2
 
     lux = _lux()
@@ -800,9 +801,10 @@ def test_the_schema_3_bump_rebuilds_a_rail_store_a_previous_version_installed(
     assert "1 installed, 0 up to date" in capsys.readouterr().out
     assert [c for c in calls if c.endswith(".osm.pbf")] == [
         f"{BASE}/rail-data-2026-09-06/{lux['file']}"]
-    assert fetch.installed_build(tmp_path, "europe/luxembourg") == (lux["sha256"], 3)
+    assert fetch.installed_build(tmp_path, "europe/luxembourg") == (
+        lux["sha256"], SCHEMA_VERSION)
     with RailStore(store) as after:
-        assert after.schema == SCHEMA_VERSION == 3
+        assert after.schema == SCHEMA_VERSION
         assert after.ways_in_bbox(*after.bbox) == ways
 
 
@@ -871,6 +873,49 @@ def test_a_schema_3_release_installs_every_layers_store(tmp_path, layer_pbfs):
         ("europe/luxembourg", "rail")]
     assert load_coverage(str(tmp_path)) == [
         ("europe/luxembourg", (LUX_BBOX[1], LUX_BBOX[0], LUX_BBOX[3], LUX_BBOX[2]))]
+
+
+def test_the_schema_4_bump_rebuilds_every_store_a_schema_3_fetch_installed(
+        tmp_path, layer_pbfs, capsys):
+    """What a box holds when part 1 of #345 reached it first: rail, ferry and
+    bus stores built at schema 3, whose ferry and bus stops are not located,
+    each with a sidecar saying 3. The release has not changed, and all three
+    are rebuilt anyway — a ferry or bus store kept would answer strategy A
+    differently from Overpass, and the reader would have no way to tell."""
+    from tests.test_rail_store_schema3 import _downgrade_to_schema_3
+
+    bodies, manifest = _layered_release(layer_pbfs)
+    get, _ = _transport(bodies)
+    assert fetch.refresh(tmp_path, get=get) == 0
+
+    for entry in manifest["regions"]:
+        layer = entry["layer"]
+        store = tmp_path / store_filename("europe/luxembourg", layer)
+        old = tmp_path / "old.sqlite"
+        _downgrade_to_schema_3(str(store), str(old))
+        os.replace(old, store)
+        sidecar = tmp_path / (store_filename("europe/luxembourg", layer) + fetch.SHA_SUFFIX)
+        sidecar.write_text(f"{entry['sha256']} 3\n", encoding="utf-8")
+        assert fetch.installed_build(tmp_path, "europe/luxembourg", layer) == (
+            entry["sha256"], 3)
+    capsys.readouterr()
+
+    get, calls = _transport(bodies)
+    assert fetch.refresh(tmp_path, get=get) == 0
+
+    assert "3 installed, 0 up to date" in capsys.readouterr().out
+    assert len([c for c in calls if c.endswith(".osm.pbf")]) == 3
+    for entry in manifest["regions"]:
+        layer = entry["layer"]
+        assert fetch.installed_build(tmp_path, "europe/luxembourg", layer) == (
+            entry["sha256"], SCHEMA_VERSION)
+        with RailStore(tmp_path / store_filename("europe/luxembourg", layer)) as store:
+            assert store.schema == SCHEMA_VERSION == 4
+
+    # And having rebuilt once, it converges at schema 4.
+    get, calls = _transport(bodies)
+    assert fetch.refresh(tmp_path, get=get) == 0
+    assert [c for c in calls if c.endswith(".osm.pbf")] == []
 
 
 def test_rail_installs_the_same_from_a_schema_2_or_a_schema_3_release(
