@@ -19,6 +19,7 @@ import '../map/geo_point.dart';
 import '../map/polyline_decoder.dart';
 import '../share/share_content_generator.dart';
 import 'client_geo_builder.dart' as client_geo;
+import 'facets/project_facet.dart';
 import 'geo_viewport.dart';
 import 'map_geometry_memo.dart';
 import 'members_service.dart';
@@ -410,6 +411,34 @@ class ProjectNotifier extends ChangeNotifier
 
   ProjectNotifier(this._service, {MembersService? membersService})
       : _membersService = membersService ?? MembersService();
+
+  // ── Facets (#294) ──────────────────────────────────────────────────────────
+  //
+  // The slices of this notifier's state that widgets can listen to one by
+  // one; see facets/project_facet.dart. Each belongs to this instance: it is
+  // created with it and disposed by [dispose]. The writers are for this class
+  // and its mixins only — never a subclass or a widget; the facet write
+  // restriction test enforces it.
+
+  final GeoFacetWriter geoFacetWriter = GeoFacetWriter();
+  final SelectionFacetWriter selectionFacetWriter = SelectionFacetWriter();
+  final StyleFacetWriter styleFacetWriter = StyleFacetWriter();
+  final ItemsFacetWriter itemsFacetWriter = ItemsFacetWriter();
+  final ElevationFacetWriter elevationFacetWriter = ElevationFacetWriter();
+
+  GeoFacet get geoFacet => geoFacetWriter.facet;
+  SelectionFacet get selectionFacet => selectionFacetWriter.facet;
+  StyleFacet get styleFacet => styleFacetWriter.facet;
+  ItemsFacet get itemsFacet => itemsFacetWriter.facet;
+  ElevationFacet get elevationFacet => elevationFacetWriter.facet;
+
+  List<ProjectFacetWriter> get _facetWriters => [
+        geoFacetWriter,
+        selectionFacetWriter,
+        styleFacetWriter,
+        itemsFacetWriter,
+        elevationFacetWriter,
+      ];
 
   /// The addressing for the currently open project (name + owner + role —
   /// issue #106). Null until [load] has been called at least once.
@@ -2283,6 +2312,11 @@ class ProjectNotifier extends ChangeNotifier
     people = [];
     groups = [];
     undecryptedFields.reset();
+    geoFacetWriter.reset();
+    selectionFacetWriter.reset();
+    styleFacetWriter.reset();
+    itemsFacetWriter.reset();
+    elevationFacetWriter.reset();
     geo = null;
     resetSegmentState();
     selectedActivityId = null;
@@ -2918,9 +2952,18 @@ class ProjectNotifier extends ChangeNotifier
   @override
   bool get isAlive => !_isDisposed;
 
+  /// Notifies the listeners of every facet written since the last notify,
+  /// each once, then this notifier's own listeners. Facet writes notify
+  /// nobody by themselves, so each notify of this notifier keeps telling
+  /// everyone at the moment it always did (Decision 17 of
+  /// docs/CLIENT_STATE_MAP_PLAN.md).
   @override
   void notifyListeners() {
-    if (!_isDisposed) super.notifyListeners();
+    if (_isDisposed) return;
+    for (final writer in _facetWriters) {
+      writer.flush();
+    }
+    super.notifyListeners();
   }
 
   /// Discarded — by its screen, or by the provider when the account changes
@@ -2951,6 +2994,9 @@ class ProjectNotifier extends ChangeNotifier
     previewArcNotifier.dispose();
     elevationCursorNotifier.dispose();
     mapCursorDistNotifier.dispose();
+    for (final writer in _facetWriters) {
+      writer.dispose();
+    }
     super.dispose();
   }
 
