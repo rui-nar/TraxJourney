@@ -44,15 +44,19 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:traxjourney_client/main.dart' show accountScopedProjectNotifier;
 import 'package:traxjourney_client/src/api/client.dart' show ApiException;
 import 'package:traxjourney_client/src/auth/auth_notifier.dart';
 import 'package:traxjourney_client/src/auth/auth_service.dart';
 import 'package:traxjourney_client/src/core/project_ref.dart';
 import 'package:traxjourney_client/src/projects/app_screen.dart';
 import 'package:traxjourney_client/src/projects/elevation_chart.dart';
+import 'package:traxjourney_client/src/projects/map_panel.dart' show MapPanel;
+import 'package:traxjourney_client/src/projects/people_screen.dart';
 import 'package:traxjourney_client/src/projects/project_filters.dart';
 import 'package:traxjourney_client/src/projects/project_notifier.dart';
 import 'package:traxjourney_client/src/projects/project_service.dart';
+import 'package:traxjourney_client/src/projects/project_stats_screen.dart';
 import 'package:traxjourney_client/src/projects/view_screen.dart';
 import 'package:traxjourney_client/src/shared/shared_project_screen.dart';
 
@@ -622,6 +626,22 @@ AuthNotifier _signedIn() => AuthNotifier(AuthService())
 /// Pumps AppScreen on an empty trip and waits for its load.
 Future<ProjectNotifier> _pumpAppScreen(WidgetTester tester) async {
   final notifier = _TestProjectNotifier();
+  await _pumpAppScreenWith(
+      tester,
+      (child) => ChangeNotifierProvider<ProjectNotifier>.value(
+          value: notifier, child: child));
+  for (var i = 0; i < 20 && notifier.isLoading; i++) {
+    await tester.pump(const Duration(milliseconds: 50));
+  }
+  await tester.pump();
+  return notifier;
+}
+
+/// Pumps AppScreen under what [provide] wraps around the app: the
+/// ProjectNotifier's provider.
+Future<void> _pumpAppScreenWith(
+    WidgetTester tester, Widget Function(Widget child) provide,
+    {AuthNotifier? auth}) async {
   final router = GoRouter(
     initialLocation: '/app?project=Trip',
     routes: [
@@ -632,20 +652,30 @@ Future<ProjectNotifier> _pumpAppScreen(WidgetTester tester) async {
       ),
     ],
   );
-  await tester.pumpWidget(MultiProvider(
-    providers: [
-      ChangeNotifierProvider<AuthNotifier>.value(value: _signedIn()),
-      ChangeNotifierProvider<ProjectNotifier>.value(value: notifier),
-    ],
-    child: MaterialApp.router(routerConfig: router),
+  await tester.pumpWidget(ChangeNotifierProvider<AuthNotifier>.value(
+    value: auth ?? _signedIn(),
+    child: provide(MaterialApp.router(routerConfig: router)),
   ));
-  await tester.pump();
   // AppScreen mounts a real map that never quiesces: no pumpAndSettle.
-  for (var i = 0; i < 20 && notifier.isLoading; i++) {
-    await tester.pump(const Duration(milliseconds: 50));
-  }
   await tester.pump();
-  return notifier;
+}
+
+/// Provides [holder]'s notifier, and the next one when [holder] changes:
+/// an account change as the app-wide provider makes it, with the old
+/// notifier kept alive, so a write to it can show it is no longer followed.
+class _Swappable extends StatelessWidget {
+  const _Swappable(this.holder, {required this.child});
+
+  final ValueNotifier<ProjectNotifier> holder;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => ValueListenableBuilder(
+        valueListenable: holder,
+        builder: (_, notifier, __) =>
+            ChangeNotifierProvider<ProjectNotifier>.value(
+                value: notifier, child: child),
+      );
 }
 
 IconButton _buttonFor(WidgetTester tester, String tooltip) =>
@@ -1002,4 +1032,284 @@ class W extends StatelessWidget {
       reportTestException = previousReporter;
     });
   });
+
+  group('a swapped notifier, style and the chart memo', () {
+    setUp(() => SharedPreferences.setMockInitialValues({}));
+
+    Map<String, dynamic> hike(int id, String day) => {
+          'id': id,
+          'type': 'Hike',
+          'start_date_local': '${day}T08:00:00',
+        };
+
+    testWidgets(
+        "AppScreen's filter button and chart follow the new notifier's facets "
+        'after a swap, and no longer the old one', (tester) async {
+      final old = _TestProjectNotifier();
+      final holder = ValueNotifier<ProjectNotifier>(old);
+      await _pumpAppScreenWith(
+          tester, (child) => _Swappable(holder, child: child));
+      for (var i = 0; i < 20 && old.isLoading; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(_chart(tester).elevation, same(old.elevationFacet));
+
+      final next = _TestProjectNotifier();
+      holder.value = next;
+      await tester.pump();
+      expect(_chart(tester).elevation, same(next.elevationFacet));
+      expect(_buttonFor(tester, 'Filter').onPressed, isNull,
+          reason: 'the new notifier holds no trip');
+
+      // The old notifier's facets change: nothing follows them any more.
+      old.itemsFacetWriter.setActivities([hike(1, '2024-04-01')]);
+      old.itemsFacetWriter.flush();
+      old.selectionFacetWriter
+          .setFilters(const ProjectFilters(activityTypes: {'hike'}), const {});
+      old.selectionFacetWriter.selectActivity(1);
+      _flushSelection(old);
+      await tester.pump();
+      expect(_buttonFor(tester, 'Filter').onPressed, isNull);
+      expect(_badgeOf(tester, 'Filter').isLabelVisible, isFalse);
+      expect(_chart(tester).selectedActivityId, isNull);
+
+      // The new one's do, each told to its facet alone.
+      next.itemsFacetWriter.setActivities([hike(2, '2024-04-01')]);
+      next.itemsFacetWriter.flush();
+      await tester.pump();
+      expect(_buttonFor(tester, 'Filter').onPressed, isNotNull);
+      next.selectionFacetWriter
+          .setFilters(const ProjectFilters(activityTypes: {'hike'}), const {});
+      next.selectionFacetWriter.selectActivity(2);
+      _flushSelection(next);
+      await tester.pump();
+      expect(_badgeOf(tester, 'Filter').isLabelVisible, isTrue);
+      expect(_chart(tester).selectedActivityId, 2);
+    });
+
+    testWidgets(
+        'AppScreen follows the notifier the account-scoped provider hands out '
+        'on an account change', (tester) async {
+      final auth = _signedIn();
+      final made = <ProjectNotifier>[];
+      ProjectNotifier make() {
+        final n = _TestProjectNotifier();
+        made.add(n);
+        return n;
+      }
+
+      await _pumpAppScreenWith(
+          tester,
+          (child) => MultiProvider(
+              providers: [accountScopedProjectNotifier(make)], child: child),
+          auth: auth);
+      for (var i = 0; i < 20 && made.last.isLoading; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      final first = made.last;
+      expect(_chart(tester).elevation, same(first.elevationFacet));
+
+      auth.updateUser(const {
+        'id': 'user-2',
+        'email': 'b@x.com',
+        'display_name': 'B',
+        'auth_provider': 'local',
+      });
+      await tester.pump();
+      final second = made.last;
+      expect(second, isNot(same(first)),
+          reason: 'a new account, a new notifier');
+      expect(_chart(tester).elevation, same(second.elevationFacet));
+
+      second.selectionFacetWriter
+          .setFilters(const ProjectFilters(activityTypes: {'hike'}), const {});
+      _flushSelection(second);
+      await tester.pump();
+      expect(_badgeOf(tester, 'Filter').isLabelVisible, isTrue);
+    });
+
+    testWidgets(
+        "the stats screen's sleeping groups follow the new notifier's items "
+        'after a swap, and no longer the old one', (tester) async {
+      final old = _TestProjectNotifier();
+      await old.load(const ProjectRef(name: 'Trip'));
+      final holder = ValueNotifier<ProjectNotifier>(old);
+      await tester.pumpWidget(MaterialApp(
+        home: _Swappable(holder,
+            child: ProjectStatsScreen(
+                projectName: 'Trip', service: _SleepingStatsService())),
+      ));
+      await tester.pumpAndSettle();
+      expect(find.text('Other  3'), findsOneWidget);
+
+      final next = _TestProjectNotifier();
+      holder.value = next;
+      await tester.pump();
+
+      old.itemsFacetWriter.setSleepingOptionGroups({'Tent': 'Indoors'});
+      old.itemsFacetWriter.flush();
+      await tester.pump();
+      expect(find.text('Indoors  3'), findsNothing);
+      expect(find.text('Other  3'), findsOneWidget);
+
+      next.itemsFacetWriter.setSleepingOptionGroups({'Tent': 'Outdoors'});
+      next.itemsFacetWriter.flush();
+      await tester.pump();
+      expect(find.text('Outdoors  3'), findsOneWidget);
+    });
+
+    testWidgets(
+        "the people screen follows the new notifier's items after a swap, "
+        'and no longer the old one', (tester) async {
+      final old = ProjectNotifier(ProjectService());
+      final holder = ValueNotifier<ProjectNotifier>(old);
+      await tester.pumpWidget(MaterialApp(
+        home: ValueListenableBuilder(
+          valueListenable: holder,
+          builder: (_, n, __) => PeopleScreen(notifier: n),
+        ),
+      ));
+      await tester.pump();
+      final next = ProjectNotifier(ProjectService());
+      holder.value = next;
+      await tester.pump();
+
+      old.itemsFacetWriter.setPeople([
+        {'id': 1, 'name': 'Alice'},
+      ]);
+      old.itemsFacetWriter.flush();
+      await tester.pump();
+      expect(find.text('Alice'), findsNothing);
+
+      next.itemsFacetWriter.setPeople([
+        {'id': 2, 'name': 'Bob'},
+      ]);
+      next.itemsFacetWriter.flush();
+      await tester.pump();
+      expect(find.text('Bob'), findsOneWidget);
+    });
+
+    testWidgets(
+        "AppScreen's charts follow a style-only change: the elevation colour, "
+        'wide and narrow, with no root notify', (tester) async {
+      final n = await _pumpAppScreen(tester);
+      const red = Color(0xFFFF0000);
+      const blue = Color(0xFF0000FF);
+      n.styleFacetWriter.setElevationChartColor(red);
+      n.styleFacetWriter.flush();
+      await tester.pump();
+      expect(_chart(tester).color, red);
+
+      tester.view.physicalSize = const Size(700, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await tester.pump();
+      n.styleFacetWriter.setElevationChartColor(blue);
+      n.styleFacetWriter.flush();
+      await tester.pump();
+      expect(_chart(tester).color, blue);
+    });
+
+    testWidgets(
+        "AppScreen's chart activities: the same list on an unrelated rebuild, "
+        'a new one for new activities or new days', (tester) async {
+      final n = await _pumpAppScreen(tester);
+      final a1 = hike(1, '2024-04-01');
+      final a2 = hike(2, '2024-04-02');
+      n.itemsFacetWriter.setActivities([a1, a2]);
+      n.itemsFacetWriter.flush();
+      n.selectionFacetWriter.selectDay('2024-04-01');
+      _flushSelection(n);
+      await tester.pump();
+      final onDay1 = _chart(tester).activities;
+      expect(onDay1, [a1]);
+
+      // Unrelated changes rebuild the chart with the very same list, so it
+      // does not recompute its profile.
+      n.selectionFacetWriter.toggleJournals();
+      _flushSelection(n);
+      n.styleFacetWriter.setElevationChartColor(const Color(0xFF00FF00));
+      n.styleFacetWriter.flush();
+      n.itemsFacetWriter.setPeople([
+        {'id': 9, 'name': 'Ana'},
+      ]);
+      n.itemsFacetWriter.flush();
+      await tester.pump();
+      expect(_chart(tester).color, const Color(0xFF00FF00),
+          reason: 'the chart was rebuilt');
+      expect(_chart(tester).activities, same(onDay1));
+
+      // New activities (a new list): the day's new list.
+      final a3 = hike(3, '2024-04-01');
+      n.itemsFacetWriter.setActivities([a1, a2, a3]);
+      n.itemsFacetWriter.flush();
+      await tester.pump();
+      expect(_chart(tester).activities, [a1, a3]);
+
+      // New days, same activities: those days' list.
+      n.selectionFacetWriter.selectDays({'2024-04-02'});
+      _flushSelection(n);
+      await tester.pump();
+      expect(_chart(tester).activities, [a2]);
+      n.selectionFacetWriter.selectDays({'2024-04-01', '2024-04-02'});
+      _flushSelection(n);
+      await tester.pump();
+      expect(_chart(tester).activities, [a1, a2, a3]);
+    });
+
+    testWidgets(
+        "SharedProjectScreen's map panel is rebuilt by its root Consumer on a "
+        'root change, and reads the photo headers and share key from it',
+        (tester) async {
+      final previousReporter = reportTestException;
+      reportTestException = (details, description) {
+        if (details.exception is! ApiException) {
+          previousReporter(details, description);
+        }
+      };
+
+      await tester.pumpWidget(MaterialApp(
+        home: ChangeNotifierProvider<AuthNotifier>.value(
+          value: AuthNotifier(AuthService()),
+          child: const SharedProjectScreen(token: 'tok'),
+        ),
+      ));
+      for (var i = 0; i < 10 && find.byType(MapPanel).evaluate().isEmpty;
+          i++) {
+        await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 10)));
+        await tester.pump();
+      }
+      final n = Provider.of<SharedProjectNotifier>(
+          tester.element(find.byType(ViewOnlyBanner)),
+          listen: false);
+      final before = tester.widget<MapPanel>(find.byType(MapPanel));
+      expect(before.notifier, same(n));
+      expect(before.notifier.photoAuthHeaders, n.photoAuthHeaders);
+      expect(before.notifier.shareContentKey, n.shareContentKey);
+
+      // A root change with no facet change: the panel is handed again.
+      n.isLoading = !n.isLoading;
+      n.notifyListeners();
+      await tester.pump();
+      final after = tester.widget<MapPanel>(find.byType(MapPanel));
+      expect(after, isNot(same(before)),
+          reason: 'the root Consumer rebuilds the panel on root state');
+      expect(after.notifier, same(n));
+
+      await tester.pump(const Duration(seconds: 20));
+      reportTestException = previousReporter;
+    });
+  });
+}
+
+/// Stats with three nights in a tent, so the sleeping legend names the
+/// group the notifier's sleeping groups put "Tent" in.
+class _SleepingStatsService extends ProjectService {
+  @override
+  Future<Map<String, dynamic>> getStats(ProjectRef ref,
+          {List<String> tags = const []}) async =>
+      <String, dynamic>{
+        'sleeping_counts': {'Tent': 3},
+      };
 }
