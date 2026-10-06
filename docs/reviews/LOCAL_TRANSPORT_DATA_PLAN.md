@@ -221,6 +221,8 @@ Branch `feat/345-local-transport-data`, base cc52978b (plan + origin/main e96f86
 | F7 | Store schema 4 (ferry/bus stores older than 4 refused) | Opus | S4 | 1 | — | yes | I1-1 |
 | F8 | Regions gauge gains a layer label | Sonnet | — | 1 | — | yes | I1-4 |
 | F9 | RAIL_PUBLISH_LAYERS decides which layers are published | Opus | S3 | 1 | — | yes | I1-2 |
+| F10 | §9 covers rolling back past the store schema 4 change | Sonnet | — | 1 | — | yes | I2-1 |
+| F11 | §9 rollback cases say when --tag is needed | Sonnet | — | 1 | — | yes | I3-1, I3-2 |
 
 Notes:
 - U1: the `rail-data` label did not exist; owner approved creating it (created 2026-10-05). `_working_bash()` in the workflow test now prefers Git Bash on Windows (a bare `bash` is the WSL launcher and drops env vars); no change on Linux.
@@ -319,7 +321,7 @@ Answer (owner, 2026-10-06): 20 GB free on the VPS, so bus for all 49 regions is 
 - Revisit when: before part 2 is deployed to val or prod, or when a rollback past F7 is considered — generalise §9 so rolling back past any store-schema bump needs the fetch step with the rolled-back image, naming 3→4 as well as 2→3
 - Guard: —
 - Override: user: Fix now — the rollback steps belong in §9 before part 2 ships, as for R2-6
-- Outcome: open
+- Outcome: fixed (F10)
 
 ## Integrated review — Round 3 — 2026-10-06, reviewed at 60b630ae (F10 only; last round under the cap)
 
@@ -330,7 +332,7 @@ Answer (owner, 2026-10-06): 20 GB free on the VPS, so bus for all 49 regions is 
 - Revisit when: before RAIL_PUBLISH_LAYERS is switched to include ferry or bus, when a rollback from part 2 to part 1 is considered, or a part-1 fetch logs an OOM on a bus store — case 1 needs `--tag <last release with no ferry/bus entries>`
 - Guard: —
 - Override: user: Fix now — two sentences in the rollback runbook; verifier step kept, no round 4
-- Outcome: open
+- Outcome: fixed (F11)
 
 ### I3-2 — §9 case 2 ties `--tag` to "releases with ferry and bus layers", but part 2's workflow writes manifest schema 3 for every release
 - Trigger: part 2 on main with RAIL_PUBLISH_LAYERS unset; rollback to a pre-U8 image; fetch run without `--tag` → "manifest schema 3, expected 2", nothing installed, trains on Overpass until the operator finds the condition is wrong
@@ -339,4 +341,15 @@ Answer (owner, 2026-10-06): 20 GB free on the VPS, so bus for all 49 regions is 
 - Revisit when: before part 2 merges to main, or a rollback to a store-schema-2 image is considered — reword to "once part 2's workflow has published any release"
 - Guard: —
 - Override: user: Fix now — two sentences in the rollback runbook; verifier step kept, no round 4
-- Outcome: open
+- Outcome: fixed (F11)
+- Integrated review round 2 (fixes F7–F9): 1 finding (I2-1, owner override Fix now → F10). Round 3 (F10 only, the cap): 2 findings (I3-1, I3-2, owner override Fix now → F11, verifier only, no round 4 by owner decision). Review closed.
+- F11 verifier note (cosmetic, not fixed): the `gh release` loop in §9 lost its `\` line continuations; still valid bash.
+- origin/main (cb351fd1, 144 commits incl. package C part 2) merged into the feature branch at 42284dbe; clean (api/router.py auto-merged); no migrations on this branch.
+
+### Summary
+
+- Units delivered: 10 plan units + 11 fix units (F1–F11). Routes: Opus 17 (U1, U2, U4, U5, U6, U7, U8, U9, U10, F3, F4, F5, F6, F7, F9 and the two Opus-routed escalation fixes counted in their rows), Sonnet 4 (U3, F1, F2, F8, F10, F11 — U10 re-routed Sonnet → Opus). Verified first time: every unit except U9 (attempt 2, narrow local guard).
+- Escalations: U3 (X3, scope +3 test files), U4 (owner question, Hamburg → Munich), U7 (Germany bus size and build memory → owner → F3, F4), U9 (no stop positions → owner → F5, #570 filed). Orchestrator re-route: U10 to Opus with the CI gate in scope.
+- Reviews: plan 3 rounds; U8 unit review 1 round; integrated review 3 rounds (cap). Owner overrides to Fix now: R1-9, R1-10, R2-2, R2-6, R3-1, U8R1-1, U8R1-2, I1-2, I2-1, I3-1, I3-2. Still deferred with revisit triggers: R1-2, R1-11, I1-3.
+- Live checks: France subset Rail extract on the branch (gate on a real CI runner); rail-data-2026-10-05 published and installed on both boxes; val ran part 1 (validation-d9561d7).
+- Owner actions after merge: release and deploy to val and prod (the first refresh rebuilds every store at schema 4); time the first refresh on val (I1-3's trigger); only then `gh variable set RAIL_PUBLISH_LAYERS --body "rail ferry bus"`; the next Rail extract publishes ferry and bus.
