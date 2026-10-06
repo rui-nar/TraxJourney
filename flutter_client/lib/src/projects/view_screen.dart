@@ -25,6 +25,7 @@ import 'basemaps.dart';
 import 'geo_viewport.dart';
 import 'day_carousel.dart';
 import 'elevation_chart.dart';
+import 'facets/project_facet_providers.dart';
 import 'map_panel.dart';
 import 'people_screen.dart';
 import 'project_add_fab.dart';
@@ -136,12 +137,14 @@ class ViewScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return ChangeNotifierProvider(
       create: (_) => ViewProjectNotifier(),
-      child: _ViewBody(
-        projectName: projectName,
-        ownerId: ownerId,
-        initialLat: initialLat,
-        initialLng: initialLng,
-        initialZoom: initialZoom,
+      child: ProjectFacetProviders<ViewProjectNotifier>(
+        child: _ViewBody(
+          projectName: projectName,
+          ownerId: ownerId,
+          initialLat: initialLat,
+          initialLng: initialLng,
+          initialZoom: initialZoom,
+        ),
       ),
     );
   }

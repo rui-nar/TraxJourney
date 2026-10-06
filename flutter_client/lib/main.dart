@@ -13,6 +13,7 @@ import 'src/projects/projects_notifier.dart';
 import 'src/projects/project_service.dart';
 import 'src/projects/photo_thumb_cache.dart';
 import 'src/projects/project_data_cache.dart';
+import 'src/projects/facets/project_facet_providers.dart';
 import 'src/projects/project_notifier.dart';
 import 'src/settings/theme_notifier.dart';
 import 'src/core/app_router.dart';
@@ -79,7 +80,11 @@ void main() async {
         ),
         accountScopedProjectNotifier(() => ProjectNotifier(ProjectService())),
       ],
-      child: const TraxJourneyApp(),
+      // The app-wide notifier's facets (#294), following it across account
+      // changes.
+      child: const ProjectFacetProviders<ProjectNotifier>(
+        child: TraxJourneyApp(),
+      ),
     ),
   );
 }

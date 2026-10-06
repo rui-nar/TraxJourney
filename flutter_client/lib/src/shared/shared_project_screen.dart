@@ -19,6 +19,7 @@ import '../projects/basemaps.dart';
 import '../projects/geo_viewport.dart';
 import '../projects/heavy_decode.dart' as heavy;
 import '../projects/elevation_chart.dart' show ElevationChart, ElevationLoadingPlaceholder;
+import '../projects/facets/project_facet_providers.dart';
 import '../projects/map_panel.dart';
 import '../projects/memory_detail_modal.dart';
 import '../projects/project_notifier.dart';
@@ -316,9 +317,11 @@ class _SharedProjectScreenState extends State<SharedProjectScreen> {
     }
     return ChangeNotifierProvider.value(
       value: _notifier!,
-      child: _SharedProjectView(
-        token: widget.token,
-        initialMemoryPublicId: widget.initialMemoryPublicId,
+      child: ProjectFacetProviders<SharedProjectNotifier>(
+        child: _SharedProjectView(
+          token: widget.token,
+          initialMemoryPublicId: widget.initialMemoryPublicId,
+        ),
       ),
     );
   }
