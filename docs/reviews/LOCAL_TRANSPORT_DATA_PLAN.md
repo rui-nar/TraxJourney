@@ -264,6 +264,7 @@ Reviewer hand-off note: `.github/workflows/rail-extract.yml:284` (U5's gate) cal
 ## Integrated review — Round 1 — 2026-10-06, reviewed at c7ac29dc (cc52978b..c7ac29dc, DELIVERY.md §5 point 2)
 
 Envelope question (to owner): Open decision 3 was never recorded as decided. Germany's bus store is 660 MB from a 112 MB file (5.9×, not the 3× the plan assumed); over 49 regions that projects to ~3–3.8 GB of bus stores per stack, over the plan's 3 GB per-stack budget, ×2 stacks on the 40 GB host, plus retired layers' files left on disk.
+Answer (owner, 2026-10-06): 20 GB free on the VPS, so bus for all 49 regions is within budget — Open decision 3 decided: no subset. Bus is switched on by RAIL_PUBLISH_LAYERS (I1-2) after part 2 is on both boxes.
 
 ### I1-1 — F5 changed what a ferry/bus store holds without bumping the store schema
 - Trigger: the cron publishes ferry/bus layers after part 2 is on main but before it is deployed → a part-1 box builds bus stores with no stop positions, sidecar "<digest> 3" → part 2 is deployed and reads them as current → bus legs resolve silently wrong (38/730 Danish relations), no fallback, until a new digest
@@ -280,7 +281,7 @@ Envelope question (to owner): Open decision 3 was never recorded as decided. Ger
 - Decision: Defer (D10) — not a D2 duplicate of R1-7 (that was the builder's memory, fixed by F3)
 - Revisit when: part 2 is about to merge while either box still runs part 1 and a scheduled run could fall between merge and deploy, or a part-1 box logs a refresh killed/OOM on a ferry/bus layer — gate ferry/bus publishing behind a repo variable or an explicit checkpoint
 - Guard: —
-- Override: —
+- Override: user: Fix now — a RAIL_PUBLISH_LAYERS repository variable (default rail) decides which layers the Rail extract publishes; ferry/bus are switched on after part 2 is on both boxes
 - Outcome: open
 
 ### I1-3 — The refresh timeout (55 min) was sized from a rail-only install

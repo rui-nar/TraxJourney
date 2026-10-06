@@ -278,7 +278,7 @@ REVIEW.md defaults apply, with these additions:
    remove the concurrency slot and its Redis set, and keep the cache and the
    cooldowns, which are the cheap part and the ban insurance. Decided by the
    owner from the numbers; a follow-up issue, not a unit here.
-3. **Bus coverage.** If the per-region bus stores exceed the 3 GB budget
+3. **Bus coverage.** *Decided 2026-10-06: all 49 regions (20 GB free on the VPS; Germany's bus store measured 660 MB, ~3.8 GB per stack projected).* If the per-region bus stores exceed the 3 GB budget
    (Review envelope) — the spike projects 1.5–2 GB, inside it but not by much —
    bus ships for a subset of regions first. Decided from U7's full-run
    measurement, before U9 starts.
