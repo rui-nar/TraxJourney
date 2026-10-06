@@ -546,3 +546,7 @@ Conflict resolution of merging main (Package C facets, recovery-key confirmation
 - Guard: —
 - Override: user: Fix now (2026-10-06) — no reason given
 - Outcome: fixed
+
+## Merge resolution, round 2 — 2026-10-06, reviewed 2e982dc0 (the M1-1 fix)
+
+No findings. Review stopped: the round produced no Fix now decision (§6).
