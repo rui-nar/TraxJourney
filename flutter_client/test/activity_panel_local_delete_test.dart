@@ -168,6 +168,15 @@ class _RefusingService extends ProjectService {
         'type': 'FeatureCollection',
         'features': const [],
       };
+
+  /// The reload's geometry, which asks for its own request (issue #379).
+  @override
+  Future<Map<String, dynamic>> getSimplifiedGeoFresh(ProjectRef ref, double zoom,
+          {Object? bbox}) async =>
+      {
+        'type': 'FeatureCollection',
+        'features': const [],
+      };
 }
 
 /// Minimal ProjectService stub that records the local-delete call and
@@ -190,6 +199,15 @@ class _RecordingService extends ProjectService {
 
   @override
   Future<Map<String, dynamic>> getGeo(ProjectRef ref, {bool bypassCache = false}) async => {
+        'type': 'FeatureCollection',
+        'features': const [],
+      };
+
+  /// The reload's geometry, which asks for its own request (issue #379).
+  @override
+  Future<Map<String, dynamic>> getSimplifiedGeoFresh(ProjectRef ref, double zoom,
+          {Object? bbox}) async =>
+      {
         'type': 'FeatureCollection',
         'features': const [],
       };

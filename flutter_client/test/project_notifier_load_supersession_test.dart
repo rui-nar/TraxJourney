@@ -90,6 +90,12 @@ class _RacingService extends ProjectService {
     return c.future;
   }
 
+  /// A reload's own geometry (issue #379): fetched fresh, not under test.
+  @override
+  Future<Map<String, dynamic>> getSimplifiedGeoFresh(ProjectRef ref, double zoom,
+          {Object? bbox}) async =>
+      _emptyGeo();
+
   @override
   Future<Map<String, dynamic>> getDetails(ProjectRef ref, {bool bypassCache = false}) {
     final c = Completer<Map<String, dynamic>>();
@@ -141,33 +147,33 @@ void main() {
     // Call A: Phase 1 completes fast; Phase 2's getGeo() is held on
     // geoCalls[0].
     await notifier.load(_ref);
-    notifier.isGeoLoaded = false;
+    notifier.geoFacetWriter.setLoaded(false);
     await _pumpUntil(() => svc.geoCalls.length == 1);
     expect(svc.geoCalls, hasLength(1));
-    expect(notifier.isGeoLoaded, isFalse);
+    expect(notifier.geoFacet.isLoaded, isFalse);
 
     // Call B: a second concurrent load() for the *same* ref — the exact
     // "mashing Retry" scenario the issue describes. Its own Phase 2 getGeo()
     // is held on geoCalls[1].
     await notifier.load(_ref);
-    notifier.isGeoLoaded = false;
+    notifier.geoFacetWriter.setLoaded(false);
     await _pumpUntil(() => svc.geoCalls.length == 2);
     expect(svc.geoCalls, hasLength(2));
-    expect(notifier.isGeoLoaded, isFalse);
+    expect(notifier.geoFacet.isLoaded, isFalse);
 
     // Resolve A's (stale) fetch first. Before the fix, `_loadKey == ref`
     // still held (same ref!) so this alone used to flip isGeoLoaded even
     // though B — the call actually in flight now — hasn't delivered anything.
     svc.geoCalls[0].complete(_emptyGeo());
     await _pumpUntil(() => false, maxTicks: 5); // let the continuation run
-    expect(notifier.isGeoLoaded, isFalse,
+    expect(notifier.geoFacet.isLoaded, isFalse,
         reason: 'a stale same-ref load must not be able to mark geo loaded '
             'for the call that actually superseded it');
 
     // Now resolve B's (current) fetch — this is the one that should count.
     svc.geoCalls[1].complete(_emptyGeo());
-    await _pumpUntil(() => notifier.isGeoLoaded);
-    expect(notifier.isGeoLoaded, isTrue);
+    await _pumpUntil(() => notifier.geoFacet.isLoaded);
+    expect(notifier.geoFacet.isLoaded, isTrue);
 
     // Both geo fetches finishing chains into _loadElevationData's own
     // getDetails() call (via whenComplete) — drain those too so nothing is
@@ -189,7 +195,7 @@ void main() {
     // load()'s Phase 2 geo fetch is held open — it is genuinely still in
     // flight for a large trip when the details-only reload below fires.
     await notifier.load(_ref);
-    notifier.isGeoLoaded = false;
+    notifier.geoFacetWriter.setLoaded(false);
     await _pumpUntil(() => svc.geoCalls.length == 1);
 
     // A completely unrelated mutation (e.g. the user drag-reordering an
@@ -204,8 +210,8 @@ void main() {
     // land normally — the unrelated details-only reload must not have
     // superseded it.
     svc.geoCalls[0].complete(_emptyGeo());
-    await _pumpUntil(() => notifier.isGeoLoaded);
-    expect(notifier.isGeoLoaded, isTrue,
+    await _pumpUntil(() => notifier.geoFacet.isLoaded);
+    expect(notifier.geoFacet.isLoaded, isTrue,
         reason: 'an unrelated details-only reload must not be able to '
             'starve an in-flight load()\'s own progressive geo fetch, which '
             'has no other way to ever complete');
@@ -228,7 +234,7 @@ void main() {
     // load()'s Phase 2 geo fetch is held open — it is genuinely still in
     // flight for a large trip when the unrelated CRUD reload below fires.
     await notifier.load(_ref);
-    notifier.isGeoLoaded = false;
+    notifier.geoFacetWriter.setLoaded(false);
     await _pumpUntil(() => svc.geoCalls.length == 1);
 
     // A completely unrelated mutation (resetting an activity's track)
@@ -246,8 +252,8 @@ void main() {
     // land normally — the unrelated _silentReload must not have superseded
     // it.
     svc.geoCalls[0].complete(_emptyGeo());
-    await _pumpUntil(() => notifier.isGeoLoaded);
-    expect(notifier.isGeoLoaded, isTrue,
+    await _pumpUntil(() => notifier.geoFacet.isLoaded);
+    expect(notifier.geoFacet.isLoaded, isTrue,
         reason: 'an unrelated _silentReload (CRUD mutation) must not be '
             'able to starve an in-flight load()\'s own progressive geo '
             'fetch, which has no other way to ever complete');

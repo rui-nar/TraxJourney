@@ -43,7 +43,7 @@ Map<String, dynamic> _geo({required bool degraded}) => {
 ProjectNotifier _notifier({required bool degraded}) =>
     ProjectNotifier(ProjectService())
       ..ref = const ProjectRef(name: 'Trip')
-      ..geo = _geo(degraded: degraded)
+      ..geoFacetWriter.replaceKeepingLod(_geo(degraded: degraded))
       ..items = [
         {
           'item_type': 'segment',

@@ -9,6 +9,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:traxjourney_client/src/core/project_ref.dart';
+import 'package:traxjourney_client/src/projects/facets/project_facet.dart';
 import 'package:traxjourney_client/src/projects/project_segment_crud_mixin.dart';
 import 'package:traxjourney_client/src/projects/project_service.dart';
 
@@ -20,7 +21,9 @@ class _Host extends ChangeNotifier with ProjectSegmentCrudMixin {
   @override
   List<Map<String, dynamic>> items = [];
   @override
-  Map<String, dynamic>? geo;
+  final GeoFacetWriter geoFacetWriter = GeoFacetWriter();
+  Map<String, dynamic>? get geo => geoFacetWriter.facet.geo;
+  set geo(Map<String, dynamic>? v) => geoFacetWriter.replace(v, GeoLod.none);
   @override
   String? error;
   @override
@@ -31,6 +34,9 @@ class _Host extends ChangeNotifier with ProjectSegmentCrudMixin {
   String errorMessage(Exception e) => e.toString();
   @override
   bool get isAlive => true;
+  @override
+  Future<void> refreshGeoAfterMutation(
+      ProjectRef ref, bool Function() stale) async {}
 }
 
 Map<String, dynamic> _segFeature(String id) => {

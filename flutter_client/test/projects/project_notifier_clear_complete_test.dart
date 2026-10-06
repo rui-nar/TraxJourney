@@ -163,14 +163,16 @@ Map<String, Object?> _state(ProjectNotifier n) => {
       'items': n.items,
       'people': n.people,
       'groups': n.groups,
-      'geo': n.geo,
+      'geo': n.geoFacet.geo,
+      'geoLod': n.geoFacet.lod,
+      'geoServedFrom': n.geoFacet.servedFrom,
       'isLoading': n.isLoading,
       'error': n.error,
       'loadErrorStatus': n.loadErrorStatus,
       'offlineFromCache': n.offlineFromCache,
       'isMetaLoaded': n.isMetaLoaded,
       'isElevationLoaded': n.isElevationLoaded,
-      'isGeoLoaded': n.isGeoLoaded,
+      'isGeoLoaded': n.geoFacet.isLoaded,
       'isSyncMetaLoaded': n.isSyncMetaLoaded,
       'selectedActivityId': n.selectedActivityId,
       'selectedSegmentId': n.selectedSegmentId,
@@ -275,7 +277,7 @@ void main() {
           ..zoomRefetchDebounce = const Duration(hours: 1)
           ..degradedRouteCheckInterval = const Duration(hours: 1);
         await n.load(_ref);
-        for (var i = 0; i < 50 && !(n.isSyncMetaLoaded && n.isGeoLoaded); i++) {
+        for (var i = 0; i < 50 && !(n.isSyncMetaLoaded && n.geoFacet.isLoaded); i++) {
           await Future<void>.delayed(const Duration(milliseconds: 10));
         }
         await pumpEventQueue();
@@ -362,7 +364,7 @@ void main() {
     });
     await loading;
 
-    expect(n.geo, isNull);
+    expect(n.geoFacet.geo, isNull);
   });
 }
 

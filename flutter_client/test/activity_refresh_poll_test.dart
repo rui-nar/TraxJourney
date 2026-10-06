@@ -105,6 +105,14 @@ class _PollService extends ProjectService {
     geoCalls++;
     return {'type': 'FeatureCollection', 'features': <dynamic>[]};
   }
+
+  /// The refresh after the re-fetch asks for its own request (issue #379).
+  @override
+  Future<Map<String, dynamic>> getSimplifiedGeoFresh(ProjectRef ref, double zoom,
+      {Object? bbox}) async {
+    geoCalls++;
+    return {'type': 'FeatureCollection', 'features': <dynamic>[]};
+  }
 }
 
 /// A notifier with [ref] set, bypassing load()'s network calls.

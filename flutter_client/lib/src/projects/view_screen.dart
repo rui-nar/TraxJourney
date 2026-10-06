@@ -64,9 +64,7 @@ class ViewProjectNotifier extends ProjectNotifier {
   }
 
   Future<void> loadView(ProjectRef ref) async {
-    isMetaLoaded = false;
-    isElevationLoaded = false;
-    isGeoLoaded = false;
+    resetProgressiveFlags();
 
     // Phase 1: load() calls _viewSvc.getDetailsMeta() (inherited, unoverridden
     // — a view-mode ref addresses a real project, so the base implementation
@@ -566,7 +564,7 @@ class _ViewBodyState extends State<_ViewBody> with TickerProviderStateMixin {
           Expanded(
             child: Consumer<ViewProjectNotifier>(
               builder: (context, notifier, _) {
-                if (!notifier.isMetaLoaded && notifier.geo == null) {
+                if (!notifier.isMetaLoaded && notifier.geoFacet.geo == null) {
                   if (notifier.error != null) {
                     return Center(
                       child: Padding(

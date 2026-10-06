@@ -420,6 +420,7 @@ class ProjectNotifier extends ChangeNotifier
   // and its mixins only — never a subclass or a widget; the facet write
   // restriction test enforces it.
 
+  @override
   final GeoFacetWriter geoFacetWriter = GeoFacetWriter();
   final SelectionFacetWriter selectionFacetWriter = SelectionFacetWriter();
   final StyleFacetWriter styleFacetWriter = StyleFacetWriter();
@@ -462,7 +463,6 @@ class ProjectNotifier extends ChangeNotifier
   @override List<Map<String, dynamic>> groups = [];  // people groups (#50)
   /// Memory/journal fields [_revealItems] left as ciphertext (#466).
   @override final UndecryptedFields undecryptedFields = UndecryptedFields();
-  @override Map<String, dynamic>? geo;
   bool isLoading = false;
   @override String? error;
 
@@ -472,7 +472,7 @@ class ProjectNotifier extends ChangeNotifier
   /// issue #111) from other errors.
   int? loadErrorStatus;
 
-  /// True when the current [activities]/[items]/[geo] came from
+  /// True when the current [activities]/[items]/geometry came from
   /// [projectDataCache]'s on-device store rather than a live server
   /// response — set only when the initial `/meta` fetch in [load] fails
   /// outright (offline / server unreachable) and a previously cached copy of
@@ -483,9 +483,19 @@ class ProjectNotifier extends ChangeNotifier
   /// Progressive-loading flags — default true so manage-mode screens that use
   /// the base load() see no behaviour change.  Set to false at the start of
   /// loadShared() / loadView() and flipped to true as each phase completes.
+  /// The geometry phase's flag is [GeoFacet.isLoaded].
   bool isMetaLoaded = true;
   bool isElevationLoaded = true;
-  bool isGeoLoaded = true;
+
+  /// Marks every progressive-loading phase as not loaded yet: what
+  /// loadView() and loadShared() do before they start (P2-R1-5). A method,
+  /// so the subclasses never write the geometry facet themselves.
+  @protected
+  void resetProgressiveFlags() {
+    isMetaLoaded = false;
+    isElevationLoaded = false;
+    geoFacetWriter.setLoaded(false);
+  }
 
   /// True once the background sync-status/share-link fetch (auto-sync
   /// setting, linked Polarsteps trip, share tokens) has completed for the
@@ -1085,10 +1095,10 @@ class ProjectNotifier extends ChangeNotifier
     // geo is built client-side and which the server cannot serve at all,
     // replace the route with an empty FeatureCollection.
     _zoomRefetchTimer?.cancel();
-    _loadedZoomBucket = null;
-    // Dropped with the bucket for the same reason: a box from the previous
-    // trip describes a region this one may be nowhere near.
-    _loadedGeoBox = null;
+    // The geometry goes with its level, and with the bucket the box for the
+    // same reason: a box from the previous trip describes a region this one
+    // may be nowhere near.
+    geoFacetWriter.replace(null, GeoLod.none);
     _mapViewport = null;
     if (perfSpans.enabled) perfSpans.reset();  // scope spans to this load
     // Counted session-wide: an unexpected reload is the likeliest way heavy
@@ -1103,7 +1113,6 @@ class ProjectNotifier extends ChangeNotifier
     isSyncMetaLoaded = !loadOwnerExtras;
     activities = [];
     items = [];
-    geo = null;
     clearSegmentOverlay();  // discard any prior project's pending segment patches
     selectedActivityId = null;
     selectedSegmentId = null;
@@ -1162,7 +1171,8 @@ class ProjectNotifier extends ChangeNotifier
         // an account change among them — must not put its geometry back
         // (U5-R1-3).
         if (!_isCurrent(token, ref)) return;
-        geo = lowRes;
+        geoFacetWriter.replace(
+            lowRes, lowRes == null ? GeoLod.none : GeoLod.lowRes);
         notifyListeners(); // map visible at ~2.2s
       }
 
@@ -1250,7 +1260,9 @@ class ProjectNotifier extends ChangeNotifier
       if (encryption.isUnlocked) {
         // Decrypted activities/items are ready now — build the low-res map
         // client-side (mirrors src/project/repo_core.py's _compute_low_res_geo).
-        geo = client_geo.buildLowResGeo(items, client_geo.activitiesById(activities));
+        geoFacetWriter.replace(
+            client_geo.buildLowResGeo(items, client_geo.activitiesById(activities)),
+            GeoLod.lowRes);
       }
       await _buildFullTrack();
       // Bug #1 of issue #283: without this check, a load() superseded while
@@ -1337,7 +1349,6 @@ class ProjectNotifier extends ChangeNotifier
   // back. The bucket is the whole level the server quantises to, so a pinch
   // does not mint a request per frame.
   double _mapZoom = 11;
-  int? _loadedZoomBucket;
   Timer? _zoomRefetchTimer;
 
   // ── Viewport scoping (issue #324) ──────────────────────────────────────
@@ -1349,13 +1360,12 @@ class ProjectNotifier extends ChangeNotifier
   // remembered; leaving it is a reason to refetch, exactly like changing
   // level is.
   //
-  // Both are null until geometry has been loaded, and _loadedGeoBox stays
-  // null whenever the geometry on hand covers the whole trip — which is a
-  // superset of any viewport, so it is never a reason to refetch. That is the
-  // state after every load, since the notifier has no camera box before the
-  // map's first event.
+  // The loaded bucket and box are the GeoFacet's level of detail
+  // (GeoLod.level). The box stays null whenever the geometry on hand covers
+  // the whole trip — which is a superset of any viewport, so it is never a
+  // reason to refetch. That is the state after every load, since the notifier
+  // has no camera box before the map's first event.
   GeoBox? _mapViewport;
-  GeoBox? _loadedGeoBox;
 
   /// How long the camera must settle before a zoom change is acted on. Long
   /// enough that a pinch through several levels causes one refetch, not five.
@@ -1369,9 +1379,10 @@ class ProjectNotifier extends ChangeNotifier
   /// load — or one carrying a bucket left over from the previous project —
   /// arms nothing.
   bool _geoIsStaleForCamera() {
-    if (_loadedZoomBucket == null) return false;
-    if (_bucketOf(_mapZoom) != _loadedZoomBucket) return true;
-    final loaded = _loadedGeoBox;
+    final lod = geoFacet.lod;
+    if (lod.kind != GeoLodKind.level) return false;
+    if (_bucketOf(_mapZoom) != lod.bucket) return true;
+    final loaded = lod.box;
     final viewport = _mapViewport;
     // No box means whole-trip geometry: nothing the camera does makes that
     // insufficient at the same level.
@@ -1478,13 +1489,19 @@ class ProjectNotifier extends ChangeNotifier
       // scheduled the next refetch.
       if (_bucketOf(_mapZoom) != bucket) return;
       reconcileSegmentOverlay(next, requestedAt: fetched.requestedAt);
-      geo = {
-        'type': 'FeatureCollection',
-        'features': mergePendingSegmentPatches(
-            List<dynamic>.from(next['features'] as List? ?? [])),
-      };
-      _loadedZoomBucket = bucket;
-      _loadedGeoBox = box;
+      // Not applied when a newer answer is already on screen — the refresh
+      // after a write that started while this was in flight (issue #379,
+      // Decision 24): this answer would put back what that write changed.
+      if (!geoFacetWriter.replace(
+          {
+            'type': 'FeatureCollection',
+            'features': mergePendingSegmentPatches(
+                List<dynamic>.from(next['features'] as List? ?? [])),
+          },
+          GeoLod.level(bucket, box: box),
+          servedFrom: fetched.servedFrom)) {
+        return;
+      }
       // Self-healing, and the reason this cannot loop again.
       //
       // A refetch exists to make `_geoIsStaleForCamera` false. If it is still
@@ -1497,7 +1514,7 @@ class ProjectNotifier extends ChangeNotifier
       // the rest of the session and the map falls back to whole-trip
       // geometry — slightly coarser, never wedged.
       if (_geoIsStaleForCamera()) {
-        _loadedGeoBox = null;
+        geoFacetWriter.forgetBox();
         perfSpans.note('geo_box_unsatisfiable', 'yes');
       }
       await _buildFullTrack();
@@ -1581,7 +1598,9 @@ class ProjectNotifier extends ChangeNotifier
       // anyway (issue #29), so there's no progressive server round trip to
       // race here; build it once, directly, from client_geo_builder.dart.
       try {
-        geo = client_geo.buildFullGeo(items, client_geo.activitiesById(activities));
+        geoFacetWriter.replace(
+            client_geo.buildFullGeo(items, client_geo.activitiesById(activities)),
+            GeoLod.full);
         await _buildFullTrack();
         // Bug #1 of issue #283: this used to be set unconditionally right
         // after the await above, before the ref check below — a load()
@@ -1589,7 +1608,7 @@ class ProjectNotifier extends ChangeNotifier
         // flip isGeoLoaded for the wrong project even with its notify
         // suppressed.
         if (!_isCurrent(token, ref)) return;
-        isGeoLoaded = true;
+        geoFacetWriter.setLoaded(true);
       } catch (e) {
         if (!_isCurrent(token, ref)) return;
         error = _loadErrorMessage(e);
@@ -1629,11 +1648,16 @@ class ProjectNotifier extends ChangeNotifier
           List<dynamic>.from(lod['features'] as List? ?? []));
       await _waitForCameraIdle();
       if (!_isCurrent(token, ref)) return;
-      geo = {'type': 'FeatureCollection', 'features': lodFeatures};
-      _loadedZoomBucket = requestedBucket;
+      // Kept out only by a newer answer — the refresh after a write made
+      // during this load (issue #379) — which is then the geometry this phase
+      // finishes with.
+      geoFacetWriter.replace(
+          {'type': 'FeatureCollection', 'features': lodFeatures},
+          GeoLod.level(requestedBucket),
+          servedFrom: fetched.servedFrom);
       await _buildFullTrack();
       if (!_isCurrent(token, ref)) return;
-      isGeoLoaded = true;
+      geoFacetWriter.setLoaded(true);
       notifyListeners();
       // Nothing above this line ever writes the full-resolution row the
       // offline fallback below reads, so a trip first opened on this device
@@ -1670,11 +1694,12 @@ class ProjectNotifier extends ChangeNotifier
         reconcileSegmentOverlay(cachedFullGeo, requestedAt: 0);
         final features = mergePendingSegmentPatches(
             List<dynamic>.from(cachedFullGeo['features'] as List? ?? []));
-        geo = {'type': 'FeatureCollection', 'features': features};
+        geoFacetWriter.replace(
+            {'type': 'FeatureCollection', 'features': features}, GeoLod.full);
         await _buildFullTrack();
         // Same bug #1 fix as the encrypted branch above.
         if (!_isCurrent(token, ref)) return;
-        isGeoLoaded = true;
+        geoFacetWriter.setLoaded(true);
       } catch (e) {
         if (!_isCurrent(token, ref)) return;
         error = _loadErrorMessage(e);
@@ -1692,11 +1717,13 @@ class ProjectNotifier extends ChangeNotifier
     // isn't left silently looking at low-res straight lines.
     Map<String, dynamic>? fullGeo;
     var fullGeoRequestedAt = 0;
+    var fullGeoServedFrom = 0;
     for (int attempt = 0; attempt < 2; attempt++) {
       try {
         final fetched = await fetchServerGeo(() => _service.getGeo(ref));
         fullGeo = fetched.geo;
         fullGeoRequestedAt = fetched.requestedAt;
+        fullGeoServedFrom = fetched.servedFrom;
         break;
       } on Object catch (e) {
         // Catch Object (not just Exception): a decode failure can throw an
@@ -1705,7 +1732,7 @@ class ProjectNotifier extends ChangeNotifier
         if (!_isCurrent(token, ref)) return;
         if (attempt == 1) {
           error = _loadErrorMessage(e);
-          isGeoLoaded = false;
+          geoFacetWriter.setLoaded(false);
           notifyListeners();
           return;
         }
@@ -1741,13 +1768,15 @@ class ProjectNotifier extends ChangeNotifier
           List<dynamic>.from(fullGeo['features'] as List? ?? []));
       await _waitForCameraIdle();
       if (!_isCurrent(token, ref)) return;
-      geo = {'type': 'FeatureCollection', 'features': features};
+      geoFacetWriter.replace(
+          {'type': 'FeatureCollection', 'features': features}, GeoLod.full,
+          servedFrom: fullGeoServedFrom);
       await _buildFullTrack();
       // _buildFullTrack() may hop through compute() — re-check like every
       // other await in this function so a superseded load doesn't flip
       // isGeoLoaded or notify for a project the user has since left.
       if (!_isCurrent(token, ref)) return;
-      isGeoLoaded = true;
+      geoFacetWriter.setLoaded(true);
       notifyListeners();
     } on Object catch (e) {
       // Non-fatal — low-res map is still shown. Catch Object so an Error in the
@@ -1845,19 +1874,22 @@ class ProjectNotifier extends ChangeNotifier
   /// Full-resolution geometry for a rendering that is not the map — an image
   /// export or a share card (issue #317).
   ///
-  /// [geo] is simplified to the zoom the map is showing, which is the right
-  /// trade for the map and the wrong one for an export: a day-scoped export
+  /// The map's geometry is simplified to the zoom it is showing, which is the
+  /// right trade for the map and the wrong one for an export: a day-scoped export
   /// fits a far tighter camera than the geometry was built for, and renders
   /// visibly angular. The extra request is affordable here because the
   /// operation is user-initiated and already slow.
   ///
-  /// Returns [geo] unchanged when it is already full resolution (an E2EE trip
-  /// builds it client-side, and the offline/older-server fallbacks apply the
-  /// full payload), and falls back to it if the fetch fails — an angular
-  /// export beats no export.
+  /// Returns the map's geometry unchanged unless it is simplified for a zoom
+  /// level ([GeoLodKind.level]): full resolution has nothing to upgrade (an
+  /// E2EE trip builds it client-side, and the offline/older-server fallbacks
+  /// apply the full payload), and before a load's level arrives there is
+  /// nothing to export at a level either. Falls back to it if the fetch fails
+  /// — an angular export beats no export.
   Future<Map<String, dynamic>?> fullResGeoForExport() async {
     final r = ref;
-    if (_loadedZoomBucket == null || r == null) return geo;
+    final geo = geoFacet.geo;
+    if (geoFacet.lod.kind != GeoLodKind.level || r == null) return geo;
     try {
       final full = await _service.fetchFullGeoUncached(r);
       // The durable segment overlay wins over the server snapshot here for
@@ -2174,6 +2206,7 @@ class ProjectNotifier extends ChangeNotifier
     // the counter untouched, so a stale compute() result could still pass
     // the staleness check below and clobber newer data).
     final gen = ++_buildFullTrackGen;
+    final geo = geoFacet.geo;
     final coordPoints = totalTrackCoordinatePoints(geo);
     final samplePoints = totalElevationProfilePoints(activities);
     final work = coordPoints > samplePoints ? coordPoints : samplePoints;
@@ -2228,7 +2261,7 @@ class ProjectNotifier extends ChangeNotifier
     for (final t in _perActivityTracks.values) {
       perAct += t.length;
     }
-    final coords = totalTrackCoordinatePoints(geo);
+    final coords = totalTrackCoordinatePoints(geoFacet.geo);
     perfSpans
       ..note('full_track_points', '${_fullTrack.length}')
       ..note('per_activity_track_points', '$perAct')
@@ -2296,8 +2329,6 @@ class ProjectNotifier extends ChangeNotifier
   /// test fails on a field that is neither.
   void clear() {
     _zoomRefetchTimer?.cancel();
-    _loadedZoomBucket = null;
-    _loadedGeoBox = null;
     _mapViewport = null;
     _stopPhotoPolling();
     stopDegradedRouteWatch();
@@ -2317,7 +2348,6 @@ class ProjectNotifier extends ChangeNotifier
     styleFacetWriter.reset();
     itemsFacetWriter.reset();
     elevationFacetWriter.reset();
-    geo = null;
     resetSegmentState();
     selectedActivityId = null;
     selectedSegmentId = null;
@@ -2390,7 +2420,6 @@ class ProjectNotifier extends ChangeNotifier
     offlineFromCache = false;
     isMetaLoaded = true;
     isElevationLoaded = true;
-    isGeoLoaded = true;
     isSyncMetaLoaded = true;
     notifyListeners();
   }
@@ -3129,23 +3158,73 @@ class ProjectNotifier extends ChangeNotifier
     await _buildFullTrack();
     if (!_reloadTrack.isCurrent(token, ref)) return;
     // Refresh GeoJSON so the map polylines reflect the updated track.
-    if (encryption.isUnlocked) {
-      geo = client_geo.buildFullGeo(items, client_geo.activitiesById(activities));
-    } else {
-      final fetched = await fetchServerGeo(
-          () => _service.getGeo(ref, bypassCache: true));
-      if (!_reloadTrack.isCurrent(token, ref)) return;
-      // Through the overlay like every other server geo, so a patch this
-      // answer supersedes cannot come back at the next rebuild (I1-R2-2).
-      reconcileSegmentOverlay(fetched.geo, requestedAt: fetched.requestedAt);
-      geo = {
-        'type': 'FeatureCollection',
-        'features': mergePendingSegmentPatches(
-            List<dynamic>.from(fetched.geo['features'] as List? ?? [])),
-      };
-    }
+    await refreshGeoAfterMutation(
+        ref, () => !_reloadTrack.isCurrent(token, ref));
     if (!_reloadTrack.isCurrent(token, ref)) return;
     notifyListeners();
+  }
+
+  /// The level of detail a refresh after a write asks for (issue #379): the
+  /// one a zoom refetch would ask for now — the camera's zoom bucket, and the
+  /// fetch box around its viewport when it has one. So the refresh neither
+  /// coarsens the map to whole-trip detail nor drops a level the camera has
+  /// moved to, and a zoom refetch still in flight for the same level is
+  /// superseded rather than needed.
+  GeoLod _cameraLod() {
+    final bucket = _bucketOf(_mapZoom);
+    final viewport = _mapViewport;
+    return GeoLod.level(bucket,
+        box: viewport == null ? null : fetchBoxFor(viewport, bucket));
+  }
+
+  /// Fetches the server's geometry for [ref] after a write, simplified at
+  /// [lod] (issue #379).
+  ///
+  /// It used to fetch full resolution, which put the whole payload back in
+  /// memory — and in L1 for the rest of the session — on every edit, under a
+  /// zoom bucket that no longer described it. The request is never one
+  /// already in flight ([ProjectService.getSimplifiedGeoFresh]): that one may
+  /// have started before the write.
+  Future<ServerGeo> _fetchGeoAfterMutation(ProjectRef ref, GeoLod lod) =>
+      fetchServerGeo(() => _service.getSimplifiedGeoFresh(
+          ref, lod.bucket!.toDouble(),
+          bbox: lod.box));
+
+  /// Shows [fetched], the answer of [_fetchGeoAfterMutation] for [lod],
+  /// through the segment overlay like every other server geo, so a patch this
+  /// answer supersedes cannot come back at the next rebuild (I1-R2-2). Not
+  /// shown if a newer answer already is (Decision 24).
+  void _showGeoAfterMutation(ServerGeo fetched, GeoLod lod) {
+    reconcileSegmentOverlay(fetched.geo, requestedAt: fetched.requestedAt);
+    geoFacetWriter.replace(
+        {
+          'type': 'FeatureCollection',
+          'features': mergePendingSegmentPatches(
+              List<dynamic>.from(fetched.geo['features'] as List? ?? [])),
+        },
+        lod,
+        servedFrom: fetched.servedFrom);
+  }
+
+  /// The geometry refresh after a write, for a caller that has nothing to
+  /// fetch beside it: client-built at full resolution for an E2EE trip, whose
+  /// geometry the server cannot build (issue #29), and otherwise the server's
+  /// at the camera's level of detail (issue #379). Dropped if [stale] is true
+  /// once it is ready.
+  @override
+  Future<void> refreshGeoAfterMutation(
+      ProjectRef ref, bool Function() stale) async {
+    if (encryption.isUnlocked) {
+      if (stale()) return;
+      geoFacetWriter.replace(
+          client_geo.buildFullGeo(items, client_geo.activitiesById(activities)),
+          GeoLod.full);
+      return;
+    }
+    final lod = _cameraLod();
+    final fetched = await _fetchGeoAfterMutation(ref, lod);
+    if (stale()) return;
+    _showGeoAfterMutation(fetched, lod);
   }
 
   void removeItemLocally(int index) {
@@ -3510,15 +3589,17 @@ class ProjectNotifier extends ChangeNotifier
           return;
         }
         _autoFillDaysToToday();
-        geo = client_geo.buildFullGeo(items, client_geo.activitiesById(activities));
+        geoFacetWriter.replace(
+            client_geo.buildFullGeo(items, client_geo.activitiesById(activities)),
+            GeoLod.full);
       } else {
+        final lod = _cameraLod();
         final results = await Future.wait<Object>([
           _service.getDetailsMeta(ref),
-          fetchServerGeo(() => _service.getGeo(ref, bypassCache: true)),
+          _fetchGeoAfterMutation(ref, lod),
         ]);
         final details = results[0] as Map<String, dynamic>;
-        final fetched =
-            results[1] as ({Map<String, dynamic> geo, int requestedAt});
+        final fetched = results[1] as ServerGeo;
         if (!await _applyDetails(details, ref, stale)) {
           notify = false;
           return;
@@ -3527,12 +3608,7 @@ class ProjectNotifier extends ChangeNotifier
         // Through the overlay like every other server geo: assigned as is, it
         // showed the server's route but left a patch it supersedes to come
         // back at the next rebuild (I1-R2-2).
-        reconcileSegmentOverlay(fetched.geo, requestedAt: fetched.requestedAt);
-        geo = {
-          'type': 'FeatureCollection',
-          'features': mergePendingSegmentPatches(
-              List<dynamic>.from(fetched.geo['features'] as List? ?? [])),
-        };
+        _showGeoAfterMutation(fetched, lod);
       }
       _updateStats();
       await _buildFullTrack();

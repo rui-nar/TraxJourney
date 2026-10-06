@@ -284,6 +284,20 @@ class ProjectService {
         () => fetchSimplifiedGeo(ref, zoom, bbox));
   }
 
+  /// The same answer as [getSimplifiedGeo], from a request of its own that
+  /// never joins one already in flight, and that no later caller joins.
+  ///
+  /// For the refresh after a write (issue #379): an identical request already
+  /// in flight may have started before the write, and its answer would show
+  /// the trip as it was. The server's simplified answers are invalidated by
+  /// every write, so a request sent after the write sees it.
+  ///
+  /// A method of its own rather than a parameter of [getSimplifiedGeo], so the
+  /// test fakes overriding that one keep compiling.
+  Future<Map<String, dynamic>> getSimplifiedGeoFresh(
+          ProjectRef ref, double zoom, {GeoBox? bbox}) =>
+      fetchSimplifiedGeo(ref, zoom, bbox);
+
   /// The request [getSimplifiedGeo] deduplicates. Override *this*, not
   /// [getSimplifiedGeo], to serve the same answer from a different endpoint —
   /// the share-token one does (issue #321) — and the dedup, and its key, stay

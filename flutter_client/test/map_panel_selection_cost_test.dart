@@ -49,7 +49,7 @@ Map<String, dynamic> _geo() => {
 
 ProjectNotifier _notifier() => ProjectNotifier(ProjectService())
   ..ref = const ProjectRef(name: 'Trip')
-  ..geo = _geo()
+  ..geoFacetWriter.replaceKeepingLod(_geo())
   ..activities = [
     for (var a = 0; a < _acts; a++)
       {'id': a, 'start_date_local': '2026-06-0${a + 1}T08:00:00'}
@@ -146,7 +146,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 600));
 
-    notifier.geo = _geo(); // the low-res -> full-res upgrade
+    notifier.geoFacetWriter.replaceKeepingLod(_geo()); // the low-res -> full-res upgrade
     notifier.notifyListeners();
     await tester.pump();
 

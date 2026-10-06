@@ -251,7 +251,7 @@ class _SegmentDialogState extends State<SegmentDialog> {
         title: title,
         initialLat: double.tryParse(latCtrl.text.trim()),
         initialLon: double.tryParse(lonCtrl.text.trim()),
-        geo: widget.notifier.geo,
+        geo: widget.notifier.geoFacet.geo,
         previewArcNotifier: widget.notifier.previewArcNotifier,
         otherLat: double.tryParse(otherLatCtrl.text.trim()),
         otherLon: double.tryParse(otherLonCtrl.text.trim()),

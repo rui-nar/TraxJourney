@@ -140,7 +140,7 @@ void main() {
     expect(notifier.error, isNull);
     expect(service.lowResCalls, 2);
     expect(service.metaCalls, 1, reason: 'the healthy request is not re-fetched');
-    expect(notifier.geo, isNotNull);
+    expect(notifier.geoFacet.geo, isNotNull);
   });
 
   test('retries are bounded and the survivor is a sentence, not an exception',
@@ -178,7 +178,7 @@ void main() {
     expect(notifier.error, isNotNull);
     expect(notifier.error, isNot(contains('TimeoutException')));
     expect(notifier.error, isNot(contains('Future not completed')));
-    expect(notifier.isGeoLoaded, isFalse);
+    expect(notifier.geoFacet.isLoaded, isFalse);
   });
 
   test('a refusal reaches the user verbatim, and immediately', () async {

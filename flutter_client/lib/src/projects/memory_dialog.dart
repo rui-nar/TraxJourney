@@ -152,7 +152,7 @@ class _MemoryDialogState extends State<MemoryDialog> {
         title: 'Pick memory location',
         initialLat: _customLat,
         initialLon: _customLon,
-        geo: widget.notifier.geo,
+        geo: widget.notifier.geoFacet.geo,
       ),
     );
     if (result != null && mounted) {

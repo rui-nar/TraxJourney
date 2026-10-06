@@ -103,7 +103,7 @@ ProjectNotifier _notifierOn(_Server server) {
     for (final s in server.segments.values)
       _segmentItem(Map<String, dynamic>.from(s)),
   ];
-  n.geo = {'type': 'FeatureCollection', 'features': <dynamic>[]};
+  n.geoFacetWriter.replaceKeepingLod({'type': 'FeatureCollection', 'features': <dynamic>[]});
   return n;
 }
 
@@ -116,7 +116,7 @@ Map<String, dynamic> _seg(String id, {String status = 'idle'}) => {
 
 /// The route mode the map draws for [segId], or null when it has no line.
 String? _drawnMode(ProjectNotifier n, String segId) {
-  for (final f in (n.geo?['features'] as List? ?? const [])) {
+  for (final f in (n.geoFacet.geo?['features'] as List? ?? const [])) {
     final props = (f as Map)['properties'] as Map;
     if (props['segment_id'] == segId) return props['route_mode'] as String?;
   }

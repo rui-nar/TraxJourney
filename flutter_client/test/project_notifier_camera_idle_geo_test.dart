@@ -71,7 +71,7 @@ ApiClient _mockedApi() => ApiClient(
     }));
 
 int _geoFeatureCount(ProjectNotifier n) =>
-    (n.geo?['features'] as List?)?.length ?? 0;
+    (n.geoFacet.geo?['features'] as List?)?.length ?? 0;
 
 void main() {
   setUp(() => projectDataCache.resetForTest());

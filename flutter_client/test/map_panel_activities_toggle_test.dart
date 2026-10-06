@@ -46,7 +46,7 @@ ProjectNotifier _notifierWithMixedMarkers() {
       },
     },
   ];
-  n.geo = {
+  n.geoFacetWriter.replaceKeepingLod({
     'type': 'FeatureCollection',
     'features': [
       {
@@ -61,7 +61,7 @@ ProjectNotifier _notifierWithMixedMarkers() {
         },
       },
     ],
-  };
+  });
   return n;
 }
 
@@ -73,7 +73,7 @@ ProjectNotifier _notifierWithActivity() {
       'activity': {'id': 1, 'name': 'Hike', 'sport_type': 'hike'},
     },
   ];
-  n.geo = {
+  n.geoFacetWriter.replaceKeepingLod({
     'type': 'FeatureCollection',
     'features': [
       {
@@ -88,7 +88,7 @@ ProjectNotifier _notifierWithActivity() {
         },
       },
     ],
-  };
+  });
   return n;
 }
 

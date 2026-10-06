@@ -85,14 +85,14 @@ void main() {
 
     final n = ProjectNotifier(ProjectService())..setMapZoom(9);
     await n.load(_ref);
-    while ((n.geo?['features'] as List?)?.isNotEmpty != true) {
+    while ((n.geoFacet.geo?['features'] as List?)?.isNotEmpty != true) {
       await Future<void>.delayed(const Duration(milliseconds: 5));
     }
 
     // What the share card does: resolve the day's points, then hand the same
     // geometry to the exporter.
     final onScreen = dayRoutePoints(
-      geo: n.geo,
+      geo: n.geoFacet.geo,
       items: n.items,
       activities: n.activities,
       date: _day,
