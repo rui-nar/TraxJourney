@@ -59,7 +59,7 @@ class TestFerryFallbackRaisesOnMissingRoute:
             return {"elements": [fake_relation]}
 
         with patch("src.services.overpass_service._overpass", side_effect=_overpass_with_relation):
-            result = get_ferry_geometry(_LAT1, _LON1, _LAT2, _LON2)
+            result = get_ferry_geometry(_LAT1, _LON1, _LAT2, _LON2).polyline
 
         assert len(result) >= 3, "Expected real geometry, not a 2-point chord"
 
@@ -109,7 +109,7 @@ class TestFerryEndpointScoring:
             return {"elements": [wrong_relation, correct_relation]}
 
         with patch("src.services.overpass_service._overpass", side_effect=_overpass_two_rels):
-            result = get_ferry_geometry(lat1, lon1, lat2, lon2)
+            result = get_ferry_geometry(lat1, lon1, lat2, lon2).polyline
 
         # The first point of the result must be near Visby, not Stockholm.
         assert abs(result[0][1] - lat1) < 0.1, (
@@ -214,7 +214,7 @@ class TestFerryRelationGraphRouting:
             return {"elements": [connected_relation]}
 
         with patch("src.services.overpass_service._overpass", side_effect=_overpass_connected):
-            result = get_ferry_geometry(_LAT1, _LON1, _LAT2, _LON2)
+            result = get_ferry_geometry(_LAT1, _LON1, _LAT2, _LON2).polyline
 
         # Full continuous path start → mid → end, no teleport: every hop is a real
         # edge, so the largest hop is one of the two legs, not a stitched gap.

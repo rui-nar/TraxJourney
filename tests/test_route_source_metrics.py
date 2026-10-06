@@ -74,14 +74,59 @@ class TestResolveCounter:
             _compute_segment_geometry(_segment("train"), {})
         assert metric(_NAME, **labels) == before + 1
 
+    @pytest.mark.parametrize("source", ["local", "overpass"])
     @pytest.mark.parametrize("kind,mode,getter", [
         ("boat", "boat", "get_ferry_geometry"),
         ("bus", "bus", "get_bus_geometry"),
     ])
-    def test_ferry_and_bus_count_overpass(self, metric, kind, mode, getter):
-        labels = dict(mode=mode, source="overpass", degraded="false")
+    def test_ferry_and_bus_count_their_source(
+            self, metric, kind, mode, getter, source):
+        labels = dict(mode=mode, source=source, degraded="false")
         before = metric(_NAME, **labels)
         with patch(f"src.services.overpass_service.{getter}",
-                   return_value=[[1.0, 1.0], [2.0, 2.0]]):
-            _compute_segment_geometry(_segment(kind), {})
+                   return_value=RailGeometry([[1.0, 1.0], [1.5, 1.5], [2.0, 2.0]],
+                                             "relation", False, source)):
+            polyline, _, degraded, _ = _compute_segment_geometry(_segment(kind), {})
         assert metric(_NAME, **labels) == before + 1
+        assert polyline == [[1.0, 1.0], [1.5, 1.5], [2.0, 2.0]]
+        assert degraded is False
+
+    @pytest.mark.parametrize("kind,mode,getter", [
+        ("boat", "boat", "get_ferry_geometry"),
+        ("bus", "bus", "get_bus_geometry"),
+    ])
+    def test_a_box_refused_locally_counts_degraded(self, metric, kind, mode, getter):
+        """The vertex ceiling straight-lines without asking Overpass, so the
+        one degraded ferry or bus result is local, and it says so."""
+        labels = dict(mode=mode, source="local", degraded="true")
+        before = metric(_NAME, **labels)
+        with patch(f"src.services.overpass_service.{getter}",
+                   return_value=RailGeometry([[1.0, 1.0], [2.0, 2.0]],
+                                             "straight", True, "local")):
+            _, _, degraded, _ = _compute_segment_geometry(_segment(kind), {})
+        assert metric(_NAME, **labels) == before + 1
+        assert degraded is True
+
+
+class TestFerryBusGeometrySource:
+    """``_get_route_geometry`` decides the source the counter is labelled with."""
+
+    @staticmethod
+    def _route(poly):
+        return poly, "relation"
+
+    def test_a_local_hit_is_local(self):
+        with patch.object(ov, "_local_route_source", return_value=object()),              patch.object(ov, "_resolve_route",
+                          return_value=self._route([[1.0, 1.0], [2.0, 2.0]])):
+            assert ov.get_ferry_geometry(1.0, 1.0, 2.0, 2.0).source == "local"
+
+    def test_a_local_miss_that_falls_back_is_overpass(self):
+        with patch.object(ov, "_local_route_source", return_value=object()),              patch.object(ov, "_resolve_route", side_effect=[
+                 ov.OverpassError("nothing local"),
+                 self._route([[1.0, 1.0], [2.0, 2.0]])]):
+            assert ov.get_bus_geometry(1.0, 1.0, 2.0, 2.0).source == "overpass"
+
+    def test_no_local_source_is_overpass(self):
+        with patch.object(ov, "_local_route_source", return_value=None),              patch.object(ov, "_resolve_route",
+                          return_value=self._route([[1.0, 1.0], [2.0, 2.0]])):
+            assert ov.get_ferry_geometry(1.0, 1.0, 2.0, 2.0).source == "overpass"

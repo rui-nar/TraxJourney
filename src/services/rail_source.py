@@ -46,6 +46,7 @@ from typing import Iterable, Optional, Sequence
 from src.rail.store import (
     _MAX_BBOX_VERTICES,
     _box,
+    CLS_ROUTE,
     DEFAULT_LAYER,
     LAYERS,
     RailStore,
@@ -285,8 +286,8 @@ def _ask(store: RailStore, question, *args, default):
     except (sqlite3.ProgrammingError, sqlite3.NotSupportedError):
         raise
     except sqlite3.DatabaseError as exc:
-        _log.warning("rail region %s failed mid-query (%s) — skipped, this "
-                     "query falls back to Overpass", store.region, exc)
+        _log.warning("%s region %s failed mid-query (%s) — skipped, this "
+                     "query falls back to Overpass", store.layer, store.region, exc)
         return default
 
 
@@ -305,14 +306,24 @@ class LocalRailSource(RailSource):
     The store cache is bounded at ``_MAX_OPEN_STORES`` open files — enough for
     every region a coordinate can land in, and nowhere near the 49 the manifest
     can list.
+
+    *layer* selects which of a region's stores this source reads (rail unless
+    said otherwise). The ferry and bus resolvers hold one per layer through
+    ``route_source.LocalRouteSource`` and use only ``regions_for``,
+    ``_stores_for`` and ``ways_in_bbox`` of it: region selection, the
+    unreadable-file guards and the merged vertex ceiling are properties of a
+    region directory, not of rail, and a second copy of them would be a second
+    place for the #352 ceiling fixes to be missed.
     """
 
     def __init__(self, directory: str | os.PathLike,
-                 cache: Optional[RailStoreCache] = None) -> None:
+                 cache: Optional[RailStoreCache] = None,
+                 layer: str = DEFAULT_LAYER) -> None:
         self.directory = str(directory)
-        self.coverage = load_coverage(self.directory)
+        self.layer = layer
+        self.coverage = load_coverage(self.directory, layer)
         self._cache = cache if cache is not None else RailStoreCache(
-            self.directory, max_open=_MAX_OPEN_STORES)
+            self.directory, max_open=_MAX_OPEN_STORES, layer=layer)
 
     # -- region selection ------------------------------------------------
 
@@ -341,13 +352,13 @@ class LocalRailSource(RailSource):
             try:
                 store = self._cache.get(region)
             except Exception as exc:  # noqa: BLE001 — see docstring
-                _log.warning("rail region %s in %s cannot be opened (%s) — "
+                _log.warning("%s region %s in %s cannot be opened (%s) — "
                              "skipped, this query falls back to Overpass",
-                             region, self.directory, exc)
+                             self.layer, region, self.directory, exc)
                 continue
             if store is None:
-                _log.warning("rail region %s is in the manifest but not in %s",
-                             region, self.directory)
+                _log.warning("%s region %s is in the manifest but not in %s",
+                             self.layer, region, self.directory)
                 continue
             yield store
 
@@ -419,9 +430,14 @@ class LocalRailSource(RailSource):
             for store in self._stores_for(_scope(near)))
 
     def ways_in_bbox(
-        self, min_lat: float, min_lon: float, max_lat: float, max_lon: float
+        self, min_lat: float, min_lon: float, max_lat: float, max_lon: float,
+        cls_mask: int = CLS_ROUTE,
     ) -> list[dict]:
         """Every overlapping region's track, merged and deduplicated by way id.
+
+        *cls_mask* is the ``way.cls`` selection (``src/rail/store.py``): bit 0,
+        the layer's routable class, is track on a rail store and what the rail
+        strategies always ask for; the ferry and bus strategies pass their own.
 
         The dedup is not defensive: Geofabrik's country extracts overlap at
         borders, so a way near one is genuinely in two files, and counting it
@@ -455,7 +471,8 @@ class LocalRailSource(RailSource):
         counts: dict[int, int] = {}
         stores = []
         for store in self._stores_for(box):
-            found = _ask(store, store.vertex_counts_in_bbox, *box, default=None)
+            found = _ask(store, store.vertex_counts_in_bbox, *box, cls_mask,
+                         default=None)
             if found is None:   # the file went bad under us — see _ask
                 continue
             # setdefault, not update: the decode below keeps the *first*
@@ -480,7 +497,7 @@ class LocalRailSource(RailSource):
         for store in stores:
             try:
                 found = _ask(store, store.ways_in_bbox, *box, _MAX_BBOX_VERTICES,
-                             default=[])
+                             cls_mask, default=[])
             except RailStoreError as exc:
                 # The store's own ceiling, kept as a backstop under the merged
                 # one: a region cannot hold more than the merged total that was
