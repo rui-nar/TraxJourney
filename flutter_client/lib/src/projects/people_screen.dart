@@ -56,8 +56,11 @@ class _PeopleScreenState extends State<PeopleScreen> {
         icon: Icon(_showGroups ? Icons.group_add : Icons.person_add_alt_1),
         label: Text(_showGroups ? 'Add group' : 'Add person'),
       ),
+      // The people, groups and encounters (items), and the root state the
+      // rows read (photo headers, permissions) (#294).
       body: AnimatedBuilder(
-        animation: widget.notifier,
+        animation:
+            Listenable.merge([widget.notifier, widget.notifier.itemsFacet]),
         builder: (context, _) {
           return Column(
             children: [
@@ -973,9 +976,9 @@ class _GroupDetailSheet extends StatelessWidget {
           const SizedBox(height: 4),
           // Listens, unlike the rest of this sheet: editing or deleting an
           // encounter in place (issue #175) has to repaint this list, and the
-          // rows come straight off notifier.items.
+          // rows come straight off the items facet.
           ListenableBuilder(
-            listenable: notifier,
+            listenable: Listenable.merge([notifier, notifier.itemsFacet]),
             builder: (context, _) {
               final encounters = encountersForGroup(notifier.itemsFacet.items, _groupId);
               if (encounters.isEmpty) {

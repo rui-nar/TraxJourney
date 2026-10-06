@@ -255,8 +255,6 @@ class _ProjectStatsScreenState extends State<ProjectStatsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final sleepingOptionGroups = widget.sleepingOptionGroups ??
-        context.watch<ProjectNotifier>().itemsFacet.sleepingOptionGroups;
     return Scaffold(
       appBar: AppBar(title: Text('${widget.projectName} — Statistics')),
       body: Column(
@@ -320,10 +318,27 @@ class _ProjectStatsScreenState extends State<ProjectStatsScreen> {
                 }
 
                 final s = snap.data!;
-                return _StatsBody(
-                  stats: s,
-                  projectName: widget.projectName,
-                  sleepingOptionGroups: sleepingOptionGroups,
+                final given = widget.sleepingOptionGroups;
+                if (given != null) {
+                  return _StatsBody(
+                    stats: s,
+                    projectName: widget.projectName,
+                    sleepingOptionGroups: given,
+                  );
+                }
+                // The ambient notifier's groups, followed as they change
+                // (#294). Selecting the notifier itself rebuilds this on an
+                // account change, not on its notifies.
+                final notifier =
+                    context.select<ProjectNotifier, ProjectNotifier>((n) => n);
+                return ListenableBuilder(
+                  listenable: notifier.itemsFacet,
+                  builder: (_, __) => _StatsBody(
+                    stats: s,
+                    projectName: widget.projectName,
+                    sleepingOptionGroups:
+                        notifier.itemsFacet.sleepingOptionGroups,
+                  ),
                 );
               },
             ),
