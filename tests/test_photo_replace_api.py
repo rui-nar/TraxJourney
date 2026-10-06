@@ -154,6 +154,38 @@ class TestMemoryPhotoReplace:
         assert thumb_img.size[0] <= 400 and thumb_img.size[1] <= 400
         assert thumb_path.stat().st_size < full_path.stat().st_size
 
+    def test_replace_keeps_rank(self, env):
+        """The new photo takes the old one's rank (#237), so a download that
+        lands later still places itself relative to it."""
+        import api.memories as mem_mod
+        from api.photo_order import load_state
+
+        client, user_id, project_id, engine, _ = env
+        memory_id = _insert_memory(engine, project_id, ["a", "b", "c"])
+        with Session(engine) as sess:
+            row = sess.get(DBMemory, memory_id)
+            row.photo_order_json = json.dumps({"epoch": 0, "ranks": {"a": 0, "b": 1, "c": 2}})
+            sess.add(row)
+            sess.commit()
+
+        resp = client.put(
+            f"/api/memories/{memory_id}/photos/b/replace",
+            files={"file": ("new.jpg", _jpeg_bytes(), "image/jpeg")},
+        )
+        assert resp.status_code == 200, resp.text
+        new_uuid = resp.json()["uuid"]
+
+        with Session(engine) as sess:
+            row = sess.get(DBMemory, memory_id)
+        assert load_state(row.photo_order_json)["ranks"] == {"a": 0, new_uuid: 1, "c": 2}
+
+        # A late rank-1 arrival goes after the replacement (equal ranks keep
+        # arrival order); had the rank been lost it would go before it.
+        mem_mod._write_memory_photo(memory_id, "late", order=1)
+        with Session(engine) as sess:
+            row = sess.get(DBMemory, memory_id)
+        assert json.loads(row.photos_json) == ["a", new_uuid, "late", "c"]
+
     def test_unknown_old_uuid_returns_404(self, env):
         client, user_id, project_id, engine, _ = env
         memory_id = _insert_memory(engine, project_id, ["real-uuid"])
