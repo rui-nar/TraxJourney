@@ -158,14 +158,14 @@ void main() {
   testWidgets('dragging the carousel updates the notifier\'s selected day',
       (tester) async {
     final notifier = await pumpCarousel(tester, const Size(1200, 900));
-    expect(notifier.selectedDays, isEmpty);
+    expect(notifier.selectionFacet.selectedDays, isEmpty);
 
     // Large drag guarantees landing on the last day regardless of the
     // wheel's residual curvature.
     await tester.drag(find.byType(ListWheelScrollView), const Offset(0, -1000));
     await tester.pumpAndSettle();
 
-    expect(notifier.selectedDays, {'2026-06-03'});
+    expect(notifier.selectionFacet.selectedDays, {'2026-06-03'});
   });
 
   testWidgets('carousel is a pill: only the right edge is rounded, radius = width / 2',
@@ -261,9 +261,9 @@ void main() {
       // commit one of its own: selectDays() clears selectedActivityId, which
       // would undo the tap and bounce the wheel back — the feedback loop
       // this guard exists to prevent.
-      expect(notifier.selectedActivityId, 2);
-      expect(notifier.selectedDays, isEmpty);
-      expect(notifier.selectedDay, isNull);
+      expect(notifier.selectionFacet.selectedActivityId, 2);
+      expect(notifier.selectionFacet.selectedDays, isEmpty);
+      expect(notifier.selectionFacet.selectedDay, isNull);
     });
 
     testWidgets('a second tap mid-scroll still leaves the map selection alone',
@@ -278,8 +278,8 @@ void main() {
       // The superseded animation completes as soon as the second one starts;
       // if that were allowed to lower the loop guard, the rest of the second
       // scroll would commit a day and clear the activity under it.
-      expect(notifier.selectedActivityId, 1);
-      expect(notifier.selectedDays, isEmpty);
+      expect(notifier.selectionFacet.selectedActivityId, 1);
+      expect(notifier.selectionFacet.selectedDays, isEmpty);
       expect(find.text('Day 1'), findsOneWidget);
     });
 
@@ -292,7 +292,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Day 1'), findsOneWidget);
-      expect(notifier.selectedDays, isEmpty);
+      expect(notifier.selectionFacet.selectedDays, isEmpty);
     });
 
     testWidgets('leaves the strip where it is when the map deselects',
@@ -305,7 +305,7 @@ void main() {
       notifier.selectActivity(2);
       await tester.pumpAndSettle();
 
-      expect(notifier.selectedActivityId, isNull);
+      expect(notifier.selectionFacet.selectedActivityId, isNull);
       expect(find.text('Day 3'), findsOneWidget);
     });
 
@@ -327,7 +327,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.byType(ListWheelScrollView), findsNothing);
-      expect(notifier.selectedActivityId, 1);
+      expect(notifier.selectionFacet.selectedActivityId, 1);
     });
   });
 }

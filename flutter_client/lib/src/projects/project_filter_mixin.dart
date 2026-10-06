@@ -6,6 +6,7 @@ library;
 
 import 'package:flutter/foundation.dart';
 
+import 'facets/project_facet.dart';
 import 'project_filters.dart';
 
 mixin ProjectFilterMixin on ChangeNotifier {
@@ -14,37 +15,18 @@ mixin ProjectFilterMixin on ChangeNotifier {
   List<Map<String, dynamic>> get items;
   Map<String, Map<String, dynamic>> get dayMeta;
 
-  // ── Abstract: selection state (provided by ProjectNotifier fields) ────────
+  // ── Abstract: selection state (the notifier's SelectionFacet) ────────────
   // setFilters clears item selection so a filtered-out item isn't left active.
-  String? get selectedDay;
-  set selectedDay(String? v);
-  dynamic get selectedActivityId;
-  set selectedActivityId(dynamic v);
-  dynamic get selectedSegmentId;
-  set selectedSegmentId(dynamic v);
-  dynamic get selectedMemoryId;
-  set selectedMemoryId(dynamic v);
-  Set<String> get selectedDays;
-  set selectedDays(Set<String> v);
+  SelectionFacetWriter get selectionFacetWriter;
 
   // ── Abstract: UI-state persistence hook (issue #76 follow-up) ─────────────
   // Implemented by ProjectNotifier — persists selection + filter state to
   // shared_preferences so a forced reload doesn't lose it.
   void saveUiState();
 
-  // ── Filter state (owned by this mixin) ───────────────────────────────────
-  ProjectFilters _filters = ProjectFilters.empty;
+  // ── Filter state (held by the SelectionFacet) ────────────────────────────
+  ProjectFilters get _filters => selectionFacetWriter.facet.filters;
 
-  ProjectFilters get filters => _filters;
-
-  // Backwards-compat shims — all 31 widget call sites remain unchanged.
-  Set<String> get tagFilter          => _filters.tags;
-  Set<String> get sleepingFilter     => _filters.sleeping;
-  Set<String> get activityTypeFilter => _filters.activityTypes;
-  Set<String> get sourceFilter       => _filters.sources;
-  Set<String> get transportFilter    => _filters.transport;
-  int  get activeFilterCount         => _filters.activeCount;
-  bool get hasActiveFilter           => _filters.hasActive;
   bool get hasFilterableContent      =>
       availableTags.isNotEmpty || availableSleepingModes.isNotEmpty ||
       availableActivityTypes.isNotEmpty || availableTransportationMeans.isNotEmpty;
@@ -132,18 +114,15 @@ mixin ProjectFilterMixin on ChangeNotifier {
     Set<String>? transport,
     Set<String>? sources,
   }) {
-    _filters = _filters.copyWith(
+    final next = _filters.copyWith(
       tags: tags,
       sleeping: sleeping,
       activityTypes: activityTypes,
       transport: transport,
       sources: sources,
     );
-    _recomputeSelectedDays();
-    selectedDay = null;
-    selectedActivityId = null;
-    selectedSegmentId = null;
-    selectedMemoryId = null;
+    selectionFacetWriter.setFilters(next, _matchingDays(next));
+    selectionFacetWriter.clearItemSelection();
     saveUiState();
     notifyListeners();
   }
@@ -153,8 +132,7 @@ mixin ProjectFilterMixin on ChangeNotifier {
 
   /// Resets filter state to empty. Called by ProjectNotifier.clear().
   void resetFilters() {
-    _filters = ProjectFilters.empty;
-    selectedDays = {};
+    selectionFacetWriter.setFilters(ProjectFilters.empty, {});
   }
 
   /// Applies a filter set restored from shared_preferences (issue #76
@@ -168,8 +146,7 @@ mixin ProjectFilterMixin on ChangeNotifier {
   /// that cannot be trusted to say what the trip holds (an offline snapshot).
   bool restoreFilters(ProjectFilters restored, {bool prune = true}) {
     if (!prune) {
-      _filters = restored;
-      _recomputeSelectedDays();
+      selectionFacetWriter.setFilters(restored, _matchingDays(restored));
       return false;
     }
 
@@ -191,25 +168,23 @@ mixin ProjectFilterMixin on ChangeNotifier {
     Set<String> held(Set<String> saved, List<String> available) =>
         saved.where(available.contains).toSet();
 
-    _filters = restored.copyWith(
+    final kept = restored.copyWith(
       tags: held(restored.tags, availableTags),
       sleeping: held(restored.sleeping, availableSleepingModes),
       activityTypes: held(restored.activityTypes, availableActivityTypes),
       transport: held(restored.transport, availableTransportationMeans),
       sources: held(restored.sources, availableSources),
     );
-    _recomputeSelectedDays();
+    selectionFacetWriter.setFilters(kept, _matchingDays(kept));
     // Every dimension only ever shrinks, so the count moves iff something went.
-    return _filters.activeCount != restored.activeCount;
+    return kept.activeCount != restored.activeCount;
   }
 
   // ── Internal ──────────────────────────────────────────────────────────────
 
-  void _recomputeSelectedDays() {
-    if (!_filters.hasActive) {
-      selectedDays = {};
-      return;
-    }
+  /// The days [filters] match; empty when none is set.
+  Set<String> _matchingDays(ProjectFilters filters) {
+    if (!filters.hasActive) return {};
 
     final actByDay = <String, Set<String>>{};
     for (final a in activities) {
@@ -242,32 +217,32 @@ mixin ProjectFilterMixin on ChangeNotifier {
 
     final matching = <String>{};
     for (final dk in dayMeta.keys) {
-      if (_filters.tags.isNotEmpty) {
+      if (filters.tags.isNotEmpty) {
         // Match on *effective* tags so days that only inherit a tag from an
         // earlier day still satisfy the tag filter (issue #18).
         final tags = effectiveDayTags(dayMeta, dk).toSet();
-        if (!tags.any(_filters.tags.contains)) continue;
+        if (!tags.any(filters.tags.contains)) continue;
       }
-      if (_filters.sleeping.isNotEmpty) {
+      if (filters.sleeping.isNotEmpty) {
         final s = dayMeta[dk]?['sleeping'] as String?;
         final label = (s == null || s.isEmpty) ? 'No data' : s;
-        if (!_filters.sleeping.contains(label)) continue;
+        if (!filters.sleeping.contains(label)) continue;
       }
-      if (_filters.activityTypes.isNotEmpty) {
+      if (filters.activityTypes.isNotEmpty) {
         final types = actByDay[dk] ?? const {};
-        if (!types.any(_filters.activityTypes.contains)) continue;
+        if (!types.any(filters.activityTypes.contains)) continue;
       }
-      if (_filters.transport.isNotEmpty) {
+      if (filters.transport.isNotEmpty) {
         final types = trByDay[dk] ?? const {};
-        if (!types.any(_filters.transport.contains)) continue;
+        if (!types.any(filters.transport.contains)) continue;
       }
-      if (_filters.sources.isNotEmpty) {
+      if (filters.sources.isNotEmpty) {
         final sources = srcByDay[dk] ?? const {};
-        if (!sources.any(_filters.sources.contains)) continue;
+        if (!sources.any(filters.sources.contains)) continue;
       }
       matching.add(dk);
     }
-    selectedDays = matching;
+    return matching;
   }
 }
 

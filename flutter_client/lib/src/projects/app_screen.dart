@@ -848,11 +848,11 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
           // Filter — always visible
           Consumer<ProjectNotifier>(
             builder: (_, n, __) {
-              final active = n.hasActiveFilter;
+              final active = n.selectionFacet.hasActiveFilter;
               return IconButton(
                 icon: Badge(
                   isLabelVisible: active,
-                  label: Text('${n.activeFilterCount}'),
+                  label: Text('${n.selectionFacet.activeFilterCount}'),
                   child: Icon(
                     Icons.tune,
                     color: active ? Theme.of(context).colorScheme.primary : null,
@@ -1178,9 +1178,9 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
                               (List<Map<String, dynamic>>, Object?, String?, Set<String>)>(
                             selector: (_, n) => (
                               n.activities,
-                              n.selectedActivityId as Object?,
-                              n.selectedDay,
-                              n.selectedDays,
+                              n.selectionFacet.selectedActivityId as Object?,
+                              n.selectionFacet.selectedDay,
+                              n.selectionFacet.selectedDays,
                             ),
                             shouldRebuild: (a, b) =>
                                 !identical(a.$1, b.$1) ||
@@ -1285,8 +1285,8 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
                         (List<Map<String, dynamic>>, Object?, String?)>(
                       selector: (_, n) => (
                         n.activities,
-                        n.selectedActivityId as Object?,
-                        n.selectedDay,
+                        n.selectionFacet.selectedActivityId as Object?,
+                        n.selectionFacet.selectedDay,
                       ),
                       shouldRebuild: (a, b) =>
                           !identical(a.$1, b.$1) ||

@@ -418,11 +418,11 @@ class _ViewBodyState extends State<_ViewBody> with TickerProviderStateMixin {
 
           Consumer<ViewProjectNotifier>(
             builder: (_, n, __) {
-              final active = n.tagFilter.isNotEmpty;
+              final active = n.selectionFacet.tagFilter.isNotEmpty;
               return IconButton(
                 icon: Badge(
                   isLabelVisible: active,
-                  label: Text('${n.tagFilter.length}'),
+                  label: Text('${n.selectionFacet.tagFilter.length}'),
                   child: Icon(
                     Icons.label_outline,
                     color: active ? Theme.of(context).colorScheme.primary : null,
@@ -636,7 +636,7 @@ class _ViewLayout extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final selActId = notifier.selectedActivityId;
+    final selActId = notifier.selectionFacet.selectedActivityId;
     final elevChart = notifier.isElevationLoaded
         ? ElevationChart(
             activities: notifier.activities,

@@ -38,6 +38,8 @@ const _declarations = {
 const _facetDeclarations = {
   'final class GeoFacet': '$_dir/facets/geo_facet.dart',
   'final class GeoFacetWriter': '$_dir/facets/geo_facet.dart',
+  'final class SelectionFacet': '$_dir/facets/selection_facet.dart',
+  'final class SelectionFacetWriter': '$_dir/facets/selection_facet.dart',
 };
 
 /// Fields clear() deliberately leaves alone, each with why.
@@ -88,14 +90,19 @@ void main() {
     expect(
         scan.fields,
         containsAll([
-          'people', 'groups', 'selectedDays', '_heldStateKey', 'pendingSync',
+          'people', 'groups', '_heldStateKey', 'pendingSync',
           'shareToken', '_photoPollingTimer', '_degradedRouteCheckTimer',
-          '_fullTrack', 'members', '_filters', 'quotaError',
+          '_fullTrack', 'members', 'quotaError',
           'polarstepsOverlaySteps',
           '_pendingSegmentPatches', '_segmentTombstones', '_removedSegments',
           'geoFacetWriter',
           'GeoFacet._geo', 'GeoFacet._lod', 'GeoFacet._servedFrom',
           'GeoFacet._isLoaded',
+          'selectionFacetWriter',
+          'SelectionFacet._activityId', 'SelectionFacet._segmentId',
+          'SelectionFacet._memoryId', 'SelectionFacet._journalId',
+          'SelectionFacet._showJournals', 'SelectionFacet._day',
+          'SelectionFacet._days', 'SelectionFacet._filters',
         ]));
     // Neither another class in the same file nor a mixin's abstract getters.
     expect(scan.fields, isNot(contains('_token'))); // _SupersessionTrack's
@@ -104,6 +111,9 @@ void main() {
     // The fields that moved to the geometry facet are its, not the notifier's.
     for (final moved in [
       'geo', 'isGeoLoaded', '_loadedZoomBucket', '_loadedGeoBox',
+      'selectedActivityId', 'selectedSegmentId', 'selectedMemoryId',
+      'selectedJournalId', 'showJournals', 'selectedDay', 'selectedDays',
+      '_filters',
     ]) {
       expect(scan.fields, isNot(contains(moved)));
     }
@@ -143,6 +153,21 @@ void main() {
     final scan = _Scan(
         {...sources, facet: geo.replaceRange(lineAt, lineAt + line.length, '')});
     expect(scan.unreset(), {'GeoFacet._servedFrom'});
+  });
+
+  test("removing a selection field's reset fails the scan", () {
+    const facet = 'final class SelectionFacet';
+    const line = '_days = {};';
+    final selection = sources[facet]!;
+    final resetAt = selection.indexOf('  void _reset() {');
+    final lineAt = selection.indexOf(line, resetAt);
+    expect(resetAt, isNonNegative);
+    expect(lineAt, isNonNegative, reason: '$line is not in _reset()');
+    final scan = _Scan({
+      ...sources,
+      facet: selection.replaceRange(lineAt, lineAt + line.length, ''),
+    });
+    expect(scan.unreset(), {'SelectionFacet._days'});
   });
 
   test("clear() not resetting the facet fails the scan for all of its fields, "

@@ -437,6 +437,7 @@ class ProjectNotifier extends ChangeNotifier
 
   @override
   final GeoFacetWriter geoFacetWriter = GeoFacetWriter();
+  @override
   final SelectionFacetWriter selectionFacetWriter = SelectionFacetWriter();
   final StyleFacetWriter styleFacetWriter = StyleFacetWriter();
   final ItemsFacetWriter itemsFacetWriter = ItemsFacetWriter();
@@ -524,27 +525,6 @@ class ProjectNotifier extends ChangeNotifier
   /// on this rather than assume isLoading turning false means they're
   /// already populated.
   bool isSyncMetaLoaded = true;
-
-  /// The activity currently highlighted on the map. Null = no selection.
-  @override dynamic selectedActivityId;
-
-  /// The connecting segment currently highlighted on the map. Null = no selection.
-  @override dynamic selectedSegmentId;
-
-  /// The memory currently highlighted on the map/panel. Null = no selection.
-  @override dynamic selectedMemoryId;
-
-  /// The journal entry currently highlighted on the map/panel. Null = no selection.
-  dynamic selectedJournalId;
-
-  /// Whether journal markers and list items are visible.
-  bool showJournals = true;
-
-  /// The day currently selected in the activity panel ("YYYY-MM-DD" or null).
-  @override String? selectedDay;
-
-  /// Days selected in multi-select mode. Empty = no multi-day filter.
-  @override Set<String> selectedDays = {};
 
   /// User-defined trip start date override ("YYYY-MM-DD"); null = infer from activities.
   String? tripStart;
@@ -696,73 +676,41 @@ class ProjectNotifier extends ChangeNotifier
   };
 
   void selectActivity(dynamic id) {
-    selectedActivityId =
-        selectedActivityId?.toString() == id?.toString() ? null : id;
-    selectedSegmentId = null;
-    selectedMemoryId = null;
-    selectedJournalId = null;
-    selectedDay = null;
-    selectedDays = {};
+    selectionFacetWriter.selectActivity(id);
     saveUiState();
     notifyListeners();
   }
 
   void selectSegment(dynamic id) {
-    selectedSegmentId =
-        selectedSegmentId?.toString() == id?.toString() ? null : id;
-    selectedActivityId = null;
-    selectedMemoryId = null;
-    selectedJournalId = null;
-    selectedDay = null;
-    selectedDays = {};
+    selectionFacetWriter.selectSegment(id);
     saveUiState();
     notifyListeners();
   }
 
   void selectMemory(dynamic id) {
-    selectedMemoryId =
-        selectedMemoryId?.toString() == id?.toString() ? null : id;
-    selectedActivityId = null;
-    selectedSegmentId = null;
-    selectedJournalId = null;
-    selectedDay = null;
-    selectedDays = {};
+    selectionFacetWriter.selectMemory(id);
     saveUiState();
     notifyListeners();
   }
 
   void selectJournal(dynamic id) {
-    selectedJournalId =
-        selectedJournalId?.toString() == id?.toString() ? null : id;
-    selectedActivityId = null;
-    selectedSegmentId = null;
-    selectedMemoryId = null;
-    selectedDay = null;
-    selectedDays = {};
+    selectionFacetWriter.selectJournal(id);
     notifyListeners();
   }
 
   void toggleJournals() {
-    showJournals = !showJournals;
+    selectionFacetWriter.toggleJournals();
     notifyListeners();
   }
 
   void selectDay(String? dateKey) {
-    selectedDay = dateKey;
-    selectedActivityId = null;
-    selectedSegmentId = null;
-    selectedMemoryId = null;
-    selectedDays = {};
+    selectionFacetWriter.selectDay(dateKey);
     saveUiState();
     notifyListeners();
   }
 
   void selectDays(Set<String> days) {
-    selectedDays = Set.from(days);
-    selectedActivityId = null;
-    selectedSegmentId = null;
-    selectedMemoryId = null;
-    selectedDay = null;
+    selectionFacetWriter.selectDays(days);
     saveUiState();
     notifyListeners();
   }
@@ -841,16 +789,17 @@ class ProjectNotifier extends ChangeNotifier
     final key = _uiStateKey(ref);
     if (key == null) return false;
     try {
+      final selection = selectionFacet;
       final data = <String, dynamic>{
-        'selectedDay': selectedDay,
-        'selectedActivityId': selectedActivityId?.toString(),
-        'selectedSegmentId': selectedSegmentId?.toString(),
-        'selectedMemoryId': selectedMemoryId?.toString(),
-        'tags': filters.tags.toList(),
-        'sleeping': filters.sleeping.toList(),
-        'activityTypes': filters.activityTypes.toList(),
-        'transport': filters.transport.toList(),
-        'sources': filters.sources.toList(),
+        'selectedDay': selection.selectedDay,
+        'selectedActivityId': selection.selectedActivityId?.toString(),
+        'selectedSegmentId': selection.selectedSegmentId?.toString(),
+        'selectedMemoryId': selection.selectedMemoryId?.toString(),
+        'tags': selection.filters.tags.toList(),
+        'sleeping': selection.filters.sleeping.toList(),
+        'activityTypes': selection.filters.activityTypes.toList(),
+        'transport': selection.filters.transport.toList(),
+        'sources': selection.filters.sources.toList(),
       };
       final prefs = await SharedPreferences.getInstance();
       return await prefs.setString(key, jsonEncode(data));
@@ -918,14 +867,14 @@ class ProjectNotifier extends ChangeNotifier
 
       final savedDay = data['selectedDay'] as String?;
       if (savedDay != null && dayMeta.containsKey(savedDay)) {
-        selectedDay = savedDay;
+        selectionFacetWriter.setSelectedDay(savedDay);
       }
 
       final savedActivityId = data['selectedActivityId'] as String?;
       if (savedActivityId != null) {
         final activityIds = activities.map((a) => a['id']?.toString()).toSet();
         if (activityIds.contains(savedActivityId)) {
-          selectedActivityId = savedActivityId;
+          selectionFacetWriter.setSelectedActivityId(savedActivityId);
         }
       }
 
@@ -937,7 +886,7 @@ class ProjectNotifier extends ChangeNotifier
             .whereType<String>()
             .toSet();
         if (segmentIds.contains(savedSegmentId)) {
-          selectedSegmentId = savedSegmentId;
+          selectionFacetWriter.setSelectedSegmentId(savedSegmentId);
         }
       }
 
@@ -949,7 +898,7 @@ class ProjectNotifier extends ChangeNotifier
             .whereType<String>()
             .toSet();
         if (memoryIds.contains(savedMemoryId)) {
-          selectedMemoryId = savedMemoryId;
+          selectionFacetWriter.setSelectedMemoryId(savedMemoryId);
         }
       }
 
@@ -988,10 +937,7 @@ class ProjectNotifier extends ChangeNotifier
     // Cleared first, as load() does: the restore applies only what was saved,
     // so a selection this notifier made would survive beside the one view
     // mode saved since (U5-R1-4).
-    selectedDay = null;
-    selectedActivityId = null;
-    selectedSegmentId = null;
-    selectedMemoryId = null;
+    selectionFacetWriter.clearItemSelection();
     await _restoreUiState(token, loadRef);
     if (_isCurrent(token, loadRef)) notifyListeners();
   }
@@ -1129,11 +1075,7 @@ class ProjectNotifier extends ChangeNotifier
     activities = [];
     items = [];
     clearSegmentOverlay();  // discard any prior project's pending segment patches
-    selectedActivityId = null;
-    selectedSegmentId = null;
-    selectedMemoryId = null;
-    selectedDay = null;
-    selectedDays = {};
+    selectionFacetWriter.clearAllSelection();
     pendingSync = null;
     members = [];
     pendingInvites = [];
@@ -2376,13 +2318,6 @@ class ProjectNotifier extends ChangeNotifier
     itemsFacetWriter.reset();
     elevationFacetWriter.reset();
     resetSegmentState();
-    selectedActivityId = null;
-    selectedSegmentId = null;
-    selectedMemoryId = null;
-    selectedJournalId = null;
-    selectedDay = null;
-    showJournals = true;
-    resetFilters();
     tripStart = null;
     tripEnd = null;
     dayMeta = {};

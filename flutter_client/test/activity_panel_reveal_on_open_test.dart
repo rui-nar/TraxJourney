@@ -92,7 +92,7 @@ void main() {
 
     final notifier = _notifierWithSegmentAtEnd();
     // Selection made on the map while the panel is hidden.
-    notifier.selectedSegmentId = 'segZ';
+    notifier.selectionFacetWriter.setSelectedSegmentId('segZ');
 
     await tester.pumpWidget(_VisibilityHarness(
       notifier: notifier, controller: controller, visible: visible));

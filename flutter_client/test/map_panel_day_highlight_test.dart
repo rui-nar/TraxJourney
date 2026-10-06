@@ -59,7 +59,7 @@ ProjectNotifier _notifier({required String selectedDay}) =>
         {'item_type': 'activity', 'activity_id': 2},
       ]
       ..isLoading = false
-      ..selectedDays = {selectedDay};
+      ..selectionFacetWriter.setSelectedDays({selectedDay});
 
 /// Mirrors map_panel_fit_bounds_test.dart's / map_panel_degraded_route_color_test.dart's harness.
 Widget _panel(ProjectNotifier notifier, AnimatedMapController controller) =>

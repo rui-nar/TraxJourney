@@ -482,7 +482,7 @@ class _SharedProjectViewState extends State<_SharedProjectView>
                         basemapStyleUri: kActiveViewStyleUri,
                       );
                       final activityList = _ReadOnlyActivityList(notifier: pn);
-                      final selectedId = notifier.selectedActivityId;
+                      final selectedId = notifier.selectionFacet.selectedActivityId;
                       final elevChart = notifier.isElevationLoaded
                           ? ElevationChart(
                               activities: notifier.activities,
@@ -665,7 +665,7 @@ class _ReadOnlyActivityList extends StatelessWidget {
         final distM = (act['distance'] as num? ?? 0).toDouble();
         final distKm = (distM / 1000).toStringAsFixed(1);
         final isSelected =
-            notifier.selectedActivityId?.toString() == id?.toString();
+            notifier.selectionFacet.selectedActivityId?.toString() == id?.toString();
 
         return ListTile(
           dense: true,

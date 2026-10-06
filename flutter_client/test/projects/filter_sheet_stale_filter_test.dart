@@ -55,7 +55,7 @@ Future<void> _untick(WidgetTester tester, ProjectNotifier notifier,
   await tester.tap(finder);
   await tester.pumpAndSettle();
 
-  expect(notifier.hasActiveFilter, isFalse);
+  expect(notifier.selectionFacet.hasActiveFilter, isFalse);
 }
 
 void main() {
