@@ -19,6 +19,7 @@ import '../projects/basemaps.dart';
 import '../projects/geo_viewport.dart';
 import '../projects/heavy_decode.dart' as heavy;
 import '../projects/elevation_chart.dart' show ElevationChart, ElevationLoadingPlaceholder;
+import '../projects/facets/project_facet_providers.dart';
 import '../projects/map_panel.dart';
 import '../projects/memory_detail_modal.dart';
 import '../projects/project_notifier.dart';
@@ -136,10 +137,9 @@ class _SharedProjectService extends ProjectService {
   Future<Map<String, dynamic>> fetchSimplifiedGeo(
       ProjectRef _, double zoom, GeoBox? bbox) async {
     final box = bbox == null ? '' : '&bbox=${bbox.param}';
-    final bytes = await perfSpans.stage(
-        'fetch_geo_lod',
-        () => api.getBytes('/api/share/$token/geo/simplified?zoom=$zoom$box',
-            timeout: const Duration(seconds: 90)));
+    final bytes = await perfSpans.geoLodFetch(() => api.getBytesWithHeaders(
+        '/api/share/$token/geo/simplified?zoom=$zoom$box',
+        timeout: const Duration(seconds: 90)));
     perfSpans.note('geo_lod', perfSizeLabel(bytes.length));
     // Same off-isolate hop the owner path uses, so the geometry caches are
     // seeded and the map's first build after the swap does no O(points) work.
@@ -212,9 +212,7 @@ class SharedProjectNotifier extends ProjectNotifier {
   }
 
   Future<void> loadShared() async {
-    isMetaLoaded = false;
-    isElevationLoaded = false;
-    isGeoLoaded = false;
+    resetProgressiveFlags();
 
     // Phase 1: load() calls _sharedSvc.getDetailsMeta() which returns the
     // lightweight /meta response in ~1 s.  isLoading goes false after that.
@@ -317,9 +315,11 @@ class _SharedProjectScreenState extends State<SharedProjectScreen> {
     }
     return ChangeNotifierProvider.value(
       value: _notifier!,
-      child: _SharedProjectView(
-        token: widget.token,
-        initialMemoryPublicId: widget.initialMemoryPublicId,
+      child: ProjectFacetProviders<SharedProjectNotifier>(
+        child: _SharedProjectView(
+          token: widget.token,
+          initialMemoryPublicId: widget.initialMemoryPublicId,
+        ),
       ),
     );
   }
@@ -389,12 +389,14 @@ class _SharedProjectViewState extends State<_SharedProjectView>
   /// Opens the deep-linked memory once the project has loaded. Matches on the
   /// stable public_id; if not found (e.g. the memory was removed), it silently
   /// leaves the reader at the trip root.
+  // root-listener-audit: allow — reads the items once, on the root change
+  // that marks the meta loaded, which the same load's items arrive with.
   void _maybeOpenDeepLinkedMemory(ProjectNotifier pn) {
     if (_deepLinkHandled || widget.initialMemoryPublicId == null) return;
     if (!pn.isMetaLoaded) return;
     _deepLinkHandled = true;
 
-    final match = pn.items.firstWhere(
+    final match = pn.itemsFacet.items.firstWhere(
       (i) =>
           i['item_type'] == 'memory' &&
           (i['memory'] as Map?)?['public_id'] == widget.initialMemoryPublicId,
@@ -418,13 +420,23 @@ class _SharedProjectViewState extends State<_SharedProjectView>
 
   @override
   Widget build(BuildContext context) {
-    final notifier = context.watch<SharedProjectNotifier>();
-    final pn = notifier as ProjectNotifier;
-    _maybeOpenDeepLinkedMemory(pn);
     final theme = Theme.of(context);
     final authUser = context.watch<AuthNotifier>().user;
     final isAnonymous = authUser == null;
 
+    // Rebuilds on the root state this screen reads (name, meta loaded,
+    // error) and that the map panel reads through this rebuild (loading,
+    // overlay, photo headers, share key). The list and the chart listen to
+    // the facets they draw (#294).
+    return Consumer<SharedProjectNotifier>(
+        builder: (context, notifier, _) => _buildScaffold(
+            context, notifier, theme, isAnonymous));
+  }
+
+  Widget _buildScaffold(BuildContext context, SharedProjectNotifier notifier,
+      ThemeData theme, bool isAnonymous) {
+    final pn = notifier as ProjectNotifier;
+    _maybeOpenDeepLinkedMemory(pn);
     return Scaffold(
       appBar: AppBar(
         title: Text(
@@ -444,8 +456,8 @@ class _SharedProjectViewState extends State<_SharedProjectView>
                 MaterialPageRoute(
                   builder: (_) => ProjectStatsScreen(
                     projectName: notifier.projectName ?? '',
-                    availableTags: notifier.availableTags,
-                    sleepingOptionGroups: notifier.sleepingOptionGroups,
+                    availableTags: notifier.itemsFacet.availableTags,
+                    sleepingOptionGroups: notifier.itemsFacet.sleepingOptionGroups,
                     service: notifier.service,
                   ),
                 ),
@@ -482,20 +494,23 @@ class _SharedProjectViewState extends State<_SharedProjectView>
                         basemapStyleUri: kActiveViewStyleUri,
                       );
                       final activityList = _ReadOnlyActivityList(notifier: pn);
-                      final selectedId = notifier.selectedActivityId;
                       final elevChart = notifier.isElevationLoaded
-                          ? ElevationChart(
-                              activities: notifier.activities,
-                              selectedActivityId: selectedId,
-                              track: selectedId == null
-                                  ? notifier.fullTrack
-                                  : notifier.perActivityTracks[
-                                          selectedId.toString()] ??
-                                      notifier.fullTrack,
-                              onCursorChanged: (pos) =>
-                                  notifier.elevationCursorNotifier.value = pos,
-                              mapCursorNotifier: notifier.mapCursorDistNotifier,
-                              color: pn.effectiveElevationChartColor,
+                          ? ListenableBuilder(
+                              listenable: Listenable.merge([
+                                pn.itemsFacet,
+                                pn.selectionFacet,
+                                pn.styleFacet,
+                              ]),
+                              builder: (_, __) => ElevationChart(
+                                activities: pn.itemsFacet.activities,
+                                selectedActivityId:
+                                    pn.selectionFacet.selectedActivityId,
+                                elevation: pn.elevationFacet,
+                                onCursorChanged: (pos) =>
+                                    notifier.elevationCursorNotifier.value = pos,
+                                mapCursorNotifier: notifier.mapCursorDistNotifier,
+                                color: pn.styleFacet.effectiveElevationChartColor,
+                              ),
                             )
                           : const ElevationLoadingPlaceholder();
 
@@ -644,9 +659,15 @@ class _ReadOnlyActivityList extends StatelessWidget {
   const _ReadOnlyActivityList({required this.notifier});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ListenableBuilder(
+        listenable:
+            Listenable.merge([notifier.itemsFacet, notifier.selectionFacet]),
+        builder: (context, _) => _buildList(context),
+      );
+
+  Widget _buildList(BuildContext context) {
     final theme = Theme.of(context);
-    final activities = notifier.activities;
+    final activities = notifier.itemsFacet.activities;
 
     if (activities.isEmpty) {
       return Center(
@@ -665,7 +686,7 @@ class _ReadOnlyActivityList extends StatelessWidget {
         final distM = (act['distance'] as num? ?? 0).toDouble();
         final distKm = (distM / 1000).toStringAsFixed(1);
         final isSelected =
-            notifier.selectedActivityId?.toString() == id?.toString();
+            notifier.selectionFacet.selectedActivityId?.toString() == id?.toString();
 
         return ListTile(
           dense: true,

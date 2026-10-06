@@ -57,9 +57,9 @@ Future<void> _openModal(
   addTearDown(tester.view.reset);
 
   final notifier = _StubNotifier()
-    ..items = [
+    ..itemsFacetWriter.setItems([
       {'item_type': 'memory', 'memory': memory},
-    ];
+    ]);
 
   await tester.pumpWidget(MaterialApp(
     home: Scaffold(

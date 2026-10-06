@@ -28,7 +28,7 @@ Widget buildProjectAddFab(BuildContext context, ProjectNotifier notifier) {
       );
       return;
     }
-    final keys = notifier.orderedDayKeys();
+    final keys = notifier.itemsFacet.orderedDayKeys();
     if (useSheet) {
       showDayMetaSheet(context, notifier, dayKey,
           orderedDateKeys: keys, countersOnly: countersOnly);

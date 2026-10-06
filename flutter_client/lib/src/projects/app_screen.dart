@@ -137,6 +137,28 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
   // ProjectNotifier.setMapCameraActive).
   Timer? _cameraIdleTimer;
 
+  // The elevation chart's activities on the selected days, kept while
+  // neither the activities nor the days change. The chart rebuilds on any
+  // selection, item or style change, and recomputes its profile only when it
+  // gets a different list, so an unrelated change must hand it the same one.
+  List<Map<String, dynamic>>? _chartSource;
+  Set<String> _chartDays = const {};
+  List<Map<String, dynamic>> _chartActivities = const [];
+
+  List<Map<String, dynamic>> _chartActivitiesOn(
+      List<Map<String, dynamic>> all, Set<String> days) {
+    if (days.isEmpty) return all;
+    if (!identical(all, _chartSource) || !ManageMapPanelState.setEquals(days, _chartDays)) {
+      _chartSource = all;
+      _chartDays = days;
+      _chartActivities = all
+          .where((a) => days.contains(
+              (a['start_date_local'] as String? ?? '').split('T').first))
+          .toList();
+    }
+    return _chartActivities;
+  }
+
   void _onMapEvent(MapEvent event) {
     if (!shouldSyncViewport(event)) return;
     final camera = _mapController.mapController.camera;
@@ -241,7 +263,9 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
           .resolveRoleFor(context.read<AuthNotifier>().user?.id);
 
       void afterLoad() {
-        if (!mounted) return;
+        // Discarded at an account change while loading (issue #418): its
+        // trip is not the signed-in account's last-opened one.
+        if (!mounted || !notifier.isAlive) return;
         if (notifier.error != null) {
           // Stale shared-project ref (owner renamed the trip) — issue #111.
           if (notifier.loadErrorStatus == 404 && !projectRef.isOwn) {
@@ -274,10 +298,14 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
       // one that failed all still need a real load() — mirrors (with the
       // extra loading/error guards) ProjectStatsScreen's identical singleton
       // reuse check (see project_stats_screen.dart).
+      //
+      // Reused, it still re-reads the saved selection and filters first (issue
+      // #418): view mode may have changed them since, and the next tap here
+      // would save this notifier's stale copy over that change.
       if (notifier.ref == projectRef &&
           !notifier.isLoading &&
           notifier.error == null) {
-        afterLoad();
+        notifier.restoreSavedUiState().then((_) => afterLoad());
       } else {
         // Seed the zoom before loading, so the first geometry fetch is for
         // the level about to be shown rather than a hard-coded default that
@@ -358,7 +386,7 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
     final ref = widget.projectRef;
 
     final notifier = context.read<ProjectNotifier>();
-    final hasMemoryPhotos = notifier.items.any(
+    final hasMemoryPhotos = notifier.itemsFacet.items.any(
       (i) =>
           i['item_type'] == 'memory' &&
           ((i['memory']?['photos'] as List?)?.isNotEmpty ?? false),
@@ -460,7 +488,7 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
       barrierDismissible: false,
       builder: (_) => VideoConfigDialog(
         projectRef: widget.projectRef,
-        activities: () => notifier.activities,
+        activities: () => notifier.itemsFacet.activities,
         onStarted: (jobId) {
           _videoStatusNotifier.start(ref: widget.projectRef, jobId: jobId);
           messenger.showSnackBar(const SnackBar(
@@ -552,7 +580,7 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
   List<Map<String, dynamic>> _posterMemoriesPayload() {
     final notifier = context.read<ProjectNotifier>();
     return [
-      for (final item in notifier.items)
+      for (final item in notifier.itemsFacet.items)
         if (item['item_type'] == 'memory' && item['memory'] is Map)
           posterMemoryJson((item['memory'] as Map).cast<String, dynamic>()),
     ];
@@ -669,8 +697,8 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
         projectRef: widget.projectRef,
         // So the date picker opens on the trip rather than on today, and a date
         // outside it is flagged before it silently extends the trip.
-        tripStart: notifier.tripStart,
-        tripEnd: notifier.tripEnd,
+        tripStart: notifier.itemsFacet.tripStart,
+        tripEnd: notifier.itemsFacet.tripEnd,
         initialFile: initialFile,
       ),
     );
@@ -753,13 +781,18 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
   @override
   Widget build(BuildContext context) {
     // Only rebuild AppScreen (AppBar + LayoutBuilder) when the title changes.
-    // ActivityPanel and MapPanel subscribe to the notifier themselves via Consumer,
-    // so they still react to every notifyListeners() without pulling the AppBar
-    // through an unnecessary rebuild on every selectActivity() call.
+    // ActivityPanel and MapPanel listen to the facets they draw themselves;
+    // the Consumers around them rebuild them on the root state they read
+    // (loading, error, overlay) without pulling the AppBar through a rebuild
+    // on every selectActivity() call. Whatever else reads a facet listens to
+    // that facet (#294; test/projects/facets/root_listener_audit_test.dart).
     final title = context.select<ProjectNotifier, String>(
       (n) => n.projectName ?? widget.projectName,
     );
     final isLoading = context.select<ProjectNotifier, bool>((n) => n.isLoading);
+    // The notifier itself, so an account change (a new notifier, with new
+    // facets) rebuilds the facet listeners below. Its notifies do not.
+    final notifier = context.select<ProjectNotifier, ProjectNotifier>((n) => n);
 
     final isNarrow = MediaQuery.sizeOf(context).width < 720;
 
@@ -847,23 +880,27 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
             },
           ),
 
-          // Filter — always visible
-          Consumer<ProjectNotifier>(
-            builder: (_, n, __) {
-              final active = n.hasActiveFilter;
+          // Filter — always visible. What is ticked (selection) and what the
+          // trip offers (items): a tap changes the one, the first activity
+          // added to an empty trip the other (#294).
+          ListenableBuilder(
+            listenable: Listenable.merge(
+                [notifier.selectionFacet, notifier.itemsFacet]),
+            builder: (_, __) {
+              final active = notifier.selectionFacet.hasActiveFilter;
               return IconButton(
                 icon: Badge(
                   isLabelVisible: active,
-                  label: Text('${n.activeFilterCount}'),
+                  label: Text('${notifier.selectionFacet.activeFilterCount}'),
                   child: Icon(
                     Icons.tune,
                     color: active ? Theme.of(context).colorScheme.primary : null,
                   ),
                 ),
                 tooltip: 'Filter',
-                onPressed: !n.hasFilterableContent
+                onPressed: !notifier.itemsFacet.hasFilterableContent
                     ? null
-                    : () => _showFilterSheet(context, n, readOnly: false),
+                    : () => _showFilterSheet(context, notifier, readOnly: false),
               );
             },
           ),
@@ -1180,45 +1217,31 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
                         bottom: 0, left: 0, right: 0,
                         child: Builder(builder: (ctx) => Container(
                           color: Theme.of(ctx).colorScheme.surface.withOpacity(0.5),
-                          child: Selector<ProjectNotifier,
-                              (List<Map<String, dynamic>>, Object?, String?, Set<String>)>(
-                            selector: (_, n) => (
-                              n.activities,
-                              n.selectedActivityId as Object?,
-                              n.selectedDay,
-                              n.selectedDays,
-                            ),
-                            shouldRebuild: (a, b) =>
-                                !identical(a.$1, b.$1) ||
-                                a.$2?.toString() != b.$2?.toString() ||
-                                a.$3 != b.$3 ||
-                                !ManageMapPanelState.setEquals(a.$4, b.$4),
-                            builder: (ctx, tuple, __) {
-                              final n = ctx.read<ProjectNotifier>();
-                              final allActivities = tuple.$1;
-                              final selActId = tuple.$2;
-                              final selDay = tuple.$3;
-                              final selDays = tuple.$4;
+                          child: ListenableBuilder(
+                            listenable: Listenable.merge([
+                              notifier.itemsFacet,
+                              notifier.selectionFacet,
+                              notifier.styleFacet,
+                            ]),
+                            builder: (ctx, __) {
+                              final selection = notifier.selectionFacet;
+                              final selActId = selection.selectedActivityId;
+                              final selDay = selection.selectedDay;
+                              final selDays = selection.selectedDays;
                               final effectiveDays = selDays.isNotEmpty
                                   ? selDays
                                   : (selDay != null ? {selDay} : <String>{});
-                              final activities = effectiveDays.isEmpty
-                                  ? allActivities
-                                  : allActivities.where((a) =>
-                                      effectiveDays.contains(
-                                        (a['start_date_local'] as String? ?? '')
-                                            .split('T').first)).toList();
                               return RepaintBoundary(child: ElevationChart(
-                                activities: activities,
+                                activities: _chartActivitiesOn(
+                                    notifier.itemsFacet.activities,
+                                    effectiveDays),
                                 selectedActivityId: selActId,
                                 onCursorChanged: (pos) =>
-                                    n.elevationCursorNotifier.value = pos,
-                                mapCursorNotifier: n.mapCursorDistNotifier,
-                                track: selActId != null
-                                    ? n.perActivityTracks[selActId.toString()] ?? n.fullTrack
-                                    : n.fullTrack,
-                                color: n.effectiveElevationChartColor,
-                                showLine: n.elevationChartShowLine,
+                                    notifier.elevationCursorNotifier.value = pos,
+                                mapCursorNotifier: notifier.mapCursorDistNotifier,
+                                elevation: notifier.elevationFacet,
+                                color: notifier.styleFacet.effectiveElevationChartColor,
+                                showLine: notifier.styleFacet.elevationChartShowLine,
                               ));
                             },
                           ),
@@ -1287,37 +1310,26 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
                   bottom: 0, left: 0, right: 0,
                   child: Builder(builder: (ctx) => Container(
                     color: Theme.of(ctx).colorScheme.surface.withOpacity(0.42),
-                    child: Selector<ProjectNotifier,
-                        (List<Map<String, dynamic>>, Object?, String?)>(
-                      selector: (_, n) => (
-                        n.activities,
-                        n.selectedActivityId as Object?,
-                        n.selectedDay,
-                      ),
-                      shouldRebuild: (a, b) =>
-                          !identical(a.$1, b.$1) ||
-                          a.$2?.toString() != b.$2?.toString() ||
-                          a.$3 != b.$3,
-                      builder: (ctx, tuple, __) {
-                        final n = ctx.read<ProjectNotifier>();
-                        final allActivities = tuple.$1;
-                        final selActId = tuple.$2;
-                        final selDay = tuple.$3;
-                        final activities = selDay != null
-                            ? allActivities.where((a) =>
-                                (a['start_date_local'] as String? ?? '')
-                                    .split('T').first == selDay).toList()
-                            : allActivities;
+                    child: ListenableBuilder(
+                      listenable: Listenable.merge([
+                        notifier.itemsFacet,
+                        notifier.selectionFacet,
+                        notifier.styleFacet,
+                      ]),
+                      builder: (ctx, __) {
+                        final selActId =
+                            notifier.selectionFacet.selectedActivityId;
+                        final selDay = notifier.selectionFacet.selectedDay;
                         return RepaintBoundary(child: ElevationChart(
-                          activities: activities,
+                          activities: _chartActivitiesOn(
+                              notifier.itemsFacet.activities,
+                              selDay != null ? {selDay} : const <String>{}),
                           selectedActivityId: selActId,
                           onCursorChanged: (pos) =>
-                              n.elevationCursorNotifier.value = pos,
-                          mapCursorNotifier: n.mapCursorDistNotifier,
-                          track: selActId != null
-                              ? n.perActivityTracks[selActId.toString()] ?? n.fullTrack
-                              : n.fullTrack,
-                          color: n.effectiveElevationChartColor,
+                              notifier.elevationCursorNotifier.value = pos,
+                          mapCursorNotifier: notifier.mapCursorDistNotifier,
+                          elevation: notifier.elevationFacet,
+                          color: notifier.styleFacet.effectiveElevationChartColor,
                         ));
                       },
                     ),

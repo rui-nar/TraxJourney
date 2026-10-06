@@ -9,10 +9,10 @@ import 'package:traxjourney_client/src/projects/project_service.dart';
 
 ProjectNotifier _notifierWithEncounter() {
   final n = ProjectNotifier(ProjectService())..ref = const ProjectRef(name: 'Trip');
-  n.people = [
+  n.itemsFacetWriter.setPeople([
     {'id': 1, 'name': 'Alice'},
-  ];
-  n.items = [
+  ]);
+  n.itemsFacetWriter.setItems([
     {
       'item_type': 'encounter',
       'encounter': {
@@ -23,7 +23,7 @@ ProjectNotifier _notifierWithEncounter() {
         'date': '2026-01-01',
       },
     },
-  ];
+  ]);
   return n;
 }
 
@@ -138,12 +138,12 @@ void main() {
 
     // Alice now belongs to a group — new list objects, same convention the
     // rest of ProjectNotifier's mutations follow (never mutate in place).
-    notifier.people = [
+    notifier.itemsFacetWriter.setPeople([
       {'id': 1, 'name': 'Alice', 'group_id': 5},
-    ];
-    notifier.groups = [
+    ]);
+    notifier.itemsFacetWriter.setGroups([
       {'id': 5, 'name': 'Hikers'},
-    ];
+    ]);
     notifier.notifyListeners();
     await tester.pump();
 

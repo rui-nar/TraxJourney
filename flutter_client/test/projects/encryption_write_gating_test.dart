@@ -173,7 +173,7 @@ void main() {
                 notifier.createMemory(date: '2026-01-01', geoMode: 'start_of_day', name: 'x')),
             isFalse);
         expect(notifier.error, message);
-        expect(notifier.items, isEmpty);
+        expect(notifier.itemsFacet.items, isEmpty);
         expect(_sent, isEmpty);
       });
 
@@ -304,7 +304,7 @@ void main() {
         'id': 'm1', 'name': 'Lac Blanc', 'date': '2026-01-01',
         'geo_mode': 'start_of_day', 'photos': <String>[],
       };
-      notifier.items = [{'item_type': 'memory', 'memory': memory}];
+      notifier.itemsFacetWriter.setItems([{'item_type': 'memory', 'memory': memory}]);
       await _open(tester, MemoryDialog(notifier: notifier, editMemory: memory));
 
       await tester.tap(find.text('Save'));

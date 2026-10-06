@@ -15,10 +15,10 @@ ProjectNotifier _notifier({
   String? tripEnd,
 }) {
   return ProjectNotifier(ProjectService())
-    ..dayMeta = {for (final e in dayMeta.entries) e.key: e.value}
-    ..activities = List.of(activities)
-    ..items = List.of(items)
-    ..tripEnd = tripEnd;
+    ..itemsFacetWriter.setDayMeta({for (final e in dayMeta.entries) e.key: e.value})
+    ..itemsFacetWriter.setActivities(List.of(activities))
+    ..itemsFacetWriter.setItems(List.of(items))
+    ..itemsFacetWriter.setTripEnd(tripEnd);
 }
 
 String _ymd(DateTime d) =>
@@ -29,7 +29,7 @@ String _ymd(DateTime d) =>
 void main() {
   group('orderedDayKeys', () {
     test('is empty when the project has no days', () {
-      expect(_notifier().orderedDayKeys(), isEmpty);
+      expect(_notifier().itemsFacet.orderedDayKeys(), isEmpty);
     });
 
     test('unions day-meta, activity and memory dates, sorted ascending, deduped',
@@ -49,7 +49,7 @@ void main() {
         ],
       );
       expect(
-        n.orderedDayKeys(),
+        n.itemsFacet.orderedDayKeys(),
         ['2025-06-01', '2025-06-02', '2025-06-03'],
       );
     });
@@ -65,7 +65,7 @@ void main() {
           'journal': {'date': '2025-06-04'},
         },
       ]);
-      expect(n.orderedDayKeys(), ['2025-06-04']);
+      expect(n.itemsFacet.orderedDayKeys(), ['2025-06-04']);
     });
 
     test('includes a day whose only content is an encounter', () {
@@ -75,7 +75,7 @@ void main() {
           'encounter': {'date': '2025-06-05'},
         },
       ]);
-      expect(n.orderedDayKeys(), ['2025-06-05']);
+      expect(n.itemsFacet.orderedDayKeys(), ['2025-06-05']);
     });
 
     test('includes a day whose only content is a dated segment', () {
@@ -85,7 +85,7 @@ void main() {
           'segment': {'date': '2025-06-06'},
         },
       ]);
-      expect(n.orderedDayKeys(), ['2025-06-06']);
+      expect(n.itemsFacet.orderedDayKeys(), ['2025-06-06']);
     });
 
     test('an undated item adds no day', () {
@@ -93,7 +93,7 @@ void main() {
         {'item_type': 'journal', 'journal': <String, dynamic>{}},
         {'item_type': 'segment', 'segment': null},
       ]);
-      expect(n.orderedDayKeys(), isEmpty);
+      expect(n.itemsFacet.orderedDayKeys(), isEmpty);
     });
 
     test('journal/encounter/segment days sort in with the activity, memory '
@@ -122,7 +122,7 @@ void main() {
           },
         ],
       );
-      expect(n.orderedDayKeys(), [
+      expect(n.itemsFacet.orderedDayKeys(), [
         '2025-06-01',
         '2025-06-02',
         '2025-06-03',
@@ -136,24 +136,24 @@ void main() {
       final n = _notifier(activities: [
         {'start_date_local': '2025-06-01T08:30:00'},
       ]);
-      expect(n.orderedDayKeys(), ['2025-06-01']);
+      expect(n.itemsFacet.orderedDayKeys(), ['2025-06-01']);
 
-      n.activities = [
+      n.itemsFacetWriter.setActivities([
         {'start_date_local': '2025-06-01T08:30:00'},
         {'start_date_local': '2025-06-09T08:30:00'},
-      ];
-      expect(n.orderedDayKeys(), ['2025-06-01', '2025-06-09']);
+      ]);
+      expect(n.itemsFacet.orderedDayKeys(), ['2025-06-01', '2025-06-09']);
 
-      n.dayMeta = {'2025-06-15': {}};
-      expect(n.orderedDayKeys(), ['2025-06-01', '2025-06-09', '2025-06-15']);
+      n.itemsFacetWriter.setDayMeta({'2025-06-15': {}});
+      expect(n.itemsFacet.orderedDayKeys(), ['2025-06-01', '2025-06-09', '2025-06-15']);
 
-      n.items = [
+      n.itemsFacetWriter.setItems([
         {
           'item_type': 'memory',
           'memory': {'date': '2025-06-20'},
         },
-      ];
-      expect(n.orderedDayKeys(),
+      ]);
+      expect(n.itemsFacet.orderedDayKeys(),
           ['2025-06-01', '2025-06-09', '2025-06-15', '2025-06-20']);
     });
   });
@@ -215,7 +215,7 @@ void main() {
           },
         ],
       );
-      final keys = n.orderedDayKeys();
+      final keys = n.itemsFacet.orderedDayKeys();
       expect(dayTripNumbering('2025-06-01', keys, null),
           (dayNumber: 1, totalDays: 3));
       expect(dayTripNumbering('2025-06-03', keys, null),

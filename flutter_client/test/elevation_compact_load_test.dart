@@ -110,7 +110,7 @@ ApiClient _api(_Counts counts,
     );
 
 Future<void> _settle(ProjectNotifier n) async {
-  for (var i = 0; i < 60 && n.fullTrack.isEmpty; i++) {
+  for (var i = 0; i < 60 && n.elevationFacet.fullTrack.isEmpty; i++) {
     await Future<void>.delayed(const Duration(milliseconds: 10));
   }
 }
@@ -130,7 +130,7 @@ void main() {
     await n.load(_ref);
     await _settle(n);
 
-    expect(n.fullTrack, isNotEmpty, reason: 'elevation must have landed');
+    expect(n.elevationFacet.fullTrack, isNotEmpty, reason: 'elevation must have landed');
     expect(counts.elevation, 1);
     expect(counts.details, 0,
         reason: 'the 33 MB payload must not be fetched for elevation alone');
@@ -143,7 +143,7 @@ void main() {
     await n.load(_ref);
     await _settle(n);
 
-    expect(n.fullTrack, isNotEmpty);
+    expect(n.elevationFacet.fullTrack, isNotEmpty);
     expect(counts.details, 1, reason: 'a 404 must not lose the elevation data');
   });
 
@@ -200,7 +200,7 @@ void main() {
     await n.load(_ref);
     await _settle(n);
 
-    expect(n.fullTrack, isNotEmpty, reason: 'the low-res profile must suffice');
+    expect(n.elevationFacet.fullTrack, isNotEmpty, reason: 'the low-res profile must suffice');
     expect(counts.elevation, 0);
     expect(counts.details, 0);
   });
@@ -225,10 +225,10 @@ void main() {
     await n.load(_ref);
     await _settle(n);
 
-    final profile = n.activities.first['elevation_profile'] as List;
+    final profile = n.itemsFacet.activities.first['elevation_profile'] as List;
     expect(profile, hasLength(3));
     expect((profile.last as List)[0], 1.0);
-    expect(n.fullTrack.last.$1, closeTo(1.0, 1e-9));
+    expect(n.elevationFacet.fullTrack.last.$1, closeTo(1.0, 1e-9));
   });
 
   test('an activity with an empty profile does not count as elevation data',
@@ -261,7 +261,7 @@ void main() {
     await n.load(_ref);
     await _settle(n);
 
-    final profile = n.activities.first['elevation_profile'] as List;
+    final profile = n.itemsFacet.activities.first['elevation_profile'] as List;
     expect(profile, hasLength(2));
     expect((profile.last as List)[1], closeTo(110.0, 0.051));
   });

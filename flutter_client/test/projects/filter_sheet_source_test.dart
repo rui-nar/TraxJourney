@@ -22,11 +22,11 @@ Map<String, dynamic> _activity({required int id, String? source}) => {
 
 ProjectNotifier _notifierWith(List<Map<String, dynamic>> activities) {
   final n = ProjectNotifier(ProjectService());
-  n.activities = activities;
-  n.items = [
+  n.itemsFacetWriter.setActivities(activities);
+  n.itemsFacetWriter.setItems([
     for (final a in activities)
       {'item_type': 'activity', 'activity_id': a['id']},
-  ];
+  ]);
   return n;
 }
 
@@ -70,7 +70,7 @@ void main() {
     await tester.tap(find.widgetWithText(FilterChip, 'GPX file'));
     await tester.pumpAndSettle();
 
-    expect(notifier.sourceFilter, {'gpx'});
+    expect(notifier.selectionFacet.sourceFilter, {'gpx'});
     expect(
         tester
             .widget<FilterChip>(find.widgetWithText(FilterChip, 'GPX file'))
@@ -81,8 +81,8 @@ void main() {
     await tester.tap(find.widgetWithText(FilterChip, 'GPX file'));
     await tester.pumpAndSettle();
 
-    expect(notifier.sourceFilter, isEmpty);
-    expect(notifier.hasActiveFilter, isFalse);
+    expect(notifier.selectionFacet.sourceFilter, isEmpty);
+    expect(notifier.selectionFacet.hasActiveFilter, isFalse);
   });
 
   testWidgets('a filter already on keeps the chip that turns it off',
@@ -103,8 +103,8 @@ void main() {
     await tester.tap(chip);
     await tester.pumpAndSettle();
 
-    expect(notifier.sourceFilter, isEmpty);
-    expect(notifier.hasActiveFilter, isFalse);
+    expect(notifier.selectionFacet.sourceFilter, isEmpty);
+    expect(notifier.selectionFacet.hasActiveFilter, isFalse);
   });
 
   testWidgets("a filter naming the trip's only source keeps its chip too",
@@ -125,7 +125,7 @@ void main() {
     await tester.tap(chip);
     await tester.pumpAndSettle();
 
-    expect(notifier.hasActiveFilter, isFalse);
+    expect(notifier.selectionFacet.hasActiveFilter, isFalse);
   });
 
   testWidgets('a shared trip can read the section but not use it',

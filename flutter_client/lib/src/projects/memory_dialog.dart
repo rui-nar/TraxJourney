@@ -77,7 +77,7 @@ class _MemoryDialogState extends State<MemoryDialog> {
     // From the record made when the items were revealed, never from the
     // value's shape: typed text such as "v1.2.3" looks like an envelope.
     final id = mem?['id']?.toString();
-    final undecrypted = widget.notifier.undecryptedFields;
+    final undecrypted = widget.notifier.itemsFacet.undecryptedFields;
     if (undecrypted.contains('memory', id, 'name')) {
       _nameEnvelope = mem!['name'] as String?;
     }
@@ -162,7 +162,7 @@ class _MemoryDialogState extends State<MemoryDialog> {
         title: 'Pick memory location',
         initialLat: _customLat,
         initialLon: _customLon,
-        geo: widget.notifier.geo,
+        geo: widget.notifier.geoFacet.geo,
       ),
     );
     if (result != null && mounted) {
@@ -257,7 +257,7 @@ class _MemoryDialogState extends State<MemoryDialog> {
 
         // If there are pending photos, find the newly created memory ID
         if (_pendingPhotos.isNotEmpty) {
-          final newMemory = widget.notifier.items
+          final newMemory = widget.notifier.itemsFacet.items
               .where((i) => i['item_type'] == 'memory')
               .map((i) => i['memory'] as Map<String, dynamic>?)
               .where((m) =>

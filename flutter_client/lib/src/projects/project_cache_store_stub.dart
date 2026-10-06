@@ -10,6 +10,8 @@ Future<void> cacheStoreInit() async {}
 
 Future<void> cacheStoreClearAll() async {}
 
+Future<void> cacheStoreDeleteKeyPrefix(String prefix) async {}
+
 Future<Map<String, dynamic>?> cacheStoreRead(String key) async => null;
 
 Future<bool> cacheStoreHasFullGeo(String key) async => false;

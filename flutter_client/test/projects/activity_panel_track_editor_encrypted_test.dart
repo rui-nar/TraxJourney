@@ -46,7 +46,7 @@ List<http.Request> get _trackFetches =>
 
 ProjectNotifier _notifierWithOneActivity(Map<String, dynamic> activity) {
   final n = ProjectNotifier(ProjectService())..ref = _ref;
-  n.activities = [
+  n.itemsFacetWriter.setActivities([
     {
       'id': 42,
       'type': 'Ride',
@@ -60,10 +60,10 @@ ProjectNotifier _notifierWithOneActivity(Map<String, dynamic> activity) {
       ],
       ...activity,
     },
-  ];
-  n.items = [
+  ]);
+  n.itemsFacetWriter.setItems([
     {'item_type': 'activity', 'activity_id': 42},
-  ];
+  ]);
   return n;
 }
 

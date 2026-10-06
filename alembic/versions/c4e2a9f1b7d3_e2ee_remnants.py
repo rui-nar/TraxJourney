@@ -36,7 +36,7 @@ Idempotent on the data side. Downgrade re-adds ``low_res_geo_json`` empty
 the eight columns; deleted cache rows and base names are not restored.
 
 Revision ID: c4e2a9f1b7d3
-Revises: 4b9d2e7a1c63
+Revises: 021d2d9e3a22
 Create Date: 2026-10-04
 
 """
@@ -48,7 +48,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = 'c4e2a9f1b7d3'
-down_revision: Union[str, Sequence[str], None] = '4b9d2e7a1c63'
+down_revision: Union[str, Sequence[str], None] = '021d2d9e3a22'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

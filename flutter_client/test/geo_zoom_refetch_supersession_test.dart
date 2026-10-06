@@ -67,7 +67,7 @@ Map<String, dynamic> _meta(String name) => {
     };
 
 int _pointsOf(ProjectNotifier n) {
-  final features = n.geo?['features'] as List?;
+  final features = n.geoFacet.geo?['features'] as List?;
   if (features == null || features.isEmpty) return 0;
   return (features.first['geometry']['coordinates'] as List?)?.length ?? 0;
 }
@@ -161,7 +161,7 @@ void main() {
 
     n.clear();
     await Future<void>.delayed(const Duration(milliseconds: 700));
-    expect(n.geo, isNull,
+    expect(n.geoFacet.geo, isNull,
         reason: 'a torn-down notifier must not be repopulated by a late fetch');
   });
 }

@@ -149,8 +149,8 @@ def test_editor_cannot_create_or_revoke_invite(env):
 def test_stranger_gets_404_with_owner_param(env):
     client, _, ids, act_as = env
     act_as("stranger")
-    r = client.put(f"/api/projects/Trip/day-meta?owner={ids['owner']}",
-                   json={"day_meta": {}})
+    r = client.patch(f"/api/projects/Trip/day-meta?owner={ids['owner']}",
+                     json={"days": {}})
     assert r.status_code == 404
 
 
@@ -158,9 +158,9 @@ def test_editor_can_write_day_meta(env):
     client, _, ids, act_as = env
     _join(client, act_as)
     act_as("editor")
-    r = client.put(f"/api/projects/Trip/day-meta?owner={ids['owner']}",
-                   json={"day_meta": {}})
-    assert r.status_code == 204
+    r = client.patch(f"/api/projects/Trip/day-meta?owner={ids['owner']}",
+                     json={"days": {}})
+    assert r.status_code == 200
 
 
 def test_editor_can_update_trip_dates_but_not_rename(env):
@@ -188,7 +188,7 @@ def test_editor_without_owner_param_sees_own_namespace(env):
     _join(client, act_as)
     act_as("editor")
     # No ?owner= → resolves against the editor's own (empty) project list.
-    r = client.put("/api/projects/Trip/day-meta", json={"day_meta": {}})
+    r = client.patch("/api/projects/Trip/day-meta", json={"days": {}})
     assert r.status_code == 404
 
 

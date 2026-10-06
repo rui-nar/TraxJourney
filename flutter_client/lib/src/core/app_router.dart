@@ -16,6 +16,8 @@ import '../auth/verify_email_screen.dart';
 import '../auth/welcome_screen.dart';
 import '../billing/billing_service.dart' show kPlanRoute;
 import '../billing/plan_screen.dart';
+import '../crypto/encryption.dart';
+import '../crypto/replace_recovery_key_screen.dart';
 import 'last_opened_project.dart';
 import 'onboarding_notifier.dart';
 import 'platform.dart';
@@ -297,6 +299,12 @@ GoRouter buildRouter(BuildContext context) {
       GoRoute(
         path: '/settings',
         builder: (context, state) => const SettingsScreen(),
+      ),
+      GoRoute(
+        // Opened from the projects-screen banner (Decision 16).
+        path: kReplaceRecoveryKeyRoute,
+        builder: (context, state) =>
+            ReplaceRecoveryKeyScreen(service: encryption),
       ),
       GoRoute(
         // A real route rather than a pushed MaterialPageRoute: the payment

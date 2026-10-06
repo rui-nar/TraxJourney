@@ -8,14 +8,14 @@ import 'package:traxjourney_client/src/projects/project_service.dart';
 
 ProjectNotifier _notifier() {
   final n = ProjectNotifier(ProjectService())..ref = const ProjectRef(name: 'Trip');
-  n.people = [
+  n.itemsFacetWriter.setPeople([
     {'id': 1, 'name': 'Alice', 'email': 'alice@x.com'},
     {'id': 2, 'name': 'Bob'},
     {'id': 3}, // unnamed → "Unknown"
-  ];
-  n.items = [
+  ]);
+  n.itemsFacetWriter.setItems([
     {'item_type': 'encounter', 'encounter': {'person_id': 1, 'description': 'summit hut'}},
-  ];
+  ]);
   return n;
 }
 
@@ -50,14 +50,14 @@ void main() {
   testWidgets('Groups tab lists groups with member counts (#50)',
       (tester) async {
     final n = ProjectNotifier(ProjectService())..ref = const ProjectRef(name: 'Trip');
-    n.people = [
+    n.itemsFacetWriter.setPeople([
       {'id': 1, 'name': 'Alice', 'group_id': 5},
       {'id': 2, 'name': 'Bob', 'group_id': 5},
       {'id': 3, 'name': 'Cara'},
-    ];
-    n.groups = [
+    ]);
+    n.itemsFacetWriter.setGroups([
       {'id': 5, 'name': 'Hostel crew', 'nationalities': [], 'socials': []},
-    ];
+    ]);
     await tester.pumpWidget(MaterialApp(home: PeopleScreen(notifier: n)));
     await tester.pump();
     // Defaults to the People tab.

@@ -1,12 +1,11 @@
-"""PUT /day-meta must not let a caller delete day-meta for a day whose content
+"""PATCH /day-meta must not let a caller delete day-meta for a day whose content
 they cannot see (issue #387).
 
-The endpoint replaces the whole map, so "the user cleared this day's notes"
-and "the trip-end prune dropped a day it should not have" arrive as the same
-payload — a key that is simply absent. #372 settled which days may go, but
-only client-side, and only a current client asks. These tests pin the server's
-own rule: a drop is refused only when the caller demonstrably could not have
-known what they were dropping.
+"The user cleared this day's notes" and "the trip-end prune dropped a day it
+should not have" arrive as the same request — a day in ``delete``. #372
+settled which days may go, but only client-side, and only a current client
+asks. These tests pin the server's own rule: a drop is refused only when the
+caller demonstrably could not have known what they were dropping.
 
 The second test is the one that matters most — a guard that blocks clearing
 notes on an ordinary day would be far worse than the hole it closes. See
@@ -79,9 +78,10 @@ def env(monkeypatch, tmp_path):
     return TestClient(app), engine, ids, lambda who: current.update(uid=ids[who])
 
 
-def _put(client, day_meta: dict):
-    r = client.put("/api/projects/Trip/day-meta", json={"day_meta": day_meta})
-    assert r.status_code == 204, r.text
+def _patch(client, days: dict | None = None, delete: list | None = None):
+    r = client.patch("/api/projects/Trip/day-meta",
+                     json={"days": days or {}, "delete": delete or []})
+    assert r.status_code == 200, r.text
 
 
 def _stored(engine):
@@ -108,11 +108,11 @@ def test_a_day_pinned_only_by_another_members_journal_survives_a_drop(env):
     """The hole #387 closes: a stale client prunes past the trip end date and
     drops a day it has no way of knowing is still on screen for someone else."""
     client, engine, ids, act_as = env
-    _put(client, {"2026-07-04": {"note": "shared notes"},
-                  "2026-07-05": {"note": "keep me"}})
+    _patch(client, {"2026-07-04": {"note": "shared notes"},
+                    "2026-07-05": {"note": "keep me"}})
     _companion_journal(client, act_as, ids, "2026-07-04")
 
-    _put(client, {"2026-07-05": {"note": "keep me"}})
+    _patch(client, delete=["2026-07-04"])
 
     assert _stored(engine) == {
         "2026-07-04": {"note": "shared notes"},
@@ -131,9 +131,9 @@ def test_clearing_the_notes_on_an_ordinary_day_still_removes_it(env):
         sess.add(DBProjectItem(project_id=ids["project"], position=0,
                                item_type="activity", activity_id=77))
         sess.commit()
-    _put(client, {"2026-07-04": {"note": "my notes"}})
+    _patch(client, {"2026-07-04": {"note": "my notes"}})
 
-    _put(client, {})
+    _patch(client, delete=["2026-07-04"])
 
     assert _stored(engine) == {}
 
@@ -148,9 +148,9 @@ def test_clearing_a_day_the_caller_can_see_via_their_own_journal_still_works(env
         "description": "my own note",
     })
     assert r.status_code == 201, r.text
-    _put(client, {"2026-07-04": {"note": "my notes"}})
+    _patch(client, {"2026-07-04": {"note": "my notes"}})
 
-    _put(client, {})
+    _patch(client, delete=["2026-07-04"])
 
     assert _stored(engine) == {}
 
@@ -159,10 +159,10 @@ def test_an_empty_entry_on_an_invisibly_pinned_day_is_still_dropped(env):
     """Nothing to lose, so nothing to protect — the guard must not pin empty
     rows in place forever."""
     client, engine, ids, act_as = env
-    _put(client, {"2026-07-04": {}})
+    _patch(client, {"2026-07-04": {}})
     _companion_journal(client, act_as, ids, "2026-07-04")
 
-    _put(client, {})
+    _patch(client, delete=["2026-07-04"])
 
     assert _stored(engine) == {}
 
@@ -170,10 +170,10 @@ def test_an_empty_entry_on_an_invisibly_pinned_day_is_still_dropped(env):
 def test_a_day_with_no_content_at_all_still_prunes(env):
     """The ordinary trip-end prune from #358 must keep working."""
     client, engine, _, _ = env
-    _put(client, {"2026-07-04": {"note": "past the end date"},
-                  "2026-07-01": {"note": "keep"}})
+    _patch(client, {"2026-07-04": {"note": "past the end date"},
+                    "2026-07-01": {"note": "keep"}})
 
-    _put(client, {"2026-07-01": {"note": "keep"}})
+    _patch(client, delete=["2026-07-04"])
 
     assert _stored(engine) == {"2026-07-01": {"note": "keep"}}
 
@@ -182,13 +182,13 @@ def test_the_journals_author_can_still_drop_their_own_day(env):
     """Symmetry check: the editor sees their own journal, so for them the day
     is not invisible and their own drop goes through."""
     client, engine, ids, act_as = env
-    _put(client, {"2026-07-04": {"note": "shared notes"}})
+    _patch(client, {"2026-07-04": {"note": "shared notes"}})
     _companion_journal(client, act_as, ids, "2026-07-04")
 
     act_as("editor")
-    r = client.put(f"/api/projects/Trip/day-meta?owner={ids['owner']}",
-                   json={"day_meta": {}})
-    assert r.status_code == 204, r.text
+    r = client.patch(f"/api/projects/Trip/day-meta?owner={ids['owner']}",
+                     json={"delete": ["2026-07-04"]})
+    assert r.status_code == 200, r.text
 
     act_as("owner")
     assert _stored(engine) == {}
@@ -199,7 +199,7 @@ def test_a_journal_left_behind_by_a_departed_member_pins_nothing(env):
     trip too — so pinning its day would make those notes unclearable by
     anyone, forever. Found in adversarial review of the first cut."""
     client, engine, ids, act_as = env
-    _put(client, {"2026-07-04": {"note": "shared notes"}})
+    _patch(client, {"2026-07-04": {"note": "shared notes"}})
     _companion_journal(client, act_as, ids, "2026-07-04")
 
     with Session(engine) as sess:
@@ -212,7 +212,7 @@ def test_a_journal_left_behind_by_a_departed_member_pins_nothing(env):
         sess.delete(member)
         sess.commit()
 
-    _put(client, {})
+    _patch(client, delete=["2026-07-04"])
 
     assert _stored(engine) == {}
 
@@ -221,13 +221,13 @@ def test_a_gap_filled_day_row_is_not_treated_as_something_to_lose(env):
     """_fill_day_gaps writes an all-null dict for every gap day. It is truthy
     but holds nothing, so it must not pin a day in place."""
     client, engine, ids, act_as = env
-    _put(client, {"2026-07-04": {
+    _patch(client, {"2026-07-04": {
         "difficulty": None, "sleeping": None, "weather": None,
         "journal": None, "tags": None, "counters": [],
     }})
     _companion_journal(client, act_as, ids, "2026-07-04")
 
-    _put(client, {})
+    _patch(client, delete=["2026-07-04"])
 
     assert _stored(engine) == {}
 
@@ -239,9 +239,9 @@ def test_a_day_pinned_by_another_members_memory_is_still_droppable(env):
     with Session(engine) as sess:
         sess.add(DBMemory(project_id=ids["project"], date="2026-07-04"))
         sess.commit()
-    _put(client, {"2026-07-04": {"note": "my notes"}})
+    _patch(client, {"2026-07-04": {"note": "my notes"}})
 
-    _put(client, {})
+    _patch(client, delete=["2026-07-04"])
 
     assert _stored(engine) == {}
 
@@ -250,7 +250,7 @@ def test_a_legacy_null_author_journal_is_the_owners_on_the_shared_path(env):
     """A NULL author is a pre-#106 row belonging to the project owner. The
     owner may drop that day; an editor coming through ?owner= may not."""
     client, engine, ids, act_as = env
-    _put(client, {"2026-07-04": {"note": "shared notes"}})
+    _patch(client, {"2026-07-04": {"note": "shared notes"}})
     r = client.post("/api/journal/", json={
         "project_name": "Trip", "date": "2026-07-04",
         "geo_mode": "custom", "lat": 1.0, "lon": 2.0,
@@ -266,13 +266,13 @@ def test_a_legacy_null_author_journal_is_the_owners_on_the_shared_path(env):
         sess.commit()
 
     act_as("editor")
-    r = client.put(f"/api/projects/Trip/day-meta?owner={ids['owner']}",
-                   json={"day_meta": {}})
-    assert r.status_code == 204, r.text
+    r = client.patch(f"/api/projects/Trip/day-meta?owner={ids['owner']}",
+                     json={"delete": ["2026-07-04"]})
+    assert r.status_code == 200, r.text
     assert _stored(engine) == {"2026-07-04": {"note": "shared notes"}}
 
     act_as("owner")
-    _put(client, {})
+    _patch(client, delete=["2026-07-04"])
     assert _stored(engine) == {}
 
 
@@ -280,10 +280,10 @@ def test_a_preserved_day_keeps_its_counters_exactly_once(env):
     """The guard runs before _merge_day_meta_preserve_counters; a day it puts
     back must not come out with duplicated or dropped counters."""
     client, engine, ids, act_as = env
-    _put(client, {"2026-07-04": {"note": "shared", "counters": [{"name": "c", "value": 2}]}})
+    _patch(client, {"2026-07-04": {"note": "shared", "counters": [{"name": "c", "value": 2}]}})
     _companion_journal(client, act_as, ids, "2026-07-04")
 
-    _put(client, {})
+    _patch(client, delete=["2026-07-04"])
 
     assert _stored(engine) == {
         "2026-07-04": {"note": "shared", "counters": [{"name": "c", "value": 2}]}
@@ -305,7 +305,7 @@ def test_a_malformed_day_meta_row_does_not_break_the_write(env, blob):
         sess.add(row)
         sess.commit()
 
-    _put(client, {"2026-07-04": {"note": "written over the rubble"}})
+    _patch(client, {"2026-07-04": {"note": "written over the rubble"}})
 
     assert _stored(engine) == {"2026-07-04": {"note": "written over the rubble"}}
 
@@ -319,7 +319,7 @@ def test_a_day_entry_that_is_not_an_object_does_not_break_counter_merging(env):
         sess.add(row)
         sess.commit()
 
-    _put(client, {"2026-07-05": {"note": "fine"}})
+    _patch(client, {"2026-07-05": {"note": "fine"}})
 
     assert _stored(engine) == {"2026-07-05": {"note": "fine"}}
 

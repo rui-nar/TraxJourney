@@ -150,19 +150,19 @@ class _StaleVersionNotifier extends ProjectNotifier {
 
 /// A notifier holding a flat split family: root 111 with [pieces] children.
 _RecordingNotifier _familyNotifier(int pieces) => _RecordingNotifier()
-  ..activities = [
+  ..itemsFacetWriter.setActivities([
     {'id': 111, 'split_parent_id': null},
     for (var i = 1; i <= pieces; i++) {'id': -i, 'split_parent_id': 111},
-  ];
+  ]);
 
 /// A notifier holding a CHAIN: 111 → -1 → -2, each cut out of the one before.
 /// The flat fixture cannot tell a transitive walk from a single-level one.
 _RecordingNotifier _chainNotifier() => _RecordingNotifier()
-  ..activities = [
+  ..itemsFacetWriter.setActivities([
     {'id': 111, 'split_parent_id': null},
     {'id': -1, 'split_parent_id': 111},
     {'id': -2, 'split_parent_id': -1},
-  ];
+  ]);
 
 /// Push the editor onto a route (as ActivityPanel does) so the page's pop-on-
 /// success has a route to return to.

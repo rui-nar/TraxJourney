@@ -102,4 +102,89 @@ void main() {
     await projectDataCache.clearAll();
     expect(await projectDataCache.readFullGeo(ref), isNull);
   });
+
+  group('a geometry write carries the lock_version it was fetched for '
+      '(issue #379)', () {
+    late List<Map<String, dynamic>> rows;
+    setUp(() {
+      rows = [];
+      projectDataCache.diskWrite = (key, row) async => rows.add(row);
+    });
+
+    /// [lockVersionOf] read before a fetch, then an edit's /meta landing
+    /// during it.
+    int fetchedThenEdited() {
+      projectDataCache.onMetaFetched(ref, {'lock_version': 1});
+      final before = projectDataCache.lockVersionOf(ref)!;
+      projectDataCache.onMetaFetched(ref, {'lock_version': 2});
+      rows.clear();
+      return before;
+    }
+
+    test('lockVersionOf is what the cache holds', () {
+      expect(projectDataCache.lockVersionOf(ref), isNull);
+      projectDataCache.onMetaFetched(ref, {'lock_version': 7});
+      expect(projectDataCache.lockVersionOf(ref), 7);
+    });
+
+    test('a seed fetched before an edit writes nothing', () {
+      final before = fetchedThenEdited();
+      projectDataCache.seedFullGeoToDisk(ref, {'v': 1}, lockVersion: before);
+      expect(rows, isEmpty);
+    });
+
+    test('a seed with an unchanged version still writes', () {
+      projectDataCache.onMetaFetched(ref, {'lock_version': 1});
+      final before = projectDataCache.lockVersionOf(ref)!;
+      rows.clear();
+      projectDataCache.seedFullGeoToDisk(ref, {'v': 1}, lockVersion: before);
+      expect(rows.single, containsPair('fullGeo', {'v': 1}));
+      expect(rows.single['lockVersion'], 1);
+    });
+
+    test('a full or low-res geometry fetched before an edit is not stored',
+        () async {
+      final before = fetchedThenEdited();
+      projectDataCache
+        ..writeFullGeo(ref, {'v': 1}, lockVersion: before)
+        ..writeLowResGeo(ref, {'v': 1}, lockVersion: before)
+        ..promoteFullGeo(ref, {'v': 1}, lockVersion: before);
+      expect(rows, isEmpty);
+      expect(await projectDataCache.readFullGeo(ref), isNull);
+      expect(await projectDataCache.readLowResGeo(ref), isNull);
+    });
+
+    test('one fetched at the version on file is stored', () async {
+      projectDataCache.onMetaFetched(ref, {'lock_version': 2});
+      projectDataCache
+        ..writeFullGeo(ref, {'v': 2}, lockVersion: 2)
+        ..writeLowResGeo(ref, {'v': 2}, lockVersion: 2);
+      expect(await projectDataCache.readFullGeo(ref), {'v': 2});
+      expect(await projectDataCache.readLowResGeo(ref), {'v': 2});
+    });
+
+    test('one fetched when nothing was on file is stored, as before', () async {
+      projectDataCache.writeFullGeo(ref, {'v': 1});
+      expect(await projectDataCache.readFullGeo(ref), {'v': 1});
+    });
+
+    test('details fetched before an edit are not stored', () async {
+      final before = fetchedThenEdited();
+      projectDataCache.writeFullDetails(ref, {'v': 1}, lockVersion: before);
+      expect(rows, isEmpty);
+      expect(await projectDataCache.readFullDetails(ref), isNull);
+    });
+
+    test('details fetched at the version on file are stored', () async {
+      projectDataCache.onMetaFetched(ref, {'lock_version': 2});
+      projectDataCache.writeFullDetails(ref, {'v': 2}, lockVersion: 2);
+      expect(await projectDataCache.readFullDetails(ref), {'v': 2});
+    });
+
+    test('details fetched when nothing was on file are stored, as before',
+        () async {
+      projectDataCache.writeFullDetails(ref, {'v': 1});
+      expect(await projectDataCache.readFullDetails(ref), {'v': 1});
+    });
+  });
 }

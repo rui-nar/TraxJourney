@@ -87,13 +87,13 @@ class _DayContext {
     String dateKey,
     List<String> orderedDateKeys,
   ) {
-    final stats = notifier.dayStats(dateKey);
-    final n = dayTripNumbering(dateKey, orderedDateKeys, notifier.tripStart);
+    final stats = notifier.itemsFacet.dayStats(dateKey);
+    final n = dayTripNumbering(dateKey, orderedDateKeys, notifier.itemsFacet.tripStart);
     return _DayContext(
       dayNumber: n.dayNumber,
       totalDays: n.totalDays,
       date: DateTime.tryParse(dateKey) ?? DateTime.now(),
-      effectiveTags: notifier.effectiveTagsFor(dateKey),
+      effectiveTags: notifier.itemsFacet.effectiveTagsFor(dateKey),
       distanceKm: stats.distanceKm,
       elevationM: stats.elevationM,
     );
@@ -168,11 +168,11 @@ class _DayMetaDialogWrapperState extends State<_DayMetaDialogWrapper> {
           child: DayMetaEditor(
             key: _editorKey,
             dateKey: _currentDateKey,
-            initialMeta: widget.notifier.dayMeta[_currentDateKey] ?? {},
-            sleepingOptions: widget.notifier.sleepingOptions,
-            sleepingOptionGroups: widget.notifier.sleepingOptionGroups,
-            availableTags: widget.notifier.availableTags,
-            counters: widget.notifier.counters,
+            initialMeta: widget.notifier.itemsFacet.dayMeta[_currentDateKey] ?? {},
+            sleepingOptions: widget.notifier.itemsFacet.sleepingOptions,
+            sleepingOptionGroups: widget.notifier.itemsFacet.sleepingOptionGroups,
+            availableTags: widget.notifier.itemsFacet.availableTags,
+            counters: widget.notifier.itemsFacet.counters,
             countersOnly: widget.countersOnly,
             dayNumber: ctx.dayNumber,
             totalDays: ctx.totalDays,
@@ -269,11 +269,11 @@ class _DayMetaSheetWrapperState extends State<_DayMetaSheetWrapper> {
             child: DayMetaEditor(
               key: _editorKey,
               dateKey: _currentDateKey,
-              initialMeta: widget.notifier.dayMeta[_currentDateKey] ?? {},
-              sleepingOptions: widget.notifier.sleepingOptions,
-              sleepingOptionGroups: widget.notifier.sleepingOptionGroups,
-              availableTags: widget.notifier.availableTags,
-              counters: widget.notifier.counters,
+              initialMeta: widget.notifier.itemsFacet.dayMeta[_currentDateKey] ?? {},
+              sleepingOptions: widget.notifier.itemsFacet.sleepingOptions,
+              sleepingOptionGroups: widget.notifier.itemsFacet.sleepingOptionGroups,
+              availableTags: widget.notifier.itemsFacet.availableTags,
+              counters: widget.notifier.itemsFacet.counters,
               countersOnly: widget.countersOnly,
               dayNumber: ctx.dayNumber,
               totalDays: ctx.totalDays,
@@ -363,13 +363,11 @@ void _persist(
   String dateKey,
   Map<String, dynamic> meta,
 ) {
-  final updated = Map<String, Map<String, dynamic>>.from(notifier.dayMeta);
   if (meta.isEmpty) {
-    updated.remove(dateKey);
+    notifier.saveDayMeta(delete: [dateKey]);
   } else {
-    updated[dateKey] = meta;
+    notifier.saveDayMeta(days: {dateKey: meta});
   }
-  notifier.saveDayMeta(newDayMeta: updated);
 }
 
 // ── Editor widget ──────────────────────────────────────────────────────────

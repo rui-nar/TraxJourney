@@ -7,6 +7,8 @@ import '../auth/verify_email_banner.dart';
 import '../billing/upgrade_sheet.dart';
 import '../core/brand.dart';
 import '../core/project_ref.dart';
+import '../crypto/encryption.dart';
+import '../crypto/recovery_key_banner.dart';
 import 'import_conflict_dialog.dart';
 import 'pending_invites_card.dart';
 import 'project_file.dart';
@@ -175,6 +177,8 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
               children: [
                 // ── Unverified-email prompt (issue #110) ──────────────────
                 const VerifyEmailBanner(),
+                // ── Unconfirmed recovery key (Decision 16) ────────────────
+                RecoveryKeyBanner(service: encryption),
                 // ── Invites addressed to me (issue #110) ──────────────────
                 const PendingInvitesCard(),
                 // ── Error banner ──────────────────────────────────────────

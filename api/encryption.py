@@ -8,6 +8,8 @@ method) and, on a later session, fetch this device's wrapped CMK to unlock.
 Routes:
     POST /api/encryption/enable   — turn on encryption for the account
     GET  /api/encryption/status   — encryption state + this device's wrapped CMK
+    POST /api/encryption/recovery/confirm       — the user saved the recovery key shown
+    PUT  /api/encryption/recovery/recovery_key  — replace an unconfirmed recovery key
 """
 from __future__ import annotations
 
@@ -15,6 +17,7 @@ from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+from sqlalchemy import update
 from sqlmodel import select
 
 from api.deps import get_current_user
@@ -64,7 +67,16 @@ class DeviceStateOut(BaseModel):
 class StatusOut(BaseModel):
     enabled: bool
     recovery_methods: List[str]
+    # Recovery methods whose one-time secret was never confirmed as saved
+    # (only "recovery_key" can be; Decision 16). Additive: older clients ignore it.
+    unconfirmed_recovery_methods: List[str] = []
     device: DeviceStateOut
+
+
+class EnableOut(StatusOut):
+    # The recovery wrap just stored, so the client can confirm exactly the key
+    # it showed (POST /recovery/confirm). Additive.
+    recovery_wrapped_cmk: str
 
 
 class DeviceRegisterIn(BaseModel):
@@ -91,12 +103,31 @@ class RecoveryWrapOut(BaseModel):
     kdf_params_json: Optional[str] = None
 
 
+class RecoveryConfirmIn(BaseModel):
+    method: Literal["recovery_key", "passphrase", "qna", "escrow"]
+    wrapped_cmk: str = Field(description="the wrap the client showed the key for")
+
+
+class RecoveryKeyReplaceIn(BaseModel):
+    wrapped_cmk: str = Field(description="base64 AEAD blob: CMK wrapped under the new recovery key")
+    salt: str = Field(description="base64 HKDF salt")
+
+
 # ── Endpoints ───────────────────────────────────────────────────────────────────
 
-@router.post("/enable", response_model=StatusOut,
+def _require_enabled(sess, uid: int) -> None:
+    ui = sess.get(UserInfo, uid)
+    if ui is None or not ui.encryption_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Encryption is not enabled for this account",
+        )
+
+
+@router.post("/enable", response_model=EnableOut,
              status_code=status.HTTP_201_CREATED,
              summary="Enable client-side encryption for the account")
-def enable(body: EnableIn, user: dict = Depends(get_current_user)) -> StatusOut:
+def enable(body: EnableIn, user: dict = Depends(get_current_user)) -> EnableOut:
     uid = _uid(user)
     with get_session() as sess:
         ui = sess.get(UserInfo, uid)
@@ -136,6 +167,9 @@ def enable(body: EnableIn, user: dict = Depends(get_current_user)) -> StatusOut:
             wrapped_cmk=body.recovery.wrapped_cmk,
             salt=body.recovery.salt,
             kdf_params_json=body.recovery.kdf_params_json,
+            # Only a recovery key is a one-time secret the user may not have
+            # saved; it stays unconfirmed until POST /recovery/confirm.
+            confirmed=body.recovery.method != "recovery_key",
         ))
         ui.encryption_enabled = True
         sess.add(ui)
@@ -146,9 +180,12 @@ def enable(body: EnableIn, user: dict = Depends(get_current_user)) -> StatusOut:
             sess.delete(cache_row)
         sess.commit()
 
-    return StatusOut(
+    return EnableOut(
         enabled=True,
         recovery_methods=[body.recovery.method],
+        unconfirmed_recovery_methods=(
+            [body.recovery.method] if body.recovery.method == "recovery_key" else []),
+        recovery_wrapped_cmk=body.recovery.wrapped_cmk,
         device=DeviceStateOut(
             registered=True,
             approved=True,
@@ -167,11 +204,9 @@ def get_status(
     uid = _uid(user)
     with get_session() as sess:
         ui = sess.get(UserInfo, uid)
-        methods = [
-            r.method for r in sess.exec(
-                select(DBRecoveryWrap).where(DBRecoveryWrap.user_info_id == uid)
-            ).all()
-        ]
+        wraps = sess.exec(
+            select(DBRecoveryWrap).where(DBRecoveryWrap.user_info_id == uid)
+        ).all()
         device = DeviceStateOut(registered=False, approved=False)
         if device_public_key:
             row = sess.exec(
@@ -189,7 +224,8 @@ def get_status(
                 )
         return StatusOut(
             enabled=bool(ui and ui.encryption_enabled),
-            recovery_methods=methods,
+            recovery_methods=[r.method for r in wraps],
+            unconfirmed_recovery_methods=[r.method for r in wraps if not r.confirmed],
             device=device,
         )
 
@@ -259,6 +295,75 @@ def get_recovery_wrap(method: str,
             salt=row.salt,
             kdf_params_json=row.kdf_params_json,
         )
+
+
+# ── Recovery key confirm or replace (Decision 16) ──────────────────────────────
+# The signed-in session is the only authority checked, as for device approval.
+# Both writes are compare-and-sets so a stolen session can never overwrite a
+# recovery key the user has confirmed saving.
+
+@router.post("/recovery/confirm", status_code=status.HTTP_204_NO_CONTENT,
+             summary="Record that the user saved the recovery secret they were shown")
+def confirm_recovery(body: RecoveryConfirmIn,
+                     user: dict = Depends(get_current_user)) -> None:
+    """Confirms only the exact wrap the client showed the key for: if another
+    device replaced it meanwhile, the key the user saved no longer unwraps the
+    CMK, so nothing is confirmed (409). Confirming twice is a success."""
+    uid = _uid(user)
+    with get_session() as sess:
+        _require_enabled(sess, uid)
+        result = sess.execute(
+            update(DBRecoveryWrap)
+            .where(DBRecoveryWrap.user_info_id == uid,
+                   DBRecoveryWrap.method == body.method,
+                   DBRecoveryWrap.wrapped_cmk == body.wrapped_cmk)
+            .values(confirmed=True)
+        )
+        sess.commit()
+        if result.rowcount == 0:
+            exists = sess.exec(
+                select(DBRecoveryWrap.id).where(
+                    DBRecoveryWrap.user_info_id == uid,
+                    DBRecoveryWrap.method == body.method,
+                )
+            ).first() is not None
+            if not exists:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"No '{body.method}' recovery configured",
+                )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This is no longer your recovery key; nothing was confirmed",
+            )
+
+
+@router.put("/recovery/recovery_key", response_model=RecoveryWrapOut,
+            summary="Replace a recovery key that was never confirmed as saved")
+def replace_recovery_key(body: RecoveryKeyReplaceIn,
+                         user: dict = Depends(get_current_user)) -> RecoveryWrapOut:
+    """Overwrites the existing row only while it is unconfirmed, and leaves it
+    unconfirmed: the client confirms once the user has saved the new key."""
+    uid = _uid(user)
+    with get_session() as sess:
+        _require_enabled(sess, uid)
+        result = sess.execute(
+            update(DBRecoveryWrap)
+            .where(DBRecoveryWrap.user_info_id == uid,
+                   DBRecoveryWrap.method == "recovery_key",
+                   DBRecoveryWrap.confirmed == False)  # noqa: E712 (SQL boolean)
+            .values(wrapped_cmk=body.wrapped_cmk, salt=body.salt)
+        )
+        sess.commit()
+        if result.rowcount == 0:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="No unconfirmed recovery key to replace",
+            )
+    # What this request wrote, never a read-back: another device's replace may
+    # have committed since, and the client must confirm the key it shows.
+    return RecoveryWrapOut(
+        method="recovery_key", wrapped_cmk=body.wrapped_cmk, salt=body.salt)
 
 
 @router.get("/devices/pending", response_model=List[PendingDeviceOut],

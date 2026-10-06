@@ -156,7 +156,7 @@ void main() {
     // ...and not as a SnackBar (which would render behind the modal barrier).
     expect(find.widgetWithText(SnackBar, 'Server exploded'), findsNothing);
     // The optimistic placeholder must have been rolled back.
-    expect(notifier.items, isEmpty);
+    expect(notifier.itemsFacet.items, isEmpty);
   });
 
   testWidgets(
@@ -220,8 +220,8 @@ void main() {
     // The entry itself saved successfully — the dialog closed and the real
     // memory (not the placeholder) is in `items`.
     expect(find.byType(AlertDialog), findsNothing);
-    expect(notifier.items, hasLength(1));
-    expect(notifier.items.single['memory']['id'], 'mem-real-1');
+    expect(notifier.itemsFacet.items, hasLength(1));
+    expect(notifier.itemsFacet.items.single['memory']['id'], 'mem-real-1');
 
     // The photo failure must still reach the user.
     expect(find.textContaining('photo failed to upload'), findsOneWidget);

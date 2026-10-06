@@ -16,7 +16,7 @@ def test_version_defaults_to_dev_without_env(monkeypatch):
     importlib.reload(router)
     resp = TestClient(router.app).get("/api/version")
     assert resp.status_code == 200
-    assert resp.json() == {"version": "dev"}
+    assert resp.json() == {"version": "dev", "min_client_version": "0.0.0"}
 
 
 def test_version_reports_baked_app_version(monkeypatch):
@@ -26,10 +26,25 @@ def test_version_reports_baked_app_version(monkeypatch):
     try:
         resp = TestClient(router.app).get("/api/version")
         assert resp.status_code == 200
-        assert resp.json() == {"version": "v9.9.9"}
+        assert resp.json() == {"version": "v9.9.9", "min_client_version": "0.0.0"}
     finally:
         # Reload once more with the env cleared so other tests see the default.
         monkeypatch.delenv("APP_VERSION", raising=False)
+        importlib.reload(router)
+
+
+def test_min_client_version_env_override(monkeypatch):
+    """Decision 15: the client gate's minimum, "0.0.0" (off) unless overridden."""
+    monkeypatch.delenv("APP_VERSION", raising=False)
+    monkeypatch.setenv("MIN_CLIENT_VERSION", "1.1.0")
+    import api.router as router
+    importlib.reload(router)
+    try:
+        resp = TestClient(router.app).get("/api/version")
+        assert resp.status_code == 200
+        assert resp.json() == {"version": "dev", "min_client_version": "1.1.0"}
+    finally:
+        monkeypatch.delenv("MIN_CLIENT_VERSION", raising=False)
         importlib.reload(router)
 
 

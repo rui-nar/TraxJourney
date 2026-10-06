@@ -151,7 +151,7 @@ final _dimensions = [
     key: 'activityTypes',
     held: 'ride',
     stale: 'hike',
-    read: (n) => n.activityTypeFilter,
+    read: (n) => n.selectionFacet.activityTypeFilter,
     // Capitalised as the server sends it; the filter matches lower-cased.
     regain: (t) => t.activities.add({
       'id': 2,
@@ -165,7 +165,7 @@ final _dimensions = [
     key: 'transport',
     held: 'train',
     stale: 'flight',
-    read: (n) => n.transportFilter,
+    read: (n) => n.selectionFacet.transportFilter,
     regain: (t) =>
         t.segments.add({'id': 12, 'segment_type': 'flight', 'date': _day2}),
   ),
@@ -174,7 +174,7 @@ final _dimensions = [
     key: 'tags',
     held: 'beach',
     stale: 'museum',
-    read: (n) => n.tagFilter,
+    read: (n) => n.selectionFacet.tagFilter,
     regain: (t) => t.dayMeta[_day2] = {
       'tags': ['museum'],
     },
@@ -184,7 +184,7 @@ final _dimensions = [
     key: 'sleeping',
     held: 'Hotel',
     stale: 'Camping',
-    read: (n) => n.sleepingFilter,
+    read: (n) => n.selectionFacet.sleepingFilter,
     regain: (t) => t.dayMeta[_day2] = {'sleeping': 'Camping'},
   ),
 ];
@@ -226,10 +226,10 @@ void main() {
         final notifier = await _loaded(service);
 
         expect(d.read(notifier), {d.held});
-        expect(notifier.selectedDays, isNotEmpty,
+        expect(notifier.selectionFacet.selectedDays, isNotEmpty,
             reason: 'the value the trip still holds keeps narrowing');
-        expect(notifier.selectedDay, _day1);
-        expect(notifier.selectedActivityId, '1');
+        expect(notifier.selectionFacet.selectedDay, _day1);
+        expect(notifier.selectionFacet.selectedActivityId, '1');
 
         final stored = await _stored();
         expect(stored[d.key], [d.held],
@@ -240,8 +240,8 @@ void main() {
 
         // And the next open of the trip still has the selection.
         final next = await _loaded(service);
-        expect(next.selectedDay, _day1);
-        expect(next.selectedActivityId, '1');
+        expect(next.selectionFacet.selectedDay, _day1);
+        expect(next.selectionFacet.selectedActivityId, '1');
         expect(d.read(next), {d.held});
       });
 
@@ -254,7 +254,7 @@ void main() {
         });
         final service = _Service(_Trip());
         final notifier = await _loaded(service);
-        expect(notifier.hasActiveFilter, isFalse);
+        expect(notifier.selectionFacet.hasActiveFilter, isFalse);
 
         d.regain(service.trip);
         await notifier.load(_ref);
@@ -262,7 +262,7 @@ void main() {
 
         expect(d.read(notifier), isEmpty,
             reason: 'the user never re-ticked it');
-        expect(notifier.hasActiveFilter, isFalse);
+        expect(notifier.selectionFacet.hasActiveFilter, isFalse);
       });
 
       test('keeps a value the trip still holds, and leaves storage alone',
@@ -276,7 +276,7 @@ void main() {
         final notifier = await _loaded(_Service(_Trip()));
 
         expect(d.read(notifier), {d.held});
-        expect(notifier.selectedDays, isNotEmpty);
+        expect(notifier.selectionFacet.selectedDays, isNotEmpty);
         final prefs = await SharedPreferences.getInstance();
         expect(prefs.getString(_key), saved);
       });
@@ -298,8 +298,8 @@ void main() {
     for (final d in _dimensions) {
       expect(d.read(notifier), {d.held}, reason: d.name);
     }
-    expect(notifier.sourceFilter, {'strava'});
-    expect(notifier.selectedDays, {_day1});
+    expect(notifier.selectionFacet.sourceFilter, {'strava'});
+    expect(notifier.selectionFacet.selectedDays, {_day1});
     final stored = await _stored();
     for (final d in _dimensions) {
       expect(stored[d.key], [d.held], reason: d.name);
@@ -316,7 +316,7 @@ void main() {
     // inherited tag is some earlier day's own tag, and a day's own tags are its
     // effective tags. These pin that, so a change to either side is noticed.
     ProjectNotifier notifierWith(Map<String, Map<String, dynamic>> dayMeta) =>
-        ProjectNotifier(ProjectService())..dayMeta = dayMeta;
+        ProjectNotifier(ProjectService())..itemsFacetWriter.setDayMeta(dayMeta);
 
     final dayMeta = <String, Map<String, dynamic>>{
       '2026-06-01': {
@@ -335,22 +335,22 @@ void main() {
       final notifier = notifierWith(dayMeta);
 
       final effective =
-          dayMeta.keys.expand(notifier.effectiveTagsFor).toSet();
+          dayMeta.keys.expand(notifier.itemsFacet.effectiveTagsFor).toSet();
 
-      expect(effective, notifier.availableTags.toSet());
+      expect(effective, notifier.itemsFacet.availableTags.toSet());
     });
 
     test('restore keeps a tag if and only if it matches a day', () {
       for (final tag in ['beach', 'city', 'museum', 'hiking']) {
         final probe = notifierWith(dayMeta)..setFilters(tags: {tag});
-        final matches = probe.selectedDays.isNotEmpty;
+        final matches = probe.selectionFacet.selectedDays.isNotEmpty;
 
         final notifier = notifierWith(dayMeta);
         final pruned = notifier.restoreFilters(ProjectFilters(tags: {tag}));
 
-        expect(notifier.tagFilter.contains(tag), matches, reason: tag);
+        expect(notifier.selectionFacet.tagFilter.contains(tag), matches, reason: tag);
         expect(pruned, !matches, reason: tag);
-        expect(notifier.selectedDays, probe.selectedDays, reason: tag);
+        expect(notifier.selectionFacet.selectedDays, probe.selectionFacet.selectedDays, reason: tag);
       }
     });
   });
@@ -390,9 +390,9 @@ void main() {
     /// Reopens your own "Japan" and asserts the state is still there.
     Future<void> expectMyJapanIntact() async {
       final own = await _loaded(myJapan(), ref: mine);
-      expect(own.activityTypeFilter, {'hike'},
+      expect(own.selectionFacet.activityTypeFilter, {'hike'},
           reason: "your own trip's saved filter");
-      expect(own.selectedActivityId, '2',
+      expect(own.selectionFacet.selectedActivityId, '2',
           reason: "your own trip's saved selection");
     }
 
@@ -403,7 +403,7 @@ void main() {
       await saveMyJapan();
 
       final shared = await _loaded(theirJapan(), ref: theirs);
-      expect(shared.hasActiveFilter, isFalse,
+      expect(shared.selectionFacet.hasActiveFilter, isFalse,
           reason: 'your filter is not theirs to apply');
 
       await expectMyJapanIntact();
@@ -417,8 +417,8 @@ void main() {
       await pumpEventQueue();
 
       final again = await _loaded(service, ref: theirs);
-      expect(again.activityTypeFilter, {'ride'});
-      expect(again.selectedActivityId, '1');
+      expect(again.selectionFacet.activityTypeFilter, {'ride'});
+      expect(again.selectionFacet.selectedActivityId, '1');
     });
 
     for (final role in ['viewer', 'co-owner']) {
@@ -436,8 +436,8 @@ void main() {
         final again = await _loaded(service, ref: theirs);
 
         expect(again.ref?.role, role);
-        expect(again.activityTypeFilter, {'ride'});
-        expect(again.selectedActivityId, '1');
+        expect(again.selectionFacet.activityTypeFilter, {'ride'});
+        expect(again.selectionFacet.selectedActivityId, '1');
       });
     }
 
@@ -452,8 +452,8 @@ void main() {
       final fromList = await _loaded(myJapan(),
           ref: const ProjectRef(name: 'Japan', ownerId: _me, role: 'editor'));
 
-      expect(fromList.activityTypeFilter, {'hike'});
-      expect(fromList.selectedActivityId, '2');
+      expect(fromList.selectionFacet.activityTypeFilter, {'hike'});
+      expect(fromList.selectionFacet.selectedActivityId, '2');
     });
 
     test('a reload that has not heard back from /meta saves nothing over yours',
@@ -505,8 +505,8 @@ void main() {
         await pumpEventQueue();
 
         expect(link.ref?.name, 'Japan');
-        expect(link.hasActiveFilter, isFalse);
-        expect(link.selectedActivityId, isNull);
+        expect(link.selectionFacet.hasActiveFilter, isFalse);
+        expect(link.selectionFacet.selectedActivityId, isNull);
         await expectMyJapanIntact();
       });
 
@@ -539,8 +539,8 @@ void main() {
       service.trip.activities.removeWhere((a) => a['id'] == 2);
       await notifier.load(mine);
       await pumpEventQueue();
-      expect(notifier.hasActiveFilter, isFalse, reason: 'not theirs to inherit');
-      expect(notifier.selectedActivityId, isNull);
+      expect(notifier.selectionFacet.hasActiveFilter, isFalse, reason: 'not theirs to inherit');
+      expect(notifier.selectionFacet.selectedActivityId, isNull);
       notifier.selectDay(_day2);
       await pumpEventQueue();
 
@@ -548,8 +548,8 @@ void main() {
       service.trip.activities.add(hike(2));
       await notifier.load(mine);
       await pumpEventQueue();
-      expect(notifier.activityTypeFilter, {'hike'});
-      expect(notifier.selectedActivityId, '2');
+      expect(notifier.selectionFacet.activityTypeFilter, {'hike'});
+      expect(notifier.selectionFacet.selectedActivityId, '2');
     });
 
     for (final (label, ref, first) in [
@@ -573,14 +573,14 @@ void main() {
         signInAs(4);
         await notifier.load(ref);
         await pumpEventQueue();
-        expect(notifier.sleepingFilter, isEmpty);
-        expect(notifier.hasActiveFilter, isFalse);
+        expect(notifier.selectionFacet.sleepingFilter, isEmpty);
+        expect(notifier.selectionFacet.hasActiveFilter, isFalse);
 
         notifier.selectDay(_day1);
         await pumpEventQueue();
         await notifier.load(ref);
         await pumpEventQueue();
-        expect(notifier.sleepingFilter, isEmpty,
+        expect(notifier.selectionFacet.sleepingFilter, isEmpty,
             reason: "and nothing of the last account's was saved as theirs");
       });
     }
@@ -599,7 +599,7 @@ void main() {
 
         service.metaGate = Completer<void>();
         final reload = notifier.load(_ref);
-        expect(notifier.activityTypeFilter, {'hike'},
+        expect(notifier.selectionFacet.activityTypeFilter, {'hike'},
             reason: 'the badge does not blink off for a reload');
 
         notifier.setFilters(sleeping: {'Hotel'}); // the user taps meanwhile
@@ -607,12 +607,12 @@ void main() {
         await reload;
         await pumpEventQueue();
 
-        expect(notifier.activityTypeFilter, {'hike'},
+        expect(notifier.selectionFacet.activityTypeFilter, {'hike'},
             reason: 'resetting at load start, the tap saved over it');
-        expect(notifier.sleepingFilter, {'Hotel'});
+        expect(notifier.selectionFacet.sleepingFilter, {'Hotel'});
         final next = await _loaded(service);
-        expect(next.activityTypeFilter, {'hike'});
-        expect(next.sleepingFilter, {'Hotel'});
+        expect(next.selectionFacet.activityTypeFilter, {'hike'});
+        expect(next.selectionFacet.sleepingFilter, {'Hotel'});
       });
 
       test('keeps the filter through a failed load and its Retry', () async {
@@ -626,20 +626,20 @@ void main() {
         await notifier.load(_ref);
         await pumpEventQueue();
         expect(notifier.error, isNotNull);
-        expect(notifier.activityTypeFilter, {'hike'});
+        expect(notifier.selectionFacet.activityTypeFilter, {'hike'});
 
         // Retry, on a network still slow enough to leave the sheet up: a
         // failed load must not have made the retry look like another trip.
         service.offline = false;
         service.metaGate = Completer<void>();
         final retry = notifier.load(_ref);
-        expect(notifier.activityTypeFilter, {'hike'},
+        expect(notifier.selectionFacet.activityTypeFilter, {'hike'},
             reason: 'still on while the retry is out');
         service.metaGate!.complete();
         await retry;
         await pumpEventQueue();
         expect(notifier.error, isNull);
-        expect(notifier.activityTypeFilter, {'hike'});
+        expect(notifier.selectionFacet.activityTypeFilter, {'hike'});
       });
     });
 
@@ -656,7 +656,7 @@ void main() {
       await notifier.load(const ProjectRef(name: 'Other'));
       await pumpEventQueue();
 
-      expect(notifier.hasActiveFilter, isFalse);
+      expect(notifier.selectionFacet.hasActiveFilter, isFalse);
     });
 
     test('with no account signed in, nothing is saved or restored', () async {
@@ -682,8 +682,8 @@ void main() {
       await notifier.load(const ProjectRef(name: 'Other'));
       await pumpEventQueue();
 
-      expect(notifier.hasActiveFilter, isFalse);
-      expect(notifier.activityTypeFilter, isEmpty);
+      expect(notifier.selectionFacet.hasActiveFilter, isFalse);
+      expect(notifier.selectionFacet.activityTypeFilter, isEmpty);
     });
 
     group('state saved before the key changed', () {
@@ -698,9 +698,9 @@ void main() {
         SharedPreferences.setMockInitialValues({legacyKey: legacyState});
 
         final own = await _loaded(myJapan(), ref: mine);
-        expect(own.activityTypeFilter, {'hike'});
-        expect(own.selectedDay, _day1);
-        expect(own.selectedActivityId, '2');
+        expect(own.selectionFacet.activityTypeFilter, {'hike'});
+        expect(own.selectionFacet.selectedDay, _day1);
+        expect(own.selectionFacet.selectedActivityId, '2');
 
         final prefs = await SharedPreferences.getInstance();
         expect(prefs.getString(legacyKey), isNull,
@@ -709,8 +709,8 @@ void main() {
         own.selectDay(_day2);
         await pumpEventQueue();
         final next = await _loaded(myJapan(), ref: mine);
-        expect(next.selectedDay, _day2);
-        expect(next.activityTypeFilter, {'hike'});
+        expect(next.selectionFacet.selectedDay, _day2);
+        expect(next.selectionFacet.activityTypeFilter, {'hike'});
       });
 
       test('is read once even when the restore changes nothing', () async {
@@ -730,12 +730,12 @@ void main() {
         // Another account's own "Japan" no longer finds it.
         signInAs(4);
         final theirs = await _loaded(myJapan(), ref: mine);
-        expect(theirs.hasActiveFilter, isFalse);
+        expect(theirs.selectionFacet.hasActiveFilter, isFalse);
 
         signInAs(_me);
         final again = await _loaded(myJapan(), ref: mine);
-        expect(again.activityTypeFilter, {'hike'});
-        expect(again.selectedDay, _day1);
+        expect(again.selectionFacet.activityTypeFilter, {'hike'});
+        expect(again.selectionFacet.selectedDay, _day1);
       });
 
       test('is not read on an offline load', () async {
@@ -755,7 +755,7 @@ void main() {
 
         final offline = await _loaded(service, ref: mine);
         expect(offline.offlineFromCache, isTrue);
-        expect(offline.hasActiveFilter, isFalse);
+        expect(offline.selectionFacet.hasActiveFilter, isFalse);
         offline.selectDay(_day1);
         await pumpEventQueue();
 
@@ -771,9 +771,9 @@ void main() {
         await offline.load(mine);
         await pumpEventQueue();
         expect(offline.offlineFromCache, isFalse);
-        expect(offline.hasActiveFilter, isFalse,
+        expect(offline.selectionFacet.hasActiveFilter, isFalse,
             reason: "the tap's state wins, and it has no filter");
-        expect(offline.selectedDay, _day1, reason: 'the offline tap stands');
+        expect(offline.selectionFacet.selectedDay, _day1, reason: 'the offline tap stands');
         expect(prefs.getString(legacyKey), isNotNull,
             reason: 'nothing deletes a key no restore has claimed');
       });
@@ -796,13 +796,13 @@ void main() {
         service.offline = false;
         await theirs.load(mine);
         await pumpEventQueue();
-        expect(theirs.selectedDay, _day2);
+        expect(theirs.selectionFacet.selectedDay, _day2);
 
         signInAs(_me);
         final own = await _loaded(myJapan(), ref: mine);
-        expect(own.activityTypeFilter, {'hike'});
-        expect(own.selectedDay, _day1);
-        expect(own.selectedActivityId, '2');
+        expect(own.selectionFacet.activityTypeFilter, {'hike'});
+        expect(own.selectionFacet.selectedDay, _day1);
+        expect(own.selectionFacet.selectedActivityId, '2');
       });
 
       for (final (label, store) in [
@@ -828,7 +828,7 @@ void main() {
           SharedPreferencesStorePlatform.instance = backing;
 
           final own = await _loaded(myJapan(), ref: mine);
-          expect(own.activityTypeFilter, {'hike'});
+          expect(own.selectionFacet.activityTypeFilter, {'hike'});
 
           // What the next page load will find: the store, not the cache.
           var persisted = await backing.getAll();
@@ -853,7 +853,7 @@ void main() {
         final own = await _loaded(myJapan(),
             ref: const ProjectRef(name: 'Japan', ownerId: _me));
 
-        expect(own.activityTypeFilter, {'hike'});
+        expect(own.selectionFacet.activityTypeFilter, {'hike'});
       });
 
       test('is not read for a trip shared with you', () async {
@@ -864,7 +864,7 @@ void main() {
                 name: 'Japan', callerRole: 'editor'),
             ref: theirs);
 
-        expect(shared.hasActiveFilter, isFalse);
+        expect(shared.selectionFacet.hasActiveFilter, isFalse);
       });
     });
   });
@@ -891,7 +891,7 @@ void main() {
       final notifier = await _loaded(service);
 
       expect(notifier.offlineFromCache, isTrue);
-      expect(notifier.sleepingFilter, {'Camping'});
+      expect(notifier.selectionFacet.sleepingFilter, {'Camping'});
       expect((await _stored())['sleeping'], ['Camping']);
 
       // The next selection change saves whatever is in memory.
@@ -907,8 +907,8 @@ void main() {
       await pumpEventQueue();
 
       expect(notifier.offlineFromCache, isFalse);
-      expect(notifier.sleepingFilter, {'Camping'});
-      expect(notifier.selectedDays, {_day2});
+      expect(notifier.selectionFacet.sleepingFilter, {'Camping'});
+      expect(notifier.selectionFacet.selectedDays, {_day2});
     });
 
     test('and an online load after it still prunes what is really gone',
@@ -922,13 +922,13 @@ void main() {
       projectDataCache.onMetaFetched(_ref, service._payload());
       service.offline = true;
       final notifier = await _loaded(service);
-      expect(notifier.sleepingFilter, {'Camping'});
+      expect(notifier.selectionFacet.sleepingFilter, {'Camping'});
 
       service.offline = false;
       await notifier.load(_ref);
       await pumpEventQueue();
 
-      expect(notifier.sleepingFilter, isEmpty);
+      expect(notifier.selectionFacet.sleepingFilter, isEmpty);
       expect((await _stored())['sleeping'], isEmpty);
     });
   });

@@ -23,14 +23,14 @@ class _StubNotifier extends ProjectNotifier {
 
 ProjectNotifier _listNotifier() {
   final n = ProjectNotifier(ProjectService())..ref = const ProjectRef(name: 'Trip');
-  n.people = [
+  n.itemsFacetWriter.setPeople([
     {'id': 1, 'name': 'Alice', 'group_id': 5},
     {'id': 2, 'name': 'Bob'}, // ungrouped
-  ];
-  n.groups = [
+  ]);
+  n.itemsFacetWriter.setGroups([
     {'id': 5, 'name': 'Crew', 'nationalities': [], 'socials': []},
-  ];
-  n.items = [
+  ]);
+  n.itemsFacetWriter.setItems([
     {
       'item_type': 'encounter',
       'encounter': {
@@ -40,7 +40,7 @@ ProjectNotifier _listNotifier() {
         'description': 'karaoke night',
       },
     },
-  ];
+  ]);
   return n;
 }
 

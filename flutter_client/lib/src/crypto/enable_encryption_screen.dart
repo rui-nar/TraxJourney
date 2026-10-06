@@ -82,8 +82,7 @@ class _EnableEncryptionScreenState extends State<EnableEncryptionScreen> {
   SecurityLevel _level = SecurityLevel.high; // strongest by default
   _HighMethod _highMethod = _HighMethod.passphrase;
   bool _busy = false;
-  bool _savedConfirmed = false;
-  String? _recoveryKeyText;
+  EnableResult? _result;
 
   final _passphrase = TextEditingController();
   // Selected question indices (into kSecurityQuestions), in the order added, each
@@ -163,12 +162,10 @@ class _EnableEncryptionScreenState extends State<EnableEncryptionScreen> {
       ));
       if (!mounted) return;
       setState(() {
-        if (result.recoverySecret != null) {
-          _recoveryKeyText = _formatRecoveryKey(result.recoverySecret!);
-          _step = _Step.showRecoveryKey;
-        } else {
-          _step = _Step.done;
-        }
+        _result = result;
+        _step = result.recoverySecret != null && result.confirmation != null
+            ? _Step.showRecoveryKey
+            : _Step.done;
       });
     } catch (e) {
       if (!mounted) return;
@@ -180,31 +177,32 @@ class _EnableEncryptionScreenState extends State<EnableEncryptionScreen> {
     }
   }
 
-  /// Grouped uppercase hex. (A BIP39 word phrase is a possible future format.)
-  String _formatRecoveryKey(List<int> bytes) {
-    final hex = bytes
-        .map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase())
-        .join();
-    final groups = <String>[];
-    for (var i = 0; i < hex.length; i += 4) {
-      groups.add(hex.substring(i, i + 4));
-    }
-    return groups.join('-');
-  }
-
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Encrypt your data')),
-      body: SafeArea(
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 520),
-            child: switch (_step) {
-              _Step.choose => _buildChoose(context),
-              _Step.showRecoveryKey => _buildRecoveryKey(context),
-              _Step.done => _buildDone(context),
-            },
+    // No leaving while the request is out (U5-R3-1): a screen popped mid-way
+    // is not there to show the recovery key the server was just given.
+    return PopScope(
+      canPop: !_busy,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Encrypt your data'),
+          automaticallyImplyLeading: !_busy,
+        ),
+        body: SafeArea(
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 520),
+              child: switch (_step) {
+                _Step.choose => _buildChoose(context),
+                _Step.showRecoveryKey => SaveRecoveryKeyView(
+                    service: widget.service,
+                    secret: _result!.recoverySecret!,
+                    confirmation: _result!.confirmation!,
+                    onConfirmed: () => setState(() => _step = _Step.done),
+                  ),
+                _Step.done => _buildDone(context),
+              },
+            ),
           ),
         ),
       ),
@@ -442,49 +440,6 @@ class _EnableEncryptionScreenState extends State<EnableEncryptionScreen> {
     );
   }
 
-  Widget _buildRecoveryKey(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        Text('Save your recovery key',
-            style: Theme.of(context).textTheme.titleMedium),
-        const SizedBox(height: 8),
-        const Text('This is shown once. Store it in a password manager or print '
-            'it. Without it — and without a trusted device — your data cannot be '
-            'recovered.'),
-        const SizedBox(height: 16),
-        SelectableText(
-          _recoveryKeyText ?? '',
-          style: monoStyle(fontSize: 15, letterSpacing: 0.5),
-        ),
-        const SizedBox(height: 12),
-        OutlinedButton.icon(
-          onPressed: () {
-            Clipboard.setData(ClipboardData(text: _recoveryKeyText ?? ''));
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Recovery key copied')),
-            );
-          },
-          icon: const Icon(Icons.copy),
-          label: const Text('Copy'),
-        ),
-        const SizedBox(height: 16),
-        CheckboxListTile(
-          contentPadding: EdgeInsets.zero,
-          value: _savedConfirmed,
-          onChanged: (v) => setState(() => _savedConfirmed = v ?? false),
-          title: const Text("I've saved my recovery key somewhere safe"),
-        ),
-        const SizedBox(height: 8),
-        FilledButton(
-          onPressed:
-              _savedConfirmed ? () => setState(() => _step = _Step.done) : null,
-          child: const Text('Done'),
-        ),
-      ],
-    );
-  }
-
   Widget _buildDone(BuildContext context) {
     return Center(
       child: Column(
@@ -499,6 +454,150 @@ class _EnableEncryptionScreenState extends State<EnableEncryptionScreen> {
           const SizedBox(height: 20),
           FilledButton(
             onPressed: () => Navigator.of(context).maybePop(true),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Grouped uppercase hex. (A BIP39 word phrase is a possible future format.)
+String formatRecoveryKey(List<int> bytes) {
+  final hex = bytes
+      .map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase())
+      .join();
+  final groups = <String>[];
+  for (var i = 0; i < hex.length; i += 4) {
+    groups.add(hex.substring(i, i + 4));
+  }
+  return groups.join('-');
+}
+
+/// Shows a new recovery key once and records on the server, at Done, that the
+/// user saved it (Decision 16). Used by the setup screen and by the
+/// replacement screen.
+class SaveRecoveryKeyView extends StatefulWidget {
+  final EncryptionService service;
+  final Uint8List secret;
+  final RecoveryKeyConfirmation confirmation;
+
+  /// Runs once the server has recorded the confirmation.
+  final VoidCallback onConfirmed;
+
+  const SaveRecoveryKeyView({
+    super.key,
+    required this.service,
+    required this.secret,
+    required this.confirmation,
+    required this.onConfirmed,
+  });
+
+  @override
+  State<SaveRecoveryKeyView> createState() => _SaveRecoveryKeyViewState();
+}
+
+class _SaveRecoveryKeyViewState extends State<SaveRecoveryKeyView> {
+  bool _saved = false;
+  bool _confirming = false;
+  String? _failure;
+  bool _discard = false;
+
+  late final String _keyText = formatRecoveryKey(widget.secret);
+
+  Future<void> _done() async {
+    setState(() {
+      _confirming = true;
+      _failure = null;
+    });
+    final outcome = await widget.service.confirmRecoveryKey(widget.confirmation);
+    if (!mounted) return;
+    setState(() {
+      _confirming = false;
+      switch (outcome) {
+        case RecoveryConfirmOutcome.confirmed:
+          break;
+        case RecoveryConfirmOutcome.conflict:
+          _discard = true;
+        case RecoveryConfirmOutcome.failed:
+          // Never suggest the key is unusable: it is the one on the server,
+          // only the record that it was saved is missing.
+          _failure = "Couldn't record that you saved it; you'll be asked again.";
+      }
+    });
+    if (outcome == RecoveryConfirmOutcome.confirmed) widget.onConfirmed();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_discard) return _buildDiscard(context);
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Text('Save your recovery key',
+            style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 8),
+        const Text('This is shown once. Store it in a password manager or print '
+            'it. Without it — and without a trusted device — your data cannot be '
+            'recovered.'),
+        const SizedBox(height: 16),
+        SelectableText(
+          _keyText,
+          style: monoStyle(fontSize: 15, letterSpacing: 0.5),
+        ),
+        const SizedBox(height: 12),
+        OutlinedButton.icon(
+          onPressed: () {
+            Clipboard.setData(ClipboardData(text: _keyText));
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Recovery key copied')),
+            );
+          },
+          icon: const Icon(Icons.copy),
+          label: const Text('Copy'),
+        ),
+        const SizedBox(height: 16),
+        CheckboxListTile(
+          contentPadding: EdgeInsets.zero,
+          value: _saved,
+          onChanged: (v) => setState(() => _saved = v ?? false),
+          title: const Text("I've saved my recovery key somewhere safe"),
+        ),
+        if (_failure != null) ...[
+          const SizedBox(height: 8),
+          Text(_failure!,
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: kWarning)),
+        ],
+        const SizedBox(height: 8),
+        FilledButton(
+          onPressed: _saved && !_confirming ? _done : null,
+          child: _confirming
+              ? const SizedBox(
+                  height: 18, width: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2))
+              : const Text('Done'),
+        ),
+      ],
+    );
+  }
+
+  /// The key shown is not the one on the server (409, U5b-R2-4): another
+  /// device replaced it. No second chance is promised; the key is hidden.
+  Widget _buildDiscard(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.key_off, color: Theme.of(context).colorScheme.error, size: 48),
+          const SizedBox(height: 12),
+          const Text('This key is no longer your recovery key. Discard it.',
+              textAlign: TextAlign.center),
+          const SizedBox(height: 20),
+          FilledButton(
+            onPressed: () => Navigator.of(context).maybePop(),
             child: const Text('Close'),
           ),
         ],

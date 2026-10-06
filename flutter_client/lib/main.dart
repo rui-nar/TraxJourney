@@ -13,10 +13,12 @@ import 'src/projects/projects_notifier.dart';
 import 'src/projects/project_service.dart';
 import 'src/projects/photo_thumb_cache.dart';
 import 'src/projects/project_data_cache.dart';
+import 'src/projects/facets/project_facet_providers.dart';
 import 'src/projects/project_notifier.dart';
 import 'src/settings/theme_notifier.dart';
 import 'src/core/app_router.dart';
 import 'src/core/brand.dart';
+import 'src/core/last_opened_project.dart';
 import 'src/core/onboarding_notifier.dart';
 import 'src/core/perf_timing.dart';
 import 'src/core/server_config.dart';
@@ -51,6 +53,10 @@ void main() async {
   if (customServerUrl != null) api = ApiClient(baseUrl: customServerUrl);
   final hasSeenOnboarding = await readHasSeenOnboarding();
   await projectDataCache.init();
+  // State the empty user id wrote before ids were real (issue #418). Before
+  // runApp, so before the router's first redirect or any load can read it.
+  await purgeSharedLastOpenedProject();
+  await projectDataCache.purgeUserZero();
   await photoThumbCache.init();
   runApp(
     // MultiProvider lives here — above TraxJourneyApp — so its providers are
@@ -72,14 +78,44 @@ void main() async {
           update: (_, auth, previous) =>
               previous!..onAuthChanged(auth.user != null),
         ),
-        ChangeNotifierProvider<ProjectNotifier>(
-          create: (_) => ProjectNotifier(ProjectService()),
-        ),
+        accountScopedProjectNotifier(() => ProjectNotifier(ProjectService())),
       ],
-      child: const TraxJourneyApp(),
+      // The app-wide notifier's facets (#294), following it across account
+      // changes.
+      child: const ProjectFacetProviders<ProjectNotifier>(
+        child: TraxJourneyApp(),
+      ),
     ),
   );
 }
+
+/// The app-wide [ProjectNotifier], one per signed-in account (issue #418).
+///
+/// Whenever [ProjectNotifier.onAuthChanged] reports an account change —
+/// including to or from no account — this hands out a fresh notifier, and
+/// the provider disposes the one it replaces. A response the old account
+/// started can only land in that discarded instance: trip checks compare name
+/// and owner, and an own trip has no owner, so in a shared instance it passed
+/// them on the next account's trip of the same name (I1-R4-1, I1-R4-2).
+///
+/// Not lazy, so every auth change reaches it — a lazy proxy updates only when
+/// read, and would miss a logout followed by the same account signing back in
+/// before anything read it.
+ChangeNotifierProxyProvider<AuthNotifier, ProjectNotifier>
+    accountScopedProjectNotifier(ProjectNotifier Function() create) =>
+        ChangeNotifierProxyProvider<AuthNotifier, ProjectNotifier>(
+          lazy: false,
+          create: (_) => create(),
+          update: (_, auth, previous) {
+            final userId = auth.user?.id;
+            if (!previous!
+                .onAuthChanged(userId, restoring: auth.isRestoring)) {
+              return previous;
+            }
+            // The new account is the first this notifier sees, not a change.
+            return create()..onAuthChanged(userId);
+          },
+        );
 
 class TraxJourneyApp extends StatefulWidget {
   const TraxJourneyApp({super.key});

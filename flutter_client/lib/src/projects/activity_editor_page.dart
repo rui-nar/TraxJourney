@@ -107,7 +107,7 @@ class _ActivityEditorPageState extends State<ActivityEditorPage> {
   /// walk of split_parent_id below. An activity with no pieces under it returns
   /// 0 and resets silently, undoing only its own edits (issue #131).
   int get _splitPiecesRemovedByReset {
-    final acts = widget.notifier.activities;
+    final acts = widget.notifier.itemsFacet.activities;
     final removed = <int>{};
     var frontier = {_activityId};
     while (frontier.isNotEmpty) {
