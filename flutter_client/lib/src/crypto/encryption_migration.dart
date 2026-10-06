@@ -14,6 +14,7 @@
 library;
 
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 
@@ -59,7 +60,8 @@ const encryptedFieldsByResource = <String, Set<String>>{
 /// Activities keep only their id and `plain_fields`: their geometry is never
 /// encrypted from a trip payload, whose `/meta` form has no polyline and only
 /// the downsampled profile (R3-1). The gain candidates keep their profile
-/// envelope and stored gain as well.
+/// envelope and stored gain as well, and the shared rows what tells whether
+/// they may hold an envelope.
 class CatchUpPayload {
   /// The trip's name as the server answered it.
   final String? name;
@@ -72,8 +74,18 @@ class CatchUpPayload {
   final String? role;
 
   /// Activities with a non-empty `plain_fields`: id and the E2EE columns
-  /// still holding plaintext.
+  /// still holding plaintext. Never a shared row ([sharedActivities]).
   final List<({Object id, List<String> fields})> plainActivities;
+
+  /// Activities a trip owned by someone else also holds
+  /// (`shared_with_others`, decision 15; absent counts as not shared): they
+  /// stay plaintext so that trip can read them, and are in no other list.
+  /// [mayHoldEnvelope] is true when `/meta` cannot rule out an envelope in
+  /// any of the row's E2EE columns — see [_mayHoldEnvelope] — and
+  /// [signature] is what `/meta` showed of those columns, so a row found
+  /// with nothing to decrypt is not read again until it changes.
+  final List<({Object id, List<String> fields, bool mayHoldEnvelope, String signature})>
+      sharedActivities;
 
   /// Activities whose stored gain the pass re-measures (decision 12): the
   /// legacy rows the pre-#374 sentinel and the unsmoothed gain could reach —
@@ -92,15 +104,39 @@ class CatchUpPayload {
   final List<Map<String, dynamic>> journals;
 
   const CatchUpPayload._(this.name, this.lockVersion, this.role,
-      this.plainActivities, this.gainActivities, this.memories, this.journals);
+      this.plainActivities, this.sharedActivities, this.gainActivities,
+      this.memories, this.journals);
 
   factory CatchUpPayload.of(Map details) {
     final plainActivities = <({Object id, List<String> fields})>[];
+    final sharedActivities = <({
+      Object id,
+      List<String> fields,
+      bool mayHoldEnvelope,
+      String signature
+    })>[];
     final gainActivities = <({Object id, String? profile, double? gain})>[];
     for (final raw in (details['activities'] as List?) ?? const []) {
       final act = raw as Map;
       final id = act['id'];
       final fields = act['plain_fields'];
+      if (id != null && act['shared_with_others'] == true) {
+        final plain = fields is List ? fields.cast<String>() : const <String>[];
+        sharedActivities.add((
+          id: id as Object,
+          fields: plain,
+          mayHoldEnvelope: _mayHoldEnvelope(act, plain),
+          signature: jsonEncode([
+            plain,
+            act['name'],
+            act['start_latlng_enc'],
+            act['end_latlng_enc'],
+            act['elevation_profile_enc'],
+            act['is_edited'],
+          ]),
+        ));
+        continue;
+      }
       if (id != null && fields is List && fields.isNotEmpty) {
         plainActivities.add((id: id as Object, fields: fields.cast<String>()));
       }
@@ -140,10 +176,34 @@ class CatchUpPayload {
       details['lock_version'] as int?,
       details['caller_role'] as String?,
       plainActivities,
+      sharedActivities,
       gainActivities,
       memories,
       journals,
     );
+  }
+
+  /// Whether a `/meta` activity [act] may hold an envelope in an E2EE column,
+  /// given its [plain] `plain_fields`. `/meta` shows the envelopes of the
+  /// name (as is), the endpoints and the low-res profile (`*_enc`); for the
+  /// polyline, the full profile and the four `original_*` snapshots it shows
+  /// nothing, and a column `plain_fields` does not list is null **or** an
+  /// envelope. So: true when a shown envelope exists or any column could be
+  /// one — the snapshots only on an edited row, the only rows `GET …/track`
+  /// returns them for. A row this cannot clear (no polyline, say) is read
+  /// once per app session, then remembered by its signature.
+  static bool _mayHoldEnvelope(Map act, List<String> plain) {
+    final name = act['name'];
+    if (name is String && EncryptedField.isEnvelope(name)) return true;
+    if (act['start_latlng_enc'] != null ||
+        act['end_latlng_enc'] != null ||
+        act['elevation_profile_enc'] != null) {
+      return true;
+    }
+    return encryptedFieldsByResource['activity']!.any((c) =>
+        c != 'name' &&
+        !plain.contains(c) &&
+        (!c.startsWith('original_') || act['is_edited'] == true));
   }
 }
 
@@ -155,8 +215,11 @@ class CatchUpResult {
   /// Rows a write failed for (logged); the next load retries them.
   int skipped = 0;
 
-  /// Activities the server would not let this user encrypt (404, decision
-  /// 14): rows another traveller imported. Retrying does not help.
+  /// Activities that stay unencrypted, each counted once: rows the server
+  /// would not let this user encrypt (404, decision 14: another traveller
+  /// imported them), and rows a trip owned by someone else also holds
+  /// (`shared_with_others`, or a 409 `shared_with_other_trip` when that trip
+  /// took the row after the load; decision 15). Retrying does not help.
   int unencryptable = 0;
 
   /// Passes that ended early because the trip changed under them (a
@@ -234,7 +297,10 @@ class EncryptionMigration {
   ///
   /// - Owner: every activity listing `plain_fields` is re-read from
   ///   `GET …/track` and its listed fields encrypted from that; plaintext
-  ///   memories and journal entries are encrypted from the payload.
+  ///   memories and journal entries are encrypted from the payload. An
+  ///   activity a trip owned by someone else also holds is never encrypted,
+  ///   and counted; its envelopes under the user's key are decrypted back
+  ///   (decision 15, [_repairShared]).
   /// - Anyone else: the user's own plaintext journal entries are encrypted
   ///   (author key, decision 1), and every memory whose envelope decrypts
   ///   under the user's key is written back in plaintext — it was encrypted
@@ -242,7 +308,8 @@ class EncryptionMigration {
   ///
   /// Then, as owner, the encrypted profile of every legacy GPX or edited
   /// activity is re-measured and its gain corrected (decision 12, see
-  /// [CatchUpPayload.gainActivities] and [_recomputeGain]).
+  /// [CatchUpPayload.gainActivities] and [_recomputeGain]); never a shared
+  /// one, which the server would refuse.
   ///
   /// The pass holds one expected lock version, advanced only by its own
   /// writes (R4-1). It ends at a `stale_write` or at a `GET …/track` answered
@@ -276,6 +343,13 @@ class EncryptionMigration {
           expected = await _encryptActivity(
               ref, tripName, act.id, act.fields, expected, result, tracks);
           if (result.unencryptable > unencryptable) refused.add(act.id);
+        }
+        for (final act in trip.sharedActivities) {
+          _checkSession();
+          result.unencryptable++;
+          if (!act.mayHoldEnvelope) continue;
+          expected = await _repairShared(ref, tripName, act.id, act.fields,
+              act.signature, expected, result);
         }
         for (final act in trip.gainActivities) {
           if (refused.contains(act.id)) continue;
@@ -339,9 +413,12 @@ class EncryptionMigration {
 
   /// PUT [body] with the pass's [expected] lock version; returns the next
   /// one. A `stale_write` ends the pass; any other failure skips this row.
-  /// A 404 on an activity means the user may not encrypt it (decision 14).
+  /// On an activity, a 404 means the user may not encrypt it (decision 14)
+  /// and a 409 `shared_with_other_trip` that a trip owned by someone else
+  /// took the row since the load (decision 15): the row is counted
+  /// unencryptable, unless the pass [counted] it already.
   Future<int> _write(String path, Map<String, dynamic> body, int expected,
-      CatchUpResult result, {bool activity = false}) async {
+      CatchUpResult result, {bool activity = false, bool counted = false}) async {
     // The row's encryption awaited: the session may have changed meanwhile.
     _checkSession();
     final dynamic response;
@@ -349,9 +426,12 @@ class EncryptionMigration {
       response = await _api.put(path, body);
     } on ApiException catch (e) {
       if (_isSessionRefusal(e)) throw const _SessionEnded();
-      if (_isStaleWrite(e)) throw const _TripChanged();
-      if (activity && e.statusCode == 404) {
-        result.unencryptable++;
+      final conflict = _conflictCode(e);
+      if (conflict == 'stale_write') throw const _TripChanged();
+      if (activity &&
+          (e.statusCode == 404 || conflict == 'shared_with_other_trip')) {
+        if (!counted) result.unencryptable++;
+        debugPrint('encryption catch-up: $path refused (${conflict ?? e.statusCode})');
       } else {
         result.skipped++;
         debugPrint('encryption catch-up: $path refused (${e.statusCode})');
@@ -366,13 +446,15 @@ class EncryptionMigration {
     return (response as Map)['lock_version'] as int;
   }
 
-  static bool _isStaleWrite(ApiException e) {
-    if (e.statusCode != 409) return false;
+  /// The `detail.code` of a 409, or null.
+  static String? _conflictCode(ApiException e) {
+    if (e.statusCode != 409) return null;
     try {
       final detail = (jsonDecode(e.body) as Map)['detail'];
-      return detail is Map && detail['code'] == 'stale_write';
+      final code = detail is Map ? detail['code'] : null;
+      return code is String ? code : null;
     } on Object {
-      return false;
+      return null;
     }
   }
 
@@ -439,23 +521,8 @@ class EncryptionMigration {
       int expected,
       CatchUpResult result,
       Map<Object, Map<String, dynamic>> tracks) async {
-    final Map<String, dynamic> track;
-    try {
-      track = await _api.get(ref.path('/activities/$id/track'))
-          as Map<String, dynamic>;
-    } on ApiException catch (e) {
-      if (_isSessionRefusal(e)) throw const _SessionEnded();
-      result.skipped++;
-      debugPrint('encryption catch-up: activity $id not read (${e.statusCode})');
-      return expected;
-    } on Exception catch (e) {
-      result.skipped++;
-      debugPrint('encryption catch-up: activity $id not read: $e');
-      return expected;
-    }
-    // Someone else wrote to the trip since the payload: anything encrypted
-    // from that payload (memories) could now be stale too (R4-1).
-    if (track['lock_version'] != expected) throw const _TripChanged();
+    final track = await _readTrack(ref, id, expected, result);
+    if (track == null) return expected;
     tracks[id] = track;
 
     final body = await _activityBody(track, fields);
@@ -472,6 +539,173 @@ class EncryptionMigration {
       'project': tripName,
       'lock_version': expected,
     }, expected, result, activity: true);
+  }
+
+  /// One activity's `GET …/track`, or null — counted as skipped — when it
+  /// could not be read. Ends the pass on a 401/403, and when the answer is
+  /// at another lock version than [expected]: someone else wrote to the
+  /// trip since the payload, and anything written from that payload
+  /// (memories) could now be stale too (R4-1).
+  Future<Map<String, dynamic>?> _readTrack(
+      ProjectRef ref, Object id, int expected, CatchUpResult result) async {
+    final Map<String, dynamic> track;
+    try {
+      track = await _api.get(ref.path('/activities/$id/track'))
+          as Map<String, dynamic>;
+    } on ApiException catch (e) {
+      if (_isSessionRefusal(e)) throw const _SessionEnded();
+      result.skipped++;
+      debugPrint('encryption catch-up: activity $id not read (${e.statusCode})');
+      return null;
+    } on Exception catch (e) {
+      result.skipped++;
+      debugPrint('encryption catch-up: activity $id not read: $e');
+      return null;
+    }
+    if (track['lock_version'] != expected) throw const _TripChanged();
+    return track;
+  }
+
+  /// The shared rows found holding nothing this user can decrypt, by session
+  /// user and activity id, with the `/meta` signature they were found at
+  /// ([CatchUpPayload.sharedActivities]). Static for the reason
+  /// [_converged] is: a row with another traveller's envelopes, or a column
+  /// `/meta` cannot clear, would otherwise be read in full on every load. A
+  /// shared row cannot gain an envelope while it stays shared (the server
+  /// refuses it), and any change `/meta` shows changes the signature.
+  static final Map<String, String> _sharedChecked = {};
+
+  /// Write back in plaintext every E2EE field of a shared row (decision 15)
+  /// that holds an envelope under this user's key: the shipped migration or
+  /// an earlier pass encrypted it before another traveller's trip took it,
+  /// and that trip cannot read it. All fields, the four `original_*`
+  /// snapshots included, read from `GET …/track`. Another account's
+  /// envelopes are left as they are. The row is already counted, so a
+  /// refusal adds nothing to the count; other answers are [_write]'s.
+  Future<int> _repairShared(ProjectRef ref, String tripName, Object id,
+      List<String> plainFields, String signature, int expected,
+      CatchUpResult result) async {
+    final memoKey = '$_sessionUser|$id';
+    if (_sharedChecked[memoKey] == signature) return expected;
+    final track = await _readTrack(ref, id, expected, result);
+    if (track == null) return expected;
+    final body = await _plaintextBody(track, plainFields);
+    if (body.isEmpty) {
+      _sharedChecked[memoKey] = signature;
+      return expected;
+    }
+    return _write('/api/activities/$id', {
+      ...body,
+      'project': tripName,
+      'lock_version': expected,
+    }, expected, result, activity: true, counted: true);
+  }
+
+  /// The plaintext of every E2EE field [track] holds as an envelope under
+  /// this user's key, keyed by the `PUT /api/activities/{id}` body key.
+  /// [plainFields] (the row's `plain_fields`) tells the profile columns
+  /// apart: `/track` serves one profile envelope, the full one's when that
+  /// column is an envelope, else the low-res one's. The low-res column gets
+  /// the server's downsample of the decrypted profile ([_lowResProfile]).
+  Future<Map<String, dynamic>> _plaintextBody(
+      Map<String, dynamic> track, List<String> plainFields) async {
+    final body = <String, dynamic>{};
+    Future<void> decrypt(String key, Object? value) async {
+      final plain = await _decryptOwn(value is String ? value : null);
+      if (plain != null) body[key] = plain;
+    }
+
+    await decrypt('name', track['name']);
+    await decrypt('summary_polyline', (track['map'] as Map?)?['summary_polyline']);
+    await decrypt('start_latlng_json', track['start_latlng_enc']);
+    await decrypt('end_latlng_json', track['end_latlng_enc']);
+    final profileEnv = track['elevation_profile_enc'];
+    final profile = await _decryptOwn(profileEnv is String ? profileEnv : null);
+    if (profile != null) {
+      if (!plainFields.contains('elevation_profile_json')) {
+        body['elevation_profile_json'] = profile;
+      }
+      if (!plainFields.contains('elevation_profile_low_res_json')) {
+        final lowRes = _lowResProfile(profile);
+        if (lowRes != null) body['elevation_profile_low_res_json'] = lowRes;
+      }
+    }
+    for (final field in encryptedFieldsByResource['activity']!) {
+      if (field.startsWith('original_')) await decrypt(field, track[field]);
+    }
+    return body;
+  }
+
+  /// The low-res form the server stores beside a plaintext profile JSON
+  /// (`_low_res_ep_json`, src/project/elevation_downsample.py): at most
+  /// [_lowResPoints] points by Largest-Triangle-Three-Buckets, keeping the
+  /// first, last, lowest and highest. Null when [profileJson] does not parse.
+  static String? _lowResProfile(String profileJson) {
+    try {
+      final ep = jsonDecode(profileJson) as Map;
+      final d = [for (final v in ep['distances_km'] as List) (v as num).toDouble()];
+      final e = [for (final v in ep['elevations_m'] as List) (v as num).toDouble()];
+      final n = math.min(d.length, e.length);
+      if (n == 0) return null;
+      var keep = List<int>.generate(n, (i) => i);
+      if (n > _lowResPoints) {
+        final idx = _lttbIndices(d, e, n, _lowResPoints).toSet();
+        var lo = 0, hi = 0;
+        for (var i = 1; i < n; i++) {
+          if (e[i] < e[lo]) lo = i;
+          if (e[i] > e[hi]) hi = i;
+        }
+        keep = (idx..add(lo)..add(hi)).toList()..sort();
+      }
+      return jsonEncode({
+        'distances_km': [for (final i in keep) d[i]],
+        'elevations_m': [for (final i in keep) e[i]],
+      });
+    } on Object {
+      return null;
+    }
+  }
+
+  /// `DEFAULT_MAX_POINTS` of src/project/elevation_downsample.py.
+  static const _lowResPoints = 300;
+
+  /// `_lttb_indices` of src/project/elevation_downsample.py.
+  static List<int> _lttbIndices(
+      List<double> xs, List<double> ys, int n, int threshold) {
+    final out = [0];
+    var a = 0;
+    final every = (n - 2) / (threshold - 2);
+    for (var i = 0; i < threshold - 2; i++) {
+      // Centroid of the next bucket.
+      final ns = ((i + 1) * every).floor() + 1;
+      final ne = math.min(((i + 2) * every).floor() + 1, n);
+      final cnt = math.max(ne - ns, 1);
+      var sumX = 0.0, sumY = 0.0;
+      for (var j = ns; j < ne; j++) {
+        sumX += xs[j];
+        sumY += ys[j];
+      }
+      final avgX = sumX / cnt, avgY = sumY / cnt;
+      // The current bucket's point making the largest triangle with the
+      // last one kept and that centroid.
+      final cs = (i * every).floor() + 1;
+      final ce = math.min(((i + 1) * every).floor() + 1, n);
+      final ax = xs[a], ay = ys[a];
+      var maxArea = -1.0;
+      var best = cs;
+      for (var j = cs; j < ce; j++) {
+        final area =
+            ((ax - avgX) * (ys[j] - ay) - (ax - xs[j]) * (avgY - ay)).abs();
+        if (area > maxArea) {
+          maxArea = area;
+          best = j;
+        }
+      }
+      out.add(best);
+      a = best;
+    }
+    out.add(n - 1);
+    return out;
   }
 
   /// Envelopes for each of [fields] that [track] holds in plaintext, keyed by
@@ -547,9 +781,13 @@ class EncryptionMigration {
   /// row, so it holds at most one envelope per activity.
   static final Map<String, ({String envelope, double? gain})> _converged = {};
 
-  /// Forgets every converged row, as a new app session would.
+  /// Forgets every converged row and every checked shared row, as a new app
+  /// session would.
   @visibleForTesting
-  static void resetConvergedForTest() => _converged.clear();
+  static void resetConvergedForTest() {
+    _converged.clear();
+    _sharedChecked.clear();
+  }
 
   /// Re-measure one encrypted activity's elevation gain from its full
   /// [envelope] with the `track_metrics/` port (decision 12, #366): the
