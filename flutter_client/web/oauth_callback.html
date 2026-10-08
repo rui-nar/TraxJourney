@@ -2,19 +2,57 @@
 <html>
 <head><meta charset="utf-8"><title>Connecting…</title></head>
 <body>
-<p>Connecting, please wait…</p>
+<p id="status">Connecting, please wait…</p>
+<p id="reason"></p>
+<p id="next"></p>
 <script>
   (function () {
     var params = new URLSearchParams(window.location.search);
-    var status = params.get('strava');
+    var status = params.get('strava') === 'code' ? 'code' : 'error';
     var reason = params.get('reason') || '';
-    if (window.opener && window.opener.origin === window.origin) {
-      // Send as a plain string "strava_oauth:connected" or "strava_oauth:error:reason"
-      var msg = 'strava_oauth:' + (status || 'error');
-      if (reason) msg += ':' + reason;
-      window.opener.postMessage(msg, window.origin);
+
+    // An opener that navigated to another site makes reading its origin
+    // throw a SecurityError: treat that as "no same-origin opener".
+    var sameOriginOpener = false;
+    try {
+      sameOriginOpener = !!window.opener && window.opener.origin === window.origin;
+    } catch (e) {
+      sameOriginOpener = false;
     }
-    window.close();
+
+    if (sameOriginOpener) {
+      // Plain object, read by strava_oauth_popup_web.dart
+      // (docs/STRAVA_CONNECT_BINDING_PLAN.md, D8).
+      window.opener.postMessage({
+        type: 'strava_oauth',
+        status: status,
+        code: params.get('code') || '',
+        state: params.get('state') || '',
+        reason: reason
+      }, window.origin);
+      window.close();
+      return;
+    }
+
+    // Nobody to hand the result to (a browser tab, or the opener moved
+    // away): say what happened instead of staying on "Connecting…".
+    var reasons = {
+      denied: 'Strava access was not granted.',
+      state_expired: 'The connection took too long.',
+      update_required: 'This version of TraxJourney is out of date. Reload or update it.',
+      no_state: 'The connection link was incomplete.',
+      invalid_state: 'The connection link was not valid.'
+    };
+    document.title = 'Strava';
+    document.getElementById('status').textContent = status === 'code'
+      ? 'Strava approved the connection, but the TraxJourney page that started it is gone.'
+      : 'Strava was not connected.';
+    if (status === 'error') {
+      document.getElementById('reason').textContent =
+        reasons.hasOwnProperty(reason) ? reasons[reason] : 'Something went wrong.';
+    }
+    document.getElementById('next').textContent =
+      'Return to TraxJourney and press Connect Strava again.';
   })();
 </script>
 </body>

@@ -7,12 +7,13 @@
 /// (including `flutter test`'s VM platform).
 library;
 
-/// Outcome of a Strava OAuth popup flow.
-typedef StravaOAuthResult = ({bool connected, String? reason});
+/// Outcome of a Strava OAuth popup flow: the relayed [code] and [state], or
+/// the callback's fixed [error] reason token.
+typedef StravaOAuthResult = ({String? code, String? state, String? error});
 
 class StravaOAuthPopup {
   Future<StravaOAuthResult> connect(String url) async =>
-      (connected: false, reason: 'Strava OAuth popup is web-only');
+      (code: null, state: null, error: 'web_only');
 
   void dispose() {}
 }
