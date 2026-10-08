@@ -63,11 +63,13 @@ class _Auth extends AuthNotifier {
 }
 
 const _settingsText = 'Settings page';
+const _homeText = 'Home page';
 
 void main() {
   late _FakeService service;
   late StravaConnectFlow flow;
   late _Auth auth;
+  late _MemKv returnStore;
 
   setUp(() {
     service = _FakeService();
@@ -75,6 +77,8 @@ void main() {
         api: service, store: _MemKv(), random: Random(3));
     stravaConnect = flow;
     auth = _Auth();
+    returnStore = _MemKv();
+    stravaReturnStore = returnStore;
   });
 
   /// Mounts the app at [location] with a real GoRouter holding the return
@@ -97,6 +101,10 @@ void main() {
               reason: q['reason'],
             );
           },
+        ),
+        GoRoute(
+          path: '/',
+          builder: (context, state) => const Scaffold(body: Text(_homeText)),
         ),
         GoRoute(
           path: '/settings',
@@ -228,5 +236,68 @@ void main() {
     await settle(tester);
 
     expect(service.completes, isEmpty);
+  });
+
+  testWidgets(
+      'the same code return handled twice completes once and the second goes '
+      'quietly to /', (tester) async {
+    auth.signIn();
+    await flow.start(app: true);
+
+    await pumpApp(tester, codeReturn);
+    await settle(tester);
+    expect(service.completes, hasLength(1));
+    expect(find.text(_settingsText), findsOneWidget);
+
+    // Android hands the same link again: a fresh screen, same storage.
+    await tester.pumpWidget(const SizedBox());
+    await pumpApp(tester, codeReturn);
+    await settle(tester);
+
+    expect(service.completes, hasLength(1));
+    expect(find.text(_homeText), findsOneWidget);
+    expect(find.byType(SnackBar), findsNothing);
+    // Neither the code nor the state is stored in plain text.
+    final stored = returnStore.data[kStravaReturnHandledKey]!;
+    expect(stored, isNot(contains('the-code')));
+    expect(stored, isNot(contains('the-state')));
+  });
+
+  testWidgets('the same error return twice shows its message once',
+      (tester) async {
+    auth.signIn();
+    const denied = 'traxjourney://app/strava-return?strava=error&reason=denied';
+    const message = 'Strava access was not granted.';
+
+    await pumpApp(tester, denied);
+    await settle(tester);
+    expect(find.text(message), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+    await pumpApp(tester, denied);
+    await settle(tester);
+
+    expect(find.text(_homeText), findsOneWidget);
+    expect(find.text(message), findsNothing);
+  });
+
+  testWidgets('a different return after one was handled is handled normally',
+      (tester) async {
+    auth.signIn();
+    await flow.start(app: true);
+
+    await pumpApp(tester, codeReturn);
+    await settle(tester);
+    expect(service.completes, hasLength(1));
+
+    await flow.start(app: true);
+    await tester.pumpWidget(const SizedBox());
+    await pumpApp(tester,
+        'traxjourney://app/strava-return?strava=code&code=c2&state=s2');
+    await settle(tester);
+
+    expect(service.completes, hasLength(2));
+    expect(service.completes.last.code, 'c2');
+    expect(find.text(_settingsText), findsOneWidget);
   });
 }

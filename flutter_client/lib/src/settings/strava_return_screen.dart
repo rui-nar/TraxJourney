@@ -9,17 +9,32 @@
 /// nothing of its own for it. A relayed error has no connect to finish, so it
 /// is shown here, on the root messenger, which outlives this route. Either way
 /// the user lands on Settings.
+///
+/// Android may hand the app the same link again (activity recreated, relaunch
+/// from Recents). The screen remembers a hash of the last return it handled
+/// and goes quietly to `/` on an identical one (U4).
 library;
 
+import 'dart:convert';
+
+import 'package:cryptography_plus/cryptography_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 import '../auth/auth_notifier.dart';
+import '../crypto/device_key_store.dart';
 import 'strava_connect_flow.dart';
 
 /// The path of `traxjourney://app/strava-return`, as the router sees it.
 const String kStravaReturnRoute = '/strava-return';
+
+/// Secure-storage entry holding the hash of the last handled return.
+const String kStravaReturnHandledKey = 'strava_return_handled';
+
+/// Where the last handled return's hash is kept. Swappable for tests, like
+/// [stravaConnect].
+SecureKvStore stravaReturnStore = FlutterSecureKvStore();
 
 class StravaReturnScreen extends StatefulWidget {
   final String? code;
@@ -72,7 +87,35 @@ class _StravaReturnScreenState extends State<StravaReturnScreen> {
     _finish();
   }
 
+  /// Hex sha256 of the return's parameters, so the code and state are never
+  /// stored in plain text.
+  Future<String> _returnKey() async {
+    final fields = [widget.strava, widget.reason, widget.code, widget.state]
+        .map((v) => v ?? '')
+        .toList();
+    final hash = await Sha256().hash(utf8.encode(jsonEncode(fields)));
+    return hash.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+  }
+
+  /// True when this exact return was handled before. Otherwise records it,
+  /// before handling, so a crash midway cannot replay it either.
+  Future<bool> _isReplay() async {
+    try {
+      final key = await _returnKey();
+      if (await stravaReturnStore.read(kStravaReturnHandledKey) == key) return true;
+      await stravaReturnStore.write(kStravaReturnHandledKey, key);
+    } catch (_) {
+      // Storage trouble must not strand the user: handle the return.
+    }
+    return false;
+  }
+
   Future<void> _finish() async {
+    if (await _isReplay()) {
+      if (mounted) context.go('/');
+      return;
+    }
+    if (!mounted) return;
     final messenger = ScaffoldMessenger.of(context);
     void show(StravaConnectOutcome outcome) => messenger.showSnackBar(
         SnackBar(content: Text(stravaConnectMessage(outcome))));
