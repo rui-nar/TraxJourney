@@ -1,8 +1,10 @@
 """Strava OAuth + activity sync endpoints.
 
 Routes:
-    GET    /api/strava/connect              — returns OAuth URL to redirect user to
-    GET    /api/strava/callback             — exchanges auth code, stores token, redirects to app
+    POST   /api/strava/connect              — returns OAuth URL, its state bound to the client's challenge
+    GET    /api/strava/connect              — retired: 426 Upgrade Required
+    GET    /api/strava/callback             — relays code + state to the starting client; writes nothing
+    POST   /api/strava/complete             — exchanges the code and links the bearer's account
     GET    /api/strava/status               — {"connected": bool}
     DELETE /api/strava/disconnect           — revokes at Strava, removes token + cached activity list
     GET    /api/strava/activities           — browse user's Strava activities (with filters)
@@ -11,11 +13,15 @@ Routes:
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import os
 import time
 from datetime import date, datetime, timezone
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse
@@ -39,6 +45,9 @@ from src.filters.filter_engine import FilterCriteria, FilterEngine
 from src.models.activity import Activity, parse_activities_or_log, strip_heartrate
 from src.project.project_io import ProjectIO
 from src.project.project_repo import ProjectRepo
+from src.utils.logging import get_logger
+
+_log = get_logger(__name__)
 
 _project_repo = ProjectRepo()
 
@@ -60,8 +69,32 @@ _CACHE_TTL = int(os.environ.get("STRAVA_CACHE_TTL", 3600))
 
 # ── Response schemas ──────────────────────────────────────────────────────────
 
+_BASE64URL_43 = r"^[A-Za-z0-9_-]{43}$"
+_BASE64URL_43_128 = r"^[A-Za-z0-9_-]{43,128}$"
+
+
+class ConnectIn(BaseModel):
+    challenge: str = Field(
+        min_length=43, max_length=43, pattern=_BASE64URL_43,
+        description="base64url(sha256(verifier)), no padding; the verifier stays on the client",
+    )
+    return_to: Literal["web", "app"] = Field(
+        description="Where the callback returns: the web popup page or the app's custom scheme",
+    )
+
+class CompleteIn(BaseModel):
+    code: str = Field(min_length=1, max_length=256, description="Authorization code Strava returned")
+    state: str = Field(min_length=1, max_length=2048, description="The state the callback relayed")
+    verifier: str = Field(
+        min_length=43, max_length=128, pattern=_BASE64URL_43_128,
+        description="The verifier whose challenge was sent to POST /api/strava/connect",
+    )
+
 class ConnectUrlOut(BaseModel):
     url: str = Field(description="Strava OAuth authorization URL to redirect the user to")
+
+class CompleteOut(BaseModel):
+    connected: bool = Field(description="True once the Strava account is linked")
 
 class StravaStatusOut(BaseModel):
     connected: bool = Field(description="True if a Strava token is stored and non-empty")
@@ -278,18 +311,49 @@ def _persist_rotated_token(user_info_id: int, token_data: Dict[str, Any]) -> Non
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
-@router.get("/api/strava/connect", response_model=ConnectUrlOut,
-            summary="Get Strava OAuth URL")
-def strava_connect(current_user: Annotated[dict, Depends(get_current_user)]):
-    """Return the Strava OAuth authorization URL to redirect the user to."""
+#: Where an app-started flow returns (docs/STRAVA_CONNECT_BINDING_PLAN.md D4).
+#: Host ``app`` so the app's router sees the path ``/strava-return``.
+_APP_RETURN_URI = "traxjourney://app/strava-return"
+
+
+def pkce_challenge(verifier: str) -> str:
+    """``base64url(sha256(verifier))`` without padding — RFC 7636 ``S256``."""
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+def _ensure_strava_configured() -> None:
     if not _cfg.validate_strava_config():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Strava not configured (missing client_id/secret in config.json)",
         )
+
+
+def _return_redirect(return_to: Optional[str], **params: str) -> RedirectResponse:
+    """Send the browser back to the client that started the flow.
+
+    ``return_to`` comes only from a signature-verified state, never from the
+    request; anything else lands on the web page. Only fixed tokens and the
+    relayed code and state go in the query.
+    """
+    base = _APP_RETURN_URI if return_to == "app" else f"{_FRONTEND_ORIGIN}/oauth_callback.html"
+    return RedirectResponse(f"{base}?{urlencode(params)}")
+
+
+@router.post("/api/strava/connect", response_model=ConnectUrlOut,
+             summary="Get Strava OAuth URL")
+def strava_connect(
+    body: ConnectIn,
+    current_user: Annotated[dict, Depends(get_current_user)],
+):
+    """Return the Strava OAuth authorization URL to redirect the user to.
+
+    Its state names the caller, the client's challenge and where to return,
+    so only the client holding the verifier can complete the connect.
+    """
+    _ensure_strava_configured()
     from api.deps import create_strava_oauth_state
-    from models.user import UserInfo
-    from sqlmodel import select
 
     user_info_id = int(current_user["sub"])
     with get_session() as sess:
@@ -298,12 +362,25 @@ def strava_connect(current_user: Annotated[dict, Depends(get_current_user)]):
         ).first()
         if user_info is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-        state_token = create_strava_oauth_state(user_info.id)
+        state_token = create_strava_oauth_state(user_info.id, body.challenge, body.return_to)
 
     oauth = OAuth2Session(_cfg)
     oauth.redirect_uri = _CALLBACK_URI
     base_url = oauth.authorization_url()
     return {"url": f"{base_url}&state={state_token}"}
+
+
+@router.get("/api/strava/connect", summary="Retired: answers 426 Upgrade Required")
+def strava_connect_retired(current_user: Annotated[dict, Depends(get_current_user)]):
+    """The unbound connect, retired for ``POST /api/strava/connect``.
+
+    Its state could be completed by whoever opened the URL, so a build that
+    still calls this cannot start a connect at all. It issues nothing.
+    """
+    raise HTTPException(
+        status_code=status.HTTP_426_UPGRADE_REQUIRED,
+        detail="Update the app to connect Strava.",
+    )
 
 
 @router.get("/api/strava/callback", include_in_schema=False)
@@ -312,30 +389,85 @@ def strava_callback(
     error: str | None = None,
     state: str | None = None,
 ):
-    """Handle Strava OAuth redirect — exchanges code for tokens and redirects to the Flutter app."""
-    if error or not code:
-        return RedirectResponse(f"{_FRONTEND_ORIGIN}/oauth_callback.html?strava=error")
+    """Handle Strava's OAuth redirect: relay ``code`` and ``state`` to the
+    client that started the flow, which completes it with its verifier.
 
+    Unauthenticated and reachable with any query string, so it writes
+    nothing and never exchanges the code; the redirect target comes only
+    from the verified state's ``ret``.
+    """
     if not state:
-        return RedirectResponse(f"{_FRONTEND_ORIGIN}/oauth_callback.html?strava=error&reason=no_state")
+        return _return_redirect(None, strava="error", reason="no_state")
 
     # Only a state issued by strava_connect is accepted — a session token is not.
     import jwt
-    from api.deps import decode_strava_oauth_state
+    from api.deps import (
+        OutdatedStravaOAuthState,
+        decode_strava_oauth_state_full,
+        expired_strava_oauth_state_return_target,
+    )
     try:
-        user_info_id = decode_strava_oauth_state(state)
+        decoded = decode_strava_oauth_state_full(state)
     except jwt.ExpiredSignatureError:
-        return RedirectResponse(f"{_FRONTEND_ORIGIN}/oauth_callback.html?strava=error&reason=state_expired")
-    if user_info_id is None:
-        return RedirectResponse(f"{_FRONTEND_ORIGIN}/oauth_callback.html?strava=error&reason=invalid_state")
+        return _return_redirect(
+            expired_strava_oauth_state_return_target(state),
+            strava="error", reason="state_expired",
+        )
+    except OutdatedStravaOAuthState:
+        # A connect started by a build from before the binding, caught
+        # across a deploy. Never log the state.
+        _log.warning("Strava OAuth state without client binding refused (update_required)")
+        return _return_redirect(None, strava="error", reason="update_required")
+    if decoded is None:
+        return _return_redirect(None, strava="error", reason="invalid_state")
+
+    if error or not code:
+        return _return_redirect(decoded.return_to, strava="error", reason="denied")
+    return _return_redirect(decoded.return_to, strava="code", code=code, state=state)
+
+
+@router.post("/api/strava/complete", response_model=CompleteOut,
+             summary="Complete Strava connect")
+def strava_complete(
+    body: CompleteIn,
+    current_user: Annotated[dict, Depends(get_current_user)],
+):
+    """Exchange the relayed code and link the Strava account to the caller.
+
+    Links only when the caller is the user the state was issued for and the
+    verifier matches the state's challenge. A Strava code exchanges once, so
+    a replayed completion fails at the exchange. Codes, states and verifiers
+    are never logged.
+    """
+    _ensure_strava_configured()
+    import jwt
+    from api.deps import OutdatedStravaOAuthState, decode_strava_oauth_state_full
+
+    try:
+        decoded = decode_strava_oauth_state_full(body.state)
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="state_expired")
+    except OutdatedStravaOAuthState:
+        decoded = None
+    if decoded is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_state")
+
+    user_info_id = int(current_user["sub"])
+    if decoded.user_info_id != user_info_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="wrong_account")
+    if not hmac.compare_digest(pkce_challenge(body.verifier), decoded.challenge):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="verifier_mismatch")
 
     try:
         oauth = OAuth2Session(_cfg)
         oauth.redirect_uri = _CALLBACK_URI
-        token_data = oauth.exchange_code(code)
+        token_data = oauth.exchange_code(body.code)
     except Exception as exc:
-        return RedirectResponse(
-            f"{_FRONTEND_ORIGIN}/oauth_callback.html?strava=error&reason={str(exc)[:80]}"
+        # The type only: an upstream message is not ours to log or relay.
+        _log.warning("Strava code exchange failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Strava did not accept the connection. Please try again.",
         )
 
     with get_session() as sess:
@@ -357,7 +489,7 @@ def strava_callback(
             sess.add(row)
         sess.commit()
 
-    return RedirectResponse(f"{_FRONTEND_ORIGIN}/oauth_callback.html?strava=connected")
+    return {"connected": True}
 
 
 @router.get("/api/strava/status", response_model=StravaStatusOut,

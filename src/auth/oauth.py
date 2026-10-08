@@ -50,7 +50,7 @@ class OAuth2Session:
             "code": code,
             "grant_type": "authorization_code",
         }
-        resp = requests.post(self.TOKEN_URL, data=data)
+        resp = requests.post(self.TOKEN_URL, data=data, timeout=self.TOKEN_TIMEOUT)
         if resp.status_code != 200:
             raise AuthenticationError(f"Failed to exchange code: {resp.text}")
         token_data = resp.json()
