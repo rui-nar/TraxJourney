@@ -4,7 +4,8 @@ The authorization URL travels to Strava, browser history and access logs, so
 its ``state`` must not be a session token: it used to be one, which signed the
 user in for a week. These tests pin that the state and the session token are
 not interchangeable in either direction, that the state expires, and that a
-fresh one still links the account of the user who asked for it.
+fresh one is relayed back to the client that asked for it. Linking itself
+happens in ``POST /api/strava/complete`` (tests/test_strava_connect_binding.py).
 
 Strava's token exchange is mocked on ``OAuth2Session.exchange_code``; the
 network is never touched.
@@ -37,6 +38,10 @@ from api.router import app
 from models.user import StravaToken, UserInfo
 from src.auth.oauth import OAuth2Session
 from src.config.settings import Config
+
+# RFC 7636 Appendix B.
+VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
 
 
 class _StravaConfig(Config):
@@ -95,6 +100,15 @@ def client():
         app.dependency_overrides.clear()
 
 
+def _state(uid: int, return_to: str = "web") -> str:
+    return create_strava_oauth_state(uid, CHALLENGE, return_to)
+
+
+def _connect(client, return_to: str = "web"):
+    return client.post(
+        "/api/strava/connect", json={"challenge": CHALLENGE, "return_to": return_to})
+
+
 def _callback(client, state):
     return client.get(
         "/api/strava/callback", params={"code": "the-code", "state": state},
@@ -111,6 +125,7 @@ def _expired_state(uid: int) -> str:
     return jwt.encode(
         {
             "aud": STRAVA_OAUTH_AUDIENCE, "sub": str(uid), "jti": "n",
+            "chal": CHALLENGE, "ret": "web",
             "exp": datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=1),
         },
         jwt_secret(), algorithm="HS256",
@@ -123,7 +138,7 @@ def test_connect_url_state_is_not_a_session_token(client, users, engine):
     a, _ = users
     app.dependency_overrides[get_current_user] = lambda: {"sub": str(a.id)}
 
-    resp = client.get("/api/strava/connect")
+    resp = _connect(client)
 
     assert resp.status_code == 200
     assert set(resp.json()) == {"url"}  # response shape unchanged
@@ -132,7 +147,7 @@ def test_connect_url_state_is_not_a_session_token(client, users, engine):
         decode_token(state)
     assert decode_token_quietly(state) is None
     claims = jwt.decode(state, options={"verify_signature": False})
-    assert set(claims) == {"aud", "sub", "jti", "exp"}
+    assert set(claims) == {"aud", "sub", "jti", "chal", "ret", "exp"}
     assert claims["sub"] == str(a.id)
     lifetime = claims["exp"] - datetime.datetime.now(datetime.timezone.utc).timestamp()
     assert 0 < lifetime <= 10 * 60
@@ -143,7 +158,7 @@ def test_connect_issues_a_fresh_nonce_each_time(client, users):
     app.dependency_overrides[get_current_user] = lambda: {"sub": str(a.id)}
 
     states = [
-        parse_qs(urlparse(client.get("/api/strava/connect").json()["url"]).query)["state"][0]
+        parse_qs(urlparse(_connect(client).json()["url"]).query)["state"][0]
         for _ in range(2)
     ]
 
@@ -155,7 +170,7 @@ def test_connect_issues_a_fresh_nonce_each_time(client, users):
 
 def test_session_decoders_refuse_a_state_token(users):
     a, _ = users
-    state = create_strava_oauth_state(a.id)
+    state = _state(a.id)
 
     with pytest.raises(HTTPException) as exc:
         decode_token(state)
@@ -165,7 +180,7 @@ def test_session_decoders_refuse_a_state_token(users):
 
 def test_authenticated_endpoint_refuses_a_state_token(client, users):
     a, _ = users
-    state = create_strava_oauth_state(a.id)
+    state = _state(a.id)
 
     resp = client.get("/api/strava/status", headers={"Authorization": f"Bearer {state}"})
 
@@ -245,35 +260,45 @@ def test_callback_refuses_a_state_signed_with_another_key(client, users, engine,
     a, _ = users
     forged = jwt.encode(
         {"aud": STRAVA_OAUTH_AUDIENCE, "sub": str(a.id), "jti": "n",
+         "chal": CHALLENGE, "ret": "app",
          "exp": datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=5)},
         "another-key-" * 4, algorithm="HS256",
     )
 
     resp = _callback(client, forged)
 
+    assert resp.headers["location"].startswith(strava_module._FRONTEND_ORIGIN)
     assert resp.headers["location"].endswith("reason=invalid_state")
     assert exchange == []
-
-
-def test_callback_accepts_a_fresh_state_and_links_that_user(client, users, engine, exchange):
-    a, b = users
-
-    resp = _callback(client, create_strava_oauth_state(b.id))
-
-    assert resp.headers["location"].endswith("/oauth_callback.html?strava=connected")
-    assert exchange == ["the-code"]
-    row = _token_row(engine, b.id)
-    assert row is not None and row.access_token == "acc" and row.refresh_token == "ref"
     assert _token_row(engine, a.id) is None
 
 
-def test_connect_then_callback_round_trip(client, users, engine, exchange):
-    a, _ = users
-    app.dependency_overrides[get_current_user] = lambda: {"sub": str(a.id)}
-    url = client.get("/api/strava/connect").json()["url"]
-    state = parse_qs(urlparse(url).query)["state"][0]
+def test_callback_relays_a_fresh_state_without_linking(client, users, engine, exchange):
+    a, b = users
+    state = _state(b.id)
 
     resp = _callback(client, state)
 
-    assert resp.headers["location"].endswith("strava=connected")
+    location = urlparse(resp.headers["location"])
+    assert location.path.endswith("/oauth_callback.html")
+    assert parse_qs(location.query) == {
+        "strava": ["code"], "code": ["the-code"], "state": [state]}
+    assert exchange == []
+    assert _token_row(engine, a.id) is None
+    assert _token_row(engine, b.id) is None
+
+
+def test_connect_callback_complete_round_trip(client, users, engine, exchange):
+    a, _ = users
+    app.dependency_overrides[get_current_user] = lambda: {"sub": str(a.id)}
+    url = _connect(client).json()["url"]
+    state = parse_qs(urlparse(url).query)["state"][0]
+
+    relayed = parse_qs(urlparse(_callback(client, state).headers["location"]).query)
+    assert _token_row(engine, a.id) is None
+    resp = client.post("/api/strava/complete", json={
+        "code": relayed["code"][0], "state": relayed["state"][0], "verifier": VERIFIER})
+
+    assert resp.status_code == 200 and resp.json() == {"connected": True}
+    assert exchange == ["the-code"]
     assert _token_row(engine, a.id) is not None

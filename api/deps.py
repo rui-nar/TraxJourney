@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import datetime
 import secrets
+from dataclasses import dataclass
 from typing import Annotated, Optional
 
 import jwt
@@ -124,36 +125,64 @@ def create_access_token(
 #: Audience of the Strava OAuth ``state`` token. Session tokens carry no
 #: ``aud`` claim, and PyJWT refuses a token that has one when the caller names
 #: no audience, so :func:`_verify` turns a state token away on its own — and
-#: :func:`decode_strava_oauth_state` requires the claim, which turns a session
-#: token away in the other direction.
+#: :func:`decode_strava_oauth_state_full` requires the claim, which turns a
+#: session token away in the other direction.
 STRAVA_OAUTH_AUDIENCE = "strava_oauth"
 _STRAVA_STATE_EXPIRY_MINUTES = 10
+#: Where the callback sends the browser back to: the web popup page or the
+#: app's custom scheme (docs/STRAVA_CONNECT_BINDING_PLAN.md D4, D5).
+STRAVA_RETURN_TARGETS = frozenset({"web", "app"})
 
 
-def create_strava_oauth_state(user_info_id: int) -> str:
+@dataclass(frozen=True)
+class StravaOAuthState:
+    """What a valid Strava ``state`` names: the user the connect was started
+    for, the starting client's challenge, and where the callback returns —
+    plus its ``jti`` and ``exp``, which the callback binds the returned code
+    to."""
+    user_info_id: int
+    challenge: str
+    return_to: str
+    jti: str
+    expires_at: float
+
+
+class OutdatedStravaOAuthState(Exception):
+    """A genuine state issued before connects were bound to their client — it
+    has neither ``chal`` nor ``ret``. Not logged here: the callback logs one
+    line per refusal, so connects caught across a deploy show up."""
+
+
+def create_strava_oauth_state(user_info_id: int, challenge: str, return_to: str) -> str:
     """A short-lived signed ``state`` for the Strava authorization URL.
 
     The URL travels to Strava, browser history and access logs, so the state
-    carries only what the callback needs to pick the user — never the session
-    token, which would sign that user in for a week.
+    carries only what the flow needs — never the session token, which would
+    sign that user in for a week. ``chal`` binds the flow to the client that
+    holds the matching verifier; ``ret`` is the only input to the callback's
+    redirect target.
     """
     payload = {
         "aud": STRAVA_OAUTH_AUDIENCE,
         "sub": str(user_info_id),
         "jti": secrets.token_urlsafe(16),
+        "chal": challenge,
+        "ret": return_to,
         "exp": datetime.datetime.now(datetime.timezone.utc)
         + datetime.timedelta(minutes=_STRAVA_STATE_EXPIRY_MINUTES),
     }
     return jwt.encode(payload, jwt_secret(), algorithm=_JWT_ALGORITHM)
 
 
-def decode_strava_oauth_state(token: str) -> Optional[int]:
-    """The user id a Strava ``state`` was issued for; None when it is not a
-    valid state token (a session token included).
+def decode_strava_oauth_state_full(token: str) -> Optional[StravaOAuthState]:
+    """The :class:`StravaOAuthState` a ``state`` carries; None when it is not
+    a valid state token (a session token included).
 
     Raises :class:`jwt.ExpiredSignatureError` for a genuine state that ran out
-    — a user who lingered at Strava — so the callback can say so. Like
-    :func:`decode_token`, expiry is not logged and anything else is.
+    — a user who lingered at Strava — so the caller can say so, and
+    :class:`OutdatedStravaOAuthState` for a genuine state from before ``chal``
+    and ``ret`` existed. Like :func:`decode_token`, expiry is not logged and
+    an invalid state is.
     """
     try:
         payload = jwt.decode(
@@ -161,13 +190,45 @@ def decode_strava_oauth_state(token: str) -> Optional[int]:
             audience=STRAVA_OAUTH_AUDIENCE,
             options={"require": ["aud", "sub", "jti", "exp"]},
         )
-        return int(payload["sub"])
-    except jwt.ExpiredSignatureError:
+        if "chal" not in payload and "ret" not in payload:
+            raise OutdatedStravaOAuthState()
+        challenge, return_to = payload.get("chal"), payload.get("ret")
+        if not isinstance(challenge, str) or not challenge:
+            raise jwt.InvalidTokenError("missing or malformed chal claim")
+        if not isinstance(return_to, str) or return_to not in STRAVA_RETURN_TARGETS:
+            raise jwt.InvalidTokenError("missing or unknown ret claim")
+        jti = payload["jti"]
+        if not isinstance(jti, str) or not jti:
+            raise jwt.InvalidTokenError("malformed jti claim")
+        return StravaOAuthState(
+            int(payload["sub"]), challenge, return_to, jti, float(payload["exp"]))
+    except (jwt.ExpiredSignatureError, OutdatedStravaOAuthState):
         raise
     except (jwt.PyJWTError, ValueError) as exc:
         # Never log the token itself.
         _log.warning("invalid Strava OAuth state rejected: %s", exc)
         return None
+
+
+def expired_strava_oauth_state_return_target(token: str) -> Optional[str]:
+    """The ``ret`` of an expired state, so the callback can still send the
+    user back to the client that started the flow.
+
+    Signature and audience are verified — only expiry is not — so a forged
+    token cannot pick the redirect. For the redirect only: never use this to
+    pick a user. None when the token does not verify or names no known
+    target.
+    """
+    try:
+        payload = jwt.decode(
+            token, jwt_secret(), algorithms=[_JWT_ALGORITHM],
+            audience=STRAVA_OAUTH_AUDIENCE,
+            options={"verify_exp": False},
+        )
+    except jwt.PyJWTError:
+        return None
+    ret = payload.get("ret")
+    return ret if isinstance(ret, str) and ret in STRAVA_RETURN_TARGETS else None
 
 
 def _verify(token: str) -> dict:
