@@ -43,3 +43,16 @@ Envelope answer: owner approved the recommendation 2026-10-08 — proxy access l
 - Guard: one warning log line (no code/state) in strava_callback per update_required refusal; correct D8's wording
 - Override: —
 - Outcome: guard added (in plan: U1 warning log + D8 corrected)
+
+## Round 2 — 2026-10-08, reviewed at ec8bdc09 (fixes 1418d07d..ec8bdc09 only)
+
+### R2-1 — The no-opener fallback in oauth_callback.html never runs when the opener navigated to another origin
+- Trigger: a web user clicks Connect, then navigates the opener tab to another site while the popup is open → the popup reads window.opener.origin → cross-origin SecurityError → the script aborts → the popup stays on "Connecting…" and does not close
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified (triager)
+- Decision: Defer (D10)
+- Revisit when: a user reports a Strava popup stuck on "Connecting, please wait…", or the owner asks for D8's "opener navigated away" claim to be made true during U2 step 3
+- Guard: —
+- Override: —
+- Outcome: open
+
+Round 2 produced no Fix now decision → review stops (REVIEW.md §6).
