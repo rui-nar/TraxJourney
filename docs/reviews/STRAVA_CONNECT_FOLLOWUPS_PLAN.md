@@ -82,3 +82,41 @@ Envelope questions (to owner) — answered 2026-10-08: EQ1 yes (in scope; plan e
 - Guard: —
 - Override: user: Fix now — as planned the test certifies nothing; arbitration moves to a platform-neutral class tested with fakeAsync
 - Outcome: fixed (plan)
+
+## Round 3 — 2026-10-08, reviewed at afdc5402 (fixes f4baa7de..afdc5402 only; review cap reached)
+
+### R3-1 — The Cancel text names "TraxJourney", but the Strava API app may still carry its old name
+- Trigger: a victim taps Continue (the hostile app relays it), returns and taps Cancel → looks for "TraxJourney" under My Apps on Strava → doesn't find it (the app is registered under its old name; the rename runbook console step is open) → never revokes
+- Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified (triager)
+- Decision: Fix now (D3)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (plan)
+
+### R3-2 — The fakeAsync test needs fake_async, which is not a declared dependency
+- Trigger: the U2 implementer imports fake_async → flutter analyze fails on depend_on_referenced_packages → pubspec is outside Scope with Latitude none → stall
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (plan)
+
+### R3-3 — The "never split a surrogate pair" rule is vacuous for Python str
+- Trigger: the implementer writes name[:40] and the prescribed emoji test → it passes unconditionally → a check that proves nothing
+- Scores: trigger=concrete, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (plan)
+
+### R3-4 — The clipping test cannot tell whether overflow: hidden applies to the name's block
+- Trigger: the CSS lands on the wrong selector or on the inline <bdi> → the test still passes → stacked marks overlay the warning again
+- Scores: trigger=plausible, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Guard (D9)
+- Revisit when: —
+- Guard: in the test, assert the name block has class "name" containing the <bdi>, and that a .name rule in <style> has both overflow: hidden and a line-height
+- Override: —
+- Outcome: guard added (plan: U1 acceptance)

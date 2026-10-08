@@ -61,7 +61,8 @@ page instead of the 302. The page:
   unique), so an attacker can make it look like the victim's own;
 - then names the TraxJourney account the state's `sub` belongs to by its
   **display name** (owner decision; never the email), cut to 40 characters
-  with an ellipsis, without splitting a surrogate pair. The name sits in its
+  with an ellipsis (a cut inside an emoji cluster is accepted: it is cosmetic,
+  and the clipping contains it; R3-3). The name sits in its
   own block after the warning, wrapped in `<bdi>` so bidi controls such as
   U+202E cannot reorder the fixed text. The block has `overflow: hidden` and a
   fixed `line-height`, so stacked combining marks cannot spill over the
@@ -70,9 +71,12 @@ page instead of the 302. The page:
   `traxjourney://app/strava-return?code=…&state=…` the 302 used to target, and
   **Cancel**, which stays on the page (CSS `:target`, no script) and replaces
   it with: "If you didn't press Continue, nothing was connected. If you did and
-  didn't expect to, remove TraxJourney under My Apps in your Strava settings.
-  You can close this page." The page cannot know whether Continue was tapped,
-  so it must not claim nothing was connected (R2-2). It does not
+  didn't expect to, remove the app you just authorised, under My Apps in your
+  Strava settings. You can close this page." The page cannot know whether
+  Continue was tapped, so it must not claim nothing was connected (R2-2). It
+  also must not name the Strava app: Strava shows the name registered in the
+  Strava console, which may differ from TraxJourney's, as on a self-hosted
+  instance or before the console rename (R3-1). It does not
   go into the app: a Cancel after Continue would otherwise show "not granted"
   to a connected user (R1-3);
 - shows "a TraxJourney account" when the display name is empty;
@@ -220,8 +224,10 @@ REVIEW.md defaults, plus the binding plan's envelope (as amended), plus:
   3b. Cancel is an in-page anchor (`#cancelled`). A CSS `:target` rule hides the
      prompt and shows the D1 Cancel text (hedged, R2-2). No script and no
      navigation into the app.
-  3c. The name block follows D1: `<bdi>`, `overflow: hidden`, a fixed
-     `line-height`, truncation that never splits a surrogate pair (R2-1).
+  3c. The name block follows D1: a block element with class `name` containing
+     the `<bdi>`, and a `.name` rule in the page's `<style>` with
+     `overflow: hidden` and a fixed `line-height` (R2-1). Truncation is
+     `name[:40] + "…"` (R3-3).
   4. Update the binding tests that asserted a 302 to `traxjourney://` for a
      valid app state, so they read the Continue link from the page instead.
      Do not weaken any other assertion.
@@ -234,11 +240,12 @@ REVIEW.md defaults, plus the binding plan's envelope (as amended), plus:
   other than Continue),
   `test_fixed_warning_precedes_the_name`,
   `test_long_display_name_is_truncated`,
-  `test_name_is_bidi_isolated_and_clipped` (the name is inside `<bdi>` within a
-  block whose CSS has `overflow: hidden`; a U+202E name stays inside the
-  `<bdi>`),
-  `test_truncation_never_splits_a_surrogate_pair` (an emoji at position 40),
-  `test_cancel_text_is_hedged` (says what to do if Continue was pressed),
+  `test_name_is_bidi_isolated_and_clipped` (the name is inside a `<bdi>`
+  within the element with class `name`; the page's `<style>` has a `.name`
+  rule with both `overflow: hidden` and a `line-height`; a U+202E name stays
+  inside the `<bdi>`) (R3-4 guard),
+  `test_cancel_text_is_hedged` (says what to do if Continue was pressed, and
+  does not contain the app name, R3-1),
   `test_deleted_account_redirects_invalid_state_and_binds_nothing`,
   `test_page_headers_forbid_caching_framing_and_referrer`,
   `test_page_has_no_script` (no `<script` in the body),
@@ -258,7 +265,9 @@ REVIEW.md defaults, plus the binding plan's envelope (as amended), plus:
 - **Goal:** on web, a blocked popup reports `popupBlocked`, a popup the user
   closes reports `cancelled`, and the popup opens inside the click's user
   activation.
-- **Scope:** `flutter_client/lib/src/settings/strava_popup_arbiter.dart` (new),
+- **Scope:** `flutter_client/pubspec.yaml` and `flutter_client/pubspec.lock`
+  (only to add `fake_async` to `dev_dependencies`, R3-2),
+  `flutter_client/lib/src/settings/strava_popup_arbiter.dart` (new),
   `flutter_client/test/settings/strava_popup_arbiter_test.dart` (new),
   `flutter_client/lib/src/settings/strava_oauth_popup_web.dart`,
   `flutter_client/lib/src/settings/strava_oauth_popup_stub.dart`,
@@ -292,7 +301,9 @@ REVIEW.md defaults, plus the binding plan's envelope (as amended), plus:
 - **Acceptance:** tests (with the fake popup):
   `blocked popup publishes popupBlocked and never calls start`,
   `closed popup publishes cancelled and clears the pending connect`,
-  `strava_popup_arbiter_test.dart` (new, `fakeAsync`), testing the real
+  `strava_popup_arbiter_test.dart` (new, `fakeAsync` from `package:fake_async`,
+  declared in `dev_dependencies` with the same kind of comment the file already
+  uses for lint-driven dev dependencies), testing the real
   arbiter, not the fake popup:
   - a message wins over a closed popup seen 200 ms earlier;
   - closed with no message in the grace period → `closed`;
