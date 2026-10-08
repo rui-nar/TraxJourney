@@ -98,3 +98,18 @@ Envelope question: the proxy-log exclusion rested on "a logged code is useless w
 - Guard: —
 - Override: user: Fix now — U1 is reworked anyway; use the module's _claim_token_row-then-INSERT idiom
 - Outcome: fixed (e457f42f)
+
+## Unit U1 review, round 2 — 2026-10-08, reviewed at e457f42f (652e2f0d..e457f42f, fixes only)
+
+U1-1 and U1-2 confirmed closed by the reviewer.
+
+Envelope question: does the hostile-app boundary cover attacker-initiated, forwarded app flows? Owner 2026-10-08: no. The boundary covers interception of flows the legitimate app started (RFC 8252 §8.1); the envelope was amended.
+
+### U1R2-1 — Forwarded app-state link plus an attacker-controlled traxjourney:// app on the victim's phone
+- Trigger: the attacker starts a ret=app flow, forwards the link; the victim, whose phone runs the attacker's scheme-claiming app, approves → the app relays code + state → the attacker completes with their own bearer and verifier → the victim's Strava is linked to the attacker
+- Scores: trigger=plausible, impact=security, detect=silent, later=expensive, fix=L/local, confidence=verified
+- Decision: Reject (D1) — outside the envelope as amended by the owner
+- Revisit when: —
+- Guard: —
+- Override: — (follow-up issue filed for a callback confirmation page)
+- Outcome: open

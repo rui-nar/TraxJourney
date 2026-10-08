@@ -203,9 +203,13 @@ by the same server, so it updates with the deploy.
 REVIEW.md defaults apply, with these additions:
 - **New trust boundary:** the `traxjourney://` custom scheme. Any installed app
   may register it and receive the return URL (code + state). That is in the
-  envelope: the design must hold when the return URL is read by a hostile app
-  (D2). An attacker controlling the victim's device or browser beyond that is
-  out.
+  envelope: the design must hold when the return URL of a flow the legitimate
+  app on that device started is read by a hostile app (RFC 8252 §8.1; D2 + D9).
+  Out (owner, 2026-10-08, U1R2-1): a flow the attacker started and forwarded
+  to a victim whose device also runs an attacker-controlled app claiming the
+  scheme. No PKCE-style design stops that. A confirmation page naming the
+  account to be linked is a follow-up. An attacker controlling the victim's
+  device or browser beyond that is out.
 - **The OAuth callback stays unauthenticated** and is reachable by anyone with
   any query string (E2). Its only write is D9's code-binding row, and only for
   a state whose signature, audience and expiry check out. It never writes or
