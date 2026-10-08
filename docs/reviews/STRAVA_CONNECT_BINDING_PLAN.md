@@ -111,5 +111,5 @@ Envelope question: does the hostile-app boundary cover attacker-initiated, forwa
 - Decision: Reject (D1) — outside the envelope as amended by the owner
 - Revisit when: —
 - Guard: —
-- Override: — (follow-up issue filed for a callback confirmation page)
+- Override: — (follow-up #584: callback confirmation page)
 - Outcome: open
