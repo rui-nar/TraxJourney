@@ -52,7 +52,7 @@ Envelope answer: owner approved the recommendation 2026-10-08 — proxy access l
 - Decision: Defer (D10)
 - Revisit when: a user reports a Strava popup stuck on "Connecting, please wait…", or the owner asks for D8's "opener navigated away" claim to be made true during U2 step 3
 - Guard: —
-- Override: —
-- Outcome: open
+- Override: user: Fix now — one try/catch in a file U2 already owns makes D8's claim true
+- Outcome: fixed
 
-Round 2 produced no Fix now decision → review stops (REVIEW.md §6).
+Round 2 produced no Fix now decision from triage → review stops (REVIEW.md §6). R2-1 was overridden to Fix now by the owner and folded into U2 step 3.

@@ -353,7 +353,10 @@ REVIEW.md defaults apply, with these additions:
      `startStravaConnect(challenge, returnTo)` and add `completeStravaConnect`.
      Remove the old method (orphan).
   3. `oauth_callback.html`: post `{type:"strava_oauth", status, code, state,
-     reason}` per D8. Keep the opener-origin check and `window.close()`. When
+     reason}` per D8. Keep the opener-origin check and `window.close()`, but
+     wrap the `window.opener.origin` read in `try/catch` and treat a throw as
+     "no same-origin opener": an opener that navigated to another site makes
+     that read throw a SecurityError (R2-1). When
      there is no same-origin opener, replace "Connecting, please wait…" with
      the outcome and a plain-text reason (`textContent`, never `innerHTML`),
      plus a line telling the user to return to the app (R1-2).
@@ -375,7 +378,8 @@ REVIEW.md defaults apply, with these additions:
   "Flutter test container"). Manual check (reported, not automated):
   `oauth_callback.html?strava=code&code=x&state=y` in a popup posts the object
   to its opener; `oauth_callback.html?strava=error&reason=state_expired` opened
-  directly shows the reason text.
+  directly shows the reason text; with the opener tab navigated to another
+  site, the popup shows the reason text instead of staying on "Connecting…".
 - **Out of scope:** the Android return route and manifest (U3). Clearing the
   pending connect on logout. Any change to Strava import screens.
 - **Latitude:** local design (class shape, enum names, message wording).
