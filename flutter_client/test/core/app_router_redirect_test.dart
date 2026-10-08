@@ -463,6 +463,10 @@ void main() {
   // scheme and host on the URI and matches on its path, `/strava-return`
   // (docs/STRAVA_CONNECT_BINDING_PLAN.md, D4 and U3).
   group('Strava return (traxjourney://app/strava-return)', () {
+    final realReturnStore = stravaReturnStore;
+    setUp(() => stravaReturnStore = _MemKv());
+    tearDown(() => stravaReturnStore = realReturnStore);
+
     test('a signed-in user stays on it', () async {
       final auth = _loggedInAuth('user-1');
 
