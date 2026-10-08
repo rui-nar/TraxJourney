@@ -165,6 +165,13 @@ callback and parking the tokens for the state. Then the forwarded-link attacker
 completes with their own state and verifier without ever holding the code,
 which reopens the original hole.
 
+Accepted residual risk (owner, 2026-10-08): expired binding rows are pruned on
+the next insert. A stolen code that is still unused and still valid at Strava
+after the victim's 10-minute state expires could then be bound to a fresh
+attacker state. This relies on Strava codes living no longer than about the
+state's 10 minutes (RFC 6749 §4.1.2 recommends at most 10). Strava does not
+document the lifetime. The rejected alternative was a 24 h prune grace.
+
 **D7 — The client keeps one pending connect, with an expiry.** The new
 `StravaConnectFlow` (in `flutter_client/lib/src/settings/`) owns the verifier.
 On web it stays in memory: the opener page stays alive while the popup is open.

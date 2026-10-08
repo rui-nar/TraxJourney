@@ -88,7 +88,7 @@ Envelope question: the proxy-log exclusion rested on "a logged code is useless w
 - Revisit when: —
 - Guard: —
 - Override: — (owner chose a DB table for the binding over an in-memory dict; plan D2/D4/D6/D9, envelope and boundaries amended)
-- Outcome: open
+- Outcome: fixed (e457f42f); residual prune-on-insert rebind window accepted by owner 2026-10-08 (plan D9)
 
 ### U1-2 — complete's upsert can 500 (StaleDataError) when a disconnect races it, orphaning new tokens
 - Trigger: a user re-runs Connect on one device while pressing Disconnect on another → zero-row UPDATE → 500; the new Strava tokens are stored nowhere and never revoked
@@ -97,4 +97,4 @@ Envelope question: the proxy-log exclusion rested on "a logged code is useless w
 - Revisit when: a StaleDataError or 500 from complete in the logs, or the upsert is next changed
 - Guard: —
 - Override: user: Fix now — U1 is reworked anyway; use the module's _claim_token_row-then-INSERT idiom
-- Outcome: open
+- Outcome: fixed (e457f42f)
