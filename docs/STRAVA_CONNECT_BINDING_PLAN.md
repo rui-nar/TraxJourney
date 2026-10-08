@@ -108,13 +108,18 @@ audience, expiry, `chal` and `ret` present), then redirects:
 - `ret == "app"` → `traxjourney://app/strava-return?code=…&state=…`
 - Errors (Strava `error`, no code, bad or expired state) go to the same target
   with `strava=error&reason=<fixed token>` when `ret` is known, and to the web
-  page otherwise. Reasons come from a fixed set (`denied`, `no_state`,
+  page otherwise. An **expired** state still names its target: after
+  `ExpiredSignatureError`, the callback decodes it again with expiry checking
+  off (signature and audience still verified) only to read `ret`. An app flow
+  whose user lingered at Strava then returns to the app with `state_expired`
+  instead of stranding them in the browser (R1-2). Reasons come from a fixed set (`denied`, `no_state`,
   `state_expired`, `invalid_state`, `update_required`). Exception text never
   goes in a URL again.
 
 A state with neither `chal` nor `ret` (issued by the old GET before deploy,
-alive for at most 10 minutes) is refused with `reason=update_required`. The
-callback never exchanges the code. The exchange happens only in `complete`.
+alive for at most 10 minutes) is refused with `reason=update_required`, and
+each such refusal logs one warning line (no code or state), so connects caught
+across a deploy show up (R1-4 guard). The callback never exchanges the code. The exchange happens only in `complete`.
 
 **D6 — `POST /api/strava/complete` does the exchange and the link.** Body:
 `{"code", "state", "verifier"}`, authenticated. In order:
@@ -123,7 +128,10 @@ callback never exchanges the code. The exchange happens only in `complete`.
 2. `sub` ≠ bearer `sub` → 403.
 3. Verifier mismatch → 403 (compared with `hmac.compare_digest`).
 4. Exchange the code: failure → 502 with a generic detail, logged without the
-   code.
+   code. `OAuth2Session.exchange_code` gains `timeout=self.TOKEN_TIMEOUT`,
+   which `refresh_token` and `revoke` already pass. Without it, a stalled
+   Strava endpoint holds a worker thread past the client's 30 s timeout
+   (R1-3, owner override).
 5. Upsert the `StravaToken` row as the callback does today. Return
    `{"connected": true}`.
 
@@ -145,10 +153,17 @@ structured message (a plain object
 `{type: "strava_oauth", status, code?, state?, reason?}`) to the opener, only
 when `window.opener.origin === window.origin`, as today.
 `StravaOAuthPopup.connect` returns `({String? code, String? state, String? error})`.
-The settings screen then calls `flow.complete(code, state)`. An old web bundle
-in a tab opened before the deploy will not understand the new message and will
-report failure, and a reload fixes it. The web client is served by the same
-server, so it updates with the deploy.
+The settings screen then calls `flow.complete(code, state)`. When the page has
+no opener (an Android browser tab, or a popup whose opener navigated away), it
+shows the outcome and its reason as text instead of staying on
+"Connecting, please wait…" (R1-2).
+
+Old web bundles: after the deploy, an old bundle calls the retired GET and gets
+the 426 error, so it never starts a flow. The one gap is a flow started before
+the deploy and approved after it. The callback answers `update_required`, the
+old listener ignores the new object message, and nothing is shown until a
+reload. That gap is accepted and only logged (R1-4). The web client is served
+by the same server, so it updates with the deploy.
 
 ## Review envelope
 
@@ -167,6 +182,10 @@ REVIEW.md defaults apply, with these additions:
   path is a defect.
 - **No iOS build exists** (`docs/ANDROID.md`). iOS URL-scheme registration is
   out (see O1).
+- **Reverse-proxy access logs and browser history are out** (E3, owner
+  2026-10-08). The callback URL's `code` and `state` reach them. A logged code is
+  useless without the client's verifier (D2). The logging convention covers
+  application logs only.
 
 ## Boundaries crossed
 
@@ -190,7 +209,9 @@ REVIEW.md defaults apply, with these additions:
 
 ## Conventions
 
-- Never log a code, state, verifier or challenge, at any level, on either side.
+- Never log a code, state, verifier or challenge, at any level, on either side,
+  in application logs (the reverse proxy's access log is out, see the
+  envelope).
   Tests assert this with `caplog` for the server paths.
 - Error reasons travel as fixed tokens (D5). The client maps them to messages.
   No exception text in URLs or response details.
@@ -218,7 +239,8 @@ REVIEW.md defaults apply, with these additions:
 - **Goal:** the server never links a Strava account except through an
   authenticated `POST /api/strava/complete` whose bearer matches the state and
   whose verifier matches the state's challenge.
-- **Scope:** `api/strava.py`, `api/deps.py`, `tests/test_strava_oauth_state.py`,
+- **Scope:** `api/strava.py`, `api/deps.py`, `src/auth/oauth.py`
+  (`exchange_code` timeout only), `tests/test_strava_oauth_state.py`,
   `tests/test_strava_connect_binding.py` (new).
 - **Context:** read D1–D6 and Conventions. Follow the current `strava_connect`
   and `strava_callback` (`api/strava.py:281-360`) for structure and the upsert.
@@ -245,9 +267,14 @@ REVIEW.md defaults apply, with these additions:
      `GET /api/strava/connect`: 426, detail `"Update the app to connect Strava."`.
   4. `GET /api/strava/callback`: per D5. It no longer exchanges or writes
      anything. It builds the redirect target from the decoded state's `ret`
-     only. Query values are URL-encoded with `urllib.parse.urlencode`.
+     only. Query values are URL-encoded with `urllib.parse.urlencode`. For an
+     expired state, add a deps helper that returns `ret` from a
+     signature-verified decode with `verify_exp` off. Never use it to pick a
+     user. Log one warning (no token) per `update_required` refusal.
   5. `POST /api/strava/complete`: per D6, steps in that order. Return
      `{"connected": true}` (add a response model).
+  5a. `src/auth/oauth.py`: pass `timeout=self.TOKEN_TIMEOUT` in
+     `exchange_code`, like `refresh_token`. Nothing else in that file changes.
   6. Update the module docstring's endpoint list.
   7. Rewrite `tests/test_strava_oauth_state.py` to the new state shape. Keep
      every existing property (not a session token in either direction, fresh
@@ -270,6 +297,12 @@ REVIEW.md defaults apply, with these additions:
   `test_complete_refuses_an_expired_state_400`,
   `test_complete_exchange_failure_is_502_without_exception_text`,
   `test_rfc7636_vector_matches` (Conventions pair),
+  `test_callback_routes_an_expired_app_state_to_the_app` (`ret=app`, expired →
+  `traxjourney://app/strava-return?strava=error&reason=state_expired`),
+  `test_expired_state_with_a_foreign_signature_goes_to_the_web_page`,
+  `test_update_required_refusal_logs_one_warning_without_the_state`,
+  `test_exchange_code_passes_a_timeout` (mock `requests.post`, assert
+  `timeout`),
   `test_no_code_state_or_verifier_in_logs` (caplog over connect, callback,
   complete, including failures).
   Then `pytest tests/test_strava_oauth_state.py tests/test_strava_connect_binding.py tests/test_strava_disconnect.py tests/test_strava_upstream_errors.py`
@@ -320,7 +353,10 @@ REVIEW.md defaults apply, with these additions:
      `startStravaConnect(challenge, returnTo)` and add `completeStravaConnect`.
      Remove the old method (orphan).
   3. `oauth_callback.html`: post `{type:"strava_oauth", status, code, state,
-     reason}` per D8. Keep the opener-origin check and `window.close()`.
+     reason}` per D8. Keep the opener-origin check and `window.close()`. When
+     there is no same-origin opener, replace "Connecting, please wait…" with
+     the outcome and a plain-text reason (`textContent`, never `innerHTML`),
+     plus a line telling the user to return to the app (R1-2).
   4. `strava_oauth_popup_web.dart`: accept only messages with
      `type == "strava_oauth"` from the same origin. Return
      `({String? code, String? state, String? error})`. Keep the stub in step.
@@ -338,7 +374,8 @@ REVIEW.md defaults apply, with these additions:
   `flutter test test/settings/` in the Flutter test container (memory note
   "Flutter test container"). Manual check (reported, not automated):
   `oauth_callback.html?strava=code&code=x&state=y` in a popup posts the object
-  to its opener.
+  to its opener; `oauth_callback.html?strava=error&reason=state_expired` opened
+  directly shows the reason text.
 - **Out of scope:** the Android return route and manifest (U3). Clearing the
   pending connect on logout. Any change to Strava import screens.
 - **Latitude:** local design (class shape, enum names, message wording).
@@ -365,7 +402,9 @@ REVIEW.md defaults apply, with these additions:
   link, then routes on). Follow `authRedirectTarget`'s `/verify-email/` handling
   and its tests in `app_router_redirect_test.dart`. The intent filter sits next
   to the App Links filter in the manifest (`AndroidManifest.xml:45-52`). Use
-  U2's `StravaConnectFlow.complete`.
+  U2's `StravaConnectFlow.complete`. For the restore wait, read
+  `AuthNotifier.isRestoring` (`auth/auth_notifier.dart:106-111`) and
+  `SplashGate` (`core/splash_screen.dart`).
 - **Do:**
   1. Manifest: a second `VIEW` intent filter (no `autoVerify`) with
      `DEFAULT` + `BROWSABLE`, `scheme="traxjourney" host="app"
@@ -379,7 +418,12 @@ REVIEW.md defaults apply, with these additions:
      path.
   3. `StravaReturnScreen`: shows progress, calls `flow.complete` (or shows the
      relayed `reason` when `strava=error`), then `go('/settings')` and shows the
-     outcome message.
+     outcome message. On a cold start the route is built while the session is
+     still being restored (`authRedirectTarget` returns null while loading,
+     and SplashGate mounts the child under the splash). The screen therefore
+     waits until `AuthNotifier.isRestoring` is false, listening to the
+     notifier, before calling `complete`. If restore ends signed out, the
+     router's redirect to login applies (R1-1).
   4. `docs/ANDROID.md`: under "Deep links", add the custom-scheme row and one
      paragraph: why it is not an App Link (D4), and how to test it with
      `adb shell am start -a android.intent.action.VIEW -d "traxjourney://app/strava-return?strava=error&reason=denied" com.traxjourney.app`.
@@ -388,7 +432,8 @@ REVIEW.md defaults apply, with these additions:
   `strava_return_screen_test.dart`: a code+state calls `complete` once and
   routes to `/settings`; `strava=error&reason=denied` shows the denied message
   without calling `complete`; `wrongAccount` and `noPendingConnect` show their
-  messages. Run `flutter analyze` and `flutter test test/core test/settings`
+  messages; built while `isRestoring` is true, the screen does not call
+  `complete` until the notifier reports restore finished, then calls it once. Run `flutter analyze` and `flutter test test/core test/settings`
   in the Flutter test container. Manual check (owner, on device): the `adb`
   command above opens the app on Settings with the denied message.
 - **Out of scope:** iOS (O1). App Links for this path. Handling a return while
@@ -429,6 +474,8 @@ as with PRs #547–#550. After the release is deployed and production's
 - On Android (release and debug builds), Connect → approve in the browser →
   the app reopens on Settings showing Strava connected. This holds even if the
   app was killed while the browser was in front, within 10 minutes.
-- No code, state, verifier or challenge appears in server logs, and no
+- An Android flow whose state expired at Strava returns to the app with the
+  expired message; it never ends on a browser page that says "Connecting…".
+- No code, state, verifier or challenge appears in application logs, and no
   exception text appears in any redirect URL or response detail.
 - Full server and Flutter suites pass. The owner has run the device check in U3.
