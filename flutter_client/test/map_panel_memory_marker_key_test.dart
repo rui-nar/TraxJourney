@@ -11,7 +11,6 @@
 // needs a running Flutter engine to observe frame-by-frame.
 
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_animations/flutter_map_animations.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -19,6 +18,7 @@ import 'package:traxjourney_client/src/core/project_ref.dart';
 import 'package:traxjourney_client/src/projects/map_panel.dart';
 import 'package:traxjourney_client/src/projects/project_notifier.dart';
 import 'package:traxjourney_client/src/projects/project_service.dart';
+import 'package:traxjourney_client/src/projects/world_copy_marker_layer.dart';
 
 Map<String, dynamic> _memoryItem(String id, double lat, double lon) => {
       'item_type': 'memory',
@@ -75,7 +75,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 600));
 
     final memoryMarkers = tester
-        .widgetList<MarkerLayer>(find.byType(MarkerLayer))
+        .widgetList<WorldCopyMarkerLayer>(find.byType(WorldCopyMarkerLayer))
         .map((l) => l.markers)
         .firstWhere((markers) => markers.length == 2);
 
