@@ -31,6 +31,7 @@ import 'people_search.dart' show classifyEncounterPin;
 import 'photo_thumb_cache.dart';
 import 'facets/project_facet.dart' show SelectionFacet;
 import 'project_notifier.dart';
+import 'world_copy_marker_layer.dart';
 
 // Existing callers (and map_geometry_memo_test.dart) import this helper from
 // map_panel.dart, where it used to live; keep that entry point.
@@ -1173,13 +1174,15 @@ class SelectionStatsOverlay extends StatelessWidget {
 // blocking() span wraps a build callback. The wrapper is a RenderProxyBox:
 // same constraints, same size, same paint offset. All five share one span
 // name, so the report reads "what do markers cost this frame", not five lines.
+// A WorldCopyMarkerLayer, not flutter_map's MarkerLayer: these markers are
+// keyed, and MarkerLayer gives every world copy the same key (ghost trips).
 List<Widget> _keyedMarkerLayer(String key, bool visible, List<Marker> markers) =>
     visible && markers.isNotEmpty
         ? [
             PerfSubtree(
               key: ValueKey('perf-$key'),
               name: 'map_markers',
-              child: MarkerLayer(key: ValueKey(key), markers: markers),
+              child: WorldCopyMarkerLayer(key: ValueKey(key), markers: markers),
             )
           ]
         : const [];
