@@ -69,10 +69,10 @@ is not the app's.
 generates 32 random bytes (`verifier`, base64url) and sends
 `challenge = base64url(sha256(verifier))` (no padding) to `POST /api/strava/connect`.
 The server signs the challenge into the state (`chal` claim). `complete` checks
-that `sha256(verifier)` matches `chal`. This binds the flow to one client
-instance, not just to one account. A code intercepted on the way back (another
-app claiming the custom scheme, D4; a leaked URL) cannot be completed without a
-verifier that never left the client. Ruled out: relying on the `sub` check
+that `sha256(verifier)` matches `chal`. This binds the **state** to one client
+instance, not just to one account. It does not bind the **code**: Strava has no
+PKCE, so on its own the verifier would let an attacker pair a stolen code with
+a state they minted for their own account. D9 closes that. Ruled out: relying on the `sub` check
 alone. It stops cross-account linking, but not an attacker who holds both the
 victim's code and a session for the same account (a shared device). Strava's
 own OAuth has no PKCE, so the binding lives in our completion step. The code
@@ -93,8 +93,10 @@ keeps working, and already-connected accounts keep working.
 `traxjourney://app/strava-return?…`.** Owner decision (2026-10-08). It works for
 release, val and debug builds and does not depend on App Link verification or
 on the API host. A custom scheme can be claimed by another app (RFC 8252
-§8.1). D2's verifier is what makes an intercepted code useless, which is the
-RFC 8252 pattern for private-use schemes. The URI has host `app` so that
+§8.1). D2's verifier and D9's code binding together make an intercepted return
+URL useless: the state is bound to the client, and the code to the state. This
+is the RFC 8252 pattern for private-use schemes, with the binding Strava's
+missing PKCE would have given. The URI has host `app` so that
 go_router sees the path `/strava-return`. A bare
 `traxjourney://strava-return` would put the name in the host and give an empty
 path. Ruled out: https App Links (`traxjourney.com/strava-return`). Only
@@ -127,17 +129,41 @@ across a deploy show up (R1-4 guard). The callback never exchanges the code. The
    400 `invalid_state`.
 2. `sub` ≠ bearer `sub` → 403.
 3. Verifier mismatch → 403 (compared with `hmac.compare_digest`).
+3a. Code binding (D9): the `strava_oauth_code` row for `sha256(code)` must
+   exist, be unexpired and name this state's `jti`, else 403
+   `code_not_bound`.
 4. Exchange the code: failure → 502 with a generic detail, logged without the
    code. `OAuth2Session.exchange_code` gains `timeout=self.TOKEN_TIMEOUT`,
    which `refresh_token` and `revoke` already pass. Without it, a stalled
    Strava endpoint holds a worker thread past the client's 30 s timeout
    (R1-3, owner override).
-5. Upsert the `StravaToken` row as the callback does today. Return
-   `{"connected": true}`.
+5. Store the `StravaToken` with the module's #440 idiom: `_claim_token_row`
+   as the session's first write, INSERT only when it returns False. A
+   disconnect committed between a read and the write can then never give a
+   `StaleDataError` 500 that leaves the new tokens stored nowhere and
+   unrevoked (U1-2, owner override). Delete the binding row in the same
+   transaction. Return `{"connected": true}`.
 
-Codes, states and verifiers are never logged. No single-use store for the
-state's `jti` is needed: a Strava code can be exchanged once, so a replay fails
-at step 4.
+Codes, states and verifiers are never logged. A replay of the same code fails
+twice over: the binding row is gone and Strava refuses a second exchange.
+
+**D9 — The callback binds each code to the state it arrived with, first seen
+wins.** Owner decision (2026-10-08, U1-1). Strava's redirect always reaches
+our callback before any app or browser page sees the code, so the callback is
+the one place that knows which state Strava returned the code with. On a valid
+state with a code, the callback INSERTs into a new table `strava_oauth_code`
+(`code_hash` = hex sha256 of the code, primary key; `state_jti`; `expires_at` =
+the state's `exp`). It then relays as in D5. If a row for that hash already exists
+with a different `jti`, the callback refuses with `reason=invalid_state` and
+writes nothing. The same `jti` (a reloaded callback) relays again. Each insert
+first deletes expired rows. `complete` requires the match (D6 step 3a). An
+attacker who holds a stolen code and calls the callback with their own state
+finds the code already bound to the victim's state. Ruled out: an in-memory
+dict (owner chose the table: it survives an API restart during consent and
+any future second API process). Also ruled out: exchanging the code at the
+callback and parking the tokens for the state. Then the forwarded-link attacker
+completes with their own state and verifier without ever holding the code,
+which reopens the original hole.
 
 **D7 — The client keeps one pending connect, with an expiry.** The new
 `StravaConnectFlow` (in `flutter_client/lib/src/settings/`) owns the verifier.
@@ -174,8 +200,10 @@ REVIEW.md defaults apply, with these additions:
   (D2). An attacker controlling the victim's device or browser beyond that is
   out.
 - **The OAuth callback stays unauthenticated** and is reachable by anyone with
-  any query string (E2). It must not write anything, and its redirect target
-  must come only from the signed state, never from a request parameter.
+  any query string (E2). Its only write is D9's code-binding row, and only for
+  a state whose signature, audience and expiry check out. It never writes or
+  changes a `StravaToken`, and never picks a user. Its redirect target must
+  come only from the signed state, never from a request parameter.
 - **E5 applies with the owner's cut decision (D3):** old APKs lose Strava
   connect, and that is accepted. A finding that "old APKs cannot connect" is D1
   (by design). A finding that an old APK can still link an account through any
@@ -184,8 +212,9 @@ REVIEW.md defaults apply, with these additions:
   out (see O1).
 - **Reverse-proxy access logs and browser history are out** (E3, owner
   2026-10-08). The callback URL's `code` and `state` reach them. A logged code is
-  useless without the client's verifier (D2). The logging convention covers
-  application logs only.
+  useless: it is bound to its state (D9), whose verifier never left the client
+  (D2). The exclusion also stands on E3: the admin and the proxy are trusted.
+  The logging convention covers application logs only.
 
 ## Boundaries crossed
 
@@ -200,8 +229,11 @@ REVIEW.md defaults apply, with these additions:
 - **State token format.** Gains `chal` and `ret`. States issued before deploy
   are refused at the callback (`update_required`). They live 10 minutes at
   most.
-- **Schema / stored data.** None. `StravaToken` rows are written exactly as
-  today, by a different endpoint.
+- **Schema / stored data.** One new table, `strava_oauth_code` (D9), added by
+  an Alembic migration on the current single head. Rows live 10 minutes and
+  hold no secret: only the code's hash. Nothing existing is migrated.
+  `StravaToken` rows are written as today, by a different endpoint, through
+  `_claim_token_row`. Downgrade drops the table.
 - **Server config.** None. `STRAVA_REDIRECT_URI` and the Strava app's callback
   domain are unchanged: the callback is still the `redirect_uri`.
 - **Android manifest.** New intent filter for scheme `traxjourney`, host `app`,
@@ -240,8 +272,11 @@ REVIEW.md defaults apply, with these additions:
   authenticated `POST /api/strava/complete` whose bearer matches the state and
   whose verifier matches the state's challenge.
 - **Scope:** `api/strava.py`, `api/deps.py`, `src/auth/oauth.py`
-  (`exchange_code` timeout only), `tests/test_strava_oauth_state.py`,
-  `tests/test_strava_connect_binding.py` (new).
+  (`exchange_code` timeout only), `models/user.py` (the `StravaOAuthCode`
+  model only), one new file in `alembic/versions/`,
+  `tests/test_strava_oauth_state.py`, `tests/test_strava_connect_binding.py`
+  (new). Amended after the U1 unit review (U1-1, U1-2): D6 steps 3a and 5,
+  and D9.
 - **Context:** read D1–D6 and Conventions. Follow the current `strava_connect`
   and `strava_callback` (`api/strava.py:281-360`) for structure and the upsert.
   Follow PUT day-meta's 426 (`api/projects.py:889-905`) for the retired GET.
@@ -468,6 +503,13 @@ as with PRs #547–#550. After the release is deployed and production's
 
 - No request to `GET /api/strava/callback`, with any query string, writes or
   changes a `StravaToken` row.
+- A code relayed with the victim's state cannot be completed with any other
+  state, including one the attacker minted for their own account with their
+  own verifier (403 `code_not_bound`). Calling the callback again with the same
+  code and the attacker's state does not rebind it.
+- A disconnect racing a completion never answers 500, and never leaves
+  freshly issued Strava tokens stored nowhere.
+- `alembic heads` shows one head.
 - A state issued for user A, completed with user B's bearer, links nobody (403),
   whichever of A and B started the flow.
 - A correct code and state with the wrong verifier links nobody (403).

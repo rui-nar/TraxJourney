@@ -76,3 +76,25 @@ Round 2 produced no Fix now decision from triage → review stops (REVIEW.md §6
 - Guard: —
 - Override: —
 - Outcome: open
+
+## Unit U1 review — 2026-10-08, reviewed at 652e2f0d (e3d53258..652e2f0d, DELIVERY.md §5 point 3)
+
+Envelope question: the proxy-log exclusion rested on "a logged code is useless without the verifier", which U1-1 disproved. Owner's U1-1 decision (code binding) restores it, and it also stands on E3; the envelope was amended to say both.
+
+### U1-1 — complete never ties the code to the state
+- Trigger: a hostile app registered for traxjourney:// receives the victim's code → the attacker mints their own state and verifier and calls complete with the stolen code → the victim's Strava is linked to the attacker's account
+- Scores: trigger=plausible, impact=security, detect=silent, later=expensive, fix=M/local, confidence=verified
+- Decision: Fix now (D3)
+- Revisit when: —
+- Guard: —
+- Override: — (owner chose a DB table for the binding over an in-memory dict; plan D2/D4/D6/D9, envelope and boundaries amended)
+- Outcome: open
+
+### U1-2 — complete's upsert can 500 (StaleDataError) when a disconnect races it, orphaning new tokens
+- Trigger: a user re-runs Connect on one device while pressing Disconnect on another → zero-row UPDATE → 500; the new Strava tokens are stored nowhere and never revoked
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: a StaleDataError or 500 from complete in the logs, or the upsert is next changed
+- Guard: —
+- Override: user: Fix now — U1 is reworked anyway; use the module's _claim_token_row-then-INSERT idiom
+- Outcome: open
