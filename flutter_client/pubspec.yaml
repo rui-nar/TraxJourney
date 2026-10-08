@@ -83,6 +83,9 @@ dev_dependencies:
   # for the platform so link tests can see which URL a tap opens (#421).
   url_launcher_platform_interface: ^2.3.2
   plugin_platform_interface: ^2.1.8
+  # Referenced directly by test/settings/strava_popup_arbiter_test.dart, which
+  # drives the popup arbiter's timers on a fake clock (#587).
+  fake_async: ^1.3.3
   # Regenerates the Android launcher icons from the assets/app_icon*.png layers.
   # Not part of any build — run by hand when the brand mark changes:
   #   python scripts/generate_icons.py && dart run flutter_launcher_icons

@@ -7,13 +7,24 @@
 /// (including `flutter test`'s VM platform).
 library;
 
-/// Outcome of a Strava OAuth popup flow: the relayed [code] and [state], or
-/// the callback's fixed [error] reason token.
-typedef StravaOAuthResult = ({String? code, String? state, String? error});
+import 'strava_popup_arbiter.dart';
+
+export 'strava_popup_arbiter.dart' show StravaOAuthResult, StravaPopupHandle;
 
 class StravaOAuthPopup {
-  Future<StravaOAuthResult> connect(String url) async =>
-      (code: null, state: null, error: 'web_only');
+  StravaPopupHandle? open() => _StubHandle();
 
   void dispose() {}
+}
+
+class _StubHandle implements StravaPopupHandle {
+  @override
+  void navigate(String url) {}
+
+  @override
+  Future<StravaOAuthResult?> get result async =>
+      (code: null, state: null, error: 'web_only');
+
+  @override
+  void close() {}
 }
