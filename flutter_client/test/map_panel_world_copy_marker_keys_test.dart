@@ -33,15 +33,19 @@ Map<String, dynamic> _memoryItem(String id, double lat, double lon) => {
       },
     };
 
-ProjectNotifier _notifier() => ProjectNotifier(ProjectService())
-  ..ref = const ProjectRef(name: 'Trip')
-  ..geoFacetWriter.replaceKeepingLod(
-      const {'type': 'FeatureCollection', 'features': <dynamic>[]})
-  ..itemsFacetWriter.setItems([
-    _memoryItem('mem-1', 60.0, 10.0),
-    _memoryItem('mem-2', 61.0, 11.0),
-  ])
-  ..isLoading = false;
+ProjectNotifier _notifier({
+  List<Map<String, dynamic>>? items,
+}) =>
+    ProjectNotifier(ProjectService())
+      ..ref = const ProjectRef(name: 'Trip')
+      ..geoFacetWriter.replaceKeepingLod(
+          const {'type': 'FeatureCollection', 'features': <dynamic>[]})
+      ..itemsFacetWriter.setItems(items ??
+          [
+            _memoryItem('mem-1', 60.0, 10.0),
+            _memoryItem('mem-2', 61.0, 11.0),
+          ])
+      ..isLoading = false;
 
 Widget _panel(ProjectNotifier notifier, AnimatedMapController controller) =>
     MaterialApp(
@@ -106,5 +110,38 @@ void main() {
       return key is ValueKey<(Key, int)> && key.value.$1 == plain;
     });
     expect(copies, findsAtLeastNWidgets(1));
+  });
+
+  // Review R1-1: keying by world index alone remounted the marker (and
+  // flashed its thumbnail) whenever the visible copy changed world, which a
+  // pan across 180° does — flutter_map renormalises the camera centre there.
+  testWidgets('panning across the antimeridian keeps the marker mounted',
+      (tester) async {
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final controller = AnimatedMapController(vsync: const TestVSync());
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+        _panel(_notifier(items: [_memoryItem('fiji', -17.0, 179.5)]),
+            controller));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+
+    const plain = ValueKey('memory-fiji');
+    // East of the line: the marker is in the main world.
+    controller.mapController.move(const LatLng(-17, 179), 6);
+    await tester.pump();
+    expect(find.byKey(plain), findsOneWidget);
+    final before = tester.element(find.byKey(plain));
+
+    // West of the line: the same marker, now drawn as world copy -1.
+    controller.mapController.move(const LatLng(-17, -179.5), 6);
+    await tester.pump();
+    expect(find.byKey(plain), findsOneWidget);
+    expect(tester.element(find.byKey(plain)), same(before));
   });
 }

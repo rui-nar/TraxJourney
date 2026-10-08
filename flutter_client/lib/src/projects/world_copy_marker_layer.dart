@@ -9,9 +9,10 @@
 /// back in.
 ///
 /// This is flutter_map 8.3.1's MarkerLayer placement (BSD-3-Clause,
-/// Copyright fleaflet), with one change: the copy in the main world keeps
-/// [Marker.key], so a keyed marker keeps its Element (and the memory
-/// thumbnail state under it) across rebuilds, and every other copy is keyed by
+/// Copyright fleaflet), with one change: one visible copy keeps [Marker.key]
+/// (the main world's when it is in view), so a keyed marker keeps its Element
+/// (and the memory thumbnail state under it) across rebuilds and across the
+/// antimeridian, and every other copy on screen at the same time is keyed by
 /// that key plus its world index.
 library;
 
@@ -83,19 +84,38 @@ class _WorldCopyMarkerLayerState extends State<WorldCopyMarkerLayer> {
                 crs.transform(projected.dx, projected.dy, zoomScale);
 
             // [copy] is the world index: 0 is the main world, negative west,
-            // positive east. Null when the copy is out of view.
-            Positioned? positioned(int copy) {
+            // positive east.
+            bool inView(int copy) {
               final shiftedX = px + copy * worldWidth;
-              if (!pixelBounds.overlaps(Rect.fromPoints(
+              return pixelBounds.overlaps(Rect.fromPoints(
                 Offset(shiftedX + left, py - bottom),
                 Offset(shiftedX - right, py + top),
-              ))) {
-                return null;
+              ));
+            }
+
+            final copies = <int>[if (inView(0)) 0];
+            // The main copy being culled says nothing about the others.
+            if (worldWidth != 0) {
+              for (var copy = -1; inView(copy); copy--) {
+                copies.add(copy);
               }
-              final local = Offset(shiftedX, py) - pixelOrigin;
+              for (var copy = 1; inView(copy); copy++) {
+                copies.add(copy);
+              }
+            }
+            if (copies.isEmpty) continue;
+
+            // The plain key goes to the main copy if it is in view, else to
+            // the only one that is: panning across the antimeridian moves the
+            // visible copy from world ±1 to world 0, and keying by index there
+            // would remount it and flash its thumbnail. Only copies on screen
+            // alongside it are told apart by their index.
+            final keyed = copies.first;
+            for (final copy in copies) {
+              final local = Offset(px + copy * worldWidth, py) - pixelOrigin;
               final key = m.key;
-              return Positioned(
-                key: key == null || copy == 0 ? key : ValueKey((key, copy)),
+              yield Positioned(
+                key: key == null || copy == keyed ? key : ValueKey((key, copy)),
                 width: m.width,
                 height: m.height,
                 left: local.dx - right,
@@ -108,21 +128,6 @@ class _WorldCopyMarkerLayerState extends State<WorldCopyMarkerLayer> {
                       )
                     : m.child,
               );
-            }
-
-            final main = positioned(0);
-            if (main != null) yield main;
-            // The main copy being culled says nothing about the others.
-            if (worldWidth == 0) continue;
-            for (var copy = -1;; copy--) {
-              final p = positioned(copy);
-              if (p == null) break;
-              yield p;
-            }
-            for (var copy = 1;; copy++) {
-              final p = positioned(copy);
-              if (p == null) break;
-              yield p;
             }
           }
         }()
