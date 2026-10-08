@@ -169,6 +169,30 @@ adb shell pm get-app-links com.traxjourney.app
 fingerprint is the debug key's, which is not in the statement — so test routing
 by naming the package explicitly, which `run-android.ps1 -DeepLink` does.
 
+### Strava return (custom scheme)
+
+| Link | Route |
+|---|---|
+| `traxjourney://app/strava-return?…` | Strava connect return, then Settings |
+
+After Strava consent in the system browser, the server's OAuth callback sends
+an app-started connect to this URI, and the app finishes the connect and opens
+Settings. It is a custom scheme, not an App Link
+([STRAVA_CONNECT_BINDING_PLAN.md](STRAVA_CONNECT_BINDING_PLAN.md), D4): it needs
+no `assetlinks.json` verification and does not depend on the API host, so
+release, val and debug builds all return. Any app could claim the scheme, but
+the code it would read is bound to its state, and the state to a verifier that
+never leaves this app. The host is `app` so the router sees the path
+`/strava-return`. Test it on a device with:
+
+```powershell
+adb shell "am start -a android.intent.action.VIEW -d 'traxjourney://app/strava-return?strava=error&reason=denied' com.traxjourney.app"
+```
+
+The app should open on Settings with "Strava access was not granted." Keep
+the inner single quotes: `adb shell` runs its arguments through the device's
+shell, where an unquoted `&` ends the command and drops `reason=denied`.
+
 ## Cutting a release
 
 Nothing extra: `.\bump_version_and_release.ps1` as usual (see
