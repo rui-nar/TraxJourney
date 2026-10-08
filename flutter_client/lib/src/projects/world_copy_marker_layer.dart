@@ -13,7 +13,7 @@
 /// — the one that held it last frame while it stays in view — so a keyed
 /// marker keeps its Element (and the memory thumbnail state under it) across
 /// rebuilds, pans and the antimeridian, and every other copy on screen at the
-/// same time is keyed by that key plus its world index.
+/// same time is keyed by that key plus its offset from it, in worlds.
 library;
 
 import 'package:flutter/widgets.dart';
@@ -121,7 +121,8 @@ class _WorldCopyMarkerLayerState extends State<WorldCopyMarkerLayer> {
             // copy, else the first in view. Keying by world index instead
             // remounted the copy being watched whenever its index changed —
             // across the antimeridian, or when another copy slid into view.
-            // Only copies on screen alongside it are told apart by index.
+            // Copies on screen alongside it are keyed by their offset from it
+            // in worlds, which, unlike the world index, the wrap leaves alone.
             final key = m.key;
             var keyed = copies.first;
             final lastX = key == null ? null : previousPlainKeyX[key];
@@ -138,7 +139,9 @@ class _WorldCopyMarkerLayerState extends State<WorldCopyMarkerLayer> {
             for (final copy in copies) {
               final local = Offset(screenX(copy), py - pixelOrigin.dy);
               yield Positioned(
-                key: key == null || copy == keyed ? key : ValueKey((key, copy)),
+                key: key == null || copy == keyed
+                    ? key
+                    : ValueKey((key, copy - keyed)),
                 width: m.width,
                 height: m.height,
                 left: local.dx - right,

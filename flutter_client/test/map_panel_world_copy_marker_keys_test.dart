@@ -184,4 +184,44 @@ void main() {
     expect(tester.widget<Positioned>(find.byKey(plain)).left, lessThan(600));
     expect(tester.element(find.byKey(plain)), same(watched));
   });
+
+  // Review R3-1: the copy beside the watched one was keyed by its world
+  // index, which the camera's wrap across the antimeridian renumbers.
+  testWidgets('both copies on screen stay mounted across the antimeridian',
+      (tester) async {
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final controller = AnimatedMapController(vsync: const TestVSync());
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+        _panel(_notifier(items: [_memoryItem('near', 0, 2)]), controller));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+
+    const plain = ValueKey('memory-near');
+    final other = find.byWidgetPredicate((w) {
+      final key = w.key;
+      return key is ValueKey<(Key, int)> && key.value.$1 == plain;
+    });
+
+    // Zoom 2 (world 1024 px, view 1200 px), centred on 178°: the marker at 2°
+    // is 176° west, near the left edge, and its next copy east is in view too.
+    controller.mapController.move(const LatLng(0, 178), 2);
+    await tester.pump();
+    expect(find.byKey(plain), findsOneWidget);
+    expect(other, findsOneWidget);
+    final plainBefore = tester.element(find.byKey(plain));
+    final otherBefore = tester.element(other);
+
+    // Across the line: the camera centre wraps to -178°, renumbering worlds.
+    controller.mapController.move(const LatLng(0, -178), 2);
+    await tester.pump();
+    expect(tester.element(find.byKey(plain)), same(plainBefore));
+    expect(other, findsOneWidget);
+    expect(tester.element(other), same(otherBefore));
+  });
 }

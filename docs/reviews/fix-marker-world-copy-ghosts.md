@@ -24,3 +24,14 @@ Envelope: REVIEW.md defaults
 - Guard: —
 - Override: —
 - Outcome: fixed
+
+## Round 3 — 2026-10-08, reviewed at 074c8f2a
+
+### R3-1 — Non-plain copies are still keyed by absolute world index, so the second copy on screen remounts when the camera wraps across the antimeridian
+- Trigger: A user at about zoom 2 on a desktop-width browser has a memory drawn twice and pans across 180° → flutter_map wraps the camera centre, every world index shifts by one, the second on-screen copy's key changes from (key, c) to (key, c-1), and its thumbnail is rebuilt (blank if still loading or evicted from cache).
+- Scores: trigger=concrete, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: user: fixed and merged without a fourth review round — one-line fix proven by a test that fails without it
+- Outcome: fixed
