@@ -50,6 +50,20 @@
                 <data android:scheme="https" android:host="traxjourney.com" android:pathPrefix="/join"/>
                 <data android:scheme="https" android:host="traxjourney.com" android:pathPrefix="/verify-email"/>
             </intent-filter>
+            <!-- The return from Strava consent in the system browser: the
+                 server's OAuth callback redirects an app-started connect to
+                 traxjourney://app/strava-return?…, which opens the app on
+                 lib/src/settings/strava_return_screen.dart. A custom scheme,
+                 not an App Link, so debug and val builds return too; another
+                 app claiming the scheme gets nothing usable, because the code
+                 is bound to a state bound to this app's verifier
+                 (docs/STRAVA_CONNECT_BINDING_PLAN.md, D4). -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="traxjourney" android:host="app" android:pathPrefix="/strava-return"/>
+            </intent-filter>
             <!-- A .gpx opened ("Open with") or shared from another app (issue
                  #368): Gmail, Files, a Chrome download, Komoot. MainActivity
                  holds the file for lib/src/projects/incoming_gpx.dart and keeps

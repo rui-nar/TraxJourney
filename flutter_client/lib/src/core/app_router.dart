@@ -38,6 +38,7 @@ import '../projects/polarsteps_import_notifier.dart';
 import '../projects/project_settings_screen.dart';
 import '../projects/project_stats_screen.dart';
 import '../settings/settings_screen.dart';
+import '../settings/strava_return_screen.dart';
 import '../shared/shared_project_screen.dart';
 
 /// The router's `initialLocation` for [base] on this platform, or null to let
@@ -111,6 +112,13 @@ Future<String?> authRedirectTarget(
   if (!isLoggedIn && loc == kIncomingGpxRoute) {
     return '/login?return_to=${Uri.encodeComponent(loc)}';
   }
+
+  // The Android return from Strava consent (docs/STRAVA_CONNECT_BINDING_PLAN.md
+  // D4) completes a connect for the signed-in account, so it needs a session.
+  // Not carried as return_to: the pending verifier only matches the account
+  // that started the connect, and the server's account check covers a
+  // different one signing in.
+  if (!isLoggedIn && loc == kStravaReturnRoute) return '/login';
 
   // On a native Android/iOS build, bare root never shows the marketing
   // WelcomeScreen (its "Sign in" button sits under the status bar there
@@ -299,6 +307,21 @@ GoRouter buildRouter(BuildContext context) {
       GoRoute(
         path: '/settings',
         builder: (context, state) => const SettingsScreen(),
+      ),
+      GoRoute(
+        // Android opens traxjourney://app/strava-return?… after Strava
+        // consent (docs/STRAVA_CONNECT_BINDING_PLAN.md D4). The route sees
+        // the URI's path; scheme and host stay on state.uri.
+        path: kStravaReturnRoute,
+        builder: (context, state) {
+          final q = state.uri.queryParameters;
+          return StravaReturnScreen(
+            code: q['code'],
+            state: q['state'],
+            strava: q['strava'],
+            reason: q['reason'],
+          );
+        },
       ),
       GoRoute(
         // Opened from the projects-screen banner (Decision 16).
