@@ -65,6 +65,12 @@ enum StravaConnectOutcome {
 
   /// The server retired the call this client made (426).
   updateRequired,
+
+  /// The user closed the Strava popup (web) before it relayed a result.
+  cancelled,
+
+  /// The browser blocked the Strava popup (web).
+  popupBlocked,
 }
 
 /// Thrown by [StravaConnectFlow.start] when the server says the client must
@@ -102,6 +108,9 @@ String stravaConnectMessage(StravaConnectOutcome outcome) => switch (outcome) {
         'Strava connection failed. Please try again.',
       StravaConnectOutcome.updateRequired =>
         'Update the app to connect Strava.',
+      StravaConnectOutcome.cancelled => 'Strava connection cancelled.',
+      StravaConnectOutcome.popupBlocked =>
+        'Allow pop-ups for TraxJourney to connect Strava.',
     };
 
 class StravaConnectFlow {
@@ -113,7 +122,7 @@ class StravaConnectFlow {
   final SecureKvStore _store;
   final DateTime Function() _now;
   final Random _random;
-  final Future<StravaOAuthResult> Function(String url) _openPopup;
+  final StravaPopupHandle? Function() _openPopup;
   final _outcomes = StreamController<StravaConnectOutcome>.broadcast();
 
   /// Web only: the pending connect, kept in memory.
@@ -128,26 +137,45 @@ class StravaConnectFlow {
     SecureKvStore? store,
     DateTime Function()? now,
     Random? random,
-    Future<StravaOAuthResult> Function(String url)? openPopup,
+    StravaPopupHandle? Function()? openPopup,
   })  : _api = api ?? SettingsService(),
         _store = store ?? FlutterSecureKvStore(),
         _now = now ?? DateTime.now,
         _random = random ?? Random.secure(),
-        _openPopup = openPopup ?? StravaOAuthPopup().connect;
+        _openPopup = openPopup ?? StravaOAuthPopup().open;
 
   /// One event per finished connect: every [complete], and every web connect
   /// whose popup relayed an error.
   Stream<StravaConnectOutcome> get outcomes => _outcomes.stream;
 
-  /// Web: starts a connect, opens the Strava popup and finishes the connect
-  /// with the code it relays. Runs to the end whoever started it, so leaving
-  /// Settings does not lose it. Errors from [start] are thrown to the caller;
-  /// the outcome after that goes to [outcomes].
+  /// Web: opens the Strava popup, starts a connect and finishes it with the
+  /// code the popup relays. The popup opens before any await, so it keeps
+  /// the click's user activation. Runs to the end whoever started it, so
+  /// leaving Settings does not lose it. Errors from [start] are thrown to the
+  /// caller; the outcome after that goes to [outcomes].
   Future<void> connectWeb() async {
-    final url = await start(app: false);
+    final popup = _openPopup();
+    if (popup == null) {
+      _memory = null;
+      _outcomes.add(StravaConnectOutcome.popupBlocked);
+      return;
+    }
+    final Uri url;
+    try {
+      url = await start(app: false);
+    } catch (_) {
+      popup.close();
+      rethrow;
+    }
     final generation = _generation;
-    final result = await _openPopup(url.toString());
+    popup.navigate(url.toString());
+    final result = await popup.result;
     if (generation != _generation) return; // Replaced by a newer connect.
+    if (result == null) {
+      _memory = null;
+      _outcomes.add(StravaConnectOutcome.cancelled);
+      return;
+    }
     final code = result.code;
     final state = result.state;
     if (code != null && state != null) {
