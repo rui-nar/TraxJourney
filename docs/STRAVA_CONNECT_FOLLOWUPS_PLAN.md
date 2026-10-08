@@ -18,8 +18,9 @@ Three loose ends from the Strava connect binding fix
   popup's message listener lingers (review ledger, U2-2).
 - **#438.** iOS has no `CFBundleURLTypes`. Google Sign-In cannot return to the
   app, and the Strava return (`traxjourney://app/strava-return`) cannot reach it
-  either. The app also lacks `FlutterDeepLinkingEnabled`, which Android has, so
-  go_router would not receive the link even if iOS opened the app.
+  either. The app also lacks an explicit `FlutterDeepLinkingEnabled`. Deep
+  linking has been on by default since Flutter 3.27, so this is for parity with
+  Android's explicit flag, not a requirement (R1-5).
 
 ## Current state
 
@@ -53,14 +54,23 @@ Three loose ends from the Strava connect binding fix
 decision, 2026-10-08. For a valid `ret=app` state with a code, the callback
 still binds the code first (binding plan D9), then answers **200** with an HTML
 page instead of the 302. The page:
-- says that Strava is about to be connected to the TraxJourney account named
-  by the state's `sub`, using its **display name** (owner decision; never the
-  email);
+- **leads with fixed wording that does not depend on the name** (R1-1, owner
+  2026-10-08): "Only continue if you just pressed Connect Strava in the
+  TraxJourney app on this phone. If someone sent you this link, cancel." The
+  display name is chosen freely by its owner (non-blank only, no length cap, not
+  unique), so an attacker can make it look like the victim's own;
+- then names the TraxJourney account the state's `sub` belongs to by its
+  **display name** (owner decision; never the email), cut to 40 characters
+  with an ellipsis;
 - offers **Continue**, a link to the same
   `traxjourney://app/strava-return?code=…&state=…` the 302 used to target, and
-  **Cancel**, a link to
-  `traxjourney://app/strava-return?strava=error&reason=denied`;
-- shows "a TraxJourney account" when the display name is empty.
+  **Cancel**, which stays on the page and replaces it with "Nothing was
+  connected. You can close this page." (CSS `:target`, no script). It does not
+  go into the app: a Cancel after Continue would otherwise show "not granted"
+  to a connected user (R1-3);
+- shows "a TraxJourney account" when the display name is empty;
+- is not shown when the state's account no longer exists. The callback then
+  redirects to the app with `reason=invalid_state` and binds nothing (R1-4).
 
 Binding before the page keeps D9's first-seen rule at the earliest point. If
 the victim cancels, the code never leaves their browser, so a code bound to an
@@ -96,9 +106,13 @@ English wording is fixed in the template.
 - If `start` throws (426 or other), the blank popup is closed before the error
   propagates as today.
 - While waiting for the message, a periodic check (every 500 ms) of
-  `popup.closed` ends the attempt with the new outcome `cancelled`, message
-  "Strava connection cancelled.", removes the listener and clears the pending
-  connect. The check stops when a message arrives or the attempt is replaced.
+  `popup.closed` watches for a closed popup. The callback page posts its
+  message and closes in the same task, so `closed` can be seen before the
+  message is delivered. The first time the check sees `closed`, it therefore
+  waits a grace period (500 ms) with the listener still registered (R1-2). Only
+  if no message arrives by then does it end the attempt with the new outcome
+  `cancelled`, message "Strava connection cancelled.", remove the listener and
+  clear the pending connect. The check stops when a message arrives or the attempt is replaced.
 
 The popup abstraction changes shape from `connect(url)` to
 open-then-navigate. The fake used in the flow tests follows suit.
@@ -130,6 +144,12 @@ REVIEW.md defaults, plus the binding plan's envelope (as amended), plus:
 - **The display name is untrusted input** rendered into HTML.
 - **No iOS build exists.** The iOS changes are checked by the brand test only.
   Device behaviour is out until an iOS build exists.
+- **The page targets the forwarded attacker-started app flow** (owner,
+  2026-10-08, EQ1). It must not rely on anything the account owner chooses,
+  such as the display name, to warn the victim (R1-1).
+- **Android consent may finish in the Strava app's in-app browser** when the
+  Strava app is installed and takes the authorize link (owner, EQ2). Continue
+  must work there too, and the owner's device check covers it.
 - **The web popup runs in real browsers.** The Flutter VM tests use the stub
   and a fake popup. Browser-only behaviour (`window.open` returning null,
   `popup.closed`) is verified by reading the code plus an owner browser check.
@@ -185,7 +205,14 @@ REVIEW.md defaults, plus the binding plan's envelope (as amended), plus:
      URLs with the same `urlencode` path `_return_redirect` uses. Keep every
      other branch (web relay, errors, expired, update_required, rebind
      refusal) exactly as today.
-  3. Empty or whitespace display name → the neutral wording.
+  3. Empty or whitespace display name → the neutral wording. A name over 40
+     characters is cut to 40 plus "…". The fixed warning comes before the name.
+  3a. No `UserInfo` for the state's `user_info_id` → the error redirect to the
+     app with `reason=invalid_state`, and nothing is bound. Check before
+     `_bind_code`.
+  3b. Cancel is an in-page anchor (`#cancelled`). A CSS `:target` rule hides the
+     prompt and shows "Nothing was connected. You can close this page." No
+     script and no navigation into the app.
   4. Update the binding tests that asserted a 302 to `traxjourney://` for a
      valid app state, so they read the Continue link from the page instead.
      Do not weaken any other assertion.
@@ -194,7 +221,11 @@ REVIEW.md defaults, plus the binding plan's envelope (as amended), plus:
   `test_display_name_is_escaped` (`<script>` in the name appears escaped),
   `test_empty_display_name_uses_neutral_wording`,
   `test_continue_link_is_the_app_return_with_code_and_state`,
-  `test_cancel_link_is_the_denied_return`,
+  `test_cancel_stays_on_the_page` (an in-page anchor, no `traxjourney:` link
+  other than Continue),
+  `test_fixed_warning_precedes_the_name`,
+  `test_long_display_name_is_truncated`,
+  `test_deleted_account_redirects_invalid_state_and_binds_nothing`,
   `test_page_headers_forbid_caching_framing_and_referrer`,
   `test_page_has_no_script` (no `<script` in the body),
   `test_web_return_is_still_a_redirect`,
@@ -241,6 +272,8 @@ REVIEW.md defaults, plus the binding plan's envelope (as amended), plus:
 - **Acceptance:** tests (with the fake popup):
   `blocked popup publishes popupBlocked and never calls start`,
   `closed popup publishes cancelled and clears the pending connect`,
+  `a message arriving within the grace period after closed wins` (closed seen
+  first, message delivered 200 ms later → connected, not cancelled),
   `start failure closes the opened popup and rethrows`,
   `popup is opened before start is awaited` (record the call order),
   plus the existing app-scope tests still passing (generation guard,
@@ -298,9 +331,10 @@ The PR closes #584 and #587, and references #438 without closing it (O1).
 
 ## Definition of done
 
-- A valid app return shows a page naming the account by display name (escaped),
-  with a Continue link to the unchanged app return URI and a Cancel link to the
-  denied return. Web returns and all error returns behave as before.
+- A valid app return shows a fixed warning first, then the account's display
+  name (escaped, at most 40 characters), with a Continue link to the unchanged
+  app return URI and a Cancel that stays on the page. A state whose account
+  is gone redirects with `invalid_state` and binds nothing. Web returns and all error returns behave as before.
 - The page is not cacheable, not frameable, sends no referrer and runs no
   script.
 - On web, a blocked popup and a closed popup each produce one message, and
@@ -309,5 +343,8 @@ The PR closes #584 and #587, and references #438 without closing it (O1).
 - `Info.plist` has both URL schemes and Flutter deep linking, and the brand test
   pins the Google scheme to `GoogleService-Info.plist`.
 - Full server and Flutter suites pass. Owner checks:
-  - an Android connect shows the page and Continue returns to the app;
+  - an Android connect shows the page and Continue returns to the app, both
+    without the Strava app installed and with it (consent in Strava's in-app
+    browser). If Continue does not reach the app from the in-app browser, that
+    comes back as a finding;
   - in a real browser, closing and blocking the popup show their messages.
