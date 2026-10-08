@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="no-referrer">
+    <title>Connect Strava</title>
+    <style>
+      body { margin: 0; padding: 24px 16px; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+             color: #1a1a1a; background: #ffffff; line-height: 1.5; }
+      main { max-width: 28rem; margin: 0 auto; }
+      .warning { font-weight: 600; }
+      /* The name is the account owner's free choice: its own block, clipped,
+         so stacked combining marks cannot spill over the warning above. */
+      .name { display: block; overflow: hidden; line-height: 1.5; max-height: 4.5em;
+              font-weight: 600; overflow-wrap: anywhere; margin: 0 0 24px; }
+      .actions { display: flex; gap: 12px; }
+      .actions a { flex: 1; display: block; padding: 12px 16px; border-radius: 6px;
+                   text-align: center; text-decoration: none; font-weight: 600; }
+      .continue { background: #1d4ed8; color: #ffffff; }
+      .cancel { border: 1px solid #9ca3af; color: #1a1a1a; }
+      .cancelled { display: none; }
+      #cancelled:target { display: block; }
+      #cancelled:target ~ .prompt { display: none; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section id="cancelled" class="cancelled">
+        <p>If you didn't press Continue, nothing was connected. If you did and didn't expect to,
+          remove the app you just authorised, under My Apps in your Strava settings.</p>
+        <p>You can close this page.</p>
+      </section>
+      <section class="prompt">
+        <p class="warning">Only continue if you just pressed Connect Strava in the {{ app_name }}
+          app on this phone. If someone sent you this link, cancel.</p>
+        {% if name is not none %}
+        <p>Your Strava account will be linked to the {{ app_name }} account named:</p>
+        <div class="name"><bdi>{{ name }}</bdi></div>
+        {% else %}
+        <p>Your Strava account will be linked to a {{ app_name }} account.</p>
+        {% endif %}
+        <div class="actions">
+          <a class="cancel" href="{{ cancel_url }}">Cancel</a>
+          <a class="continue" href="{{ continue_url }}">Continue</a>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
