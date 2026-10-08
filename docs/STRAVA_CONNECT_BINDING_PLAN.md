@@ -494,7 +494,38 @@ REVIEW.md defaults apply, with these additions:
   file outside Scope must change.
 - **Depends on:** U2
 
-### Wave 3 — integration (orchestrator)
+### Wave 3 — review fix
+
+#### U4 — A replayed Strava return does nothing (I1-1)
+
+- **Goal:** when Android hands the app the same `traxjourney://app/strava-return?…`
+  link a second time (activity recreated, relaunch from Recents), the return
+  screen goes quietly to `/` instead of completing again and showing "not
+  started here".
+- **Scope:** `flutter_client/lib/src/settings/strava_return_screen.dart`,
+  `flutter_client/test/settings/strava_return_screen_test.dart`.
+- **Context:** the pending-connect storage in `strava_connect_flow.dart`
+  (`SecureKvStore` / `FlutterSecureKvStore` from `crypto/device_key_store.dart`,
+  injectable) is the pattern to follow. Existing tests in
+  `strava_return_screen_test.dart` show the fixture style.
+- **Do:** compute a key from the return's query parameters (`strava`, `reason`,
+  `code`, `state`, in a fixed order), as hex sha256 (`cryptography_plus`
+  `Sha256`). Before handling, read the last handled key from secure storage
+  (one entry, its own storage key). If it is equal, `go('/')` with no message
+  and no `complete`. Otherwise store the key first, then handle as today. The
+  store is injectable for tests. The code and state are never stored in
+  plain text.
+- **Acceptance:** new tests: the same code+state return handled twice →
+  `complete` called once, and the second shows no SnackBar and lands on `/`; the
+  same error return twice → the message shows once; a different return after one
+  was handled is handled normally; the restore-wait test still passes. Run
+  `flutter analyze` and `flutter test test/settings test/core` in the container.
+- **Out of scope:** `MainActivity.kt`; any change to `strava_connect_flow.dart`.
+- **Latitude:** none.
+- **Escalate if:** the guard needs a file outside Scope.
+- **Depends on:** U3.
+
+### Wave 4 — integration (orchestrator)
 
 Run the full `pytest` in the py314 citest container (mind the WSL bash probe
 caveat) and the full `flutter test` in the Flutter test container. Run

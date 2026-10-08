@@ -113,3 +113,14 @@ Envelope question: does the hostile-app boundary cover attacker-initiated, forwa
 - Guard: —
 - Override: — (follow-up #584: callback confirmation page)
 - Outcome: open
+
+## Integrated diff, round 1 — 2026-10-08, reviewed at 3e267258 (146c5884..3e267258)
+
+### I1-1 — A Strava return that cold-started the app is replayed when Android recreates the activity
+- Trigger: an Android user swipes the app away during consent, approves → a new task is rooted on the traxjourney:// intent → the connect completes → later the OS kills the process and the user reopens from Recents → the same intent is replayed → "not started here" SnackBar, and the app lands on Settings, on each such relaunch
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified (triager)
+- Decision: Defer (D10)
+- Revisit when: a report of a spurious "not started here" message or an unexpected Settings landing after reopening; MainActivity.onCreate/takeIncomingFile or the strava-return route next changed; another custom-scheme route with side effects added
+- Guard: —
+- Override: user: Fix now — a misleading error for a user who is already connected, repeated on each reopen; fixed Dart-side as U4 (no Android SDK locally to compile/test a MainActivity change)
+- Outcome: open
