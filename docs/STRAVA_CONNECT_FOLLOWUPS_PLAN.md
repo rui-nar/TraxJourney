@@ -44,7 +44,7 @@ Three loose ends from the Strava connect binding fix
   `flutter_client/ios/Runner/GoogleService-Info.plist` has
   `BUNDLE_ID com.traxjourney.app`, but it was edited by hand (commit 20ecf1f3).
   Its `CLIENT_ID` and `REVERSED_CLIENT_ID` still belong to the old
-  `com.viewtrip.client` OAuth client. There is no iOS build or CI job.
+  pre-rename bundle id's OAuth client. There is no iOS build or CI job.
   `flutter_client/test/brand/platform_identity_test.dart` already pins the
   plist's `BUNDLE_ID` to the bundle id.
 
