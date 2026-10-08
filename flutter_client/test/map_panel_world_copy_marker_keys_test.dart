@@ -144,4 +144,44 @@ void main() {
     expect(find.byKey(plain), findsOneWidget);
     expect(tester.element(find.byKey(plain)), same(before));
   });
+
+  // Review R2-1: handing the plain key to the main copy whenever it was in
+  // view remounted the copy already on screen as soon as the main one slid in.
+  testWidgets('a second copy sliding into view leaves the watched one mounted',
+      (tester) async {
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final controller = AnimatedMapController(vsync: const TestVSync());
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(_panel(
+        _notifier(items: [_memoryItem('far', 0, 150)]), controller));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+
+    // Zoom 2: the world is 1024 px in a 1200 px view. Centred on -100°, the
+    // marker at 150° is 250° east, off the right edge, so only its western
+    // copy (world -1) is on screen, left of centre.
+    const plain = ValueKey('memory-far');
+    controller.mapController.move(const LatLng(0, -100), 2);
+    await tester.pump();
+    expect(find.byKey(plain), findsOneWidget);
+    expect(tester.widget<Positioned>(find.byKey(plain)).left, lessThan(600));
+    final watched = tester.element(find.byKey(plain));
+
+    // Pan east: the main copy enters at the right edge, the watched one stays.
+    controller.mapController.move(const LatLng(0, -50), 2);
+    await tester.pump();
+    final copies = find.byWidgetPredicate((w) {
+      final key = w.key;
+      return key is ValueKey<(Key, int)> && key.value.$1 == plain;
+    });
+    expect(copies, findsOneWidget, reason: 'the main copy is in view too');
+    // The plain key, and its Element, are still on the left-hand copy.
+    expect(tester.widget<Positioned>(find.byKey(plain)).left, lessThan(600));
+    expect(tester.element(find.byKey(plain)), same(watched));
+  });
 }

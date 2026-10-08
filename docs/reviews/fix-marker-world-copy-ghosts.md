@@ -13,3 +13,14 @@ Envelope: REVIEW.md defaults
 - Guard: —
 - Override: —
 - Outcome: fixed
+
+## Round 2 — 2026-10-08, reviewed at da4ad3f3
+
+### R2-1 — Plain key jumps to the main copy when it re-enters view, remounting the ±1 copy on screen
+- Trigger: A user at about zoom 2 on a desktop-width browser sees memories only as world copy -1 (plain key), pans east, and the main-world copy enters at the right edge → the plain key moves to copy 0 and the copy they were watching is remounted; a thumbnail still loading or evicted from cache goes blank and re-fetches.
+- Scores: trigger=concrete, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed

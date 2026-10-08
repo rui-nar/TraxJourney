@@ -10,10 +10,10 @@
 ///
 /// This is flutter_map 8.3.1's MarkerLayer placement (BSD-3-Clause,
 /// Copyright fleaflet), with one change: one visible copy keeps [Marker.key]
-/// (the main world's when it is in view), so a keyed marker keeps its Element
-/// (and the memory thumbnail state under it) across rebuilds and across the
-/// antimeridian, and every other copy on screen at the same time is keyed by
-/// that key plus its world index.
+/// — the one that held it last frame while it stays in view — so a keyed
+/// marker keeps its Element (and the memory thumbnail state under it) across
+/// rebuilds, pans and the antimeridian, and every other copy on screen at the
+/// same time is keyed by that key plus its world index.
 library;
 
 import 'package:flutter/widgets.dart';
@@ -34,6 +34,11 @@ class _WorldCopyMarkerLayerState extends State<WorldCopyMarkerLayer> {
   // marker rather than a re-projection.
   List<Offset>? _projectedPoints;
   Crs? _projectionCrs;
+  // Screen x, last frame, of the copy that held each marker key's plain key.
+  // Kept as a position, not a world index: the camera renormalises its centre
+  // across the antimeridian, which renumbers every copy at once, while the
+  // copy the user is looking at barely moves on screen.
+  Map<Key, double> _plainKeyX = {};
 
   @override
   void didUpdateWidget(WorldCopyMarkerLayer oldWidget) {
@@ -67,6 +72,8 @@ class _WorldCopyMarkerLayerState extends State<WorldCopyMarkerLayer> {
     final pixelBounds = map.pixelBounds;
     final pixelOrigin = map.pixelOrigin;
     final markers = widget.markers;
+    final previousPlainKeyX = _plainKeyX;
+    final plainKeyX = _plainKeyX = <Key, double>{};
 
     return MobileLayerTransformer(
       child: Stack(
@@ -105,15 +112,31 @@ class _WorldCopyMarkerLayerState extends State<WorldCopyMarkerLayer> {
             }
             if (copies.isEmpty) continue;
 
-            // The plain key goes to the main copy if it is in view, else to
-            // the only one that is: panning across the antimeridian moves the
-            // visible copy from world ±1 to world 0, and keying by index there
-            // would remount it and flash its thumbnail. Only copies on screen
-            // alongside it are told apart by their index.
-            final keyed = copies.first;
+            double screenX(int copy) =>
+                px + copy * worldWidth - pixelOrigin.dx;
+
+            // One copy keeps the plain key, so the Element (and thumbnail
+            // state) under it survives: the copy that held it last frame,
+            // found as the one nearest where it was on screen, else the main
+            // copy, else the first in view. Keying by world index instead
+            // remounted the copy being watched whenever its index changed —
+            // across the antimeridian, or when another copy slid into view.
+            // Only copies on screen alongside it are told apart by index.
+            final key = m.key;
+            var keyed = copies.first;
+            final lastX = key == null ? null : previousPlainKeyX[key];
+            if (lastX != null) {
+              for (final copy in copies) {
+                if ((screenX(copy) - lastX).abs() <
+                    (screenX(keyed) - lastX).abs()) {
+                  keyed = copy;
+                }
+              }
+            }
+            if (key != null) plainKeyX[key] = screenX(keyed);
+
             for (final copy in copies) {
-              final local = Offset(px + copy * worldWidth, py) - pixelOrigin;
-              final key = m.key;
+              final local = Offset(screenX(copy), py - pixelOrigin.dy);
               yield Positioned(
                 key: key == null || copy == keyed ? key : ValueKey((key, copy)),
                 width: m.width,
