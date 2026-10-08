@@ -56,3 +56,23 @@ Envelope answer: owner approved the recommendation 2026-10-08 — proxy access l
 - Outcome: fixed
 
 Round 2 produced no Fix now decision from triage → review stops (REVIEW.md §6). R2-1 was overridden to Fix now by the owner and folded into U2 step 3.
+
+## Unit U2 review — 2026-10-08, reviewed at 99739a8f (e3d53258..99739a8f, DELIVERY.md §5 point 3)
+
+### U2-1 — Leaving Settings while the web popup is open silently loses the connect
+- Trigger: a web user presses Connect, presses back out of Settings during Strava consent, then approves → the listener and in-memory verifier died with the Settings State → no complete, no message, Strava stays not connected
+- Scores: trigger=plausible (triager, was concrete), impact=degraded-ux, detect=silent, later=cheap, fix=M/local, confidence=verified
+- Decision: Guard (D9)
+- Revisit when: —
+- Guard: info log in strava_callback per web relay and in complete per link (no code/state/verifier); correct D7 wording to "stays alive while Settings is open"
+- Override: user: Fix now — regression vs server-side linking; pending connect + popup listener move to app scope (U2 attempt 2)
+- Outcome: fixed (17bb5332)
+
+### U2-2 — A popup closed by the user, or blocked, never resolves connect()
+- Trigger: a web user closes the Strava popup without approving, or the browser blocks it → no SnackBar; the listener lingers until the next Connect
+- Scores: trigger=plausible (triager), impact=cosmetic (triager), detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: a user reports Connect Strava doing nothing on web, or the connect click is reworked to open the popup before the await
+- Guard: —
+- Override: —
+- Outcome: open
