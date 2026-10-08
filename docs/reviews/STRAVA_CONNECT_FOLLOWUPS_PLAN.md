@@ -120,3 +120,14 @@ Envelope questions (to owner) — answered 2026-10-08: EQ1 yes (in scope; plan e
 - Guard: in the test, assert the name block has class "name" containing the <bdi>, and that a .name rule in <style> has both overflow: hidden and a line-height
 - Override: —
 - Outcome: guard added (plan: U1 acceptance)
+
+## Unit U1 review — 2026-10-08, reviewed at 949d7154 (e84b8d6e..949d7154, DELIVERY.md §5 point 3)
+
+### FU1-1 — test_page_is_not_logged cannot see a DEBUG-level leak from the callback's own logger
+- Trigger: a maintainer adds a DEBUG log of the code to strava_callback → the test still passes (caplog lowers root only; configure_logging pins api/src to INFO)
+- Scores: trigger=theoretical, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=inferred
+- Decision: Reject (D11) — the callback logs no code, state or name today
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
