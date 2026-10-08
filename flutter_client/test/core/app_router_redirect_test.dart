@@ -9,9 +9,11 @@
 // app_router.dart / buildRouter() itself).
 
 import 'dart:async' show unawaited;
+import 'dart:math' show Random;
 
 import 'package:flutter/foundation.dart' show debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
@@ -28,7 +30,11 @@ import 'package:traxjourney_client/src/projects/project_notifier.dart';
 import 'package:traxjourney_client/src/projects/project_service.dart';
 import 'package:traxjourney_client/src/projects/projects_notifier.dart';
 import 'package:traxjourney_client/src/projects/projects_service.dart';
+import 'package:traxjourney_client/src/crypto/device_key_store.dart';
 import 'package:traxjourney_client/src/settings/settings_screen.dart';
+import 'package:traxjourney_client/src/settings/settings_service.dart';
+import 'package:traxjourney_client/src/settings/strava_connect_flow.dart';
+import 'package:traxjourney_client/src/settings/strava_return_screen.dart';
 import 'package:traxjourney_client/src/settings/theme_notifier.dart';
 
 AuthNotifier _loggedInAuth(String userId) {
@@ -79,6 +85,38 @@ class _TestProjectNotifier extends ProjectNotifier {
   @override
   bool get loadOwnerExtras => false;
 }
+
+class _MemKv implements SecureKvStore {
+  final Map<String, String> data = {};
+  @override
+  Future<String?> read(String key) async => data[key];
+  @override
+  Future<void> write(String key, String value) async => data[key] = value;
+  @override
+  Future<void> delete(String key) async => data.remove(key);
+}
+
+/// Records the code and state a Strava connect is completed with.
+class _FakeStravaService extends SettingsService {
+  final completes = <({String code, String state})>[];
+
+  @override
+  Future<String> startStravaConnect(String challenge, String returnTo) async =>
+      'https://www.strava.com/oauth/authorize';
+
+  @override
+  Future<void> completeStravaConnect({
+    required String code,
+    required String state,
+    required String verifier,
+  }) async =>
+      completes.add((code: code, state: state));
+}
+
+/// The URI the server's OAuth callback sends an app-started Strava connect
+/// back to (docs/STRAVA_CONNECT_BINDING_PLAN.md, D4).
+const _stravaReturn =
+    'traxjourney://app/strava-return?strava=code&code=the-code&state=the-state';
 
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
@@ -413,6 +451,103 @@ void main() {
       await tester.pump(const Duration(milliseconds: 50));
       await tester.pump(const Duration(milliseconds: 50));
       await tester.pump(const Duration(milliseconds: 50));
+      expect(find.byType(SettingsScreen), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  // Android hands the custom-scheme intent URI to the engine whole
+  // (FlutterActivityAndFragmentDelegate.maybeGetInitialRouteFromIntent returns
+  // `data.toString()`): as the platform's default route on a cold start, and
+  // as a pushed route when the app is already running. go_router keeps the
+  // scheme and host on the URI and matches on its path, `/strava-return`
+  // (docs/STRAVA_CONNECT_BINDING_PLAN.md, D4 and U3).
+  group('Strava return (traxjourney://app/strava-return)', () {
+    final realReturnStore = stravaReturnStore;
+    setUp(() => stravaReturnStore = _MemKv());
+    tearDown(() => stravaReturnStore = realReturnStore);
+
+    test('a signed-in user stays on it', () async {
+      final auth = _loggedInAuth('user-1');
+
+      expect(await authRedirectTarget(auth, Uri.parse(_stravaReturn)), isNull);
+    });
+
+    test('a signed-out user goes to login, without a return_to', () async {
+      final auth = AuthNotifier(AuthService());
+
+      expect(
+          await authRedirectTarget(auth, Uri.parse(_stravaReturn)), '/login');
+    });
+
+    late _FakeStravaService service;
+
+    Future<void> pumpRealRouter(WidgetTester tester, AuthNotifier auth) async {
+      service = _FakeStravaService();
+      final flow = StravaConnectFlow(
+          api: service, store: _MemKv(), random: Random(5));
+      stravaConnect = flow;
+      await flow.start(app: true);
+
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider<AuthNotifier>.value(value: auth),
+            ChangeNotifierProvider<OnboardingNotifier>(
+                create: (_) => OnboardingNotifier(true)),
+            ChangeNotifierProvider<ProjectNotifier>(
+                create: (_) => _TestProjectNotifier(_FakeProjectService())),
+            ChangeNotifierProvider<ThemeNotifier>(
+                create: (_) => ThemeNotifier()),
+            ChangeNotifierProvider<ProjectsNotifier>(
+                create: (_) => ProjectsNotifier(ProjectsService())),
+          ],
+          child: Builder(
+            builder: (context) =>
+                MaterialApp.router(routerConfig: buildRouter(context)),
+          ),
+        ),
+      );
+    }
+
+    Future<void> pumpFrames(WidgetTester tester) async {
+      for (var i = 0; i < 4; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+    }
+
+    testWidgets(
+        'cold start: the launch URI reaches the return screen with its query',
+        (tester) async {
+      tester.platformDispatcher.defaultRouteNameTestValue = _stravaReturn;
+      addTearDown(tester.platformDispatcher.clearDefaultRouteNameTestValue);
+
+      await pumpRealRouter(tester, _loggedInAuth('user-1'));
+      await tester.pump();
+      expect(find.byType(StravaReturnScreen), findsOneWidget);
+
+      await pumpFrames(tester);
+      expect(service.completes, [(code: 'the-code', state: 'the-state')]);
+      expect(find.byType(SettingsScreen), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('app already running: a pushed URI reaches the return screen',
+        (tester) async {
+      await pumpRealRouter(tester, _loggedInAuth('user-1'));
+      await pumpFrames(tester);
+      expect(find.byType(StravaReturnScreen), findsNothing);
+
+      // What the engine sends for a new intent (NavigationChannel).
+      await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+        SystemChannels.navigation.name,
+        SystemChannels.navigation.codec.encodeMethodCall(MethodCall(
+            'pushRouteInformation',
+            <String, dynamic>{'location': _stravaReturn, 'state': null})),
+        (_) {},
+      );
+      await pumpFrames(tester);
+      expect(service.completes, [(code: 'the-code', state: 'the-state')]);
       expect(find.byType(SettingsScreen), findsOneWidget);
       expect(tester.takeException(), isNull);
     });

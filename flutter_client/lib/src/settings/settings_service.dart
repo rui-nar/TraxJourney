@@ -51,10 +51,20 @@ class SettingsService {
     return data['connected'] == true;
   }
 
-  Future<String> getStravaConnectUrl() async {
-    final data = await api.get('/api/strava/connect') as Map<String, dynamic>;
+  /// Returns the Strava authorize URL. [returnTo] is `"web"` or `"app"`.
+  Future<String> startStravaConnect(String challenge, String returnTo) async {
+    final data = await api.post('/api/strava/connect',
+        {'challenge': challenge, 'return_to': returnTo}) as Map<String, dynamic>;
     return data['url'] as String;
   }
+
+  Future<void> completeStravaConnect({
+    required String code,
+    required String state,
+    required String verifier,
+  }) async =>
+      api.post('/api/strava/complete',
+          {'code': code, 'state': state, 'verifier': verifier});
 
   Future<void> disconnectStrava() async => api.delete('/api/strava/disconnect');
 

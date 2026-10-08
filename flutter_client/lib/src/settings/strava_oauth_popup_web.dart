@@ -2,8 +2,10 @@
 /// a popup window and listens for the `postMessage` result sent by
 /// `web/oauth_callback.html` once the OAuth redirect completes.
 ///
-/// Message format from oauth_callback.html: `"strava_oauth:connected"` or
-/// `"strava_oauth:error[:reason]"`.
+/// Message format from oauth_callback.html: a plain object
+/// `{type: "strava_oauth", status: "code" | "error", code, state, reason}`
+/// (docs/STRAVA_CONNECT_BINDING_PLAN.md, D8). Only messages from this
+/// origin are read.
 library;
 
 import 'dart:async';
@@ -11,8 +13,9 @@ import 'dart:js_interop';
 
 import 'package:web/web.dart' as web;
 
-/// Outcome of a Strava OAuth popup flow.
-typedef StravaOAuthResult = ({bool connected, String? reason});
+/// Outcome of a Strava OAuth popup flow: the relayed [code] and [state], or
+/// the callback's fixed [error] reason token.
+typedef StravaOAuthResult = ({String? code, String? state, String? error});
 
 class StravaOAuthPopup {
   JSFunction? _messageHandler;
@@ -35,22 +38,28 @@ class StravaOAuthPopup {
     _messageHandler = (web.Event event) {
       final msg = event as web.MessageEvent;
       if (msg.origin != web.window.origin) return;
-      final raw = msg.data?.toString() ?? '';
-      if (!raw.startsWith('strava_oauth:')) return;
+      final data = msg.data.dartify();
+      if (data is! Map || data['type'] != 'strava_oauth') return;
 
       dispose();
       popup?.close();
 
-      final parts = raw.split(':');
-      final status = parts.length > 1 ? parts[1] : 'error';
-      final reason = parts.length > 2 ? parts.sublist(2).join(':') : '';
+      final code = data['code'];
+      final state = data['state'];
+      final reason = data['reason'];
+      final StravaOAuthResult result = data['status'] == 'code' &&
+              code is String &&
+              code.isNotEmpty &&
+              state is String &&
+              state.isNotEmpty
+          ? (code: code, state: state, error: null)
+          : (
+              code: null,
+              state: null,
+              error: reason is String && reason.isNotEmpty ? reason : 'failed',
+            );
 
-      if (!completer.isCompleted) {
-        completer.complete((
-          connected: status == 'connected',
-          reason: reason.isNotEmpty ? reason : null,
-        ));
-      }
+      if (!completer.isCompleted) completer.complete(result);
     }.toJS;
 
     web.window.addEventListener('message', _messageHandler!);
