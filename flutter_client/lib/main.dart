@@ -15,6 +15,7 @@ import 'src/projects/photo_thumb_cache.dart';
 import 'src/projects/project_data_cache.dart';
 import 'src/projects/facets/project_facet_providers.dart';
 import 'src/projects/project_notifier.dart';
+import 'src/settings/strava_connect_flow.dart';
 import 'src/settings/theme_notifier.dart';
 import 'src/core/app_router.dart';
 import 'src/core/brand.dart';
@@ -31,6 +32,10 @@ import 'src/core/version_gate.dart';
 // in web/index.html — so serverClientId must be null on web.
 const _kGoogleServerClientId =
     '544571555396-gj0q3hndadfo00ifotme305jcf4ii5cc.apps.googleusercontent.com';
+
+/// The app-level ScaffoldMessenger, for messages that outlive the screen
+/// that caused them.
+final scaffoldMessengerKey = GlobalKey<ScaffoldMessengerState>();
 
 void main() async {
   if (kIsWeb) usePathUrlStrategy();
@@ -58,6 +63,9 @@ void main() async {
   await purgeSharedLastOpenedProject();
   await projectDataCache.purgeUserZero();
   await photoThumbCache.init();
+  // A Strava connect can finish after the screen that started it is gone,
+  // so its outcome is shown through the app-level messenger.
+  showStravaConnectOutcomes(scaffoldMessengerKey);
   runApp(
     // MultiProvider lives here — above TraxJourneyApp — so its providers are
     // never reconstructed by theme changes. Only the Builder inside
@@ -136,6 +144,7 @@ class _TraxJourneyAppState extends State<TraxJourneyApp> {
     _router ??= buildRouter(context);
     return MaterialApp.router(
       title: kAppName,
+      scaffoldMessengerKey: scaffoldMessengerKey,
       theme: lightTheme,
       darkTheme: darkTheme,
       themeMode: themeMode,

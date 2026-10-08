@@ -19,4 +19,11 @@ void main() {
     popup.dispose();
     expect(() => popup.dispose(), returnsNormally);
   });
+
+  test('connect() relays no code, only an error reason', () async {
+    final result = await StravaOAuthPopup().connect('https://example.test');
+    expect(result.code, isNull);
+    expect(result.state, isNull);
+    expect(result.error, isNotNull);
+  });
 }

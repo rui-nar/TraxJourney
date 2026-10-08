@@ -1,3 +1,4 @@
+import 'dart:async' show StreamSubscription;
 import 'dart:convert' show jsonDecode;
 
 import 'package:flutter/foundation.dart';
@@ -27,8 +28,7 @@ import '../crypto/recover_screen.dart';
 import '../projects/photo_thumb_cache.dart';
 import '../projects/project_data_cache.dart';
 import 'settings_service.dart';
-import 'strava_oauth_popup_stub.dart'
-    if (dart.library.js_interop) 'strava_oauth_popup_web.dart';
+import 'strava_connect_flow.dart';
 import 'theme_notifier.dart';
 
 /// What the delete-account confirmation says (issue #429).
@@ -102,7 +102,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // ── Strava state ──────────────────────────────────────────────────────────
   bool _stravaConnected = false;
   bool _stravaLoading = false;
-  final _stravaPopup = StravaOAuthPopup();
+  /// The connect itself is app-scoped ([stravaConnect]), so it finishes even
+  /// if this screen is gone. While it is here, a connect refreshes the status.
+  StreamSubscription<StravaConnectOutcome>? _stravaOutcomes;
 
   // ── Polarsteps state ──────────────────────────────────────────────────────
   bool _polarstepsConnected = false;
@@ -153,6 +155,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
+    _stravaOutcomes = stravaConnect.outcomes.listen((outcome) {
+      if (outcome == StravaConnectOutcome.connected) _loadStravaStatus();
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadStravaStatus();
       _loadPolarstepsStatus();
@@ -163,7 +168,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   void dispose() {
-    _stravaPopup.dispose();
+    _stravaOutcomes?.cancel();
     _displayNameCtrl.dispose();
     _currentPwCtrl.dispose();
     _newPwCtrl.dispose();
@@ -358,31 +363,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _connectStrava() async {
     try {
-      final urlStr = await _service.getStravaConnectUrl();
-
       if (kIsWeb) {
-        // Open OAuth in a popup and await the postMessage result relayed by
-        // oauth_callback.html once the OAuth redirect completes.
-        final result = await _stravaPopup.connect(urlStr);
-        if (!mounted) return;
-        if (result.connected) {
-          _loadStravaStatus();
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Strava connected!')),
-          );
-        } else {
-          final reason = result.reason;
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(reason != null && reason.isNotEmpty
-                  ? 'Strava connection failed: $reason'
-                  : 'Strava connection failed.'),
-            ),
-          );
-        }
+        // Opens the popup and finishes the connect with the code relayed by
+        // oauth_callback.html. The app-level messenger shows the outcome,
+        // and the listener in initState refreshes the status.
+        await stravaConnect.connectWeb();
       } else {
-        await launchUrl(Uri.parse(urlStr),
-            mode: LaunchMode.externalApplication);
+        // The app returns through traxjourney://app/strava-return, which
+        // finishes the connect (docs/STRAVA_CONNECT_BINDING_PLAN.md, U3).
+        final url = await stravaConnect.start(app: true);
+        await launchUrl(url, mode: LaunchMode.externalApplication);
+      }
+    } on StravaConnectException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(stravaConnectMessage(e.outcome))),
+        );
       }
     } catch (e) {
       if (mounted) {
