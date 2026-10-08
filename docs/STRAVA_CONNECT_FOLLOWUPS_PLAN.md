@@ -61,11 +61,18 @@ page instead of the 302. The page:
   unique), so an attacker can make it look like the victim's own;
 - then names the TraxJourney account the state's `sub` belongs to by its
   **display name** (owner decision; never the email), cut to 40 characters
-  with an ellipsis;
+  with an ellipsis, without splitting a surrogate pair. The name sits in its
+  own block after the warning, wrapped in `<bdi>` so bidi controls such as
+  U+202E cannot reorder the fixed text. The block has `overflow: hidden` and a
+  fixed `line-height`, so stacked combining marks cannot spill over the
+  warning (R2-1);
 - offers **Continue**, a link to the same
   `traxjourney://app/strava-return?code=…&state=…` the 302 used to target, and
-  **Cancel**, which stays on the page and replaces it with "Nothing was
-  connected. You can close this page." (CSS `:target`, no script). It does not
+  **Cancel**, which stays on the page (CSS `:target`, no script) and replaces
+  it with: "If you didn't press Continue, nothing was connected. If you did and
+  didn't expect to, remove TraxJourney under My Apps in your Strava settings.
+  You can close this page." The page cannot know whether Continue was tapped,
+  so it must not claim nothing was connected (R2-2). It does not
   go into the app: a Cancel after Continue would otherwise show "not granted"
   to a connected user (R1-3);
 - shows "a TraxJourney account" when the display name is empty;
@@ -211,8 +218,10 @@ REVIEW.md defaults, plus the binding plan's envelope (as amended), plus:
      app with `reason=invalid_state`, and nothing is bound. Check before
      `_bind_code`.
   3b. Cancel is an in-page anchor (`#cancelled`). A CSS `:target` rule hides the
-     prompt and shows "Nothing was connected. You can close this page." No
-     script and no navigation into the app.
+     prompt and shows the D1 Cancel text (hedged, R2-2). No script and no
+     navigation into the app.
+  3c. The name block follows D1: `<bdi>`, `overflow: hidden`, a fixed
+     `line-height`, truncation that never splits a surrogate pair (R2-1).
   4. Update the binding tests that asserted a 302 to `traxjourney://` for a
      valid app state, so they read the Continue link from the page instead.
      Do not weaken any other assertion.
@@ -225,6 +234,11 @@ REVIEW.md defaults, plus the binding plan's envelope (as amended), plus:
   other than Continue),
   `test_fixed_warning_precedes_the_name`,
   `test_long_display_name_is_truncated`,
+  `test_name_is_bidi_isolated_and_clipped` (the name is inside `<bdi>` within a
+  block whose CSS has `overflow: hidden`; a U+202E name stays inside the
+  `<bdi>`),
+  `test_truncation_never_splits_a_surrogate_pair` (an emoji at position 40),
+  `test_cancel_text_is_hedged` (says what to do if Continue was pressed),
   `test_deleted_account_redirects_invalid_state_and_binds_nothing`,
   `test_page_headers_forbid_caching_framing_and_referrer`,
   `test_page_has_no_script` (no `<script` in the body),
@@ -244,7 +258,9 @@ REVIEW.md defaults, plus the binding plan's envelope (as amended), plus:
 - **Goal:** on web, a blocked popup reports `popupBlocked`, a popup the user
   closes reports `cancelled`, and the popup opens inside the click's user
   activation.
-- **Scope:** `flutter_client/lib/src/settings/strava_oauth_popup_web.dart`,
+- **Scope:** `flutter_client/lib/src/settings/strava_popup_arbiter.dart` (new),
+  `flutter_client/test/settings/strava_popup_arbiter_test.dart` (new),
+  `flutter_client/lib/src/settings/strava_oauth_popup_web.dart`,
   `flutter_client/lib/src/settings/strava_oauth_popup_stub.dart`,
   `flutter_client/lib/src/settings/strava_connect_flow.dart`,
   `flutter_client/test/settings/strava_connect_flow_test.dart`,
@@ -262,18 +278,28 @@ REVIEW.md defaults, plus the binding plan's envelope (as amended), plus:
   2. `connectWeb()`: open synchronously before any await. Null → publish
      `popupBlocked`, clear the pending connect, return. Then `start`; on a
      throw, close the handle and rethrow. Then navigate and await the result.
-  3. Web implementation: `open()` is `window.open('', 'strava_oauth', features)`.
-     `navigate` sets `location.href`. The result completes from the message as
-     today, or with `error: 'closed'` when a 500 ms timer sees `closed` (the
-     timer is cancelled on completion). The listener is removed on every
-     completion.
+  3. Put the closed-versus-message decision in a new platform-neutral class,
+     `PopupResultArbiter` (`strava_popup_arbiter.dart`). It takes an injected
+     `bool Function() isClosed`, exposes `onMessage(result)`, runs the 500 ms
+     check and the 500 ms grace with `dart:async` `Timer`, completes exactly
+     once, and cancels its timers on completion (R2-3, owner override).
+     The web implementation only wires `window.open('', 'strava_oauth',
+     features)`, `navigate` (sets `location.href`), the message listener →
+     `onMessage`, and `isClosed` → `popup.closed`. It removes the listener when
+     the arbiter completes.
   4. Map `closed` → `cancelled`. Add messages for `cancelled` and
      `popupBlocked`.
 - **Acceptance:** tests (with the fake popup):
   `blocked popup publishes popupBlocked and never calls start`,
   `closed popup publishes cancelled and clears the pending connect`,
-  `a message arriving within the grace period after closed wins` (closed seen
-  first, message delivered 200 ms later → connected, not cancelled),
+  `strava_popup_arbiter_test.dart` (new, `fakeAsync`), testing the real
+  arbiter, not the fake popup:
+  - a message wins over a closed popup seen 200 ms earlier;
+  - closed with no message in the grace period → `closed`;
+  - completes exactly once (a message after the closed result is ignored, and a
+    second message is ignored);
+  - no timer is left pending after completion;
+  - a message before any check → the message result, with no timers.
   `start failure closes the opened popup and rethrows`,
   `popup is opened before start is awaited` (record the call order),
   plus the existing app-scope tests still passing (generation guard,

@@ -53,3 +53,32 @@ Envelope questions (to owner) — answered 2026-10-08: EQ1 yes (in scope; plan e
 - Guard: —
 - Override: —
 - Outcome: wording corrected in the plan anyway (no cost)
+
+## Round 2 — 2026-10-08, reviewed at f4baa7de (fixes 5a9c034b..f4baa7de only)
+
+### R2-1 — The name has no bidi isolation or overflow clipping, so it can overlay or reorder the fixed warning
+- Trigger: the attacker's display name is a letter plus 39 stacked combining marks, or contains U+202E → the marks cover the fixed warning or reverse the following text → the only non-attacker signal is defeated
+- Scores: trigger=plausible, impact=security, detect=silent, later=cheap, fix=S/local, confidence=verified (triager)
+- Decision: Fix now (D3)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (plan)
+
+### R2-2 — The Cancel view says "Nothing was connected." even after Continue
+- Trigger: a victim in the forwarded flow taps Continue (the hostile app catches it, and their own app shows nothing), returns and taps Cancel → the page falsely reassures them → they never revoke on Strava
+- Scores: trigger=plausible, impact=silent-wrong (triager), detect=silent (triager), later=cheap, fix=S/local, confidence=inferred
+- Decision: Fix now (D3)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (plan)
+
+### R2-3 — The grace-period test can only exercise the fake popup, not the web implementation
+- Trigger: the implementer tests the R1-2 grace period with _FakePopup → the test passes whatever strava_oauth_popup_web.dart does → the fix ships effectively untested
+- Scores: trigger=concrete, impact=maintainability, detect=silent, later=cheap, fix=M/local, confidence=verified
+- Decision: Defer (D8)
+- Revisit when: the browser check or a user report shows "cancelled" after approval, or the closed-check/grace logic is next changed
+- Guard: —
+- Override: user: Fix now — as planned the test certifies nothing; arbitration moves to a platform-neutral class tested with fakeAsync
+- Outcome: fixed (plan)
