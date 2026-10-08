@@ -123,4 +123,20 @@ Envelope question: does the hostile-app boundary cover attacker-initiated, forwa
 - Revisit when: a report of a spurious "not started here" message or an unexpected Settings landing after reopening; MainActivity.onCreate/takeIncomingFile or the strava-return route next changed; another custom-scheme route with side effects added
 - Guard: —
 - Override: user: Fix now — a misleading error for a user who is already connected, repeated on each reopen; fixed Dart-side as U4 (no Android SDK locally to compile/test a MainActivity change)
-- Outcome: open
+- Outcome: fixed (U4, 04633c51)
+
+## Delivery
+
+| Unit | Goal | Route | Rule | Attempts | Escalated | Verified first time | Findings traced |
+|---|---|---|---|---|---|---|---|
+| U1 | Server links Strava only via authenticated complete; code bound to its state | Opus | S4 | 2 | — | yes (both attempts) | U1-1, U1-2, U1R2-1, R1-3 |
+| U2 | Client connect flow with verifier; web popup relay; callback page | Opus | S5 | 2 | — | yes (both attempts) | U2-1, U2-2, R1-4, R2-1 |
+| U3 | Android custom-scheme return; waits for session restore | Opus | S5 | 1 | — | yes | R1-1, I1-1 |
+| U4 | Replayed Android return does nothing (I1-1) | Sonnet | — | 2 | X3 (scope widened to app_router_redirect_test.dart) | yes | I1-1 |
+
+Notes:
+- Second attempts on U1 and U2 were review fixes (owner overrides U1-2 and U2-1; floor finding U1-1), not verification failures.
+- U3 had no single-unit review (orchestrator call); the integrated review covered it and found I1-1.
+- U4 fixed I1-1 on the Dart side rather than in MainActivity.kt: no Android SDK is available locally to compile or test a Kotlin change.
+- Checks at the end: full pytest (CI command, minus test_rail_extract_workflow.py) 6905 passed / 0 failed on 81bcd8ed (server code unchanged afterwards); flutter analyze clean and flutter test 2611 passed on 3b358f58 (after merging origin/main); alembic heads: a8d3f5c2e917 only.
+- Owed: graphify update from main after merge; owner device checks (Android adb command in docs/ANDROID.md, web popup in a real browser); publish GHSA-66h3 after the release reaches production.
