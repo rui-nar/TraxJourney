@@ -1,10 +1,11 @@
 """Strava connect is bound to the client that started it.
 
 ``GET /api/strava/callback`` is unauthenticated and its URL can be forwarded,
-so it writes nothing: it relays ``code`` and ``state`` back to the client the
-signed state names. Only ``POST /api/strava/complete`` links an account, and
-only when the bearer is the state's user and the verifier matches the
-state's challenge (docs/STRAVA_CONNECT_BINDING_PLAN.md D1-D6).
+so it never touches a token: it binds the code to the state it arrived with
+and relays both back to the client the signed state names. Only
+``POST /api/strava/complete`` links an account, and only when the bearer is
+the state's user, the verifier matches the state's challenge and the code is
+bound to that state (docs/STRAVA_CONNECT_BINDING_PLAN.md D1-D6, D9).
 
 Strava's token exchange is mocked on ``OAuth2Session.exchange_code``; the
 network is never touched. Fixtures are copied from
@@ -14,12 +15,14 @@ from __future__ import annotations
 
 import datetime
 import logging
+import time
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 import jwt
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import delete
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
@@ -33,7 +36,7 @@ from api.deps import (
     jwt_secret,
 )
 from api.router import app
-from models.user import StravaToken, UserInfo
+from models.user import StravaOAuthCode, StravaToken, UserInfo
 from src.auth.oauth import AuthenticationError, OAuth2Session
 from src.config.settings import Config
 
@@ -43,6 +46,7 @@ CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
 OTHER_VERIFIER = "x" * 43
 
 CODE = "strava-code-0123456789abcdef"
+CODE_2 = "strava-code-fedcba9876543210"
 APP_RETURN = "traxjourney://app/strava-return"
 FIXED_REASONS = {"denied", "no_state", "state_expired", "invalid_state", "update_required"}
 
@@ -173,6 +177,24 @@ def _token_row(engine, uid):
         return sess.exec(select(StravaToken).where(StravaToken.user_info_id == uid)).first()
 
 
+def _jti(state: str) -> str:
+    return jwt.decode(state, options={"verify_signature": False})["jti"]
+
+
+def _bindings(engine) -> dict[str, str]:
+    """code_hash → state_jti for every binding row."""
+    with Session(engine) as sess:
+        return {r.code_hash: r.state_jti for r in sess.exec(select(StravaOAuthCode)).all()}
+
+
+def _bind(client, state, code=CODE) -> str:
+    """Send the code back through the callback with ``state``, as Strava
+    does, and check it was relayed; returns the state."""
+    _, query = _location(_callback(client, code=code, state=state))
+    assert query["strava"] == ["code"], query
+    return state
+
+
 # ── connect ──────────────────────────────────────────────────────────────────
 
 def test_get_connect_is_retired_with_426(client, users, exchange):
@@ -224,8 +246,9 @@ def test_callback_never_writes_a_token_row(client, users, engine, exchange):
         sess.add(StravaToken(
             user_info_id=a.id, access_token="old", refresh_token="old-r", expires_at=1.0))
         sess.commit()
+    first = _state(a.id)
     queries = [
-        {"code": CODE, "state": _state(a.id)},
+        {"code": CODE, "state": first},
         {"code": CODE, "state": _state(b.id, "app")},
         {"code": CODE, "state": _expired_state(b.id)},
         {"code": CODE, "state": _outdated_state(b.id)},
@@ -243,6 +266,8 @@ def test_callback_never_writes_a_token_row(client, users, engine, exchange):
     row = _token_row(engine, a.id)
     assert (row.access_token, row.refresh_token, row.expires_at) == ("old", "old-r", 1.0)
     assert _token_row(engine, b.id) is None
+    # Its one write: the code bound to the first valid state it came with.
+    assert _bindings(engine) == {strava_module._code_hash(CODE): _jti(first)}
 
 
 def test_callback_relays_code_and_state_to_web_page(client, users, exchange):
@@ -369,7 +394,7 @@ def test_complete_links_the_bearer_when_state_and_verifier_match(client, users, 
     a, b = users
     _sign_in(a)
 
-    resp = _complete(client, _state(a.id))
+    resp = _complete(client, _bind(client, _state(a.id)))
 
     assert resp.status_code == 200
     assert resp.json() == {"connected": True}
@@ -387,7 +412,7 @@ def test_complete_updates_an_existing_token_row(client, users, engine, exchange)
         sess.commit()
     _sign_in(a)
 
-    assert _complete(client, _state(a.id)).status_code == 200
+    assert _complete(client, _bind(client, _state(a.id))).status_code == 200
 
     row = _token_row(engine, a.id)
     assert (row.access_token, row.refresh_token) == ("acc", "ref")
@@ -401,9 +426,10 @@ def test_complete_refuses_another_users_state_403(
     pair = users
     _sign_in(pair[bearer])
 
-    resp = _complete(client, _state(pair[state_for].id))
+    resp = _complete(client, _bind(client, _state(pair[state_for].id)))
 
     assert resp.status_code == 403
+    assert resp.json()["detail"] == "wrong_account"
     assert exchange == []
     assert _token_row(engine, pair[0].id) is None
     assert _token_row(engine, pair[1].id) is None
@@ -413,9 +439,10 @@ def test_complete_refuses_a_wrong_verifier_403(client, users, engine, exchange):
     a, _ = users
     _sign_in(a)
 
-    resp = _complete(client, _state(a.id), verifier=OTHER_VERIFIER)
+    resp = _complete(client, _bind(client, _state(a.id)), verifier=OTHER_VERIFIER)
 
     assert resp.status_code == 403
+    assert resp.json()["detail"] == "verifier_mismatch"
     assert exchange == []
     assert _token_row(engine, a.id) is None
 
@@ -455,14 +482,14 @@ def test_complete_refuses_a_malformed_verifier_422(client, users, exchange, veri
     a, _ = users
     _sign_in(a)
 
-    assert _complete(client, _state(a.id), verifier=verifier).status_code == 422
+    assert _complete(client, _bind(client, _state(a.id)), verifier=verifier).status_code == 422
     assert exchange == []
 
 
 def test_complete_requires_a_session(client, users, engine, exchange):
     a, _ = users
 
-    resp = _complete(client, _state(a.id))
+    resp = _complete(client, _bind(client, _state(a.id)))
 
     assert resp.status_code in (401, 403)
     assert exchange == []
@@ -474,14 +501,208 @@ def test_complete_exchange_failure_is_502_without_exception_text(
     a, _ = users
     _sign_in(a)
 
+    state = _bind(client, _state(a.id))
     with caplog.at_level(logging.DEBUG):
-        resp = _complete(client, _state(a.id))
+        resp = _complete(client, state)
 
     assert resp.status_code == 502
     assert "upstream-body-text" not in resp.text
     assert "upstream-body-text" not in _app_log(caplog)
     assert failing_exchange == [CODE]
     assert _token_row(engine, a.id) is None
+
+
+# ── code binding (D9) ────────────────────────────────────────────────────────
+
+def _add_binding(engine, code: str, jti: str, expires_at: float) -> None:
+    with Session(engine) as sess:
+        sess.add(StravaOAuthCode(
+            code_hash=strava_module._code_hash(code), state_jti=jti, expires_at=expires_at))
+        sess.commit()
+
+
+def _attacker_state(attacker) -> str:
+    """A state the attacker minted for their own account, with their own
+    verifier — everything the hostile app needs besides the victim's code."""
+    return create_strava_oauth_state(
+        attacker.id, strava_module.pkce_challenge(OTHER_VERIFIER), "app")
+
+
+def test_complete_refuses_a_code_bound_to_another_state(client, users, engine, exchange):
+    """A hostile app read the victim's return URL: it completes the victim's
+    code with its owner's own state, verifier and session."""
+    victim, attacker = users
+    victim_state = _bind(client, _state(victim.id, "app"))
+    _sign_in(attacker)
+
+    resp = _complete(client, _attacker_state(attacker), verifier=OTHER_VERIFIER)
+
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "code_not_bound"
+    assert exchange == []
+    assert _token_row(engine, victim.id) is None
+    assert _token_row(engine, attacker.id) is None
+    assert _bindings(engine) == {strava_module._code_hash(CODE): _jti(victim_state)}
+
+
+def test_callback_does_not_rebind_a_code(client, users, engine, exchange):
+    victim, attacker = users
+    victim_state = _bind(client, _state(victim.id))
+
+    loc, query = _location(_callback(client, code=CODE, state=_attacker_state(attacker)))
+
+    assert loc.startswith(f"{APP_RETURN}?")  # the attacker's state names the app
+    assert query == {"strava": ["error"], "reason": ["invalid_state"]}
+    assert _bindings(engine) == {strava_module._code_hash(CODE): _jti(victim_state)}
+
+
+def test_callback_reload_with_same_state_relays_again(client, users, engine, exchange):
+    a, _ = users
+    state = _state(a.id)
+
+    _bind(client, state)
+    _bind(client, state)
+
+    assert _bindings(engine) == {strava_module._code_hash(CODE): _jti(state)}
+
+
+@pytest.mark.parametrize("winner_is_same_state", [False, True])
+def test_callback_racing_on_one_code_binds_it_once(
+        client, users, engine, exchange, monkeypatch, winner_is_same_state):
+    """Another callback inserts the same code between this one's read and its
+    insert: the primary key refuses the second insert, and the row that won
+    decides."""
+    a, _ = users
+    state = _state(a.id)
+    winner = _jti(state) if winner_is_same_state else "other-jti"
+    _add_binding(engine, CODE, winner, time.time() + 300)
+    real = strava_module._bound_jti
+    calls = []
+
+    def read_before_the_other_insert(sess, code_hash):
+        calls.append(code_hash)
+        return None if len(calls) == 1 else real(sess, code_hash)
+
+    monkeypatch.setattr(strava_module, "_bound_jti", read_before_the_other_insert)
+
+    _, query = _location(_callback(client, code=CODE, state=state))
+
+    assert len(calls) == 2  # the re-read after the refused insert
+    assert query["strava"] == (["code"] if winner_is_same_state else ["error"])
+    assert _bindings(engine) == {strava_module._code_hash(CODE): winner}
+
+
+def test_complete_without_a_callback_binding_is_refused(client, users, engine, exchange):
+    a, _ = users
+    _sign_in(a)
+
+    resp = _complete(client, _state(a.id))
+
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "code_not_bound"
+    assert exchange == []
+    assert _token_row(engine, a.id) is None
+
+
+def test_complete_refuses_an_expired_binding(client, users, engine, exchange):
+    a, _ = users
+    state = _state(a.id)
+    _add_binding(engine, CODE, _jti(state), time.time() - 1)
+    _sign_in(a)
+
+    resp = _complete(client, state)
+
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "code_not_bound"
+    assert exchange == []
+
+
+def test_expired_binding_rows_are_pruned_on_insert(client, users, engine, exchange):
+    a, _ = users
+    _add_binding(engine, "old-code", "old-jti", time.time() - 1)
+    _add_binding(engine, "live-code", "live-jti", time.time() + 300)
+    state = _state(a.id)
+
+    _bind(client, state)
+
+    assert _bindings(engine) == {
+        strava_module._code_hash("live-code"): "live-jti",
+        strava_module._code_hash(CODE): _jti(state),
+    }
+
+
+def test_binding_row_is_deleted_after_a_successful_complete(client, users, engine, exchange):
+    a, _ = users
+    state = _bind(client, _state(a.id))
+    _sign_in(a)
+
+    assert _complete(client, state).status_code == 200
+    assert _bindings(engine) == {}
+
+    replay = _complete(client, state)
+    assert replay.status_code == 403
+    assert replay.json()["detail"] == "code_not_bound"
+    assert exchange == [CODE]
+
+
+def test_complete_survives_a_disconnect_during_the_exchange(
+        client, users, engine, monkeypatch):
+    """The token row a disconnect removed while Strava was being asked is
+    simply inserted again: the new tokens are stored, not lost."""
+    a, _ = users
+    with Session(engine) as sess:
+        sess.add(StravaToken(
+            user_info_id=a.id, access_token="old", refresh_token="old-r", expires_at=1.0))
+        sess.commit()
+
+    def exchange_while_disconnecting(self, code):
+        with Session(engine) as sess:
+            for row in sess.exec(select(StravaToken)).all():
+                sess.delete(row)
+            sess.commit()
+        return {"access_token": "acc", "refresh_token": "ref", "expires_at": 9999999999}
+
+    monkeypatch.setattr(OAuth2Session, "exchange_code", exchange_while_disconnecting)
+    state = _bind(client, _state(a.id))
+    _sign_in(a)
+
+    resp = _complete(client, state)
+
+    assert resp.status_code == 200
+    row = _token_row(engine, a.id)
+    assert (row.access_token, row.refresh_token) == ("acc", "ref")
+
+
+def test_complete_survives_a_disconnect_between_read_and_write(
+        client, users, engine, exchange, monkeypatch):
+    """The row vanishes just before the token write: the claim matches
+    nothing and the tokens are inserted — no StaleDataError, no 500 — and
+    the binding still goes in the same transaction."""
+    a, _ = users
+    with Session(engine) as sess:
+        sess.add(StravaToken(
+            user_info_id=a.id, access_token="old", refresh_token="old-r", expires_at=1.0))
+        sess.commit()
+    real = strava_module._claim_token_row
+    claims = []
+
+    def claim_after_a_disconnect(sess, user_info_id, **values):
+        sess.execute(delete(StravaToken).where(StravaToken.user_info_id == user_info_id))
+        claimed = real(sess, user_info_id, **values)
+        claims.append(claimed)
+        return claimed
+
+    monkeypatch.setattr(strava_module, "_claim_token_row", claim_after_a_disconnect)
+    state = _bind(client, _state(a.id))
+    _sign_in(a)
+
+    resp = _complete(client, state)
+
+    assert resp.status_code == 200
+    assert claims == [False]
+    row = _token_row(engine, a.id)
+    assert (row.access_token, row.refresh_token) == ("acc", "ref")
+    assert _bindings(engine) == {}
 
 
 def test_rfc7636_vector_matches():
@@ -526,17 +747,23 @@ def test_no_code_state_or_verifier_in_logs(client, users, engine, exchange, capl
         _sign_in(b)
         _complete(client, state)                                # wrong account
         _sign_in(a)
+        _complete(client, state, code=CODE_2)                   # not bound
         _complete(client, state)                                # success
+        _complete(client, state)                                # replay
+        _callback(client, code=CODE, state=_state(b.id))        # rebind refused
 
         def boom(self, code):
             raise AuthenticationError(f"Failed to exchange code: {code}")
 
         monkeypatch.setattr(OAuth2Session, "exchange_code", boom)
-        _complete(client, state)                                # 502
+        _callback(client, code=CODE_2, state=state)
+        _complete(client, state, code=CODE_2)                   # 502
 
     with caplog.at_level(logging.DEBUG):
         run()
 
     assert _token_row(engine, a.id) is not None  # the success path ran
-    for secret in [CODE, VERIFIER, OTHER_VERIFIER, CHALLENGE, *states]:
+    assert exchange == [CODE]
+    hashes = [strava_module._code_hash(c) for c in (CODE, CODE_2)]
+    for secret in [CODE, CODE_2, *hashes, VERIFIER, OTHER_VERIFIER, CHALLENGE, *states]:
         assert secret not in _app_log(caplog)

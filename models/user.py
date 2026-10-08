@@ -78,6 +78,23 @@ class StravaToken(sqlmodel.SQLModel, table=True):
     expires_at: float = sqlmodel.Field(default=0.0)
 
 
+class StravaOAuthCode(sqlmodel.SQLModel, table=True):
+    """Which Strava connect a returned code belongs to: the state it first
+    arrived with at the callback (docs/STRAVA_CONNECT_BINDING_PLAN.md D9).
+
+    ``POST /api/strava/complete`` only exchanges a code bound to the state it
+    is given, so a code taken from the return URL cannot be paired with
+    another state. Holds the code's hash only; rows live as long as their
+    state and are pruned on the next insert.
+    """
+
+    __tablename__ = "strava_oauth_code"
+
+    code_hash: str = sqlmodel.Field(primary_key=True)  # hex sha256 of the code
+    state_jti: str
+    expires_at: float  # the state's exp, epoch seconds
+
+
 class PolarstepsToken(sqlmodel.SQLModel, table=True):
     """Stores per-user Polarsteps remember_token (unofficial API cookie,
     encrypted at rest)."""

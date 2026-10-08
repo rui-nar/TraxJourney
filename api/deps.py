@@ -137,10 +137,14 @@ STRAVA_RETURN_TARGETS = frozenset({"web", "app"})
 @dataclass(frozen=True)
 class StravaOAuthState:
     """What a valid Strava ``state`` names: the user the connect was started
-    for, the starting client's challenge, and where the callback returns."""
+    for, the starting client's challenge, and where the callback returns —
+    plus its ``jti`` and ``exp``, which the callback binds the returned code
+    to."""
     user_info_id: int
     challenge: str
     return_to: str
+    jti: str
+    expires_at: float
 
 
 class OutdatedStravaOAuthState(Exception):
@@ -193,7 +197,11 @@ def decode_strava_oauth_state_full(token: str) -> Optional[StravaOAuthState]:
             raise jwt.InvalidTokenError("missing or malformed chal claim")
         if not isinstance(return_to, str) or return_to not in STRAVA_RETURN_TARGETS:
             raise jwt.InvalidTokenError("missing or unknown ret claim")
-        return StravaOAuthState(int(payload["sub"]), challenge, return_to)
+        jti = payload["jti"]
+        if not isinstance(jti, str) or not jti:
+            raise jwt.InvalidTokenError("malformed jti claim")
+        return StravaOAuthState(
+            int(payload["sub"]), challenge, return_to, jti, float(payload["exp"]))
     except (jwt.ExpiredSignatureError, OutdatedStravaOAuthState):
         raise
     except (jwt.PyJWTError, ValueError) as exc:
