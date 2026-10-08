@@ -10,16 +10,40 @@
 /// Web keeps the pending connect in memory: the page that opened the popup
 /// stays alive. The app keeps it in secure storage, because Android may kill
 /// the app while the browser is in front.
+///
+/// The flow is app-scoped ([stravaConnect]), not owned by the Settings
+/// screen: a web connect whose popup relays a code after the user left
+/// Settings still completes, and every outcome goes to [outcomes], which the
+/// app shows wherever the user is ([showStravaConnectOutcomes]).
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
 import 'package:cryptography_plus/cryptography_plus.dart';
+import 'package:flutter/material.dart';
 
 import '../api/client.dart';
 import '../crypto/device_key_store.dart';
 import 'settings_service.dart';
+import 'strava_oauth_popup_stub.dart'
+    if (dart.library.js_interop) 'strava_oauth_popup_web.dart';
+
+/// The app's one Strava connect flow. Mutable (not `final`) so tests can
+/// swap in one with fakes, like the `api` global.
+StravaConnectFlow stravaConnect = StravaConnectFlow();
+
+/// Shows every outcome of [flow] (default [stravaConnect]) as a SnackBar
+/// through [messenger], the app-level ScaffoldMessenger.
+StreamSubscription<StravaConnectOutcome> showStravaConnectOutcomes(
+  GlobalKey<ScaffoldMessengerState> messenger, [
+  StravaConnectFlow? flow,
+]) =>
+    (flow ?? stravaConnect).outcomes.listen((outcome) =>
+        messenger.currentState?.showSnackBar(
+          SnackBar(content: Text(stravaConnectMessage(outcome))),
+        ));
 
 /// How a connect attempt ended.
 enum StravaConnectOutcome {
@@ -89,19 +113,50 @@ class StravaConnectFlow {
   final SecureKvStore _store;
   final DateTime Function() _now;
   final Random _random;
+  final Future<StravaOAuthResult> Function(String url) _openPopup;
+  final _outcomes = StreamController<StravaConnectOutcome>.broadcast();
 
   /// Web only: the pending connect, kept in memory.
   ({String verifier, DateTime expiresAt})? _memory;
+
+  /// Bumped by every [start], so a popup result from a connect that a newer
+  /// one replaced is dropped.
+  int _generation = 0;
 
   StravaConnectFlow({
     SettingsService? api,
     SecureKvStore? store,
     DateTime Function()? now,
     Random? random,
+    Future<StravaOAuthResult> Function(String url)? openPopup,
   })  : _api = api ?? SettingsService(),
         _store = store ?? FlutterSecureKvStore(),
         _now = now ?? DateTime.now,
-        _random = random ?? Random.secure();
+        _random = random ?? Random.secure(),
+        _openPopup = openPopup ?? StravaOAuthPopup().connect;
+
+  /// One event per finished connect: every [complete], and every web connect
+  /// whose popup relayed an error.
+  Stream<StravaConnectOutcome> get outcomes => _outcomes.stream;
+
+  /// Web: starts a connect, opens the Strava popup and finishes the connect
+  /// with the code it relays. Runs to the end whoever started it, so leaving
+  /// Settings does not lose it. Errors from [start] are thrown to the caller;
+  /// the outcome after that goes to [outcomes].
+  Future<void> connectWeb() async {
+    final url = await start(app: false);
+    final generation = _generation;
+    final result = await _openPopup(url.toString());
+    if (generation != _generation) return; // Replaced by a newer connect.
+    final code = result.code;
+    final state = result.state;
+    if (code != null && state != null) {
+      await complete(code, state);
+    } else {
+      _memory = null;
+      _outcomes.add(stravaOutcomeForReason(result.error));
+    }
+  }
 
   /// base64url(sha256(verifier)), no padding (RFC 7636 S256).
   static Future<String> challengeFor(String verifier) async {
@@ -113,6 +168,7 @@ class StravaConnectFlow {
   /// where the server sends the user back: the custom scheme or the web
   /// popup page. Replaces any pending connect.
   Future<Uri> start({required bool app}) async {
+    _generation++;
     final verifier =
         _b64url(List<int>.generate(32, (_) => _random.nextInt(256)));
     final expiresAt = _now().add(ttl);
@@ -141,8 +197,15 @@ class StravaConnectFlow {
   }
 
   /// Finishes the pending connect with the [code] and [state] Strava
-  /// relayed. Clears the pending connect whatever the outcome.
+  /// relayed. Clears the pending connect whatever the outcome, and publishes
+  /// the outcome to [outcomes].
   Future<StravaConnectOutcome> complete(String code, String state) async {
+    final outcome = await _complete(code, state);
+    _outcomes.add(outcome);
+    return outcome;
+  }
+
+  Future<StravaConnectOutcome> _complete(String code, String state) async {
     final inMemory = _memory;
     _memory = null;
     final pending = inMemory ?? await _readStored();
