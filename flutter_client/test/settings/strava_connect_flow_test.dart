@@ -27,14 +27,18 @@ class _MemKv implements SecureKvStore {
 class _FakeService extends SettingsService {
   final starts = <({String challenge, String returnTo})>[];
   final completes = <({String code, String state, String verifier})>[];
+  /// Start call n answers only once startGates[n] completes (or fails).
+  final startGates = <Completer<void>>[];
   ApiException? startError;
   ApiException? completeError;
 
   @override
   Future<String> startStravaConnect(String challenge, String returnTo) async {
+    final call = starts.length;
     starts.add((challenge: challenge, returnTo: returnTo));
+    if (call < startGates.length) await startGates[call].future;
     if (startError != null) throw startError!;
-    return 'https://www.strava.com/oauth/authorize?state=s';
+    return 'https://www.strava.com/oauth/authorize?state=s$call';
   }
 
   @override
@@ -52,9 +56,13 @@ class _FakeService extends SettingsService {
 /// test's control.
 class _RecordingHandle implements StravaPopupHandle {
   final calls = <String>[];
+  final urls = <String>[];
   final completer = Completer<StravaOAuthResult?>();
   @override
-  void navigate(String url) => calls.add('navigate');
+  void navigate(String url) {
+    calls.add('navigate');
+    urls.add(url);
+  }
   @override
   Future<StravaOAuthResult?> get result => completer.future;
   @override
@@ -275,6 +283,61 @@ void main() {
       await expectLater(webFlow.connectWeb(), throwsA(isA<ApiException>()));
       expect(handle.calls, ['close']);
       expect(published, isEmpty);
+    });
+
+    // Both attempts get the same handle: the named window is shared.
+    test('a double-click whose first start answers last navigates and '
+        'completes only the second attempt', () async {
+      service.startGates.addAll([Completer<void>(), Completer<void>()]);
+      final first = webFlow.connectWeb();
+      final second = webFlow.connectWeb();
+      await pumpEventQueue();
+
+      service.startGates[1].complete();
+      await pumpEventQueue();
+      service.startGates[0].complete(); // The replaced start answers last.
+      await first;
+      await pumpEventQueue();
+
+      expect(handle.urls, [endsWith('state=s1')]);
+
+      handle.completer
+          .complete((code: 'code-2', state: 'state-2', error: null));
+      await second;
+      await pumpEventQueue();
+
+      expect(service.completes, hasLength(1));
+      expect(service.completes.single.code, 'code-2');
+      expect(await StravaConnectFlow.challengeFor(service.completes.single.verifier),
+          service.starts[1].challenge);
+      expect(published, [StravaConnectOutcome.connected]);
+    });
+
+    test('a replaced attempt whose start fails leaves the shared popup alone',
+        () async {
+      service.startGates.addAll([Completer<void>(), Completer<void>()]);
+      final first = webFlow.connectWeb();
+      final second = webFlow.connectWeb();
+      await pumpEventQueue();
+
+      // The first start fails while the second is still in flight.
+      service.startError = ApiException(500, 'boom');
+      service.startGates[0].complete();
+      await first; // Replaced: returns silently instead of throwing.
+      await pumpEventQueue();
+      expect(handle.calls, isEmpty);
+
+      service.startError = null;
+      service.startGates[1].complete();
+      await pumpEventQueue();
+      expect(handle.calls, ['navigate']);
+      expect(handle.urls, [endsWith('state=s1')]);
+
+      handle.completer
+          .complete((code: 'code-2', state: 'state-2', error: null));
+      await second;
+      await pumpEventQueue();
+      expect(published, [StravaConnectOutcome.connected]);
     });
 
     test('a 426 from start closes the popup and throws updateRequired',
