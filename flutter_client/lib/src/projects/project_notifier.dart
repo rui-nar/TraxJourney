@@ -2031,6 +2031,12 @@ class ProjectNotifier extends ChangeNotifier
   ProjectRef? _postEditSeedRef;
   bool _postEditSeedAgain = false;
 
+  /// The running seed loop's own token. A loop resets the state above only
+  /// while it still owns it (issue #574): after a [clear] and a reopen of the
+  /// same trip, the old loop's ref still matches, and resetting on that would
+  /// clear the new loop's coalescing and let a second seed run beside it.
+  Object? _postEditSeedLoop;
+
   /// Refills the offline full-resolution row after an edit (I2-R1-1).
   ///
   /// The edit's `/meta` brought a new lock_version, which cleared the trip's
@@ -2043,8 +2049,7 @@ class ProjectNotifier extends ChangeNotifier
   /// At most one in flight per trip, the load's own seed included: an edit
   /// during a seed marks it to run once more after, since the running one's
   /// write is refused by the version check anyway. Not started alongside it —
-  /// its full-resolution fetch would join the running one (the service
-  /// deduplicates it) and come back with the geometry from before the edit.
+  /// that would be a second full-resolution download of the trip at once.
   void _startOfflineSeed(ProjectRef ref) {
     if (kIsWeb || !loadOwnerExtras || encryption.isUnlocked) return;
     if (!isOpenTrip(ref)) return;
@@ -2053,14 +2058,19 @@ class ProjectNotifier extends ChangeNotifier
       return;
     }
     _postEditSeedRef = ref;
+    final loop = Object();
+    _postEditSeedLoop = loop;
     unawaited(() async {
       try {
         do {
           _postEditSeedAgain = false;
           await _seedOfflineFullGeo(ref, _loadTrack.token);
-        } while (_postEditSeedAgain && isOpenTrip(ref));
+        } while (identical(_postEditSeedLoop, loop) &&
+            _postEditSeedAgain &&
+            isOpenTrip(ref));
       } finally {
-        if (_postEditSeedRef == ref) {
+        if (identical(_postEditSeedLoop, loop)) {
+          _postEditSeedLoop = null;
           _postEditSeedRef = null;
           _postEditSeedAgain = false;
         }
@@ -2461,6 +2471,7 @@ class ProjectNotifier extends ChangeNotifier
     // The next trip starts its own seeds; a running one stops at its trip check.
     _postEditSeedRef = null;
     _postEditSeedAgain = false;
+    _postEditSeedLoop = null;
     // The saved state the filters belong to: a held key would let the next
     // load of the same key keep filters this clear has just dropped.
     _heldStateKey = null;

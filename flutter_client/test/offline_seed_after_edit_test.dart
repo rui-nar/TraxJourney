@@ -30,11 +30,14 @@ const _ref = ProjectRef(name: 'Trip');
 http.Response _json(Object body) => http.Response(jsonEncode(body), 200);
 
 /// One trip whose every write bumps [version]; the full-resolution endpoint
-/// waits on [gate] and answers with the version it saw on arrival.
+/// waits on [gate] and answers with the version it saw on arrival. While
+/// [held] is set, each full-resolution request also waits on a gate of its
+/// own, added there, so the requests can be released one at a time.
 class _Server {
   int version = 1;
   int fullRequests = 0;
   Completer<void> gate = Completer<void>()..complete();
+  List<Completer<void>>? held;
 
   Map<String, dynamic> _geo(int v) => {
         'type': 'FeatureCollection',
@@ -76,7 +79,11 @@ class _Server {
           if (path == '/api/geo/project') {
             final v = version;
             fullRequests++;
+            final own = Completer<void>();
+            held?.add(own);
+            if (held == null) own.complete();
             await gate.future;
+            await own.future;
             return _json(_geo(v));
           }
           if (req.method != 'GET') {
@@ -103,6 +110,8 @@ void main() {
 
   setUp(() {
     projectDataCache.resetForTest();
+    // A test that fails with a request still held would hand it to the next.
+    resetInFlightFetches();
     fullGeoRows = [];
     projectDataCache.diskWrite = (key, row) async {
       if (row['fullGeo'] != null) fullGeoRows.add(row);
@@ -173,6 +182,75 @@ void main() {
     expect(fullGeoRows, hasLength(2), reason: 'the stale answer was refused');
     expect(fullGeoRows.last['lockVersion'], 3);
     expect(vOf(fullGeoRows.last), 3);
+    n.dispose();
+  });
+
+  // Issue #575: the export and the seed share the uncached full-resolution
+  // fetch. A seed reading the post-edit version used to join an export fetch
+  // sent before the edit, and store its geometry under the new version.
+  test('a seed never joins an export fetch started before an edit', () async {
+    final (n, server) = await openSeeded();
+    server.held = [];
+
+    final export = n.fullResGeoForExport();
+    expect(await _waitFor(() => server.fullRequests == 2), isTrue,
+        reason: 'the export is fetching, at version 1');
+
+    await n.resetActivityTrack(1);
+    expect(server.version, 2);
+    expect(await _waitFor(() => server.fullRequests == 3), isTrue,
+        reason: 'the seed sent a request of its own, after the edit');
+
+    for (final c in server.held!) {
+      c.complete();
+    }
+    expect(await _waitFor(() => fullGeoRows.length == 2), isTrue);
+    expect(fullGeoRows.last['lockVersion'], 2);
+    expect(vOf(fullGeoRows.last), 2,
+        reason: 'geometry from version 1 must not be stored for version 2');
+    expect(await export, isNotNull);
+    n.dispose();
+  });
+
+  // Issue #574: a seed loop still running from before a clear() used to reset
+  // the coalescing state of the loop the reopen started, so the next edit ran
+  // a second seed beside it.
+  test("a seed from before a clear() leaves the reopened trip's seed alone",
+      () async {
+    final server = _Server()..held = [];
+    api = server.api();
+    final n = ProjectNotifier(ProjectService())
+      ..loadRetryBackoff = const []
+      ..setMapZoom(9);
+    await n.load(_ref);
+    expect(await _waitFor(() => server.fullRequests == 1), isTrue,
+        reason: 'the first seed is fetching');
+
+    // The logout reset, then the same trip opened again.
+    n.clear();
+    resetInFlightFetches();
+    await n.load(_ref);
+    expect(await _waitFor(() => server.fullRequests == 2), isTrue,
+        reason: 'the reopen started its own seed');
+
+    server.held![0].complete(); // the old seed ends
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    await n.resetActivityTrack(1);
+    expect(server.version, 2);
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(server.fullRequests, 2,
+        reason: 'the edit marks the running seed, it does not start another');
+
+    server.held![1].complete(); // its answer is version 1's: refused
+    expect(await _waitFor(() => server.fullRequests == 3), isTrue,
+        reason: 'the running seed runs once more for the edit');
+    server.held![2].complete();
+    expect(await _waitFor(() => fullGeoRows.isNotEmpty), isTrue);
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(fullGeoRows, hasLength(1));
+    expect(fullGeoRows.single['lockVersion'], 2);
+    expect(vOf(fullGeoRows.single), 2);
     n.dispose();
   });
 }

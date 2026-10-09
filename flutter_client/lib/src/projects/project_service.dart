@@ -231,10 +231,19 @@ class ProjectService {
   /// joining an in-flight [getGeo] still gets the cache write [getGeo]
   /// promises, and one joining this does not get one it did not ask for.
   ///
+  /// The key also carries the lock_version on file when the fetch starts
+  /// (issue #575). The offline seed reads that version, then stores what this
+  /// returns under it; joining a fetch started before an edit would hand it
+  /// the pre-edit geometry to store under the post-edit version, which no
+  /// later version check can see. A fetch started under the same version was
+  /// sent after that version was known, so joining it is safe.
+  ///
   /// Overridden by the shared-project service, which is on the share
   /// endpoints and would 401 against this one.
   Future<Map<String, dynamic>> fetchFullGeoUncached(ProjectRef ref) =>
-      _dedupFetch('geoFullUncached:${ref.ownerId ?? 0}:${ref.name}',
+      _dedupFetch(
+          'geoFullUncached:${ref.ownerId ?? 0}:${ref.name}'
+          ':${projectDataCache.lockVersionOf(ref)}',
           () => _fetchFullGeo(ref));
 
   Future<Map<String, dynamic>> _fetchFullGeo(ProjectRef ref) async {
