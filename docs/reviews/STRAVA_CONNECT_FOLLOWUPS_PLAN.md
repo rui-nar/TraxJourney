@@ -131,3 +131,14 @@ Envelope questions (to owner) — answered 2026-10-08: EQ1 yes (in scope; plan e
 - Guard: —
 - Override: —
 - Outcome: open
+
+## Integrated diff, round 1 — 2026-10-08, reviewed at 8c09aabf (origin/main..8c09aabf)
+
+### FI1-1 — A replaced web attempt still steers the shared named popup
+- Trigger: a web user double-clicks Connect Strava → both attempts share the named window → (a) the first start answers last and navigates to state 1, which attempt 2 completes with verifier 2 → "started from another account or device"; (b) the first start fails and closes the window attempt 2 uses → "cancelled" plus "Could not open Strava"
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified (triager)
+- Decision: Defer (D10)
+- Revisit when: a double-click report or a browser check shows either message, or the Connect button, connectWeb generation handling or popup open/close changes next
+- Guard: —
+- Override: user: Fix now — this delivery rewrote that code and added close(); a replaced attempt must not touch the popup (U2 attempt 2, Sonnet)
+- Outcome: open
