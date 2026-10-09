@@ -1409,7 +1409,7 @@ class ProjectNotifier extends ChangeNotifier
           ? rawPeopleGroups.cast<Map<String, dynamic>>()
           : []);
       _applyDayMetaDetails(details);
-      styleFacetWriter.applyDetails(details, includeSecondary: true);
+      styleFacetWriter.applyDetails(details);
       _updateStats();
       if (encryption.isUnlocked) {
         // Decrypted activities/items are ready now — build the low-res map
@@ -4025,7 +4025,7 @@ class ProjectNotifier extends ChangeNotifier
     );
     itemsFacetWriter.setTripDates(
         details['trip_start'] as String?, details['trip_end'] as String?);
-    styleFacetWriter.applyDetails(details, includeSecondary: false);
+    styleFacetWriter.applyDetails(details);
     itemsFacetWriter.setActivities(nextActivities);
     itemsFacetWriter.setItems(nextItems);
     itemsFacetWriter.recordUndecrypted(undecrypted);

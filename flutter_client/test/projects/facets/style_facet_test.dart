@@ -18,6 +18,10 @@ const _ref = ProjectRef(name: 'Trip');
 const _defaultColor = Color(0xFF6B7280);
 
 class _Service extends ProjectService {
+  /// What the server holds as the secondary colour; another device may change
+  /// it between two reads.
+  String? secondaryColor = '#445566';
+
   Map<String, dynamic> _payload() => {
         'name': 'Trip',
         'lock_version': 1,
@@ -26,7 +30,7 @@ class _Service extends ProjectService {
         'people': <dynamic>[],
         'groups': <dynamic>[],
         'track_color': '#112233',
-        'track_secondary_color': '#445566',
+        'track_secondary_color': secondaryColor,
         'track_width': 4,
         'alternating_track_colors': true,
         'elevation_chart_color': '#AABBCC',
@@ -194,5 +198,26 @@ void main() {
     expect(s.colorByType, false);
     expect(s.typeStyles, isEmpty);
     expect(s.languages, isEmpty);
+  });
+
+  // Issue #572: the background refresh after an edit read every style field
+  // but this one, so a secondary colour changed on another device showed
+  // only after the trip was reopened.
+  test('a background refresh re-reads the secondary track colour', () async {
+    final service = _Service();
+    final n = ProjectNotifier(service)
+      ..loadRetryBackoff = const [Duration(milliseconds: 1)];
+    addTearDown(n.dispose);
+    await n.load(_ref);
+    await pumpEventQueue();
+    expect(n.styleFacet.trackSecondaryColor, const Color(0xFF445566));
+
+    service.secondaryColor = '#778899';
+    await n.reloadDetailsOnly(_ref);
+    expect(n.styleFacet.trackSecondaryColor, const Color(0xFF778899));
+
+    service.secondaryColor = null; // cleared on the other device
+    await n.reloadDetailsOnly(_ref);
+    expect(n.styleFacet.trackSecondaryColor, isNull);
   });
 }
