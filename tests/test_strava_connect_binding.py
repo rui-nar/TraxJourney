@@ -14,7 +14,9 @@ tests/test_strava_oauth_state.py.
 from __future__ import annotations
 
 import datetime
+import html
 import logging
+import re
 import time
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
@@ -187,10 +189,21 @@ def _bindings(engine) -> dict[str, str]:
         return {r.code_hash: r.state_jti for r in sess.exec(select(StravaOAuthCode)).all()}
 
 
+def _continue_link(resp):
+    """The Continue link of an app return's confirmation page (#584): the
+    app return the callback used to redirect to."""
+    assert resp.status_code == 200
+    hrefs = re.findall(r'<a class="continue" href="([^"]*)"', resp.text)
+    assert len(hrefs) == 1, resp.text
+    loc = html.unescape(hrefs[0])
+    return loc, parse_qs(urlparse(loc).query)
+
+
 def _bind(client, state, code=CODE) -> str:
     """Send the code back through the callback with ``state``, as Strava
     does, and check it was relayed; returns the state."""
-    _, query = _location(_callback(client, code=code, state=state))
+    resp = _callback(client, code=code, state=state)
+    _, query = _continue_link(resp) if resp.status_code == 200 else _location(resp)
     assert query["strava"] == ["code"], query
     return state
 
@@ -284,7 +297,7 @@ def test_callback_relays_code_and_state_to_app_scheme(client, users, exchange):
     a, _ = users
     state = _state(a.id, "app")
 
-    loc, query = _location(_callback(client, code=CODE, state=state))
+    loc, query = _continue_link(_callback(client, code=CODE, state=state))
 
     assert loc.startswith(f"{APP_RETURN}?")
     assert query == {"strava": ["code"], "code": [CODE], "state": [state]}

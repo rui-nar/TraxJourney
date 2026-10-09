@@ -41,13 +41,26 @@ class _FakeService extends SettingsService {
       completes.add((code: code, state: state, verifier: verifier));
 }
 
-/// A popup that relays its result only when the test says so.
+/// An opened popup that relays its result only when the test says so.
+class _FakeHandle implements StravaPopupHandle {
+  final completer = Completer<StravaOAuthResult?>();
+  final navigated = <String>[];
+  @override
+  void navigate(String url) => navigated.add(url);
+  @override
+  Future<StravaOAuthResult?> get result => completer.future;
+  @override
+  void close() {}
+}
+
 class _FakePopup {
-  final pending = <Completer<StravaOAuthResult>>[];
-  Future<StravaOAuthResult> open(String url) {
-    final c = Completer<StravaOAuthResult>();
-    pending.add(c);
-    return c.future;
+  final handles = <_FakeHandle>[];
+  List<Completer<StravaOAuthResult?>> get pending =>
+      [for (final h in handles) h.completer];
+  StravaPopupHandle? open() {
+    final h = _FakeHandle();
+    handles.add(h);
+    return h;
   }
 }
 

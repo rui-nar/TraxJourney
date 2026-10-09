@@ -24,7 +24,7 @@ from typing import Annotated, Any, Dict, List, Literal, Optional
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, update
 from sqlalchemy.exc import IntegrityError
@@ -47,6 +47,7 @@ from src.models.activity import Activity, parse_activities_or_log, strip_heartra
 from src.project.project_io import ProjectIO
 from src.project.project_repo import ProjectRepo
 from src.utils.logging import get_logger
+from src.web_pages.render import render_strava_return_confirm
 
 _log = get_logger(__name__)
 
@@ -331,15 +332,44 @@ def _ensure_strava_configured() -> None:
         )
 
 
-def _return_redirect(return_to: Optional[str], **params: str) -> RedirectResponse:
-    """Send the browser back to the client that started the flow.
+def _return_url(return_to: Optional[str], **params: str) -> str:
+    """The URL that hands the browser back to the client that started the flow.
 
     ``return_to`` comes only from a signature-verified state, never from the
     request; anything else lands on the web page. Only fixed tokens and the
     relayed code and state go in the query.
     """
     base = _APP_RETURN_URI if return_to == "app" else f"{_FRONTEND_ORIGIN}/oauth_callback.html"
-    return RedirectResponse(f"{base}?{urlencode(params)}")
+    return f"{base}?{urlencode(params)}"
+
+
+def _return_redirect(return_to: Optional[str], **params: str) -> RedirectResponse:
+    """Send the browser back to the client that started the flow."""
+    return RedirectResponse(_return_url(return_to, **params))
+
+
+#: Headers of the app-return confirmation page: it holds a code, so it is
+#: never cached, framed or sent on as a referrer, and it runs no script.
+_CONFIRM_PAGE_HEADERS = {
+    "Cache-Control": "no-store",
+    "Referrer-Policy": "no-referrer",
+    "Content-Security-Policy":
+        "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+}
+
+
+def _app_return_page(display_name: str, code: str, state: str) -> HTMLResponse:
+    """Ask before an app connect returns to the app (issue #584, plan D1).
+
+    Its Continue link is the app return the callback used to redirect to;
+    Cancel stays on the page. Never log the body: it holds the code.
+    """
+    html = render_strava_return_confirm(
+        display_name=display_name,
+        continue_url=_return_url("app", strava="code", code=code, state=state),
+        cancel_url="#cancelled",
+    )
+    return HTMLResponse(html, headers=_CONFIRM_PAGE_HEADERS)
 
 
 def _code_hash(code: str) -> str:
@@ -435,7 +465,8 @@ def strava_callback(
     exchanges the code or touches a token. Its one write, for a valid state
     only, binds the code to that state's ``jti`` so the code cannot be
     completed with any other state (D9). The redirect target comes only from
-    the verified state's ``ret``.
+    the verified state's ``ret``. An app return is not redirected: it gets a
+    page naming the account, whose Continue link is that redirect (#584).
     """
     if not state:
         return _return_redirect(None, strava="error", reason="no_state")
@@ -464,10 +495,20 @@ def strava_callback(
 
     if error or not code:
         return _return_redirect(decoded.return_to, strava="error", reason="denied")
+    if decoded.return_to == "app":
+        # The page names the state's account; one deleted since the connect
+        # started has nothing to name or link, so nothing is bound.
+        with get_session() as sess:
+            user_info = sess.get(UserInfo, decoded.user_info_id)
+            display_name = user_info.display_name if user_info is not None else None
+        if display_name is None:
+            return _return_redirect("app", strava="error", reason="invalid_state")
     if not _bind_code(_code_hash(code), decoded.jti, decoded.expires_at):
         # The code already came back with another state: someone is trying
         # to pair it with a connect of their own.
         return _return_redirect(decoded.return_to, strava="error", reason="invalid_state")
+    if decoded.return_to == "app":
+        return _app_return_page(display_name, code, state)
     return _return_redirect(decoded.return_to, strava="code", code=code, state=state)
 
 

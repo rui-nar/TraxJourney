@@ -3,6 +3,7 @@
 // pending connect's storage and expiry, and how server answers map to
 // outcomes.
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
@@ -11,6 +12,7 @@ import 'package:traxjourney_client/src/api/client.dart';
 import 'package:traxjourney_client/src/crypto/device_key_store.dart';
 import 'package:traxjourney_client/src/settings/settings_service.dart';
 import 'package:traxjourney_client/src/settings/strava_connect_flow.dart';
+import 'package:traxjourney_client/src/settings/strava_oauth_popup_stub.dart';
 
 class _MemKv implements SecureKvStore {
   final Map<String, String> data = {};
@@ -25,14 +27,18 @@ class _MemKv implements SecureKvStore {
 class _FakeService extends SettingsService {
   final starts = <({String challenge, String returnTo})>[];
   final completes = <({String code, String state, String verifier})>[];
+  /// Start call n answers only once startGates[n] completes (or fails).
+  final startGates = <Completer<void>>[];
   ApiException? startError;
   ApiException? completeError;
 
   @override
   Future<String> startStravaConnect(String challenge, String returnTo) async {
+    final call = starts.length;
     starts.add((challenge: challenge, returnTo: returnTo));
+    if (call < startGates.length) await startGates[call].future;
     if (startError != null) throw startError!;
-    return 'https://www.strava.com/oauth/authorize?state=s';
+    return 'https://www.strava.com/oauth/authorize?state=s$call';
   }
 
   @override
@@ -44,6 +50,23 @@ class _FakeService extends SettingsService {
     completes.add((code: code, state: state, verifier: verifier));
     if (completeError != null) throw completeError!;
   }
+}
+
+/// A popup that records what the flow does to it; [result] is under the
+/// test's control.
+class _RecordingHandle implements StravaPopupHandle {
+  final calls = <String>[];
+  final urls = <String>[];
+  final completer = Completer<StravaOAuthResult?>();
+  @override
+  void navigate(String url) {
+    calls.add('navigate');
+    urls.add(url);
+  }
+  @override
+  Future<StravaOAuthResult?> get result => completer.future;
+  @override
+  void close() => calls.add('close');
 }
 
 void main() {
@@ -191,6 +214,148 @@ void main() {
     await flow.complete('c', 's');
     expect(await StravaConnectFlow.challengeFor(service.completes.single.verifier),
         service.starts.last.challenge);
+  });
+
+  group('connectWeb popup handling', () {
+    late _RecordingHandle handle;
+    late List<StravaConnectOutcome> published;
+    late StravaConnectFlow webFlow;
+    var opened = 0;
+    StravaPopupHandle? opening;
+
+    setUp(() {
+      handle = _RecordingHandle();
+      opened = 0;
+      opening = handle;
+      published = [];
+      webFlow = StravaConnectFlow(
+        api: service,
+        store: kv,
+        now: () => now,
+        random: Random(42),
+        openPopup: () {
+          opened++;
+          return opening;
+        },
+      );
+      webFlow.outcomes.listen(published.add);
+    });
+
+    test('popup is opened before start is awaited', () async {
+      final done = webFlow.connectWeb();
+      // Synchronously, before any await: opened, but start not yet reached.
+      expect(opened, 1);
+      expect(service.starts, isEmpty);
+      await pumpEventQueue();
+      expect(service.starts, hasLength(1));
+      expect(handle.calls, ['navigate']);
+      handle.completer.complete(null);
+      await done;
+    });
+
+    test('blocked popup publishes popupBlocked and never calls start',
+        () async {
+      opening = null;
+      await webFlow.connectWeb();
+      await pumpEventQueue();
+      expect(service.starts, isEmpty);
+      expect(published, [StravaConnectOutcome.popupBlocked]);
+      expect(kv.data, isEmpty);
+    });
+
+    test('closed popup publishes cancelled and clears the pending connect',
+        () async {
+      final done = webFlow.connectWeb();
+      await pumpEventQueue();
+      handle.completer.complete(null);
+      await done;
+      await pumpEventQueue();
+      expect(published, [StravaConnectOutcome.cancelled]);
+      expect(service.completes, isEmpty);
+
+      // The pending connect is gone: a late relay finds nothing to finish.
+      expect(await webFlow.complete('c', 's'),
+          StravaConnectOutcome.noPendingConnect);
+    });
+
+    test('start failure closes the opened popup and rethrows', () async {
+      service.startError = ApiException(500, 'boom');
+      await expectLater(webFlow.connectWeb(), throwsA(isA<ApiException>()));
+      expect(handle.calls, ['close']);
+      expect(published, isEmpty);
+    });
+
+    // Both attempts get the same handle: the named window is shared.
+    test('a double-click whose first start answers last navigates and '
+        'completes only the second attempt', () async {
+      service.startGates.addAll([Completer<void>(), Completer<void>()]);
+      final first = webFlow.connectWeb();
+      final second = webFlow.connectWeb();
+      await pumpEventQueue();
+
+      service.startGates[1].complete();
+      await pumpEventQueue();
+      service.startGates[0].complete(); // The replaced start answers last.
+      await first;
+      await pumpEventQueue();
+
+      expect(handle.urls, [endsWith('state=s1')]);
+
+      handle.completer
+          .complete((code: 'code-2', state: 'state-2', error: null));
+      await second;
+      await pumpEventQueue();
+
+      expect(service.completes, hasLength(1));
+      expect(service.completes.single.code, 'code-2');
+      expect(await StravaConnectFlow.challengeFor(service.completes.single.verifier),
+          service.starts[1].challenge);
+      expect(published, [StravaConnectOutcome.connected]);
+    });
+
+    test('a replaced attempt whose start fails leaves the shared popup alone',
+        () async {
+      service.startGates.addAll([Completer<void>(), Completer<void>()]);
+      final first = webFlow.connectWeb();
+      final second = webFlow.connectWeb();
+      await pumpEventQueue();
+
+      // The first start fails while the second is still in flight.
+      service.startError = ApiException(500, 'boom');
+      service.startGates[0].complete();
+      await first; // Replaced: returns silently instead of throwing.
+      await pumpEventQueue();
+      expect(handle.calls, isEmpty);
+
+      service.startError = null;
+      service.startGates[1].complete();
+      await pumpEventQueue();
+      expect(handle.calls, ['navigate']);
+      expect(handle.urls, [endsWith('state=s1')]);
+
+      handle.completer
+          .complete((code: 'code-2', state: 'state-2', error: null));
+      await second;
+      await pumpEventQueue();
+      expect(published, [StravaConnectOutcome.connected]);
+    });
+
+    test('a 426 from start closes the popup and throws updateRequired',
+        () async {
+      service.startError = ApiException(426, '');
+      await expectLater(
+          webFlow.connectWeb(),
+          throwsA(isA<StravaConnectException>().having(
+              (e) => e.outcome, 'outcome', StravaConnectOutcome.updateRequired)));
+      expect(handle.calls, ['close']);
+    });
+  });
+
+  test('cancelled and popupBlocked have their own messages', () {
+    expect(stravaConnectMessage(StravaConnectOutcome.cancelled),
+        'Strava connection cancelled.');
+    expect(stravaConnectMessage(StravaConnectOutcome.popupBlocked),
+        'Allow pop-ups for TraxJourney to connect Strava.');
   });
 
   test('relayed reason tokens map to outcomes', () {

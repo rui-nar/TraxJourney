@@ -37,6 +37,32 @@ void main() {
         [kAppPackageId]);
   });
 
+  // The URL schemes iOS routes back to the app: Google Sign-In's callback and
+  // the Strava connect return (#438). Declared in Info.plist, which Dart
+  // cannot read at build time.
+  List<String> infoPlistUrlSchemes() => _all(
+      r'<key>CFBundleURLSchemes</key>\s*<array>\s*<string>([^<]*)</string>',
+      _read('ios/Runner/Info.plist'));
+
+  test('Info.plist URL schemes include GoogleService-Info REVERSED_CLIENT_ID',
+      () {
+    final reversed = _all(
+        r'<key>REVERSED_CLIENT_ID</key>\s*<string>([^<]*)</string>',
+        _read('ios/Runner/GoogleService-Info.plist'));
+    expect(reversed, hasLength(1));
+    expect(infoPlistUrlSchemes(), contains(reversed.single));
+  });
+
+  test('Info.plist URL schemes include traxjourney', () {
+    expect(infoPlistUrlSchemes(), contains('traxjourney'));
+  });
+
+  test('Info.plist enables Flutter deep linking', () {
+    // Explicit parity with Android's flutter_deeplinking_enabled.
+    expect(_read('ios/Runner/Info.plist'),
+        matches(RegExp(r'<key>FlutterDeepLinkingEnabled</key>\s*<true/>')));
+  });
+
   test('macOS bundle id is kAppPackageId, tests under it', () {
     expect(
         _all(r'PRODUCT_BUNDLE_IDENTIFIER = (.+)',
