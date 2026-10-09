@@ -141,4 +141,18 @@ Envelope questions (to owner) — answered 2026-10-08: EQ1 yes (in scope; plan e
 - Revisit when: a double-click report or a browser check shows either message, or the Connect button, connectWeb generation handling or popup open/close changes next
 - Guard: —
 - Override: user: Fix now — this delivery rewrote that code and added close(); a replaced attempt must not touch the popup (U2 attempt 2, Sonnet)
-- Outcome: open
+- Outcome: fixed (039ae148)
+
+## Delivery
+
+| Unit | Goal | Route | Rule | Attempts | Escalated | Verified first time | Findings traced |
+|---|---|---|---|---|---|---|---|
+| U1 | Confirmation page for Android returns (#584) | Opus | S4 | 1 | — | yes | R1-1, R1-3, R1-4, R2-1, R2-2, R3-1, R3-3, R3-4, FU1-1 |
+| U2 | Web popup opens on the click; closed/blocked reported; arbiter (#587) | Sonnet | — | 2 | — | yes (both attempts) | R1-2, R2-3, R3-2, FI1-1 |
+| U3 | iOS URL schemes and deep linking (#438, partial) | Sonnet | — | 1 | — | yes | R1-5 |
+
+Notes:
+- U2's second attempt was a review fix (FI1-1, owner override), not a verification failure. Its tests were proven to fail on the previous code.
+- The plan text carried the legacy bundle id, which test_no_legacy_brand caught. The orchestrator reworded it (a20295cc).
+- Checks at the end: full pytest (CI command, minus test_rail_extract_workflow.py) 6923 passed / 0 failed on 8c09aabf (server unchanged afterwards); flutter analyze clean and flutter test 2628 passed on 2ccb879a; `flutter build web --release` succeeded on U2 (the web-only popup file compiles); alembic heads unchanged.
+- Owed: owner device checks (Android: page, Continue and Cancel, with and without the Strava app installed; web: closing and blocking the popup in a real browser); O1 regenerate GoogleService-Info.plist for com.traxjourney.app (#438 stays open); graphify update from main after merge.
