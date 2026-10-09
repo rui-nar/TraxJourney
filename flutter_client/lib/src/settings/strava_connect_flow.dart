@@ -160,14 +160,20 @@ class StravaConnectFlow {
       _outcomes.add(StravaConnectOutcome.popupBlocked);
       return;
     }
+    // start() bumps the generation before its first await, so this attempt
+    // owns its id from here. A newer attempt reuses the same named window:
+    // a replaced one must leave the popup alone.
+    final starting = start(app: false);
+    final generation = _generation;
     final Uri url;
     try {
-      url = await start(app: false);
+      url = await starting;
     } catch (_) {
+      if (generation != _generation) return; // Replaced: stay silent.
       popup.close();
       rethrow;
     }
-    final generation = _generation;
+    if (generation != _generation) return; // Replaced by a newer connect.
     popup.navigate(url.toString());
     final result = await popup.result;
     if (generation != _generation) return; // Replaced by a newer connect.
