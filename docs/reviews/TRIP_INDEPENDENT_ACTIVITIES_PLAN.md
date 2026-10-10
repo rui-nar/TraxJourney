@@ -158,3 +158,26 @@ Fable reviewer, Opus triager. 6 findings, no envelope questions.
 - Guard: —
 - Override: —
 - Outcome: fixed (plan)
+
+## Round 3 — 2026-10-10, reviewed at c050381d (fixes since 565d425d)
+
+Fable reviewer, Opus triager. 2 findings, no envelope questions. This is the
+last round under the cap (§6).
+
+### R3-1 — Step 3 only lists heads held by two or more trips, so a split whose head and tails ended up in different trips is never repaired
+- Trigger: the same ride in trips A and B; split in A, then the head removed from A (its row kept because B references it) → B keeps the cut "(1/2)" head and A's tail is detached, although A holding the tail is the evidence. Mirror: A and B hold the head and only C holds the tails.
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=expensive, fix=S/local, confidence=verified
+- Decision: Fix now (D5)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (plan)
+
+### R3-2 — Step 6's restore leaves elevation_profile_low_res_json as the cut head's downsample
+- Trigger: a user opens a trip whose head the migration restored → the map shows the full track but the elevation chart is still the cut one; nothing re-derives the low-res profile.
+- Scores: trigger=concrete, impact=silent-wrong, detect=silent, later=expensive, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (plan)

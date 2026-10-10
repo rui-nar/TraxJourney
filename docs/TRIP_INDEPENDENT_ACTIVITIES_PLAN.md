@@ -202,10 +202,15 @@ line names where to look.
        made or any owner changes, so copies inherit the true values. Negative
        rows with a NULL source (copies imported from another account's file)
        get no `strava_id`, and so stay local (review R1-7).
-    3. **Find leaked splits** (review R2-2), before anything is copied. A
-       *head* is a row that other rows name in `split_root_id`, whatever its
-       `split_base_name` says. For each head referenced by more than one trip,
-       record which of those trips hold at least one of its tails.
+    3. **Find leaked splits** (reviews R2-2, R3-1), before anything is copied.
+       - A *head* is a row that other rows name in `split_root_id`, whatever
+         its `split_base_name` says. Its *family* is the head plus every row
+         naming it.
+       - A family is *shared* when its rows, head or tails, are held by more
+         than one trip in total. That includes a head held by one trip whose
+         tails are held by another.
+       - For each shared family, record the trips that hold the head, and,
+         **over every trip**, which trips hold at least one of its tails.
     4. **Copy.** For every row referenced by more than one trip, one trip keeps
        the original and every other trip gets a copy. The lowest
        `projectitem.id` decides who keeps it, as a tie-break only: correctness
@@ -220,12 +225,18 @@ line names where to look.
        The trip's items are repointed to the copy.
     5. **Remap families per trip.** Within each trip, split ids are remapped to
        that trip's copies.
-    6. **Repair**, only for the shared heads found in step 3 (review R2-2):
-       - **At least one trip holds tails, and this trip holds none:** this trip
-         never split it, and its head (original or copy) shows a leaked split.
+    6. **Repair**, only for the shared families found in step 3 (reviews R2-2,
+       R3-1), and for each trip that holds the family's head:
+       - **At least one trip, any trip, holds tails, and this trip holds
+         none:** this trip never split it, and its head (original or copy)
+         shows a leaked split.
          The head is restored from its first-edit snapshot, as
          `reset_activity_track` restores, without descendants:
          - original geometry and figures;
+         - `elevation_profile_low_res_json` re-derived from the restored
+           profile, as `reset_activity_track` does (review R3-2). It is
+           downsampled inline, as `d1e2f3a4b5c6_add_elevation_profile_low_res`
+           does, because the migration cannot import app code;
          - split columns cleared;
          - the name reset to `split_base_name` only when that is set;
          - its `activity_geo_prepared` row **deleted, not copied**, so the next
@@ -238,8 +249,8 @@ line names where to look.
        - **No trip holds any tail** (owner, 2026-10-10, review R2-2): the
          migration cannot tell which trip split it, and the tails may have been
          deleted on purpose. Every trip's head is left as it is and logged.
-       - Heads that only one trip holds are never touched. A split whose tails
-         its own trip deleted stays as the user left it.
+       - Families held entirely by one trip are never touched. A split whose
+         tails its own trip deleted stays as the user left it.
        - **Tails whose head, or whose parent, is not in the same trip** (any
          family, not only shared ones): each such tail is re-rooted on its
          nearest ancestor that the trip holds. If the trip holds none, its
@@ -409,7 +420,13 @@ REVIEW.md §2 defaults apply, with these additions:
     - the trip that split keeps its cut head and tails, whichever row it holds;
     - the other trip's head is restored, with original geometry, cleared split
       columns and the base name;
-  - a restored head having no prepared row afterwards (R1-3);
+  - a restored head having no prepared row afterwards (R1-3), and its
+    `elevation_profile_low_res_json` matching the downsample of the restored
+    profile (R3-2);
+  - **a head held only by trip B whose tails are held only by trip A** (the
+    split was made in A, then A's head removed): B's head is restored (R3-1);
+  - a head held by trips A and B whose tails only trip C holds: A's and B's
+    heads are restored (R3-1);
   - an encrypted head without tails left unrestored and logged (R1-4);
   - **a user's own split whose tail they deleted**, held by one trip, left
     untouched (R2-2);
