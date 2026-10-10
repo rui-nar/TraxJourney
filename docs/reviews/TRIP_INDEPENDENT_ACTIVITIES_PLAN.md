@@ -181,3 +181,16 @@ last round under the cap (§6).
 - Guard: —
 - Override: —
 - Outcome: fixed (plan)
+
+## Round 4 (owner-requested) — 2026-10-10, reviewed at 56ea6000 (fixes since c050381d)
+
+Fable reviewer, Opus triager. 1 finding, no envelope questions.
+
+### R4-1 — The precedent cited for an inline downsample imports the app's helper instead
+- Trigger: U1's implementer follows the plan → d1e2f3a4b5c6 imports `src.project.elevation_downsample.downsample_elevation`; they either hand-copy the LTTB into the migration (which then drifts from the app) or import it against the plan's stated rule.
+- Scores: trigger=concrete, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (plan)

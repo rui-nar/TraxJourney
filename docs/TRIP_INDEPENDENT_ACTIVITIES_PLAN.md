@@ -234,9 +234,11 @@ line names where to look.
          `reset_activity_track` restores, without descendants:
          - original geometry and figures;
          - `elevation_profile_low_res_json` re-derived from the restored
-           profile, as `reset_activity_track` does (review R3-2). It is
-           downsampled inline, as `d1e2f3a4b5c6_add_elevation_profile_low_res`
-           does, because the migration cannot import app code;
+           profile, as `reset_activity_track` does (review R3-2). The migration
+           imports the pure helper
+           `src.project.elevation_downsample.downsample_elevation`, as
+           `d1e2f3a4b5c6` and `6c1f0e9a2b47` do (review R4-1). It still never
+           imports app models;
          - split columns cleared;
          - the name reset to `split_base_name` only when that is set;
          - its `activity_geo_prepared` row **deleted, not copied**, so the next
