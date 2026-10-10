@@ -32,3 +32,32 @@ Decision 2.
 - Guard: —
 - Override: user: Fix now — a listed photo with no file is close to the corruption floor, and the fix is a few lines
 - Outcome: fixed (plan: Decision 6 and U3 write the row first, then unlink)
+
+## Round 2 — 2026-10-10, reviewed at 7efcf96b (fixes since b41aae9e)
+
+Fable reviewer, Opus triager. 2 findings, 1 envelope question.
+
+Envelope question (to the owner, not triaged): with the content key, a
+Polarsteps step that holds the same photo twice (two media URLs, identical
+bytes) imports as one photo, with only an info log. Decision 6 keeps manual
+memories out because a user may upload the same photo twice on purpose.
+Is one copy acceptable for Polarsteps steps?
+Owner answer: one copy is fine. Added to the plan's envelope.
+
+### R2-1 — U3 now depends on U1 but still sits in Wave 1, which DELIVERY.md W1 forbids
+- Trigger: deliver-plan starts Wave 1 → U1 and U3 run at once in separate worktrees → U3 has no `hashes` in the state functions, and hand-writes the JSON or escalates; the unit is wasted.
+- Scores: trigger=concrete, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (plan: U3 moved to Wave 2)
+
+### R2-2 — Files left by an interrupted cleanup stay on disk and counted against the user's storage
+- Trigger: owner's `--apply --api-stopped` run is interrupted after a memory's row commits and before its duplicates are unlinked → the files stay on disk and in the usage counter; every re-run reports them and does nothing.
+- Scores: trigger=plausible, impact=degraded-ux, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: a dedupe_memory_photos.py --apply run on val or prod reports any unlisted files, or a user asks about storage usage they cannot account for after the cleanup ran.
+- Guard: —
+- Override: —
+- Outcome: open

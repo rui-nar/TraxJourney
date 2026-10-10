@@ -132,6 +132,9 @@ REVIEW.md §2 defaults apply, with these additions:
 - **Old clients (E5).** They keep sending `from-url` unchanged and get the
   dedup for free.
 - **Scale.** Memories of up to a few hundred photos.
+- **One copy per content** (owner, 2026-10-10, review R2): a Polarsteps step
+  that holds the same photo twice (identical bytes) imports it once. This is
+  accepted and is not a defect.
 
 ## Boundaries crossed
 
@@ -213,6 +216,8 @@ None.
   - a file outside Scope must change (X3).
 - **Depends on:** —
 
+### Wave 2
+
 #### U3 — Owner script: remove duplicate photos from Polarsteps memories
 - **Goal:** `scripts/dedupe_memory_photos.py` removes byte-identical duplicate
   photos from Polarsteps-imported memories, and records the hashes of those it
@@ -273,8 +278,6 @@ None.
     app;
   - a file outside Scope must change (X3).
 - **Depends on:** U1 (it writes the three-key state).
-
-### Wave 2
 
 #### U2 — `from-url` does not store a photo the memory already has
 - **Goal:** a memory never gets a second copy of a photo downloaded from a URL.
