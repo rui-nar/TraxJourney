@@ -241,3 +241,15 @@ def test_has_hash_only_counts_photos_in_the_list():
     assert not has_hash(state, ["a", "b"], _H3)
     assert not has_hash(_state(), [], _H1)
     assert state == before
+
+
+def test_has_hash_never_matches_a_missing_hash():
+    # "m" is a manual upload: it records no hash, so hashes.get("m") is None.
+    state = _state(hashes={"a": _H1})
+    assert not has_hash(state, ["a", "m"], None)
+
+
+@pytest.mark.parametrize("bad", ["", "junk", _H1.upper(), _H1[:63], _H1 + "\n"])
+def test_has_hash_never_matches_a_malformed_hash(bad):
+    # Even a malformed entry already stored in the state does not match.
+    assert not has_hash(_state(hashes={"a": _H1, "m": bad}), ["a", "m"], bad)

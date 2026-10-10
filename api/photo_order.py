@@ -172,7 +172,11 @@ def clear(state: dict) -> dict:
 def has_hash(state: dict, photos: list, content_hash: str) -> bool:
     """True when a photo currently in *photos* carries *content_hash*.
 
-    A stale entry for a UUID no longer in *photos* does not count.
+    A stale entry for a UUID no longer in *photos* does not count, and a
+    missing or malformed *content_hash* never matches (an unhashed photo
+    must not make every unhashed download look present).
     """
+    if not _is_hash(content_hash):
+        return False
     hashes = state["hashes"]
     return any(hashes.get(uuid) == content_hash for uuid in photos)
