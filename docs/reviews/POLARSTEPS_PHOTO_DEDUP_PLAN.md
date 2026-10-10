@@ -89,3 +89,29 @@ Fable reviewer, Opus triager. 1 finding, no envelope questions.
 - Guard: — (proposed: skip and report a memory with repeated entries; superseded by the override)
 - Override: user: Fix now — a repeated entry is the same photo: collapsed to one, its files never unlinked
 - Outcome: fixed (be32ccc5)
+
+## Integrated review, round 1 — 2026-10-10, reviewed at 39b27dcf (since d7c84cda: U1, U2, U3)
+
+Fable reviewer. No findings, no envelope questions. No Fix now decision, so
+the review stops here (§6).
+
+## Delivery
+
+| Unit | Goal | Route | Rule | Attempts | Escalated | Verified first time | Findings traced |
+|---|---|---|---|---|---|---|---|
+| U1 | Photo content hashes in the order state | Opus | S4 | 2 | — | yes | R1-1, U1R1-1 |
+| U2 | `from-url` does not store a photo the memory already has | Opus | S5 | 1 | — | yes | — |
+| U3 | Owner script removing duplicate photos from Polarsteps memories | Opus | S4 | 3 | X3 → Scope widened (`.dockerignore`, image test) | yes | R1-2, R2-2, U3R1-1 |
+
+Notes:
+- Attempts beyond the first were the owner's Fix now overrides of the unit
+  reviews (U1R1-1, U3R1-1) and, for U3, the X3 Scope widening: the script was
+  excluded from the image by `.dockerignore`, so the runbook would have failed.
+- U2's plan section said `Latitude: none`; DELIVERY.md §2 gives Opus units
+  `local design`, which the brief used. Its decisions are in its commit and
+  were verified.
+- Agent worktrees were created from `main`, not the feature branch; each
+  implementer fast-forwarded to the integrated head before starting.
+- Full checks: pytest after wave 1, 6980 passed; after wave 2, 7002 passed,
+  47 skipped (py314 citest container, from a `git archive`; the two tests
+  that need `.git` were left to CI). No Flutter change.
