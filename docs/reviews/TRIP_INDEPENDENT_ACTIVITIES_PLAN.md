@@ -100,3 +100,61 @@ Envelope questions (to the owner, not triaged):
 - Guard: —
 - Override: —
 - Outcome: fixed (plan)
+
+## Round 2 — 2026-10-10, reviewed at 565d425d (fixes since f6b570a0)
+
+Fable reviewer, Opus triager. 6 findings, no envelope questions.
+
+### R2-1 — Backfill runs after Copy, so every copy gets strava_id = its fresh random id and strava_user_id = the trip owner
+- Trigger: a Strava ride in two trips → the migration copies it (strava_id still NULL, owner overwritten), then backfills strava_id = id → the copy's strava_id is not a Strava id; refresh 404s, sync re-adds a duplicate.
+- Scores: trigger=concrete, impact=silent-wrong, detect=silent, later=expensive, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (plan)
+
+### R2-2 — "Head and none of its tails" also matches a head whose tails the splitting trip deliberately deleted
+- Trigger: a user splits a ride and removes the tail; the head keeps split_base_name and its snapshot → the migration restores the full track over the piece the user kept.
+- Scores: trigger=concrete, impact=silent-wrong, detect=logged, later=expensive, fix=M/local, confidence=verified
+- Decision: Fix now (D3)
+- Revisit when: —
+- Guard: —
+- Override: — (owner decision on the open case: when no trip holds a tail, leave every head as it is, logged)
+- Outcome: fixed (plan)
+
+### R2-3 — A head that was split and later reset still carries split_base_name but has no snapshot
+- Trigger: a user splits a shared activity, then resets the head (snapshot nulled, split_base_name kept) → the restore has no snapshot: it aborts the migration or writes NULL over good geometry.
+- Scores: trigger=concrete, impact=wrong-visible, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (plan)
+
+### R2-4 — Dangling items are deleted after Copy, so step 1 enumerates ids that have no row
+- Trigger: "Keep both" plus a reset in one trip leaves the other's items on a deleted tail → step 1 treats the missing id as shared and tries to copy a row that does not exist.
+- Scores: trigger=plausible, impact=wrong-visible, detect=logged, later=expensive (triager, from cheap), fix=S/local, confidence=verified
+- Decision: Fix now (D5)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (plan)
+
+### R2-5 — U7 does not say what account deletion does with encrypted rows kept in other users' trips
+- Trigger: a companion's encrypted activity in the owner's trip keeps the companion as owner; the companion deletes their account → a dangling item, or unreadable ciphertext owned by a deleted user.
+- Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Revisit when: —
+- Guard: —
+- Override: — (owner approved the extended privacy sentence)
+- Outcome: fixed (plan)
+
+### R2-6 — An exception row repaired to plaintext stays owned by the companion; the owner can never encrypt it
+- Trigger: the companion's client decrypts the exception row to plaintext → it stays owned by the companion; the trip owner's encrypt 404s on every pass, and the audit flags it on every run.
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=expensive (triager, from cheap), fix=S/local, confidence=verified (triager, from inferred)
+- Decision: Fix now (D5)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (plan)

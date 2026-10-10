@@ -135,6 +135,15 @@ line names where to look.
      R1-6). Only that owner's key can read it, so giving it to the trip owner
      would leave ciphertext nobody can decrypt, and the owner's client repair
      would 404. The migration logs each such row (id, trip, owner).
+   - **The exception ends when the row stops being encrypted** (review R2-6).
+     A write that leaves the row with no envelope field, such as the
+     companion's client decrypting it back to plaintext, hands the row to the
+     holding trip's owner in the same transaction. The owner can then encrypt
+     it under their own key.
+   - **Account deletion and the exception** (review R2-5, owner 2026-10-10).
+     When a companion deletes their account, an encrypted row they own in
+     another user's trip is deleted with its item, and logged. Nobody else can
+     read it. The privacy sentence (O1) says so.
 5. **"Imported by" is kept apart from ownership.** A new nullable
    `strava_user_id` column holds the account whose Strava connection the
    activity came from. Enrichment and refresh use that account's token. It is
@@ -182,55 +191,69 @@ line names where to look.
     crosses trips**. A row's `split_root_id` and `split_parent_id` name only
     rows held by the same trip (review R1-2).
 
-    It works in this order:
-    1. **Copy.** For every row referenced by more than one trip, one trip keeps
+    It works in this order. The order matters: each step relies on the ones
+    before it.
+    1. **Dangling items** (review R2-4). Activity items pointing at missing rows
+       are deleted (owner), with a per-trip count in the log. This runs first,
+       so the copy step never meets an id with no row.
+    2. **Backfill** (review R2-1). Every row's `strava_id` is backfilled from
+       `id`, for Strava-sourced positive rows only, together with
+       `strava_user_id` from `user_info_id`. This runs **before** any copy is
+       made or any owner changes, so copies inherit the true values. Negative
+       rows with a NULL source (copies imported from another account's file)
+       get no `strava_id`, and so stay local (review R1-7).
+    3. **Find leaked splits** (review R2-2), before anything is copied. A
+       *head* is a row that other rows name in `split_root_id`, whatever its
+       `split_base_name` says. For each head referenced by more than one trip,
+       record which of those trips hold at least one of its tails.
+    4. **Copy.** For every row referenced by more than one trip, one trip keeps
        the original and every other trip gets a copy. The lowest
        `projectitem.id` decides who keeps it, as a tie-break only: correctness
        never depends on which trip keeps it (review R1-1). Each copy:
        - gets a fresh id under Decision 3;
-       - copies every column;
+       - copies every column, `strava_id` and `strava_user_id` included, from
+         the row it copies;
        - gets `user_info_id` = that trip's owner, except for encrypted rows
          (Decision 4);
        - has its `activity_geo_prepared` row copied.
 
        The trip's items are repointed to the copy.
-    2. **Remap families per trip.** Within each trip, split ids are remapped to
+    5. **Remap families per trip.** Within each trip, split ids are remapped to
        that trip's copies.
-    3. **Repair per trip** (review R1-1). For each trip and each split family
-       it holds, judged on that trip's rows and never on whether a row is the
-       original or a copy:
-       - **The trip holds the head and none of its tails:** the trip never
-         split it, and the head shows a leaked split. The head is restored from
-         its first-edit snapshot, as `reset_activity_track` restores, without
-         descendants:
+    6. **Repair**, only for the shared heads found in step 3 (review R2-2):
+       - **At least one trip holds tails, and this trip holds none:** this trip
+         never split it, and its head (original or copy) shows a leaked split.
+         The head is restored from its first-edit snapshot, as
+         `reset_activity_track` restores, without descendants:
          - original geometry and figures;
          - split columns cleared;
          - the name reset to `split_base_name` only when that is set;
          - its `activity_geo_prepared` row **deleted, not copied**, so the next
            read rebuilds it from the restored track (review R1-3).
 
-         **A head whose originals are envelopes is never restored** (review
-         R1-4): it is left as it is and logged. The server cannot rebuild an
-         encrypted track, and an encrypted root has no `split_base_name`.
-       - **The trip holds tails whose head, or whose parent, is not in that
-         trip:** each such tail is re-rooted on its nearest ancestor that the
-         trip holds. If the trip holds none, its split columns are cleared and
-         it becomes a plain local row (review R1-2).
-    4. **Backfill.** Every row's `strava_id` is backfilled from `id`, for
-       Strava-sourced positive rows only, together with `strava_user_id` from
-       `user_info_id`. Negative rows with a NULL source (copies imported from
-       another account's file) get no `strava_id`, and so stay local (review
-       R1-7).
-    5. **Owner.** Every other row whose holding trip has a different owner is
+         It is restored **only when the row is edited and has a plaintext
+         `original_polyline`** (reviews R1-4, R2-3). A head with an enveloped
+         original, or with no snapshot (for example, a split later reset), is
+         left as it is and logged.
+       - **No trip holds any tail** (owner, 2026-10-10, review R2-2): the
+         migration cannot tell which trip split it, and the tails may have been
+         deleted on purpose. Every trip's head is left as it is and logged.
+       - Heads that only one trip holds are never touched. A split whose tails
+         its own trip deleted stays as the user left it.
+       - **Tails whose head, or whose parent, is not in the same trip** (any
+         family, not only shared ones): each such tail is re-rooted on its
+         nearest ancestor that the trip holds. If the trip holds none, its
+         split columns are cleared and it becomes a plain local row (review
+         R1-2).
+    7. **Owner.** Every other row whose holding trip has a different owner is
        given to that owner (Decision 4, with its encrypted exception).
-    6. **Dangling items.** Activity items pointing at missing rows are deleted
-       (owner), with a per-trip count in the log.
-    7. **Bump.** Every touched trip has its `lock_version` bumped.
+    8. **Bump.** Every touched trip has its `lock_version` bumped.
 
     The migration logs:
     - restored heads, per trip (a trip with a share link is flagged; see the
       envelope);
-    - encrypted heads left unrestored;
+    - shared heads left as they are, with the reason (enveloped, no snapshot,
+      or no trip holds a tail);
     - re-rooted or detached tails;
     - encrypted rows kept with their owner.
 
@@ -327,9 +350,10 @@ REVIEW.md §2 defaults apply, with these additions:
 ## Open decisions
 
 - **O1 — Privacy-policy wording** for Decision 4. **Decided** (owner,
-  2026-10-10): "Activities you add to a trip someone else owns become part of
-  that trip: they belong to its owner and stay in it when you delete your
-  account."
+  2026-10-10; extended after review R2-5): "Activities you add to a trip
+  someone else owns become part of that trip: they belong to its owner and
+  stay in it when you delete your account, unless it is encrypted with your
+  key, in which case it is deleted with your account."
 
 ## Execution units
 
@@ -363,9 +387,9 @@ REVIEW.md §2 defaults apply, with these additions:
 - **Do:**
   1. Add `strava_id` (BIGINT, nullable, indexed) and `strava_user_id`
      (INTEGER, nullable).
-  2. Run Decision 10's steps 1-7 in order (copy, remap, per-trip repair,
-     backfill, owner, dangling items, bump), in batches as the envelope
-     requires.
+  2. Run Decision 10's steps 1-8 in their order (dangling items, backfill,
+     find leaked splits, copy, remap, repair, owner, bump), in batches as the
+     envelope requires.
   3. Mark the stats of every touched project for recompute.
   4. Write the log lines Decision 10 lists.
   5. Make the migration re-runnable: a second run is a no-op, and an
@@ -376,7 +400,9 @@ REVIEW.md §2 defaults apply, with these additions:
   - backfill of both columns, and a negative row with NULL source getting no
     `strava_id`;
   - a Strava row shared by two trips ending as two rows, with the copy
-    positive;
+    positive, **its `strava_id` equal to the original's Strava id**, and its
+    `strava_user_id` equal to the original importer, including for a
+    companion's row (R2-1);
   - a GPX row shared by two trips getting a negative copy;
   - a split family shared by two trips remapped per copy;
   - **the splitting trip newer than the other** (review R1-1):
@@ -385,6 +411,15 @@ REVIEW.md §2 defaults apply, with these additions:
       columns and the base name;
   - a restored head having no prepared row afterwards (R1-3);
   - an encrypted head without tails left unrestored and logged (R1-4);
+  - **a user's own split whose tail they deleted**, held by one trip, left
+    untouched (R2-2);
+  - a shared head that no trip holds a tail of, left as it is in every trip
+    and logged (R2-2, owner decision);
+  - a shared head that was split and then reset (no snapshot) left as it is,
+    without aborting (R2-3);
+  - "Keep both" followed by a reset in one trip (the other trip's items on
+    deleted tails): those items are deleted first, and the run completes
+    (R2-4);
   - a tail whose head is held only by another trip being re-rooted or
     detached, so that afterwards no `split_root_id`/`split_parent_id` names a
     row of another trip (R1-2);
@@ -521,10 +556,14 @@ REVIEW.md §2 defaults apply, with these additions:
        has no `strava_id`, answer a clear 409 and make no Strava call;
      - write only the trip's row.
   3. Refresh accepts a Strava id fallback (Decision 11).
-  4. Remove `_refuse_shared` and the holder fan-out in the E2EE and
+  4. The E2EE field write (`PUT /api/activities/{id}`): when a write leaves
+     the row with no envelope field and the row's owner is not its holding
+     trip's owner, set `user_info_id` to the trip owner in the same transaction
+     (Decision 4, review R2-6).
+  5. Remove `_refuse_shared` and the holder fan-out in the E2EE and
      elevation-gain routes. Each write bumps only the trip that holds the row.
-  5. The delete-local route deletes the trip's row.
-  6. The GPX re-import match uses `strava_id`.
+  6. The delete-local route deletes the trip's row.
+  7. The GPX re-import match uses `strava_id`.
 - **Acceptance:** the Scope's tests pass, with new tests for:
   - refresh with a companion's activity using the companion's token;
   - refresh after the importer was deleted → 409;
@@ -532,6 +571,8 @@ REVIEW.md §2 defaults apply, with these additions:
     with no Strava call;
   - refresh by Strava id from an old picker;
   - an encrypted write no longer refused for a companion's activity;
+  - a companion decrypting their exception row hands it to the trip owner,
+    who can then encrypt it (R2-6);
   - no cross-trip bump.
 - **Out of scope:** the Strava sync and browser routes (U5), import (U6), and
   `src/auth/` (U7).
@@ -611,16 +652,21 @@ REVIEW.md §2 defaults apply, with these additions:
   - Plan Decisions 4 and 5.
   - `account_deletion.py:441-470, 505`.
 - **Do:**
-  1. Account deletion deletes the rows of the user's own trips. It no longer
-     sweeps other users' trips. It sets `strava_user_id` to NULL on rows the
-     user imported into other users' trips.
+  1. Account deletion deletes the rows of the user's own trips. It sets
+     `strava_user_id` to NULL on rows the user imported into other users'
+     trips. In other users' trips, it deletes only the rows the user still
+     owns, which are the encrypted ones under Decision 4's exception, together
+     with their items, and logs each deletion (review R2-5).
   2. The audit script checks that each row's owner is its holding trip's owner,
      unless the row holds encrypted fields (Decision 4's exception). It checks
      that no row is held by two or more trips, and that no split link crosses
      trips. It does not report rows that no trip references (review R1-9).
 - **Acceptance:** tests pass for:
-  - a companion deleting their account leaves their contributed activity in the
-    owner's trip, owned by the owner, with `strava_user_id` NULL;
+  - a companion deleting their account leaves their contributed plaintext
+    activity in the owner's trip, owned by the owner, with `strava_user_id`
+    NULL;
+  - the same deletion removes their encrypted contributed activity and its item
+    from the owner's trip, leaving no dangling item (R2-5);
   - the audit flags:
     - a row held by two trips;
     - a plaintext row whose owner differs from its trip's owner;
