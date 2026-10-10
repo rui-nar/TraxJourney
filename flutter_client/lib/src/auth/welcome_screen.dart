@@ -16,6 +16,10 @@ import '../core/legal_links.dart';
 const _kBreak = 900.0;
 const _kNavH  = 64.0;
 const _kShell = 1200.0;
+/// Below this width the page keeps a phone's 16 px side gutter, not 32 px:
+/// on a 320 px screen 64 px of gutter left too little for the nav and the
+/// pricing cards (issue #473).
+const _kPhone = 600.0;
 
 // ── Always-dark showcase palette ─────────────────────────────────────────────
 const _dBg   = Color(0xFF0D1B2A);
@@ -112,15 +116,18 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
 
 class _Shell extends StatelessWidget {
   final Widget child;
-  final EdgeInsets padding;
-  const _Shell({required this.child, this.padding = const EdgeInsets.symmetric(horizontal: 32)});
+  final EdgeInsets? padding;
+  const _Shell({required this.child, this.padding});
 
   @override
   Widget build(BuildContext context) {
+    final gutter = MediaQuery.sizeOf(context).width < _kPhone ? 16.0 : 32.0;
     return Center(
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: _kShell),
-        child: Padding(padding: padding, child: child),
+        child: Padding(
+            padding: padding ?? EdgeInsets.symmetric(horizontal: gutter),
+            child: child),
       ),
     );
   }
@@ -234,15 +241,24 @@ class _NavBar extends StatelessWidget {
           children: [
             const _Logo(size: 28),
             const SizedBox(width: 10),
-            _LogoWordmark(theme),
             if (wide) ...[
+              _LogoWordmark(theme),
               const SizedBox(width: 32),
               _NavLink('Features', onFeatures, theme),
               _NavLink('How it works', onHow, theme),
               _NavLink('Self-host', onSelfHost, theme),
               _NavLink('GitHub', () => _openUrl(kRepoUrl), theme),
-            ],
-            const Spacer(),
+              const Spacer(),
+            ] else
+              // On a phone the wordmark shrinks before the buttons get pushed
+              // off the edge (issue #473).
+              Expanded(
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: FittedBox(
+                      fit: BoxFit.scaleDown, child: _LogoWordmark(theme)),
+                ),
+              ),
             TextButton(
               onPressed: () => context.go('/login'),
               style: TextButton.styleFrom(
@@ -276,11 +292,11 @@ class _LogoWordmark extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Text('View', style: s),
+        Text(kWordmarkLead, style: s),
         ShaderMask(
           blendMode: BlendMode.srcIn,
           shaderCallback: (b) => _gradLogoText.createShader(b),
-          child: Text('Trip', style: s.copyWith(color: Colors.white)),
+          child: Text(kWordmarkTail, style: s.copyWith(color: Colors.white)),
         ),
       ],
     );
@@ -404,8 +420,12 @@ class _HeroText extends StatelessWidget {
                         .copyWith(letterSpacing: 0.05)),
               ),
               const SizedBox(width: 8),
-              Text('Self-hosted · open source · Docker',
-                  style: _mono(12, FontWeight.w500, fg2)),
+              // Wraps rather than running off a phone (issue #473).
+              Flexible(
+                child: Text('Self-hosted · open source · Docker',
+                    textAlign: align,
+                    style: _mono(12, FontWeight.w500, fg2)),
+              ),
             ],
           ),
         ),
@@ -583,8 +603,13 @@ class _WindowBar extends StatelessWidget {
           const SizedBox(width: 6),
           _TrafficDot(const Color(0xFF16A34A)),
           const SizedBox(width: 12),
-          Text('traxjourney.com / camino-portugués',
-              style: _mono(11, FontWeight.w500, theme.colorScheme.onSurfaceVariant)),
+          // Cut short like a real narrow address bar (issue #473).
+          Flexible(
+            child: Text('traxjourney.com / camino-portugués',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: _mono(11, FontWeight.w500, theme.colorScheme.onSurfaceVariant)),
+          ),
         ],
       ),
     );
@@ -1583,15 +1608,19 @@ class _TierCard extends StatelessWidget {
                   style: _inter(20, FontWeight.w700, fg1)),
               const SizedBox(height: 12),
               if (!featured)
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.baseline,
-                  textBaseline: TextBaseline.alphabetic,
-                  children: [
-                    Text('Free',
+                // One paragraph, so "· AGPL" wraps under "Free" instead of
+                // running off a phone; capped at 2x like the price below, past
+                // which "Free" alone is wider than the card (issue #473).
+                MediaQuery.withClampedTextScaling(
+                  maxScaleFactor: 2,
+                  child: Text.rich(TextSpan(children: [
+                    TextSpan(
+                        text: 'Free',
                         style: _inter(40, FontWeight.w800, fg1, spacing: -0.03)),
-                    const SizedBox(width: 6),
-                    Text('· AGPL', style: _inter(14, FontWeight.w500, fg2)),
-                  ],
+                    TextSpan(
+                        text: '  · AGPL',
+                        style: _inter(14, FontWeight.w500, fg2)),
+                  ])),
                 )
               else if (price != null)
                 // "from" sits on its own line so the price gets the card's full
@@ -1622,11 +1651,16 @@ class _TierCard extends StatelessWidget {
               for (final f in (featured ? cloudFeatures : freeFeatures)) ...[
                 Padding(
                   padding: const EdgeInsets.only(bottom: 10),
+                  // The text wraps beside a top-aligned tick rather than
+                  // running off a phone (issue #473).
                   child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Icon(Icons.check_rounded, size: 18, color: primary),
                       const SizedBox(width: 8),
-                      Text(f, style: _inter(14, FontWeight.w400, fg2)),
+                      Expanded(
+                        child: Text(f, style: _inter(14, FontWeight.w400, fg2)),
+                      ),
                     ],
                   ),
                 ),
