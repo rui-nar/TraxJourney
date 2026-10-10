@@ -79,15 +79,12 @@ final class StyleFacet extends ProjectFacet {
     _markChanged();
   }
 
-  // The style block of a project-details response. `load()` also reads the
-  // secondary colour; `_applyDetails` never has, and keeps not doing so.
-  void _applyDetails(Map<String, dynamic> details,
-      {required bool includeSecondary}) {
+  // The style block of a project-details response, read the same way by
+  // `load()` and by the background refresh after edits (issue #572).
+  void _applyDetails(Map<String, dynamic> details) {
     final color = _hexColor(details['track_color'] as String?);
     if (color != null) _trackColor = color;
-    if (includeSecondary) {
-      _trackSecondaryColor = _hexColor(details['track_secondary_color'] as String?);
-    }
+    _trackSecondaryColor = _hexColor(details['track_secondary_color'] as String?);
     final rawWidth = details['track_width'] as num?;
     if (rawWidth != null) _trackWidth = rawWidth.toDouble();
     final rawAlt = details['alternating_track_colors'] as bool?;
@@ -160,12 +157,9 @@ final class StyleFacetWriter extends ProjectFacetWriter<StyleFacet> {
     markChanged();
   }
 
-  /// Reads the style block of a project-details response. [includeSecondary]
-  /// is true for `load()`, which reads the secondary track colour, and false
-  /// for `_applyDetails`, which never has.
-  void applyDetails(Map<String, dynamic> details,
-          {required bool includeSecondary}) =>
-      facet._applyDetails(details, includeSecondary: includeSecondary);
+  /// Reads the style block of a project-details response.
+  void applyDetails(Map<String, dynamic> details) =>
+      facet._applyDetails(details);
 
   // Single-field writes, for tests.
   void setTrackColor(Color v) {
