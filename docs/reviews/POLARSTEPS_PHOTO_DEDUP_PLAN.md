@@ -12,6 +12,8 @@ Polarsteps photo keeps the same URL path across two step fetches, only the
 query varying. Nothing in the repo shows a real media URL. Confirm the shape
 from a live step payload (scripts/inspect_polarsteps_steps.py), or key on the
 sha256 of the fetched bytes instead.
+Owner answer: key on the content (sha256 of the fetched bytes), plan
+Decision 2.
 
 ### R1-1 — U1's three-key state breaks the reorder script and exact-state tests outside U1's scope
 - Trigger: owner runs scripts/reorder_polarsteps_memory_photos.py --apply after this ships → `_write_reorder` passes a two-key dict to `dump_state` → KeyError on the first memory (or, with `.get`, the memory's sources silently wiped).
@@ -20,13 +22,13 @@ sha256 of the fetched bytes instead.
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (plan: U1's Scope gains the reorder script and its tests; Decision 5)
 
 ### R1-2 — Cleanup script unlinks files before writing the row, and its missing-file rule then refuses to finish the job
 - Trigger: owner's `--apply --api-stopped` run is interrupted after a duplicate's files were unlinked but before the row was written → the memory lists a UUID with no file (broken thumbnail, 404), and a re-run reports it as "file missing, never a duplicate" and leaves it.
 - Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified (triager, from inferred)
-- Decision: Defer (D10)
+- Decision: Defer (D10), overridden to Fix now
 - Revisit when: an --apply run of dedupe_memory_photos.py is interrupted, or a later run reports a missing-file photo in a Polarsteps memory.
 - Guard: —
-- Override: —
-- Outcome: open
+- Override: user: Fix now — a listed photo with no file is close to the corruption floor, and the fix is a few lines
+- Outcome: fixed (plan: Decision 6 and U3 write the row first, then unlink)
