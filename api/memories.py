@@ -19,6 +19,7 @@ Routes:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -48,7 +49,7 @@ from api.project_access import (
     translate_insert_after,
 )
 from api.photo_locks import photo_lock
-from api.photo_order import clear as clear_order, dump_state, load_state, place
+from api.photo_order import clear as clear_order, dump_state, has_hash, load_state, place
 from api.photo_order import remove as remove_from_order, replace as replace_in_order
 from api.project_shared import bust_project_payloads, project_cache_ref
 from api.translations import translate_text
@@ -639,7 +640,7 @@ def _clear_memory_photos(sess, user_id: str, mem_row: DBMemory) -> None:
 
 def _write_memory_photo(
     memory_id: int, uuid_str: str, order: Optional[int] = None, epoch: Optional[int] = None,
-    *, owner_dir: Optional[str] = None,
+    *, owner_dir: Optional[str] = None, content_hash: Optional[str] = None,
 ) -> bool:
     """Place *uuid_str*, whose files are already written under *owner_dir*, in
     a memory's photo list. Returns False when it could not be placed.
@@ -658,17 +659,24 @@ def _write_memory_photo(
     *epoch* is given and a re-import has bumped the stored one since the
     download was queued, the photo's files are deleted — and uncounted —
     instead.
+
+    *content_hash* is the sha256 of a downloaded photo's bytes (issue #566),
+    recorded with the photo. When a photo in the memory already carries it
+    (a concurrent download of the same photo placed first), this one is a
+    duplicate and its files are deleted the same way. Manual uploads pass
+    none and are never refused.
     """
     with photo_lock("memory", memory_id):
         with get_session() as sess:
             mem_row = sess.get(DBMemory, memory_id)
             state = load_state(mem_row.photo_order_json) if mem_row is not None else None
-            if mem_row is None or (epoch is not None and state["epoch"] != epoch):
+            photos = [p for p in json.loads(mem_row.photos_json or "[]") if p] if mem_row is not None else []
+            if (mem_row is None or (epoch is not None and state["epoch"] != epoch)
+                    or (content_hash is not None and has_hash(state, photos, content_hash))):
                 if owner_dir is not None:
                     _delete_photo_files(owner_dir, memory_id, [uuid_str])
                 return False
-            photos = [p for p in json.loads(mem_row.photos_json or "[]") if p]
-            photos, state = place(photos, state, uuid_str, order)
+            photos, state = place(photos, state, uuid_str, order, content_hash=content_hash)
             mem_row.photos_json = json.dumps(photos)
             mem_row.photo_order_json = dump_state(state)
             sess.add(mem_row)
@@ -692,6 +700,20 @@ def _download_photo_from_url(
             memory_id, project_id, user_id, url,
         )
         return
+    # A memory never stores the same downloaded photo twice (issue #566): a
+    # repeated import fetches it, finds its hash and stores nothing. This
+    # check, outside the lock, only spares the quota check and the writes;
+    # the one at placement is authoritative.
+    content_hash = hashlib.sha256(content).hexdigest()
+    with get_session() as sess:
+        mem_row = sess.get(DBMemory, memory_id)
+        duplicate = mem_row is not None and has_hash(
+            load_state(mem_row.photo_order_json),
+            [p for p in json.loads(mem_row.photos_json or "[]") if p], content_hash,
+        )
+    if duplicate:
+        _log.info("Skipped photo download for memory %s: it already has this photo", memory_id)
+        return
     # Same quota rule as a direct upload, but this runs in a background task —
     # there is no request left to answer 402 on, so it just declines to store.
     try:
@@ -702,7 +724,7 @@ def _download_photo_from_url(
         return
     uuid_str = str(uuid_lib.uuid4())
     _save_photo_files(user_id, memory_id, uuid_str, content)
-    _write_memory_photo(memory_id, uuid_str, order, epoch, owner_dir=user_id)
+    _write_memory_photo(memory_id, uuid_str, order, epoch, owner_dir=user_id, content_hash=content_hash)
 
 
 class PhotoFromUrlIn(BaseModel):
