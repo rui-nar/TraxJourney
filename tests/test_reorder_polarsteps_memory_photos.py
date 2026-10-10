@@ -9,7 +9,7 @@ Covers the two layers of the script:
     changes, ``--apply`` persists the corrected ``photos_json``, and a
     project with no linked trip and no override is skipped untouched;
   * the rank model's ``photo_order_json`` — ``--apply`` writes a dense list,
-    clears ranks and keeps the epoch, an unmigrated DB is refused, and a
+    clears ranks and keeps the epoch and hashes, an unmigrated DB is refused, and a
     memory edited by the live API during the run is not overwritten;
   * a single failed or non-200 source download flags the memory and writes
     nothing (U7R1-1), and only memories selected by ``--imported-before``
@@ -368,7 +368,27 @@ class TestPhotoOrderColumn:
         photos, state = _read_memory(db, memory_id)
         assert photos == [_A, _B, _C]
         assert None not in photos
-        assert state == {"epoch": 3, "ranks": {}}
+        assert state == {"epoch": 3, "ranks": {}, "hashes": {}}
+
+    def test_apply_keeps_the_memory_s_content_hashes(self, tmp_path, monkeypatch):
+        # The photos keep their UUIDs, so the hashes that guard a re-import
+        # against duplicates (issue #566) must survive the reorder (R1-1).
+        db = tmp_path / "r.db"
+        data_dir = tmp_path / "data"
+        hashes = {_A: "a" * 64, _B: "b" * 64, _C: "c" * 64}
+        stored = json.dumps({"epoch": 1, "ranks": {_C: 0, _A: 1, _B: 2}, "hashes": hashes})
+        _, memory_id = _seed_db(db, data_dir, link_trip=True,
+                                scrambled_photos=[_C, _A, _B], content=_CONTENT,
+                                photo_order_json=stored)
+
+        monkeypatch.setattr(backfill, "PolarstepsClient", _FakeClient)
+        _patch_requests_get(monkeypatch)
+        monkeypatch.setattr("sys.argv", ["x", "--db", str(db), "--data-dir", str(data_dir), *_CUTOFF, "--apply"])
+        assert backfill.main() == 0
+
+        photos, state = _read_memory(db, memory_id)
+        assert photos == [_A, _B, _C]
+        assert state == {"epoch": 1, "ranks": {}, "hashes": hashes}
 
     def test_apply_on_null_photo_order_json_writes_epoch_zero(self, tmp_path, monkeypatch):
         db = tmp_path / "r.db"
@@ -383,7 +403,7 @@ class TestPhotoOrderColumn:
 
         photos, state = _read_memory(db, memory_id)
         assert photos == [_A, _B, _C]
-        assert state == {"epoch": 0, "ranks": {}}
+        assert state == {"epoch": 0, "ranks": {}, "hashes": {}}
 
     def test_unmigrated_db_is_refused_before_anything_runs(self, tmp_path, monkeypatch, capsys):
         import sqlite3
@@ -503,7 +523,7 @@ class TestFailedDownloads:
     def test_all_downloads_succeeding_still_reorders(self, tmp_path, monkeypatch, capsys):
         (photos, state), _ = self._run(tmp_path, monkeypatch, capsys, [_C, _A, _B])
         assert photos == [_A, _B, _C]
-        assert state == {"epoch": 2, "ranks": {}}
+        assert state == {"epoch": 2, "ranks": {}, "hashes": {}}
 
 
 # ── Selection: --imported-before and --project ──────────────────────────────

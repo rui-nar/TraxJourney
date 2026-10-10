@@ -28,10 +28,14 @@ Covers:
     a file-backed SQLite; the journal's rank rules are covered in
     ``tests/test_journal_photo_order.py``);
   * the end-to-end ``POST /photos/from-url`` route accepts ``order``;
+  * a memory never stores the same downloaded photo twice (issue #566),
+    whether the downloads run one after the other or concurrently, while a
+    manual upload of the same bytes is still stored;
   * ``delete_photo`` still works under the same lock.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 import threading
@@ -113,11 +117,13 @@ def env(monkeypatch, tmp_path):
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
-def _jpeg_bytes() -> bytes:
+def _jpeg_bytes(shade: int = 10) -> bytes:
+    """A small JPEG; a different *shade* gives different bytes, so a different
+    photo for the content dedup of downloads (issue #566)."""
     import io
     from PIL import Image
     buf = io.BytesIO()
-    Image.new("RGB", (20, 20), (10, 20, 30)).save(buf, "JPEG")
+    Image.new("RGB", (20, 20), (shade, 20, 30)).save(buf, "JPEG")
     return buf.getvalue()
 
 
@@ -292,7 +298,7 @@ class TestReimportEpoch:
         assert _files(user_id, memory_id) == []
         assert _usage(engine, user_id) == _BASELINE_USAGE
         with Session(engine) as sess:
-            assert load_state(sess.get(DBMemory, memory_id).photo_order_json) == {"epoch": 1, "ranks": {}}
+            assert load_state(sess.get(DBMemory, memory_id).photo_order_json) == {"epoch": 1, "ranks": {}, "hashes": {}}
 
     def test_a_download_queued_after_a_reimport_lands(self, env, monkeypatch):
         client, engine, user_id, memory_id, _ = env
@@ -526,13 +532,13 @@ class TestFromUrlRouteOrdering:
         """Photo 0's download is the slowest; photo 2's is the fastest. Even so,
         once both land, the memory's photo list must read [photo0, photo1, photo2]."""
         client, engine, _, memory_id, _ = env
-        photo_bytes = _jpeg_bytes()
 
         def fake_fetch(url, **kwargs):
             # Simulate the slowest download being for order=0, the fastest for order=2.
             delay = {"http://x/0.jpg": 0.06, "http://x/1.jpg": 0.03, "http://x/2.jpg": 0.0}[url]
             time.sleep(delay)
-            return photo_bytes
+            # Three different photos: identical bytes would be one (#566).
+            return _jpeg_bytes(shade=int(url[-5]) * 80)
 
         monkeypatch.setattr(mem_mod, "fetch_bytes", fake_fetch)
 
@@ -561,7 +567,8 @@ class TestFromUrlRouteOrdering:
 
     def test_order_out_of_range_is_refused(self, env, monkeypatch):
         client, engine, _, memory_id, _ = env
-        monkeypatch.setattr(mem_mod, "fetch_bytes", lambda url, **kwargs: _jpeg_bytes())
+        # A different photo per URL: identical bytes would be one (#566).
+        monkeypatch.setattr(mem_mod, "fetch_bytes", lambda url, **kwargs: _jpeg_bytes(shade=len(url) * 9))
 
         for order in (-1, 10000):
             resp = client.post(f"/api/memories/{memory_id}/photos/from-url",
@@ -577,6 +584,163 @@ class TestFromUrlRouteOrdering:
             row = sess.get(DBMemory, memory_id)
         ranks = load_state(row.photo_order_json)["ranks"]
         assert [ranks[p] for p in json.loads(row.photos_json)] == [0, 9999]
+
+
+# ── One copy per downloaded photo (issue #566) ──────────────────────────────
+
+def _queue(client, memory_id, url, order=None):
+    body = {"url": url} if order is None else {"url": url, "order": order}
+    resp = client.post(f"/api/memories/{memory_id}/photos/from-url", json=body)
+    assert resp.status_code == 202, resp.text
+
+
+def _hashes(engine, memory_id) -> dict:
+    with Session(engine) as sess:
+        return load_state(sess.get(DBMemory, memory_id).photo_order_json)["hashes"]
+
+
+def _sha(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+class TestFromUrlDedup:
+    def test_the_same_photo_queued_twice_is_stored_once(self, env, monkeypatch):
+        client, engine, user_id, memory_id, _ = env
+        raw = _jpeg_bytes()
+        monkeypatch.setattr(mem_mod, "fetch_bytes", lambda url, **kwargs: raw)
+
+        _queue(client, memory_id, "http://x/0.jpg", 0)
+        (first,) = _photos(engine, memory_id)
+        usage = _usage(engine, user_id)
+        # Import pressed again: the same step's photo is queued again.
+        _queue(client, memory_id, "http://x/0.jpg", 0)
+
+        assert _photos(engine, memory_id) == [first]
+        assert _hashes(engine, memory_id) == {first: _sha(raw)}
+        assert _files(user_id, memory_id) == sorted([f"{first}.jpg", f"{first}_thumb.jpg"])
+        assert _usage(engine, user_id) == usage
+
+    def test_the_same_photo_from_two_urls_is_stored_once(self, env, monkeypatch):
+        # The key is the content: a URL that differs between two fetches
+        # (a signed path, say) still finds the photo already there.
+        client, engine, user_id, memory_id, _ = env
+        raw = _jpeg_bytes()
+        monkeypatch.setattr(mem_mod, "fetch_bytes", lambda url, **kwargs: raw)
+
+        _queue(client, memory_id, "http://x/0.jpg?sig=a", 0)
+        _queue(client, memory_id, "http://y/other.jpg?sig=b", 0)
+
+        assert len(_photos(engine, memory_id)) == 1
+        assert len(_files(user_id, memory_id)) == 2
+
+    def test_the_same_photo_downloaded_concurrently_is_stored_once(self, env, monkeypatch):
+        _, engine, user_id, memory_id, _ = env
+        owner = str(user_id)
+        raw = _jpeg_bytes()
+        monkeypatch.setattr(mem_mod, "fetch_bytes", lambda url, **kwargs: raw)
+        original_save = mem_mod._save_photo_files
+        # Both downloads have passed the early check and the quota check, and
+        # written their files, before either places: only the check at
+        # placement can catch the second.
+        both_written = threading.Barrier(2, timeout=5)
+        saved = []
+
+        def save_then_wait(user_id_, memory_id_, uuid_str, content):
+            original_save(user_id_, memory_id_, uuid_str, content)
+            saved.append(uuid_str)
+            both_written.wait()
+
+        monkeypatch.setattr(mem_mod, "_save_photo_files", save_then_wait)
+        threads = [
+            threading.Thread(target=mem_mod._download_photo_from_url,
+                             args=(memory_id, f"http://x/{i}.jpg", owner, None, 0, 0))
+            for i in range(2)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(saved) == 2
+        (kept,) = _photos(engine, memory_id)
+        assert kept in saved
+        assert _hashes(engine, memory_id) == {kept: _sha(raw)}
+        # The loser's files are gone, and uncounted.
+        assert _files(user_id, memory_id) == sorted([f"{kept}.jpg", f"{kept}_thumb.jpg"])
+        folder = Path(mem_mod._DATA_DIR) / "users" / owner / "memories" / str(memory_id)
+        kept_bytes = sum(p.stat().st_size for p in folder.glob("*"))
+        assert _usage(engine, user_id) == _BASELINE_USAGE + kept_bytes
+
+    def test_two_different_photos_are_both_stored_in_rank_order(self, env, monkeypatch):
+        client, engine, _, memory_id, _ = env
+        content = {"http://x/0.jpg": _jpeg_bytes(shade=0), "http://x/1.jpg": _jpeg_bytes(shade=200)}
+        monkeypatch.setattr(mem_mod, "fetch_bytes", lambda url, **kwargs: content[url])
+
+        _queue(client, memory_id, "http://x/1.jpg", 1)
+        _queue(client, memory_id, "http://x/0.jpg", 0)
+
+        p0, p1 = _photos(engine, memory_id)
+        assert _hashes(engine, memory_id) == {p0: _sha(content["http://x/0.jpg"]),
+                                              p1: _sha(content["http://x/1.jpg"])}
+
+    def test_after_a_reimport_clear_the_same_photos_download_again(self, env, monkeypatch):
+        client, engine, user_id, memory_id, _ = env
+        raw = _jpeg_bytes()
+        monkeypatch.setattr(mem_mod, "fetch_bytes", lambda url, **kwargs: raw)
+        _queue(client, memory_id, "http://x/0.jpg", 0)
+        (before,) = _photos(engine, memory_id)
+
+        assert _reimport(user_id) == memory_id
+        _queue(client, memory_id, "http://x/0.jpg", 0)
+
+        (after,) = _photos(engine, memory_id)
+        assert after != before
+        assert _hashes(engine, memory_id) == {after: _sha(raw)}
+
+    def test_a_deleted_photo_downloads_again(self, env, monkeypatch):
+        client, engine, _, memory_id, _ = env
+        raw = _jpeg_bytes()
+        monkeypatch.setattr(mem_mod, "fetch_bytes", lambda url, **kwargs: raw)
+        _queue(client, memory_id, "http://x/0.jpg", 0)
+        (deleted,) = _photos(engine, memory_id)
+        assert client.delete(f"/api/memories/{memory_id}/photos/{deleted}").status_code == 204
+
+        _queue(client, memory_id, "http://x/0.jpg", 0)
+
+        (again,) = _photos(engine, memory_id)
+        assert again != deleted
+        assert _hashes(engine, memory_id) == {again: _sha(raw)}
+
+    def test_a_skipped_duplicate_writes_no_file_and_checks_no_quota(self, env, monkeypatch):
+        client, engine, user_id, memory_id, _ = env
+        raw = _jpeg_bytes()
+        monkeypatch.setattr(mem_mod, "fetch_bytes", lambda url, **kwargs: raw)
+        _queue(client, memory_id, "http://x/0.jpg", 0)
+
+        calls = []
+        monkeypatch.setattr(mem_mod, "ensure_storage_quota", lambda *a, **k: calls.append("quota"))
+        monkeypatch.setattr(mem_mod, "_save_photo_files", lambda *a, **k: calls.append("save"))
+        monkeypatch.setattr(mem_mod, "_write_memory_photo", lambda *a, **k: calls.append("place"))
+        _queue(client, memory_id, "http://x/0.jpg", 0)
+
+        assert calls == []
+        assert len(_photos(engine, memory_id)) == 1
+
+    def test_a_manual_upload_of_a_downloaded_photo_is_still_stored(self, env, monkeypatch):
+        client, engine, _, memory_id, _ = env
+        raw = _jpeg_bytes()
+        monkeypatch.setattr(mem_mod, "fetch_bytes", lambda url, **kwargs: raw)
+        _queue(client, memory_id, "http://x/0.jpg", 0)
+        (downloaded,) = _photos(engine, memory_id)
+
+        resp = client.post(f"/api/memories/{memory_id}/photos",
+                           files={"file": ("m.jpg", raw, "image/jpeg")})
+        assert resp.status_code == 201, resp.text
+        manual = resp.json()["uuid"]
+
+        assert _photos(engine, memory_id) == [downloaded, manual]
+        # The upload records no hash, so it never makes a download look present.
+        assert _hashes(engine, memory_id) == {downloaded: _sha(raw)}
 
 
 # ── delete still correct under the lock ─────────────────────────────────────
