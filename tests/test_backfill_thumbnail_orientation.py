@@ -221,7 +221,8 @@ def test_the_temp_file_a_killed_rewrite_leaves_is_the_one_reported(data_dir, eng
 
 
 @pytest.mark.parametrize("script", ["scripts/backfill_thumbnail_orientation.py",
-                                    "scripts/reorder_polarsteps_memory_photos.py"])
+                                    "scripts/reorder_polarsteps_memory_photos.py",
+                                    "scripts/dedupe_memory_photos.py"])
 def test_the_photo_repair_scripts_are_in_the_image(script):
     patterns = (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
     assert (ROOT / script).is_file()
