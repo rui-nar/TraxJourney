@@ -81,7 +81,6 @@ void main() {
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
-      ignoreFontFetchErrors();
       await tester.pumpWidget(
           MaterialApp(theme: landingTheme(), home: const WelcomeScreen()));
       await tester.pump();

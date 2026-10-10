@@ -16,9 +16,9 @@ import '../core/legal_links.dart';
 const _kBreak = 900.0;
 const _kNavH  = 64.0;
 const _kShell = 1200.0;
-/// Below this width the page keeps a phone's 16 px side gutter, not 32 px:
-/// on a 320 px screen 64 px of gutter left too little for the nav and the
-/// pricing cards (issue #473).
+/// Below this width the page (every _Shell: the nav and each section) keeps a
+/// phone's 16 px side gutter, not 32 px: on a 320 px screen 64 px of gutter
+/// left too little for the nav and the pricing cards (issue #473).
 const _kPhone = 600.0;
 
 // ── Always-dark showcase palette ─────────────────────────────────────────────
@@ -116,8 +116,11 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
 
 class _Shell extends StatelessWidget {
   final Widget child;
-  final EdgeInsets? padding;
-  const _Shell({required this.child, this.padding});
+  /// Vertical space only: the side gutter is the shell's, so every section
+  /// lines up with the nav (issue #473, review R1-3).
+  final double top;
+  final double bottom;
+  const _Shell({required this.child, this.top = 0, this.bottom = 0});
 
   @override
   Widget build(BuildContext context) {
@@ -126,7 +129,7 @@ class _Shell extends StatelessWidget {
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: _kShell),
         child: Padding(
-            padding: padding ?? EdgeInsets.symmetric(horizontal: gutter),
+            padding: EdgeInsets.fromLTRB(gutter, top, gutter, bottom),
             child: child),
       ),
     );
@@ -336,7 +339,7 @@ class _HeroSection extends StatelessWidget {
     return Container(
       color: theme.scaffoldBackgroundColor,
       child: _Shell(
-        padding: const EdgeInsets.fromLTRB(32, 80, 32, 64),
+        top: 80, bottom: 64,
         child: LayoutBuilder(
           builder: (_, c) => c.maxWidth >= _kBreak
               ? _HeroWide(theme)
@@ -634,9 +637,12 @@ class _MapView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Placed by the map's own width, not the screen's: on a wide window the
+    // map is half the screen, and screen-relative offsets put Barcelos and
+    // the memory card past its clipped edge (issue #473, review R1-1).
     return SizedBox(
       height: 280,
-      child: Stack(
+      child: LayoutBuilder(builder: (context, box) => Stack(
         fit: StackFit.expand,
         children: [
           // Map canvas
@@ -645,19 +651,19 @@ class _MapView extends StatelessWidget {
           // City labels
           Positioned(left: 24, bottom: 36,
               child: _MapLabel('Porto')),
-          Positioned(left: 0.48 * MediaQuery.sizeOf(context).width, bottom: 64,
+          Positioned(left: 0.48 * box.maxWidth, bottom: 64,
               child: _MapLabel('Barcelos')),
           Positioned(right: 8, top: 48,
               child: _MapLabel('Santiago')),
 
           // Memory card
           Positioned(
-            left: 0.32 * MediaQuery.sizeOf(context).width,
+            left: 0.32 * box.maxWidth,
             top: 40,
             child: _MemoryCard(theme),
           ),
         ],
-      ),
+      )),
     );
   }
 }
@@ -956,7 +962,7 @@ class _FeaturesSection extends StatelessWidget {
         children: [
           Divider(height: 1, color: theme.dividerColor),
           _Shell(
-            padding: const EdgeInsets.fromLTRB(32, 96, 32, 96),
+            top: 96, bottom: 96,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1105,7 +1111,7 @@ class _HowItWorksSection extends StatelessWidget {
         children: [
           Divider(height: 1, color: theme.dividerColor),
           _Shell(
-            padding: const EdgeInsets.fromLTRB(32, 96, 32, 96),
+            top: 96, bottom: 96,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1216,7 +1222,7 @@ class _ShowcaseSection extends StatelessWidget {
               // Grid overlay
               Positioned.fill(child: CustomPaint(painter: _GridPainter())),
               _Shell(
-                padding: const EdgeInsets.fromLTRB(32, 96, 32, 96),
+                top: 96, bottom: 96,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -1501,7 +1507,7 @@ class _SelfHostSectionState extends State<_SelfHostSection> {
         children: [
           Divider(height: 1, color: theme.dividerColor),
           _Shell(
-            padding: const EdgeInsets.fromLTRB(32, 96, 32, 96),
+            top: 96, bottom: 96,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1621,7 +1627,8 @@ class _TierCard extends StatelessWidget {
                         text: 'Free',
                         style: _inter(40, FontWeight.w800, fg1, spacing: -0.03)),
                     TextSpan(
-                        text: '  · AGPL',
+                        // No break between the dot and "AGPL" (review R1-2).
+                        text: '  · AGPL',
                         style: _inter(14, FontWeight.w500, fg2)),
                   ])),
                 )
@@ -1736,7 +1743,7 @@ class _Footer extends StatelessWidget {
         children: [
           Divider(height: 1, color: theme.dividerColor),
           _Shell(
-            padding: const EdgeInsets.fromLTRB(32, 48, 32, 32),
+            top: 48, bottom: 32,
             child: LayoutBuilder(builder: (_, c) {
               final wide = c.maxWidth >= _kBreak;
               if (wide) {

@@ -48,7 +48,6 @@ void main() {
         // Only the price is under test. The rest of the page still overflows
         // at 2x and 3x (issue #595; the pricing cards themselves are held by
         // welcome_screen_overflow_test.dart), so overflow reports are set aside.
-        ignoreFontFetchErrors();
         final previous = FlutterError.onError;
         FlutterError.onError = (details) {
           if (details.exceptionAsString().contains('overflowed')) return;

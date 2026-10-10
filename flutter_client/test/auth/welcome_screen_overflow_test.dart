@@ -36,7 +36,6 @@ Future<List<RenderObject>> _pump(
   addTearDown(tester.view.resetDevicePixelRatio);
   tester.platformDispatcher.textScaleFactorTestValue = scale;
   addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
-  ignoreFontFetchErrors();
 
   final overflowing = <RenderObject>[];
   final previous = FlutterError.onError;
@@ -133,6 +132,79 @@ void main() {
       expect(split, isEmpty);
     });
   }
+
+  // The hero map's label and memory card sit in a clipping Stack, which cuts
+  // them off without reporting an overflow. They were placed by screen width,
+  // so on a wide window they landed past the half-screen map (review R1-1).
+  for (final size in [..._phones, const Size(1280, 900), const Size(1920, 1080)]) {
+    testWidgets('the hero map keeps its label and card inside it at '
+        '${size.width.toInt()} px', (tester) async {
+      await _pump(tester, size, 1.0);
+      final label = find.text('Barcelos');
+      final map = tester.getRect(
+          find.ancestor(of: label, matching: find.byType(Stack)).first);
+      for (final item in [label, find.text('Ponte de Lima café')]) {
+        final placed = tester.getRect(
+            find.ancestor(of: item, matching: find.byType(Positioned)).first);
+        expect(map.contains(placed.topLeft) && map.contains(placed.bottomRight - const Offset(1, 1)),
+            isTrue, reason: '$placed is not inside the map $map');
+      }
+    });
+  }
+
+  // "· AGPL" moves under "Free" as one piece; the dot never ends a line on
+  // its own (review R1-2).
+  for (final phone in _phones) {
+    for (final scale in [1.0, 2.0, 3.0]) {
+      testWidgets('"· AGPL" stays together at ${phone.width.toInt()} px and '
+          '${scale}x text', (tester) async {
+        await _pump(tester, phone, scale);
+        final p = tester.renderObject<RenderParagraph>(find.byWidgetPredicate(
+            (w) => w is RichText && w.text.toPlainText().startsWith('Free')));
+        final text = p.text.toPlainText();
+        final dot = text.indexOf('·');
+        final tops = {
+          for (final box in p.getBoxesForSelection(
+              TextSelection(baseOffset: dot, extentOffset: text.length)))
+            box.top.round(),
+        };
+        expect(tops, hasLength(1), reason: '"$text" breaks inside "· AGPL"');
+      });
+    }
+  }
+
+  // Every section shares the nav's side gutter: 16 px on a phone (review R1-3).
+  for (final phone in _phones) {
+    testWidgets('sections line up with the nav at ${phone.width.toInt()} px',
+        (tester) async {
+      await _pump(tester, phone, 1.0);
+      // The features section's eyebrow (the footer's link comes later; on a
+      // phone the nav has no link of that name).
+      expect(tester.getTopLeft(find.text('Features').first).dx, 16);
+      expect(tester.getTopLeft(find.text(kWordmarkLead).first).dx,
+          lessThan(16 + 28 + 10 + 1)); // logo (28) and its gap (10) first
+    });
+  }
+
+  // Everything is measured in a font loadRealFonts loaded and checked: text
+  // in any other family would lay out in the test font (review R1-4).
+  testWidgets('the page draws only fonts the test loaded', (tester) async {
+    await _pump(tester, const Size(390, 844), 1.0);
+    final families = <String?>{};
+    for (final p in tester.renderObjectList<RenderParagraph>(find.descendant(
+        of: find.byType(WelcomeScreen), matching: find.byType(RichText)))) {
+      p.text.visitChildren((span) {
+        if (span is TextSpan && span.text != null) {
+          families.add(span.style?.fontFamily);
+        }
+        return true;
+      });
+    }
+    families
+      ..remove('MaterialIcons') // icon glyphs, not text
+      ..remove('Inter'); // the map labels' unregistered family: issue #594
+    expect(families.difference(loadedFontFamilies), isEmpty);
+  });
 
   testWidgets('the wordmark spells the app name', (tester) async {
     await _pump(tester, const Size(390, 844), 1.0);

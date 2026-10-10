@@ -29,14 +29,33 @@ final _mono = {
   FontWeight.w800: 'JetBrainsMono-ExtraBold.ttf',
 };
 
+/// Every family [loadRealFonts] registered. A page under test that draws text
+/// in any other family (bar icon fonts) is measured in the test font, which
+/// is what welcome_screen_overflow_test.dart checks against.
+final loadedFontFamilies = <String>{};
+
 Future<void> _load(String family, String file) async {
   final bytes = File('test/fonts/$file').readAsBytesSync();
   await (FontLoader(family)..addFont(Future.value(ByteData.sublistView(bytes))))
       .load();
+  // google_fonts only prints a failed lookup, so a family that silently fell
+  // back to the test font would go unnoticed: the test font draws every glyph
+  // a full em wide, real fonts draw "i" far narrower (review R1-4).
+  final probe = TextPainter(
+    text: TextSpan(text: 'iiiiiiiiii',
+        style: TextStyle(fontFamily: family, fontSize: 10)),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  // Ten glyphs at 10 px: 100 px in the test font, 60 in a monospace font.
+  expect(probe.width, lessThan(90),
+      reason: '$file under "$family" measured like the test font');
+  probe.dispose();
+  loadedFontFamilies.add(family);
 }
 
 /// Loads Inter and JetBrains Mono at every weight the landing page uses.
-/// Call from `setUpAll`.
+/// Call from `setUpAll`. google_fonts' own lookups of these families still
+/// fail (runtime fetching is off) and print a line each; that is expected.
 Future<void> loadRealFonts() async {
   GoogleFonts.config.allowRuntimeFetching = false;
   for (final MapEntry(key: weight, value: file) in _inter.entries) {
@@ -67,18 +86,3 @@ ThemeData landingTheme() {
   );
 }
 
-/// Sets aside google_fonts' own failed attempts to fetch the fonts above (it
-/// does not know they are already loaded) and nothing else, so an overflow
-/// still fails the test. Call inside the test.
-void ignoreFontFetchErrors() {
-  final previous = FlutterError.onError;
-  FlutterError.onError = (details) {
-    final text = details.exceptionAsString();
-    if (text.contains('GoogleFonts') || text.contains('google_fonts') ||
-        text.contains('allowRuntimeFetching')) {
-      return;
-    }
-    previous?.call(details);
-  };
-  addTearDown(() => FlutterError.onError = previous);
-}

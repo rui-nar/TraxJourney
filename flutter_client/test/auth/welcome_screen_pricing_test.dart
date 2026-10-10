@@ -41,8 +41,6 @@ Future<void> _pumpWelcome(
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
 
-  ignoreFontFetchErrors();
-
   await tester.pumpWidget(MaterialApp(
       theme: landingTheme(), home: WelcomeScreen(loadPlans: loadPlans)));
   await tester.pump(); // resolve the catalogue future

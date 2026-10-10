@@ -23,8 +23,6 @@ Future<void> _pumpWelcome(WidgetTester tester, Size size) async {
   addTearDown(tester.view.resetDevicePixelRatio);
   addTearDown(() => serverVersion.value = null);
 
-  ignoreFontFetchErrors();
-
   await tester.pumpWidget(
       MaterialApp(theme: landingTheme(), home: const WelcomeScreen()));
   await tester.pump();
