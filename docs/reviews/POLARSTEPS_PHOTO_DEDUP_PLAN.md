@@ -61,3 +61,18 @@ Owner answer: one copy is fine. Added to the plan's envelope.
 - Guard: —
 - Override: —
 - Outcome: open
+
+## Unit review U1 — 2026-10-10, reviewed at f7157d40 (worktree-agent-ac8cca895fccb0c61)
+
+Fable reviewer, Opus triager. 1 finding, no envelope questions. Every writer
+of `photo_order_json` was traced through `load_state`; the format change reads
+old rows as no hashes.
+
+### U1R1-1 — has_hash answers True for content_hash=None whenever any listed photo carries no hash
+- Trigger: no current caller. A future path calling `has_hash(state, photos, None)` on a memory holding a manual upload (no hash) gets True and skips a download as a duplicate; the user sees a photo missing, with only an info log.
+- Scores: trigger=theoretical, impact=silent-wrong, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Guard (D4), overridden to Fix now
+- Revisit when: —
+- Guard: — (proposed: has_hash raises unless given a sha256 hex digest; superseded by the override)
+- Override: user: Fix now — has_hash returns False for a missing or invalid hash rather than a guard
+- Outcome: fixed (2a1ce9a9)
