@@ -34,6 +34,7 @@ scripts/
 !scripts/rotate_credentials_key.py
 !scripts/reorder_polarsteps_memory_photos.py
 !scripts/backfill_thumbnail_orientation.py
+!scripts/dedupe_memory_photos.py
 
 # Secrets
 config/config.json
