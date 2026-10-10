@@ -9,6 +9,7 @@
 // issue #595.
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:traxjourney_client/src/auth/welcome_screen.dart';
 import 'package:traxjourney_client/src/billing/billing_service.dart';
@@ -106,6 +107,31 @@ void main() {
         expect(find.text('Same app, hosted for you'), findsOneWidget);
       });
     }
+  }
+
+  // A word wider than its line does not overflow: it is broken between two
+  // letters, which no overflow check sees. The hero headline was, on every
+  // phone ("advent / ure,").
+  for (final size in [..._phones, const Size(412, 915), const Size(1280, 900)]) {
+    testWidgets('no word is split across lines at ${size.width.toInt()} px',
+        (tester) async {
+      await _pump(tester, size, 1.0);
+      final split = <String>[];
+      for (final p in tester.renderObjectList<RenderParagraph>(find.descendant(
+          of: find.byType(WelcomeScreen), matching: find.byType(RichText)))) {
+        final text = p.text.toPlainText();
+        // Breaking at a space or after a hyphen is fine.
+        for (final word in RegExp(r'[^\s-]+').allMatches(text)) {
+          final tops = {
+            for (final box in p.getBoxesForSelection(TextSelection(
+                baseOffset: word.start, extentOffset: word.end)))
+              box.top.round(),
+          };
+          if (tops.length > 1) split.add('"${word[0]}" in "$text"');
+        }
+      }
+      expect(split, isEmpty);
+    });
   }
 
   testWidgets('the wordmark spells the app name', (tester) async {

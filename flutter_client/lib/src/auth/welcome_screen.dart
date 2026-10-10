@@ -391,6 +391,9 @@ class _HeroText extends StatelessWidget {
     final fg2 = theme.colorScheme.onSurfaceVariant;
     final align = centered ? TextAlign.center : TextAlign.left;
     final cross = centered ? CrossAxisAlignment.center : CrossAxisAlignment.start;
+    // 64 px puts "adventure," wider than a phone, which breaks it between
+    // two letters; phones get a size whose longest word fits (issue #473).
+    final h1 = MediaQuery.sizeOf(context).width < _kPhone ? 40.0 : 64.0;
 
     return Column(
       crossAxisAlignment: cross,
@@ -434,12 +437,12 @@ class _HeroText extends StatelessWidget {
         // H1 — two lines
         Text('Your adventure,',
             textAlign: align,
-            style: _inter(64, FontWeight.w800, fg1, height: 1.02, spacing: -0.035)),
+            style: _inter(h1, FontWeight.w800, fg1, height: 1.02, spacing: -0.035)),
         SizedBox(
           width: double.infinity,
           child: _gradientText(
             'stitched end-to-end.',
-            _inter(64, FontWeight.w800, Colors.white, height: 1.02, spacing: -0.035),
+            _inter(h1, FontWeight.w800, Colors.white, height: 1.02, spacing: -0.035),
             textAlign: centered ? TextAlign.center : TextAlign.start,
           ),
         ),
