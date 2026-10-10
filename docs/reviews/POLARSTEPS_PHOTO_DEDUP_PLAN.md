@@ -76,3 +76,16 @@ old rows as no hashes.
 - Guard: — (proposed: has_hash raises unless given a sha256 hex digest; superseded by the override)
 - Override: user: Fix now — has_hash returns False for a missing or invalid hash rather than a guard
 - Outcome: fixed (2a1ce9a9)
+
+## Unit review U3 — 2026-10-10, reviewed at 0e6024be (worktree-agent-a31a027eca7a97fd4)
+
+Fable reviewer, Opus triager. 1 finding, no envelope questions.
+
+### U3R1-1 — A UUID listed twice in photos_json is treated as its own duplicate and the memory loses its only copy
+- Trigger: owner runs `--apply --api-stopped` on a Polarsteps memory whose `photos_json` holds the same UUID twice → the second occurrence is planned as a duplicate of the first → `remove` strips every occurrence, the row is committed, and the photo's files are deleted.
+- Scores: trigger=theoretical, impact=data-loss, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Guard (D4), overridden to Fix now
+- Revisit when: —
+- Guard: — (proposed: skip and report a memory with repeated entries; superseded by the override)
+- Override: user: Fix now — a repeated entry is the same photo: collapsed to one, its files never unlinked
+- Outcome: fixed (be32ccc5)
