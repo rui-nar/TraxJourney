@@ -367,9 +367,10 @@ docker compose up -d
 What it prints:
 
 - `memory <id> (project <id>): removed N duplicate(s), B bytes; H hash(es)
-  recorded`, then one `removed: <uuid> (same as <uuid>)` line per photo. Each
-  photo goes with its thumbnail and share copy, and the owner's counted
-  storage drops by B.
+  recorded; R repeated entries collapsed`, then one `removed: <uuid> (same
+  as <uuid>)` line per photo. Each photo goes with its thumbnail and share
+  copy, and the owner's counted storage drops by B. A repeated entry is the
+  same photo listed twice: only the extra entry goes, never the photo's files.
 - `file missing for <uuid>`: the memory lists a photo whose file is not on
   disk. It is never treated as a duplicate and stays listed.
 - `unlisted file (not deleted): <path>`: a file in a Polarsteps memory's

@@ -13,7 +13,9 @@ their full-resolution files have the same sha256 (the import writes that file
 byte for byte as downloaded). The first in ``photos_json`` order is kept, the
 others are removed with their thumbnail and share copy, and each owner's
 counted storage drops by what was removed. A listed photo whose file is
-missing is reported and is never a duplicate.
+missing is reported and is never a duplicate. A UUID the list holds more than
+once is one photo shown twice, not a duplicate: the repeats are dropped from
+the list and its files are kept.
 
 Every photo kept gets its hash recorded, unless it already carries one (a
 replaced photo carries the hash of the download it replaced, on purpose), so
@@ -69,6 +71,7 @@ class Report:
     photos_removed: int = 0
     bytes_freed: int = 0
     hashes_recorded: int = 0
+    repeats_collapsed: int = 0
     missing: List[Tuple[int, str]] = field(default_factory=list)
     unlisted: List[Path] = field(default_factory=list)
 
@@ -79,7 +82,11 @@ def _sha256(path: Path) -> str:
 
 def _plan(folder: Path, photos: List[str], report: Report,
           memory_id: int) -> Tuple[Dict[str, str], Dict[str, str]]:
-    """``(kept uuid -> hash, dropped uuid -> kept uuid it duplicates)``."""
+    """``(kept uuid -> hash, dropped uuid -> kept uuid it duplicates)``.
+
+    *photos* holds each UUID once: a UUID listed twice is the same photo, not
+    a duplicate of itself, and must never land in the dropped set (U3R1-1).
+    """
     kept: Dict[str, str] = {}
     first_of: Dict[str, str] = {}
     dropped: Dict[str, str] = {}
@@ -115,27 +122,34 @@ def _dedupe_memory(data_dir: Path, memory_id: int, apply: bool, report: Report) 
         owner_id = sess.get(DBProject, mem.project_id).user_info_id
         folder = photo_folder(data_dir, owner_id, "memories", memory_id)
         photos = [p for p in json.loads(mem.photos_json or "[]") if p]
-        kept, dropped = _plan(folder, photos, report, memory_id)
+        # A UUID listed more than once is one photo shown twice: keep its
+        # first place and drop the repeats from the list, never its files.
+        unique = list(dict.fromkeys(photos))
+        repeats = len(photos) - len(unique)
+        kept, dropped = _plan(folder, unique, report, memory_id)
 
         state = load_state(mem.photo_order_json)
-        new_photos = photos
+        new_photos = unique
         for uuid in dropped:
             new_photos, state = remove(new_photos, state, uuid)
         new_hashes = {u: h for u, h in kept.items() if u not in state["hashes"]}
         state = {**state, "hashes": {**state["hashes"], **new_hashes}}
 
         freed = bytes_of(*photo_files(folder, dropped))
-        if dropped or new_hashes:
+        changed = bool(dropped or new_hashes or repeats)
+        if changed:
             report.memories_touched += 1
+            report.repeats_collapsed += repeats
             report.photos_removed += len(dropped)
             report.bytes_freed += freed
             report.hashes_recorded += len(new_hashes)
             verb, hverb = ("removed", "recorded") if apply else ("to remove", "to record")
             print(f"memory {memory_id} (project {mem.project_id}): {verb} {len(dropped)} "
-                  f"duplicate(s), {freed} bytes; {len(new_hashes)} hash(es) {hverb}")
+                  f"duplicate(s), {freed} bytes; {len(new_hashes)} hash(es) {hverb}; "
+                  f"{repeats} repeated entr{'y' if repeats == 1 else 'ies'} collapsed")
             for uuid, original in dropped.items():
                 print(f"    {verb}: {uuid} (same as {original})")
-        if apply and (dropped or new_hashes):
+        if apply and changed:
             # The row first: an interruption before the unlink below leaves
             # unlisted files (reported by the next run), never a listed photo
             # without its file (review R1-2).
@@ -198,7 +212,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     verb = "removed" if args.apply else "to remove"
     print(f"memories touched {report.memories_touched} / photos {verb} {report.photos_removed} / "
           f"bytes freed {report.bytes_freed} / hashes recorded {report.hashes_recorded} / "
-          f"missing files {len(report.missing)} / unlisted files {len(report.unlisted)}")
+          f"missing files {len(report.missing)} / unlisted files {len(report.unlisted)} / "
+          f"repeats collapsed {report.repeats_collapsed}")
     if not args.apply and report.memories_touched:
         print("Dry run: nothing written. Stop the API, then re-run with --apply --api-stopped.")
     return 0

@@ -256,3 +256,60 @@ def test_an_interruption_after_the_row_write_leaves_only_unlisted_files(data_dir
     # Memory 20 was never reached by the killed run; the re-run cleans it.
     assert _memory(engine, 20)[0] == [P2_FIRST]
     assert all(files[p] == p.read_bytes() for p in leftovers)
+
+
+def _add_memory(engine, data_dir: Path, memory_id: int, photos: list) -> None:
+    """A Polarsteps memory *memory_id* in a new project *memory_id* listing *photos*."""
+    with Session(engine) as sess:
+        sess.add(DBProject(id=memory_id, user_info_id=1, name=f"trip {memory_id}"))
+        sess.add(DBMemory(id=memory_id, project_id=memory_id, date="2026-02-01",
+                          polarsteps_step_id=memory_id, photos_json=json.dumps(photos)))
+        sess.commit()
+
+
+def test_a_uuid_listed_twice_is_collapsed_and_its_files_kept(data_dir, engine, capsys):
+    """[A, A] is one photo shown twice, not a duplicate of itself (U3R1-1)."""
+    folder = _folder(data_dir, 30)
+    _store(folder, FIRST, SAME, share=True)
+    _add_memory(engine, data_dir, 30, [FIRST, FIRST])
+    files = _snapshot(folder)
+    assert _apply(data_dir, "--project", "30") == 0
+    out = capsys.readouterr().out
+    assert _memory(engine, 30)[0] == [FIRST]
+    assert json.loads(_memory(engine, 30)[1])["hashes"] == {FIRST: _sha(SAME)}
+    assert _snapshot(folder) == files
+    assert _usage(engine) == INITIAL_USAGE
+    assert "removed 0 duplicate(s), 0 bytes; 1 hash(es) recorded; 1 repeated entry collapsed" in out
+    assert "memories touched 1 / photos removed 0 / bytes freed 0" in out
+    assert "repeats collapsed 1" in out
+
+
+def test_a_repeated_uuid_with_a_true_duplicate_keeps_the_first(data_dir, engine, capsys):
+    """[A, B, A] with B byte-identical to A: B goes, A stays, listed once."""
+    folder = _folder(data_dir, 31)
+    _store(folder, FIRST, SAME)
+    _store(folder, COPY_1, SAME)
+    removed = _counted(folder, COPY_1)
+    _add_memory(engine, data_dir, 31, [FIRST, COPY_1, FIRST])
+    assert _apply(data_dir, "--project", "31") == 0
+    out = capsys.readouterr().out
+    assert _memory(engine, 31)[0] == [FIRST]
+    assert sorted(p.name for p in folder.iterdir()) == [f"{FIRST}.jpg", f"{FIRST}_thumb.jpg"]
+    assert _usage(engine) == INITIAL_USAGE - removed
+    assert f"removed: {COPY_1} (same as {FIRST})" in out
+    assert "repeats collapsed 1" in out
+
+
+def test_dry_run_reports_repeats_and_writes_nothing(data_dir, engine, capsys):
+    folder = _folder(data_dir, 32)
+    _store(folder, FIRST, SAME)
+    _store(folder, COPY_1, SAME)
+    _add_memory(engine, data_dir, 32, [FIRST, COPY_1, FIRST])
+    files, row = _snapshot(data_dir), _memory(engine, 32)
+    assert _run("--data-dir", str(data_dir), "--project", "32") == 0
+    out = capsys.readouterr().out
+    assert _snapshot(data_dir) == files
+    assert _memory(engine, 32) == row
+    assert _usage(engine) == INITIAL_USAGE
+    assert "to remove 1 duplicate(s)" in out and "1 repeated entry collapsed" in out
+    assert "memories touched 1 / photos to remove 1" in out and "repeats collapsed 1" in out
