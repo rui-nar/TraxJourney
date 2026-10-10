@@ -170,7 +170,10 @@ def _has_photo_order_column(con: sqlite3.Connection) -> bool:
 
 
 def _write_reorder(con: sqlite3.Connection, memory, new_order: List[str]) -> bool:
-    """Store *new_order* with ranks reset and the epoch kept; commit at once.
+    """Store *new_order* with ranks reset and the epoch and hashes kept; commit at once.
+
+    The photos keep their UUIDs, so their content hashes (issue #566) still
+    hold and are carried over.
 
     Compare-and-set against the values the plan was computed from, so a live
     API edit made since then is never overwritten. Committing per memory holds
@@ -183,7 +186,7 @@ def _write_reorder(con: sqlite3.Connection, memory, new_order: List[str]) -> boo
         "WHERE id=? AND photos_json IS ? AND photo_order_json IS ?",
         (
             json.dumps(new_order),
-            dump_state({"epoch": state["epoch"], "ranks": {}}),
+            dump_state({**state, "ranks": {}}),
             memory["id"],
             memory["photos_json"],
             memory["photo_order_json"],

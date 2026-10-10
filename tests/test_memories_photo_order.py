@@ -292,7 +292,7 @@ class TestReimportEpoch:
         assert _files(user_id, memory_id) == []
         assert _usage(engine, user_id) == _BASELINE_USAGE
         with Session(engine) as sess:
-            assert load_state(sess.get(DBMemory, memory_id).photo_order_json) == {"epoch": 1, "ranks": {}}
+            assert load_state(sess.get(DBMemory, memory_id).photo_order_json) == {"epoch": 1, "ranks": {}, "hashes": {}}
 
     def test_a_download_queued_after_a_reimport_lands(self, env, monkeypatch):
         client, engine, user_id, memory_id, _ = env
