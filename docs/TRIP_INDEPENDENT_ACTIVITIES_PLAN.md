@@ -266,8 +266,10 @@ REVIEW.md §2 defaults apply, with these additions:
 
 ## Open decisions
 
-- **O1 — Privacy-policy wording** for Decision 4. The owner writes or approves
-  the sentence before U9 runs. A suggested draft is in U9.
+- **O1 — Privacy-policy wording** for Decision 4. **Decided** (owner,
+  2026-10-10): "Activities you add to a trip someone else owns become part of
+  that trip: they belong to its owner and stay in it when you delete your
+  account."
 
 ## Execution units
 
@@ -594,17 +596,15 @@ REVIEW.md §2 defaults apply, with these additions:
   - The deletion paragraph at `legal/privacy.html:362-370` and the Strava
     paragraph at :147-153.
   - Example: how #427 changed this file.
-- **Do:** add the owner-approved sentence (O1) to the deletion paragraph.
-  Suggested draft: "Activities you add to a trip someone else owns become part
-  of that trip: they belong to its owner and stay in it when you delete your
-  account."
+- **Do:** add the owner-approved sentence (O1), verbatim, to the deletion
+  paragraph.
 - **Acceptance:**
   - The sentence is present, verbatim as approved.
   - Any test that checks the policy text passes.
 - **Out of scope:** the terms, other policy sections, and the notice to users
   (RELEASING.md §"significant changes" is the owner's call).
 - **Latitude:** none.
-- **Escalate if:** O1 is not decided.
+- **Escalate if:** a file outside Scope must change (X3).
 - **Depends on:** —
 
 **Waves and W1/W3/W4:**
