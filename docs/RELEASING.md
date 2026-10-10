@@ -330,3 +330,55 @@ owner's counted storage by the size difference. A second `--apply` rewrites
 nothing and reports every photo as already upright.
 
 Once prod is done and checked, delete `db/traxjourney_pre_237.db` on each host.
+
+### Duplicate photos in Polarsteps memories (#566)
+
+Imports from this release on skip a photo the memory already holds. This
+removes the duplicates stored before, in memories imported from Polarsteps
+only (a manual memory may hold the same photo twice on purpose). Two photos
+are duplicates when their full-resolution files are byte-identical; the first
+in the memory's order is kept. It also records the content hash of every photo
+it keeps, so a later re-import of those memories skips them too. Run it on
+val first, check a few of the reported memories in the app, then on prod.
+
+**1. Copy the database**, as in step 1 of the subsection above, under a new
+name (`traxjourney_pre_566.db`); restoring it works the same way.
+
+```bash
+cd /opt/traxjourney
+docker compose run --rm --entrypoint python traxjourney -c "import sqlite3; s=sqlite3.connect('/app/db/traxjourney.db'); d=sqlite3.connect('/app/db/traxjourney_pre_566.db'); s.backup(d); d.close(); s.close(); print('backup done')"
+```
+
+**2. Remove the duplicates, with the API stopped.** `--apply` deletes files
+and rewrites memories, and refuses to run without `--api-stopped`. Like the
+thumbnail backfill, it has no `--db`: it reaches the API's database through
+`DATABASE_URL` from the same `.env`. `--project <id>` (repeatable) narrows the
+run. Dry run, read it, then apply, then start again:
+
+```bash
+docker compose down
+docker compose run --rm --entrypoint python traxjourney \
+    scripts/dedupe_memory_photos.py --data-dir /app/data
+docker compose run --rm --entrypoint python traxjourney \
+    scripts/dedupe_memory_photos.py --data-dir /app/data --apply --api-stopped
+docker compose up -d
+```
+
+What it prints:
+
+- `memory <id> (project <id>): removed N duplicate(s), B bytes; H hash(es)
+  recorded`, then one `removed: <uuid> (same as <uuid>)` line per photo. Each
+  photo goes with its thumbnail and share copy, and the owner's counted
+  storage drops by B.
+- `file missing for <uuid>`: the memory lists a photo whose file is not on
+  disk. It is never treated as a duplicate and stays listed.
+- `unlisted file (not deleted): <path>`: a file in a Polarsteps memory's
+  folder that the memory does not list. The script writes each memory before
+  deleting its duplicates' files, so an interrupted `--apply` leaves files
+  like these, never a listed photo without its file. They still count against
+  the owner's storage. Nothing deletes them: record the paths in the follow-up
+  issue for this release.
+
+A second `--apply` changes nothing and reports `memories touched 0`.
+
+Once prod is done and checked, delete `db/traxjourney_pre_566.db` on each host.
