@@ -17,7 +17,6 @@ import 'package:provider/provider.dart';
 import '../api/client.dart';
 import 'members_service.dart';
 import 'projects_notifier.dart';
-import 'travel_companions_section.dart' show companionErrorMessage;
 
 /// User-facing summary of what [role] grants, shown on the invite preview.
 String _roleDescription(String role) => switch (role) {
@@ -66,7 +65,7 @@ class _JoinTripScreenState extends State<JoinTripScreen> {
       setState(() {
         _loading = false;
         _invalid = e.statusCode == 404;
-        _error = e.statusCode == 404 ? null : companionErrorMessage(e);
+        _error = e.statusCode == 404 ? null : apiErrorMessage(e);
       });
     } catch (e) {
       // Not just Exception: an unreachable/misconfigured HTTP client can
@@ -74,7 +73,7 @@ class _JoinTripScreenState extends State<JoinTripScreen> {
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = companionErrorMessage(e);
+        _error = apiErrorMessage(e);
       });
     }
   }
@@ -115,14 +114,14 @@ class _JoinTripScreenState extends State<JoinTripScreen> {
       setState(() {
         _joining = false;
         _invalid = e.statusCode == 404;
-        _error = e.statusCode == 404 ? null : companionErrorMessage(e);
+        _error = e.statusCode == 404 ? null : apiErrorMessage(e);
       });
     } catch (e) {
       // See _loadPreview — keep any failure inline.
       if (!mounted) return;
       setState(() {
         _joining = false;
-        _error = companionErrorMessage(e);
+        _error = apiErrorMessage(e);
       });
     }
   }

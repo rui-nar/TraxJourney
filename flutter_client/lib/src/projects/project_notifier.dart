@@ -2781,7 +2781,7 @@ class ProjectNotifier extends ChangeNotifier
       shareToken = result['share_token'] as String?;
       notifyListeners();
     } on ApiException catch (e) {
-      throw Exception(e.body);
+      throw Exception(apiErrorDetail(e.body));
     }
   }
 
@@ -2793,7 +2793,7 @@ class ProjectNotifier extends ChangeNotifier
       shareToken = null;
       notifyListeners();
     } on ApiException catch (e) {
-      throw Exception(e.body);
+      throw Exception(apiErrorDetail(e.body));
     }
   }
 
@@ -2806,7 +2806,7 @@ class ProjectNotifier extends ChangeNotifier
       shareTokenNoMemories = result['share_token_no_memories'] as String?;
       notifyListeners();
     } on ApiException catch (e) {
-      throw Exception(e.body);
+      throw Exception(apiErrorDetail(e.body));
     }
   }
 
@@ -2818,7 +2818,7 @@ class ProjectNotifier extends ChangeNotifier
       shareTokenNoMemories = null;
       notifyListeners();
     } on ApiException catch (e) {
-      throw Exception(e.body);
+      throw Exception(apiErrorDetail(e.body));
     }
   }
 
@@ -2828,7 +2828,7 @@ class ProjectNotifier extends ChangeNotifier
     try {
       return await api.get(ref.path('/share/visitors')) as Map<String, dynamic>;
     } on ApiException catch (e) {
-      throw Exception(e.body);
+      throw Exception(apiErrorDetail(e.body));
     }
   }
 
@@ -2989,7 +2989,7 @@ class ProjectNotifier extends ChangeNotifier
     try {
       return await api.getRaw(apiPath);
     } on ApiException catch (e) {
-      throw Exception(e.body);
+      throw Exception(apiErrorDetail(e.body));
     }
   }
 
@@ -4144,11 +4144,7 @@ class ProjectNotifier extends ChangeNotifier
   @override
   String errorMessage(Exception e) => _msg(e);
 
-  String _msg(Exception e) {
-    final s = e.toString();
-    final m = RegExp(r'"detail"\s*:\s*"([^"]+)"').firstMatch(s);
-    return m?.group(1) ?? s.replaceFirst('Exception: ', '');
-  }
+  String _msg(Exception e) => apiErrorMessage(e);
 
   /// A message for a background project fetch that failed — the initial load,
   /// the full-res geo upgrade, or an activity re-fetch (issues #178, #190).

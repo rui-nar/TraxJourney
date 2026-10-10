@@ -201,6 +201,53 @@ String apiErrorDetail(String body) {
   return body;
 }
 
+/// The reason in a FastAPI validation error body (422), or null if [body] is
+/// not one.
+///
+/// A field validator's refusal arrives as a `detail` list whose first item's
+/// `msg` is "Value error, " plus the reason.
+String? validationErrorMessage(String body) {
+  try {
+    final decoded = jsonDecode(body);
+    if (decoded is Map && decoded['detail'] is List) {
+      final first = (decoded['detail'] as List).firstOrNull;
+      if (first is Map && first['msg'] is String) {
+        return (first['msg'] as String).replaceFirst('Value error, ', '');
+      }
+    }
+  } on FormatException {
+    // Not JSON: not a validation error.
+  }
+  return null;
+}
+
+/// What the server said about the failure [e], or null when it said nothing
+/// readable: [e] is not an [ApiException], or its body has neither a string
+/// `detail` nor a validation error.
+///
+/// For callers with their own fallbacks (a proxy's bare 413, an HTML error
+/// page); everyone else wants [apiErrorMessage].
+String? apiErrorReason(Object e) {
+  if (e is! ApiException) return null;
+  try {
+    final decoded = jsonDecode(e.body);
+    if (decoded is Map && decoded['detail'] is String) {
+      return decoded['detail'] as String;
+    }
+  } on FormatException {
+    // Not JSON — nothing the server meant for the reader.
+  }
+  return validationErrorMessage(e.body);
+}
+
+/// The message to show for the failure [e]: what the server said
+/// ([apiErrorReason]), or else the exception's own text.
+///
+/// The one way screens and notifiers read an error (issue #480). A regex on
+/// `"detail"` stopped at the first escaped quote and lost validation errors.
+String apiErrorMessage(Object e) =>
+    apiErrorReason(e) ?? e.toString().replaceFirst('Exception: ', '');
+
 class ApiException implements Exception {
   final int statusCode;
   final String body;

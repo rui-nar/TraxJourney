@@ -37,14 +37,6 @@ const _kDim = Color(0xFF64748B);
 const _kBlueActive = Color(0xFF60A5FA);
 const _kRed = Color(0xFFEF4444);
 
-/// Extracts the server's `detail` message out of an exception, mirroring
-/// ProjectNotifier._msg.
-String companionErrorMessage(Object e) {
-  final s = e.toString();
-  final m = RegExp(r'"detail"\s*:\s*"([^"]+)"').firstMatch(s);
-  return m?.group(1) ?? s.replaceFirst('Exception: ', '');
-}
-
 /// Display label for a member/invite role (issue #109).
 String roleLabel(String role) => switch (role) {
       'viewer' => 'Viewer',
@@ -117,7 +109,7 @@ class _TravelCompanionsSectionState extends State<TravelCompanionsSection> {
       if (mounted) {
         setState(() {
           _loading = false;
-          _loadError = companionErrorMessage(e);
+          _loadError = apiErrorMessage(e);
         });
       }
       return;
@@ -165,7 +157,7 @@ class _TravelCompanionsSectionState extends State<TravelCompanionsSection> {
     } on Exception catch (e) {
       // 409 (E2EE-enabled account), 422 (malformed email), and any other
       // failure surface inline — no dialog.
-      if (mounted) setState(() => _inviteError = companionErrorMessage(e));
+      if (mounted) setState(() => _inviteError = apiErrorMessage(e));
     } finally {
       if (mounted) setState(() => _inviteBusy = false);
     }
@@ -180,7 +172,7 @@ class _TravelCompanionsSectionState extends State<TravelCompanionsSection> {
       await context.read<ProjectNotifier>().revokePendingInvite(invite.id);
     } on Exception catch (e) {
       // The notifier restores the row on failure, so the list stays honest.
-      if (mounted) setState(() => _inviteError = companionErrorMessage(e));
+      if (mounted) setState(() => _inviteError = apiErrorMessage(e));
     } finally {
       if (mounted) setState(() => _revokingId = null);
     }
@@ -194,7 +186,7 @@ class _TravelCompanionsSectionState extends State<TravelCompanionsSection> {
     try {
       await context.read<ProjectNotifier>().revokeMemberInvite();
     } on Exception catch (e) {
-      if (mounted) setState(() => _inviteError = companionErrorMessage(e));
+      if (mounted) setState(() => _inviteError = apiErrorMessage(e));
     } finally {
       if (mounted) setState(() => _inviteBusy = false);
     }
@@ -229,7 +221,7 @@ class _TravelCompanionsSectionState extends State<TravelCompanionsSection> {
     } on Exception catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(companionErrorMessage(e))));
+            SnackBar(content: Text(apiErrorMessage(e))));
       }
     }
   }
@@ -286,7 +278,7 @@ class _TravelCompanionsSectionState extends State<TravelCompanionsSection> {
       if (mounted) {
         setState(() => _leaving = false);
         ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(companionErrorMessage(e))));
+            SnackBar(content: Text(apiErrorMessage(e))));
       }
     }
   }

@@ -1,5 +1,4 @@
 import 'dart:async' show StreamSubscription;
-import 'dart:convert' show jsonDecode;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -10,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:vector_map_tiles/vector_map_tiles.dart' show VectorTileLayerMode;
 
+import '../api/client.dart' show validationErrorMessage;
 import '../auth/auth_notifier.dart';
 import '../auth/auth_service.dart';
 import '../billing/billing_section.dart';
@@ -66,27 +66,6 @@ String deleteAccountWarning(BillingStatus? billing) {
 
 /// Inline message when Save is pressed with a blank display name (#507).
 const kBlankDisplayNameMessage = 'Enter a name. Others on a shared trip see it.';
-
-/// The reason in a FastAPI validation error body (422), or null if [body] is
-/// not one.
-///
-/// A field validator's refusal arrives as a `detail` list whose first item's
-/// `msg` is "Value error, " plus the reason. The service passes that body on
-/// as raw text, since its detail is not a string.
-String? validationErrorMessage(String body) {
-  try {
-    final decoded = jsonDecode(body);
-    if (decoded is Map && decoded['detail'] is List) {
-      final first = (decoded['detail'] as List).firstOrNull;
-      if (first is Map && first['msg'] is String) {
-        return (first['msg'] as String).replaceFirst('Value error, ', '');
-      }
-    }
-  } on FormatException {
-    // Not JSON: not a validation error.
-  }
-  return null;
-}
 
 class SettingsScreen extends StatefulWidget {
   final SettingsService? service; // injectable for tests

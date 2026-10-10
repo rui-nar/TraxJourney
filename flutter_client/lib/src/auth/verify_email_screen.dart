@@ -10,15 +10,8 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import '../api/client.dart' show apiErrorMessage;
 import 'auth_notifier.dart';
-
-/// Extracts the server's `detail` message out of an exception, mirroring
-/// companionErrorMessage in travel_companions_section.dart.
-String verifyErrorMessage(Object e) {
-  final s = e.toString();
-  final m = RegExp(r'"detail"\s*:\s*"([^"]+)"').firstMatch(s);
-  return m?.group(1) ?? s.replaceFirst('Exception: ', '');
-}
 
 class VerifyEmailScreen extends StatefulWidget {
   final String token;
@@ -49,7 +42,7 @@ class _VerifyEmailScreenState extends State<VerifyEmailScreen> {
       if (mounted) {
         setState(() {
           _busy = false;
-          _error = verifyErrorMessage(e);
+          _error = apiErrorMessage(e);
         });
       }
     }
