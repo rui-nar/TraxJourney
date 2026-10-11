@@ -2,6 +2,7 @@
 import 'package:cryptography_plus/cryptography_plus.dart';
 import 'package:flutter/material.dart';
 
+import '../core/design_tokens.dart' show kMonoFontFamily;
 import '../api/client.dart';
 import '../crypto/share_crypto.dart';
 import '../photos/photo_upgrade_screen.dart';
@@ -647,7 +648,7 @@ class _MemoryDetailModalState extends State<_MemoryDetailModal> {
                   Text(
                     _fmtDate(_current['date'] as String?).toUpperCase(),
                     style: const TextStyle(
-                      color: _kOrange, fontFamily: 'monospace',
+                      color: _kOrange, fontFamily: kMonoFontFamily,
                       fontSize: 11, letterSpacing: 1.5,
                     ),
                   ),
@@ -808,7 +809,7 @@ class _MemoryDetailModalState extends State<_MemoryDetailModal> {
           child: Text(
             _fmtDate(dateStr).toUpperCase(),
             style: const TextStyle(
-              color: _kOrange, fontFamily: 'monospace',
+              color: _kOrange, fontFamily: kMonoFontFamily,
               fontSize: 11, letterSpacing: 1.5,
             ),
           ),

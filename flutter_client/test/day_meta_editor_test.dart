@@ -2,7 +2,6 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
@@ -82,7 +81,6 @@ Future<void> _tapVisible(WidgetTester tester, Finder finder) async {
 
 void main() {
   // Avoid network font fetches during tests — fall back to a bundled font.
-  setUpAll(() => GoogleFonts.config.allowRuntimeFetching = false);
 
   group('dayTripNumbering', () {
     test('contiguous days number by calendar position', () {

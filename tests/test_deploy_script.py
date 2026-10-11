@@ -374,7 +374,7 @@ def test_missing_keys_are_named(sandbox, exe):
             "DEPLOY_VAL_DIR, DEPLOY_VAL_URL, DEPLOY_PROD_DIR, DEPLOY_PROD_URL") in "".join(result.stdout.splitlines())
 
 
-# Stand-ins for ssh, gh, python, flutter and docker, first on PATH. Each logs
+# Stand-ins for ssh, gh, python, flutter, dart and docker, first on PATH. Each logs
 # its arguments. gh prints SHIM_GH_JSON as its run list; python prints
 # SHIM_EXPECT for `expect` and exits with SHIM_DEPLOY_EXIT for `deploy`, 0
 # otherwise; flutter leaves a build/web behind for the script to copy.
@@ -389,6 +389,7 @@ if os.name == "nt":
                        ':expect\r\necho %SHIM_EXPECT%\r\nexit /b 0\r\n'),
         "flutter.bat": ('@echo off\r\necho %*>> "%~dp0flutter.log"\r\n'
                         'mkdir build\\web 2>nul\r\necho x> build\\web\\index.html\r\nexit /b 0\r\n'),
+        "dart.bat": '@echo off\r\necho %*>> "%~dp0dart.log"\r\nexit /b 0\r\n',
         "docker.bat": '@echo off\r\necho %*>> "%~dp0docker.log"\r\nexit /b 0\r\n',
     }
 else:
@@ -399,6 +400,7 @@ else:
                    'case "$2" in expect) printf "%s\\n" "$SHIM_EXPECT";; deploy) exit "$SHIM_DEPLOY_EXIT";; esac\n'),
         "flutter": ('#!/bin/sh\nprintf "%s\\n" "$*" >> "$(dirname "$0")/flutter.log"\n'
                     'mkdir -p build/web && echo x > build/web/index.html\n'),
+        "dart": '#!/bin/sh\nprintf "%s\\n" "$*" >> "$(dirname "$0")/dart.log"\n',
         "docker": '#!/bin/sh\nprintf "%s\\n" "$*" >> "$(dirname "$0")/docker.log"\n',
     }
 
@@ -576,6 +578,11 @@ def test_validation_build_of_a_dirty_tree_warns_and_says_dirty(sandbox, exe):
     assert f"deploy {described} (Validation)" in result.stdout
 
     assert f"--dart-define=APP_VERSION={described}" in read("flutter.log")
+    # The web build serves its own engine files, in this order (#601, #602).
+    assert read("dart.log").splitlines() == [
+        "run tool/mirror_fallback_fonts.dart build/web",
+        "run tool/version_canvaskit.dart build/web",
+    ]
     docker = read("docker.log")
     assert f"APP_VERSION={described}" in docker
     assert "registry.invalid/owner/app:validation" in docker

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'journal_dialog.dart';
 import 'project_notifier.dart';
+import '../core/design_tokens.dart' show kMonoFontFamily;
 import '../crypto/encrypted_display.dart';
 
 /// Opens a read-only detail view for a journal entry.
@@ -342,7 +343,7 @@ class _JournalDetailModalState extends State<_JournalDetailModal> {
                 style: const TextStyle(
                   color: _kTextDim,
                   fontSize: 10,
-                  fontFamily: 'monospace',
+                  fontFamily: kMonoFontFamily,
                   letterSpacing: 0.5,
                 ),
               ),
@@ -427,7 +428,7 @@ class _JournalDetailModalState extends State<_JournalDetailModal> {
               style: const TextStyle(
                 color: _kBlue,
                 fontSize: 11,
-                fontFamily: 'monospace',
+                fontFamily: kMonoFontFamily,
                 letterSpacing: 2,
                 fontWeight: FontWeight.w600,
               ),
@@ -442,7 +443,7 @@ class _JournalDetailModalState extends State<_JournalDetailModal> {
               style: const TextStyle(
                 color: _kText,
                 fontSize: 72,
-                fontFamily: 'monospace',
+                fontFamily: kMonoFontFamily,
                 fontWeight: FontWeight.w500,
                 letterSpacing: -3,
                 height: 0.9,
@@ -459,7 +460,7 @@ class _JournalDetailModalState extends State<_JournalDetailModal> {
                     style: const TextStyle(
                       color: _kTextDim,
                       fontSize: 14,
-                      fontFamily: 'monospace',
+                      fontFamily: kMonoFontFamily,
                       fontWeight: FontWeight.w500,
                       letterSpacing: 1,
                     ),
@@ -469,7 +470,7 @@ class _JournalDetailModalState extends State<_JournalDetailModal> {
                     style: const TextStyle(
                       color: _kMuted,
                       fontSize: 13,
-                      fontFamily: 'monospace',
+                      fontFamily: kMonoFontFamily,
                       letterSpacing: 0.5,
                     ),
                   ),
@@ -486,7 +487,7 @@ class _JournalDetailModalState extends State<_JournalDetailModal> {
               style: const TextStyle(
                 color: _kBlue,
                 fontSize: 11,
-                fontFamily: 'monospace',
+                fontFamily: kMonoFontFamily,
                 letterSpacing: 1.5,
                 fontWeight: FontWeight.w500,
               ),
@@ -573,7 +574,7 @@ class _JournalDetailModalState extends State<_JournalDetailModal> {
           style: const TextStyle(
             color: _kMuted,
             fontSize: 10,
-            fontFamily: 'monospace',
+            fontFamily: kMonoFontFamily,
             letterSpacing: 0.8,
           ),
         ),

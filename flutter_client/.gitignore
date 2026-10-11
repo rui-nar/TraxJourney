@@ -31,6 +31,8 @@ migrate_working_dir/
 .pub-cache/
 .pub/
 /build/
+# The web engine's fallback fonts, mirrored for local runs (tool/mirror_fallback_fonts.dart).
+/web/fallback-fonts/
 /coverage/
 
 # Symbolication related

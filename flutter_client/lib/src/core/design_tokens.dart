@@ -1,7 +1,15 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
+
+// ── Typefaces ─────────────────────────────────────────────────────────────────
+/// The app's typeface, bundled in pubspec.yaml with every weight it uses
+/// (400–800), so any fontWeight draws its real face (#601).
+const kFontFamily = 'Inter';
+
+/// The monospace typeface, bundled the same way. Use this rather than the
+/// generic 'monospace', which iOS does not have (#602).
+const kMonoFontFamily = 'JetBrains Mono';
 
 // ── Accent (crimson red) ─────────────────────────────────────────────────────
 const kAccent     = Color(0xFFDC2626);
@@ -161,7 +169,7 @@ List<BoxShadow> kShadow2(Brightness b) => [
 
 // ── Mono numerals (JetBrains Mono, tabular) ──────────────────────────────────
 /// Tabular monospaced style for instrument-grade numerals (day number,
-/// distances, counters). JetBrains Mono is already a bundled Google font.
+/// distances, counters).
 TextStyle monoStyle({
   double? fontSize,
   FontWeight? fontWeight,
@@ -169,7 +177,8 @@ TextStyle monoStyle({
   double? letterSpacing,
   double? height,
 }) =>
-    GoogleFonts.jetBrainsMono(
+    TextStyle(
+      fontFamily: kMonoFontFamily,
       fontSize: fontSize,
       fontWeight: fontWeight,
       color: color,

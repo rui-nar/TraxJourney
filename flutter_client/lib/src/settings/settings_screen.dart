@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:vector_map_tiles/vector_map_tiles.dart' show VectorTileLayerMode;
 
+import '../core/design_tokens.dart' show kMonoFontFamily;
 import '../api/client.dart' show validationErrorMessage;
 import '../auth/auth_notifier.dart';
 import '../auth/auth_service.dart';
@@ -1230,7 +1231,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       // to read out in a bug report (#275).
                       const VersionText(
                         style: TextStyle(
-                          fontFamily: 'monospace',
+                          fontFamily: kMonoFontFamily,
                           fontSize: 12,
                         ),
                       ),
@@ -1374,7 +1375,7 @@ class _PerfPanelState extends State<_PerfPanel> {
                   child: SelectableText(
                     report,
                     style: const TextStyle(
-                        fontFamily: 'monospace', fontSize: 11),
+                        fontFamily: kMonoFontFamily, fontSize: 11),
                   ),
                 ),
                 const SizedBox(height: 8),
