@@ -187,24 +187,29 @@ void main() {
   }
 
   // Everything is measured in a font loadRealFonts loaded and checked: text
-  // in any other family would lay out in the test font (review R1-4).
-  testWidgets('the page draws only fonts the test loaded', (tester) async {
-    await _pump(tester, const Size(390, 844), 1.0);
-    final families = <String?>{};
-    for (final p in tester.renderObjectList<RenderParagraph>(find.descendant(
-        of: find.byType(WelcomeScreen), matching: find.byType(RichText)))) {
-      p.text.visitChildren((span) {
-        if (span is TextSpan && span.text != null) {
-          families.add(span.style?.fontFamily);
-        }
-        return true;
-      });
-    }
-    families
-      ..remove('MaterialIcons') // icon glyphs, not text
-      ..remove('Inter'); // the map labels' unregistered family: issue #594
-    expect(families.difference(loadedFontFamilies), isEmpty);
-  });
+  // in any other family would lay out in the test font (review R1-4). Wide
+  // windows build widgets phones never see (nav links, the wide hero), so
+  // both layouts are checked (review R2-1).
+  for (final size in [..._phones, const Size(1280, 900)]) {
+    testWidgets('the page draws only fonts the test loaded at '
+        '${size.width.toInt()} px', (tester) async {
+      await _pump(tester, size, 1.0);
+      final families = <String?>{};
+      for (final p in tester.renderObjectList<RenderParagraph>(find.descendant(
+          of: find.byType(WelcomeScreen), matching: find.byType(RichText)))) {
+        p.text.visitChildren((span) {
+          if (span is TextSpan && span.text != null) {
+            families.add(span.style?.fontFamily);
+          }
+          return true;
+        });
+      }
+      families
+        ..remove('MaterialIcons') // icon glyphs, not text
+        ..remove('Inter'); // the map labels' unregistered family: issue #594
+      expect(families.difference(loadedFontFamilies), isEmpty);
+    });
+  }
 
   testWidgets('the wordmark spells the app name', (tester) async {
     await _pump(tester, const Size(390, 844), 1.0);

@@ -42,3 +42,18 @@ Reviewer: adversarial-reviewer (Fable). Triager: review-triager (Opus). 4 findin
 - Guard: loadRealFonts checks each family it loads measures narrower than the test font (a "iiiiiiiiii" probe), and welcome_screen_overflow_test.dart checks every family the page draws was loaded (shown to fail on a dropped weight); ignoreFontFetchErrors and its 5 call sites removed.
 - Override: —
 - Outcome: guard added
+
+## Round 2 — 2026-10-10, reviewed at eb92be7b (fixes since 2ed4686f)
+
+Reviewer: adversarial-reviewer (Opus; Fable weekly limit reached). Triager: review-triager (Opus). 1 finding, well-formed.
+
+### R2-1 — The R1-4 font-family guard only checks the phone layout
+- Trigger: a developer gives text that only appears on wide screens (_NavLink, _HeroWide, the wide section/footer branches, all built only at width >= 900) a weight loadRealFonts does not load → the 1280 px overflow and hero-map tests lay it out in the full-em test font, and "the page draws only fonts the test loaded" still passes because it only pumps 390x844.
+- Scores: trigger=plausible, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Guard (D9)
+- Revisit when: —
+- Guard: the family check runs at 320, 360, 390 and 1280 px; shown failing at 1280 px only when _NavLink (wide-only) uses Inter w300.
+- Override: —
+- Outcome: guard added
+
+Round 2 produced no Fix now decision: review closed (§6).
