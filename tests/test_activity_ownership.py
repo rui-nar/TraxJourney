@@ -679,23 +679,40 @@ def _edit(client, trip: str, aid: int, owner_q: str = ""):
 
 def test_geometry_writes_refuse_an_activity_of_an_account_outside_the_trip(bobs_ride):
     client, engine, ids, act_as = bobs_ride
-    with Session(engine) as sess:
-        sess.add(DBActivity(id=-55, user_info_id=ids["bob"], name="Bob local",
-                            summary_polyline=_POLYLINE))
-        sess.commit()
     _create_trip(client, "Mine")
     bobs_row = _bobs_row(engine, ids)
     _plant(engine, ids["alice"], "Mine", bobs_row)
-    _plant(engine, ids["alice"], "Mine", -55)
     base = f"/api/projects/Mine/activities/{bobs_row}"
 
     assert _edit(client, "Mine", bobs_row).status_code == 404
     assert client.post(f"{base}/reset").status_code == 404
     assert client.post(f"{base}/split", json={"split_index": 1}).status_code == 404
-    assert client.delete("/api/projects/Mine/activities/-55/local").status_code == 404
 
     _assert_bobs_row_untouched(engine, ids)
-    assert _row(engine, -55) is not None
+
+
+def test_delete_local_deletes_the_trips_row_of_an_account_outside_the_trip(bobs_ride):
+    """Any editor of the trip holding a local row deletes it, whoever owns it
+    (#592, plan Decision 9, owner answer EQ1-1, review U4R1-1): this was a
+    404 behind the trip-rewrite gate."""
+    from models.project_db import DBActivityGeoPrepared
+
+    client, engine, ids, act_as = bobs_ride
+    with Session(engine) as sess:
+        sess.add(DBActivity(id=-55, user_info_id=ids["bob"], name="Bob local",
+                            summary_polyline=_POLYLINE))
+        sess.add(DBActivityGeoPrepared(activity_id=-55, version=1, blob=b"geo"))
+        sess.commit()
+    _create_trip(client, "Mine")
+    _plant(engine, ids["alice"], "Mine", -55)
+
+    assert client.delete("/api/projects/Mine/activities/-55/local").status_code == 204
+
+    assert _row(engine, -55) is None
+    with Session(engine) as sess:
+        assert sess.get(DBActivityGeoPrepared, -55) is None
+        assert not sess.exec(select(DBProjectItem)
+                             .where(DBProjectItem.activity_id == -55)).first()
 
 
 def test_geometry_writes_on_a_companions_activity_are_the_trips(env):
