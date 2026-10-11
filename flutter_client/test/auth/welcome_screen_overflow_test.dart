@@ -4,9 +4,10 @@
 // font every glyph is a full em wide and the page overflows for that reason
 // alone. So an overflow reported here is one a reader sees.
 //
-// At the reader's default text size nothing on the page may overflow. At 2x
-// and 3x the pricing cards must hold; the rest of the page at those sizes is
-// issue #595.
+// Nothing on the page may overflow at the reader's default text size, nor at
+// 2x and 3x on a phone (issue #595). No word may be split between two letters
+// up to 2x; at 3x only headings are held to that, since a long body word can
+// be wider than a phone's column with nowhere else to go.
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -20,12 +21,6 @@ import '../helpers/real_fonts.dart';
 
 /// Small phone (iPhone SE 1st gen), common Android, common iPhone.
 const _phones = [Size(320, 568), Size(360, 800), Size(390, 844)];
-
-/// Each pricing card's column, found by its tagline.
-const _cardTaglines = [
-  'We run the Docker, you ride the bike.',
-  'For makers with their own hardware.',
-];
 
 /// Pumps the page at [phone] and [scale], returning the flexes that reported
 /// an overflow while it was laid out.
@@ -68,15 +63,42 @@ Future<List<RenderObject>> _pump(
   return overflowing;
 }
 
-bool _inside(RenderObject child, RenderObject ancestor) {
-  for (RenderObject? o = child; o != null; o = o.parent) {
-    if (identical(o, ancestor)) return true;
-  }
-  return false;
-}
-
 String _describe(List<RenderObject> flexes) =>
     flexes.map((f) => f.debugCreator.toString()).join('\n');
+
+/// The page's headings, by their semantic role rather than their size:
+/// a heading fitted down to a small size is still one (review R1-1).
+final _headings = find.byWidgetPredicate(
+    (w) => w is Semantics && (w.properties.header ?? false));
+
+/// Every word on the page broken between two letters, as `"word" in "text"`.
+/// A word wider than its line does not overflow, so no overflow check sees
+/// it. Breaking at a space or after a hyphen is fine.
+List<String> _splitWords(WidgetTester tester, {bool headingsOnly = false}) {
+  final split = <String>[];
+  for (final p in tester.renderObjectList<RenderParagraph>(find.descendant(
+      of: headingsOnly ? _headings : find.byType(WelcomeScreen),
+      matching: find.byType(RichText)))) {
+    final text = p.text.toPlainText();
+    for (final word in RegExp(r'[^\s-]+').allMatches(text)) {
+      final tops = {
+        for (final box in p.getBoxesForSelection(
+            TextSelection(baseOffset: word.start, extentOffset: word.end)))
+          box.top.round(),
+      };
+      if (tops.length > 1) split.add('"${word[0]}" in "$text"');
+    }
+  }
+  return split;
+}
+
+/// The text scale [text] is drawn at.
+double _scaleOf(WidgetTester tester, String text) => tester
+    .renderObject<RenderParagraph>(find
+        .byWidgetPredicate((w) => w is RichText && w.text.toPlainText() == text)
+        .first)
+    .textScaler
+    .scale(10) / 10;
 
 void main() {
   setUpAll(loadRealFonts);
@@ -88,51 +110,60 @@ void main() {
     });
   }
 
+  // At 2x and 3x on a phone the whole page holds (issue #595).
   for (final phone in _phones) {
     for (final scale in [2.0, 3.0]) {
-      testWidgets(
-          'the pricing cards hold at ${phone.width.toInt()} px and ${scale}x text',
-          (tester) async {
+      testWidgets('nothing overflows at ${phone.width.toInt()} px and '
+          '${scale}x text', (tester) async {
         final overflowing = await _pump(tester, phone, scale);
-        for (final tagline in _cardTaglines) {
-          final card = tester.renderObject(find
-              .ancestor(of: find.text(tagline), matching: find.byType(Column))
-              .first);
-          final inCard = [
-            for (final f in overflowing) if (_inside(f, card)) f,
-          ];
-          expect(inCard, isEmpty, reason: '"$tagline" card:\n${_describe(inCard)}');
-        }
+        expect(overflowing, isEmpty, reason: _describe(overflowing));
         // The hosted card was laid out with its feature lines.
         expect(find.text('Same app, hosted for you'), findsOneWidget);
       });
     }
   }
 
-  // A word wider than its line does not overflow: it is broken between two
-  // letters, which no overflow check sees. The hero headline was, on every
-  // phone ("advent / ure,").
+  // The hero headline once broke "advent / ure," on every phone.
   for (final size in [..._phones, const Size(412, 915), const Size(1280, 900)]) {
     testWidgets('no word is split across lines at ${size.width.toInt()} px',
         (tester) async {
       await _pump(tester, size, 1.0);
-      final split = <String>[];
-      for (final p in tester.renderObjectList<RenderParagraph>(find.descendant(
-          of: find.byType(WelcomeScreen), matching: find.byType(RichText)))) {
-        final text = p.text.toPlainText();
-        // Breaking at a space or after a hyphen is fine.
-        for (final word in RegExp(r'[^\s-]+').allMatches(text)) {
-          final tops = {
-            for (final box in p.getBoxesForSelection(TextSelection(
-                baseOffset: word.start, extentOffset: word.end)))
-              box.top.round(),
-          };
-          if (tops.length > 1) split.add('"${word[0]}" in "$text"');
-        }
-      }
-      expect(split, isEmpty);
+      expect(_splitWords(tester), isEmpty);
     });
   }
+
+  for (final phone in _phones) {
+    testWidgets('no word is split at ${phone.width.toInt()} px and 2x text',
+        (tester) async {
+      await _pump(tester, phone, 2.0);
+      expect(_splitWords(tester), isEmpty);
+    });
+
+    testWidgets('no heading word is split at ${phone.width.toInt()} px and '
+        '3x text', (tester) async {
+      await _pump(tester, phone, 3.0);
+      // Every display heading is marked as one: the hero's two lines and the
+      // four section headings.
+      expect(find.descendant(of: _headings, matching: find.byType(RichText)),
+          findsNWidgets(6));
+      expect(_splitWords(tester, headingsOnly: true), isEmpty);
+    });
+  }
+
+  // How each part answers a large text size (issue #595): body text follows
+  // it in full; headings and the nav stop at 1.5x; the mock-ups of the app
+  // are pictures and keep their drawn size.
+  testWidgets('each part of the page scales as decided at 3x text',
+      (tester) async {
+    await _pump(tester, const Size(390, 844), 3.0);
+    expect(_scaleOf(tester, 'Same app, hosted for you'), 3.0);
+    expect(_scaleOf(tester, 'Your adventure,'), 1.5);
+    expect(_scaleOf(tester, 'Run it yourself, or let us.'), 1.5);
+    expect(_scaleOf(tester, 'Sign in'), 1.5);
+    expect(_scaleOf(tester, 'traxjourney.com / camino-portugués'), 1.0);
+    expect(_scaleOf(tester, '847.3'), 1.0);
+    expect(_scaleOf(tester, 'Porto'), 1.0);
+  });
 
   // The hero map's label and memory card sit in a clipping Stack, which cuts
   // them off without reporting an overflow. They were placed by screen width,
