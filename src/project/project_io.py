@@ -188,9 +188,10 @@ class ProjectIO:
         converted from the storage format ``{"distances_km": [...], "elevations_m": [...]}``
         to a list of ``[dist_km, elev_m]`` pairs so the Flutter client can
         iterate over them directly, and an activity loaded from the database
-        carries ``plain_fields``, its E2EE columns still in plaintext, and
-        ``shared_with_others``, whether another user's trip holds it; every
-        activity carries ``has_gain_snapshot``.
+        carries ``plain_fields``, its E2EE columns still in plaintext; every
+        activity carries ``has_gain_snapshot``. ``shared_with_others`` is
+        emitted only when set, and nothing sets it now that a row belongs to
+        one trip (#592), so it is absent.
         """
         def _ep_pairs(a: Activity) -> Any:
             # Prefer the full profile; fall back to the downsampled low-res copy
