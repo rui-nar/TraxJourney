@@ -7,6 +7,15 @@ import '../core/project_ref.dart';
 import 'project_notifier.dart';
 import 'strava_import_notifier.dart';
 
+/// The trip row holding the Strava activity [stravaId], or null when the trip
+/// has none. The picker lists Strava ids, but a refresh addresses the row (#592).
+int? tripRowIdForStravaId(List<Map<String, dynamic>> activities, int stravaId) {
+  for (final r in activities) {
+    if (r['strava_id'] == stravaId) return (r['id'] as num?)?.toInt();
+  }
+  return null;
+}
+
 class StravaImportScreen extends StatefulWidget {
   final String projectName;
 
@@ -383,9 +392,17 @@ class _StravaImportScreenState extends State<StravaImportScreen> {
                       onRefetch: inProject
                           ? () async {
                               final pn = context.read<ProjectNotifier>();
-                              await pn.refreshActivity(id);
+                              // The picker lists Strava ids; the refresh
+                              // addresses the trip's own row (#592).
+                              final rowId = tripRowIdForStravaId(
+                                  pn.itemsFacet.activities, id);
+                              if (rowId != null) {
+                                await pn.refreshActivity(rowId);
+                              }
                               if (!context.mounted) return;
-                              final err = pn.error;
+                              final err = rowId == null
+                                  ? 'This trip does not hold that activity.'
+                                  : pn.error;
                               ScaffoldMessenger.of(context).showSnackBar(
                                 SnackBar(
                                   content: Text(err != null

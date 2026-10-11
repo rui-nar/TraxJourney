@@ -13,7 +13,9 @@ import 'package:traxjourney_client/src/projects/project_service.dart';
 /// "delete local activity" affordance in its row. Normal (positive-id)
 /// activities must NOT show it.
 void main() {
-  ProjectNotifier notifierWith({required int activityId, String name = 'Ride'}) {
+  ProjectNotifier notifierWith(
+      {required int activityId, String name = 'Ride', bool? local}) {
+    final isLocal = local ?? activityId < 0;
     final n = ProjectNotifier(ProjectService());
     n.itemsFacetWriter.setActivities([
       {
@@ -23,7 +25,8 @@ void main() {
         'distance': 5000,
         'moving_time': 1800,
         'start_date_local': '2026-06-01T08:00:00',
-        'manual': activityId < 0,
+        'strava_id': isLocal ? null : activityId.abs(),
+        'manual': isLocal,
       },
     ]);
     n.itemsFacetWriter.setItems([
@@ -77,6 +80,23 @@ void main() {
     await pumpPanel(tester, notifier);
 
     expect(find.byKey(const ValueKey('del_local_42')), findsNothing);
+    expect(find.byIcon(Icons.delete_forever), findsNothing);
+  });
+
+  testWidgets('a positive-id row with no strava_id is local too (#592)',
+      (tester) async {
+    final notifier = notifierWith(activityId: 42, local: true);
+    await pumpPanel(tester, notifier);
+
+    expect(find.byKey(const ValueKey('del_local_42')), findsOneWidget);
+  });
+
+  testWidgets('a negative-id row with a strava_id is not local (#592)',
+      (tester) async {
+    final notifier = notifierWith(activityId: -42, local: false);
+    await pumpPanel(tester, notifier);
+
+    expect(find.byKey(const ValueKey('del_local_-42')), findsNothing);
     expect(find.byIcon(Icons.delete_forever), findsNothing);
   });
 

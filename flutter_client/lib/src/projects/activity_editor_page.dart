@@ -82,10 +82,11 @@ class _ActivityEditorPageState extends State<ActivityEditorPage> {
   /// in which case the save/split proceeds unconditionally.
   int? get _lockVersion => (widget.activity['lock_version'] as num?)?.toInt();
 
-  /// Local activities (split tails, added transport) carry a synthetic negative
-  /// id and never came from Strava, so there is no Strava original to reset to —
-  /// reset only undoes edits made since the piece was created (issue #131).
-  bool get _isLocal => _activityId < 0;
+  /// Local activities (GPX imports, split tails, added transport, rows brought
+  /// in from another account's file) have no `strava_id`, so there is no Strava
+  /// original to reset to — reset only undoes edits made since the piece was
+  /// created (issue #131). The id's sign says nothing (#592).
+  bool get _isLocal => widget.activity['strava_id'] == null;
 
   String get _resetLabel => _isLocal ? 'Reset track' : 'Reset to Strava';
 

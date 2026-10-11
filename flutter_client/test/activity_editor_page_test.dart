@@ -42,6 +42,7 @@ Map<String, dynamic> _activity({
   bool edited = false,
   int id = 111,
   int? splitParentId,
+  bool local = false,
 }) {
   final track = <GeoPoint>[
     (lat: 48.0, lon: 2.00),
@@ -51,6 +52,7 @@ Map<String, dynamic> _activity({
   ];
   return {
     'id': id,
+    'strava_id': local ? null : id.abs(),
     'name': 'Test Ride',
     'is_edited': edited,
     'split_parent_id': splitParentId,
@@ -349,9 +351,23 @@ void main() {
       (tester) async {
     // Split tails and added transport carry a synthetic negative id and never
     // came from Strava, so reset only undoes their own edits (issue #131).
-    await _pump(tester, _activity(edited: true, id: -1));
+    await _pump(tester, _activity(edited: true, id: -1, local: true));
     expect(find.text('Reset to Strava'), findsNothing);
     expect(find.text('Reset track'), findsOneWidget);
+  });
+
+  testWidgets('local is decided by the missing strava_id, not the id sign (#592)',
+      (tester) async {
+    // A GPX import or an imported row can carry any id.
+    await _pump(tester, _activity(edited: true, id: 5000, local: true));
+    expect(find.text('Reset to Strava'), findsNothing);
+    expect(find.text('Reset track'), findsOneWidget);
+
+    // And a row with a Strava id is not local whatever its id's sign.
+    await tester.pumpWidget(const SizedBox());
+    await _pump(tester, _activity(edited: true, id: -9));
+    expect(find.text('Reset to Strava'), findsOneWidget);
+    expect(find.text('Reset track'), findsNothing);
   });
 
   // ── Reset on a split root warns first (issue #141) ────────────────────────
@@ -404,7 +420,7 @@ void main() {
     // A leaf piece takes nothing with it — reset just undoes its edits (#131).
     final notifier = _familyNotifier(1);
     await _pumpPushed(
-        tester, _activity(edited: true, id: -1, splitParentId: 111), notifier);
+        tester, _activity(edited: true, id: -1, local: true, splitParentId: 111), notifier);
 
     await tester.tap(find.text('Reset track'));
     await tester.pumpAndSettle();
@@ -419,7 +435,7 @@ void main() {
     // root above the reset is not below it and must not be counted.
     final notifier = _chainNotifier();
     await _pumpPushed(
-        tester, _activity(edited: true, id: -1, splitParentId: 111), notifier);
+        tester, _activity(edited: true, id: -1, local: true, splitParentId: 111), notifier);
 
     await tester.tap(find.text('Reset track'));
     await tester.pumpAndSettle();
@@ -477,7 +493,7 @@ void main() {
         await tester.pumpWidget(const SizedBox()); // a fresh navigator each time
         await _pumpPushed(
             tester,
-            _activity(edited: true, id: id)..['name'] = longName,
+            _activity(edited: true, id: id, local: id < 0)..['name'] = longName,
             _RecordingNotifier(),
             size: Size(width, 900));
 
@@ -547,9 +563,9 @@ void main() {
       (tester) async {
     final semantics = tester.ensureSemantics();
 
-    for (final (id, label) in [(111, 'Reset to Strava'), (-1, 'Reset track')]) {
+    for (final (id, local, label) in [(111, false, 'Reset to Strava'), (-1, true, 'Reset track')]) {
       await tester.pumpWidget(const SizedBox());
-      await _pumpPushed(tester, _activity(edited: true, id: id),
+      await _pumpPushed(tester, _activity(edited: true, id: id, local: local),
           _RecordingNotifier(),
           size: const Size(360, 800));
 

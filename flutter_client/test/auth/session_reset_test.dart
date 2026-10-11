@@ -371,7 +371,7 @@ void main() {
     projectDataCache.setCurrentUser(8);
     row.complete({
       'lockVersion': 1,
-      'schemaVersion': 1,
+      'schemaVersion': 2,
       'meta': {'name': 'Japan'},
     });
 
