@@ -237,3 +237,68 @@ Fable reviewer, Opus triager. 2 findings, no envelope questions.
 - Guard: —
 - Override: — (owner approved the table 2026-10-11)
 - Outcome: open
+
+## Unit review U7 — 2026-10-11, reviewed at 5fa118b4 (u592/u7)
+
+Fable reviewer, Opus triager. 2 findings, no envelope questions.
+
+### U7R1-1 — Withdrawing a companion's encrypted activity leaves the owner's trip stats counting it
+- Trigger: a companion who contributed an encrypted activity deletes their account → its item is removed and lock_version bumped, but stats_json is not cleared → the owner's totals still include it until the trip is next edited.
+- Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
+
+### U7R1-2 — An encrypted split head kept for pieces another account owns is handed to that account instead of deleted
+- Trigger: a companion's encrypted split family in the owner's trip, one tail already decrypted and handed over (R2-6); the companion deletes their account → the head row (unreadable ciphertext) is re-owned to the trip owner instead of deleted, against Decision 4 and the privacy sentence O1.
+- Scores: trigger=plausible, impact=maintainability, detect=logged, later=expensive (triager, from cheap), fix=M/local, confidence=verified
+- Decision: Fix now (D5)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
+
+## Unit review U4 — 2026-10-11, reviewed at b668db0d (u592/u4)
+
+Fable reviewer, Opus triager. 2 findings, no envelope questions. The triager
+noted the same gate in api/project_items.py:114 (U6's file): there removal
+unlinks the item and leaves the row orphaned. Passed to U6 as part of its
+EQ1-1 work.
+
+### U4R1-1 — Delete-local still runs the trip-rewrite gate for non-Strava rows, so the owner is refused on a departed companion's encrypted local row
+- Trigger: a companion's encrypted GPX import kept with them by the migration (Decision 4 exception); the companion leaves; the owner presses "Delete local activity" → 404 "Activity not in project", and the row stays.
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: the U1 migration log lists an encrypted row kept with a companion owner who is no longer owner or member, or a user reports "Activity not in project" when deleting a local activity.
+- Guard: —
+- Override: —
+- Outcome: open
+
+### U4R1-2 — Refresh job marks the row "resolved" when force_update_activity silently declines to write it
+- Trigger: the owner refreshes a companion's activity; the companion deletes their account mid-job → force_update_activity skips the write silently, and the job reports success with the old data.
+- Scores: trigger=plausible, impact=degraded-ux, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Guard (D9)
+- Revisit when: —
+- Guard: (proposed) WARNING log on both silent early exits of force_update_activity (strava_user_id mismatch; trip no longer holds the row).
+- Override: —
+- Outcome: open
+
+## Unit review U5 — 2026-10-11, reviewed at 9c02faf6 (u592/u5)
+
+Fable reviewer. No findings, no envelope questions. (The Project.add_activities
+id comparison was already known and is scheduled as a follow-up fix unit.)
+
+## Unit review U6 — 2026-10-11, reviewed at 06e0d5f1 (u592/u6)
+
+Fable reviewer, Opus triager. 1 finding, no envelope questions.
+
+### U6R1-1 — U6's GPX export writes the Strava identity, but only U4's import matches it
+- Trigger: only if U6 were integrated without U4 → a GPX re-import into its own trip would duplicate Strava tracks. U4 and U6 are integrated together, U4 first.
+- Scores: trigger=theoretical (triager, from concrete), impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Reject (D11)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: — (recorded in the delivery record as an unlisted U6-on-U4 dependency)
