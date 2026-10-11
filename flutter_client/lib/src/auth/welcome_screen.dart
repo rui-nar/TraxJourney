@@ -186,9 +186,14 @@ class _Heading extends StatelessWidget {
             fitted = fitted.copyWith(
                 fontSize: fitted.fontSize! * box.maxWidth / widest * 0.99);
           }
-          return gradient
-              ? _gradientText(text, fitted, textAlign: textAlign)
-              : Text(text, textAlign: textAlign, style: fitted);
+          // A heading for screen readers too, which is also how the layout
+          // test finds every heading whatever size it was fitted to.
+          return Semantics(
+            header: true,
+            child: gradient
+                ? _gradientText(text, fitted, textAlign: textAlign)
+                : Text(text, textAlign: textAlign, style: fitted),
+          );
         }),
       );
 

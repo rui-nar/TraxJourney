@@ -66,15 +66,10 @@ Future<List<RenderObject>> _pump(
 String _describe(List<RenderObject> flexes) =>
     flexes.map((f) => f.debugCreator.toString()).join('\n');
 
-/// Whether [p] holds display text: a heading, 32 px or more before scaling.
-bool _isHeading(RenderParagraph p) {
-  var heading = false;
-  p.text.visitChildren((span) {
-    if ((span.style?.fontSize ?? 0) >= 32) heading = true;
-    return !heading;
-  });
-  return heading;
-}
+/// The page's headings, by their semantic role rather than their size:
+/// a heading fitted down to a small size is still one (review R1-1).
+final _headings = find.byWidgetPredicate(
+    (w) => w is Semantics && (w.properties.header ?? false));
 
 /// Every word on the page broken between two letters, as `"word" in "text"`.
 /// A word wider than its line does not overflow, so no overflow check sees
@@ -82,8 +77,8 @@ bool _isHeading(RenderParagraph p) {
 List<String> _splitWords(WidgetTester tester, {bool headingsOnly = false}) {
   final split = <String>[];
   for (final p in tester.renderObjectList<RenderParagraph>(find.descendant(
-      of: find.byType(WelcomeScreen), matching: find.byType(RichText)))) {
-    if (headingsOnly && !_isHeading(p)) continue;
+      of: headingsOnly ? _headings : find.byType(WelcomeScreen),
+      matching: find.byType(RichText)))) {
     final text = p.text.toPlainText();
     for (final word in RegExp(r'[^\s-]+').allMatches(text)) {
       final tops = {
@@ -147,6 +142,10 @@ void main() {
     testWidgets('no heading word is split at ${phone.width.toInt()} px and '
         '3x text', (tester) async {
       await _pump(tester, phone, 3.0);
+      // Every display heading is marked as one: the hero's two lines and the
+      // four section headings.
+      expect(find.descendant(of: _headings, matching: find.byType(RichText)),
+          findsNWidgets(6));
       expect(_splitWords(tester, headingsOnly: true), isEmpty);
     });
   }
