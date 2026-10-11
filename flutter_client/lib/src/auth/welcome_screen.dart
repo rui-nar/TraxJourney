@@ -676,14 +676,10 @@ class _MapLabel extends StatelessWidget {
   Widget build(BuildContext context) {
     return Text(
       text,
-      style: const TextStyle(
-        fontFamily: 'Inter',
-        fontSize: 11,
-        fontWeight: FontWeight.w600,
-        color: Color(0xFF0F172A),
-        letterSpacing: 0.06,
-        shadows: [Shadow(blurRadius: 4, color: Colors.white)],
-      ),
+      // google_fonts registers Inter under its own family names; a plain
+      // 'Inter' matched nothing and fell back to the platform font (#594).
+      style: _inter(11, FontWeight.w600, const Color(0xFF0F172A), spacing: 0.06)
+          .copyWith(shadows: const [Shadow(blurRadius: 4, color: Colors.white)]),
     );
   }
 }

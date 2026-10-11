@@ -8,6 +8,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:traxjourney_client/src/core/theme.dart';
 import 'package:traxjourney_client/src/auth/welcome_screen.dart';
 import 'package:traxjourney_client/src/billing/billing_service.dart';
 
@@ -42,7 +43,7 @@ Future<void> _pumpWelcome(
   addTearDown(tester.view.resetDevicePixelRatio);
 
   await tester.pumpWidget(MaterialApp(
-      theme: landingTheme(), home: WelcomeScreen(loadPlans: loadPlans)));
+      theme: lightTheme, home: WelcomeScreen(loadPlans: loadPlans)));
   await tester.pump(); // resolve the catalogue future
   await tester.pump(); // rebuild with it
 }

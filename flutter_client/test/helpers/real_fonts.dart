@@ -13,7 +13,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:traxjourney_client/src/core/theme.dart';
 
 final _inter = {
   FontWeight.w400: 'Inter-Regular.ttf',
@@ -66,23 +65,4 @@ Future<void> loadRealFonts() async {
   for (final MapEntry(key: weight, value: file) in _mono.entries) {
     await _load(GoogleFonts.jetBrainsMono(fontWeight: weight).fontFamily!, file);
   }
-  await _load('Roboto', 'Roboto-SemiBold.ttf');
 }
-
-/// [lightTheme] with its elevated buttons drawn the way the app draws them.
-///
-/// The theme's button text style names no family, so the app draws button
-/// labels in the platform's default font (Roboto on Android and the web),
-/// while a widget test would use the test font, far wider. Until issue #594
-/// gives the buttons Inter, this names Roboto (loaded above) explicitly.
-ThemeData landingTheme() {
-  final style = lightTheme.elevatedButtonTheme.style!;
-  final text = style.textStyle!.resolve(const {})!;
-  return lightTheme.copyWith(
-    elevatedButtonTheme: ElevatedButtonThemeData(
-      style: style.copyWith(
-          textStyle: WidgetStatePropertyAll(text.copyWith(fontFamily: 'Roboto'))),
-    ),
-  );
-}
-

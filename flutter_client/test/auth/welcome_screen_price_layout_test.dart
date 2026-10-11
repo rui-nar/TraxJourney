@@ -7,6 +7,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:traxjourney_client/src/core/theme.dart';
 import 'package:traxjourney_client/src/auth/welcome_screen.dart';
 import 'package:traxjourney_client/src/billing/billing_service.dart';
 
@@ -56,7 +57,7 @@ void main() {
         addTearDown(() => FlutterError.onError = previous);
 
         await tester.pumpWidget(MaterialApp(
-            theme: landingTheme(),
+            theme: lightTheme,
             home: WelcomeScreen(loadPlans: () async => [
                   const PlanInfo(id: 'tier_1', name: 'Tier 1',
                       priceLabel: _label, features: [], purchasable: true),

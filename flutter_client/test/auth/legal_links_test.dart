@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:traxjourney_client/src/core/theme.dart';
 import 'package:traxjourney_client/src/api/client.dart';
 import 'package:traxjourney_client/src/auth/auth_notifier.dart';
 import 'package:traxjourney_client/src/auth/auth_service.dart';
@@ -82,7 +83,7 @@ void main() {
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
       await tester.pumpWidget(
-          MaterialApp(theme: landingTheme(), home: const WelcomeScreen()));
+          MaterialApp(theme: lightTheme, home: const WelcomeScreen()));
       await tester.pump();
     }
 
