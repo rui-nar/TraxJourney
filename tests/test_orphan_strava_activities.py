@@ -276,24 +276,25 @@ def test_owner_deleting_a_departed_companions_tail_locally_frees_it_and_its_root
     assert _prepared(engine) == set()
 
 
-def test_an_editor_deleting_a_tail_of_the_owners_split_locally_is_refused(engine):
+def test_an_editor_deleting_a_tail_of_the_owners_split_locally_deletes_it(engine):
+    """Any editor of the trip may delete its local rows (#592, plan Decision 9,
+    owner answer EQ1-1): this was a 403 for anyone but the tail's account or
+    the trip's owner."""
     owner = _user(engine, "owner")
     companion = _user(engine, "companion")
     _activity(engine, 111, owner, name="Ride (1/2)", split_base_name="Ride", is_edited=True)
     _activity(engine, -5, owner, name="Ride (2/2)", split_root_id=111, split_parent_id=111,
               start_date="2026-06-10T10:00:00Z")
-    _trip(engine, owner, "Trip", [111, -5], members=[companion])
+    _activity(engine, 222, owner, name="Walk", start_date="2026-06-11T09:00:00Z")
+    _trip(engine, owner, "Trip", [111, -5, 222], members=[companion])
 
-    resp = _as(companion).delete("/api/projects/Trip/activities/-5/local",
-                                 params={"owner": owner})
+    _delete_local(companion, "Trip", -5, owner=owner)
 
-    assert resp.status_code == 403, resp.text
-    assert resp.json()["detail"] == (
-        "Only the activity's owner or the trip owner can delete this piece")
-    assert _rows(engine) == {111, -5}
-    assert _prepared(engine) == {111, -5}
+    assert _rows(engine) == {111, 222}
+    assert _prepared(engine) == {111, 222}
     with Session(engine) as sess:
-        assert sess.exec(select(DBProjectItem).where(DBProjectItem.activity_id == -5)).first()
+        assert not sess.exec(select(DBProjectItem).where(DBProjectItem.activity_id == -5)).first()
+        assert {it.activity_id for it in sess.exec(select(DBProjectItem)).all()} == {111, 222}
 
 
 def test_an_editor_deleting_a_tail_of_their_own_split_locally_frees_it_and_its_root(engine):

@@ -2284,13 +2284,12 @@ def delete_local_activity(
     This is the undo path for a split — deleting the tail leaves the head in
     place. A row another trip holds is that trip's (#592), and is refused.
 
-    A tail of a Strava activity (issue #509) follows the timeline path's rule
-    in ``api/project_items.py`` instead of the trip-rewrite gate: its own
-    account may delete it, and so may the trip's owner when the trip holds
-    it — a companion who has since left included. Any other companion is
-    refused with a 403 (owner decision, review F1-R1-1). Once a split piece
-    goes, its root is reconsidered, since the piece kept it: a root no item
-    references goes with its last piece (plan Decision 9).
+    A tail of a Strava activity (issue #509) skips the trip-rewrite gate: any
+    editor of the trip holding it may delete it, whoever cut it — a companion
+    who has since left included (plan Decision 9, owner answer EQ1-1, which
+    supersedes the 2026-10-03 rule that only its own account or the trip's
+    owner could). Once a split piece goes, its root is reconsidered, since the
+    piece kept it: a root no item references goes with its last piece.
     """
     user_info_id = int(current_user["sub"])
     with get_session() as sess:
@@ -2309,11 +2308,6 @@ def delete_local_activity(
             _require_rewritable_by_trip(sess, row, activity_id)
         elif user_info_id != tail.user_info_id:
             _require_held(sess, row, activity_id)
-            if user_info_id != owner_id:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Only the activity's owner or the trip owner can delete this piece",
-                )
         if not _repo.delete_local_activity(sess, row.id, activity_id):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
