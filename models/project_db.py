@@ -14,7 +14,7 @@ import uuid
 from typing import Optional
 
 import sqlmodel
-from sqlalchemy import Index, UniqueConstraint, text
+from sqlalchemy import BigInteger, Index, UniqueConstraint, text
 
 
 class DBProject(sqlmodel.SQLModel, table=True):
@@ -232,10 +232,12 @@ class DBProjectSyncMeta(sqlmodel.SQLModel, table=True):
 
 
 class DBActivity(sqlmodel.SQLModel, table=True):
-    """Strava activity row — shared across all projects that reference it.
+    """Activity row — held by exactly one project (#592).
 
-    Uses the Strava activity ID as the natural primary key (globally unique
-    across all Strava accounts).  Datetime fields are stored as ISO-8601 UTC
+    The same Strava activity in two trips is two rows, one per trip, tied
+    together by nothing but ``strava_id``. Rows created before #592 keep their
+    Strava id as primary key; the id carries no meaning beyond identifying
+    the row.  Datetime fields are stored as ISO-8601 UTC
     strings so they sort lexicographically and require no conversion layer.
     """
 
@@ -363,6 +365,18 @@ class DBActivity(sqlmodel.SQLModel, table=True):
     #: recognised instead of silently becoming a second overlapping activity.
     #: Indexed because it is looked up on every import (issue #260, unit 2).
     source_id: Optional[str] = sqlmodel.Field(default=None, index=True)
+
+    #: The Strava activity this row came from, or NULL for a local row (GPX
+    #: import, split piece). The row id is not a Strava id: each trip holds its
+    #: own row, so one Strava activity can be several rows, one per trip. Hence
+    #: indexed but not unique (#592; backfilled by migration b3e9d71c4a58).
+    strava_id: Optional[int] = sqlmodel.Field(
+        default=None, index=True, sa_type=BigInteger)
+    #: The account whose Strava connection the activity came from, kept apart
+    #: from ``user_info_id`` (the owner of the trip holding the row): refresh
+    #: and enrichment use this account's token. NULL once that account is
+    #: deleted, and on local rows (#592, plan Decision 5).
+    strava_user_id: Optional[int] = sqlmodel.Field(default=None)
 
     # Safety valve: unmapped Strava fields that may arrive in the future
     extra_json: str = sqlmodel.Field(default="{}")
