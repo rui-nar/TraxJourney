@@ -381,7 +381,9 @@ if ($Building) {
 # -- 1. Build Flutter web ------------------------------------------------------
 Step 1 3 "Building Flutter web..."
 Push-Location (Join-Path $SrcRoot 'flutter_client')
-flutter build web --release `
+# --no-web-resources-cdn: CanvasKit from this build, not www.gstatic.com
+# (#601 review R2-1).
+flutter build web --release --no-web-resources-cdn `
   --dart-define=APP_VERSION=$FullVersion `
   --dart-define=MAPBOX_TOKEN=$MapboxToken
 if ($LASTEXITCODE -ne 0) { Pop-Location; Die "Flutter build failed." }

@@ -35,3 +35,16 @@ Envelope question: does "drop the run-time download from Google Fonts" cover the
 - Guard: —
 - Override: —
 - Outcome: fixed
+
+## Round 2 — 2026-10-11, reviewed at 3209713c (fixes since 5d357df5)
+
+Reviewer: adversarial-reviewer (Fable). Triager: review-triager (Opus). 1 finding, well-formed.
+
+### R2-1 — CanvasKit is still downloaded from www.gstatic.com at every web start
+- Trigger: any visitor opens the web app → flutter.js resolves CanvasKit to https://www.gstatic.com/flutter-canvaskit/<engine-rev>/ (the build passes no --no-web-resources-cdn, so the build config has no useLocalCanvasKit) → canvaskit.js and canvaskit.wasm come from Google before the first frame, while the edited privacy policy lists Google only for sign-in and translation. New evidence relative to R1-1, which traced only font fetches; the author's Chrome check filtered on fonts.gstatic.com/s/ and dismissed www.gstatic.com as browser noise — the log does show both CanvasKit files fetched from it and none locally.
+- Scores: trigger=concrete, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3, floor F3)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed
