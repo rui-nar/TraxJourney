@@ -50,7 +50,7 @@ final ThemeData darkTheme = ThemeData(
     onSurfaceVariant: _darkHint,
   ),
   scaffoldBackgroundColor: _darkBg,
-  appBarTheme: const AppBarTheme(
+  appBarTheme: AppBarTheme(
     backgroundColor: _darkCard,
     foregroundColor: _darkOnBg,
     elevation: 0,
@@ -58,9 +58,9 @@ final ThemeData darkTheme = ThemeData(
     surfaceTintColor: Colors.transparent,
     shadowColor: _darkBorder,
     centerTitle: false,
-    titleTextStyle: TextStyle(
+    titleTextStyle: GoogleFonts.inter(
         color: _darkOnBg, fontSize: 18, fontWeight: FontWeight.w600),
-    shape: Border(bottom: BorderSide(color: _darkBorder, width: 1)),
+    shape: const Border(bottom: BorderSide(color: _darkBorder, width: 1)),
   ),
   cardTheme: const CardThemeData(
     color: _darkCard,
@@ -99,7 +99,7 @@ final ThemeData darkTheme = ThemeData(
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.all(Radius.circular(8))),
       textStyle:
-          const TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
+          GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 15),
     ),
   ),
   outlinedButtonTheme: OutlinedButtonThemeData(
@@ -131,15 +131,15 @@ final ThemeData darkTheme = ThemeData(
       ),
       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
       visualDensity: VisualDensity.compact,
-      textStyle: const WidgetStatePropertyAll(
-        TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+      textStyle: WidgetStatePropertyAll(
+        GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w500),
       ),
     ),
   ),
   dividerTheme: const DividerThemeData(color: _darkBorder, thickness: 1),
-  snackBarTheme: const SnackBarThemeData(
+  snackBarTheme: SnackBarThemeData(
     backgroundColor: _darkCard,
-    contentTextStyle: TextStyle(color: _darkOnBg),
+    contentTextStyle: GoogleFonts.inter(color: _darkOnBg),
   ),
 );
 
@@ -158,7 +158,7 @@ final ThemeData lightTheme = ThemeData(
     onSurfaceVariant: _lightHint,
   ),
   scaffoldBackgroundColor: _lightBg,
-  appBarTheme: const AppBarTheme(
+  appBarTheme: AppBarTheme(
     backgroundColor: _lightCard,
     foregroundColor: _lightOnBg,
     elevation: 0,
@@ -166,9 +166,9 @@ final ThemeData lightTheme = ThemeData(
     surfaceTintColor: Colors.transparent,
     shadowColor: _lightBorder,
     centerTitle: false,
-    titleTextStyle: TextStyle(
+    titleTextStyle: GoogleFonts.inter(
         color: _lightOnBg, fontSize: 18, fontWeight: FontWeight.w600),
-    shape: Border(bottom: BorderSide(color: _lightBorder, width: 1)),
+    shape: const Border(bottom: BorderSide(color: _lightBorder, width: 1)),
   ),
   cardTheme: const CardThemeData(
     color: _lightCard,
@@ -207,7 +207,7 @@ final ThemeData lightTheme = ThemeData(
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.all(Radius.circular(8))),
       textStyle:
-          const TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
+          GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 15),
     ),
   ),
   outlinedButtonTheme: OutlinedButtonThemeData(
@@ -239,14 +239,14 @@ final ThemeData lightTheme = ThemeData(
       ),
       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
       visualDensity: VisualDensity.compact,
-      textStyle: const WidgetStatePropertyAll(
-        TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+      textStyle: WidgetStatePropertyAll(
+        GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w500),
       ),
     ),
   ),
   dividerTheme: const DividerThemeData(color: _lightBorder, thickness: 1),
-  snackBarTheme: const SnackBarThemeData(
+  snackBarTheme: SnackBarThemeData(
     backgroundColor: _lightCard,
-    contentTextStyle: TextStyle(color: _lightOnBg),
+    contentTextStyle: GoogleFonts.inter(color: _lightOnBg),
   ),
 );

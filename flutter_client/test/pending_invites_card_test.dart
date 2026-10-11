@@ -2,6 +2,8 @@
 // (issue #110): an invite addressed to your confirmed address is offered for
 // explicit Accept/Decline rather than silently appearing as a trip.
 
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
@@ -153,6 +155,21 @@ void main() {
     expect(find.text('This invite was sent to other@example.com.'),
         findsOneWidget);
     expect(find.text('Accept'), findsOneWidget);
+  });
+
+  // Issue #480: the escaped quote used to cut the message short.
+  testWidgets('a failed accept shows a quoted server message whole (issue #480)',
+      (tester) async {
+    const message = 'Can\'t use "Mon voyage" — café 日本';
+    final svc = _FakeMembersService([_invite()])
+      ..acceptError = ApiException(400, jsonEncode({'detail': message}));
+    await tester.pumpWidget(_harness(svc, _FakeProjectsNotifier()));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Accept'));
+    await tester.pumpAndSettle();
+
+    expect(find.text(message), findsOneWidget);
   });
 
   testWidgets('a failed listing hides the card instead of breaking the screen',

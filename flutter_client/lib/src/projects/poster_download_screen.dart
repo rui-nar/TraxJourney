@@ -18,14 +18,6 @@ import '../api/client.dart';
 import '../core/brand.dart';
 import 'download_stub.dart' if (dart.library.js_interop) 'download_web.dart';
 
-/// Extracts the server's `detail` message out of an exception, mirroring
-/// verifyErrorMessage in verify_email_screen.dart.
-String _errorMessage(Object e) {
-  final s = e.toString();
-  final m = RegExp(r'"detail"\s*:\s*"([^"]+)"').firstMatch(s);
-  return m?.group(1) ?? s.replaceFirst('Exception: ', '');
-}
-
 class PosterDownloadScreen extends StatefulWidget {
   final String token;
   final ApiClient apiClient;
@@ -70,7 +62,7 @@ class _PosterDownloadScreenState extends State<PosterDownloadScreen> {
       setState(() {
         _loading = false;
         _notFound = e.statusCode == 404;
-        _error = e.statusCode == 404 ? null : _errorMessage(e);
+        _error = e.statusCode == 404 ? null : apiErrorMessage(e);
       });
     } catch (e) {
       // Not just ApiException: an unreachable/misconfigured HTTP client can
@@ -78,7 +70,7 @@ class _PosterDownloadScreenState extends State<PosterDownloadScreen> {
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = _errorMessage(e);
+        _error = apiErrorMessage(e);
       });
     }
   }
@@ -95,7 +87,7 @@ class _PosterDownloadScreenState extends State<PosterDownloadScreen> {
       triggerBrowserDownload(res.bodyBytes, mimeType, 'poster.$format');
     } catch (e) {
       if (!mounted) return;
-      setState(() => _error = _errorMessage(e));
+      setState(() => _error = apiErrorMessage(e));
     } finally {
       if (mounted) setState(() => _downloading = null);
     }

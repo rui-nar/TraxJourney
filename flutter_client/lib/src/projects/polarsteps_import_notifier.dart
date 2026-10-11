@@ -183,7 +183,7 @@ class PolarstepsImportNotifier extends ChangeNotifier {
     try {
       await _api.post('/api/polarsteps/connect', {'remember_token': trimmed});
     } on ApiException catch (e) {
-      error = _detail(e.body);
+      error = apiErrorDetail(e.body);
       reconnecting = false;
       notifyListeners();
       return false;
@@ -203,11 +203,6 @@ class PolarstepsImportNotifier extends ChangeNotifier {
     reconnecting = false;
     notifyListeners();
     return true;
-  }
-
-  static String _detail(String body) {
-    final m = RegExp(r'"detail"\s*:\s*"([^"]+)"').firstMatch(body);
-    return m?.group(1) ?? body;
   }
 
   // ── Selection ──────────────────────────────────────────────────────────────

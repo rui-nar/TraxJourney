@@ -4,6 +4,8 @@
 // invite's role, and the 409 you-own-this-trip fallback. The service is
 // mocked by subclassing; navigation is exercised through a real GoRouter.
 
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
@@ -101,6 +103,25 @@ void main() {
     await tester.tap(find.text('Go to my trips'));
     await tester.pumpAndSettle();
     expect(find.text('PROJECTS LIST'), findsOneWidget);
+  });
+
+  // Issue #480: the escaped quote used to cut the message short.
+  testWidgets('a failed join shows a quoted server message whole (issue #480)',
+      (tester) async {
+    const message = 'Can\'t use "Mon voyage" — café 日本';
+    final svc = _FakeMembersService()
+      ..preview = const InvitePreview(
+          projectName: 'Alps', ownerName: 'Alice', role: 'editor')
+      ..acceptError = ApiException(400, jsonEncode({'detail': message}));
+
+    await tester.pumpWidget(
+        MaterialApp.router(routerConfig: _router(svc, (_) {})));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(ElevatedButton, 'Join trip'));
+    await tester.pumpAndSettle();
+
+    expect(find.text(message), findsOneWidget);
   });
 
   testWidgets('Join accepts the invite and navigates into the trip as editor '

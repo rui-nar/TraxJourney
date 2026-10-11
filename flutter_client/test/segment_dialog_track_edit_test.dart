@@ -8,6 +8,7 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:traxjourney_client/src/api/client.dart';
 import 'package:traxjourney_client/src/projects/project_notifier.dart';
 import 'package:traxjourney_client/src/projects/project_service.dart';
 import 'package:traxjourney_client/src/projects/segment_dialog.dart';
@@ -43,6 +44,9 @@ class _RecordingNotifier extends ProjectNotifier {
   final List<String?> updatedRouteModes = [];
   final List<({String segId, bool force})> resolveCalls = [];
 
+  /// When set, resolveTrainRoute throws it instead of resolving.
+  Object? resolveError;
+
   @override
   Future<void> updateSegment(
     String segId, {
@@ -70,6 +74,8 @@ class _RecordingNotifier extends ProjectNotifier {
     bool force = false,
   }) async {
     resolveCalls.add((segId: segId, force: force));
+    final err = resolveError;
+    if (err != null) throw err;
     return {'route_status': 'resolved', 'stop_count': 2, 'degraded': false};
   }
 }
@@ -172,6 +178,23 @@ void main() {
 
     expect(find.byType(SegmentDialog), findsNothing);
     expect(find.byType(SegmentTrackEditorPage), findsOneWidget);
+  });
+
+  // Issue #480: the escaped quote used to cut the message short.
+  testWidgets('a failed resolve shows the server message whole (issue #480)',
+      (tester) async {
+    const detail = 'Can\'t use "Mon voyage" — café 日本';
+    final notifier = _RecordingNotifier()
+      ..resolveError = ApiException(400, jsonEncode({'detail': detail}));
+    await _pumpPushedDialog(tester, notifier, editSegment: _segment());
+
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+    // The error queues behind the "Calculating…" snackbar (10 s).
+    await tester.pump(const Duration(seconds: 11));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Route unavailable: $detail'), findsOneWidget);
   });
 
   group('re-resolving a manually edited route', () {

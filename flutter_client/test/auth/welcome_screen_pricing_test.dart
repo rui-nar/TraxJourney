@@ -8,8 +8,11 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:traxjourney_client/src/core/theme.dart';
 import 'package:traxjourney_client/src/auth/welcome_screen.dart';
 import 'package:traxjourney_client/src/billing/billing_service.dart';
+
+import '../helpers/real_fonts.dart';
 
 PlanInfo _plan(String id, String price, {bool purchasable = true}) => PlanInfo(
     id: id, name: id, priceLabel: price, features: const [],
@@ -39,16 +42,8 @@ Future<void> _pumpWelcome(
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
 
-  // The page overflows under the test font (see welcome_screen_version_test);
-  // that is not what this test is asking about.
-  final previous = FlutterError.onError;
-  FlutterError.onError = (details) {
-    if (details.exceptionAsString().contains('overflowed')) return;
-    previous?.call(details);
-  };
-  addTearDown(() => FlutterError.onError = previous);
-
-  await tester.pumpWidget(MaterialApp(home: WelcomeScreen(loadPlans: loadPlans)));
+  await tester.pumpWidget(MaterialApp(
+      theme: lightTheme, home: WelcomeScreen(loadPlans: loadPlans)));
   await tester.pump(); // resolve the catalogue future
   await tester.pump(); // rebuild with it
 }
@@ -65,6 +60,9 @@ Finder _cloudCard() =>
     find.ancestor(of: find.text('Cloud'), matching: find.byType(Stack)).first;
 
 void main() {
+  // In the real fonts, so the page lays out as it does for a reader.
+  setUpAll(loadRealFonts);
+
   testWidgets('the hosted card is rendered', (tester) async {
     await _pumpWelcome(tester, _selling);
 

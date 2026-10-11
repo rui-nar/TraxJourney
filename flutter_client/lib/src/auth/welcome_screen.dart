@@ -16,6 +16,10 @@ import '../core/legal_links.dart';
 const _kBreak = 900.0;
 const _kNavH  = 64.0;
 const _kShell = 1200.0;
+/// Below this width the page (every _Shell: the nav and each section) keeps a
+/// phone's 16 px side gutter, not 32 px: on a 320 px screen 64 px of gutter
+/// left too little for the nav and the pricing cards (issue #473).
+const _kPhone = 600.0;
 
 // ── Always-dark showcase palette ─────────────────────────────────────────────
 const _dBg   = Color(0xFF0D1B2A);
@@ -112,15 +116,21 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
 
 class _Shell extends StatelessWidget {
   final Widget child;
-  final EdgeInsets padding;
-  const _Shell({required this.child, this.padding = const EdgeInsets.symmetric(horizontal: 32)});
+  /// Vertical space only: the side gutter is the shell's, so every section
+  /// lines up with the nav (issue #473, review R1-3).
+  final double top;
+  final double bottom;
+  const _Shell({required this.child, this.top = 0, this.bottom = 0});
 
   @override
   Widget build(BuildContext context) {
+    final gutter = MediaQuery.sizeOf(context).width < _kPhone ? 16.0 : 32.0;
     return Center(
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: _kShell),
-        child: Padding(padding: padding, child: child),
+        child: Padding(
+            padding: EdgeInsets.fromLTRB(gutter, top, gutter, bottom),
+            child: child),
       ),
     );
   }
@@ -141,6 +151,66 @@ Widget _gradientText(String text, TextStyle style, {TextAlign? textAlign}) => Sh
   shaderCallback: (b) => _gradText.createShader(b),
   child: Text(text, textAlign: textAlign, style: style.copyWith(color: Colors.white)),
 );
+
+/// A display heading (issue #595).
+///
+/// It follows the reader's text size up to 1.5x, which is about what Android's
+/// non-linear scaling gives text this large, and is drawn smaller than its
+/// design size only when its widest word would not fit the line: Flutter
+/// breaks such a word between two letters. [gradient] draws it in the brand
+/// gradient. A heading split over two widgets passes the other's text as
+/// [sizeWith], so both lines fit to the same size.
+class _Heading extends StatelessWidget {
+  final String text;
+  final TextStyle style;
+  final TextAlign? textAlign;
+  final bool gradient;
+  final String? sizeWith;
+  const _Heading(this.text, this.style,
+      {this.textAlign, this.gradient = false, this.sizeWith});
+
+  /// The pieces a line may break between: words, split after hyphens.
+  static final _unbreakable = RegExp(r'[^\s-]+-?');
+
+  @override
+  Widget build(BuildContext context) => MediaQuery.withClampedTextScaling(
+        maxScaleFactor: 1.5,
+        child: LayoutBuilder(builder: (context, box) {
+          final scaler = MediaQuery.textScalerOf(context);
+          var fitted = style;
+          // A few passes: with non-linear scaling, a smaller size scales by a
+          // slightly larger factor, so one proportional step can fall short.
+          for (var pass = 0; pass < 3; pass++) {
+            final widest = _widestPiece(fitted, scaler);
+            if (widest <= box.maxWidth) break;
+            fitted = fitted.copyWith(
+                fontSize: fitted.fontSize! * box.maxWidth / widest * 0.99);
+          }
+          // A heading for screen readers too, which is also how the layout
+          // test finds every heading whatever size it was fitted to.
+          return Semantics(
+            header: true,
+            child: gradient
+                ? _gradientText(text, fitted, textAlign: textAlign)
+                : Text(text, textAlign: textAlign, style: fitted),
+          );
+        }),
+      );
+
+  double _widestPiece(TextStyle style, TextScaler scaler) {
+    var widest = 0.0;
+    for (final piece in _unbreakable.allMatches('$text ${sizeWith ?? ''}')) {
+      final painter = TextPainter(
+        text: TextSpan(text: piece[0], style: style),
+        textDirection: TextDirection.ltr,
+        textScaler: scaler,
+      )..layout();
+      if (painter.width > widest) widest = painter.width;
+      painter.dispose();
+    }
+    return widest;
+  }
+}
 
 Future<void> _openUrl(String url) async {
   final uri = Uri.parse(url);
@@ -221,7 +291,9 @@ class _NavBar extends StatelessWidget {
     final isDark = theme.brightness == Brightness.dark;
     final wide = MediaQuery.sizeOf(context).width >= _kBreak;
 
-    return Container(
+    // Capped at 1.5x, as app bars commonly are: past it the two buttons alone
+    // are wider than a phone (issue #595).
+    return MediaQuery.withClampedTextScaling(maxScaleFactor: 1.5, child: Container(
       height: _kNavH,
       decoration: BoxDecoration(
         color: isDark
@@ -234,15 +306,24 @@ class _NavBar extends StatelessWidget {
           children: [
             const _Logo(size: 28),
             const SizedBox(width: 10),
-            _LogoWordmark(theme),
             if (wide) ...[
+              _LogoWordmark(theme),
               const SizedBox(width: 32),
               _NavLink('Features', onFeatures, theme),
               _NavLink('How it works', onHow, theme),
               _NavLink('Self-host', onSelfHost, theme),
               _NavLink('GitHub', () => _openUrl(kRepoUrl), theme),
-            ],
-            const Spacer(),
+              const Spacer(),
+            ] else
+              // On a phone the wordmark shrinks before the buttons get pushed
+              // off the edge (issue #473).
+              Expanded(
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: FittedBox(
+                      fit: BoxFit.scaleDown, child: _LogoWordmark(theme)),
+                ),
+              ),
             TextButton(
               onPressed: () => context.go('/login'),
               style: TextButton.styleFrom(
@@ -262,7 +343,7 @@ class _NavBar extends StatelessWidget {
           ],
         ),
       ),
-    );
+    ));
   }
 }
 
@@ -276,11 +357,11 @@ class _LogoWordmark extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Text('View', style: s),
+        Text(kWordmarkLead, style: s),
         ShaderMask(
           blendMode: BlendMode.srcIn,
           shaderCallback: (b) => _gradLogoText.createShader(b),
-          child: Text('Trip', style: s.copyWith(color: Colors.white)),
+          child: Text(kWordmarkTail, style: s.copyWith(color: Colors.white)),
         ),
       ],
     );
@@ -320,7 +401,7 @@ class _HeroSection extends StatelessWidget {
     return Container(
       color: theme.scaffoldBackgroundColor,
       child: _Shell(
-        padding: const EdgeInsets.fromLTRB(32, 80, 32, 64),
+        top: 80, bottom: 64,
         child: LayoutBuilder(
           builder: (_, c) => c.maxWidth >= _kBreak
               ? _HeroWide(theme)
@@ -375,6 +456,9 @@ class _HeroText extends StatelessWidget {
     final fg2 = theme.colorScheme.onSurfaceVariant;
     final align = centered ? TextAlign.center : TextAlign.left;
     final cross = centered ? CrossAxisAlignment.center : CrossAxisAlignment.start;
+    // 64 px puts "adventure," wider than a phone, which breaks it between
+    // two letters; phones get a size whose longest word fits (issue #473).
+    final h1 = MediaQuery.sizeOf(context).width < _kPhone ? 40.0 : 64.0;
 
     return Column(
       crossAxisAlignment: cross,
@@ -385,7 +469,9 @@ class _HeroText extends StatelessWidget {
           decoration: BoxDecoration(
             color: theme.cardColor,
             border: Border.all(color: theme.dividerColor),
-            borderRadius: BorderRadius.circular(999),
+            // A pill on one line; when large text wraps it, a rounded box
+            // rather than a 999 px-radius oval (issue #595).
+            borderRadius: BorderRadius.circular(16),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -404,23 +490,29 @@ class _HeroText extends StatelessWidget {
                         .copyWith(letterSpacing: 0.05)),
               ),
               const SizedBox(width: 8),
-              Text('Self-hosted · open source · Docker',
-                  style: _mono(12, FontWeight.w500, fg2)),
+              // Wraps rather than running off a phone (issue #473).
+              Flexible(
+                child: Text('Self-hosted · open source · Docker',
+                    textAlign: align,
+                    style: _mono(12, FontWeight.w500, fg2)),
+              ),
             ],
           ),
         ),
         const SizedBox(height: 20),
 
         // H1 — two lines
-        Text('Your adventure,',
-            textAlign: align,
-            style: _inter(64, FontWeight.w800, fg1, height: 1.02, spacing: -0.035)),
+        _Heading('Your adventure,',
+            _inter(h1, FontWeight.w800, fg1, height: 1.02, spacing: -0.035),
+            textAlign: align, sizeWith: 'stitched end-to-end.'),
         SizedBox(
           width: double.infinity,
-          child: _gradientText(
+          child: _Heading(
             'stitched end-to-end.',
-            _inter(64, FontWeight.w800, Colors.white, height: 1.02, spacing: -0.035),
+            _inter(h1, FontWeight.w800, Colors.white, height: 1.02, spacing: -0.035),
             textAlign: centered ? TextAlign.center : TextAlign.start,
+            gradient: true,
+            sizeWith: 'Your adventure,',
           ),
         ),
         const SizedBox(height: 20),
@@ -530,7 +622,9 @@ class _HeroVis extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    // A picture of the app, not text to read: it keeps its drawn size at any
+    // text size, as a screenshot would (issue #595).
+    return MediaQuery.withNoTextScaling(child: Container(
       decoration: BoxDecoration(
         color: theme.cardColor,
         border: Border.all(color: theme.dividerColor),
@@ -558,7 +652,7 @@ class _HeroVis extends StatelessWidget {
           _ElevationStrip(theme),
         ],
       ),
-    );
+    ));
   }
 }
 
@@ -583,8 +677,13 @@ class _WindowBar extends StatelessWidget {
           const SizedBox(width: 6),
           _TrafficDot(const Color(0xFF16A34A)),
           const SizedBox(width: 12),
-          Text('traxjourney.com / camino-portugués',
-              style: _mono(11, FontWeight.w500, theme.colorScheme.onSurfaceVariant)),
+          // Cut short like a real narrow address bar (issue #473).
+          Flexible(
+            child: Text('traxjourney.com / camino-portugués',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: _mono(11, FontWeight.w500, theme.colorScheme.onSurfaceVariant)),
+          ),
         ],
       ),
     );
@@ -606,9 +705,12 @@ class _MapView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Placed by the map's own width, not the screen's: on a wide window the
+    // map is half the screen, and screen-relative offsets put Barcelos and
+    // the memory card past its clipped edge (issue #473, review R1-1).
     return SizedBox(
       height: 280,
-      child: Stack(
+      child: LayoutBuilder(builder: (context, box) => Stack(
         fit: StackFit.expand,
         children: [
           // Map canvas
@@ -617,19 +719,19 @@ class _MapView extends StatelessWidget {
           // City labels
           Positioned(left: 24, bottom: 36,
               child: _MapLabel('Porto')),
-          Positioned(left: 0.48 * MediaQuery.sizeOf(context).width, bottom: 64,
+          Positioned(left: 0.48 * box.maxWidth, bottom: 64,
               child: _MapLabel('Barcelos')),
           Positioned(right: 8, top: 48,
               child: _MapLabel('Santiago')),
 
           // Memory card
           Positioned(
-            left: 0.32 * MediaQuery.sizeOf(context).width,
+            left: 0.32 * box.maxWidth,
             top: 40,
             child: _MemoryCard(theme),
           ),
         ],
-      ),
+      )),
     );
   }
 }
@@ -642,14 +744,10 @@ class _MapLabel extends StatelessWidget {
   Widget build(BuildContext context) {
     return Text(
       text,
-      style: const TextStyle(
-        fontFamily: 'Inter',
-        fontSize: 11,
-        fontWeight: FontWeight.w600,
-        color: Color(0xFF0F172A),
-        letterSpacing: 0.06,
-        shadows: [Shadow(blurRadius: 4, color: Colors.white)],
-      ),
+      // google_fonts registers Inter under its own family names; a plain
+      // 'Inter' matched nothing and fell back to the platform font (#594).
+      style: _inter(11, FontWeight.w600, const Color(0xFF0F172A), spacing: 0.06)
+          .copyWith(shadows: const [Shadow(blurRadius: 4, color: Colors.white)]),
     );
   }
 }
@@ -928,7 +1026,7 @@ class _FeaturesSection extends StatelessWidget {
         children: [
           Divider(height: 1, color: theme.dividerColor),
           _Shell(
-            padding: const EdgeInsets.fromLTRB(32, 96, 32, 96),
+            top: 96, bottom: 96,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -936,9 +1034,9 @@ class _FeaturesSection extends StatelessWidget {
                     style: _inter(12, FontWeight.w600,
                         theme.colorScheme.primary).copyWith(letterSpacing: 0.12)),
                 const SizedBox(height: 10),
-                Text(
+                _Heading(
                   'One map. Every kilometre.\nIncluding the ones you didn\'t pedal.',
-                  style: _inter(40, FontWeight.w800, fg1, height: 1.1, spacing: -0.025),
+                  _inter(40, FontWeight.w800, fg1, height: 1.1, spacing: -0.025),
                 ),
                 const SizedBox(height: 12),
                 Text(
@@ -1077,7 +1175,7 @@ class _HowItWorksSection extends StatelessWidget {
         children: [
           Divider(height: 1, color: theme.dividerColor),
           _Shell(
-            padding: const EdgeInsets.fromLTRB(32, 96, 32, 96),
+            top: 96, bottom: 96,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1085,8 +1183,8 @@ class _HowItWorksSection extends StatelessWidget {
                     style: _inter(12, FontWeight.w600,
                         theme.colorScheme.primary).copyWith(letterSpacing: 0.12)),
                 const SizedBox(height: 10),
-                Text('From Strava dump to shareable journey in three steps.',
-                    style: _inter(40, FontWeight.w800, fg1, height: 1.1, spacing: -0.025)),
+                _Heading('From Strava dump to shareable journey in three steps.',
+                    _inter(40, FontWeight.w800, fg1, height: 1.1, spacing: -0.025)),
                 const SizedBox(height: 48),
                 LayoutBuilder(builder: (_, c) {
                   final wide = c.maxWidth >= _kBreak;
@@ -1188,7 +1286,7 @@ class _ShowcaseSection extends StatelessWidget {
               // Grid overlay
               Positioned.fill(child: CustomPaint(painter: _GridPainter())),
               _Shell(
-                padding: const EdgeInsets.fromLTRB(32, 96, 32, 96),
+                top: 96, bottom: 96,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -1196,8 +1294,8 @@ class _ShowcaseSection extends StatelessWidget {
                         style: _inter(12, FontWeight.w600, const Color(0xFF60A5FA))
                             .copyWith(letterSpacing: 0.12)),
                     const SizedBox(height: 10),
-                    Text('Camino Portugués · 18 activities · 4 connecting segments.',
-                        style: _inter(40, FontWeight.w800, const Color(0xFFF1F5F9),
+                    _Heading('Camino Portugués · 18 activities · 4 connecting segments.',
+                        _inter(40, FontWeight.w800, const Color(0xFFF1F5F9),
                             height: 1.1, spacing: -0.025)),
                     const SizedBox(height: 12),
                     Text(
@@ -1264,7 +1362,8 @@ class _ShowStats extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Wrap(
+    // Part of the live-project mock-up: drawn at a fixed size (issue #595).
+    return MediaQuery.withNoTextScaling(child: Wrap(
       spacing: 16,
       runSpacing: 16,
       children: [
@@ -1274,7 +1373,7 @@ class _ShowStats extends StatelessWidget {
             child: _ShowStat(s.$1, s.$2, s.$3, s.$4),
           ),
       ],
-    );
+    ));
   }
 }
 
@@ -1326,7 +1425,8 @@ class _ShowPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    // Part of the live-project mock-up: drawn at a fixed size (issue #595).
+    return MediaQuery.withNoTextScaling(child: Container(
       decoration: BoxDecoration(
         color: _dCard,
         border: Border.all(color: _dBord),
@@ -1378,7 +1478,7 @@ class _ShowPanel extends StatelessWidget {
           ),
         ],
       ),
-    );
+    ));
   }
 }
 
@@ -1473,7 +1573,7 @@ class _SelfHostSectionState extends State<_SelfHostSection> {
         children: [
           Divider(height: 1, color: theme.dividerColor),
           _Shell(
-            padding: const EdgeInsets.fromLTRB(32, 96, 32, 96),
+            top: 96, bottom: 96,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1481,8 +1581,8 @@ class _SelfHostSectionState extends State<_SelfHostSection> {
                     style: _inter(12, FontWeight.w600,
                         theme.colorScheme.primary).copyWith(letterSpacing: 0.12)),
                 const SizedBox(height: 10),
-                Text('Run it yourself, or let us.',
-                    style: _inter(40, FontWeight.w800, fg1,
+                _Heading('Run it yourself, or let us.',
+                    _inter(40, FontWeight.w800, fg1,
                         height: 1.1, spacing: -0.025)),
                 const SizedBox(height: 12),
                 Text(
@@ -1583,15 +1683,20 @@ class _TierCard extends StatelessWidget {
                   style: _inter(20, FontWeight.w700, fg1)),
               const SizedBox(height: 12),
               if (!featured)
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.baseline,
-                  textBaseline: TextBaseline.alphabetic,
-                  children: [
-                    Text('Free',
+                // One paragraph, so "· AGPL" wraps under "Free" instead of
+                // running off a phone; capped at 2x like the price below, past
+                // which "Free" alone is wider than the card (issue #473).
+                MediaQuery.withClampedTextScaling(
+                  maxScaleFactor: 2,
+                  child: Text.rich(TextSpan(children: [
+                    TextSpan(
+                        text: 'Free',
                         style: _inter(40, FontWeight.w800, fg1, spacing: -0.03)),
-                    const SizedBox(width: 6),
-                    Text('· AGPL', style: _inter(14, FontWeight.w500, fg2)),
-                  ],
+                    TextSpan(
+                        // No break between the dot and "AGPL" (review R1-2).
+                        text: '  · AGPL',
+                        style: _inter(14, FontWeight.w500, fg2)),
+                  ])),
                 )
               else if (price != null)
                 // "from" sits on its own line so the price gets the card's full
@@ -1622,11 +1727,16 @@ class _TierCard extends StatelessWidget {
               for (final f in (featured ? cloudFeatures : freeFeatures)) ...[
                 Padding(
                   padding: const EdgeInsets.only(bottom: 10),
+                  // The text wraps beside a top-aligned tick rather than
+                  // running off a phone (issue #473).
                   child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Icon(Icons.check_rounded, size: 18, color: primary),
                       const SizedBox(width: 8),
-                      Text(f, style: _inter(14, FontWeight.w400, fg2)),
+                      Expanded(
+                        child: Text(f, style: _inter(14, FontWeight.w400, fg2)),
+                      ),
                     ],
                   ),
                 ),
@@ -1699,7 +1809,7 @@ class _Footer extends StatelessWidget {
         children: [
           Divider(height: 1, color: theme.dividerColor),
           _Shell(
-            padding: const EdgeInsets.fromLTRB(32, 48, 32, 32),
+            top: 48, bottom: 32,
             child: LayoutBuilder(builder: (_, c) {
               final wide = c.maxWidth >= _kBreak;
               if (wide) {
@@ -1771,7 +1881,11 @@ class _FootBrand extends StatelessWidget {
         Row(children: [
           const _Logo(size: 26),
           const SizedBox(width: 8),
-          _LogoWordmark(theme),
+          // Shrinks rather than running off a phone at large text (#595).
+          Flexible(
+            child: FittedBox(
+                fit: BoxFit.scaleDown, child: _LogoWordmark(theme)),
+          ),
         ]),
         const SizedBox(height: 14),
         Text(

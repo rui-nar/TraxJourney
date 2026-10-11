@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:traxjourney_client/src/core/theme.dart';
 import 'package:traxjourney_client/src/api/client.dart';
 import 'package:traxjourney_client/src/auth/auth_notifier.dart';
 import 'package:traxjourney_client/src/auth/auth_service.dart';
@@ -15,6 +16,7 @@ import 'package:traxjourney_client/src/auth/register_screen.dart';
 import 'package:traxjourney_client/src/auth/welcome_screen.dart';
 
 import '../helpers/fake_url_launcher.dart';
+import '../helpers/real_fonts.dart';
 
 const _server = 'https://trax.example.com';
 
@@ -72,20 +74,16 @@ void main() {
   }
 
   group('landing page footer', () {
-    // The page overflows in widget tests for reasons unrelated to links (see
-    // welcome_screen_version_test.dart), so overflow reports are swallowed.
+    // In the real fonts, so the page lays out as it does for a reader.
+    setUpAll(loadRealFonts);
+
     Future<void> pumpWelcome(WidgetTester tester, Size size) async {
       tester.view.physicalSize = size;
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
-      final previous = FlutterError.onError;
-      FlutterError.onError = (details) {
-        if (details.exceptionAsString().contains('overflowed')) return;
-        previous?.call(details);
-      };
-      addTearDown(() => FlutterError.onError = previous);
-      await tester.pumpWidget(const MaterialApp(home: WelcomeScreen()));
+      await tester.pumpWidget(
+          MaterialApp(theme: lightTheme, home: const WelcomeScreen()));
       await tester.pump();
     }
 

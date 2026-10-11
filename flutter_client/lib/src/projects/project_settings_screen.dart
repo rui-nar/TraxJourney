@@ -210,6 +210,25 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
     });
   }
 
+  /// Creates or revokes a share link, then refreshes the visitors. When the
+  /// server refuses (an editor on a shared trip gets a 403), says why instead
+  /// of doing nothing visible (issue #480, review R1-1).
+  Future<void> _changeShareLink(Future<void> Function() change,
+      {VoidCallback? onDone}) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await change();
+    } on Exception catch (e) {
+      if (mounted) {
+        messenger.showSnackBar(SnackBar(content: Text(apiErrorMessage(e))));
+      }
+      return;
+    }
+    if (!mounted) return;
+    setState(() => onDone?.call());
+    _loadVisitors();
+  }
+
   Future<void> _loadVisitors() async {
     if (!mounted) return;
     setState(() => _visitorsLoading = true);
@@ -843,16 +862,9 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
               label: 'Full project',
               token: n.shareToken,
               shareKeyFragment: _shareContentKey,
-              onCreateLink: () async {
-                await n.createShareToken();
-                setState(() {});
-                _loadVisitors();
-              },
-              onRevoke: () async {
-                await n.revokeShareToken();
-                setState(() => _shareContentKey = null);
-                _loadVisitors();
-              },
+              onCreateLink: () => _changeShareLink(n.createShareToken),
+              onRevoke: () => _changeShareLink(n.revokeShareToken,
+                  onDone: () => _shareContentKey = null),
             ),
             if (n.shareToken != null) ...[
               const SizedBox(height: 8),
@@ -888,16 +900,9 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
             _ShareLinkCard(
               label: 'Without memories',
               token: n.shareTokenNoMemories,
-              onCreateLink: () async {
-                await n.createShareTokenNoMemories();
-                setState(() {});
-                _loadVisitors();
-              },
-              onRevoke: () async {
-                await n.revokeShareTokenNoMemories();
-                setState(() {});
-                _loadVisitors();
-              },
+              onCreateLink: () =>
+                  _changeShareLink(n.createShareTokenNoMemories),
+              onRevoke: () => _changeShareLink(n.revokeShareTokenNoMemories),
             ),
             if (_visitorsLoading) ...[
               const SizedBox(height: 12),

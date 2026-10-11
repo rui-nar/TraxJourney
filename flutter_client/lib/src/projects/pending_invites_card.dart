@@ -12,9 +12,10 @@ library;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../api/client.dart' show apiErrorMessage;
 import 'members_service.dart';
 import 'projects_notifier.dart';
-import 'travel_companions_section.dart' show companionErrorMessage, roleLabel;
+import 'travel_companions_section.dart' show roleLabel;
 
 class PendingInvitesCard extends StatefulWidget {
   /// Injected in tests; defaults to the app-wide service.
@@ -67,7 +68,7 @@ class _PendingInvitesCardState extends State<PendingInvitesCard> {
         await context.read<ProjectsNotifier>().load();
       }
     } on Exception catch (e) {
-      if (mounted) setState(() => _error = companionErrorMessage(e));
+      if (mounted) setState(() => _error = apiErrorMessage(e));
     } finally {
       if (mounted) setState(() => _busyToken = null);
     }
