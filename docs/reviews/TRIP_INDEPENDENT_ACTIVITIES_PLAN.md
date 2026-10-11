@@ -194,3 +194,24 @@ Fable reviewer, Opus triager. 1 finding, no envelope questions.
 - Guard: —
 - Override: —
 - Outcome: fixed (plan)
+
+## Unit review U1 — 2026-10-11, reviewed at a9459f8f (worktree-agent-a4096de40ba92d331)
+
+Fable reviewer, Opus triager. 1 finding, 1 envelope question.
+
+Envelope question EQ-U1-1 (to the owner, not triaged): a "Keep both" copy
+of the user's own split trip, where the user then removed the tail from the
+copy on purpose, looks to the migration exactly like a trip that never split
+the activity (it holds the head and no tail, and another trip holds tails). The
+migration restores the full track in that copy. Accept, or treat it
+differently?
+Owner answer: accepted (2026-10-11) — the restore stands; every restore is logged per trip.
+
+### U1R1-1 — A tail whose parent chain dead-ends on a deleted row is detached although the trip holds its split_root_id
+- Trigger: no current code path produces it. A trip holding head H and a tail whose `split_parent_id` names a missing row → the walk returns None and the migration permanently clears the tail's split columns although the trip holds H.
+- Scores: trigger=theoretical, impact=data-loss (triager, from degraded-ux), detect=logged, later=expensive, fix=S/local, confidence=verified
+- Decision: Guard (D4), approved by the owner
+- Revisit when: —
+- Guard: WARNING log plus a summary counter when a tail is detached although its own root is held. (e173a2a1)
+- Override: —
+- Outcome: guard added (e173a2a1)
