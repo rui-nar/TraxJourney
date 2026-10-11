@@ -84,6 +84,27 @@ void main() {
         [_revision]);
   });
 
+  // After a Flutter SDK upgrade the reused build/web still holds the previous
+  // engine's canvaskit/<old revision>/, which Flutter never deletes
+  // (review R5-1).
+  test('a rebuild on a newer SDK drops the previous revision', () {
+    final build = _build();
+    const older = '0123456789abcdef0123456789abcdef01234567';
+    File('${build.path}/canvaskit/$older/chromium/canvaskit.wasm')
+      ..createSync(recursive: true)
+      ..writeAsStringSync('old');
+
+    versionCanvasKit(build.path);
+
+    expect(
+        Directory('${build.path}/canvaskit')
+            .listSync()
+            .map((e) => e.path.split(RegExp(r'[\\/]')).last),
+        [_revision]);
+    expect(Directory('${build.path}/canvaskit/$_revision/$older').existsSync(),
+        isFalse);
+  });
+
   test('a build without its own CanvasKit is refused', () {
     final build = _build();
     Directory('${build.path}/canvaskit').deleteSync(recursive: true);

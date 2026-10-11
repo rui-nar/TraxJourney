@@ -83,3 +83,16 @@ Reviewer: adversarial-reviewer (Fable). Triager: review-triager (Opus). 2 findin
 - Guard: —
 - Override: —
 - Outcome: fixed
+
+## Round 5 — 2026-10-11, reviewed at b2045c73 (fixes since 118a7548; owner asked for a fifth round)
+
+Reviewer: adversarial-reviewer (Fable). Triager: review-triager (Opus). 1 finding, well-formed.
+
+### R5-1 — After a Flutter SDK upgrade, the previous revision's CanvasKit is nested inside the new one and shipped
+- Trigger: the owner upgrades the Flutter SDK (engine A → B) and deploys from his checkout (no flutter clean) → build/web still holds canvaskit/A/, which Flutter never deletes → version_canvaskit.dart moves every entry not named B, so A/ becomes canvaskit/B/A/ → the stale CanvasKit set (~7 MB+) ships in the :validation image, and nests again on each upgrade. Nothing requests or prunes it.
+- Scores: trigger=concrete, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed

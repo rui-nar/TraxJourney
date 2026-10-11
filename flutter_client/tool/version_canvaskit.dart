@@ -15,11 +15,17 @@ library;
 
 import 'dart:io';
 
+/// An engine revision: a git commit hash.
+const _revision = '[0-9a-f]{7,64}';
+
+/// A directory name that is an engine revision.
+final _revisionShape = RegExp('^$_revision\$');
+
 /// The engine revision `flutter build web` wrote into the build's bootstrap.
 String engineRevisionOf(String webBuild) {
   final bootstrap = File('$webBuild/flutter_bootstrap.js').readAsStringSync();
   final revision =
-      RegExp(r'"engineRevision":"([0-9a-f]{7,64})"').firstMatch(bootstrap);
+      RegExp('"engineRevision":"($_revision)"').firstMatch(bootstrap);
   if (revision == null) {
     throw StateError('No engineRevision in $webBuild/flutter_bootstrap.js');
   }
@@ -39,10 +45,18 @@ void versionCanvasKit(String webBuild) {
   // Listed before the target exists and matched by name: on Windows a listed
   // child's path is joined with '\', so it never equals one built with '/'
   // (review R4-1).
-  final entries = [
-    for (final entry in root.listSync())
-      if (_name(entry) != revision) entry,
-  ];
+  final entries = <FileSystemEntity>[];
+  for (final entry in root.listSync()) {
+    final name = _name(entry);
+    if (name == revision) continue;
+    if (_revisionShape.hasMatch(name)) {
+      // A previous SDK's moved CanvasKit, which Flutter never deletes from a
+      // reused build/web: dropped, not nested inside the new one (review R5-1).
+      entry.deleteSync(recursive: true);
+      continue;
+    }
+    entries.add(entry);
+  }
   final target = Directory('${root.path}/$revision')..createSync();
   for (final entry in entries) {
     final destination = '${target.path}/${_name(entry)}';
