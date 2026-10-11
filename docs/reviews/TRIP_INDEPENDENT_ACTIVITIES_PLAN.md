@@ -323,7 +323,7 @@ Fable reviewer, Opus triager. 2 findings, no envelope questions.
 - Revisit when: —
 - Guard: —
 - Override: — (owner approved 2026-10-11)
-- Outcome: open
+- Outcome: fixed (af666cd3)
 
 ### IR1-2 — Sharing-era repository helpers survive as dead code with stale docstrings
 - Trigger: a maintainer adding a new activity writer reads `_upsert_activity` documented as the import's path, though no caller remains → uses it, reintroducing the removed ownership/re-add behaviour. Also: `activity_rewritable_by_trip` and `ProjectIO.to_dict` docstrings still describe shared rows. Tests still call some of these helpers and must move to the live path.
@@ -332,4 +332,4 @@ Fable reviewer, Opus triager. 2 findings, no envelope questions.
 - Revisit when: —
 - Guard: —
 - Override: — (owner approved 2026-10-11)
-- Outcome: open
+- Outcome: fixed (d7c04617, 24e16658, c54b25db, c63a1293)
