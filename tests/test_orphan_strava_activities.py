@@ -485,14 +485,12 @@ def test_a_refresh_that_outlives_its_row_warns_and_recreates_nothing(engine, cap
 def test_a_disconnect_deletes_no_activity_rows(engine):
     """An activity stays in its trip when its importer disconnects Strava,
     and one no trip holds is harmless (plan Decision 9, review R1-9)."""
-    from api.project_shared import _repo
-
     uid = _user(engine, "owner")
     _activity(engine, 1, uid, strava_id=900, strava_user_id=uid)
     _activity(engine, 2, uid, strava_id=901, strava_user_id=uid)
     _trip(engine, uid, "Trip", [1])
 
-    with Session(engine) as sess:
-        assert _repo.delete_unreferenced_strava_activities(sess, uid) == set()
+    resp = _as(uid).delete("/api/strava/disconnect")
+    assert resp.status_code == 204, resp.text
 
     assert _rows(engine) == {1, 2}

@@ -1160,29 +1160,6 @@ class ActivityMixin:
                 self._renumber_split_family(sess, project_id, root_id)
         return renamed
 
-    def delete_unreferenced_strava_activities(
-        self,
-        sess: Session,
-        user_info_id: int,
-        ids: Optional[Iterable[int]] = None,
-        tail_ids: Optional[Iterable[int]] = None,
-    ) -> Set[int]:
-        """Adapter for the callers in ``api/`` until #592's U5 and U6 call
-        ``delete_unreferenced_activities`` themselves: deletes the rows among
-        *ids* and *tail_ids* that no trip references, and commits.
-
-        *user_info_id* is no longer read: a row is its trip's, whoever owns
-        it. Without *ids* (a Strava disconnect) nothing is deleted: an
-        activity stays in its trip when its importer disconnects (plan
-        Decision 9).
-        """
-        if ids is None:
-            return set()
-        renamed = self.delete_unreferenced_activities(
-            sess, list(ids) + list(tail_ids or ()))
-        sess.commit()
-        return renamed
-
     @staticmethod
     def _delete_activity_rows(sess: Session, ids: List[int]) -> None:
         """Delete activity rows and their prepared geometry, in bounded batches.
@@ -1315,11 +1292,11 @@ class ActivityMixin:
     ) -> bool:
         """Whether a trip may rewrite or delete this activity's row.
 
-        An activity row is shared by every trip that holds it, so changing it
-        from one trip changes it in all of them. A trip may do that only to an
-        activity of its owner or of a current member: someone who is part of
-        the trip now. True for a row that does not exist: there is nothing to
-        protect, and the caller answers for the missing row itself.
+        A row belongs to the one trip that holds it (#592). The trip may
+        rewrite it only if the row's account is the trip's owner or a current
+        member: someone who is part of the trip now. True for a row that does
+        not exist: there is nothing to protect, and the caller answers for the
+        missing row itself.
         """
         act = sess.get(DBActivity, activity_id)
         if act is None:
@@ -1345,41 +1322,6 @@ class ActivityMixin:
             select(DBActivity.user_info_id).where(DBActivity.id == activity_id)
         ).first()
         return owner is not None and owner == user_info_id
-
-    def activity_shared_with_others(
-        self, sess: Session, activity_id: int, user_info_id: int
-    ) -> bool:
-        """Always False: a row belongs to one trip (#592), so no trip of
-        anyone else holds it. Kept for ``api/activities.py``'s
-        ``_refuse_shared`` until #592's U4 removes it."""
-        return False
-
-    def activity_owners(self, sess: Session, activity_ids) -> Dict[int, int]:
-        """Owner account of each of *activity_ids* that has a row.
-
-        Only plain integers are looked up: anything else names no row here,
-        though SQLite would match "9001" to 9001 (see ``is_activity_id``).
-        Kept for the ``.traxj`` import (``repo_transfer``) until #592's U6
-        gives every file activity a fresh row.
-        """
-        ids = {aid for aid in activity_ids if is_activity_id(aid)}
-        if not ids:
-            return {}
-        return dict(sess.exec(
-            select(DBActivity.id, DBActivity.user_info_id).where(DBActivity.id.in_(ids))
-        ).all())
-
-    def own_activities_only(
-        self, sess: Session, user_info_id: int, activities: List[Activity]
-    ) -> List[Activity]:
-        """*activities* less those whose id is not a plain integer.
-
-        An activity no longer has to be the caller's to be added: whatever row
-        another account has for it, the trip gets a row of its own (#592).
-        Kept for ``api/activities.py`` and ``api/strava.py`` until #592's U4
-        and U5 drop it.
-        """
-        return [a for a in activities if a.id is None or is_activity_id(a.id)]
 
     def trip_holds_activity(self, sess: Session, project_id: int, activity_id: int) -> bool:
         """Whether trip *project_id* holds the activity row *activity_id*."""
@@ -1509,53 +1451,6 @@ class ActivityMixin:
         project.items = items
         project.activities = activities
         project.rebuild_map()
-
-    def _upsert_activity(
-        self, sess: Session, user_info_id: int, act: Activity
-    ) -> None:
-        """Insert the activity row under its own id if it doesn't exist; skip
-        if it does.
-
-        Kept for the ``.traxj`` import (``repo_transfer``), which remaps ids
-        another account holds before calling this, until #592's U6 gives every
-        file activity a fresh row. Every other writer goes through
-        ``_save_trip_activities``.
-
-        Enriched data (summary_polyline, elevation_profile) is only written
-        for new rows — existing rows may already have richer data from a
-        previous enrichment pass. A row owned by another account is never
-        written.
-        """
-        if act.id is None:
-            return
-        existing = sess.get(DBActivity, act.id)
-        if existing is not None and existing.user_info_id != user_info_id:
-            return
-        if existing is not None:
-            # Update mutable user-visible fields always — except name, once it's
-            # already a client-side E2EE ciphertext envelope (issue #29): a
-            # plain re-sync must not silently overwrite it back to plaintext.
-            if not is_encrypted_envelope(existing.name):
-                existing.name = act.name
-            existing.kudos_count = act.kudos_count
-            existing.achievement_count = act.achievement_count
-            # If the stored polyline is null but the incoming one is not, take
-            # the incoming value — the user may have fixed their Strava map
-            # privacy and re-synced, or the first sync happened to return null.
-            # Already safe against clobbering ciphertext without an explicit
-            # guard: an encrypted summary_polyline is never None (it's a
-            # non-empty "v1.…" envelope), so this branch can't fire once the
-            # field is encrypted.
-            if existing.summary_polyline is None and act.summary_polyline:
-                existing.summary_polyline = act.summary_polyline
-                store_prepared_geometry(sess, existing)
-            return
-
-        row = self._new_activity_row(act, act.id, user_info_id)
-        row.strava_id = strava_identity(act)
-        row.strava_user_id = user_info_id if row.strava_id is not None else None
-        sess.add(row)
-        store_prepared_geometry(sess, row)
 
     @staticmethod
     def _new_activity_row(act: Activity, row_id: int, owner_id: int) -> DBActivity:
