@@ -116,6 +116,9 @@ def repo_env(monkeypatch):
 
         encrypted = DBActivity(
             id=111, user_info_id=uid, name=_ENC_NAME, type="Ride",
+            # From Strava through this user's connection (#592): the rows
+            # enrichment and a refresh write.
+            strava_id=111, strava_user_id=uid,
             kudos_count=1,
             summary_polyline=_ENC_POLY,
             elevation_profile_json=_ENC_ELEV,
@@ -214,6 +217,7 @@ class TestUpdateActivityEnrichmentGuard:
         engine, uid, repo = repo_env
         with Session(engine) as sess:
             sess.add(DBActivity(id=222, user_info_id=uid, name="Plain", type="Ride",
+                                 strava_id=222, strava_user_id=uid,
                                  start_date="2026-01-01T00:00:00Z",
                                  start_date_local="2026-01-01T00:00:00Z"))
             sess.commit()
@@ -259,6 +263,7 @@ class TestForceUpdateActivityGuard:
         engine, uid, repo = repo_env
         with Session(engine) as sess:
             sess.add(DBActivity(id=444, user_info_id=uid, name="Plain", type="Ride",
+                                 strava_id=444, strava_user_id=uid,
                                  start_date="2026-01-01T00:00:00Z",
                                  start_date_local="2026-01-01T00:00:00Z"))
             sess.commit()

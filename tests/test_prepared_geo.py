@@ -234,6 +234,9 @@ def repo_env(monkeypatch):
         dist_km = [i * 0.01 for i in range(len(_TRACK))]
         sess.add(DBActivity(
             id=111, user_info_id=uid, name="Ride", type="Ride",
+            # From Strava through the owner's connection (#592): what
+            # enrichment and a refresh write.
+            strava_id=111, strava_user_id=uid,
             distance=4000.0, moving_time=1000, elapsed_time=1200,
             summary_polyline=polyline_lib.encode(_TRACK),
             elevation_profile_json=json.dumps(

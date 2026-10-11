@@ -157,9 +157,14 @@ class TestConcurrentAddDoesNotDropTheOtherWritersActivity:
 
         assert resp.status_code == 200, resp.text
         # All three must be present: the pre-existing one (111), the
-        # concurrent writer's (333), and this request's own (222). Losing 333
-        # is exactly the silent-overwrite bug this test guards against.
-        assert _activity_ids(engine) == {111, 222, 333}
+        # concurrent writer's (333), and this request's own (Strava 222, in a
+        # row of its own whose id is allocated, #592). Losing 333 is exactly
+        # the silent-overwrite bug this test guards against.
+        with Session(engine) as sess:
+            added = sess.exec(select(DBActivity.id)
+                              .where(DBActivity.strava_id == 222)).all()
+        assert len(added) == 1
+        assert _activity_ids(engine) == {111, added[0], 333}
 
 
 class TestQuotaStillEnforcedAfterARetry:

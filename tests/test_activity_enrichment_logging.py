@@ -17,11 +17,14 @@ from sqlmodel import Session, SQLModel, create_engine
 
 import api.activities as activities_module
 import models.db as db_module
-from models.project_db import DBActivity
+from models.project_db import DBActivity, DBProject, DBProjectItem
+from models.user import UserInfo
 
 
 @pytest.fixture
 def db(monkeypatch):
+    """User 1's trip "Trip" holding row 1, Strava activity 1001 added through
+    user 1's connection (#592: enrichment needs both)."""
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -30,12 +33,17 @@ def db(monkeypatch):
     monkeypatch.setattr(db_module, "engine", engine)
     SQLModel.metadata.create_all(engine)
     with Session(engine) as sess:
+        sess.add(UserInfo(id=1, email="a@e.com", display_name="A"))
+        sess.add(DBProject(id=1, user_info_id=1, name="Trip"))
         sess.add(DBActivity(
             id=1, user_info_id=1, name="Act 1", type="Ride",
+            strava_id=1001, strava_user_id=1,
             distance=1000.0, moving_time=100, elapsed_time=120,
             start_date="2024-06-01T10:00:00Z",
             start_date_local="2024-06-01T12:00:00Z",
         ))
+        sess.add(DBProjectItem(project_id=1, position=0, item_type="activity",
+                               activity_id=1))
         sess.commit()
     return engine
 

@@ -4,9 +4,9 @@ The server cannot measure the climb of an encrypted profile, so the device
 measures it and writes it here (#366). Accepted from whoever may write the
 row's E2EE fields (as ``PUT /api/activities/{id}``), only for a row whose
 stored profile is an envelope, and only for a finite value within 0..50 000 m.
-It advances the lock version of every trip holding the row — a
-compare-and-swap on one of them when ``project`` and ``lock_version`` are
-given (decision 13) — and queues their stats refresh.
+It advances the lock version of the one trip holding the row (#592) — a
+compare-and-swap when ``project`` and ``lock_version`` are given (decision
+13) — and queues its stats refresh.
 ``PUT /api/activities/{id}`` itself still never writes the gain.
 """
 from __future__ import annotations
@@ -40,10 +40,12 @@ def _env(seed: int) -> str:
 
 @pytest.fixture
 def env(monkeypatch):
-    """Owner's trips "Trip" (lock 7) and "Other" (lock 3) both hold 111, an
-    encrypted Strava row of the owner's, and "Trip" holds 222, a plaintext
-    one. Stranger's trip "Theirs" holds 333, an encrypted row of the
-    stranger's, and 334, a local row of the owner's."""
+    """Owner's trip "Trip" (lock 7) holds 111, an encrypted Strava row of the
+    owner's, and 222, a plaintext one; the owner's "Other" (lock 3) holds
+    112, its own copy of 111 (#592: a row per trip). Stranger's trip "Theirs"
+    holds 333, an encrypted row of the stranger's, and -334, a local row the
+    owner added there and encrypted under their key, so still theirs (plan
+    Decision 4)."""
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -68,6 +70,8 @@ def env(monkeypatch):
         pids = {n: t.id for n, t in trips.items()}
         sess.add(DBActivity(id=111, user_info_id=ids["owner"], name=_env(1), type="Ride",
                             elevation_profile_json=_env(2), total_elevation_gain=10.0))
+        sess.add(DBActivity(id=112, user_info_id=ids["owner"], name=_env(1), type="Ride",
+                            elevation_profile_json=_env(2), total_elevation_gain=10.0))
         sess.add(DBActivity(id=222, user_info_id=ids["owner"], name="Plain", type="Ride",
                             elevation_profile_json='{"distances_km": [0, 1], '
                                                    '"elevations_m": [1, 2]}',
@@ -76,7 +80,7 @@ def env(monkeypatch):
                             elevation_profile_json=_env(4), total_elevation_gain=10.0))
         sess.add(DBActivity(id=-334, user_info_id=ids["owner"], name=_env(5), type="Ride",
                             elevation_profile_json=_env(6), total_elevation_gain=10.0))
-        for trip, aid in (("Trip", 111), ("Other", 111), ("Trip", 222),
+        for trip, aid in (("Trip", 111), ("Other", 112), ("Trip", 222),
                           ("Theirs", 333), ("Theirs", -334)):
             sess.add(DBProjectItem(project_id=pids[trip], position=0,
                                    item_type="activity", activity_id=aid))
@@ -114,13 +118,13 @@ def test_owner_writes_the_gain_of_an_encrypted_profile(env):
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"id": 111}
     assert _gain(env["engine"]) == 1234.5
-    # Every trip holding the row advances, and has its stats refreshed.
-    assert _locks(env["engine"]) == {"Trip": 8, "Other": 4, "Theirs": 5}
+    # The trip holding the row advances, and has its stats refreshed; the
+    # other trip's copy of the same activity is not touched (#592).
+    assert _locks(env["engine"]) == {"Trip": 8, "Other": 3, "Theirs": 5}
+    assert _gain(env["engine"], 112) == 10.0
     owner = env["ids"]["owner"]
-    assert sorted(c for c in env["calls"] if c[0] == "stats") == [
-        ("stats", owner, "Other"), ("stats", owner, "Trip")]
-    assert sorted(c for c in env["calls"] if c[0] == "geo") == [
-        ("geo", owner, "Other"), ("geo", owner, "Trip")]
+    assert [c for c in env["calls"] if c[0] == "stats"] == [("stats", owner, "Trip")]
+    assert [c for c in env["calls"] if c[0] == "geo"] == [("geo", owner, "Trip")]
 
 
 def test_a_flat_activity_may_be_written_zero(env):
@@ -132,7 +136,7 @@ def test_compare_and_swap_with_the_current_version(env):
     resp = _put(env, total_elevation_gain=50.0, project="Trip", lock_version=7)
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"id": 111, "lock_version": 8}
-    assert _locks(env["engine"]) == {"Trip": 8, "Other": 4, "Theirs": 5}
+    assert _locks(env["engine"]) == {"Trip": 8, "Other": 3, "Theirs": 5}
 
 
 def test_stale_version_is_refused_and_writes_nothing(env):
@@ -163,12 +167,25 @@ def test_a_non_owner_is_404(env):
     assert _locks(env["engine"]) == before
 
 
-def test_the_owner_of_every_trip_holding_a_local_row_may_write_it(env):
-    """Decision 14: a local row someone else imported, held only by the
-    caller's trips."""
+def test_a_row_encrypted_under_another_key_is_404_in_the_callers_own_trip(env):
+    """Was writable by the owner of every trip holding a local row (E2EE
+    remnants decision 14). Since #592 the row held by the stranger's trip
+    that the owner encrypted stays the owner's (plan Decision 4): the
+    stranger's device cannot read its profile to measure it."""
     env["caller"]["id"] = env["ids"]["stranger"]
+    before = _locks(env["engine"])
+    assert _put(env, aid=-334, total_elevation_gain=77.0).status_code == 404
+    assert _gain(env["engine"], -334) == 10.0
+    assert _locks(env["engine"]) == before
+
+
+def test_the_rows_owner_writes_it_in_another_users_trip(env):
+    """The trip holding it advances and is refreshed under its owner."""
     assert _put(env, aid=-334, total_elevation_gain=77.0).status_code == 200
     assert _gain(env["engine"], -334) == 77.0
+    assert _locks(env["engine"]) == {"Trip": 7, "Other": 3, "Theirs": 6}
+    stranger = env["ids"]["stranger"]
+    assert [c for c in env["calls"] if c[0] == "stats"] == [("stats", stranger, "Theirs")]
 
 
 def test_a_plaintext_profile_is_refused_as_not_encrypted(env):

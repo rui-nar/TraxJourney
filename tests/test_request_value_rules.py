@@ -195,7 +195,8 @@ def test_an_activity_the_import_would_refuse_is_not_added(app, monkeypatch, capl
     assert r.status_code == 200, r.text
     assert r.json()["added"] == 1
     with Session(engine) as sess:
-        assert [a.id for a in sess.exec(select(DBActivity)).all()] == [16900000002]
+        # By Strava id: the row's own id is allocated (#592).
+        assert [a.strava_id for a in sess.exec(select(DBActivity)).all()] == [16900000002]
     assert any(rec.levelno == logging.WARNING for rec in caplog.records)
 
 

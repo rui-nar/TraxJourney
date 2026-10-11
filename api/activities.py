@@ -73,9 +73,9 @@ from src.project.local_ids import LocalIdExhausted, allocate_local_activity_id, 
 from src.project.project_repo import StaleWriteError, bump_lock_version
 from src.project.repo_activities import (
     ENCRYPTED_PIECE_FIELDS, EncryptedEditOnDevice, NotEncrypted, NothingToRestore,
-    store_prepared_geometry,
+    store_prepared_geometry, strava_identity, trip_rows,
 )
-from src.project.repo_core import check_and_bump_lock_version
+from src.project.repo_core import _E2EE_ACTIVITY_COLUMNS, check_and_bump_lock_version
 from src.utils.logging import get_logger
 
 _log = get_logger(__name__)
@@ -221,6 +221,17 @@ def _strava_client_for_user(user_info_id: int) -> Optional[StravaAPI]:
     return _strava_client_for_token(token_row)
 
 
+def _part_of_trip(sess, project_row: DBProject, account_id: Optional[int]) -> bool:
+    """Whether *account_id* is the trip's owner or a current member.
+
+    A trip's activities are re-fetched from Strava with the token of the
+    account they came through (``strava_user_id``), and only while that
+    account is part of the trip (#592, plan Decision 5, review R1-5): a
+    companion who leaves or is removed takes their Strava access with them.
+    """
+    return account_id is not None and effective_role(sess, project_row, account_id) is not None
+
+
 def _enrich_activities(
     activities: List[Activity],
     client: StravaAPI,
@@ -289,10 +300,29 @@ def _enrich_activities_background(
     same wall. Instead they're handed to :func:`_enrich_pending_background`,
     which sleeps until the window resets and retries them.
 
-    ``user_info_id`` is the IMPORTER whose Strava token fetches the streams;
-    ``owner_id`` is the PROJECT OWNER whose geo cache is keyed — the two differ
-    when a companion imports into a shared trip (issue #106).
+    ``activity_ids`` are rows of the trip ``owner_id``/``project_name`` (#592):
+    each is enriched from Strava by its ``strava_id``, and only that row is
+    written (plan Decision 6). ``user_info_id`` is the IMPORTER whose Strava
+    token fetches the streams; ``owner_id`` is the PROJECT OWNER whose geo
+    cache is keyed — the two differ when a companion imports into a shared
+    trip (issue #106). A row is left alone unless the trip holds it and it
+    came through *user_info_id*'s connection; nothing is fetched at all once
+    *user_info_id* is no longer part of the trip (plan Decision 5).
     """
+    with get_session() as sess:
+        project_id = _repo.project_id_for(sess, owner_id, project_name)
+        project_row = sess.get(DBProject, project_id) if project_id is not None else None
+        if project_row is None or not _part_of_trip(sess, project_row, user_info_id):
+            return
+        strava_ids: Dict[int, int] = dict(sess.exec(
+            select(DBActivity.id, DBActivity.strava_id).where(
+                DBActivity.id.in_(trip_rows(project_id)),
+                DBActivity.strava_user_id == user_info_id,
+                DBActivity.strava_id.is_not(None),
+            )
+        ).all())
+    activity_ids = [a for a in activity_ids if a in strava_ids]
+
     client = _strava_client_for_user(user_info_id)
     if client is None:
         return
@@ -313,7 +343,7 @@ def _enrich_activities_background(
             )
             break
         try:
-            streams  = client.get_activity_streams(activity_id)
+            streams  = client.get_activity_streams(strava_ids[activity_id])
             latlng   = streams.get("latlng",   {}).get("data") or []
             altitude = streams.get("altitude", {}).get("data") or []
             distance = streams.get("distance", {}).get("data") or []
@@ -334,7 +364,7 @@ def _enrich_activities_background(
                 with get_session() as sess:
                     _repo.update_activity_enrichment(
                         sess, activity_id, polyline_str, ep_json,
-                        owner_id=user_info_id,
+                        owner_id=user_info_id, project_id=project_id,
                     )
                 any_enriched = True
         except RateLimitError:
@@ -362,10 +392,8 @@ def _enrich_activities_background(
             # client's on-disk cache — which only ever checks that counter —
             # notices the newly enriched polyline/elevation instead of serving
             # pre-enrichment data from disk indefinitely.
-            project_id = _repo.project_id_for(sess, owner_id, project_name)
-            if project_id is not None:
-                bump_lock_version(sess, project_id)
-                sess.commit()
+            bump_lock_version(sess, project_id)
+            sess.commit()
         bust_geo_cache(owner_id, project_name)
         # Recompute now (still in the background task) so the user's next geo
         # load is a fast cache HIT rather than a cold recompute.
@@ -433,13 +461,8 @@ def add_activities(
         row = resolve_project(sess, user_info_id, name, owner, min_role="editor")
         owner_id = row.user_info_id
         project_id = row.id
-        # Only the caller's own activities: an id another account already
-        # holds is theirs. save_project enforces the same within its own
-        # transaction; filtering here keeps the counts and the enrichment
-        # below to what can actually be added.
-        activities = _repo.own_activities_only(sess, user_info_id, activities)
 
-    added_holder: Dict[str, int] = {}
+    added_holder: Dict[str, Any] = {}
 
     def _add(project) -> None:
         # Plan limit on trip length (issue #121) — an import that reaches
@@ -459,10 +482,24 @@ def add_activities(
                 qsess, project_id, owner_id,
                 *[a.start_date_local for a in activities],
             )
-        added_holder["added"] = project.add_activities(activities)
+        # The trip's own rows, by Strava id (#592, plan Decision 7): an
+        # activity the trip already holds is not added again, so a re-add
+        # changes nothing — not even a split's "(i/N)" name. Whatever row
+        # another trip has for it is that trip's.
+        held = {a.strava_id for a in project.activities if a.strava_id is not None}
+        new: List[Activity] = []
+        for act in activities:
+            sid = strava_identity(act)
+            if sid is None or sid not in held:
+                new.append(act)
+                if sid is not None:
+                    held.add(sid)
+        added_holder["added"] = project.add_activities(new)
+        added_holder["strava_ids"] = [
+            sid for sid in (strava_identity(a) for a in new) if sid is not None]
 
-    # New activity rows record the IMPORTER (the caller), not the project
-    # owner — a companion's imports must stay tied to their Strava account.
+    # New Strava rows record the IMPORTER (the caller) as strava_user_id, whose
+    # token refreshes them; the trip's owner owns them (plan Decisions 4, 5).
     # save_project_with_retry (src/project/repo_retry.py) reloads the project
     # fresh on each attempt and retries under check_version=True on a 409
     # conflict, instead of the blind check_version=False overwrite this used
@@ -480,7 +517,10 @@ def add_activities(
 
     # Enrich GPS streams in the background immediately — never blocks this response.
     # Uses the importer's (caller's) Strava token, not the project owner's.
-    activity_ids = [a.id for a in activities if a.id is not None]
+    # Only the rows this request created, by their row ids: a Strava id no
+    # longer names a row (#592).
+    row_of = {a.strava_id: a.id for a in project.activities if a.strava_id is not None}
+    activity_ids = [row_of[sid] for sid in added_holder["strava_ids"] if sid in row_of]
     if activity_ids:
         background_tasks.add_task(
             _enrich_activities_background, activity_ids, user_info_id, owner_id, name
@@ -710,8 +750,9 @@ def _existing_import(sess, project_row_id: int, fingerprint: str):
 
 def _existing_identity(sess, project_row_id: int, identity):
     """The activity in this trip a TraxJourney export says the track is (Q1):
-    the GPX import with that fingerprint, the Strava activity with that id,
-    or the local activity with that id (a split tail, an early GPX import;
+    the GPX import with that fingerprint, the trip's row with that
+    ``strava_id`` (#592: a row id is not a Strava id), or the local activity
+    with that id (a split tail, an early GPX import;
     PIR2-1). Only this trip's timeline is searched, so a file naming an
     activity elsewhere matches nothing, and says nothing about it."""
     if identity is None:
@@ -724,8 +765,7 @@ def _existing_identity(sess, project_row_id: int, identity):
         query = (query.where(DBActivity.source == SOURCE_GPX)
                  .where(DBActivity.source_id == source_id))
     elif source == SOURCE_STRAVA:
-        query = (query.where(DBActivity.id == int(source_id))
-                 .where(DBActivity.source.is_(None)))
+        query = query.where(DBActivity.strava_id == int(source_id))
     elif source == SOURCE_LOCAL:
         query = query.where(DBActivity.id == int(source_id))
     else:
@@ -1342,6 +1382,25 @@ async def import_gpx_tracks(
 
 # ── Single-activity refresh ────────────────────────────────────────────────────
 
+_NOT_IN_TRIP = ("The traveller who added this activity is no longer part of this "
+                "trip, so it cannot be refreshed from Strava.")
+
+
+def _refresh_target(sess, project_id: int, activity_id: int) -> Optional[DBActivity]:
+    """The trip's row a refresh of *activity_id* is for, or None.
+
+    The row of that id when the trip holds it. Otherwise the trip's row whose
+    ``strava_id`` it is: an installed picker refreshes by Strava id (plan
+    Decision 11).
+    """
+    if _repo.trip_holds_activity(sess, project_id, activity_id):
+        return sess.get(DBActivity, activity_id)
+    return sess.exec(select(DBActivity).where(
+        DBActivity.id.in_(trip_rows(project_id)),
+        DBActivity.strava_id == activity_id,
+    ).order_by(DBActivity.id)).first()
+
+
 def _set_refresh_state(
     activity_id: int,
     refresh_status: Optional[str],
@@ -1381,8 +1440,27 @@ def _refresh_activity_job(
     The row was marked ``pending`` synchronously by the trigger; every exit path
     here writes a terminal ``resolved``/``failed``. Mirrors
     :func:`api.segments._resolve_route_job`.
+
+    *activity_id* is the trip's row, fetched from Strava by its ``strava_id``
+    with the token of *user_info_id*, the account it came through (#592, plan
+    Decision 5). That account's place in the trip is checked again here, as
+    the trigger's check is a moment old: no Strava call is made once it has
+    left the trip.
     """
     try:
+        with get_session() as sess:
+            act_row = sess.get(DBActivity, activity_id)
+            strava_id = act_row.strava_id if act_row is not None else None
+            project_id = _repo.project_id_for(sess, owner_id, name)
+            project_row = sess.get(DBProject, project_id) if project_id is not None else None
+            in_trip = project_row is not None and _part_of_trip(sess, project_row, user_info_id)
+        if strava_id is None:
+            _set_refresh_state(activity_id, "failed", error="Not a Strava activity")
+            return
+        if not in_trip:
+            _set_refresh_state(activity_id, "failed", error=_NOT_IN_TRIP)
+            return
+
         client = _strava_client_for_user(user_info_id)
         if client is None:
             _set_refresh_state(activity_id, "failed", error="Strava not connected")
@@ -1390,7 +1468,7 @@ def _refresh_activity_job(
 
         # 1. Fetch fresh activity metadata from Strava
         try:
-            raw = client.get_activity(activity_id)
+            raw = client.get_activity(strava_id)
         except Exception as exc:  # noqa: BLE001 — any failure marks the re-fetch failed
             _log.warning("refresh activity=%s status=failed: %s", activity_id, exc)
             _set_refresh_state(
@@ -1404,7 +1482,7 @@ def _refresh_activity_job(
         # 2. Enrich with full GPS streams (single call — check rate limit first)
         if client.remaining_requests > 2:
             try:
-                streams  = client.get_activity_streams(activity_id)
+                streams  = client.get_activity_streams(strava_id)
                 latlng   = streams.get("latlng",   {}).get("data") or []
                 altitude = streams.get("altitude", {}).get("data") or []
                 distance = streams.get("distance", {}).get("data") or []
@@ -1430,7 +1508,8 @@ def _refresh_activity_job(
             # notices the re-fetched polyline/elevation instead of serving
             # the pre-refresh data from disk indefinitely.
             project_id = _repo.project_id_for(sess, owner_id, name)
-            _repo.force_update_activity(sess, user_info_id, act, project_id)
+            _repo.force_update_activity(
+                sess, user_info_id, act, project_id, row_id=activity_id)
         _set_refresh_state(activity_id, "resolved")
         _log.info("refresh activity=%s status=resolved", activity_id)
     except Exception as exc:  # noqa: BLE001
@@ -1478,39 +1557,63 @@ def refresh_activity(
     The activity is marked ``refresh_status="pending"`` synchronously and a 202
     is returned. The client polls ``/meta`` until it flips to ``resolved`` or
     ``failed``. See :func:`_refresh_activity_job`.
+
+    *activity_id* is a row of this trip, and only that row is written (#592,
+    plan Decision 6). An installed picker sends a Strava id instead: when no
+    row of the trip has that id but one has it as its ``strava_id``, that row
+    is refreshed (plan Decision 11).
+
+    Strava is called with the token of the account the activity came through
+    (``strava_user_id``), whoever presses the button, and only while that
+    account is the trip's owner or a current member (plan Decision 5, review
+    R1-5). Otherwise — that account deleted, gone from the trip, or no longer
+    connected to Strava, or a row not from Strava — the answer is a 409 and no
+    Strava call is made.
     """
     user_info_id = int(current_user["sub"])
 
-    # Check project access first, then restrict the refresh to the activity's
-    # IMPORTER (issue #106): a re-fetch talks to Strava with the caller's token,
-    # and another editor's account can't see this activity — worse, the
-    # overwrite would re-attribute the row to the wrong user.
     with get_session() as sess:
         row = resolve_project(sess, user_info_id, name, owner, min_role="editor")
         owner_id = row.user_info_id
-        act_row = sess.get(DBActivity, activity_id)
-    if act_row is not None and act_row.user_info_id != user_info_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the user who imported this activity can refresh it from Strava",
-        )
+        act_row = _refresh_target(sess, row.id, activity_id)
+        if act_row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                detail="Activity not in project")
+        activity_id = act_row.id
+        token_user_id = act_row.strava_user_id
 
-    # Locally edited tracks must never be overwritten by a Strava re-fetch.
-    # Surface a clear message so the client can prompt the user to reset first.
-    if _repo.activity_is_edited(activity_id):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This activity has a locally edited track. "
-                   "Reset it to Strava before refreshing.",
-        )
+        # Locally edited tracks must never be overwritten by a Strava re-fetch.
+        # Surface a clear message so the client can prompt the user to reset first.
+        if act_row.is_edited:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This activity has a locally edited track. "
+                       "Reset it to Strava before refreshing.",
+            )
+        if act_row.strava_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This activity did not come from Strava, so it cannot be "
+                       "refreshed from Strava.",
+            )
+        if token_user_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="The account this activity was added from no longer exists, "
+                       "so it cannot be refreshed from Strava.",
+            )
+        if not _part_of_trip(sess, row, token_user_id):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_NOT_IN_TRIP)
 
     # Checked here as well as in the job: a missing Strava connection is knowable
     # without any network call, so the user gets it as an error on the button
     # press rather than as a failed poll seconds later.
-    if _strava_client_for_user(user_info_id) is None:
+    if _strava_client_for_user(token_user_id) is None:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Strava not connected",
+            status_code=status.HTTP_409_CONFLICT,
+            detail=("Strava not connected" if token_user_id == user_info_id else
+                    "The Strava account this activity was added from is no longer "
+                    "connected, so it cannot be refreshed from Strava."),
         )
 
     _set_refresh_state(
@@ -1521,7 +1624,7 @@ def refresh_activity(
     # still says "not pending" — has to go before the first poll lands (#178).
     bust_geo_cache(owner_id, name)
     background_tasks.add_task(
-        _refresh_activity_job, user_info_id, owner_id, name, activity_id
+        _refresh_activity_job, token_user_id, owner_id, name, activity_id
     )
     return {"status": "pending", "refresh_status": "pending"}
 
@@ -1609,22 +1712,15 @@ def _require_e2ee_writable(sess, activity_id: int, caller_id: int) -> None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not found")
 
 
-def _refuse_shared(sess, activity_id: int, key_owner_id: int, *, rollback: bool = False) -> None:
-    """409 ``shared_with_other_trip`` when a trip owned by someone other than
-    *key_owner_id* holds this activity (E2EE remnants decision 15): its owner
-    could not read an envelope stored on the row. *key_owner_id* is the caller
-    on the row-scoped routes, the trip's owner on the trip-scoped ones (the
-    owner of the trip ``shared_with_others`` is computed for). Called by every
-    write that stores an envelope, before it writes; with *rollback*, once more
-    after the lock-version bump holds the write lock, undoing the bump, so a
-    trip that took the row in between is seen."""
-    if _repo.activity_shared_with_others(sess, activity_id, key_owner_id):
-        if rollback:
-            sess.rollback()
-        raise _conflict(
-            "shared_with_other_trip",
-            "This activity is also in another traveller's trip, so it stays unencrypted.",
-            activity_id=activity_id)
+def _holding_trip(sess, activity_id: int) -> Optional[DBProject]:
+    """The trip holding this activity's row, or None for a row no trip holds.
+    A row belongs to one trip (#592, plan Decision 1), so a write to it
+    advances that trip alone."""
+    return sess.exec(select(DBProject).where(DBProject.id.in_(
+        select(DBProjectItem.project_id).where(
+            DBProjectItem.item_type == "activity",
+            DBProjectItem.activity_id == activity_id,
+        ))).order_by(DBProject.id)).first()
 
 
 def _project_contains_activity(project, activity_id: int) -> bool:
@@ -2103,8 +2199,7 @@ def edit_activity_track_encrypted(
     Same permission checks as ``PUT …/track``; ``lock_version`` is required.
     The first edit snapshots the previous track and figures for reset. 409
     ``not_encrypted`` when the stored polyline is not an envelope, 409
-    ``stale_write`` on a lock_version mismatch, 409 ``shared_with_other_trip``
-    when another user's trip holds the row, 422 on any value that is not a
+    ``stale_write`` on a lock_version mismatch, 422 on any value that is not a
     well-formed envelope or a figure out of bounds. Returns the trip's new
     ``lock_version``.
     """
@@ -2114,7 +2209,6 @@ def edit_activity_track_encrypted(
         owner_id = row.user_info_id
         _require_rewritable_by_trip(sess, row, activity_id)
         _require_held(sess, row, activity_id)
-        _refuse_shared(sess, activity_id, owner_id)
         try:
             edited = _repo.edit_activity_track_encrypted(
                 sess, row.id, activity_id, body.stored(),
@@ -2156,8 +2250,6 @@ def split_activity_encrypted(
         owner_id = row.user_info_id
         _require_rewritable_by_trip(sess, row, activity_id)
         _require_held(sess, row, activity_id)
-        # The tail is a new row only this trip holds: the head decides.
-        _refuse_shared(sess, activity_id, owner_id)
         try:
             tail_id = _repo.split_activity_encrypted(
                 sess, row.id, activity_id, body.head.stored(), body.tail.stored(),
@@ -2185,17 +2277,20 @@ def delete_local_activity(
     background_tasks: BackgroundTasks,
     owner: OwnerParam = None,
 ):
-    """Delete a local (negative-id) activity row and unlink it from the project.
+    """Delete a local activity row of this trip and unlink it from the project.
 
-    Only local activities may be deleted (Strava activities are shared). This is
-    the undo path for a split — deleting the tail leaves the head in place.
+    Local means the app made it — a split piece or a GPX import — so it has no
+    ``strava_id``; a Strava activity leaves a trip through its timeline item.
+    This is the undo path for a split — deleting the tail leaves the head in
+    place. A row another trip holds is that trip's (#592), and is refused.
 
     A tail of a Strava activity (issue #509) follows the timeline path's rule
     in ``api/project_items.py`` instead of the trip-rewrite gate: its own
     account may delete it, and so may the trip's owner when the trip holds
     it — a companion who has since left included. Any other companion is
-    refused with a 403 (owner decision, review F1-R1-1). Once such a tail
-    goes, its root is reconsidered, since the tail kept it.
+    refused with a 403 (owner decision, review F1-R1-1). Once a split piece
+    goes, its root is reconsidered, since the piece kept it: a root no item
+    references goes with its last piece (plan Decision 9).
     """
     user_info_id = int(current_user["sub"])
     with get_session() as sess:
@@ -2206,24 +2301,14 @@ def delete_local_activity(
             select(DBActivity.user_info_id, DBActivity.split_root_id, DBActivity.source)
             .where(DBActivity.id == activity_id)
         ).first()
-        strava_root = (
-            tail.split_root_id
-            if tail is not None
-            and (tail.split_root_id or 0) > 0
-            and tail.source in (None, "", "strava")
-            else None
-        )
-        if strava_root is None:
+        root_id = tail.split_root_id if tail is not None else None
+        # Pieces take their head's source, so this is a piece cut out of an
+        # activity from Strava.
+        strava_tail = root_id is not None and tail.source in (None, "", SOURCE_STRAVA)
+        if not strava_tail:
             _require_rewritable_by_trip(sess, row, activity_id)
         elif user_info_id != tail.user_info_id:
-            held = sess.exec(select(DBProjectItem.id).where(
-                DBProjectItem.project_id == row.id,
-                DBProjectItem.item_type == "activity",
-                DBProjectItem.activity_id == activity_id,
-            )).first() is not None
-            if not held:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND, detail="Activity not in project")
+            _require_held(sess, row, activity_id)
             if user_info_id != owner_id:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -2234,8 +2319,9 @@ def delete_local_activity(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Local activity not found",
             )
-        if strava_root is not None:
-            _repo.delete_unreferenced_strava_activities(sess, owner_id, ids=[strava_root])
+        if root_id is not None:
+            _repo.delete_unreferenced_activities(sess, [root_id])
+            sess.commit()
     bust_geo_cache(owner_id, name)
     queue_stats_refresh(background_tasks, owner_id, name)
     queue_share_tiles_refresh(background_tasks, owner_id, name)
@@ -2243,9 +2329,10 @@ def delete_local_activity(
 
 # ── Activity field update (issue #29 — client-side E2EE migration) ────────────
 #
-# A separate, project-agnostic router: activities are rows shared across every
-# project that references them (see DBActivity's docstring), so — unlike the
-# routes above — this doesn't hang off /api/projects/{name}. Deliberately
+# A separate, project-agnostic router: the client's encryption pass works
+# through the caller's activity rows by id, so — unlike the routes above —
+# this doesn't hang off /api/projects/{name}. A row belongs to the one trip
+# holding it (#592), and only that trip is advanced. Deliberately
 # narrow: it only ever writes the six DB columns EncryptionMigration.run()
 # (flutter_client/lib/src/crypto/encryption_migration.dart) needs to migrate an
 # activity from plaintext to ciphertext, plus the four original_* edit-undo
@@ -2317,9 +2404,12 @@ def update_activity_fields(
     names another user's trip the caller edits as a member, editor or above;
     any other caller gets the same 404. An envelope ``name`` also clears
     ``split_base_name``, the plaintext name the row had before it was split.
-    A body storing any envelope on a row another user's trip holds is refused
-    with 409 ``shared_with_other_trip``, nothing written (decision 15);
-    plaintext is not.
+
+    The row belongs to one trip (#592), the only one whose lock_version
+    advances. A row a companion encrypted stays theirs while it holds an
+    envelope (plan Decision 4); a write that leaves it with none hands it to
+    the holding trip's owner in the same transaction, who can then encrypt it
+    under their own key (review R2-6).
     """
     user_info_id = int(current_user["sub"])
     data = body.model_dump(exclude_unset=True)
@@ -2336,22 +2426,15 @@ def update_activity_fields(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="owner is given only with project",
         )
-    stores_envelope = any(is_well_formed_envelope(v) for v in data.values())
     with get_session() as sess:
         _require_e2ee_writable(sess, activity_id, user_info_id)
-        if stores_envelope:
-            _refuse_shared(sess, activity_id, user_info_id)
         row = sess.get(DBActivity, activity_id)
 
-        # Every project this activity appears in — needed both to bust the geo
-        # cache below and to advance each one's lock_version (issue #173) so a
-        # native client's on-disk cache notices the ciphertext swap.
-        project_ids = sess.exec(
-            select(DBProjectItem.project_id).where(
-                DBProjectItem.item_type == "activity",
-                DBProjectItem.activity_id == activity_id,
-            ).distinct()
-        ).all()
+        # The trip holding this activity — needed both to bust its geo cache
+        # below and to advance its lock_version (issue #173) so a native
+        # client's on-disk cache notices the ciphertext swap.
+        holder = _holding_trip(sess, activity_id)
+        holder_key = (holder.user_info_id, holder.name) if holder is not None else None
         cas_project_id = None
         if cas_project is not None:
             try:
@@ -2361,25 +2444,32 @@ def update_activity_fields(
                 # Missing trip, no membership or a viewer one: one answer,
                 # as for a trip that does not hold the row.
                 cas_project_id = None
-            if cas_project_id is None or cas_project_id not in project_ids:
+            if cas_project_id is None or holder is None or cas_project_id != holder.id:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                                     detail="Activity not in project")
             try:
                 check_and_bump_lock_version(sess, cas_project_id, expected_version)
             except StaleWriteError:
                 raise _stale_write(cas_project_id)
-        for project_id in project_ids:
-            if project_id != cas_project_id:
-                bump_lock_version(sess, project_id)
-        if stores_envelope:
-            _refuse_shared(sess, activity_id, user_info_id, rollback=True)
+        elif holder is not None:
+            bump_lock_version(sess, holder.id)
 
+        if holder is not None and row.user_info_id != holder_key[0]:
+            # Re-read once the bump holds the write lock: what decides the
+            # handover below is the row as it is now, not as first loaded.
+            sess.refresh(row)
         for field, value in data.items():
             setattr(row, field, value)
         if is_encrypted_envelope(data.get("name")):
             # The pre-split plaintext name must not outlive the encrypted one
             # (decision 10); renumbering ignores it for an enveloped root anyway.
             row.split_base_name = None
+        if (holder is not None and row.user_info_id != holder_key[0]
+                and not any(is_encrypted_envelope(getattr(row, c))
+                            for c in _E2EE_ACTIVITY_COLUMNS)):
+            # Only the key holder could read it while it was encrypted; now
+            # nothing is, so it is the trip's like every other row (R2-6).
+            row.user_info_id = holder_key[0]
         sess.add(row)
         if "summary_polyline" in data:
             # Once the polyline is ciphertext the prepared row derived from its
@@ -2388,19 +2478,14 @@ def update_activity_fields(
             store_prepared_geometry(sess, row)
         sess.commit()
 
-        # Bust the full-res geo cache for every project this activity appears
-        # in — same as every other activity-mutating endpoint above — so a
-        # subsequent (non-E2EE-client) geo load doesn't serve a stale cached
-        # response built from the pre-migration plaintext. Each trip is cached
-        # under its own owner, who may not be the caller (decision 15, I3-1).
-        holders = sess.exec(
-            select(DBProject.user_info_id, DBProject.name)
-            .where(DBProject.id.in_(project_ids))
-        ).all() if project_ids else []
-
-    for trip_owner, pname in holders:
-        bust_geo_cache(trip_owner, pname)
-        queue_stats_refresh(background_tasks, trip_owner, pname)
+    # Bust the full-res geo cache of the trip holding it — same as every other
+    # activity-mutating endpoint above — so a subsequent (non-E2EE-client) geo
+    # load doesn't serve a stale cached response built from the pre-migration
+    # plaintext. The trip is cached under its owner, who may not be the caller
+    # (decision 15, I3-1).
+    if holder_key is not None:
+        bust_geo_cache(*holder_key)
+        queue_stats_refresh(background_tasks, *holder_key)
 
     if cas_project_id is not None:
         return {"id": activity_id, "lock_version": expected_version + 1}
@@ -2437,10 +2522,9 @@ def update_activity_elevation_gain(
 
     Who may call it is who may call ``PUT /api/activities/{id}``. 409
     ``not_encrypted`` unless the stored ``elevation_profile_json`` is an
-    envelope, 409 ``shared_with_other_trip`` when another user's trip holds
-    the row; 422 unless the value is finite and within 0..50 000 m. The
+    envelope; 422 unless the value is finite and within 0..50 000 m. The
     compare-and-swap (``project`` + ``lock_version``) and the lock_version
-    advance of every trip holding the row are those of
+    advance of the trip holding the row are those of
     ``PUT /api/activities/{id}``, which itself still never writes the gain.
     """
     user_info_id = int(current_user["sub"])
@@ -2453,51 +2537,38 @@ def update_activity_elevation_gain(
         )
     with get_session() as sess:
         _require_e2ee_writable(sess, activity_id, user_info_id)
-        # The gain is the device's measure of an enveloped profile, which a
-        # shared row must not keep: refused like the envelope itself.
-        _refuse_shared(sess, activity_id, user_info_id)
         row = sess.get(DBActivity, activity_id)
         if not is_encrypted_envelope(row.elevation_profile_json):
             raise _not_encrypted(activity_id)
 
-        holders = sess.exec(
-            select(DBProject.id, DBProject.user_info_id, DBProject.name)
-            .join(DBProjectItem, DBProjectItem.project_id == DBProject.id)
-            .where(
-                DBProjectItem.item_type == "activity",
-                DBProjectItem.activity_id == activity_id,
-            ).distinct()
-        ).all()
+        holder = _holding_trip(sess, activity_id)
+        holder_key = (holder.user_info_id, holder.name) if holder is not None else None
         cas_project_id = None
         if cas_project is not None:
-            cas_project_id = next(
-                (pid for pid, uid, pname in holders
-                 if uid == user_info_id and pname == cas_project), None)
-            if cas_project_id is None:
+            if holder is None or holder_key != (user_info_id, cas_project):
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                                     detail="Activity not in project")
+            cas_project_id = holder.id
             try:
                 check_and_bump_lock_version(sess, cas_project_id, expected_version)
             except StaleWriteError:
                 raise _stale_write(cas_project_id)
-        for project_id, _, _ in holders:
-            if project_id != cas_project_id:
-                bump_lock_version(sess, project_id)
+        elif holder is not None:
+            bump_lock_version(sess, holder.id)
         # Re-read once the bump holds the write lock: the profile may have been
         # decrypted since the check above.
         sess.refresh(row, ["elevation_profile_json"])
         if not is_encrypted_envelope(row.elevation_profile_json):
             sess.rollback()
             raise _not_encrypted(activity_id)
-        _refuse_shared(sess, activity_id, user_info_id, rollback=True)
 
         row.total_elevation_gain = body.total_elevation_gain
         sess.add(row)
         sess.commit()
 
-    for _, trip_owner, pname in holders:
-        bust_geo_cache(trip_owner, pname)
-        queue_stats_refresh(background_tasks, trip_owner, pname)
+    if holder_key is not None:
+        bust_geo_cache(*holder_key)
+        queue_stats_refresh(background_tasks, *holder_key)
 
     if cas_project_id is not None:
         return {"id": activity_id, "lock_version": expected_version + 1}
