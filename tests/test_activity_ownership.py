@@ -664,11 +664,16 @@ def test_the_audit_lists_items_whose_activity_does_not_exist(env):
 
 # ── Removing an item ────────────────────────────────────────────────────────
 
-def test_removing_an_item_leaves_a_local_activity_of_an_account_outside_the_trip(env):
+def test_removing_an_item_deletes_a_local_activity_of_an_account_outside_the_trip(env):
+    """A row belongs to the one trip holding it, so removing its item deletes
+    it, whoever owns it (#592, plan Decision 9, EQ1-1)."""
+    from models.project_db import DBActivityGeoPrepared
+
     client, engine, ids, act_as = env
     with Session(engine) as sess:
         sess.add(DBActivity(id=-55, user_info_id=ids["bob"], name="Bob local",
                             summary_polyline=_POLYLINE))
+        sess.add(DBActivityGeoPrepared(activity_id=-55, version=1, blob=b"geo"))
         sess.commit()
     _create_trip(client, "Mine")
     _plant(engine, ids["alice"], "Mine", -55)
@@ -677,7 +682,9 @@ def test_removing_an_item_leaves_a_local_activity_of_an_account_outside_the_trip
 
     assert r.status_code == 204, r.text
     assert _trip_activity_ids(engine, ids["alice"], "Mine") == set()
-    assert _row(engine, -55) is not None
+    assert _row(engine, -55) is None
+    with Session(engine) as sess:
+        assert sess.get(DBActivityGeoPrepared, -55) is None
 
 
 def test_removing_an_item_still_deletes_the_trips_own_local_activity(env):

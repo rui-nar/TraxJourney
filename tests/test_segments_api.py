@@ -119,3 +119,42 @@ def test_delete_segment_not_found(env):
     client, *_ = env
     resp = client.delete("/api/projects/My Trip/segments/nope")
     assert resp.status_code == 404
+
+
+def test_segment_saves_never_touch_another_trips_row(env):
+    """A segment write saves the whole trip, and with it only the trip's own
+    activity rows (#592): another trip's row of the same Strava activity is
+    neither read nor written, and that trip is not bumped."""
+    from models.project_db import DBActivity, DBProjectItem
+    from sqlmodel import select
+
+    client, engine, uid = env
+    with Session(engine) as sess:
+        mine = sess.exec(select(DBProject).where(DBProject.name == "My Trip")).one()
+        other = DBProject(user_info_id=uid, name="Other")
+        sess.add(other)
+        sess.commit()
+        sess.add(DBActivity(id=10, user_info_id=uid, name="Mine", type="Ride",
+                            strava_id=7, start_date="2024-06-01T10:00:00Z",
+                            start_date_local="2024-06-01T10:00:00Z"))
+        sess.add(DBActivity(id=7, user_info_id=uid, name="Theirs", type="Ride",
+                            strava_id=7, start_date="2024-06-01T10:00:00Z",
+                            start_date_local="2024-06-01T10:00:00Z"))
+        sess.add(DBProjectItem(project_id=mine.id, position=0,
+                               item_type="activity", activity_id=10))
+        sess.add(DBProjectItem(project_id=other.id, position=0,
+                               item_type="activity", activity_id=7))
+        sess.commit()
+        other_id, other_version = other.id, other.lock_version
+
+    seg_id = client.post("/api/projects/My Trip/segments", json=_segment_body()).json()["id"]
+    resp = client.put(f"/api/projects/My Trip/segments/{seg_id}",
+                      json=_segment_body(label="SFO -> EWR"))
+    assert resp.status_code == 204, resp.text
+
+    with Session(engine) as sess:
+        assert {r.id: r.name for r in sess.exec(select(DBActivity)).all()} == {
+            10: "Mine", 7: "Theirs"}
+        assert sess.exec(select(DBProjectItem.activity_id).where(
+            DBProjectItem.project_id == other_id)).all() == [7]
+        assert sess.get(DBProject, other_id).lock_version == other_version

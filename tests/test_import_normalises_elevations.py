@@ -23,7 +23,7 @@ import math
 import pytest
 from sqlmodel import Session, select
 
-from models.project_db import DBActivity
+from models.project_db import DBActivity, DBProjectItem
 from src.models.track_edit import clean_elevation_profile, elevation_gain
 from src.project.project_io import ProjectIO
 from tests.test_elevation_non_finite import _upload_gpx, app  # noqa: F401
@@ -242,7 +242,13 @@ def test_a_tail_exported_without_its_source_is_measured_as_its_parent(env):
 
     assert r.status_code == 201, r.text
     with Session(engine) as sess:
-        row = sess.get(DBActivity, -5)
+        # The tail's new row (#592: an import never keeps the file's -5): the
+        # trip's last activity item, as the file has it.
+        last = sess.exec(select(DBProjectItem.activity_id).where(
+            DBProjectItem.item_type == "activity").order_by(
+            DBProjectItem.position.desc())).first()
+        row = sess.get(DBActivity, last)
+        assert row.source is None
     dists, elevs = clean_elevation_profile(_DISTS, broken["elevations_m"])
     assert row.total_elevation_gain == pytest.approx(elevation_gain(elevs, dists))
     assert (row.elev_high, row.elev_low) == (840.0, 800.0)

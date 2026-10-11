@@ -10,8 +10,6 @@ from __future__ import annotations
 from typing import Annotated, Dict, List
 
 from models.db import get_session
-from models.project_db import DBActivity
-from sqlmodel import select
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -40,7 +38,6 @@ def delete_item(
     with get_session() as sess:
         row = resolve_project(sess, user_info_id, name, owner, min_role="editor")
         owner_id = row.user_info_id
-        project_row_id = row.id
 
     removed: Dict[str, object] = {}
 
@@ -61,58 +58,18 @@ def delete_item(
     if project is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
-    # A split tail is a LOCAL (negative-id) activity owned solely by its
-    # timeline item. remove_item only unlinks the item, so without this the
-    # row is orphaned in the activity table and its negative id gets reused
-    # by the next split → UNIQUE constraint failure. Delete the row once no
-    # remaining item references it — and only if it is the trip's to delete.
-    #
-    # A Strava row (positive id) or a tail of a Strava activity (issue #509)
-    # is deleted only by its own account or by the trip's owner. The owner
-    # may free any of them, a companion who has since left included: a tail
-    # belongs to one trip, so the item just removed proves it is this one's.
-    # A companion removing someone else's activity — the owner's or another
-    # member's — only unlinks it; the row stays until its account's own
-    # removal or Strava disconnect frees it (owner decision 2026-10-03). Once
-    # such a tail goes, its root is reconsidered, since the tail kept it.
-    #
-    # Any other local row only if its owner is the trip's owner or a current
-    # member. Otherwise the item is unlinked and the row left in place,
-    # unreferenced; nothing prunes it automatically, but it costs no one
-    # quota and its owner can still delete it from a trip of their own.
+    # An activity row belongs to the one trip holding it (#592), so once its
+    # last item here is gone nothing references it, and it goes with its
+    # prepared geometry: whoever removed it, a companion removing the owner's
+    # activity included (plan Decision 9, EQ1-1). A split family's surviving
+    # pieces are renumbered, and a head kept only by its pieces goes with the
+    # last of them (delete_unreferenced_activities). A row another item of the
+    # trip still names stays.
     gone = removed["item"]
-    gone_id = gone.activity_id or 0
-    if (
-        gone.item_type == "activity"
-        and gone_id != 0
-        and not any(
-            it.item_type == "activity" and it.activity_id == gone_id
-            for it in project.items
-        )
-    ):
+    if gone.item_type == "activity" and gone.activity_id is not None:
         with get_session() as sess:
-            row = sess.exec(
-                select(DBActivity.user_info_id, DBActivity.split_root_id, DBActivity.source)
-                .where(DBActivity.id == gone_id)
-            ).first()
-            freeable = row is not None and user_info_id in (row.user_info_id, owner_id)
-            strava_root = (
-                row.split_root_id
-                if row is not None
-                and gone_id < 0
-                and (row.split_root_id or 0) > 0
-                and row.source in (None, "", "strava")
-                else None
-            )
-            if gone_id > 0:
-                if freeable:
-                    _repo.delete_unreferenced_strava_activities(sess, owner_id, ids=[gone_id])
-            elif strava_root is not None:
-                if freeable and _repo.delete_local_activity(sess, project_row_id, gone_id):
-                    _repo.delete_unreferenced_strava_activities(
-                        sess, owner_id, ids=[strava_root])
-            elif _repo.activity_rewritable_by_trip(sess, project_row_id, gone_id):
-                _repo.delete_local_activity(sess, project_row_id, gone_id)
+            _repo.delete_unreferenced_activities(sess, [gone.activity_id])
+            sess.commit()
     bust_geo_cache(owner_id, name)
     queue_stats_refresh(background_tasks, owner_id, name)
     queue_share_tiles_refresh(background_tasks, owner_id, name)

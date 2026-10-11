@@ -21,6 +21,7 @@ import polyline
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
+from sqlalchemy import delete
 from sqlmodel import Session, SQLModel, create_engine, select
 
 import api.project_shared as project_shared_mod
@@ -28,7 +29,7 @@ import api.project_transfer as project_transfer_mod
 import models.db as db_module
 import src.admin.storage as storage_mod
 from api.deps import get_current_user
-from models.project_db import DBActivity, DBProject, DBProjectItem
+from models.project_db import DBActivity, DBActivityGeoPrepared, DBProject, DBProjectItem
 from models.user import UserInfo
 from src.gpx.export_format import (
     EXTENSION_NAMESPACE, activity_extensions, activity_identity,
@@ -154,6 +155,13 @@ def _rows(engine, project):
         ).all())
 
 
+def _row_id(engine, project, name) -> int:
+    """The id of the row the trip holds for the activity called *name*: an
+    import gives every activity a new row (#592), so not the file's id."""
+    (row,) = [row for row in _rows(engine, project) if row.name == name]
+    return row.id
+
+
 def _crafted(*identities) -> bytes:
     """A GPX file of one timed track per ``(source, source_id)``."""
     ns = EXTENSION_NAMESPACE
@@ -229,29 +237,30 @@ def test_import_gpx_into_its_own_trip_is_a_conflict(env):
     r = _import_one(client, _export(client, "Solo"), "Solo")
 
     assert r.status_code == 409, r.text
-    assert r.json()["detail"]["activity_id"] == 101
+    assert r.json()["detail"]["activity_id"] == _row_id(engine, "Solo", "Morning run")
     assert len(_rows(engine, "Solo")) == 1
 
 
 def test_import_gpx_with_typed_times_is_still_a_conflict(env):
     """The identity does not depend on the times the form sends."""
-    client, _, _ = env
+    client, engine, _ = env
     _create_trip(client, "Solo", [_HIKE])
 
     r = _import_one(client, _export(client, "Solo"), "Solo",
                     date="2024-07-01", start_time="10:00", end_time="11:00")
 
     assert r.status_code == 409, r.text
-    assert r.json()["detail"]["activity_id"] == -102
+    assert r.json()["detail"]["activity_id"] == _row_id(engine, "Solo", "Temple hike")
 
 
 def test_inspect_reports_the_activity_already_in_its_own_trip(env):
-    client, _, _ = env
+    client, engine, _ = env
     _create_trip(client, "Solo", [_RUN])
 
     body = _inspect(client, _export(client, "Solo"), "Solo")
 
-    assert body["duplicate_of"] == {"activity_id": 101, "name": "Morning run"}
+    assert body["duplicate_of"] == {
+        "activity_id": _row_id(engine, "Solo", "Morning run"), "name": "Morning run"}
 
 
 def _split(client, trip, activity_id, at=3):
@@ -265,8 +274,8 @@ def test_split_pieces_imported_back_into_their_own_trip_are_skipped(env):
     "local" identity recognises it."""
     client, engine, _ = env
     _create_trip(client, "Split", [_RUN, _HIKE])
-    _split(client, "Split", 101)
-    _split(client, "Split", -102, at=10)
+    _split(client, "Split", _row_id(engine, "Split", "Morning run"))
+    _split(client, "Split", _row_id(engine, "Split", "Temple hike"), at=10)
     before = _rows(engine, "Split")
     assert len(before) == 4
     tails = [row for row in before if row.split_parent_id is not None]
@@ -288,20 +297,23 @@ def test_a_gpx_import_from_before_fingerprints_is_skipped(env):
     early = dict(_HIKE, id=-300, name="Early import", source=None,
                  source_id=None)
     _create_trip(client, "Early", [early])
+    # The import gives it a new local row, not the file's -300 (#592).
+    row_id = _row_id(engine, "Early", "Early import")
+    assert row_id < 0
     content = _export(client, "Early")
     (candidate,) = candidates(parse_gpx_bytes(content))
-    assert candidate.carried_identity == ("local", "-300")
+    assert candidate.carried_identity == ("local", str(row_id))
 
     r = _import_all(client, content, "Early")
 
     assert r.status_code == 200, r.text
     assert r.json()["imported"] == []
     assert r.json()["skipped"][0]["duplicate_of"] == {
-        "activity_id": -300, "name": "Early import"}
+        "activity_id": row_id, "name": "Early import"}
     single = _import_one(client, content, "Early")
     assert single.status_code == 409, single.text
     assert _inspect(client, content, "Early")["duplicate_of"] == {
-        "activity_id": -300, "name": "Early import"}
+        "activity_id": row_id, "name": "Early import"}
     assert len(_rows(engine, "Early")) == 1
 
 
@@ -312,6 +324,17 @@ def test_a_gpx_import_with_a_62_bit_id_is_skipped(env):
     early = dict(_HIKE, id=old_id, name="Wide id", source=None,
                  source_id=None)
     _create_trip(client, "Wide", [early])
+    # An import draws a new 53-bit id (#592): the row is given its 62-bit id
+    # directly, as it has in a database from before the cap.
+    with Session(engine) as sess:
+        row = sess.get(DBActivity, _row_id(engine, "Wide", "Wide id"))
+        item = sess.exec(select(DBProjectItem).where(
+            DBProjectItem.activity_id == row.id)).one()
+        sess.execute(delete(DBActivityGeoPrepared).where(
+            DBActivityGeoPrepared.activity_id == row.id))
+        row.id = item.activity_id = old_id
+        sess.add_all([row, item])
+        sess.commit()
     content = _export(client, "Wide")
     (candidate,) = candidates(parse_gpx_bytes(content))
     assert candidate.carried_identity == ("local", str(old_id))
@@ -328,8 +351,8 @@ def test_a_gpx_import_with_a_62_bit_id_is_skipped(env):
 def test_split_pieces_import_into_an_empty_trip(env):
     client, engine, _ = env
     _create_trip(client, "Split", [_RUN, _HIKE])
-    _split(client, "Split", 101)
-    _split(client, "Split", -102, at=10)
+    _split(client, "Split", _row_id(engine, "Split", "Morning run"))
+    _split(client, "Split", _row_id(engine, "Split", "Temple hike"), at=10)
 
     r = _import_all(client, _export(client, "Split"), "Back")
 
