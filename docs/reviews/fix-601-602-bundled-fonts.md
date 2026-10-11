@@ -1,0 +1,37 @@
+# Review ledger — #601 #602
+
+Subject: branch fix/601-602-bundled-fonts
+Envelope: REVIEW.md defaults
+
+## Round 1 — 2026-10-11, reviewed at 5d357df5
+
+Reviewer: adversarial-reviewer (Fable). Triager: review-triager (Opus). 3 findings, all well-formed; 1 envelope question (to the owner).
+
+Envelope question: does "drop the run-time download from Google Fonts" cover the Flutter web engine's own fallback-font fetches (Roboto at every start, Noto for scripts the bundled fonts lack), which go to fonts.gstatic.com outside the google_fonts package? Decides R1-1's fix: reword the policy, or self-host.
+
+### R1-1 — The privacy policy now says Google gets nothing at app start, but the web engine still fetches fonts from fonts.gstatic.com
+- Trigger: any visitor opens the web app → the Flutter web engine downloads Roboto from fonts.gstatic.com before the first frame (FontManifest has no 'Roboto'; fontFallbackBaseUrl defaults to https://fonts.gstatic.com/s/), and Noto files for glyphs the bundled fonts lack → Google receives the visitor's IP while the edited policy lists Google only for sign-in and translation.
+- Scores: trigger=concrete, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3, floor F3). Owner answered the envelope question: yes, self-host the engine fallback fonts.
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed
+
+### R1-2 — The web first frame waits for all ten bundled font files
+- Trigger: a visitor opens the web app for the first time, or after the 1-day assets/ cache expires, on a mobile connection → engine init awaits all ten .ttf (in parallel with CanvasKit) before the first frame → the boot splash stays up longer.
+- Scores: trigger=concrete, impact=degraded-ux, detect=user-visible, later=cheap, fix=M/local, confidence=verified (triager corrected from inferred)
+- Decision: Defer (D8)
+- Revisit when: a measured web cold load on a throttled mobile profile (docs/LAUNCH_QA.md pass, or the #401 device measurement) shows the bundled fonts adding a noticeable delay to first paint beyond the CanvasKit download, or a user reports a slow first load. Likely fix then: subset the fonts to Latin/Latin-ext.
+- Guard: —
+- Override: —
+- Outcome: open
+
+### R1-3 — The "nothing in lib/ asks for a font the app does not bundle" test only catches two literal strings
+- Trigger: a developer writes fontFamily: "monospace", 'Courier New', or a generic in fontFamilyFallback → the test passes and platforms fall back silently. Already true today: fontFamily: 'Georgia' (social_share_dialog.dart:869, the Facebook "f" badge) is not bundled and is absent on Android and the web.
+- Scores: trigger=concrete (triager corrected from plausible), impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7). Owner: the Facebook "f" uses Inter ExtraBold, no allowlist.
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed

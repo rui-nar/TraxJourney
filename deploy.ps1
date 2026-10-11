@@ -385,6 +385,10 @@ flutter build web --release `
   --dart-define=APP_VERSION=$FullVersion `
   --dart-define=MAPBOX_TOKEN=$MapboxToken
 if ($LASTEXITCODE -ne 0) { Pop-Location; Die "Flutter build failed." }
+# Self-host the web engine's fallback fonts instead of fetching them from
+# Google at run time (#601, #602; see web/flutter_bootstrap.js).
+dart run tool/mirror_fallback_fonts.dart build/web
+if ($LASTEXITCODE -ne 0) { Pop-Location; Die "Mirroring the fallback fonts failed." }
 Pop-Location
 $webClient = Join-Path $SrcRoot 'web_client'
 if (Test-Path $webClient) { Remove-Item -Recurse -Force $webClient }

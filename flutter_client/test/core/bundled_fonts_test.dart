@@ -40,16 +40,20 @@ void main() {
         _width('MMMMMMMMMM', kMonoFontFamily));
   });
 
-  test('nothing in lib/ asks for a font the app does not bundle', () {
+  // A family named by a string can be one no platform bundles ('monospace' on
+  // iOS, 'Georgia' on Android and the web), which falls back silently. So
+  // lib/ names families only through the constants, which the test above
+  // ties to pubspec.yaml (review R1-3).
+  test('nothing in lib/ names a font family by a string', () {
+    final literal =
+        RegExp(r'''fontFamily(Fallback)?:\s*(const\s*)?['"\[]''');
     final offenders = <String>[];
     for (final file in Directory('lib').listSync(recursive: true)) {
       if (file is! File || !file.path.endsWith('.dart')) continue;
       final lines = file.readAsLinesSync();
       for (var i = 0; i < lines.length; i++) {
         final line = lines[i];
-        // The generic family iOS lacks, and the run-time font download.
-        if (line.contains("fontFamily: 'monospace'") ||
-            line.contains('package:google_fonts/')) {
+        if (literal.hasMatch(line) || line.contains('package:google_fonts/')) {
           offenders.add('${file.path}:${i + 1}: ${line.trim()}');
         }
       }

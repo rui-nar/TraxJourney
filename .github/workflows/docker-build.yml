@@ -45,6 +45,9 @@ jobs:
         run: |
           flutter pub get
           flutter build web --release --dart-define=APP_VERSION=${{ steps.app_version.outputs.version }} --dart-define=MAPBOX_TOKEN=${{ secrets.MAPBOX_TOKEN }}
+          # Self-host the web engine's fallback fonts instead of fetching them
+          # from Google at run time (#601, #602; web/flutter_bootstrap.js).
+          dart run tool/mirror_fallback_fonts.dart build/web
 
       - name: Stage Flutter build output for Docker
         run: cp -r flutter_client/build/web web_client

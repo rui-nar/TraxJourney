@@ -34,6 +34,12 @@ if ($RasterMap) {
   Write-Host '[dev-client] MAP_TILE_MODE=raster (cached bitmap tiles).' -ForegroundColor Yellow
 }
 
+# web/flutter_bootstrap.js points the engine at fallback-fonts/ (#601, #602);
+# keep a local copy in web/ (git-ignored) so emoji and other scripts render in
+# dev too. Only missing files are fetched, so after the first run it is quick.
+dart run tool/mirror_fallback_fonts.dart web
+if ($LASTEXITCODE -ne 0) { Write-Host '[dev-client] Could not mirror the fallback fonts; emoji may not render.' -ForegroundColor Yellow }
+
 flutter run -d chrome --web-port 5500 `
   --dart-define=API_BASE_URL=$ApiBaseUrl `
   --dart-define=MAPBOX_TOKEN=$MapboxToken `
