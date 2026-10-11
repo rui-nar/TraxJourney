@@ -55,7 +55,7 @@ import 'project_cache_store_stub.dart'
 /// Bump when the cached JSON shapes change in a way an old cached row can't
 /// safely be replayed through the current parsing code — this makes every
 /// existing on-disk row a miss instead of trying to migrate it.
-const _kSchemaVersion = 1;
+const _kSchemaVersion = 2;
 
 class _Entry {
   int lockVersion;

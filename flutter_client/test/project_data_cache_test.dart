@@ -187,4 +187,25 @@ void main() {
       expect(await projectDataCache.readFullDetails(ref), {'v': 1});
     });
   });
+
+  group('on-disk schema version (#592)', () {
+    Map<String, dynamic> row(int schemaVersion) => {
+          'lockVersion': 1,
+          'schemaVersion': schemaVersion,
+          'meta': {'name': 'Trip'},
+        };
+
+    test('a row written before activities carried strava_id is a miss',
+        () async {
+      projectDataCache.diskRead = (_) async => row(1);
+      expect(await projectDataCache.readMetaForOfflineFallback(ref), isNull);
+    });
+
+    test('a row at the current version is a hit', () async {
+      projectDataCache.diskRead = (_) async => row(2);
+      expect(
+          (await projectDataCache.readMetaForOfflineFallback(ref))?['name'],
+          'Trip');
+    });
+  });
 }

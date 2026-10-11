@@ -27,6 +27,7 @@ import 'package:traxjourney_client/src/api/client.dart';
 import 'package:traxjourney_client/src/core/project_ref.dart';
 import 'package:traxjourney_client/src/projects/project_notifier.dart';
 import 'package:traxjourney_client/src/projects/project_service.dart';
+import 'package:traxjourney_client/src/projects/strava_import_screen.dart';
 
 const _ref = ProjectRef(name: 'Trip');
 const _fast = Duration(milliseconds: 1);
@@ -76,11 +77,13 @@ class _PollService extends ProjectService {
   int detailsCalls = 0;
   int geoCalls = 0;
   int triggerCalls = 0;
+  final List<int> triggered = [];
 
   @override
   Future<Map<String, dynamic>> refreshActivity(
       ProjectRef ref, int activityId) async {
     triggerCalls++;
+    triggered.add(activityId);
     if (triggerError != null) throw triggerError!;
     return {'status': 'pending', 'refresh_status': 'pending'};
   }
@@ -328,6 +331,45 @@ void main() {
 
       expect(n.error, contains('taking longer than expected'));
     });
+
+    test('the picker refreshes and polls the trip row, not the Strava id (#592)',
+        () async {
+      // Row 987654 holds Strava activity 111. /meta reports the row by its id.
+      Map<String, dynamic> row(String status) =>
+          {..._activity(id: 987654, refreshStatus: status), 'strava_id': 111};
+      final service = _PollService(
+        metaSequence: [
+          [row('pending')],
+          [row('resolved')],
+        ],
+        detailsActivities: [row('resolved')],
+      );
+      final n = _notifier(service);
+      n.itemsFacetWriter.setActivities([row('resolved')]);
+
+      final rowId = tripRowIdForStravaId(n.itemsFacet.activities, 111);
+      expect(rowId, 987654);
+      await n.refreshActivity(rowId!,
+          pollInterval: _fast, pollTimeout: const Duration(seconds: 5));
+
+      expect(service.triggered, [987654]);
+      expect(service.metaCalls, 2, reason: 'ends when /meta shows the row done');
+      expect(service.detailsCalls, 1);
+      expect(n.error, isNull);
+    });
   });
 
+  group('tripRowIdForStravaId', () {
+    test('finds the row by its strava_id and ignores the id', () {
+      final rows = [
+        {'id': 111, 'strava_id': null}, // a local row whose id looks Strava-ish
+        {'id': 5, 'strava_id': 111},
+      ];
+      expect(tripRowIdForStravaId(rows, 111), 5);
+    });
+
+    test('is null when the trip holds no such activity', () {
+      expect(tripRowIdForStravaId([{'id': 5, 'strava_id': 7}], 111), isNull);
+    });
+  });
 }

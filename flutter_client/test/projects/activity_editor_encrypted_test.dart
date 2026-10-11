@@ -81,6 +81,7 @@ Future<String> _decrypt(Object? envelope) => encryption.decryptText(envelope! as
 /// The `GET …/track` response of the encrypted vector activity, as stored.
 Future<Map<String, dynamic>> _storedTrack({bool edited = false}) async => {
       'id': _id,
+      'strava_id': _id,
       'name': await encryption.encryptText('Col du Lautaret'),
       'is_edited': edited,
       'moving_time': _movingTime,
@@ -416,6 +417,7 @@ void main() {
   group('reset', () {
     Map<String, dynamic> edited() => {
           'id': _id,
+          'strava_id': _id,
           'name': 'Ride',
           'is_edited': true,
           'map': {'summary_polyline': _polyline},
