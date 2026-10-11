@@ -61,3 +61,25 @@ Reviewer: adversarial-reviewer (Fable). Triager: review-triager (Opus). 1 findin
 - Guard: —
 - Override: —
 - Outcome: fixed
+
+## Round 4 — 2026-10-11, reviewed at 118a7548 (fixes since 5593a460; owner asked for a fourth round)
+
+Reviewer: adversarial-reviewer (Fable). Triager: review-triager (Opus). 2 findings, well-formed. Both regressions in the R3-1 fix, both in the owner's Windows deploy path, invisible to CI (Linux, fresh runners) and to the Docker test suite.
+
+### R4-1 — On Windows the tool moves the revision directory into itself
+- Trigger: the owner runs deploy.ps1 on Windows → version_canvaskit.dart creates canvaskit/<rev>, then lists canvaskit/; dart:io returns `build/web/canvaskit\<rev>`, which is not string-equal to the target path → the tool renames the directory into its own subtree → FileSystemException; deploy.ps1 dies "Versioning CanvasKit failed." Reproduced natively on the Windows workstation: "Rename failed … (OS Error: The parameter is incorrect, errno = 87)".
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed
+
+### R4-2 — A rebuild into the persisted build/web collides on canvaskit/<rev>/chromium
+- Trigger: the owner deploys twice on the same Flutter SDK from his checkout (default, no -FromMain, no flutter clean) → flutter build web re-copies canvaskit/chromium/* → the tool renames canvaskit/chromium onto the non-empty canvaskit/<rev>/chromium → renameSync throws → deploy dies. Shows only once R4-1 is fixed.
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed

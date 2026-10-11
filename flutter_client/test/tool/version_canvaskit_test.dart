@@ -57,6 +57,33 @@ void main() {
     expect(_files(build), before);
   });
 
+  // deploy.ps1 rebuilds into the same build/web without `flutter clean`, and
+  // Flutter copies canvaskit/ back next to the previous run's moved copy
+  // (review R4-2).
+  test('a rebuild into the same build replaces the previous run', () {
+    final build = _build();
+    versionCanvasKit(build.path);
+    for (final f in ['canvaskit.js', 'chromium/canvaskit.js']) {
+      File('${build.path}/canvaskit/$f')
+        ..createSync(recursive: true)
+        ..writeAsStringSync('rebuilt $f');
+    }
+
+    versionCanvasKit(build.path);
+
+    final moved = '${build.path}/canvaskit/$_revision';
+    expect(File('$moved/canvaskit.js').readAsStringSync(), 'rebuilt canvaskit.js');
+    expect(File('$moved/chromium/canvaskit.js').readAsStringSync(),
+        'rebuilt chromium/canvaskit.js');
+    // The rebuilt chromium/ replaced the old one rather than merging into it.
+    expect(File('$moved/chromium/canvaskit.wasm').existsSync(), isFalse);
+    expect(
+        Directory('${build.path}/canvaskit')
+            .listSync()
+            .map((e) => e.path.split(RegExp(r'[\\/]')).last),
+        [_revision]);
+  });
+
   test('a build without its own CanvasKit is refused', () {
     final build = _build();
     Directory('${build.path}/canvaskit').deleteSync(recursive: true);

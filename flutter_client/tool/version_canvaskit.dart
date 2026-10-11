@@ -36,16 +36,36 @@ void versionCanvasKit(String webBuild) {
     throw StateError('No canvaskit/ in $webBuild: was it built with '
         '--no-web-resources-cdn?');
   }
+  // Listed before the target exists and matched by name: on Windows a listed
+  // child's path is joined with '\', so it never equals one built with '/'
+  // (review R4-1).
+  final entries = [
+    for (final entry in root.listSync())
+      if (_name(entry) != revision) entry,
+  ];
   final target = Directory('${root.path}/$revision')..createSync();
-  for (final entry in root.listSync()) {
-    if (entry.path == target.path) continue;
-    final name = entry.uri.pathSegments.lastWhere((s) => s.isNotEmpty);
-    entry.renameSync('${target.path}/$name');
+  for (final entry in entries) {
+    final destination = '${target.path}/${_name(entry)}';
+    // A rebuild into the same build/web brings canvaskit/chromium/ back next
+    // to the previous run's <revision>/chromium/; the new copy replaces it
+    // (review R4-2).
+    switch (FileSystemEntity.typeSync(destination)) {
+      case FileSystemEntityType.directory:
+        Directory(destination).deleteSync(recursive: true);
+      case FileSystemEntityType.notFound:
+        break;
+      default:
+        File(destination).deleteSync();
+    }
+    entry.renameSync(destination);
   }
   if (!File('${target.path}/canvaskit.js').existsSync()) {
     throw StateError('${target.path} has no canvaskit.js');
   }
 }
+
+/// The last segment of [entry]'s path, whichever separator joined it.
+String _name(FileSystemEntity entry) => entry.path.split(RegExp(r'[\\/]')).last;
 
 void main(List<String> args) {
   if (args.length != 1) {
