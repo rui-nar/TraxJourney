@@ -19,7 +19,7 @@ import 'package:provider/provider.dart';
 
 import '../api/client.dart';
 import '../auth/auth_notifier.dart';
-import '../core/design_tokens.dart' show kWarningDark;
+import '../core/design_tokens.dart' show kMonoFontFamily, kWarningDark;
 import '../core/last_opened_project.dart';
 import 'members_service.dart';
 import 'project_notifier.dart';
@@ -524,7 +524,7 @@ class _TravelCompanionsSectionState extends State<TravelCompanionsSection> {
                     child: Text(
                       _joinUrl(token),
                       style: const TextStyle(
-                        fontFamily: 'monospace',
+                        fontFamily: kMonoFontFamily,
                         fontSize: 12,
                         color: _kMuted,
                         overflow: TextOverflow.ellipsis,
@@ -640,7 +640,7 @@ class _MemberRow extends StatelessWidget {
                 style: TextStyle(
                   color: member.isOwner ? _kBlueActive : _kMuted,
                   fontSize: 11,
-                  fontFamily: 'monospace',
+                  fontFamily: kMonoFontFamily,
                 ),
               ),
             ),

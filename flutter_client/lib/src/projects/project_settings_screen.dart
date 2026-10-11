@@ -7,7 +7,8 @@ import 'package:provider/provider.dart';
 import '../api/client.dart';
 import '../core/app_version.dart';
 import '../core/brand.dart';
-import '../core/design_tokens.dart' show LineStyleKind, resolveTypeStyle, lineStyleName;
+import '../core/design_tokens.dart'
+    show LineStyleKind, kMonoFontFamily, resolveTypeStyle, lineStyleName;
 import 'project_notifier.dart';
 import 'travel_companions_section.dart';
 import 'trip_end_days.dart';
@@ -951,13 +952,13 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
                 Row(
                   children: [
                     const Text('Thickness', style: TextStyle(
-                      fontFamily: 'monospace', fontSize: 10, fontWeight: FontWeight.w600,
+                      fontFamily: kMonoFontFamily, fontSize: 10, fontWeight: FontWeight.w600,
                       color: _kDim, letterSpacing: 1.4,
                     )),
                     const Spacer(),
                     Text(
                       '${_trackWidth.toStringAsFixed(1)} px',
-                      style: const TextStyle(fontFamily: 'monospace', fontSize: 13, color: _kText1),
+                      style: const TextStyle(fontFamily: kMonoFontFamily, fontSize: 13, color: _kText1),
                     ),
                   ],
                 ),
@@ -1026,7 +1027,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
           Padding(
             padding: const EdgeInsets.fromLTRB(22, 14, 22, 0),
             child: Text('Elevation chart', style: const TextStyle(
-              fontFamily: 'monospace', fontSize: 10, fontWeight: FontWeight.w600,
+              fontFamily: kMonoFontFamily, fontSize: 10, fontWeight: FontWeight.w600,
               color: _kDim, letterSpacing: 1.4,
             )),
           ),
@@ -1216,7 +1217,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
                               controller: _counterStartCtrls[i],
                               style: const TextStyle(
                                 color: _kText1, fontSize: 18,
-                                fontFamily: 'monospace', fontWeight: FontWeight.w500,
+                                fontFamily: kMonoFontFamily, fontWeight: FontWeight.w500,
                               ),
                               keyboardType: const TextInputType.numberWithOptions(
                                   decimal: true, signed: true),
@@ -1248,7 +1249,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
             child: VersionText(
               prefix: '© ${DateTime.now().year} $kAppName · ',
               style: const TextStyle(
-                fontFamily: 'monospace', fontSize: 10.5, color: _kDim, letterSpacing: 0.5,
+                fontFamily: kMonoFontFamily, fontSize: 10.5, color: _kDim, letterSpacing: 0.5,
               ),
               textAlign: TextAlign.center,
             ),
@@ -1350,7 +1351,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
                                 '${_tagCount(tag)} day${_tagCount(tag) == 1 ? '' : 's'}',
                                 style: const TextStyle(
                                   color: _kMuted, fontSize: 11,
-                                  fontFamily: 'monospace',
+                                  fontFamily: kMonoFontFamily,
                                 ),
                               ),
                             ),
@@ -1549,7 +1550,7 @@ class _Sidebar extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const Text('Project settings', style: TextStyle(
-                          fontFamily: 'monospace', fontSize: 10, fontWeight: FontWeight.w500,
+                          fontFamily: kMonoFontFamily, fontSize: 10, fontWeight: FontWeight.w500,
                           color: _kDim, letterSpacing: 1.4, height: 1,
                         )),
                         const SizedBox(height: 4),
@@ -1757,7 +1758,7 @@ class _StickyHeader extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text('PROJECT SETTINGS', style: TextStyle(
-                  fontFamily: 'monospace', fontSize: 10, fontWeight: FontWeight.w600,
+                  fontFamily: kMonoFontFamily, fontSize: 10, fontWeight: FontWeight.w600,
                   color: _kDim, letterSpacing: 1.4, height: 1,
                 )),
                 const SizedBox(height: 4),
@@ -1778,7 +1779,7 @@ class _StickyHeader extends StatelessWidget {
           // name on a phone (#275).
           const Text(
             kClientVersion,
-            style: TextStyle(fontFamily: 'monospace', fontSize: 10, color: _kDim),
+            style: TextStyle(fontFamily: kMonoFontFamily, fontSize: 10, color: _kDim),
           ),
         ],
       ),
@@ -1830,7 +1831,7 @@ class _SectionCard extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(eyebrow, style: const TextStyle(
-                        fontFamily: 'monospace', fontSize: 10, fontWeight: FontWeight.w600,
+                        fontFamily: kMonoFontFamily, fontSize: 10, fontWeight: FontWeight.w600,
                         color: _kDim, letterSpacing: 1.4, height: 1,
                       )),
                       const SizedBox(height: 4),
@@ -2006,7 +2007,7 @@ class _ShareLinkCard extends StatelessWidget {
                     child: Text(
                       _shareUrl(token!),
                       style: const TextStyle(
-                        fontFamily: 'monospace', fontSize: 12, color: _kMuted,
+                        fontFamily: kMonoFontFamily, fontSize: 12, color: _kMuted,
                         overflow: TextOverflow.ellipsis,
                       ),
                       maxLines: 1,
@@ -2147,7 +2148,7 @@ class _VisitorStats extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(bucketLabel, style: const TextStyle(
-          fontFamily: 'monospace', fontSize: 10, fontWeight: FontWeight.w600,
+          fontFamily: kMonoFontFamily, fontSize: 10, fontWeight: FontWeight.w600,
           color: _kDim, letterSpacing: 1.2,
         )),
         const SizedBox(height: 4),
@@ -2231,7 +2232,7 @@ class _ColorPickerRow extends StatelessWidget {
           child: Text(
             label,
             style: const TextStyle(
-              fontFamily: 'monospace', fontSize: 10, fontWeight: FontWeight.w600,
+              fontFamily: kMonoFontFamily, fontSize: 10, fontWeight: FontWeight.w600,
               color: _kDim, letterSpacing: 1.4,
             ),
           ),

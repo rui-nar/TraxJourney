@@ -43,9 +43,6 @@ dependencies:
   # Persist user preferences (theme mode)
   shared_preferences: ^2.3.2
 
-  # Typography
-  google_fonts: ^8.1.0
-
   # Color picker
   flutter_colorpicker: ^1.1.0
 
@@ -93,6 +90,37 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+
+  # Bundled rather than fetched from Google Fonts at run time (#601, #602):
+  # one family per typeface, so every fontWeight picks its real face instead
+  # of a synthetic bold, the monospace font is the same on every platform,
+  # and text renders offline and without a request to Google. These are the
+  # exact files google_fonts served (OFL; licences in assets/fonts/).
+  fonts:
+    - family: Inter
+      fonts:
+        - asset: assets/fonts/Inter-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/Inter-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Inter-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/Inter-Bold.ttf
+          weight: 700
+        - asset: assets/fonts/Inter-ExtraBold.ttf
+          weight: 800
+    - family: JetBrains Mono
+      fonts:
+        - asset: assets/fonts/JetBrainsMono-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/JetBrainsMono-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/JetBrainsMono-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/JetBrainsMono-Bold.ttf
+          weight: 700
+        - asset: assets/fonts/JetBrainsMono-ExtraBold.ttf
+          weight: 800
 
 # Android only — iOS keeps its own icon pipeline until that platform ships.
 # All three layers come from scripts/generate_icons.py: the flat icon, and the

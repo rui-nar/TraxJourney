@@ -3,7 +3,6 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../billing/billing_service.dart';
@@ -140,11 +139,13 @@ class _Shell extends StatelessWidget {
 
 TextStyle _inter(double size, FontWeight weight, Color color,
     {double? height, double? spacing}) =>
-    GoogleFonts.inter(fontSize: size, fontWeight: weight, color: color,
+    TextStyle(fontFamily: kFontFamily, fontSize: size, fontWeight: weight,
+        color: color,
         height: height, letterSpacing: spacing);
 
 TextStyle _mono(double size, FontWeight weight, Color color) =>
-    GoogleFonts.jetBrainsMono(fontSize: size, fontWeight: weight, color: color);
+    TextStyle(fontFamily: kMonoFontFamily, fontSize: size, fontWeight: weight,
+        color: color);
 
 Widget _gradientText(String text, TextStyle style, {TextAlign? textAlign}) => ShaderMask(
   blendMode: BlendMode.srcIn,
@@ -744,8 +745,6 @@ class _MapLabel extends StatelessWidget {
   Widget build(BuildContext context) {
     return Text(
       text,
-      // google_fonts registers Inter under its own family names; a plain
-      // 'Inter' matched nothing and fell back to the platform font (#594).
       style: _inter(11, FontWeight.w600, const Color(0xFF0F172A), spacing: 0.06)
           .copyWith(shadows: const [Shadow(blurRadius: 4, color: Colors.white)]),
     );

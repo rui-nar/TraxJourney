@@ -13,22 +13,23 @@
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:traxjourney_client/src/api/client.dart';
+import 'package:traxjourney_client/src/core/design_tokens.dart' show kFontFamily;
 import 'package:traxjourney_client/src/core/project_ref.dart';
 import 'package:traxjourney_client/src/projects/video_config_dialog.dart';
 import 'package:traxjourney_client/src/projects/video_consent_dialog.dart';
 import 'package:traxjourney_client/src/projects/video_job_notifier.dart';
 import 'package:traxjourney_client/src/projects/video_preview_image.dart';
+
+import 'helpers/real_fonts.dart';
 
 http.Response _json(int status, Object body) => http.Response(
       jsonEncode(body),
@@ -507,14 +508,7 @@ void main() {
       // Widget tests otherwise draw every glyph a full em wide, which would
       // report wrapping even for text that fits in the real Inter font the
       // app renders with (see welcome_screen_price_layout_test.dart).
-      setUpAll(() async {
-        GoogleFonts.config.allowRuntimeFetching = false;
-        final bytes = File('test/fonts/Inter-ExtraBold.ttf').readAsBytesSync();
-        final loader = FontLoader(
-            GoogleFonts.inter(fontWeight: FontWeight.w800).fontFamily!)
-          ..addFont(Future.value(ByteData.sublistView(bytes)));
-        await loader.load();
-      });
+      setUpAll(loadRealFonts);
 
       for (final size in [const Size(360, 640), const Size(800, 600)]) {
         testWidgets(
@@ -526,9 +520,7 @@ void main() {
           addTearDown(tester.view.resetDevicePixelRatio);
 
           await open(tester, ok,
-              theme: ThemeData(
-                  fontFamily: GoogleFonts.inter(fontWeight: FontWeight.w800)
-                      .fontFamily));
+              theme: ThemeData(fontFamily: kFontFamily));
           expect(tester.takeException(), isNull);
 
           for (final label in ['Follow', 'Overview', 'Fixed zoom']) {
