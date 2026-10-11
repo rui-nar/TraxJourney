@@ -34,7 +34,7 @@ from datetime import datetime
 from typing import Annotated, Any, Dict, List, Optional, Tuple
 
 from pydantic import (
-    AfterValidator, BaseModel, ConfigDict, TypeAdapter, ValidationError,
+    AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter, ValidationError,
 )
 from pydantic_core import PydanticCustomError
 
@@ -306,14 +306,19 @@ class _ElevationProfile(_Model):
     elevations_m: Elevations
 
 
+#: A Strava activity id: Strava numbers its activities from 1.
+StravaId = Annotated[int, Field(gt=0)]
+
+
 class _Activity(_Model):
-    """``Activity.to_strava_dict``: a Strava activity, plus the app's own.
+    """``Activity.to_traxj_dict``: a Strava activity, plus the app's own.
 
     Its numbers are typed as numbers, not as the int or float of the
     dataclass: Strava sends ``max_heartrate`` as a float, SQLite hands a
     whole REAL back as an int, and the database binds either. Each is bounded
     by physical plausibility (src/models/value_bounds.py): past the bounds,
-    the trip's totals overflow.
+    the trip's totals overflow. The edit snapshot (``original_*``) is bounded
+    as the live figures are, since a reset puts it back in their place.
     """
     id: Optional[int] = None
     name: str = ""
@@ -354,6 +359,24 @@ class _Activity(_Model):
     elevation_profile: Optional[_ElevationProfile] = None
     is_edited: bool = False
     split_parent_id: Optional[int] = None
+    # Written since #592; a file before it carries none.
+    strava_id: Optional[StravaId] = None
+    split_root_id: Optional[int] = None
+    split_base_name: Optional[str] = None
+    original_polyline: Optional[str] = None
+    original_elevation_profile: Optional[_ElevationProfile] = None
+    original_elevation_profile_enc: Optional[Envelope] = None
+    original_start_latlng: Optional[LatLng] = None
+    original_start_latlng_enc: Optional[Envelope] = None
+    original_end_latlng: Optional[LatLng] = None
+    original_end_latlng_enc: Optional[Envelope] = None
+    original_total_elevation_gain: Optional[Gain] = None
+    original_distance: Optional[Distance] = None
+    original_moving_time: Optional[Duration] = None
+    original_elapsed_time: Optional[Duration] = None
+    original_average_speed: Optional[Speed] = None
+    original_elev_high: Optional[Elevation] = None
+    original_elev_low: Optional[Elevation] = None
     refresh_status: Optional[str] = None
     refresh_started_at: Optional[str] = None
     refresh_error: Optional[str] = None
@@ -464,6 +487,7 @@ _SAYS = {
     "dict_type": "is not an object",
     "model_type": "is not an object",
     "missing": "is missing",
+    "greater_than": "is out of range",
     "greater_than_equal": "is out of range",
     "less_than_equal": "is out of range",
 }
@@ -683,26 +707,39 @@ def normalise(document: Dict[str, Any]) -> None:
     for act in activities:
         if not isinstance(act, dict):
             continue
-        ep = act.get("elevation_profile")
-        profile = None
-        if (isinstance(ep, dict) and isinstance(ep.get("distances_km"), list)
-                and isinstance(ep.get("elevations_m"), list)):
-            profile = (ep["distances_km"], ep["elevations_m"])
-        figures = {k: act.get(k) for k in ("total_elevation_gain", "elev_high", "elev_low")}
-        if not all(v is None or (isinstance(v, (int, float)) and not isinstance(v, bool))
-                   for v in figures.values()):
-            continue            # a wrong type: fault() names it
-        new_profile, gain, high, low = repair_elevations(
-            profile, *figures.values(), app_measured=_app_measured(act, by_id, known))
-        if new_profile is not profile:
-            act["elevation_profile"] = (
-                None if new_profile is None
-                else {**ep, "distances_km": new_profile[0], "elevations_m": new_profile[1]})
-        for key, value in zip(figures, (gain, high, low)):
-            if key in act:
-                act[key] = value
-        if "elapsed_time" in act:
-            act["elapsed_time"] = repair_elapsed(act["elapsed_time"], act.get("moving_time"))
+        # The live figures, then the edit snapshot (#592): a reset puts the
+        # snapshot in their place, and it was taken from rows that could
+        # hold the same faults.
+        for prefix in ("", "original_"):
+            _repair_figures(act, prefix, by_id, known)
+
+
+def _repair_figures(act: Dict[str, Any], prefix: str,
+                    by_id: Dict[int, Dict[str, Any]], known: Dict[int, bool]) -> None:
+    """*act*'s elevation figures and elapsed time, or those of its snapshot
+    (*prefix* ``original_``), repaired as :func:`normalise` says."""
+    ep = act.get(prefix + "elevation_profile")
+    profile = None
+    if (isinstance(ep, dict) and isinstance(ep.get("distances_km"), list)
+            and isinstance(ep.get("elevations_m"), list)):
+        profile = (ep["distances_km"], ep["elevations_m"])
+    figures = {prefix + k: act.get(prefix + k)
+               for k in ("total_elevation_gain", "elev_high", "elev_low")}
+    if not all(v is None or (isinstance(v, (int, float)) and not isinstance(v, bool))
+               for v in figures.values()):
+        return              # a wrong type: fault() names it
+    new_profile, gain, high, low = repair_elevations(
+        profile, *figures.values(), app_measured=_app_measured(act, by_id, known))
+    if new_profile is not profile:
+        act[prefix + "elevation_profile"] = (
+            None if new_profile is None
+            else {**ep, "distances_km": new_profile[0], "elevations_m": new_profile[1]})
+    for key, value in zip(figures, (gain, high, low)):
+        if key in act:
+            act[key] = value
+    if prefix + "elapsed_time" in act:
+        act[prefix + "elapsed_time"] = repair_elapsed(
+            act[prefix + "elapsed_time"], act.get(prefix + "moving_time"))
 
 
 def fault(document: Dict[str, Any]) -> Optional[str]:
