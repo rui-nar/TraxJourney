@@ -15,3 +15,7 @@ Reviewer: adversarial-reviewer (Fable). Triager: review-triager (Opus). 1 findin
 - Guard: —
 - Override: —
 - Outcome: fixed
+
+## Round 2 — 2026-10-10, reviewed at 5d7a8672 (fixes since 229680b7)
+
+Reviewer: adversarial-reviewer (Opus; Fable weekly limit reached). No findings: round clean, review closed (§6).
