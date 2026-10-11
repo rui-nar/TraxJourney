@@ -1094,17 +1094,13 @@ def sync_check(
                     datetime.strptime(proj.trip_end, "%Y-%m-%d").date()
                     if proj.trip_end else None
                 )
-                # Get IDs already in project
-                item_rows = sess.exec(
-                    select(DBProjectItem).where(
-                        DBProjectItem.project_id == proj.id,
-                        DBProjectItem.item_type == "activity",
-                    )
-                ).all()
-                in_project_ids = {r.activity_id for r in item_rows if r.activity_id is not None}
+                # Strava ids the trip already holds a row for: a row id is
+                # not a Strava id (#592, plan Decision 2).
+                in_project_strava_ids = set(
+                    _repo.trip_activity_ids_by_strava_id(sess, proj.id))
 
                 for act in parse_activities_or_log(raw_list, "projects_unimported"):
-                    if act.id in in_project_ids:
+                    if act.strava_id in in_project_strava_ids:
                         continue
                     act_ts = act.start_date.timestamp() if act.start_date else 0.0
                     if act_ts <= cutoff:
@@ -1157,10 +1153,10 @@ def delete_project(
     with get_session() as sess:
         row = resolve_project(sess, user_info_id, name, owner, min_role="owner")
         owner_id = row.user_info_id
-        # The trip's activities, to free those no other trip holds once it is
-        # gone (issue #509): its Strava rows, and its split tails whoever cut
-        # them — a tail belongs to one trip, so this one's are its own to
-        # delete. The repo keeps only Strava-family tails among the latter.
+        # The trip's activity rows go with it, whatever they came from and
+        # whoever added them: a row belongs to the one trip holding it (#592,
+        # plan Decision 9). With them, their prepared geometry and any split
+        # ancestor only they still name.
         held = sess.exec(select(DBProjectItem.activity_id).where(
             DBProjectItem.project_id == row.id,
             DBProjectItem.activity_id.is_not(None),
@@ -1168,11 +1164,8 @@ def delete_project(
         found = _repo.delete_project(sess, owner_id, name)
         renamed = []
         if found:
-            renamed_ids = _repo.delete_unreferenced_strava_activities(
-                sess, owner_id,
-                ids=[a for a in held if a > 0],
-                tail_ids=[a for a in held if a < 0],
-            )
+            renamed_ids = _repo.delete_unreferenced_activities(sess, held)
+            sess.commit()
             renamed = sess.exec(select(DBProject.user_info_id, DBProject.name).where(
                 DBProject.id.in_(renamed_ids))).all() if renamed_ids else []
     bust_project_cache(owner_id, name)

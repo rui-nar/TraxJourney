@@ -1,5 +1,7 @@
 """Disconnecting Strava removes the cached raw data and revokes the app (issue #440).
 
+It deletes no activity row: an activity belongs to the trip holding it (#592).
+
 Regression: ``DELETE /api/strava/disconnect`` used to delete only the
 ``StravaToken`` row. The cached raw activity list (``DBStravaCache``) stayed
 behind, and the app was never revoked at Strava, so it kept showing as
@@ -226,10 +228,12 @@ def _add_activity(engine, act_id: int, owner: int, project_id=None, **kw) -> Non
         sess.commit()
 
 
-def test_disconnect_deletes_strava_rows_no_trip_holds(client, engine, post):
-    """Issue #509: an unreferenced Strava row goes with its prepared geometry.
-    Kept: one still in a trip (activity 1, seeded), GPX rows, and a split
-    root whose tail is in a trip."""
+def test_disconnect_deletes_no_activity_rows(client, engine, post):
+    """#592, plan Decision 9: an activity belongs to its trip, not to the
+    Strava connection it came from, so disconnecting deletes no row and no
+    prepared geometry. That includes rows no trip holds: issue #509 used to
+    delete those here, but they are harmless and nothing reads them (review
+    R1-9); a trip lets go of its rows itself."""
     tc, uid = client
     with Session(engine) as sess:
         trip_id = sess.exec(select(DBProject.id).where(DBProject.user_info_id == uid)).one()
@@ -243,15 +247,15 @@ def test_disconnect_deletes_strava_rows_no_trip_holds(client, engine, post):
     assert tc.delete("/api/strava/disconnect").status_code == 204
 
     with Session(engine) as sess:
-        assert set(sess.exec(select(DBActivity.id)).all()) == {1, 4, -40, 5, -5}
+        assert set(sess.exec(select(DBActivity.id)).all()) == {1, 2, 3, 4, -40, 5, -5}
         # Activity 1 was seeded without prepared geometry.
-        assert set(sess.exec(select(DBActivityGeoPrepared.activity_id)).all()) == {4, -40, 5, -5}
+        assert set(sess.exec(select(DBActivityGeoPrepared.activity_id)).all()) == {
+            2, 3, 4, -40, 5, -5}
 
 
 def test_companion_activity_in_owners_trip_survives_companion_disconnect(engine, post):
-    """The companion's row sits in the owner's trip: still referenced, kept.
-    Their unreferenced row goes; the owner's rows are not the companion's to
-    touch."""
+    """The companion's row sits in the owner's trip and stays there. No row
+    goes, whoever's it is (#592, plan Decision 9)."""
     owner = _seed(engine)
     with Session(engine) as sess:
         c = UserInfo(display_name="C", email="c@e.com")
@@ -274,7 +278,7 @@ def test_companion_activity_in_owners_trip_survives_companion_disconnect(engine,
         app.dependency_overrides.clear()
 
     with Session(engine) as sess:
-        assert set(sess.exec(select(DBActivity.id)).all()) == {1, 2, 70}
+        assert set(sess.exec(select(DBActivity.id)).all()) == {1, 2, 70, 71}
         assert sess.exec(select(DBProjectItem).where(DBProjectItem.activity_id == 70)).first() is not None
 
 
