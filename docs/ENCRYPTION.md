@@ -210,7 +210,7 @@ Trips shared **with** you by another user are not touched by the enable-time
 the catch-up when you load them. Activities are the exception: on a trip you
 do not own the catch-up never encrypts your own activity rows (it only decrypts
 back your own envelopes, "Remaining plaintext" case 5), and rows you may
-not encrypt, or that another user's trip also holds, stay plaintext too — see
+not encrypt stay plaintext too — see
 "Remaining plaintext".
 
 ## Editing an encrypted track
@@ -445,7 +445,7 @@ encrypted account, so that every traveller on the trip can read it.
    endpoints and profile in plaintext. The catch-up counts them
    (`CatchUpResult.unencryptable`, a 404 on the write), the trip screen says
    "N activities are also used by another traveller and stay unencrypted"
-   (one wording for this case and case 5; `_UnencryptableNotice` in `encryption_locked_banner.dart`, fed by
+   (the client's wording; `_UnencryptableNotice` in `encryption_locked_banner.dart`, fed by
    `ProjectNotifier.unencryptableActivityCount`), and the enable screen reports
    the count after the migration (`migrationNotice` in
    `enable_encryption_screen.dart`).
