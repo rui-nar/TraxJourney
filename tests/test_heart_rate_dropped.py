@@ -21,7 +21,7 @@ import polyline as polyline_lib
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 import api.activities as activities_module
 import api.strava as strava_module
@@ -162,12 +162,13 @@ def test_sync_stores_and_serves_activity_without_heartrate(env):
 
     assert "heartrate" not in _cached_blob(engine, uid)
     with Session(engine) as sess:
-        row = sess.get(DBActivity, 501)
+        # By Strava id: the row's own id is allocated (#592).
+        row = sess.exec(select(DBActivity).where(DBActivity.strava_id == 501)).first()
         assert row is not None and row.name == "Ride with HR"
         assert not [k for k in vars(row) if "heartrate" in k]
 
     detail = client.get("/api/projects/Trip").json()
-    assert [a["id"] for a in detail["activities"]] == [501]
+    assert [a["strava_id"] for a in detail["activities"]] == [501]
     assert not _mentions_heartrate(detail)
 
     export = client.get("/api/projects/Trip/export-traxj")
@@ -184,5 +185,5 @@ def test_bulk_import_of_raw_payload_drops_heartrate(env):
     assert resp.json()["added"] == 1
 
     detail = client.get("/api/projects/Trip").json()
-    assert [a["id"] for a in detail["activities"]] == [502]
+    assert [a["strava_id"] for a in detail["activities"]] == [502]
     assert not _mentions_heartrate(detail)

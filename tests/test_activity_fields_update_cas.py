@@ -6,8 +6,12 @@
   carries the trip's new lock version.
 * Optional ``owner`` beside ``project`` (decision 15, I3-1): the CAS trip is
   that user's, reached by a member editor or above; anyone else gets 404.
-* Who may write (decision 14): the row's owner, or the owner of every trip
-  that references a local (negative id) row.
+* Who may write: the row's owner (#592, plan Decision 4) — the owner of the
+  one trip holding it, or the account whose key encrypted it.
+* A write advances the lock version of the one trip holding the row, and no
+  other (#592).
+* A write that leaves an encrypted row with no envelope hands it to the
+  holding trip's owner (plan Decision 4, review R2-6).
 * An envelope ``name`` nulls ``split_base_name``, the pre-split plaintext
   name (decision 10).
 """
@@ -31,9 +35,14 @@ _ENC_POLY = "v1.d2VsY29tZQ==.cG9seWxpbmU="
 
 @pytest.fixture
 def env(monkeypatch):
-    """Alice (the caller) owns trips "Trip" (lock 3) and "Other" (lock 10);
-    Bob owns "Bobs" (lock 20). Alice's activity 111 is in "Trip" and in
-    "Bobs"."""
+    """Alice (the caller by default) owns trips "Trip" (lock 3) and "Other"
+    (lock 10); Bob owns "Bobs" (lock 20).
+
+    * 111: Alice's activity in "Trip".
+    * 112: Alice's activity in "Bobs", added as a companion and encrypted
+      under her key, so it is still hers (plan Decision 4's exception).
+
+    Each row is held by one trip (#592)."""
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -56,15 +65,25 @@ def env(monkeypatch):
                             type="Ride", split_base_name="Ride"))
         sess.add(DBProjectItem(project_id=trip.id, position=0,
                                item_type="activity", activity_id=111))
+        sess.add(DBActivity(id=112, user_info_id=alice.id, name=_ENC_NAME,
+                            summary_polyline=_ENC_POLY, type="Ride",
+                            strava_id=9112, strava_user_id=alice.id))
         sess.add(DBProjectItem(project_id=bobs.id, position=0,
-                               item_type="activity", activity_id=111))
+                               item_type="activity", activity_id=112))
         sess.commit()
         ids = dict(alice=alice.id, bob=bob.id, trip=trip.id, other=other.id, bobs=bobs.id)
 
+    current = {"uid": ids["alice"]}
     app = FastAPI()
-    app.dependency_overrides[get_current_user] = lambda: {"sub": str(ids["alice"]), "email": "a@e.com"}
+    app.dependency_overrides[get_current_user] = lambda: {"sub": str(current["uid"])}
     app.include_router(activity_fields_router)
-    return TestClient(app), engine, ids
+    client = TestClient(app)
+
+    def act_as(who):
+        current["uid"] = ids[who]
+
+    client.act_as = act_as
+    return client, engine, ids
 
 
 def _add_activity(engine, activity_id, owner_id, project_ids, **fields):
@@ -86,6 +105,11 @@ def _row(engine, activity_id=111):
     with Session(engine) as sess:
         a = sess.get(DBActivity, activity_id)
         return a.name, a.summary_polyline, a.split_base_name
+
+
+def _owner(engine, activity_id):
+    with Session(engine) as sess:
+        return sess.get(DBActivity, activity_id).user_info_id
 
 
 # ── split_base_name (decision 10) ────────────────────────────────────────────
@@ -113,9 +137,9 @@ def test_cas_with_current_version_writes_and_returns_next_version(env):
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"id": 111, "lock_version": 4}
     assert _row(engine)[0] == _ENC_NAME
-    # The CAS trip advances by one; the other trip holding the row is
-    # bumped as before; a trip not holding it is untouched.
-    assert _versions(engine) == {"Trip": 4, "Other": 10, "Bobs": 21}
+    # The CAS trip, the one holding the row, advances by one; no other trip
+    # moves (#592).
+    assert _versions(engine) == {"Trip": 4, "Other": 10, "Bobs": 20}
 
 
 def test_cas_with_stale_version_writes_nothing(env):
@@ -147,24 +171,26 @@ def test_cas_needs_both_project_and_lock_version(env, body):
     assert (_row(engine), _versions(engine)) == before
 
 
-def test_without_cas_every_trip_holding_the_row_advances(env):
+def test_without_cas_only_the_trip_holding_the_row_advances(env):
     client, engine, _ = env
     resp = client.put("/api/activities/111", json={"name": _ENC_NAME})
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"id": 111}
-    assert _versions(engine) == {"Trip": 4, "Other": 10, "Bobs": 21}
+    assert _versions(engine) == {"Trip": 4, "Other": 10, "Bobs": 20}
 
 
-# ── Who may write (decision 14) ──────────────────────────────────────────────
+# ── Who may write (#592, plan Decision 4) ────────────────────────────────────
 
-def test_local_row_of_another_user_only_in_callers_trips_is_writable(env):
+def test_a_row_another_user_still_owns_in_callers_trip_is_refused(env):
+    """Bob's activity in Alice's trip that Bob encrypted stays Bob's: only
+    his key reads it, so Alice may not write its encrypted fields."""
     client, engine, ids = env
-    _add_activity(engine, -5, ids["bob"], [ids["trip"], ids["other"]])
+    _add_activity(engine, -5, ids["bob"], [ids["trip"]], summary_polyline=_ENC_POLY)
     resp = client.put("/api/activities/-5",
                       json={"name": _ENC_NAME, "project": "Trip", "lock_version": 3})
-    assert resp.status_code == 200, resp.text
-    assert _row(engine, -5)[0] == _ENC_NAME
-    assert _versions(engine) == {"Trip": 4, "Other": 11, "Bobs": 20}
+    assert resp.status_code == 404, resp.text
+    assert _row(engine, -5)[0] == "Walk"
+    assert _versions(engine) == {"Trip": 3, "Other": 10, "Bobs": 20}
 
 
 def test_strava_row_of_another_user_only_in_callers_trips_is_refused(env):
@@ -183,9 +209,9 @@ def test_unreferenced_local_row_of_another_user_is_refused(env):
     assert _row(engine, -6)[0] == "Walk"
 
 
-def test_local_row_also_in_another_users_trip_is_refused(env):
+def test_a_row_of_another_users_trip_is_refused(env):
     client, engine, ids = env
-    _add_activity(engine, -7, ids["bob"], [ids["trip"], ids["bobs"]])
+    _add_activity(engine, -7, ids["bob"], [ids["bobs"]])
     resp = client.put("/api/activities/-7", json={"name": _ENC_NAME})
     assert resp.status_code == 404, resp.text
     assert _row(engine, -7)[0] == "Walk"
@@ -193,10 +219,73 @@ def test_local_row_also_in_another_users_trip_is_refused(env):
 
 
 def test_own_row_in_another_users_trip_stays_writable(env):
-    """The row's owner may write it wherever it is referenced — as before."""
+    """The row's owner may write it wherever it is — as before."""
     client, engine, _ = env
-    resp = client.put("/api/activities/111", json={"name": _ENC_NAME})
+    resp = client.put("/api/activities/112", json={"name": _ENC_NAME})
     assert resp.status_code == 200, resp.text
+
+
+def test_the_trip_owner_encrypts_a_companions_activity(env):
+    """A companion's plaintext activity in the owner's trip is the owner's
+    (Decision 4): encrypting it is no longer refused as shared with another
+    traveller's trip (was 409 ``shared_with_other_trip``)."""
+    client, engine, ids = env
+    _add_activity(engine, 113, ids["bob"], [ids["bobs"]],
+                  strava_id=9113, strava_user_id=ids["alice"])
+    client.act_as("bob")
+    resp = client.put("/api/activities/113",
+                      json={"name": _ENC_NAME, "summary_polyline": _ENC_POLY,
+                            "project": "Bobs", "lock_version": 20})
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"id": 113, "lock_version": 21}
+    assert _row(engine, 113)[:2] == (_ENC_NAME, _ENC_POLY)
+    assert _owner(engine, 113) == ids["bob"]
+    assert _versions(engine) == {"Trip": 3, "Other": 10, "Bobs": 21}
+
+
+# ── An exception row decrypted goes to the trip's owner (R2-6) ───────────────
+
+def test_a_companion_decrypting_their_row_hands_it_to_the_trip_owner(env):
+    """Once no envelope is left only the trip's owner should own it, and can
+    then encrypt it under their own key."""
+    client, engine, ids = env
+    _join(engine, ids, ids["bobs"], "editor")
+    resp = client.put("/api/activities/112",
+                      json={"name": "Ride", "summary_polyline": "abc",
+                            "project": "Bobs", "owner": ids["bob"],
+                            "lock_version": 20})
+    assert resp.status_code == 200, resp.text
+    assert _owner(engine, 112) == ids["bob"]
+
+    client.act_as("bob")
+    resp = client.put("/api/activities/112",
+                      json={"name": _ENC_NAME, "summary_polyline": _ENC_POLY,
+                            "project": "Bobs", "lock_version": 21})
+    assert resp.status_code == 200, resp.text
+    assert _row(engine, 112)[:2] == (_ENC_NAME, _ENC_POLY)
+    assert _owner(engine, 112) == ids["bob"]
+
+    # The companion's key no longer writes it.
+    client.act_as("alice")
+    resp = client.put("/api/activities/112", json={"name": "Ride"})
+    assert resp.status_code == 404, resp.text
+
+
+def test_a_row_still_holding_an_envelope_keeps_its_owner(env):
+    """Decrypting the name alone leaves the polyline encrypted under the
+    companion's key: the row stays theirs."""
+    client, engine, ids = env
+    resp = client.put("/api/activities/112", json={"name": "Ride"})
+    assert resp.status_code == 200, resp.text
+    assert _row(engine, 112)[:2] == ("Ride", _ENC_POLY)
+    assert _owner(engine, 112) == ids["alice"]
+
+
+def test_a_decrypted_row_in_a_trip_of_its_own_owner_changes_nothing(env):
+    client, engine, ids = env
+    resp = client.put("/api/activities/111", json={"name": "Ride (1/2)"})
+    assert resp.status_code == 200, resp.text
+    assert _owner(engine, 111) == ids["alice"]
 
 
 # ── CAS on a trip the caller edits but does not own (decision 15, I3-1) ─────
@@ -214,28 +303,27 @@ def test_member_repairs_own_row_in_owners_trip(env, role):
     the friend's trip it was loaded from."""
     client, engine, ids = env
     _join(engine, ids, ids["bobs"], role)
-    resp = client.put("/api/activities/111",
+    resp = client.put("/api/activities/112",
                       json={"name": "Ride (1/2)", "summary_polyline": "abc",
                             "project": "Bobs", "owner": ids["bob"],
                             "lock_version": 20})
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"id": 111, "lock_version": 21}
-    assert _row(engine)[:2] == ("Ride (1/2)", "abc")
-    # The CAS trip advances by one; the caller's trip holding the row is
-    # bumped as on any write.
-    assert _versions(engine) == {"Trip": 4, "Other": 10, "Bobs": 21}
+    assert resp.json() == {"id": 112, "lock_version": 21}
+    assert _row(engine, 112)[:2] == ("Ride (1/2)", "abc")
+    # The CAS trip advances by one; no other trip moves.
+    assert _versions(engine) == {"Trip": 3, "Other": 10, "Bobs": 21}
 
 
 def test_member_cas_with_stale_version_writes_nothing(env):
     client, engine, ids = env
     _join(engine, ids, ids["bobs"], "editor")
-    before = (_row(engine), _versions(engine))
-    resp = client.put("/api/activities/111",
+    before = (_row(engine, 112), _versions(engine), _owner(engine, 112))
+    resp = client.put("/api/activities/112",
                       json={"summary_polyline": "abc", "project": "Bobs",
                             "owner": ids["bob"], "lock_version": 19})
     assert resp.status_code == 409, resp.text
     assert resp.json()["detail"]["code"] == "stale_write"
-    assert (_row(engine), _versions(engine)) == before
+    assert (_row(engine, 112), _versions(engine), _owner(engine, 112)) == before
 
 
 @pytest.mark.parametrize("role", ["viewer", None], ids=["viewer", "non-member"])
@@ -243,12 +331,12 @@ def test_owner_trip_needs_an_editor_membership(env, role):
     client, engine, ids = env
     if role is not None:
         _join(engine, ids, ids["bobs"], role)
-    before = (_row(engine), _versions(engine))
-    resp = client.put("/api/activities/111",
+    before = (_row(engine, 112), _versions(engine))
+    resp = client.put("/api/activities/112",
                       json={"summary_polyline": "abc", "project": "Bobs",
                             "owner": ids["bob"], "lock_version": 20})
     assert resp.status_code == 404, resp.text
-    assert (_row(engine), _versions(engine)) == before
+    assert (_row(engine, 112), _versions(engine)) == before
 
 
 def test_owner_trip_not_holding_the_row_is_404(env):
@@ -258,12 +346,12 @@ def test_owner_trip_not_holding_the_row_is_404(env):
         sess.add(empty); sess.commit(); sess.refresh(empty)
         empty_id = empty.id
     _join(engine, ids, empty_id, "editor")
-    before = (_row(engine), _versions(engine))
-    resp = client.put("/api/activities/111",
+    before = (_row(engine, 112), _versions(engine))
+    resp = client.put("/api/activities/112",
                       json={"summary_polyline": "abc", "project": "Empty",
                             "owner": ids["bob"], "lock_version": 5})
     assert resp.status_code == 404, resp.text
-    assert (_row(engine), _versions(engine)) == before
+    assert (_row(engine, 112), _versions(engine)) == before
 
 
 def test_project_without_owner_stays_the_callers_own_trip(env):
@@ -271,7 +359,7 @@ def test_project_without_owner_stays_the_callers_own_trip(env):
     ``owner`` equal to the caller is the caller's own trip."""
     client, engine, ids = env
     _join(engine, ids, ids["bobs"], "editor")
-    resp = client.put("/api/activities/111",
+    resp = client.put("/api/activities/112",
                       json={"summary_polyline": "abc", "project": "Bobs",
                             "lock_version": 20})
     assert resp.status_code == 404, resp.text
@@ -282,9 +370,10 @@ def test_project_without_owner_stays_the_callers_own_trip(env):
     assert resp.json() == {"id": 111, "lock_version": 4}
 
 
-def test_repair_refreshes_each_trip_under_its_owner(env, monkeypatch):
+def test_repair_refreshes_the_trip_under_its_owner(env, monkeypatch):
     """The friend's map and stats are cached under the friend's id: the
-    repair must refresh them there, not under the caller's."""
+    repair must refresh them there, not under the caller's — and no other
+    trip, as no other trip holds the row (#592)."""
     import api.activities as activities_mod
     client, engine, ids = env
     _join(engine, ids, ids["bobs"], "editor")
@@ -293,12 +382,11 @@ def test_repair_refreshes_each_trip_under_its_owner(env, monkeypatch):
                         lambda owner, name: calls.append(("geo", owner, name)))
     monkeypatch.setattr(activities_mod, "queue_stats_refresh",
                         lambda bt, owner, name: calls.append(("stats", owner, name)))
-    resp = client.put("/api/activities/111",
+    resp = client.put("/api/activities/112",
                       json={"summary_polyline": "abc", "project": "Bobs",
                             "owner": ids["bob"], "lock_version": 20})
     assert resp.status_code == 200, resp.text
     assert sorted(calls) == sorted([
-        ("geo", ids["alice"], "Trip"), ("stats", ids["alice"], "Trip"),
         ("geo", ids["bob"], "Bobs"), ("stats", ids["bob"], "Bobs"),
     ])
 
@@ -308,8 +396,8 @@ def test_repair_refreshes_each_trip_under_its_owner(env, monkeypatch):
 def test_owner_without_project_is_422(env, cas):
     client, engine, ids = env
     _join(engine, ids, ids["bobs"], "editor")
-    before = (_row(engine), _versions(engine))
-    resp = client.put("/api/activities/111",
+    before = (_row(engine, 112), _versions(engine))
+    resp = client.put("/api/activities/112",
                       json={"summary_polyline": "abc", "owner": ids["bob"], **cas})
     assert resp.status_code == 422, resp.text
-    assert (_row(engine), _versions(engine)) == before
+    assert (_row(engine, 112), _versions(engine)) == before

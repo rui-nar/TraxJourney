@@ -8,8 +8,8 @@ marked ``pending`` and does the fetching in a background task.
 
 Covers:
   - the trigger returns 202 and marks the row pending before any Strava call;
-  - checks answerable without Strava (403 importer / 409 edited / 400 not
-    connected) still fail synchronously, so the button press is still an error;
+  - checks answerable without Strava (409 edited / 409 not connected) still
+    fail synchronously, so the button press is still an error;
   - the job writes ``resolved`` and the fresh data on success;
   - the job writes ``failed`` + a message when the Strava fetch raises;
   - the job writes ``failed`` rather than leaving a stuck spinner when it
@@ -18,6 +18,10 @@ Covers:
   - refresh bookkeeping survives force_update_activity;
   - the refresh state reaches the client through /meta, which is what the client
     polls.
+
+Since #592 a row id is not a Strava id: the seeded row 111 stands for Strava
+activity 9111, and Strava is asked for 9111 with the token of the account it
+came through (``strava_user_id``), only while that account is part of the trip.
 """
 from __future__ import annotations
 
@@ -41,6 +45,8 @@ from models.user import StravaToken, UserInfo
 
 _TRACK = [(48.0, 2.0), (48.0, 2.01), (48.0, 2.02)]
 _ELEV = [100.0, 120.0, 110.0]
+#: The Strava id of the seeded row 111.
+_STRAVA_ID = 9111
 
 
 def _seed(engine):
@@ -55,6 +61,7 @@ def _seed(engine):
         ))
         act = DBActivity(
             id=111, user_info_id=u.id, name="Old name", type="Ride",
+            strava_id=_STRAVA_ID, strava_user_id=u.id,
             distance=4000.0, moving_time=1000, elapsed_time=1200,
             total_elevation_gain=60.0,
             summary_polyline=polyline_lib.encode(_TRACK),
@@ -86,7 +93,7 @@ def env(monkeypatch):
     return TestClient(app), engine, uid
 
 
-def _raw(aid=111, name="Fresh name", distance=9999.0):
+def _raw(aid=_STRAVA_ID, name="Fresh name", distance=9999.0):
     """A minimal Strava activity-detail payload."""
     return {
         "id": aid, "name": name, "type": "Ride", "distance": distance,
@@ -108,13 +115,16 @@ class _FakeClient:
         self._fail_streams = fail_streams
         self.remaining_requests = remaining
         self.streams_calls = 0
+        self.asked = []
 
-    def get_activity(self, _aid):
+    def get_activity(self, aid):
+        self.asked.append(aid)
         if self._fail_activity is not None:
             raise self._fail_activity
         return self._raw
 
-    def get_activity_streams(self, _aid):
+    def get_activity_streams(self, aid):
+        self.asked.append(aid)
         self.streams_calls += 1
         if self._fail_streams:
             raise RuntimeError("streams boom")
@@ -161,11 +171,12 @@ def test_trigger_returns_202_and_marks_pending(env, monkeypatch):
 
 
 def test_trigger_rejects_when_strava_not_connected(env, monkeypatch):
-    """Knowable without a network call, so it stays a synchronous 400."""
+    """Knowable without a network call, so it stays synchronous: a 409, as
+    every refresh the activity's Strava connection cannot serve (#592)."""
     client, engine, _ = env
     _use_client(monkeypatch, None)
     r = client.post("/api/projects/Trip/activities/111/refresh")
-    assert r.status_code == 400
+    assert r.status_code == 409
     assert "Strava not connected" in r.json()["detail"]
     # No job was scheduled, so nothing must be left pending.
     assert _row(engine).refresh_status is None
@@ -215,6 +226,9 @@ def test_job_writes_resolved_and_fresh_data(env, monkeypatch):
     ep = json.loads(row.elevation_profile_json)
     assert ep["elevations_m"] == [200.0, 250.0]
     assert ep["distances_km"] == [0.0, 1.0]
+    # Strava was asked about the row's Strava id, never its row id.
+    assert fake.asked == [_STRAVA_ID, _STRAVA_ID]
+    assert row.strava_id == _STRAVA_ID
 
 
 def test_job_writes_failed_when_strava_fetch_raises(env, monkeypatch):
@@ -349,9 +363,212 @@ def test_force_update_does_not_clobber_refresh_bookkeeping(env, monkeypatch):
 
     with Session(engine) as sess:
         activities_module._repo.force_update_activity(
-            sess, uid, Activity.from_strava_api(_raw(name="Fresh name")))
+            sess, uid, Activity.from_strava_api(_raw(name="Fresh name")), row_id=111)
 
     row = _row(engine)
     assert row.name == "Fresh name"          # data was written
     assert row.refresh_status == "pending"   # bookkeeping untouched
     assert row.refresh_started_at == "2026-07-29T10:00:00+00:00"
+
+
+# ── Whose token, and only while they are part of the trip (#592) ─────────────
+#
+# The trip "Trip" belongs to the owner. The companion, an editor, added Strava
+# activity 9222 to it: row 222, owned by the trip's owner (plan Decision 4),
+# with the companion as strava_user_id (Decision 5). The owner's own trip
+# "Other" holds a copy of the same Strava activity, row 333.
+
+_COMPANION_STRAVA_ID = 9222
+
+
+@pytest.fixture
+def team(monkeypatch):
+    from api.members import router as members_router
+    from models.project_db import DBProjectMember
+
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    monkeypatch.setattr(db_module, "engine", engine)
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as sess:
+        owner = UserInfo(display_name="Owner", email="owner@e.com")
+        companion = UserInfo(display_name="Companion", email="companion@e.com")
+        sess.add(owner); sess.add(companion); sess.commit()
+        sess.refresh(owner); sess.refresh(companion)
+        trip = DBProject(user_info_id=owner.id, name="Trip")
+        other = DBProject(user_info_id=owner.id, name="Other")
+        sess.add(trip); sess.add(other); sess.commit()
+        sess.refresh(trip); sess.refresh(other)
+        sess.add(DBProjectMember(project_id=trip.id, user_info_id=companion.id,
+                                 role="editor", invited_by=owner.id,
+                                 created_at=time.time()))
+        for uid in (owner.id, companion.id):
+            sess.add(StravaToken(user_info_id=uid, access_token="tok",
+                                 refresh_token="ref", expires_at=time.time() + 3600))
+        for row_id, project in ((222, trip), (333, other)):
+            sess.add(DBActivity(
+                id=row_id, user_info_id=owner.id, name="Old name", type="Ride",
+                strava_id=_COMPANION_STRAVA_ID, strava_user_id=companion.id,
+                distance=4000.0, moving_time=1000, elapsed_time=1200,
+                summary_polyline=polyline_lib.encode(_TRACK)))
+            sess.add(DBProjectItem(project_id=project.id, position=0,
+                                   item_type="activity", activity_id=row_id))
+        sess.commit()
+        ids = {"owner": owner.id, "companion": companion.id}
+
+    current = {"uid": ids["owner"]}
+    app = FastAPI()
+    app.dependency_overrides[get_current_user] = lambda: {"sub": str(current["uid"])}
+    app.include_router(activities_router)
+    app.include_router(projects_router)
+    app.include_router(members_router)
+
+    tokens_used = []
+    fake = _FakeClient(raw=_raw(aid=_COMPANION_STRAVA_ID, name="Fresh name"))
+
+    def _factory(uid):
+        tokens_used.append(uid)
+        return fake
+
+    monkeypatch.setattr(activities_module, "_strava_client_for_user", _factory)
+
+    def act_as(who):
+        current["uid"] = ids[who]
+
+    return TestClient(app), engine, ids, act_as, fake, tokens_used
+
+
+def test_owner_refreshes_a_companions_activity_with_the_companions_token(team):
+    client, engine, ids, act_as, fake, tokens_used = team
+    act_as("owner")
+
+    r = client.post("/api/projects/Trip/activities/222/refresh")
+
+    assert r.status_code == 202, r.text
+    assert tokens_used and set(tokens_used) == {ids["companion"]}
+    assert fake.asked == [_COMPANION_STRAVA_ID, _COMPANION_STRAVA_ID]
+    row = _row(engine, 222)
+    assert row.refresh_status == "resolved"
+    assert row.name == "Fresh name"
+    # Refreshing keeps the row the trip owner's, its Strava link the companion's.
+    assert (row.user_info_id, row.strava_user_id) == (ids["owner"], ids["companion"])
+
+
+def test_a_refresh_writes_and_bumps_only_the_trip_that_asked(team):
+    """The owner's other trip holds its own copy of the same Strava activity:
+    it keeps what it has, and its lock_version does not move (Decision 6)."""
+    client, engine, _, act_as, _, _ = team
+    act_as("owner")
+    before_other = _lock_version(engine, "Other")
+    before_trip = _lock_version(engine, "Trip")
+
+    assert client.post("/api/projects/Trip/activities/222/refresh").status_code == 202
+
+    assert _row(engine, 222).name == "Fresh name"
+    other_copy = _row(engine, 333)
+    assert other_copy.name == "Old name"
+    assert other_copy.refresh_status is None
+    assert _lock_version(engine, "Other") == before_other
+    assert _lock_version(engine, "Trip") == before_trip + 1
+
+
+def test_refresh_after_the_importer_was_deleted_is_a_409(team):
+    """Account deletion clears strava_user_id (Decision 5): no token is left
+    to ask Strava with."""
+    client, engine, _, act_as, fake, tokens_used = team
+    with Session(engine) as sess:
+        row = sess.get(DBActivity, 222)
+        row.strava_user_id = None
+        sess.add(row); sess.commit()
+    act_as("owner")
+
+    r = client.post("/api/projects/Trip/activities/222/refresh")
+
+    assert r.status_code == 409
+    assert "no longer exists" in r.json()["detail"]
+    assert tokens_used == [] and fake.asked == []
+    assert _row(engine, 222).refresh_status is None
+
+
+@pytest.mark.parametrize("how", ["left", "removed"])
+def test_refresh_after_the_importer_left_the_trip_is_a_409_with_no_strava_call(team, how):
+    """A companion who leaves, or is removed, takes their Strava access with
+    them (review R1-5)."""
+    client, engine, ids, act_as, fake, tokens_used = team
+    act_as("companion" if how == "left" else "owner")
+    r = client.delete(f"/api/projects/Trip/members/{ids['companion']}",
+                      params={"owner": ids["owner"]} if how == "left" else None)
+    assert r.status_code == 204, r.text
+    act_as("owner")
+
+    r = client.post("/api/projects/Trip/activities/222/refresh")
+
+    assert r.status_code == 409
+    assert "no longer part of this trip" in r.json()["detail"]
+    assert tokens_used == [] and fake.asked == []
+    row = _row(engine, 222)
+    assert row.refresh_status is None
+    assert row.name == "Old name"
+
+
+def test_the_job_makes_no_strava_call_once_the_importer_has_left(team):
+    """Checked again in the job: the trigger's answer is a moment old."""
+    _, engine, ids, _, fake, tokens_used = team
+    from models.project_db import DBProjectMember
+    with Session(engine) as sess:
+        for member in sess.exec(select(DBProjectMember)).all():
+            sess.delete(member)
+        sess.commit()
+
+    _refresh_activity_job(ids["companion"], ids["owner"], "Trip", 222)
+
+    assert tokens_used == [] and fake.asked == []
+    row = _row(engine, 222)
+    assert row.refresh_status == "failed"
+    assert row.name == "Old name"
+
+
+def test_an_old_picker_refreshes_by_strava_id(team):
+    """An installed picker posts the Strava id (Decision 11): the trip's row
+    with that strava_id is refreshed, and no other trip's copy."""
+    client, engine, _, act_as, fake, _ = team
+    act_as("owner")
+
+    r = client.post(f"/api/projects/Trip/activities/{_COMPANION_STRAVA_ID}/refresh")
+
+    assert r.status_code == 202, r.text
+    assert fake.asked == [_COMPANION_STRAVA_ID, _COMPANION_STRAVA_ID]
+    assert _row(engine, 222).refresh_status == "resolved"
+    assert _row(engine, 222).name == "Fresh name"
+    assert _row(engine, 333).name == "Old name"
+
+
+def test_a_row_the_trip_does_not_hold_is_a_404(team):
+    """Row 333 is the other trip's copy: neither its id nor any Strava id
+    names a row of this trip."""
+    client, engine, _, act_as, fake, tokens_used = team
+    act_as("owner")
+
+    r = client.post("/api/projects/Trip/activities/333/refresh")
+
+    assert r.status_code == 404
+    assert tokens_used == [] and fake.asked == []
+    assert _row(engine, 333).refresh_status is None
+
+
+def test_a_row_not_from_strava_is_a_409(team):
+    client, engine, _, act_as, fake, tokens_used = team
+    with Session(engine) as sess:
+        row = sess.get(DBActivity, 222)
+        row.strava_id = None
+        sess.add(row); sess.commit()
+    act_as("owner")
+
+    r = client.post("/api/projects/Trip/activities/222/refresh")
+
+    assert r.status_code == 409
+    assert "did not come from Strava" in r.json()["detail"]
+    assert tokens_used == [] and fake.asked == []
