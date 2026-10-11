@@ -334,9 +334,9 @@ encryption time, from the code:
 | `activity_geo_prepared` (zoom-level track cache, issue #369) | decoded track coordinates | **deleted** when the polyline becomes ciphertext (`store_prepared_geometry`) — by the catch-up's write, by an encrypted edit or split (`_apply_encrypted_piece`) and by a reset to an enveloped original; the backfill sweep skips `v1.` rows and its store is guarded against re-inserting plaintext |
 | `project.stats_json` | totals, per-type counts, best-day **dates**, distance per tag/mode, sleeping counts, ride time series | numbers and dates only — no names, no coordinates; recomputed after each activity write (the catch-up's included) |
 | `memory_translation` | machine translations of memory `name`/`description` | **purged** when the memory becomes ciphertext; the server refuses to translate an encrypted memory (409) |
-| Full-res geo response cache | GeoJSON built from plaintext tracks | busted for every trip the activity is in |
+| Full-res geo response cache | GeoJSON built from plaintext tracks | busted for the trip holding the activity |
 | GPX export, poster tracks | built from `summary_polyline` | GPX export refuses (409) any trip with an encrypted activity; the geo builders skip encrypted tracks |
-| `.traxj` / ZIP export (`api/project_transfer.py`) | the project as JSON (ZIP adds the photos) | no check: encrypted fields are written into the file **as their envelopes** (`name`, `map.summary_polyline`, and the endpoints/elevation under `start_latlng_enc`/`end_latlng_enc`/`elevation_profile_enc`), so the export stays unreadable without your key. **Re-importing it keeps them** (issue #466): an activity row the import creates (another account's copy, or your own activity whose row is gone) takes the envelopes into `start_latlng_json`, `end_latlng_json`, `elevation_profile_json` and the low-res copy, exactly as the migration writes them; only a well-formed `v1.<b64>.<b64>` is accepted there. Your own key decrypts the result; another account cannot, and its app shows "Encrypted content unavailable" for such text. A plaintext activity the import creates is encrypted by the next catch-up |
+| `.traxj` / ZIP export (`api/project_transfer.py`) | the project as JSON (ZIP adds the photos) | no check: encrypted fields are written into the file **as their envelopes** (`name`, `map.summary_polyline`, and the endpoints/elevation under `start_latlng_enc`/`end_latlng_enc`/`elevation_profile_enc`), so the export stays unreadable without your key. **Re-importing it keeps them** (issue #466): every activity row the import creates (each activity of the file gets a row of its own, #592) takes the envelopes into `start_latlng_json`, `end_latlng_json`, `elevation_profile_json` and the low-res copy, exactly as the migration writes them; only a well-formed `v1.<b64>.<b64>` is accepted there. Your own key decrypts the result; another account cannot, and its app shows "Encrypted content unavailable" for such text. A plaintext activity the import creates is encrypted by the next catch-up |
 | `stravacache.activities_json` (raw Strava list, issue #504) | every synced activity's name, endpoints, summary polyline and dates, as Strava returned them | **not written to disk for an encrypted account**: `_save_cache`/`_load_cache` in `api/strava.py` keep it in an in-process dict (`_memory_cache`, same `STRAVA_CACHE_TTL`, lost on restart at the price of one Strava refetch — it assumes a single API process). `_save_cache` deletes any row left in the table, `POST /api/encryption/enable` deletes the user's row, and the Alembic migration `c4e2a9f1b7d3_e2ee_remnants.py` deleted the existing rows of encrypted users |
 | `project.low_res_geo_json` | straight-line GeoJSON per activity with name and endpoints | **column dropped** by the same migration; nothing read it. `api/geo.py` computes the low-res response from the live project on each request (`_compute_low_res_geo`) |
 | `activity.split_base_name` | the plaintext pre-split name | **nulled** when `PUT /api/activities/{id}` stores an envelope `name` (`update_activity_fields`); the migration nulled it for rows whose name was already an envelope |
@@ -418,9 +418,10 @@ days and downloadable with its link token.
 The list found while writing this page from the code (issue #433) had nine
 entries; the remnant package for #504, #505, #506 and #366 fixed all but the
 backups and the on-device cache, and added the cases below. The list is
-complete as far as the code shows; each case names the code to check. Cases 3
-and 5 are the two ways an activity row stays plaintext on an otherwise
-encrypted account, so that every traveller on the trip can read it.
+complete as far as the code shows; each case names the code to check. Case 3
+is how an activity row stays plaintext on an otherwise encrypted account, so
+that every traveller on the trip can read it; case 5 is the repair of rows
+written before #592.
 
 1. **Database backups** — `src/backup/backup_service.py` keeps the last 30
    daily SQLite copies. A backup taken before you enabled encryption holds the
@@ -432,18 +433,17 @@ encrypted account, so that every traveller on the trip can read it.
    therefore hold decrypted content. It is protected by the device only (the
    web client has no on-disk cache).
 3. **Activity rows you may not encrypt.** `PUT /api/activities/{id}` and the
-   elevation-gain route accept the caller only when they own the row, or when
-   the row is local (negative id: a GPX import or a split piece), at least one
-   trip holds it, and every trip holding it is theirs
+   elevation-gain route accept the caller only when they own the row
    (`activity_e2ee_writable_by` in `src/project/repo_activities.py`, enforced by
-   `_require_e2ee_writable` in `api/activities.py`, which answers 404). A Strava
-   row (positive id) imported by another user — for instance a former
-   companion's — stays refused even when only your trips hold it: its owner's
-   next Strava sync reuses the row, and it would come back to them encrypted
-   under a key they do not have. A local row that is also in another user's
-   trip is refused for the same reason. Such rows keep their name, track,
-   endpoints and profile in plaintext. The catch-up counts them
-   (`CatchUpResult.unencryptable`, a 404 on the write), the trip screen says
+   `_require_e2ee_writable` in `api/activities.py`, which answers 404). A row
+   belongs to one trip and, unless it carries an envelope, to that trip's owner
+   (plan Decision 4 of #592): a companion's Strava or GPX activity added to the
+   owner's trip is the owner's row. So on a trip you do not own, the rows are
+   refused to you; the exception is a row that already carries an envelope,
+   which keeps the account whose key made it until it is decrypted. Such rows
+   keep their name, track, endpoints and profile in plaintext. The catch-up
+   counts them (`CatchUpResult.unencryptable`, a 404 on the write), the trip
+   screen says
    "N activities are also used by another traveller and stay unencrypted"
    (the client's wording; `_UnencryptableNotice` in `encryption_locked_banner.dart`, fed by
    `ProjectNotifier.unencryptableActivityCount`), and the enable screen reports
@@ -480,15 +480,15 @@ encrypted account, so that every traveller on the trip can read it.
    catch-up does not encrypt your own activity rows.
 
    The repair also runs when you open a trip you do **not** own. A row you own
-   can sit in a friend's trip that holds it, with envelopes under your key that
-   the friend cannot read, and the owner's catch-up never runs on that trip. So
+   can sit in a friend's trip, with envelopes under your key that the friend
+   cannot read (a row that carried your envelope keeps you as its key owner), and the owner's catch-up never runs on that trip. So
    the non-owner pass (`encryption_migration.dart`) decrypts those envelopes
    back to plaintext in the same way, writing with the compare-and-swap of the
    friend's trip: `PUT /api/activities/{id}` with `owner`, `project` and
    `lock_version` (`ActivityFieldsUpdate`, `update_activity_fields` in
    `api/activities.py`; `owner` is accepted only beside `project`, else 422).
-   After such a write the server refreshes the cache of each trip holding the
-   row under that trip's own owner, not under the caller.
+   After such a write the server refreshes the cache of the trip holding the
+   row under that trip's owner, not under the caller.
 
 ## What the server checks
 
