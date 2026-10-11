@@ -777,7 +777,8 @@ def test_the_migration_applies_to_a_database_at_the_previous_head(db_path):
 
 def test_the_migration_downgrades(db_path):
     cfg = _alembic_config(db_path)
-    command.upgrade(cfg, "head")
+    # The prepared-geo migration, not "head": #592's after it cannot downgrade.
+    command.upgrade(cfg, "04a606ace483")
     command.downgrade(cfg, _PREVIOUS_HEAD)
     assert _columns(db_path, "activity_geo_prepared") == []
 

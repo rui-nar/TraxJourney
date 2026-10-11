@@ -296,6 +296,8 @@ def test_startup_succeeds_with_a_usable_key(monkeypatch):
 # ── Data migration e3a91c5d7f20 ─────────────────────────────────────────────
 
 _PREV_REV = "b7e4d2c9a1f0"  # down_revision of e3a91c5d7f20
+# Not "head": the one-row-per-trip migration (#592) after it cannot downgrade.
+_REV = "e3a91c5d7f20"
 
 
 def _alembic(tmp_path, monkeypatch):
@@ -335,7 +337,7 @@ def test_migration_encrypts_existing_values_and_downgrade_restores_them(tmp_path
             "INSERT INTO polarstepstoken (user_info_id, remember_token, polarsteps_user_id, "
             "polarsteps_username) VALUES (2, '', 0, '')"))
 
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, _REV)
 
     with eng.connect() as conn:
         for _m, attr, table, column in COLUMNS:
@@ -367,8 +369,9 @@ def test_migration_needs_no_key_when_there_is_nothing_to_encrypt(tmp_path, monke
     with no key configured."""
     cfg, _url = _alembic(tmp_path, monkeypatch)
     _use_keys(monkeypatch, None)
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, _REV)
     command.downgrade(cfg, _PREV_REV)
+    command.upgrade(cfg, "head")
 
 
 # ── No credential file ──────────────────────────────────────────────────────
