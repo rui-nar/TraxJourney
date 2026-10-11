@@ -7,6 +7,7 @@ admin-triggered ``DELETE /api/admin/users/{id}``.
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from unittest.mock import MagicMock
@@ -457,26 +458,64 @@ class TestActivityRowsFollowTheirTrip:
             assert sess.exec(select(DBProjectItem).where(
                 DBProjectItem.activity_id == 556)).first() is not None
 
-    def test_an_encrypted_split_head_kept_by_its_pieces_is_not_left_to_a_deleted_account(
+    def test_an_encrypted_split_head_kept_by_its_pieces_goes_with_the_account(
             self, engine):
+        """Never handed to another account (review U7R1-2): its pieces are
+        re-rooted on their nearest ancestor in their trip, or detached."""
         oid, cid = self._users(engine)
         with Session(engine) as sess:
             ids = _seed_companionship(sess, oid, cid)
-        self._add_row(engine, ids["project_id"], 600, cid, name=_ENVELOPE)
+        self._add_row(engine, ids["project_id"], 600, cid, name=_ENVELOPE,
+                      split_base_name="ride")
         self._add_row(engine, ids["project_id"], 601, oid,
                       split_root_id=600, split_parent_id=600)
+        self._add_row(engine, ids["project_id"], 602, oid,
+                      split_root_id=600, split_parent_id=601)
+        with Session(engine) as sess:
+            sess.add(DBActivityGeoPrepared(activity_id=600, version=1, blob=b"x"))
+            sess.commit()
 
         with Session(engine) as sess:
             delete_user_and_data(sess, cid)
 
         with Session(engine) as sess:
+            assert sess.get(DBActivity, 600) is None
+            assert sess.get(DBActivityGeoPrepared, 600) is None
             assert sess.exec(select(DBProjectItem).where(
                 DBProjectItem.activity_id == 600)).first() is None
-            # The head stays as the family's root, owned by its piece's owner.
-            assert sess.get(DBActivity, 600).user_info_id == oid
-            assert sess.get(DBActivity, 601).split_root_id == 600
+            first, second = sess.get(DBActivity, 601), sess.get(DBActivity, 602)
+            # The first piece has no ancestor left: detached, the family's head.
+            assert (first.split_root_id, first.split_parent_id) == (None, None)
+            # The second hangs on it now.
+            assert (second.split_root_id, second.split_parent_id) == (601, 601)
             assert sess.exec(select(DBActivity).where(
                 DBActivity.user_info_id == cid)).first() is None
+
+    def test_a_withdrawn_activity_leaves_the_trip_totals(self, engine):
+        """Review U7R1-1: the trip's cached stats no longer count it."""
+        from src.project.project_repo import ProjectRepo
+
+        oid, cid = self._users(engine)
+        with Session(engine) as sess:
+            ids = _seed_companionship(sess, oid, cid)
+            sess.get(DBActivity, ids["activity_id"]).distance = 1000.0
+            sess.commit()
+        self._add_row(engine, ids["project_id"], 557, cid,
+                      summary_polyline=_ENVELOPE, distance=5000.0)
+        repo = ProjectRepo()
+        with Session(engine) as sess:
+            repo.compute_and_cache_stats(sess, oid, "Shared Trip")
+            assert json.loads(sess.get(DBProject, ids["project_id"]).stats_json)[
+                "total_distance_m"] == 6000.0
+
+        with Session(engine) as sess:
+            delete_user_and_data(sess, cid)
+
+        with Session(engine) as sess:
+            assert sess.get(DBProject, ids["project_id"]).stats_json is None
+            repo.compute_and_cache_stats(sess, oid, "Shared Trip")
+            assert json.loads(sess.get(DBProject, ids["project_id"]).stats_json)[
+                "total_distance_m"] == 1000.0
 
     def test_deleting_the_owner_deletes_every_row_of_their_trips(self, engine):
         """Including a companion's encrypted row there, and the owner's rows no

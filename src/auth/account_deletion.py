@@ -363,6 +363,51 @@ def _billing_moved(settled: tuple | None, current: tuple | None) -> bool:
     return (status or "") not in _ENDED_SUBSCRIPTION_STATUSES
 
 
+def _unhook_split_pieces(sess: Session, head_id: int) -> None:
+    """Unhook the split pieces of *head_id*, a row about to be deleted.
+
+    Each piece is re-rooted on its nearest ancestor that its own trip holds,
+    or, when the trip holds none, detached (split columns cleared), as the
+    #592 migration repairs a family: no split link may name a missing row or
+    cross trips (plan Decision 10).
+    """
+    links = {aid: (root, parent) for aid, root, parent in sess.exec(
+        select(DBActivity.id, DBActivity.split_root_id, DBActivity.split_parent_id)
+        .where((DBActivity.split_root_id == head_id)
+               | (DBActivity.split_parent_id == head_id))
+    ).all()}
+    if not links:
+        return
+    holder = dict(sess.exec(
+        select(DBProjectItem.activity_id, DBProjectItem.project_id)
+        .where(DBProjectItem.activity_id.in_(sorted(links)))
+    ).all())
+    resolved: dict[int, tuple] = {}
+
+    def resolve(aid: int) -> tuple:
+        """``(root, parent)`` of piece *aid* once the head is gone."""
+        if aid not in resolved:
+            resolved[aid] = (None, None)    # guards a cyclic chain
+            trip = holder.get(aid)
+            seen: set[int] = set()
+            ancestor = links[aid][1]
+            while (ancestor in links and ancestor not in seen
+                   and (trip is None or holder.get(ancestor) != trip)):
+                seen.add(ancestor)
+                ancestor = links[ancestor][1]
+            if ancestor in links and trip is not None and holder.get(ancestor) == trip:
+                top, _parent = resolve(ancestor)
+                resolved[aid] = (top if top is not None else ancestor, ancestor)
+        return resolved[aid]
+
+    for aid in sorted(links):
+        root, parent = resolve(aid)
+        values = {"split_root_id": root, "split_parent_id": parent}
+        if root is None:
+            values["split_base_name"] = None
+        sess.execute(update(DBActivity).where(DBActivity.id == aid).values(**values))
+
+
 def delete_user_and_data(sess: Session, user_info_id: int) -> None:
     """Delete a ``UserInfo`` and every row it owns, directly or via a project.
 
@@ -510,6 +555,11 @@ def delete_user_and_data(sess: Session, user_info_id: int) -> None:
     # SQLite (single writer) but free to get right here.
     for touched in touched_project_ids:
         bump_lock_version(sess, touched)
+    if touched_project_ids:
+        # Their cached totals counted what goes (review U7R1-1).
+        sess.execute(update(DBProject)
+                     .where(DBProject.id.in_(sorted(touched_project_ids)))
+                     .values(stats_json=None))  # recomputed on the next read
     if authored_journal_ids:
         _delete_all(DBProjectItem, DBProjectItem.journal_id.in_(authored_journal_ids))
         _delete_all(DBJournalEntry, DBJournalEntry.id.in_(authored_journal_ids))
@@ -564,11 +614,21 @@ def delete_user_and_data(sess: Session, user_info_id: int) -> None:
     ProjectRepo().delete_unreferenced_activities(sess, own_trip_rows | owned_rows)
     # What still names this user is a split head kept because pieces another
     # trip holds name it (delete_unreferenced_activities keeps a family whole).
-    # It goes to the owner of such a piece, so no row is left owned by an
-    # account that no longer exists.
+    # An encrypted one goes with the account like every other encrypted row
+    # (review U7R1-2), its pieces unhooked from it. A plaintext one goes to the
+    # owner of such a piece, so no row is left owned by an account that no
+    # longer exists.
     for aid in sess.exec(
         select(DBActivity.id).where(DBActivity.user_info_id == user_info_id)
     ).all():
+        if row_holds_envelope(sess.get(DBActivity, aid)):
+            _log.info("Deletion of account %s: encrypted activity %s, the head "
+                      "of split pieces, is deleted and its pieces unhooked",
+                      user_info_id, aid)
+            _unhook_split_pieces(sess, aid)
+            _delete_all(DBActivityGeoPrepared, DBActivityGeoPrepared.activity_id == aid)
+            _delete_all(DBActivity, DBActivity.id == aid)
+            continue
         heir = sess.exec(select(DBActivity.user_info_id).where(
             DBActivity.split_root_id == aid,
             DBActivity.user_info_id != user_info_id)).first()
