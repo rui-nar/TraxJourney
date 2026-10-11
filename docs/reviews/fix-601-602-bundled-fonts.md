@@ -96,3 +96,18 @@ Reviewer: adversarial-reviewer (Fable). Triager: review-triager (Opus). 1 findin
 - Guard: —
 - Override: —
 - Outcome: fixed
+
+## Round 6 — 2026-10-11, reviewed at 700b4e26 (fixes since b2045c73; owner asked for a sixth round)
+
+Reviewer: adversarial-reviewer (Fable). Triager: review-triager (Opus). 1 finding, well-formed.
+
+### R6-1 — Stale non-revision directories an older SDK left in canvaskit/ are still moved under the new revision and shipped
+- Trigger: the owner runs deploy.ps1 from his checkout (persisted build/web) → the tool drops only hash-named leftovers and moves everything else into canvaskit/<rev>/ → canvaskit/experimental_webparagraph/ (a CanvasKit variant from an older SDK, present in the owner's build/web today, absent from the current SDK) ships in the image, never requested. Main already ships it the same way (deploy.ps1 copies build/web wholesale); the tool keeps it.
+- Scores: trigger=concrete, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7) — root cause: deploy.ps1 removes build/web/canvaskit before `flutter build web` (Flutter re-copies every current file). The tool's R4-2/R5-1 handling stays as the safeguard for callers that do not wipe.
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed
+
+Review closed after round 6 at the owner's decision (no round 7). Open: R1-2 (Defer).

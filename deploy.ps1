@@ -381,6 +381,12 @@ if ($Building) {
 # -- 1. Build Flutter web ------------------------------------------------------
 Step 1 3 "Building Flutter web..."
 Push-Location (Join-Path $SrcRoot 'flutter_client')
+# Flutter never deletes stale files from a reused build/web, so canvaskit/
+# would carry an older SDK's variants and moved revision directories into the
+# image. Removing it makes the build copy exactly the current SDK's set
+# (#601 review R6-1; also covers R4-2 and R5-1).
+$canvasKitOut = Join-Path (Get-Location) 'build/web/canvaskit'
+if (Test-Path $canvasKitOut) { Remove-Item -Recurse -Force $canvasKitOut }
 # --no-web-resources-cdn: CanvasKit from this build, not www.gstatic.com
 # (#601 review R2-1).
 flutter build web --release --no-web-resources-cdn `

@@ -45,6 +45,17 @@ def test_builds_mirror_the_fallback_fonts_after_building():
         assert mirror > build, name
 
 
+def test_deploy_clears_canvaskit_before_building():
+    # deploy.ps1 builds into a reused build/web; Flutter never deletes stale
+    # files there, so without this an older SDK's CanvasKit leftovers would
+    # ship (#601 review R6-1). CI builds on a fresh runner.
+    text = BUILDS["deploy.ps1"].read_text(encoding="utf-8")
+    clear = text.find("Remove-Item -Recurse -Force $canvasKitOut")
+    assert clear != -1
+    assert "'build/web/canvaskit'" in text
+    assert clear < text.index("flutter build web")
+
+
 def test_builds_move_canvaskit_under_its_engine_revision():
     # web/flutter_bootstrap.js loads CanvasKit from canvaskit/<revision>/
     # whenever the build carries its own, so skipping this step would leave
