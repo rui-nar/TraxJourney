@@ -528,6 +528,27 @@ def test_a_tail_whose_root_another_trip_holds_is_re_rooted_on_its_parent(cfg, en
     _assert_invariants(engine)
 
 
+def test_a_piece_whose_parent_chain_dead_ends_while_its_root_is_held_warns(
+        cfg, engine, log):
+    # Guard for U1R1-1: no known path leaves this state; the migration still
+    # detaches the piece, but says the trip held its root.
+    _trip(engine, 10)
+    _split_head(engine, 900)
+    _tail(engine, -1, 900, parent=-99)      # -99 is no row at all
+    _item(engine, 1, 10, 900)
+    _item(engine, 2, 10, -1)
+
+    _upgrade(cfg)
+
+    assert (_row(engine, -1)["split_root_id"], _row(engine, -1)["split_parent_id"]) \
+        == (None, None)
+    assert [r.getMessage() for r in log.records
+            if r.name == _LOG and r.levelno == logging.WARNING] == [
+        "one row per trip: split piece -1 in trip 10 detached although the trip "
+        "holds its root 900 (parent chain dead-ends)"]
+    assert any("detached_with_held_root=1" in m for m in log.messages)
+
+
 # -- ownership ----------------------------------------------------------------
 
 def test_a_companions_plaintext_row_goes_to_the_trip_owner(cfg, engine):

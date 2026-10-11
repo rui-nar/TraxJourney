@@ -140,6 +140,7 @@ class _Run:
         self.kept_encrypted: set = set()
         self._owners: dict = {}
         self.restored = self.left = self.rerooted = self.detached = 0
+        self.detached_with_held_root = 0
 
     def _scalars(self, sql: str, **params) -> list:
         stmt = sa.text(sql)
@@ -487,9 +488,19 @@ class _Run:
                         "split_parent_id = NULL, split_base_name = NULL "
                         "WHERE id = :id"), {"id": row_id})
                     self.detached += 1
-                    _log.info("one row per trip: split piece %s in trip %s "
-                              "detached: the trip holds none of its ancestors",
-                              row_id, trip)
+                    own_root = links[row_id][0]
+                    if own_root is not None and own_root in held:
+                        # Guard (U1R1-1): no known path leaves a parent chain
+                        # that dead-ends on a missing row; say so if one did.
+                        self.detached_with_held_root += 1
+                        _log.warning(
+                            "one row per trip: split piece %s in trip %s "
+                            "detached although the trip holds its root %s "
+                            "(parent chain dead-ends)", row_id, trip, own_root)
+                    else:
+                        _log.info("one row per trip: split piece %s in trip %s "
+                                  "detached: the trip holds none of its ancestors",
+                                  row_id, trip)
                 else:
                     self.bind.execute(sa.text(
                         "UPDATE activity SET split_root_id = :r, "
@@ -561,9 +572,10 @@ class _Run:
         _log.info(
             "one row per trip: %d trip(s) touched; %d head(s) restored, %d "
             "shared head(s) left as they are, %d piece(s) re-rooted, %d "
-            "detached, %d encrypted row(s) kept with their owner",
+            "detached (detached_with_held_root=%d), %d encrypted row(s) kept "
+            "with their owner",
             len(self.touched), self.restored, self.left, self.rerooted,
-            self.detached, len(self.kept_encrypted))
+            self.detached, self.detached_with_held_root, len(self.kept_encrypted))
 
 
 def upgrade() -> None:
