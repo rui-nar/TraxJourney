@@ -346,5 +346,5 @@ IR1-2 fixes themselves were traced as correct.
 - Revisit when: —
 - Guard: —
 - Override: — (owner approved 2026-10-12)
-- Outcome: open
+- Outcome: fixed (8a77f1af)
 - Fix shape (triager): a log line, not a repair. H's only snapshot predates A's own first split, so a restore would undo A's split. Collect H's direct children (split_parent_id = H) in step 3 before the copy and remap. In repair_heads, for each trip in head_trips ∩ tail_trips that holds none of H's children held by another trip, call _leave(..., "head cut again by another trip's split; no snapshot of the state before that cut"). Add a test.
