@@ -311,3 +311,25 @@ save path drops, with a WARNING, an activity whose id names a held row but
 whose strava_id differs. That is unreachable from current code, and stored
 data is identical either way, so the drop is kept as the guard; raising
 would abort the whole save.
+
+## Integrated review, round 1 — 2026-10-11, reviewed at 5ac45ba4 (diff origin/main...HEAD)
+
+Fable reviewer, Opus triager. 2 findings, no envelope questions.
+
+### IR1-1 — A split made on a shared tail (a sub-split) is neither repaired nor logged by the migration
+- Trigger: "Keep both" of the user's own split trip (head H, tail P shared), then P split again in the copy before the deploy → the migration sees tails of H in both trips and restores nothing; P is never treated as a head, so the trip that never split P keeps the cut piece and its "(2/3)" name, with no log line.
+- Scores: trigger=plausible, impact=wrong-visible, detect=silent, later=expensive, fix=M/local, confidence=verified
+- Decision: Fix now (D5)
+- Revisit when: —
+- Guard: —
+- Override: — (owner approved 2026-10-11)
+- Outcome: open
+
+### IR1-2 — Sharing-era repository helpers survive as dead code with stale docstrings
+- Trigger: a maintainer adding a new activity writer reads `_upsert_activity` documented as the import's path, though no caller remains → uses it, reintroducing the removed ownership/re-add behaviour. Also: `activity_rewritable_by_trip` and `ProjectIO.to_dict` docstrings still describe shared rows. Tests still call some of these helpers and must move to the live path.
+- Scores: trigger=concrete, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: — (owner approved 2026-10-11)
+- Outcome: open
