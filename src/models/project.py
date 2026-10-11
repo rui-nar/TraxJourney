@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import dataclasses
+import secrets
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any, Dict, FrozenSet, Iterable, List, Literal, Optional
 
-from src.models.activity import Activity
+from src.models.activity import Activity, is_activity_id
 from src.models.encounter import Encounter
 from src.models.journal import JournalEntry
 from src.models.memory import Memory
@@ -30,6 +32,32 @@ DEFAULT_SLEEPING_GROUPS: Dict[str, str] = {
 
 DifficultyLevel = Literal["easy", "normal", "hard", "super_hard"]
 WeatherCondition = Literal["hot", "clear", "cloudy", "some_rain", "heavy_rain"]
+
+# The ``source`` of an activity from Strava: NULL on every row that predates
+# the column, and "strava" for any writer that spells it out. A GPX import
+# says "gpx".
+_STRAVA_SOURCES = (None, "", "strava")
+
+# Bits of the in-memory id an added activity takes when its own id is taken
+# in the trip: the 53-bit range ids are allocated in (plan Decision 3).
+_STAND_IN_ID_BITS = 53
+
+
+def strava_identity(act: Activity) -> Optional[int]:
+    """The Strava id of *act*, an activity about to get a row; None for an
+    activity the app made.
+
+    ``strava_id`` when the activity carries one. Otherwise the activity comes
+    from a caller or a file that predates #592, where a positive id on a
+    Strava-sourced activity IS its Strava id (plan Decisions 3 and 8): the one
+    place an id's sign is read for meaning.
+    """
+    sid = getattr(act, "strava_id", None)
+    if is_activity_id(sid) and sid > 0:
+        return sid
+    if act.source in _STRAVA_SOURCES and is_activity_id(act.id) and act.id > 0:
+        return act.id
+    return None
 
 
 @dataclass
@@ -349,11 +377,27 @@ class Project:
         chronologically correct position rather than always appending to the end.
 
         Returns the count of activities actually added (not already present).
+
+        An activity from Strava is present when the trip holds its
+        ``strava_id`` (plan Decision 7); its id is not compared with the
+        trip's, which are opaque row ids (Decision 2). Added under an id the
+        trip already uses, it takes a stand-in id here, and the save gives it
+        a row of its own. An activity the app made is present when the trip
+        holds its id: its caller allocated that id as its row's.
         """
         self.rebuild_map()
         existing_ids = {a.id for a in self.activities if a.id is not None}
+        held_strava = {a.strava_id for a in self.activities if a.strava_id is not None}
         added = 0
         for act in sorted(new_activities, key=lambda a: a.start_date or ""):
+            sid = strava_identity(act)
+            if sid is not None:
+                if sid in held_strava:
+                    continue
+                held_strava.add(sid)
+                if act.id in existing_ids:
+                    act = dataclasses.replace(
+                        act, id=self._stand_in_id(existing_ids), strava_id=sid)
             if act.id not in existing_ids:
                 self.activities.append(act)
                 self._activity_map[act.id] = act
@@ -366,6 +410,15 @@ class Project:
         if added:
             self._fill_day_gaps()
         return added
+
+    @staticmethod
+    def _stand_in_id(taken: set) -> int:
+        """A positive id none of *taken* is, for an added Strava activity
+        whose own id the trip already uses."""
+        while True:
+            candidate = secrets.randbits(_STAND_IN_ID_BITS)
+            if candidate and candidate not in taken:
+                return candidate
 
     def _chronological_insert_pos(self, act: "Activity") -> int:
         """Return the index at which *act* should be inserted to keep items in
