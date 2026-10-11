@@ -431,30 +431,107 @@ def test_background_enrichment_never_writes_another_accounts_row(bobs_ride):
 
 # ── Finding references made before this was enforced ────────────────────────
 
-def test_the_audit_lists_trips_holding_activities_of_accounts_outside_them(env):
-    from scripts.audit_activity_ownership import find_foreign_activity_refs
+_ENVELOPE = "v1.d3JhcHBlZA==.Y2lwaGVydGV4dA=="
+
+
+def _audit_trips(engine, ids, rows: list, held: dict) -> dict:
+    """Alice's trip "Trip" and Bob's trip "Other", plus raw *rows*
+    ``(id, owner, extra columns)``; *held* maps a trip name to the row ids its
+    items name. Returns the trips' ids."""
+    with Session(engine) as sess:
+        for aid, who, extra in rows:
+            sess.add(DBActivity(**{"id": aid, "user_info_id": ids[who], "name": f"a{aid}", **extra}))
+        trips = {"Trip": DBProject(user_info_id=ids["alice"], name="Trip"),
+                 "Other": DBProject(user_info_id=ids["bob"], name="Other")}
+        for trip in trips.values():
+            sess.add(trip)
+        sess.commit()
+        for name, aids in held.items():
+            for pos, aid in enumerate(aids):
+                sess.add(DBProjectItem(project_id=trips[name].id, position=pos,
+                                       item_type="activity", activity_id=aid))
+        sess.commit()
+        return {name: trip.id for name, trip in trips.items()}
+
+
+def test_the_audit_lists_a_row_two_trips_hold(env):
+    from scripts.audit_activity_ownership import find_rows_held_by_several_trips
 
     client, engine, ids, act_as = env
+    trips = _audit_trips(engine, ids, [(1, "alice", {}), (2, "alice", {})],
+                         {"Trip": [1, 2], "Other": [1]})
+
     with Session(engine) as sess:
-        for aid, who in ((1, "alice"), (2, "bob"), (3, "carol")):
-            sess.add(DBActivity(id=aid, user_info_id=ids[who], name=f"a{aid}"))
-        trip = DBProject(user_info_id=ids["alice"], name="Trip")
-        sess.add(trip)
-        sess.commit()
-        from models.project_db import DBProjectMember
-        sess.add(DBProjectMember(project_id=trip.id, user_info_id=ids["carol"],
-                                 role="editor", invited_by=ids["alice"]))
-        for pos, aid in enumerate((1, 2, 3)):
-            sess.add(DBProjectItem(project_id=trip.id, position=pos,
-                                   item_type="activity", activity_id=aid))
-        sess.commit()
+        found = find_rows_held_by_several_trips(sess)
 
-        trip_id = trip.id
-        refs = find_foreign_activity_refs(sess)
+    assert found == [{"activity_id": 1,
+                      "project_ids": sorted((trips["Trip"], trips["Other"]))}]
 
-    # Alice's own and her member Carol's are fine; Bob's is reported.
-    assert [(r["project_id"], r["activity_id"], r["activity_owner_id"]) for r in refs] == [
-        (trip_id, 2, ids["bob"])]
+
+def test_the_audit_lists_a_plaintext_row_its_trips_owner_does_not_own(env):
+    from scripts.audit_activity_ownership import find_foreign_owned_rows
+
+    client, engine, ids, act_as = env
+    trips = _audit_trips(engine, ids, [
+        (1, "alice", {}),                      # the trip owner's: fine
+        (2, "carol", {}),                      # a companion's, plaintext: reported
+        (3, "carol", {"name": _ENVELOPE}),     # a companion's, encrypted: fine
+        (4, "carol", {"summary_polyline": _ENVELOPE}),
+        (5, "bob", {}),                        # no trip holds it: not reported
+    ], {"Trip": [1, 2, 3, 4]})
+
+    with Session(engine) as sess:
+        found = find_foreign_owned_rows(sess)
+
+    assert [(r["project_id"], r["activity_id"], r["activity_owner_id"]) for r in found] == [
+        (trips["Trip"], 2, ids["carol"])]
+
+
+def test_the_audit_lists_a_split_link_across_trips(env):
+    from scripts.audit_activity_ownership import find_cross_trip_split_links
+
+    client, engine, ids, act_as = env
+    trips = _audit_trips(engine, ids, [
+        (10, "alice", {}),
+        (11, "bob", {"split_root_id": 10, "split_parent_id": 10}),
+        # A family inside one trip, and a tail whose head no trip holds.
+        (20, "alice", {}), (21, "alice", {"split_root_id": 20, "split_parent_id": 20}),
+        (31, "alice", {"split_root_id": 30, "split_parent_id": 30}),
+        # A row no trip holds, naming a held head: not reported.
+        (40, "bob", {"split_root_id": 10, "split_parent_id": 10}),
+    ], {"Trip": [10, 20, 21, 31], "Other": [11]})
+
+    with Session(engine) as sess:
+        found = find_cross_trip_split_links(sess)
+
+    assert [(r["project_id"], r["activity_id"], r["link"], r["linked_project_id"])
+            for r in found] == [
+        (trips["Other"], 11, "split_parent_id", trips["Trip"]),
+        (trips["Other"], 11, "split_root_id", trips["Trip"]),
+    ]
+
+
+def test_the_audit_passes_encrypted_companion_rows_and_rows_no_trip_holds(env):
+    from scripts.audit_activity_ownership import (
+        find_cross_trip_split_links,
+        find_dangling_activity_refs,
+        find_foreign_owned_rows,
+        find_rows_held_by_several_trips,
+    )
+
+    client, engine, ids, act_as = env
+    _audit_trips(engine, ids, [
+        (1, "alice", {}),
+        (2, "carol", {"start_latlng_json": _ENVELOPE}),
+        (3, "carol", {}),
+        (4, "bob", {"split_root_id": 1, "split_parent_id": 1}),
+    ], {"Trip": [1, 2], "Other": []})
+
+    with Session(engine) as sess:
+        assert find_rows_held_by_several_trips(sess) == []
+        assert find_foreign_owned_rows(sess) == []
+        assert find_cross_trip_split_links(sess) == []
+        assert find_dangling_activity_refs(sess) == []
 
 
 # ── Activity ids are plain integers ─────────────────────────────────────────
