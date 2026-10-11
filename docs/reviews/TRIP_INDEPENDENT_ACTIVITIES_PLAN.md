@@ -302,3 +302,12 @@ Fable reviewer, Opus triager. 1 finding, no envelope questions.
 - Guard: —
 - Override: —
 - Outcome: — (recorded in the delivery record as an unlisted U6-on-U4 dependency)
+
+## Unit review U10 (follow-up unit) — 2026-10-11, reviewed at 14f0d05b (u592/u10)
+
+Fable reviewer. No findings, no envelope questions. U10 (found in U5's report):
+an added activity is matched to the trip by strava_id, never by row id. The
+save path drops, with a WARNING, an activity whose id names a held row but
+whose strava_id differs. That is unreachable from current code, and stored
+data is identical either way, so the drop is kept as the guard; raising
+would abort the whole save.
