@@ -13,5 +13,16 @@ _flutter.loader.load({
   },
   config: {
     fontFallbackBaseUrl: new URL('fallback-fonts/', document.baseURI).href,
+    // Release builds carry their own CanvasKit (--no-web-resources-cdn),
+    // which tool/version_canvaskit.dart moves under the engine revision so a
+    // cached copy from an older release is never paired with a newer engine
+    // (#601 review R3-1). Development builds keep Flutter's default.
+    ...(_flutter.buildConfig.useLocalCanvasKit
+      ? {
+          canvasKitBaseUrl: new URL(
+            'canvaskit/' + _flutter.buildConfig.engineRevision + '/',
+            document.baseURI).href,
+        }
+      : {}),
   },
 });

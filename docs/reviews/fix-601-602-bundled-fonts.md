@@ -48,3 +48,16 @@ Reviewer: adversarial-reviewer (Fable). Triager: review-triager (Opus). 1 findin
 - Guard: —
 - Override: —
 - Outcome: fixed
+
+## Round 3 — 2026-10-11, reviewed at 5593a460 (fixes since 3209713c)
+
+Reviewer: adversarial-reviewer (Fable). Triager: review-triager (Opus). 1 finding, well-formed. A regression introduced by the R2-1 fix.
+
+### R3-1 — Self-hosted CanvasKit lost the engine revision from its URL but kept a one-day cache
+- Trigger: a daily user opens the web app → the owner releases a build on a newer Flutter SDK → the user reloads within 24 h → main.dart.js and flutter_bootstrap.js are no-cache and fresh, but canvaskit/chromium/canvaskit.js and .wasm come from the HTTP cache (public, max-age=86400) → the new engine runs against the previous CanvasKit; where their APIs differ the boot splash never hands over, until the cache expires or a hard reload. (Before R2-1 the gstatic URL carried the engine revision.) Making canvaskit/ no-cache instead is not enough: Starlette 1.7's FileResponse never answers 304 (checked), so the ~7 MB wasm would download on every load.
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=inferred
+- Decision: Fix now (D6)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed

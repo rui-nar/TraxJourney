@@ -391,6 +391,10 @@ if ($LASTEXITCODE -ne 0) { Pop-Location; Die "Flutter build failed." }
 # Google at run time (#601, #602; see web/flutter_bootstrap.js).
 dart run tool/mirror_fallback_fonts.dart build/web
 if ($LASTEXITCODE -ne 0) { Pop-Location; Die "Mirroring the fallback fonts failed." }
+# CanvasKit under its engine revision, as web/flutter_bootstrap.js expects
+# (#601 review R3-1).
+dart run tool/version_canvaskit.dart build/web
+if ($LASTEXITCODE -ne 0) { Pop-Location; Die "Versioning CanvasKit failed." }
 Pop-Location
 $webClient = Join-Path $SrcRoot 'web_client'
 if (Test-Path $webClient) { Remove-Item -Recurse -Force $webClient }

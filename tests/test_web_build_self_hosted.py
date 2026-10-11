@@ -43,3 +43,14 @@ def test_builds_mirror_the_fallback_fonts_after_building():
         build = text.index("flutter build web")
         mirror = text.find("dart run tool/mirror_fallback_fonts.dart build/web")
         assert mirror > build, name
+
+
+def test_builds_move_canvaskit_under_its_engine_revision():
+    # web/flutter_bootstrap.js loads CanvasKit from canvaskit/<revision>/
+    # whenever the build carries its own, so skipping this step would leave
+    # the app with no renderer (#601 review R3-1).
+    for name, path in BUILDS.items():
+        text = path.read_text(encoding="utf-8")
+        build = text.index("flutter build web")
+        move = text.find("dart run tool/version_canvaskit.dart build/web")
+        assert move > build, name
