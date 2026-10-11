@@ -61,15 +61,44 @@ class Activity:
     elevation_profile_low_res: Optional[Tuple[List[float], List[float]]] = None
     # Geometry-edit flag (issue #31). True when the track was edited locally, so
     # Strava sync must skip this activity. Round-trips through the DB and the REST
-    # API; the pre-edit snapshot itself stays DB-only.
+    # API; the pre-edit snapshot (original_* below) only through a .traxj file.
     is_edited: bool = False
     # The piece this activity was cut directly out of (issue #143), None if it
     # never was. Round-trips through the DB and the REST API so the editor can
     # walk it to find the pieces cut out of an activity: resetting destroys those
-    # pieces, and the user has to be warned first (#141). The DB's split_root_id
-    # is deliberately NOT surfaced — it points every piece at the family's first
-    # piece however deep the chain, which cannot answer "what is below this one".
+    # pieces, and the user has to be warned first (#141).
     split_parent_id: Optional[int] = None
+    # The Strava activity this one came from (#592), None for a local one (a
+    # GPX import, a split piece). The id names the row and nothing else: the
+    # same Strava activity in two trips is two activities with one strava_id.
+    strava_id: Optional[int] = None
+
+    # Carried by a .traxj file only (to_traxj_dict), never by the REST API, so
+    # an import keeps a split family and an edit's snapshot (#592, plan
+    # Decision 8). None unless whoever built the activity filled them in.
+    #
+    # The family's first piece, however deep the chain (the DB's split_root_id;
+    # split_parent_id cannot answer "which family"), and the family's name
+    # before any "(i/N)" (split_base_name). Both name ids of the same file.
+    split_root_id: Optional[int] = None
+    split_base_name: Optional[str] = None
+    # The track and figures before the first edit, as a reset restores them.
+    # Parsed as the live fields are, with the same *_enc passthrough for a
+    # snapshot that holds an E2EE envelope; original_polyline is text either way.
+    original_polyline: Optional[str] = None
+    original_elevation_profile: Optional[Tuple[List[float], List[float]]] = None
+    original_elevation_profile_enc: Optional[str] = None
+    original_start_latlng: Optional[List[float]] = None
+    original_start_latlng_enc: Optional[str] = None
+    original_end_latlng: Optional[List[float]] = None
+    original_end_latlng_enc: Optional[str] = None
+    original_total_elevation_gain: Optional[float] = None
+    original_distance: Optional[float] = None
+    original_moving_time: Optional[int] = None
+    original_elapsed_time: Optional[int] = None
+    original_average_speed: Optional[float] = None
+    original_elev_high: Optional[float] = None
+    original_elev_low: Optional[float] = None
     # Async Strava re-fetch state (issue #148). Read-only as far as the client is
     # concerned: set by the re-fetch job's bookkeeping, surfaced here so the
     # client can poll /meta for a verdict instead of holding a request open for
@@ -156,6 +185,7 @@ class Activity:
             } if self.elevation_profile else None,
             "is_edited": self.is_edited,
             "split_parent_id": self.split_parent_id,
+            "strava_id": self.strava_id,
             "refresh_status": self.refresh_status,
             "refresh_started_at": self.refresh_started_at,
             "refresh_error": self.refresh_error,
@@ -164,6 +194,34 @@ class Activity:
             "start_latlng_enc": self.start_latlng_enc,
             "end_latlng_enc": self.end_latlng_enc,
             "elevation_profile_enc": self.elevation_profile_enc,
+        }
+
+    def to_traxj_dict(self) -> dict:
+        """Serialise as a .traxj file holds an activity: :meth:`to_strava_dict`
+        plus the split family and the edit snapshot, which the REST API never
+        sends (#592). Read back by from_strava_api()."""
+        op = self.original_elevation_profile
+        return {
+            **self.to_strava_dict(),
+            "split_root_id": self.split_root_id,
+            "split_base_name": self.split_base_name,
+            "original_polyline": self.original_polyline,
+            "original_elevation_profile": {
+                "distances_km": op[0],
+                "elevations_m": op[1],
+            } if op else None,
+            "original_elevation_profile_enc": self.original_elevation_profile_enc,
+            "original_start_latlng": self.original_start_latlng,
+            "original_start_latlng_enc": self.original_start_latlng_enc,
+            "original_end_latlng": self.original_end_latlng,
+            "original_end_latlng_enc": self.original_end_latlng_enc,
+            "original_total_elevation_gain": self.original_total_elevation_gain,
+            "original_distance": self.original_distance,
+            "original_moving_time": self.original_moving_time,
+            "original_elapsed_time": self.original_elapsed_time,
+            "original_average_speed": self.original_average_speed,
+            "original_elev_high": self.original_elev_high,
+            "original_elev_low": self.original_elev_low,
         }
 
     def __str__(self) -> str:
@@ -220,6 +278,27 @@ class Activity:
             ),
             is_edited=data.get("is_edited", False),
             split_parent_id=data.get("split_parent_id"),
+            strava_id=_strava_id(data),
+            split_root_id=data.get("split_root_id"),
+            split_base_name=data.get("split_base_name"),
+            original_polyline=data.get("original_polyline"),
+            original_elevation_profile=(
+                (op["distances_km"], op["elevations_m"])
+                if (op := data.get("original_elevation_profile"))
+                else None
+            ),
+            original_elevation_profile_enc=data.get("original_elevation_profile_enc"),
+            original_start_latlng=data.get("original_start_latlng"),
+            original_start_latlng_enc=data.get("original_start_latlng_enc"),
+            original_end_latlng=data.get("original_end_latlng"),
+            original_end_latlng_enc=data.get("original_end_latlng_enc"),
+            original_total_elevation_gain=_gain(data.get("original_total_elevation_gain")),
+            original_distance=data.get("original_distance"),
+            original_moving_time=data.get("original_moving_time"),
+            original_elapsed_time=data.get("original_elapsed_time"),
+            original_average_speed=data.get("original_average_speed"),
+            original_elev_high=_elevation(data.get("original_elev_high")),
+            original_elev_low=_elevation(data.get("original_elev_low")),
             # Absent from a real Strava payload — present only when round-tripping
             # our own to_strava_dict() output (e.g. a .traxj file).
             refresh_status=data.get("refresh_status"),
@@ -231,6 +310,30 @@ class Activity:
             end_latlng_enc=data.get("end_latlng_enc"),
             elevation_profile_enc=data.get("elevation_profile_enc"),
         )
+
+
+#: The ``source`` of an activity from Strava, as past writers stored it.
+_STRAVA_SOURCES = (None, "", "strava")
+
+
+def _strava_id(data: dict) -> Optional[int]:
+    """The Strava id of the activity *data* describes, or None.
+
+    A dict that carries ``strava_id`` (our own, since #592) is taken at its
+    word, null included. One that does not is a Strava payload, or a .traxj
+    file written before #592, where a Strava activity's id *was* its Strava
+    id: a positive id with a Strava source. A negative id, or a GPX source,
+    is a local activity (review R1-7). This is the only place an id's sign
+    still means anything (plan Decision 8).
+
+    Raises ``ValueError`` for a ``strava_id`` that is not a plain integer.
+    """
+    if "strava_id" in data:
+        return activity_id_or_none(data["strava_id"])
+    aid = data.get("id")
+    if is_activity_id(aid) and aid > 0 and data.get("source") in _STRAVA_SOURCES:
+        return aid
+    return None
 
 
 def _elevation(value: Any) -> Any:
