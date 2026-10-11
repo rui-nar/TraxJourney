@@ -572,3 +572,47 @@ def test_a_row_not_from_strava_is_a_409(team):
     assert r.status_code == 409
     assert "did not come from Strava" in r.json()["detail"]
     assert tokens_used == [] and fake.asked == []
+
+
+# ── A refresh force_update_activity declines is logged (review U4R1-2) ───────
+
+def test_a_refresh_dropped_for_another_strava_user_is_logged(env, caplog):
+    """The importer changed under the job (account deleted, so NULL): the
+    row is left as it was, and the log says why."""
+    import logging
+    from src.models.activity import Activity
+    _, engine, uid = env
+    with Session(engine) as sess:
+        row = sess.get(DBActivity, 111)
+        row.strava_user_id = None
+        sess.add(row); sess.commit()
+
+    with caplog.at_level(logging.WARNING), Session(engine) as sess:
+        activities_module._repo.force_update_activity(
+            sess, uid, Activity.from_strava_api(_raw(name="Fresh name")), row_id=111)
+
+    assert _row(engine).name == "Old name"
+    assert any(r.levelno == logging.WARNING
+               and "strava_user_id no longer matches" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_a_refresh_dropped_for_a_trip_no_longer_holding_the_row_is_logged(env, caplog):
+    import logging
+    from src.models.activity import Activity
+    _, engine, uid = env
+    with Session(engine) as sess:
+        project_id = sess.exec(select(DBProject.id)).one()
+        for item in sess.exec(select(DBProjectItem)).all():
+            sess.delete(item)
+        sess.commit()
+
+    with caplog.at_level(logging.WARNING), Session(engine) as sess:
+        activities_module._repo.force_update_activity(
+            sess, uid, Activity.from_strava_api(_raw(name="Fresh name")),
+            project_id, row_id=111)
+
+    assert _row(engine).name == "Old name"
+    assert any(r.levelno == logging.WARNING
+               and f"trip {project_id} no longer holds the row" in r.getMessage()
+               for r in caplog.records)

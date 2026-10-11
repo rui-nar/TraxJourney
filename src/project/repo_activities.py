@@ -1248,10 +1248,19 @@ class ActivityMixin:
                 "refresh dropped for activity=%s user=%s: row deleted while the "
                 "re-fetch was in flight", target, user_info_id)
             return
+        # The two exits below leave the row as it was, and the refresh job
+        # still reports it resolved: said in the log at least (review guard
+        # U4R1-2).
         if existing.strava_user_id != user_info_id:
+            _log.warning(
+                "refresh dropped for activity=%s user=%s: strava_user_id no longer "
+                "matches (now %s)", target, user_info_id, existing.strava_user_id)
             return
         if project_id is not None and not self.trip_holds_activity(
                 sess, project_id, target):
+            _log.warning(
+                "refresh dropped for activity=%s user=%s: trip %s no longer holds "
+                "the row", target, user_info_id, project_id)
             return
 
         if project_id is not None:

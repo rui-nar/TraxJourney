@@ -2284,30 +2284,22 @@ def delete_local_activity(
     This is the undo path for a split — deleting the tail leaves the head in
     place. A row another trip holds is that trip's (#592), and is refused.
 
-    A tail of a Strava activity (issue #509) skips the trip-rewrite gate: any
-    editor of the trip holding it may delete it, whoever cut it — a companion
-    who has since left included (plan Decision 9, owner answer EQ1-1, which
-    supersedes the 2026-10-03 rule that only its own account or the trip's
-    owner could). Once a split piece goes, its root is reconsidered, since the
-    piece kept it: a root no item references goes with its last piece.
+    Any editor of the trip holding the row may delete it, whoever owns the
+    row — a companion who has since left, or one whose row stays theirs
+    because they encrypted it, included (plan Decision 9, owner answer
+    EQ1-1; review U4R1-1). Removing it from the timeline does the same. A
+    row no trip holds stays deletable (#405, see ``delete_local_activity``).
+    Once a split piece goes, its root is reconsidered, since the piece kept
+    it: a root no item references goes with its last piece.
     """
     user_info_id = int(current_user["sub"])
     with get_session() as sess:
         row = resolve_project(sess, user_info_id, name, owner, min_role="editor")
         owner_id = row.user_info_id
         # Read before the delete: the row is gone afterwards.
-        tail = sess.exec(
-            select(DBActivity.user_info_id, DBActivity.split_root_id, DBActivity.source)
-            .where(DBActivity.id == activity_id)
+        root_id = sess.exec(
+            select(DBActivity.split_root_id).where(DBActivity.id == activity_id)
         ).first()
-        root_id = tail.split_root_id if tail is not None else None
-        # Pieces take their head's source, so this is a piece cut out of an
-        # activity from Strava.
-        strava_tail = root_id is not None and tail.source in (None, "", SOURCE_STRAVA)
-        if not strava_tail:
-            _require_rewritable_by_trip(sess, row, activity_id)
-        elif user_info_id != tail.user_info_id:
-            _require_held(sess, row, activity_id)
         if not _repo.delete_local_activity(sess, row.id, activity_id):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
