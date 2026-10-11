@@ -19,7 +19,10 @@ in the order of the plan's Decision 10; each step relies on the ones before it.
 3. **Find leaked splits.** A *head* is a row other rows name in
    ``split_root_id``; its family is the head plus those rows. A family held by
    more than one trip in total is *shared*: the trips holding its head and the
-   trips holding at least one tail are recorded.
+   trips holding at least one tail are recorded. The same is recorded one
+   level down (review IR1-1) for a piece split again: a row other rows name
+   in ``split_parent_id`` that is not a family root, with the rows cut out of
+   it (its transitive ``split_parent_id`` descendants) in place of tails.
 4. **Copy.** Of the trips referencing a row, the one with the lowest item id
    keeps it (a tie-break only) and every other trip gets a copy: every column
    copied, a fresh random id of the same sign (Decision 3), owned by that
@@ -32,7 +35,10 @@ in the order of the plan's Decision 10; each step relies on the ones before it.
    its head is restored from its first-edit snapshot as
    ``reset_activity_track`` restores it, without descendants; a head with an
    enveloped original or no snapshot is left and logged. If no trip holds a
-   tail, every head is left and logged. Then, in every trip, a tail whose
+   tail, every head is left and logged. A piece split again is repaired by
+   the same rule, except that a restored piece keeps its split links and the
+   family its trip holds is renumbered "<base> (i/N)" in start-date order.
+   Then, in every trip, a tail whose
    root or parent is not held by the same trip is re-rooted on its nearest
    ancestor the trip holds, or detached when there is none.
 7. **Owner.** Every other row whose trip has a different owner is given to
@@ -45,7 +51,7 @@ Rows no trip references are left alone.
 It never holds the table in memory: shared rows and split heads are found by
 grouped, keyset-paginated queries returning ids only, trips are walked in
 keyset batches, and a full row is read one at a time. In memory: the copy map
-and the shared families, ids only.
+and the shared families and pieces, ids only.
 
 Re-runnable. The data steps all run in Alembic's one transaction. pysqlite
 autocommits the ``ADD COLUMN`` before it, so an interrupted run can leave the
@@ -249,6 +255,53 @@ class _Run:
                 if len(held_by | tails_in) > 1:
                     families[head] = (held_by, tails_in)
 
+    def find_shared_pieces(self) -> dict:
+        """piece id -> (trips holding the piece, trips holding a row cut out
+        of it), for every split piece that was split again (a row named in
+        another row's ``split_parent_id`` that is not a family root) whose
+        rows are held by more than one trip in total (review IR1-1). The rule
+        is step 3's, applied one level down: "cut out of it" is every
+        transitive ``split_parent_id`` descendant, what a reset of the piece
+        removes."""
+        pieces = {}
+        last = _KEY_FLOOR
+        while True:
+            named = self._scalars(
+                "SELECT DISTINCT split_parent_id FROM activity "
+                "WHERE split_parent_id > :last ORDER BY split_parent_id LIMIT :n",
+                last=last, n=_BATCH)
+            if not named:
+                return pieces
+            last = named[-1]
+            subs = self._scalars(
+                "SELECT id FROM activity WHERE id IN :ids "
+                "AND split_root_id IS NOT NULL AND split_root_id != id", ids=named)
+            if not subs:
+                continue
+            descendants = {sub: self._descendants(sub) for sub in subs}
+            trips_by_row = self._holding_trips(
+                subs + [d for ds in descendants.values() for d in ds])
+            for sub in subs:
+                held_by = trips_by_row.get(sub, set())
+                cut_in = set()
+                for d in descendants[sub]:
+                    cut_in |= trips_by_row.get(d, set())
+                if len(held_by | cut_in) > 1:
+                    pieces[sub] = (held_by, cut_in)
+
+    def _descendants(self, row_id: int) -> list:
+        found, seen, frontier = [], {row_id}, [row_id]
+        while frontier:
+            children = []
+            for chunk in _chunks(frontier):
+                children += [c for c in self._scalars(
+                    "SELECT id FROM activity WHERE split_parent_id IN :ids", ids=chunk)
+                    if c not in seen]
+            seen.update(children)
+            found += children
+            frontier = children
+        return found
+
     # -- 4. copy ----------------------------------------------------------------
 
     def copy_shared_rows(self) -> None:
@@ -373,14 +426,69 @@ class _Run:
                     continue
                 self._restore(row_id, trip)
 
-    def _leave(self, row_id: int, trip: int, reason: str) -> None:
-        self.left += 1
-        _log.info("one row per trip: shared split head %s in trip %s left as "
-                  "it is: %s", row_id, trip, reason)
+    def repair_pieces(self, pieces: dict) -> None:
+        """Step 6's rule for a piece split again (IR1-1): a trip holding the
+        piece but nothing cut out of it, while another trip holds some, never
+        made that split, and its piece is restored. Unlike a head, the piece
+        stays in its family: its split links are kept and the family the trip
+        holds is renumbered."""
+        for piece in sorted(pieces):
+            holders, cut_in = pieces[piece]
+            for trip in sorted(holders):
+                if trip in cut_in:
+                    continue    # the trip that split it keeps its cut piece
+                row_id = self.copies.get((trip, piece), piece)
+                if not cut_in:
+                    self._leave(row_id, trip, "no trip holds a piece cut out of it",
+                                what="piece")
+                    continue
+                if self._restore(row_id, trip, piece=True):
+                    self._renumber(row_id, trip)
 
-    def _restore(self, row_id: int, trip: int) -> None:
+    def _renumber(self, row_id: int, trip: int) -> None:
+        """Name the family *trip* holds "<base> (i/N)" in start-date order, as
+        ``_renumber_split_family`` does; the leaked split had renumbered it
+        with the other trip's pieces counted. Left as it is, and logged, when
+        the trip does not hold the family's root, or the root has no plaintext
+        base name to number from."""
+        from src.utils.encryption_check import is_encrypted_envelope
+
+        root = self.bind.execute(sa.text(
+            "SELECT split_root_id FROM activity WHERE id = :id"),
+            {"id": row_id}).scalar()
+        found = None
+        if root is not None and root in self._held(trip):
+            found = self.bind.execute(sa.text(
+                "SELECT name, split_base_name FROM activity WHERE id = :id"),
+                {"id": root}).first()
+        if found is None or is_encrypted_envelope(found[0]) or not found[1]:
+            _log.info("one row per trip: family of split piece %s in trip %s "
+                      "not renumbered: no plaintext base name on a root the "
+                      "trip holds", row_id, trip)
+            return
+        base = found[1]
+        members = self._scalars(
+            "SELECT id FROM activity WHERE (id = :root OR split_root_id = :root) "
+            "AND id IN (SELECT activity_id FROM projectitem "
+            "  WHERE project_id = :t AND item_type = 'activity') "
+            "ORDER BY start_date, id", root=root, t=trip)
+        for i, member in enumerate(members, start=1):
+            name = base if len(members) < 2 else f"{base} ({i}/{len(members)})"
+            self.bind.execute(sa.text(
+                "UPDATE activity SET name = :n WHERE id = :id"),
+                {"n": name, "id": member})
+
+    def _leave(self, row_id: int, trip: int, reason: str, what: str = "head") -> None:
+        self.left += 1
+        _log.info("one row per trip: shared split %s %s in trip %s left as "
+                  "it is: %s", what, row_id, trip, reason)
+
+    def _restore(self, row_id: int, trip: int, piece: bool = False) -> bool:
         """Restore a leaked split head from its first-edit snapshot, as
-        ``reset_activity_track`` does, without touching any other row."""
+        ``reset_activity_track`` does, without touching any other row. With
+        *piece*, a piece split again: its name and split links are kept.
+        True when restored."""
+        what = "piece" if piece else "head"
         from src.project.elevation_downsample import downsample_elevation
         from src.utils.encryption_check import is_encrypted_envelope
 
@@ -392,13 +500,16 @@ class _Run:
         orig_poly = row["original_polyline"]
         orig_ep_json = row["original_elevation_profile_json"]
         if not row["is_edited"] or not orig_poly:
-            return self._leave(row_id, trip, "no snapshot")
+            self._leave(row_id, trip, "no snapshot", what)
+            return False
         if is_encrypted_envelope(orig_poly) or is_encrypted_envelope(orig_ep_json):
-            return self._leave(row_id, trip, "its original is encrypted")
+            self._leave(row_id, trip, "its original is encrypted", what)
+            return False
         if row["original_distance"] is None:
             # Migration c4e2a9f1b7d3 left the scalar snapshot empty only where
             # the original could not be read; the reset would fail on it too.
-            return self._leave(row_id, trip, "no snapshot")
+            self._leave(row_id, trip, "no snapshot", what)
+            return False
 
         profile = None
         low_res = None
@@ -417,14 +528,15 @@ class _Run:
 
         assignments = ", ".join(f"{n} = original_{n}" for n in _SCALAR_SNAPSHOT)
         cleared = ", ".join(f"original_{n} = NULL" for n in _SCALAR_SNAPSHOT)
+        unsplit = "" if piece else (
+            "name = CASE WHEN split_base_name IS NOT NULL AND split_base_name != '' "
+            "THEN split_base_name ELSE name END, "
+            "split_root_id = NULL, split_parent_id = NULL, split_base_name = NULL, ")
         self.bind.execute(sa.text(
             "UPDATE activity SET summary_polyline = original_polyline, "
             "elevation_profile_json = original_elevation_profile_json, "
             "elevation_profile_low_res_json = :low_res, "
-            f"total_elevation_gain = :gain, {assignments}, "
-            "name = CASE WHEN split_base_name IS NOT NULL AND split_base_name != '' "
-            "THEN split_base_name ELSE name END, "
-            "split_root_id = NULL, split_parent_id = NULL, split_base_name = NULL, "
+            f"total_elevation_gain = :gain, {assignments}, {unsplit}"
             "is_edited = :false, original_polyline = NULL, "
             "original_elevation_profile_json = NULL, "
             f"original_total_elevation_gain = NULL, {cleared} "
@@ -439,10 +551,11 @@ class _Run:
         shared_link = self.bind.execute(sa.text(
             "SELECT share_token IS NOT NULL OR share_token_no_memories IS NOT NULL "
             "FROM project WHERE id = :t"), {"t": trip}).scalar()
-        _log.info("one row per trip: restored split head %s in trip %s, which "
-                  "never split it%s", row_id, trip,
+        _log.info("one row per trip: restored split %s %s in trip %s, which "
+                  "never split it%s", what, row_id, trip,
                   " (trip has a share link: its public tiles stay stale until "
                   "the trip next changes)" if shared_link else "")
+        return True
 
     @staticmethod
     def _recomputed_gain(orig_poly, profile, current):
@@ -584,9 +697,11 @@ def upgrade() -> None:
     run.delete_dangling_items()                  # 1
     run.backfill()                               # 2
     families = run.find_shared_families()        # 3
+    pieces = run.find_shared_pieces()            # 3, pieces split again
     run.copy_shared_rows()                       # 4
     run.remap_families()                         # 5
     run.repair_heads(families)                   # 6
+    run.repair_pieces(pieces)                    # 6, pieces split again
     run.repair_crossing_tails()                  # 6, tails
     run.give_rows_to_trip_owners()               # 7
     run.bump_touched()                           # 8

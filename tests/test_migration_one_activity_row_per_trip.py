@@ -549,6 +549,116 @@ def test_a_piece_whose_parent_chain_dead_ends_while_its_root_is_held_warns(
     assert any("detached_with_held_root=1" in m for m in log.messages)
 
 
+# -- a piece split again (IR1-1) ----------------------------------------------
+
+def _sub_split(engine, *, piece_original: str = _FULL_TRACK) -> None:
+    """ "Keep both" of a split trip (head 900, piece -1, both shared by trips
+    10 and 20), then -1 split again in trip 20 only: -1 is cut and every
+    name was renumbered over the whole family, trip 10's rows included."""
+    _trip(engine, 10)
+    _trip(engine, 20)
+    _split_head(engine, 900, name="Alps (1/3)", start_date="2026-05-01T08:00:00Z")
+    _activity(engine, -1, name="Alps (2/3)", split_root_id=900, split_parent_id=900,
+              start_date="2026-05-01T10:00:00Z", is_edited=True,
+              summary_polyline=_CUT_TRACK, elevation_profile_json=_CUT_PROFILE,
+              elevation_profile_low_res_json=_CUT_PROFILE, distance=20_000.0,
+              moving_time=2_000, total_elevation_gain=100.0,
+              original_polyline=piece_original,
+              original_elevation_profile_json=_FULL_PROFILE,
+              original_total_elevation_gain=400.0, original_distance=40_000.0,
+              original_moving_time=4_000, original_elapsed_time=5_000,
+              original_average_speed=10.0, original_elev_high=600.0,
+              original_elev_low=400.0)
+    _prepared(engine, -1)
+    _activity(engine, -2, name="Alps (3/3)", split_root_id=900, split_parent_id=-1,
+              start_date="2026-05-01T12:00:00Z")
+    _item(engine, 1, 10, 900)
+    _item(engine, 2, 10, -1)
+    _item(engine, 3, 20, 900)
+    _item(engine, 4, 20, -1)
+    _item(engine, 5, 20, -2)
+
+
+def test_a_piece_split_again_in_one_trip_is_restored_in_the_other(cfg, engine, log):
+    _sub_split(engine)
+
+    _upgrade(cfg)
+
+    # Trip 10 never split -1: restored, still a piece of its own family, and
+    # the family it holds renumbered without trip 20's piece.
+    piece_a = _row(engine, -1)
+    assert (piece_a["summary_polyline"], piece_a["elevation_profile_json"]) \
+        == (_FULL_TRACK, _FULL_PROFILE)
+    assert (piece_a["distance"], piece_a["moving_time"], piece_a["total_elevation_gain"]) \
+        == (40_000.0, 4_000, 400.0)
+    assert (piece_a["split_root_id"], piece_a["split_parent_id"]) == (900, 900)
+    assert (piece_a["is_edited"], piece_a["original_polyline"]) == (0, None)
+    assert not _has_prepared(engine, -1)
+    full = json.loads(_FULL_PROFILE)
+    dd, ee = downsample_elevation(full["distances_km"], full["elevations_m"])
+    assert json.loads(piece_a["elevation_profile_low_res_json"]) \
+        == {"distances_km": dd, "elevations_m": ee}
+    assert (_row(engine, 900)["name"], piece_a["name"]) == ("Alps (1/2)", "Alps (2/2)")
+    assert _row(engine, 900)["summary_polyline"] == _CUT_TRACK
+
+    # Trip 20 made the split: its copies keep it, linked among themselves.
+    head_b, piece_b, cut_b = (_row_of(engine, 20, i) for i in (3, 4, 5))
+    assert (piece_b["summary_polyline"], piece_b["name"]) == (_CUT_TRACK, "Alps (2/3)")
+    assert head_b["name"] == "Alps (1/3)"
+    assert (piece_b["split_root_id"], piece_b["split_parent_id"]) \
+        == (head_b["id"], head_b["id"])
+    assert (cut_b["split_root_id"], cut_b["split_parent_id"]) \
+        == (head_b["id"], piece_b["id"])
+    assert any("restored split piece -1 in trip 10, which never split it" in m
+               for m in log.messages)
+    _assert_invariants(engine)
+
+
+def test_a_piece_split_again_with_an_encrypted_original_is_left_and_logged(
+        cfg, engine, log):
+    _sub_split(engine, piece_original=_ENVELOPE)
+
+    _upgrade(cfg)
+
+    piece_a = _row(engine, -1)
+    assert (piece_a["summary_polyline"], piece_a["name"]) == (_CUT_TRACK, "Alps (2/3)")
+    assert piece_a["original_polyline"] == _ENVELOPE
+    assert _row(engine, 900)["name"] == "Alps (1/3)"
+    assert any("shared split piece -1 in trip 10 left as it is: its original "
+               "is encrypted" in m for m in log.messages)
+    _assert_invariants(engine)
+
+
+def test_a_piece_split_again_held_by_one_trip_is_untouched(cfg, engine):
+    _trip(engine, 10)
+    _split_head(engine, 900, name="Alps (1/3)")
+    _activity(engine, -1, name="Alps (2/3)", split_root_id=900, split_parent_id=900,
+              is_edited=True, summary_polyline=_CUT_TRACK,
+              original_polyline=_FULL_TRACK, original_distance=40_000.0)
+    _activity(engine, -2, name="Alps (3/3)", split_root_id=900, split_parent_id=-1)
+    for item, row_id in enumerate((900, -1, -2), start=1):
+        _item(engine, item, 10, row_id)
+    before = {r: _row(engine, r) for r in (900, -1, -2)}
+
+    _upgrade(cfg)
+
+    for row_id, row in before.items():
+        assert {k: v for k, v in _row(engine, row_id).items()
+                if not k.startswith("strava_")} == row
+    assert _trips(engine)[10] == (5, '{"cached": true}')
+
+
+def test_a_second_run_after_a_piece_repair_changes_nothing(cfg, engine):
+    _sub_split(engine)
+    _upgrade(cfg)
+    first = _dump(engine)
+
+    command.stamp(cfg, _BEFORE)
+    _upgrade(cfg)
+
+    assert _dump(engine) == first
+
+
 # -- ownership ----------------------------------------------------------------
 
 def test_a_companions_plaintext_row_goes_to_the_trip_owner(cfg, engine):
