@@ -659,6 +659,51 @@ def test_a_second_run_after_a_piece_repair_changes_nothing(cfg, engine):
     assert _dump(engine) == first
 
 
+# -- a shared head cut again (IR2-1) ------------------------------------------
+
+_CUT_AGAIN = "head cut again by another trip's split"
+
+
+def _keep_both_split(engine) -> None:
+    """ "Keep both" of a split trip: head 900 and piece -1 shared by trips 10
+    and 20."""
+    _trip(engine, 10)
+    _trip(engine, 20)
+    _split_head(engine, 900, name="Alps (1/3)")
+    _tail(engine, -1, 900)
+    _item(engine, 1, 10, 900)
+    _item(engine, 2, 10, -1)
+    _item(engine, 3, 20, 900)
+    _item(engine, 4, 20, -1)
+
+
+def test_a_shared_head_cut_again_by_another_trip_is_left_and_logged(cfg, engine, log):
+    _keep_both_split(engine)
+    # Trip 20 split the shared head again: -2 was cut out of 900.
+    _tail(engine, -2, 900)
+    _item(engine, 5, 20, -2)
+    before = _row(engine, 900)
+
+    _upgrade(cfg)
+
+    after = _row(engine, 900)
+    assert {k: v for k, v in after.items() if not k.startswith("strava_")} == before
+    assert [m for m in log.messages if _CUT_AGAIN in m] == [
+        "one row per trip: shared split head 900 in trip 10 left as it is: head "
+        "cut again by another trip's split; no snapshot of the state before "
+        "that cut"]
+    _assert_invariants(engine)
+
+
+def test_a_shared_head_both_trips_cut_alike_logs_no_second_cut(cfg, engine, log):
+    _keep_both_split(engine)
+
+    _upgrade(cfg)
+
+    assert not [m for m in log.messages if _CUT_AGAIN in m]
+    _assert_invariants(engine)
+
+
 # -- ownership ----------------------------------------------------------------
 
 def test_a_companions_plaintext_row_goes_to_the_trip_owner(cfg, engine):

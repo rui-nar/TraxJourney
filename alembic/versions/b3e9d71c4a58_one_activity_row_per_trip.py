@@ -35,7 +35,9 @@ in the order of the plan's Decision 10; each step relies on the ones before it.
    its head is restored from its first-edit snapshot as
    ``reset_activity_track`` restores it, without descendants; a head with an
    enveloped original or no snapshot is left and logged. If no trip holds a
-   tail, every head is left and logged. A piece split again is repaired by
+   tail, every head is left and logged. A trip that split the head but lacks
+   a direct child another trip holds had its head cut again by that trip; its
+   only snapshot predates its own split, so it is left and logged. A piece split again is repaired by
    the same rule, except that a restored piece keeps its split links and the
    family its trip holds is renumbered "<base> (i/N)" in start-date order.
    Then, in every trip, a tail whose
@@ -226,8 +228,10 @@ class _Run:
     # -- 3. find leaked splits ----------------------------------------------
 
     def find_shared_families(self) -> dict:
-        """head id -> (trips holding the head, trips holding a tail), for every
-        family held by more than one trip in total."""
+        """head id -> (trips holding the head, trips holding a tail, the head's
+        direct children -> the trips holding each), for every family held by
+        more than one trip in total. The children are read here, before the
+        remap rewrites ``split_parent_id`` (review IR2-1)."""
         families = {}
         last = _KEY_FLOOR
         while True:
@@ -242,18 +246,21 @@ class _Run:
             if not heads:
                 continue
             tails = self._rows(
-                "SELECT id, split_root_id FROM activity "
+                "SELECT id, split_root_id, split_parent_id FROM activity "
                 "WHERE split_root_id IN :ids AND id != split_root_id", ids=heads)
             head_trips = self._holding_trips(heads)
-            tail_trips_by_row = self._holding_trips([t for t, _ in tails])
+            tail_trips_by_row = self._holding_trips([t for t, _, _ in tails])
             tail_trips = defaultdict(set)
-            for tail, head in tails:
+            children = defaultdict(dict)
+            for tail, head, parent in tails:
                 tail_trips[head] |= tail_trips_by_row.get(tail, set())
+                if parent == head:
+                    children[head][tail] = tail_trips_by_row.get(tail, set())
             for head in heads:
                 held_by = head_trips.get(head, set())
                 tails_in = tail_trips.get(head, set())
                 if len(held_by | tails_in) > 1:
-                    families[head] = (held_by, tails_in)
+                    families[head] = (held_by, tails_in, children.get(head, {}))
 
     def find_shared_pieces(self) -> dict:
         """piece id -> (trips holding the piece, trips holding a row cut out
@@ -416,11 +423,20 @@ class _Run:
 
     def repair_heads(self, families: dict) -> None:
         for head in sorted(families):
-            head_trips, tail_trips = families[head]
+            head_trips, tail_trips, children = families[head]
             for trip in sorted(head_trips):
-                if trip in tail_trips:
-                    continue    # the trip that split it keeps its cut head
                 row_id = self.copies.get((trip, head), head)
+                if trip in tail_trips:
+                    # The trip that split it keeps its cut head. If another
+                    # trip cut the shared head again (IR2-1), this trip's head
+                    # carries that cut too; the only snapshot predates this
+                    # trip's own split, so restoring would undo it: logged.
+                    if any(trip not in holders and holders
+                           for holders in children.values()):
+                        self._leave(row_id, trip, "head cut again by another "
+                                    "trip's split; no snapshot of the state "
+                                    "before that cut")
+                    continue
                 if not tail_trips:
                     self._leave(row_id, trip, "no trip holds a tail of it")
                     continue
