@@ -8,6 +8,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:traxjourney_client/src/core/theme.dart';
 import 'package:traxjourney_client/src/auth/welcome_screen.dart';
 import 'package:traxjourney_client/src/core/app_version.dart';
 
@@ -24,7 +25,7 @@ Future<void> _pumpWelcome(WidgetTester tester, Size size) async {
   addTearDown(() => serverVersion.value = null);
 
   await tester.pumpWidget(
-      MaterialApp(theme: landingTheme(), home: const WelcomeScreen()));
+      MaterialApp(theme: lightTheme, home: const WelcomeScreen()));
   await tester.pump();
 }
 

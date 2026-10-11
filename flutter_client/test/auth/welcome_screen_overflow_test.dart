@@ -11,6 +11,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:traxjourney_client/src/core/theme.dart';
 import 'package:traxjourney_client/src/auth/welcome_screen.dart';
 import 'package:traxjourney_client/src/billing/billing_service.dart';
 import 'package:traxjourney_client/src/core/brand.dart';
@@ -56,7 +57,7 @@ Future<List<RenderObject>> _pump(
 
   // A plan for sale, so the hosted card shows its price line too.
   await tester.pumpWidget(MaterialApp(
-      theme: landingTheme(),
+      theme: lightTheme,
       home: WelcomeScreen(loadPlans: () async => [
             const PlanInfo(id: 'tier_1', name: 'Tier 1',
                 priceLabel: '€0.99 / month', features: [], purchasable: true),
@@ -204,9 +205,7 @@ void main() {
           return true;
         });
       }
-      families
-        ..remove('MaterialIcons') // icon glyphs, not text
-        ..remove('Inter'); // the map labels' unregistered family: issue #594
+      families.remove('MaterialIcons'); // icon glyphs, not text
       expect(families.difference(loadedFontFamilies), isEmpty);
     });
   }
