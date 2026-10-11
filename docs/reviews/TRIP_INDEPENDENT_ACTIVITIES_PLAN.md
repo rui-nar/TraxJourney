@@ -215,3 +215,25 @@ Owner answer: accepted (2026-10-11) — the restore stands; every restore is log
 - Guard: WARNING log plus a summary counter when a tail is detached although its own root is held. (e173a2a1)
 - Override: —
 - Outcome: guard added (e173a2a1)
+
+## Unit review U3 — 2026-10-11, reviewed at f03c21c4 (u592/u3, U2's files excluded)
+
+Fable reviewer, Opus triager. 2 findings, no envelope questions.
+
+### U3R1-1 — Trip deletion leaves a split root the trip kept for its tails as a permanent orphan row
+- Trigger: a user splits a ride, removes the head from the timeline while keeping the tails (the head row is kept because the tails name it), then deletes the trip → the tails go, the head row and its prepared blob stay forever, named by nothing. Same class: a reset whose split walk sees only held rows leaves an unlinked tail orphaned and still naming the head.
+- Scores: trigger=concrete, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed (d63fafd3)
+
+### U3R1-2 — Every heavy project load parses the full edit snapshot of every edited row, although only the export reads it
+- Trigger: any heavy load or retried save of a trip with many split pieces parses one extra elevation profile per edited row and discards it.
+- Scores: trigger=concrete, impact=maintainability (triager, from degraded-ux), detect=silent, later=cheap, fix=M/shared (triager, from S/local), confidence=verified (triager, from inferred)
+- Decision: Defer (D8)
+- Revisit when: a profile of a heavy get_project or save_project_with_retry on a split-heavy trip shows the original_* parsing as a measurable share of load time, or the #401 device measurement points at server-side load time on split-heavy trips.
+- Guard: —
+- Override: — (owner approved the table 2026-10-11)
+- Outcome: open
