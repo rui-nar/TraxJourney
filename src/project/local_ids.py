@@ -1,16 +1,19 @@
-"""Identity for activities the app creates itself (issue #260, unit 2).
+"""Identity for activity rows (issue #260, unit 2; #592).
 
 Two things live here, and they are separate on purpose:
 
-**Local ids.** ``activity.id`` is a global primary key whose positive range
-belongs to Strava — a row's id IS its Strava id, which is what makes an upsert
-from a sync idempotent. Anything the app creates itself therefore takes a
-NEGATIVE id: a split tail, or a GPX import. Both used to allocate their own way
-— a split took ``min(0, global_min) - 1`` and a GPX import a random 62-bit
-value — which meant two schemes sharing one keyspace with different collision
-properties, and the dense one was unsafe across instances: a ``.traxj``
-exported from one deployment and imported into another carries its ids with it,
-and ids -1, -2, -3 exist in every deployment.
+**Row ids.** ``activity.id`` is an opaque primary key: the same Strava
+activity in two trips is two rows, tied together only by ``strava_id`` (#592,
+plan Decisions 1-2). Every new row takes a random id from one allocator, so
+every creator shares one keyspace with one set of collision properties. A
+split used to take ``min(0, global_min) - 1`` and a GPX import a random 62-bit
+value; the dense scheme handed out -1, -2, -3 in every deployment, so it
+collided the moment a ``.traxj`` crossed between two.
+
+The sign still says where a row came from (plan Decision 3): positive for an
+activity from Strava, negative for one the app made (a GPX import, a split
+piece). Installed builds read it to label "Reset to Strava" and to offer
+"Delete local activity"; new code reads ``source`` / ``strava_id`` instead.
 
 **Source ids.** A content fingerprint of what was imported, so the same file
 imported twice is recognised as the same activity rather than silently becoming
@@ -59,24 +62,31 @@ _FINGERPRINT_PRECISION = 7
 
 
 class LocalIdExhausted(RuntimeError):
-    """Raised when no free local id could be drawn — see _ALLOCATION_ATTEMPTS."""
+    """Raised when no free activity id could be drawn — see _ALLOCATION_ATTEMPTS."""
+
+
+def allocate_activity_id(sess: Session, *, strava: bool) -> int:
+    """Return an unused activity id: positive for an activity from Strava,
+    negative for one the app made (plan Decision 3).
+
+    Used by every path that creates an activity row, so all of them share one
+    keyspace with one set of collision properties. Checks the whole
+    ``activity`` table rather than one trip's timeline: ids are global, and a
+    row no item references still holds its id. A draw of zero is no id and
+    counts as a failed attempt.
+    """
+    sign = 1 if strava else -1
+    for _ in range(_ALLOCATION_ATTEMPTS):
+        candidate = sign * secrets.randbits(_LOCAL_ID_BITS)
+        if candidate != 0 and sess.get(DBActivity, candidate) is None:
+            return candidate
+    raise LocalIdExhausted(
+        f"no free activity id after {_ALLOCATION_ATTEMPTS} attempts")
 
 
 def allocate_local_activity_id(sess: Session) -> int:
-    """Return an unused negative activity id.
-
-    Used by every path that creates an activity the app owns, so all of them
-    share one keyspace with one set of collision properties. Checks the
-    ``activity`` table rather than this project's timeline: a tail whose item
-    was removed leaves the row behind, and reusing its id would collide on
-    INSERT.
-    """
-    for _ in range(_ALLOCATION_ATTEMPTS):
-        candidate = -secrets.randbits(_LOCAL_ID_BITS)
-        if sess.get(DBActivity, candidate) is None:
-            return candidate
-    raise LocalIdExhausted(
-        f"no free local activity id after {_ALLOCATION_ATTEMPTS} attempts")
+    """Return an unused negative activity id, for an activity the app made."""
+    return allocate_activity_id(sess, strava=False)
 
 
 def track_fingerprint(points: Iterable[Tuple[float, float]],

@@ -34,6 +34,7 @@ def _seed(engine):
         dist_km = [i * 1.0 for i in range(len(_TRACK))]
         act = DBActivity(
             id=111, user_info_id=u.id, name="Ride", type="Ride",
+            strava_id=111, strava_user_id=u.id,
             distance=4000.0, moving_time=1000, elapsed_time=1200,
             total_elevation_gain=60.0, summary_polyline=poly,
             elevation_profile_json=json.dumps({"distances_km": dist_km, "elevations_m": _ELEV}),
@@ -327,7 +328,8 @@ def test_delete_local_removes_row_and_item(env):
 
 def test_delete_local_rejects_strava_id(env):
     client, _ = env
-    # 111 is a real Strava id (>= 0) — must not be row-deleted via this endpoint.
+    # 111 comes from Strava (it has a strava_id) — not deletable through this
+    # endpoint, which deletes only what the app made.
     resp = client.delete("/api/projects/My Trip/activities/111/local")
     assert resp.status_code == 404
 

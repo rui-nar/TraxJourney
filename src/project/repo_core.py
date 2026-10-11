@@ -12,13 +12,13 @@ import time
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import and_, case, exists, func, not_, update
+from sqlalchemy import and_, case, func, not_, update
 from sqlalchemy.orm import defer as _sa_defer
 from sqlmodel import Session, select
 
 from src.utils.logging import get_logger
 from models.project_db import DBActivity, DBEncounter, DBJournalEntry, DBMemory, DBMemoryComment, DBMemoryLike, DBPerson, DBPersonGroup, DBProject, DBProjectItem
-from src.models.activity import Activity, is_activity_id
+from src.models.activity import Activity
 from src.models.journal import JournalEntry
 from src.models.memory import Memory
 from src.models.project import (
@@ -164,22 +164,6 @@ def _plain_fields(mask: int) -> List[str]:
     return [c for i, c in enumerate(_E2EE_ACTIVITY_COLUMNS) if mask & (1 << i)]
 
 
-def referenced_by_others(activity_id, user_info_id: int):
-    """SQL truth of "a trip owned by someone other than *user_info_id* holds
-    activity *activity_id*" (E2EE remnants decision 15): such a row must stay
-    readable, so no envelope may be stored on it. *activity_id* is an id or a
-    column (``DBActivity.id`` correlates it with an activity query)."""
-    return exists().where(
-        DBProjectItem.project_id == DBProject.id,
-        DBProjectItem.item_type == "activity",
-        # Written activity-side first: tests/test_orphan_strava_activities.py
-        # spots the removal's own reference check by its
-        # "projectitem.activity_id = activity.id" text.
-        activity_id == DBProjectItem.activity_id,
-        DBProject.user_info_id != user_info_id,
-    )
-
-
 class ProjectCoreMixin:
     """Project CRUD, stats caching, and row-to-domain reconstruction."""
 
@@ -195,61 +179,6 @@ class ProjectCoreMixin:
             .order_by(DBProject.name)
         ).all()
         return [{"name": r.name, "filename": r.name + ProjectIO.EXTENSION} for r in rows]
-
-    @staticmethod
-    def _drop_activities_of_other_accounts(
-        sess: Session, project_id: int, importer_id: int, project: Project,
-    ) -> None:
-        """Remove from *project* any activity it is about to start referencing
-        that is not the saver's own.
-
-        An activity row belongs to the account that created it. A trip may
-        hold activities of several accounts (a companion adds their own, issue
-        #106), but only because each account added its own: an activity the
-        trip does not hold yet may join it only if its row is the saver's, or
-        does not exist and is about to be created as the saver's from the
-        project's own activities. A reference to an id with no row and nothing
-        to create it from is left out too: it would start naming whichever
-        account later creates that id. Activities the trip already holds are
-        left alone, whoever owns them.
-
-        Runs in the save's own write transaction. That settles a race on
-        SQLite, where a writer holds the database; a backend with concurrent
-        writers would need the owner rows locked here.
-        """
-        held = set(sess.exec(
-            select(DBProjectItem.activity_id).where(
-                DBProjectItem.project_id == project_id,
-                DBProjectItem.item_type == "activity",
-            )
-        ).all())
-        joining = {
-            it.activity_id for it in project.items
-            if it.item_type == "activity" and it.activity_id is not None
-            and it.activity_id not in held
-        }
-        if not joining:
-            return
-        ids = {aid for aid in joining if is_activity_id(aid)}
-        owners = dict(sess.exec(
-            select(DBActivity.id, DBActivity.user_info_id).where(DBActivity.id.in_(ids))
-        ).all()) if ids else {}
-        creatable = {a.id for a in project.activities if is_activity_id(a.id)}
-        others = {
-            aid for aid in joining
-            if not is_activity_id(aid)
-            or owners.get(aid, importer_id if aid in creatable else None) != importer_id
-        }
-        if not others:
-            return
-        _log.warning("project id=%s: left out %d activities owned by another account",
-                     project_id, len(others))
-        project.items = [
-            it for it in project.items
-            if not (it.item_type == "activity" and it.activity_id in others)
-        ]
-        project.activities = [a for a in project.activities if a.id not in others]
-        project.rebuild_map()
 
     def project_exists(self, sess: Session, user_info_id: int, name: str) -> bool:
         row = sess.exec(
@@ -361,12 +290,17 @@ class ProjectCoreMixin:
     ) -> None:
         """Persist all changes to an in-memory Project back to the DB.
 
-        This is a full replace of the project's item list and activity upserts.
+        This is a full replace of the project's item list. Activities are
+        written per trip (#592): a row the trip already holds is never
+        rewritten, an activity it does not hold yet gets a new row of its own,
+        and no row of another trip is read or written — see
+        ``ActivityMixin._save_trip_activities``.
 
-        ``activity_user_id`` is recorded on any NEWLY inserted activity rows —
-        the importer, which for a shared project (issue #106) may be a
-        companion rather than the project owner passed as ``user_info_id``.
-        Defaults to ``user_info_id``. Existing rows keep their importer.
+        ``activity_user_id`` is the account adding activities — the importer,
+        which for a shared project (issue #106) may be a companion rather than
+        the project owner passed as ``user_info_id``. A new Strava row records
+        it as ``strava_user_id``, whose token later refreshes it. Defaults to
+        ``user_info_id``.
 
         Pass ``check_version=True`` for load-then-mutate-then-save flows that
         must not clobber a concurrent write (e.g. the segment endpoints and the
@@ -431,7 +365,6 @@ class ProjectCoreMixin:
             project.lock_version = row.lock_version
 
         importer_id = activity_user_id if activity_user_id is not None else user_info_id
-        self._drop_activities_of_other_accounts(sess, row.id, importer_id, project)
 
         row.version = project.version
         row.trip_start = project.trip_start
@@ -466,12 +399,12 @@ class ProjectCoreMixin:
         row.languages_json = json.dumps(project.languages)
         row.updated_at = time.time()
 
-        # Upsert all activities in the project's activity pool
-        for act in project.activities:
-            self._upsert_activity(sess, importer_id, act)
+        # The trip's own activity rows: new ones created, item ids mapped onto
+        # them, references to rows the trip does not hold left out.
+        sess.flush()  # ensure row.id is available
+        self._save_trip_activities(sess, row.id, row.user_info_id, importer_id, project)
 
         # Replace the full item list
-        sess.flush()  # ensure row.id is available
         self._replace_items(sess, row.id, project.items)
 
         sess.commit()
@@ -587,11 +520,10 @@ class ProjectCoreMixin:
             r.activity_id for r in item_rows
             if r.item_type == "activity" and r.activity_id is not None
         ]
-        # Both flags are columns of this one query, so the light path reads
-        # them without a statement of its own.
+        # The flag is a column of this one query, so the light path reads it
+        # without a statement of its own.
         _act_query = select(
             DBActivity, _plain_fields_mask(),
-            referenced_by_others(DBActivity.id, row.user_info_id).label("shared"),
         ).where(DBActivity.id.in_(activity_ids))
         if not include_heavy:
             _act_query = _act_query.options(
@@ -604,11 +536,10 @@ class ProjectCoreMixin:
             )
         act_rows = sess.exec(_act_query).all() if activity_ids else []
         act_by_id = {}
-        for r, plain_mask, shared in act_rows:
+        for r, plain_mask in act_rows:
             act = self._row_to_activity(
                 r, include_heavy=include_heavy, include_elevation=include_elevation)
             act.plain_fields = _plain_fields(plain_mask)
-            act.shared_with_others = bool(shared)
             act_by_id[r.id] = act
 
         # Load memory rows for this project
