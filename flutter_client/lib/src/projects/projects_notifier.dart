@@ -238,16 +238,15 @@ class ProjectsNotifier extends ChangeNotifier {
   /// [extension] names the import's file type, so a proxy's bare 413 can say
   /// which limit the file broke (the server's caps: 1 GB ZIP, 50 MB .traxj).
   String _msg(Exception e, {String? extension}) {
-    final s = e.toString();
-    final m = RegExp(r'"detail"\s*:\s*"([^"]+)"').firstMatch(s);
-    if (m != null) return m.group(1)!;
+    final reason = apiErrorReason(e);
+    if (reason != null) return reason;
     // A 413 from a proxy in front of the server has no JSON detail (issue #434).
     if (e is ApiException && e.statusCode == 413) return _tooLarge(extension);
     // The server's busy answer, when a proxy or the body drops its detail.
     if (e is ApiException && e.statusCode == 503) {
       return 'Another trip import is in progress. Try again in a minute.';
     }
-    return s.replaceFirst('Exception: ', '');
+    return e.toString().replaceFirst('Exception: ', '');
   }
 
   /// The "too large" message, naming [extension]'s limit when it has one.

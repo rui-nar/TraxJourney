@@ -11,8 +11,8 @@ library;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../api/client.dart' show apiErrorMessage;
 import 'auth_notifier.dart';
-import 'verify_email_screen.dart' show verifyErrorMessage;
 
 class VerifyEmailBanner extends StatefulWidget {
   const VerifyEmailBanner({super.key});
@@ -41,7 +41,7 @@ class _VerifyEmailBannerState extends State<VerifyEmailBanner> {
         setState(() => _message = 'Sent — check your inbox.');
       }
     } catch (e) {
-      if (mounted) setState(() => _message = verifyErrorMessage(e));
+      if (mounted) setState(() => _message = apiErrorMessage(e));
     } finally {
       if (mounted) setState(() => _sending = false);
     }

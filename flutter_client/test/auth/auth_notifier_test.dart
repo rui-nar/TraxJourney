@@ -102,6 +102,31 @@ class _FakeNoSessionAuthService extends AuthService {
   }
 }
 
+/// Fake AuthService whose sign-in calls fail with [error].
+class _FailingAuthService extends AuthService {
+  _FailingAuthService(this.error);
+
+  final ApiException error;
+
+  @override
+  Future<Map<String, dynamic>> loginWithPassword(
+          String username, String password) async =>
+      throw error;
+
+  @override
+  Future<Map<String, dynamic>> register(
+    String email,
+    String password, {
+    required String firstName,
+    required String lastName,
+  }) async =>
+      throw error;
+}
+
+// A detail with a quote and non-ASCII text, as the server JSON-encodes it.
+const _quotedDetail = 'Can\'t use "Mon voyage" — café 日本';
+final _quotedBody = jsonEncode({'detail': _quotedDetail});
+
 void main() {
   setUp(() {
     // Each AuthNotifier under test reads/writes the shared `api` singleton
@@ -212,6 +237,28 @@ void main() {
 
     expect(notifier.user, isNull);
     expect(service.appOpenedCalls, ['login_required']);
+  });
+
+  // Issue #480: a regex on "detail" cut the message at the escaped quote.
+  test('a login failure keeps the whole server message (issue #480)',
+      () async {
+    final notifier =
+        AuthNotifier(_FailingAuthService(ApiException(400, _quotedBody)));
+
+    await notifier.loginWithPassword('a@b.c', 'pw');
+
+    expect(notifier.error, _quotedDetail);
+  });
+
+  // Issue #480: same truncation on the register path.
+  test('a register failure keeps the whole server message (issue #480)',
+      () async {
+    final notifier =
+        AuthNotifier(_FailingAuthService(ApiException(409, _quotedBody)));
+
+    await notifier.register('a@b.c', 'pw', firstName: 'A', lastName: 'B');
+
+    expect(notifier.error, _quotedDetail);
   });
 
   test('no persisted session at all records login_required', () async {

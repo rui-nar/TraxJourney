@@ -23,6 +23,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:traxjourney_client/src/api/client.dart';
 import 'package:traxjourney_client/src/core/project_ref.dart';
 import 'package:traxjourney_client/src/projects/project_notifier.dart';
 import 'package:traxjourney_client/src/projects/project_service.dart';
@@ -192,7 +193,7 @@ void main() {
     test('a trigger failure reports without polling', () async {
       final service = _PollService(
         metaSequence: const [],
-        triggerError: Exception(
+        triggerError: ApiException(409,
             '{"detail":"This activity has a locally edited track."}'),
       );
       final n = _notifier(service);
@@ -265,7 +266,7 @@ void main() {
         metaSequence: [
           [_activity(refreshStatus: 'resolved')],
         ],
-        detailsError: Exception('{"detail":"Project not found"}'),
+        detailsError: ApiException(404, '{"detail":"Project not found"}'),
       );
       final n = _notifier(service);
 

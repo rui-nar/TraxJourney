@@ -88,5 +88,17 @@ void main() {
       expect(n.reconnecting, isFalse);
       expect(n.error, contains('Invalid Polarsteps token'));
     });
+
+    // Issue #480: the escaped quote used to cut the message short.
+    test('reconnect: a quoted, non-ASCII server message is shown whole (issue #480)',
+        () async {
+      const message = 'Can\'t use "Mon voyage" — café 日本';
+      final n = _notifier((req) async => _json(400, {'detail': message}));
+
+      final ok = await n.reconnect('1|bad');
+
+      expect(ok, isFalse);
+      expect(n.error, message);
+    });
   });
 }

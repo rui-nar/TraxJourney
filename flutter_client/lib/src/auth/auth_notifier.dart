@@ -240,7 +240,7 @@ class AuthNotifier extends ChangeNotifier {
       _error = null;
       await _unlockEncryption();
     } on Exception catch (e) {
-      _error = _extractMessage(e);
+      _error = apiErrorMessage(e);
       _user = null;
     } finally {
       _setLoading(false);
@@ -255,7 +255,7 @@ class AuthNotifier extends ChangeNotifier {
       _error = null;
       await _unlockEncryption();
     } on Exception catch (e) {
-      _error = _extractMessage(e);
+      _error = apiErrorMessage(e);
       _user = null;
     } finally {
       _setLoading(false);
@@ -283,7 +283,7 @@ class AuthNotifier extends ChangeNotifier {
       _error = null;
       await _unlockEncryption();
     } on Exception catch (e) {
-      _error = _extractMessage(e);
+      _error = apiErrorMessage(e);
       _user = null;
     } finally {
       _setLoading(false);
@@ -366,14 +366,5 @@ class AuthNotifier extends ChangeNotifier {
   void _setLoading(bool v) {
     _isLoading = v;
     notifyListeners();
-  }
-
-  /// Extracts the FastAPI `"detail"` string from an ApiException body, falling
-  /// back to the raw exception message.
-  String _extractMessage(Exception e) {
-    final s = e.toString();
-    final match = RegExp(r'"detail"\s*:\s*"([^"]+)"').firstMatch(s);
-    if (match != null) return match.group(1)!;
-    return s.replaceFirst('Exception: ', '');
   }
 }

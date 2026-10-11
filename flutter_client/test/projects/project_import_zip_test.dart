@@ -156,6 +156,18 @@ void main() {
       });
     }
 
+    // Issue #480: the escaped quote used to cut the message short.
+    test('a detail with quotes and non-ASCII text is shown whole (issue #480)',
+        () async {
+      const detail = 'Can\'t use "Mon voyage" — café 日本';
+      final (notifier, _) = await _upload('zip',
+          response: http.Response.bytes(
+              utf8.encode(jsonEncode({'detail': detail})), 400,
+              headers: {'content-type': 'application/json; charset=utf-8'}));
+
+      expect(notifier.error, detail);
+    });
+
     test('a proxy 413 on a ZIP names the 1 GB cap', () async {
       final (notifier, _) =
           await _upload('zip', response: http.Response('<html>413</html>', 413));

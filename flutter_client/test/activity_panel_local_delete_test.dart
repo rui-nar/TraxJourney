@@ -1,6 +1,9 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
+import 'package:traxjourney_client/src/api/client.dart';
 import 'package:traxjourney_client/src/core/project_ref.dart';
 import 'package:traxjourney_client/src/projects/activity_panel.dart';
 import 'package:traxjourney_client/src/projects/project_notifier.dart';
@@ -153,7 +156,8 @@ class _RefusingService extends ProjectService {
 
   @override
   Future<void> deleteLocalActivity(ProjectRef ref, int activityId) async {
-    throw Exception('403: {"detail":"$detail"}');
+    // What ProjectService throws: api.delete's ApiException.
+    throw ApiException(403, jsonEncode({'detail': detail}));
   }
 
   @override

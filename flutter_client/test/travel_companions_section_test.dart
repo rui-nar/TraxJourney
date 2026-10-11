@@ -6,6 +6,8 @@
 // remove-a-co-owner guard. Services are mocked by subclassing, like
 // projects_screen_shared_test.dart.
 
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
@@ -175,6 +177,24 @@ void main() {
     // Still no invite URL, and the create button remains available.
     expect(find.textContaining('/join/'), findsNothing);
     expect(find.text('Create invite link'), findsOneWidget);
+  });
+
+  // Issue #480: the escaped quote used to cut the message short.
+  testWidgets('owner: an invite error with quotes and non-ASCII text is shown '
+      'whole (issue #480)', (tester) async {
+    const message = 'Can\'t use "Mon voyage" — café 日本';
+    final svc = _FakeMembersService([_owner])
+      ..createError = ApiException(400, jsonEncode({'detail': message}));
+    final notifier = _notifierWith(svc, const ProjectRef(name: 'Trip'));
+
+    await tester.pumpWidget(_harness(notifier: notifier, authUserId: '1'));
+    await tester.pump();
+    await tester.pump();
+
+    await tester.tap(find.text('Create invite link'));
+    await tester.pumpAndSettle();
+
+    expect(find.text(message), findsOneWidget);
   });
 
   testWidgets('owner: removing a member asks for confirmation, then removes '

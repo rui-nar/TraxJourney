@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../api/client.dart' show apiErrorReason;
 import '../map/great_circle.dart';
 import 'location_picker_dialog.dart';
 import 'project_notifier.dart';
@@ -512,9 +513,9 @@ class _SegmentDialogState extends State<SegmentDialog> {
   /// Converts a resolve-route exception into a short human-readable string.
   /// Strips nginx HTML error pages that would otherwise flood the snackbar.
   static String _resolveErrMsg(Object e) {
-    final s = e.toString();
-    final detail = RegExp(r'"detail"\s*:\s*"([^"]+)"').firstMatch(s)?.group(1);
+    final detail = apiErrorReason(e);
     if (detail != null) return detail;
+    final s = e.toString();
     final codeMatch = RegExp(r'ApiException\((\d+)\)').firstMatch(s);
     if (codeMatch != null) {
       final code = codeMatch.group(1)!;

@@ -5,6 +5,8 @@
 // link from their inbox, which may be a browser with no session — so both
 // paths are covered here.
 
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
@@ -66,6 +68,10 @@ const _unverified = User(
   authProvider: 'local',
 );
 
+// A detail with a quote and non-ASCII text, as the server JSON-encodes it.
+const _quotedDetail = 'Can\'t use "Mon voyage" — café 日本';
+final _quotedBody = jsonEncode({'detail': _quotedDetail});
+
 void main() {
   setUp(() => VerifyEmailBanner.dismissed = false);
 
@@ -95,6 +101,19 @@ void main() {
       expect(
           find.text('This verification link is invalid or has expired.'),
           findsOneWidget);
+    });
+
+    // Issue #480: the escaped quote used to cut the message short.
+    testWidgets('shows a server message containing quotes whole (issue #480)',
+        (tester) async {
+      final svc = _FakeAuthService()
+        ..verifyError = ApiException(400, _quotedBody);
+      final auth = _FakeAuth(svc, _unverified);
+
+      await tester.pumpWidget(_wrap(auth, const VerifyEmailScreen(token: 't1')));
+      await tester.pumpAndSettle();
+
+      expect(find.text(_quotedDetail), findsOneWidget);
     });
 
     testWidgets('offers sign-in rather than trips when signed out',
@@ -188,6 +207,22 @@ void main() {
 
       expect(find.text('Too many verification emails requested.'),
           findsOneWidget);
+    });
+
+    // Issue #480: the escaped quote used to cut the message short.
+    testWidgets('resend error keeps a quoted server message whole (issue #480)',
+        (tester) async {
+      final svc = _FakeAuthService()
+        ..resendError = ApiException(400, _quotedBody);
+      final auth = _FakeAuth(svc, _unverified);
+      await tester.pumpWidget(_wrap(auth, const Scaffold(
+          body: VerifyEmailBanner())));
+      await tester.pump();
+
+      await tester.tap(find.text('Resend'));
+      await tester.pumpAndSettle();
+
+      expect(find.text(_quotedDetail), findsOneWidget);
     });
 
     testWidgets('dismiss hides it', (tester) async {
