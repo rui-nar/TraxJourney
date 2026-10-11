@@ -515,3 +515,153 @@ class TestDataclassRoundTrips:
         # Same omission, same consequence: the degraded retry budget was being
         # silently reset to 0 by every structural save (issue #207's counter).
         assert seg.route_degrade_retries == 4
+
+
+# ---------------------------------------------------------------------------
+# strava_id, split family and edit snapshot (#592)
+# ---------------------------------------------------------------------------
+
+def _activity_dict(aid, **extra):
+    return {
+        "id": aid, "name": "Ride", "type": "Ride",
+        "start_date": "2024-01-01T00:00:00Z",
+        "start_date_local": "2024-01-01T00:00:00Z",
+        **extra,
+    }
+
+
+def _trip_with(*activities):
+    return {"name": "T", "version": 1, "items": [], "activities": list(activities)}
+
+
+def _split_family():
+    """A Strava activity cut in two, then its head edited again: the head
+    holds a split family and a first-edit snapshot, the tail is local."""
+    from src.models.activity import Activity
+    head = Activity.from_strava_api(_activity_dict(
+        7_001, name="Alps (1/2)", strava_id=123_456_789, is_edited=True,
+        split_root_id=None, split_base_name="Alps",
+        original_polyline="_p~iF~ps|U_ulLnnqC",
+        original_elevation_profile={"distances_km": [0.0, 1.5], "elevations_m": [400.0, 820.5]},
+        original_start_latlng=[45.9, 6.8], original_end_latlng=[46.0, 6.9],
+        original_total_elevation_gain=420.5, original_distance=1500.0,
+        original_moving_time=900, original_elapsed_time=1200,
+        original_average_speed=1.67, original_elev_high=820.5, original_elev_low=400.0,
+    ))
+    tail = Activity.from_strava_api(_activity_dict(
+        -9_002, name="Alps (2/2)", strava_id=None, is_edited=True,
+        split_root_id=7_001, split_parent_id=7_001,
+    ))
+    return head, tail
+
+
+class TestStravaIdAndSnapshot:
+    def test_strava_id_round_trips_through_a_file(self, tmp_path):
+        """The row id names a row of one trip; the Strava activity is
+        strava_id, and it survives a save and load whatever the id is."""
+        head, tail = _split_family()
+        p = Project(name="T", activities=[head, tail])
+        path = str(tmp_path / "t.traxj")
+        ProjectIO.save(p, path)
+
+        loaded = {a.id: a for a in ProjectIO.load(path).activities}
+        assert loaded[7_001].strava_id == 123_456_789
+        assert loaded[-9_002].strava_id is None
+
+    def test_a_null_strava_id_is_taken_at_its_word(self):
+        """A file since #592 says a positive id with no strava_id is local."""
+        project = ProjectIO.from_dict(_trip_with(_activity_dict(55, strava_id=None)))
+        assert project.activities[0].strava_id is None
+
+    @pytest.mark.parametrize("source", [None, "", "strava"])
+    def test_an_old_files_positive_strava_id_becomes_the_strava_id(self, source):
+        """Before #592 a Strava activity's id was its Strava id (Decision 8)."""
+        project = ProjectIO.from_dict(_trip_with(_activity_dict(987_654_321, source=source)))
+        assert project.activities[0].strava_id == 987_654_321
+
+    @pytest.mark.parametrize("aid, source", [
+        (-42, None),        # imported from another account's file (review R1-7)
+        (-43, "gpx"),
+        (44, "gpx"),
+    ])
+    def test_an_old_files_local_activity_has_no_strava_id(self, aid, source):
+        project = ProjectIO.from_dict(_trip_with(_activity_dict(aid, source=source)))
+        assert project.activities[0].strava_id is None
+
+    def test_a_split_family_and_edit_snapshot_survive_a_round_trip(self, tmp_path):
+        head, tail = _split_family()
+        p = Project(name="T", activities=[head, tail])
+        path = str(tmp_path / "t.traxj")
+        ProjectIO.save(p, path)
+
+        loaded = {a.id: a for a in ProjectIO.load(path).activities}
+        h, t = loaded[7_001], loaded[-9_002]
+        assert (t.split_root_id, t.split_parent_id) == (7_001, 7_001)
+        assert h.split_base_name == "Alps"
+        assert h.is_edited and t.is_edited
+        assert h.original_polyline == "_p~iF~ps|U_ulLnnqC"
+        assert h.original_elevation_profile == ([0.0, 1.5], [400.0, 820.5])
+        assert h.original_start_latlng == [45.9, 6.8]
+        assert h.original_end_latlng == [46.0, 6.9]
+        assert (h.original_total_elevation_gain, h.original_distance,
+                h.original_moving_time, h.original_elapsed_time,
+                h.original_average_speed, h.original_elev_high,
+                h.original_elev_low) == (420.5, 1500.0, 900, 1200, 1.67, 820.5, 400.0)
+
+    def test_an_encrypted_snapshot_survives_a_round_trip(self, tmp_path):
+        from src.models.activity import Activity
+        env = "v1.QUJD.REVG"
+        act = Activity.from_strava_api(_activity_dict(
+            8, strava_id=8, is_edited=True, original_polyline=env,
+            original_elevation_profile_enc=env,
+            original_start_latlng_enc=env, original_end_latlng_enc=env))
+        path = str(tmp_path / "t.traxj")
+        ProjectIO.save(Project(name="T", activities=[act]), path)
+
+        back = ProjectIO.load(path).activities[0]
+        assert back.original_polyline == env
+        assert back.original_elevation_profile is None
+        assert (back.original_elevation_profile_enc, back.original_start_latlng_enc,
+                back.original_end_latlng_enc) == (env, env, env)
+
+    def test_the_rest_api_adds_strava_id_and_nothing_else(self):
+        """Decision 11: activity dicts gain strava_id only; the split family
+        and the snapshot stay in the file."""
+        head, _ = _split_family()
+        d = ProjectIO.to_dict(Project(name="T", activities=[head]))["activities"][0]
+        assert d["strava_id"] == 123_456_789
+        assert not any(k.startswith("original_") for k in d)
+        assert "split_root_id" not in d and "split_base_name" not in d
+
+    @pytest.mark.parametrize("value, says", [
+        (0, "is out of range"),
+        (-5, "is out of range"),
+        ("123", "is not a whole number"),
+        (True, "is not a whole number"),
+    ])
+    def test_a_strava_id_no_writer_emits_is_refused(self, value, says):
+        with pytest.raises(InvalidProjectFile,
+                           match=rf"activities\[0\]\.strava_id {says}"):
+            ProjectIO.from_dict(_trip_with(_activity_dict(1, strava_id=value)))
+
+    @pytest.mark.parametrize("field, value", [
+        ("original_start_latlng", [95.0, 0.0]),
+        ("original_distance", -1.0),
+        ("original_elevation_profile_enc", "not an envelope"),
+        ("split_root_id", "1"),
+    ])
+    def test_a_snapshot_value_no_writer_emits_is_refused(self, field, value):
+        with pytest.raises(InvalidProjectFile, match=rf"activities\[0\]\.{field}"):
+            ProjectIO.from_dict(_trip_with(_activity_dict(1, **{field: value})))
+
+    def test_a_snapshot_is_repaired_as_the_live_figures_are(self):
+        """A snapshot taken from a row before #462 can hold an implausible
+        figure; its export must still import, as a live one does."""
+        project = ProjectIO.from_dict(_trip_with(_activity_dict(
+            1, original_elapsed_time=10 ** 12, original_moving_time=600,
+            original_elev_high=65535.0,
+            original_elevation_profile={"distances_km": [0.0, 1.0],
+                                        "elevations_m": [100.0, 140.0]})))
+        act = project.activities[0]
+        assert act.original_elapsed_time == 600
+        assert act.original_elev_high == 140.0
