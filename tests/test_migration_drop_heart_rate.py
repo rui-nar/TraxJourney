@@ -198,7 +198,7 @@ def test_cache_rows_are_read_one_at_a_time(db):
 def test_upgrade_is_noop_on_clean_db(db):
     """Idempotent on the data side: re-running the scrub changes nothing."""
     cfg = _cfg(db)
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, _DROP_REV)     # not "head": #592's migration cannot downgrade
     engine = create_engine(f"sqlite:///{db.as_posix()}")
     clean = json.dumps([{"id": 7, "name": "Ride"}])
     _seed_cache(engine, 1, clean)
@@ -211,7 +211,7 @@ def test_upgrade_is_noop_on_clean_db(db):
 
 def test_downgrade_restores_empty_columns(seeded):
     cfg, engine = seeded
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, _DROP_REV)     # not "head": #592's migration cannot downgrade
     command.downgrade(cfg, _PREV_REV)
     assert _HR_COLUMNS <= _columns(engine, "activity")
     with engine.connect() as conn:
