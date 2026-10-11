@@ -1,15 +1,18 @@
-"""An activity row belongs to one account, and trips only reach it legitimately.
+"""An activity row belongs to the one trip holding it, and trips only reach their own.
 
-Activity rows are keyed by their Strava id and record the account that owns
-them (``user_info_id``). A trip reaches an activity through its items, so which
-activities a trip may reference decides what every read path returns: the
-owner's and their companions' views, public share links, geo, stats, exports.
+Every trip holds its own activity rows (#592): the same Strava activity in two
+trips, or in two accounts' trips, is two rows tied together by ``strava_id``
+alone. A row is owned (``user_info_id``) by the owner of the trip holding it,
+and ``strava_user_id`` names the account whose Strava connection it came from.
+A trip reaches an activity through its items, so which rows a trip may
+reference decides what every read path returns: the owner's and their
+companions' views, public share links, geo, stats, exports.
 
 These tests pin that adding activities to a trip (a ``.traxj`` import, the
-add-activities endpoint, a Strava sync) never modifies a row another account
-owns and never makes that row part of the caller's trip, while activities
-legitimately shared through a trip stay visible to its companions and its
-public share link.
+add-activities endpoint, a Strava sync) never modifies a row of another trip
+and never makes that row part of the caller's trip — the caller's trip gets a
+row of its own instead — while a companion's activity added to a trip stays
+visible to its owner and its public share link.
 """
 
 from __future__ import annotations
@@ -95,7 +98,7 @@ def _add(client, trip: str, activities: list, owner_q: str = ""):
 
 @pytest.fixture
 def bobs_ride(env):
-    """Bob owns activity 9001, in his own trip."""
+    """Bob's trip holds his Strava activity 9001."""
     client, engine, ids, act_as = env
     act_as("bob")
     _create_trip(client, "Bob trip")
@@ -112,8 +115,25 @@ def _row(engine, aid: int) -> DBActivity:
         return row
 
 
+def _trip_row(engine, trip_owner: int, trip: str, strava_id: int) -> DBActivity:
+    """The row trip *trip* holds for Strava activity *strava_id*."""
+    with Session(engine) as sess:
+        pid = sess.exec(select(DBProject.id).where(
+            DBProject.user_info_id == trip_owner, DBProject.name == trip)).one()
+        row = sess.exec(select(DBActivity).where(
+            DBActivity.strava_id == strava_id,
+            DBActivity.id.in_(select(DBProjectItem.activity_id).where(
+                DBProjectItem.project_id == pid)))).one()
+        sess.expunge_all()
+        return row
+
+
+def _bobs_row(engine, ids) -> int:
+    return _trip_row(engine, ids["bob"], "Bob trip", _VICTIM_ACT).id
+
+
 def _assert_bobs_row_untouched(engine, ids) -> None:
-    row = _row(engine, _VICTIM_ACT)
+    row = _trip_row(engine, ids["bob"], "Bob trip", _VICTIM_ACT)
     assert row.user_info_id == ids["bob"]
     assert row.name == _NAME
     assert row.summary_polyline == _POLYLINE
@@ -128,7 +148,7 @@ def _trip_activity_ids(engine, trip_owner: int, trip: str) -> set[int]:
             DBProjectItem.item_type == "activity"))}
 
 
-def _assert_not_exposed(client, trip: str) -> None:
+def _assert_not_exposed(client, trip: str, bobs_row: int) -> None:
     """None of the read paths of *trip* returns Bob's activity."""
     paths = [f"/api/projects/{trip}{p}" for p in ("", "/meta", "/stats", "/export-traxj")]
     paths += [f"/api/geo/project{p}?name={trip}" for p in ("", "/low-res")]
@@ -138,18 +158,19 @@ def _assert_not_exposed(client, trip: str) -> None:
         assert r.status_code == 200, (path, r.text)
         assert _POLYLINE not in r.text, path
         assert _NAME not in r.text, path
-    r = client.get(f"/api/projects/{trip}/activities/{_VICTIM_ACT}/track")
+    r = client.get(f"/api/projects/{trip}/activities/{bobs_row}/track")
     assert r.status_code == 404, r.text
 
 
-# ── Adding someone else's activity id ───────────────────────────────────────
+# ── Adding an activity another account has ──────────────────────────────────
 
 def test_an_import_naming_another_accounts_activity_neither_changes_nor_exposes_it(bobs_ride):
     client, engine, ids, act_as = bobs_ride
+    bobs_row = _bobs_row(engine, ids)
     doc = {
         "version": 1, "name": "x", "items": [
-            {"item_type": "activity", "activity_id": _VICTIM_ACT}],
-        "activities": [_activity(_VICTIM_ACT, name="Renamed", polyline="??")],
+            {"item_type": "activity", "activity_id": bobs_row}],
+        "activities": [_activity(bobs_row, name="Renamed", polyline="??")],
     }
 
     r = client.post("/api/projects/import", files={
@@ -157,20 +178,20 @@ def test_an_import_naming_another_accounts_activity_neither_changes_nor_exposes_
 
     assert r.status_code == 201, r.text
     _assert_bobs_row_untouched(engine, ids)
-    assert _VICTIM_ACT not in _trip_activity_ids(engine, ids["alice"], "Mine")
-    _assert_not_exposed(client, "Mine")
-    # The file's own activity is kept, as the importer's own local copy.
+    assert bobs_row not in _trip_activity_ids(engine, ids["alice"], "Mine")
+    _assert_not_exposed(client, "Mine", bobs_row)
+    # The file's own activity is kept, as the importer's own copy.
     (copy_id,) = _trip_activity_ids(engine, ids["alice"], "Mine")
     copy = _row(engine, copy_id)
-    assert copy_id < 0
     assert (copy.user_info_id, copy.name, copy.summary_polyline) == (
         ids["alice"], "Renamed", "??")
 
 
 def test_an_import_item_naming_another_accounts_activity_it_does_not_carry_is_left_out(bobs_ride):
     client, engine, ids, act_as = bobs_ride
+    bobs_row = _bobs_row(engine, ids)
     doc = {"version": 1, "name": "x",
-           "items": [{"item_type": "activity", "activity_id": _VICTIM_ACT}],
+           "items": [{"item_type": "activity", "activity_id": bobs_row}],
            "activities": []}
 
     r = client.post("/api/projects/import", files={
@@ -178,7 +199,7 @@ def test_an_import_item_naming_another_accounts_activity_it_does_not_carry_is_le
 
     assert r.status_code == 201, r.text
     assert _trip_activity_ids(engine, ids["alice"], "Mine") == set()
-    _assert_not_exposed(client, "Mine")
+    _assert_not_exposed(client, "Mine", bobs_row)
 
 
 def test_an_import_of_a_local_activity_id_another_account_uses_gets_a_new_id(env):
@@ -206,10 +227,11 @@ def test_an_import_of_a_local_activity_id_another_account_uses_gets_a_new_id(env
     assert "Bob GPX" not in r.text
 
 
-def test_an_import_of_the_importers_own_activity_reuses_it(env):
+def test_an_import_of_the_importers_own_activity_makes_the_trips_own_row(env):
     client, engine, ids, act_as = env
     _create_trip(client, "One")
     assert _add(client, "One", [_activity(5001)]).json()["added"] == 1
+    (one_row,) = _trip_activity_ids(engine, ids["alice"], "One")
     doc = {"version": 1, "name": "x",
            "items": [{"item_type": "activity", "activity_id": 5001}],
            "activities": [_activity(5001)]}
@@ -218,20 +240,27 @@ def test_an_import_of_the_importers_own_activity_reuses_it(env):
         "file": (f"Two{ProjectIO.EXTENSION}", json.dumps(doc).encode(), "application/json")})
 
     assert r.status_code == 201, r.text
-    assert _trip_activity_ids(engine, ids["alice"], "Two") == {5001}
+    (two_row,) = _trip_activity_ids(engine, ids["alice"], "Two")
+    assert two_row != one_row
 
 
-def test_adding_another_accounts_activity_neither_changes_nor_exposes_it(bobs_ride):
+def test_adding_another_accounts_activity_gives_the_trip_its_own_row(bobs_ride):
+    """Two accounts linked to one Strava athlete post the same Strava id: each
+    trip gets a row of its own, and Bob's is neither changed nor exposed."""
     client, engine, ids, act_as = bobs_ride
+    bobs_row = _bobs_row(engine, ids)
     _create_trip(client, "Mine")
 
     r = _add(client, "Mine", [_activity(_VICTIM_ACT, name="Renamed", polyline="??")])
 
     assert r.status_code == 200, r.text
-    assert r.json()["added"] == 0
+    assert r.json()["added"] == 1
     _assert_bobs_row_untouched(engine, ids)
-    assert _VICTIM_ACT not in _trip_activity_ids(engine, ids["alice"], "Mine")
-    _assert_not_exposed(client, "Mine")
+    mine = _trip_row(engine, ids["alice"], "Mine", _VICTIM_ACT)
+    assert mine.id != bobs_row
+    assert (mine.user_info_id, mine.strava_user_id, mine.name) == (
+        ids["alice"], ids["alice"], "Renamed")
+    _assert_not_exposed(client, "Mine", bobs_row)
 
 
 def test_a_strava_sync_listing_another_accounts_activity_leaves_it_alone(
@@ -257,28 +286,32 @@ def test_a_strava_sync_listing_another_accounts_activity_leaves_it_alone(
 
     assert r.status_code == 200, r.text
     _assert_bobs_row_untouched(engine, ids)
-    assert _trip_activity_ids(engine, ids["alice"], "Mine") == {9002}
-    assert _row(engine, 9002).user_info_id == ids["alice"]
+    assert _bobs_row(engine, ids) not in _trip_activity_ids(engine, ids["alice"], "Mine")
+    for strava_id in (_VICTIM_ACT, 9002):
+        assert _trip_row(engine, ids["alice"], "Mine", strava_id).user_info_id == ids["alice"]
 
 
 def test_a_refresh_never_moves_an_activity_to_another_account(env):
-    """force_update_activity used to rewrite the row's owner to the caller."""
+    """force_update_activity used to rewrite the row's owner to the caller;
+    it now writes nothing through another account's Strava."""
     client, engine, ids, act_as = env
     from src.models.activity import Activity
     act_as("bob")
     _create_trip(client, "Bob trip")
     assert _add(client, "Bob trip", [_activity(_VICTIM_ACT)]).status_code == 200
+    bobs_row = _bobs_row(engine, ids)
 
     with Session(engine) as sess:
         project_shared_mod._repo.force_update_activity(
-            sess, ids["alice"], Activity.from_strava_api(_activity(_VICTIM_ACT, name="X")))
+            sess, ids["alice"], Activity.from_strava_api(_activity(_VICTIM_ACT, name="X")),
+            row_id=bobs_row)
 
-    row = _row(engine, _VICTIM_ACT)
+    row = _row(engine, bobs_row)
     assert row.user_info_id == ids["bob"]
     assert row.name == _NAME
 
 
-# ── Legitimate sharing keeps working ────────────────────────────────────────
+# ── A companion's activity in someone else's trip ───────────────────────────
 
 def _join(client, act_as, owner: str, member: str, trip: str) -> str:
     act_as(owner)
@@ -288,6 +321,8 @@ def _join(client, act_as, owner: str, member: str, trip: str) -> str:
 
 
 def test_a_companions_activity_is_visible_to_the_owner_and_the_share_link(env):
+    """It belongs to the trip, so to its owner (plan Decision 4), and stays
+    tied to the companion's Strava account for refreshes (Decision 5)."""
     client, engine, ids, act_as = env
     act_as("alice")
     _create_trip(client, "Japan")
@@ -298,17 +333,19 @@ def test_a_companions_activity_is_visible_to_the_owner_and_the_share_link(env):
     r = _add(client, "Japan", [_activity(7001, name="Carol's ride")], owner_q)
     assert r.status_code == 200, r.text
     assert r.json()["added"] == 1
-    assert _row(engine, 7001).user_info_id == ids["carol"]
+    row = _trip_row(engine, ids["alice"], "Japan", 7001)
+    assert (row.user_info_id, row.strava_user_id) == (ids["alice"], ids["carol"])
 
     act_as("alice")
     assert "Carol's ride" in client.get("/api/projects/Japan").text
     token = client.post("/api/projects/Japan/share").json()["share_token"]
     assert "Carol's ride" in client.get(f"/api/share/{token}").text
 
-    # The owner re-saving the trip (a reorder here) keeps Carol's row Carol's.
+    # The owner re-saving the trip (a reorder here) changes nothing of the row.
     r = client.put("/api/projects/Japan/items/sort")
     assert r.status_code == 204, r.text
-    assert _row(engine, 7001).user_info_id == ids["carol"]
+    after = _row(engine, row.id)
+    assert (after.user_info_id, after.strava_user_id) == (ids["alice"], ids["carol"])
 
     # And a companion who leaves leaves their contribution behind, as with
     # memories (test_companion_e2e).
@@ -327,45 +364,59 @@ def test_an_account_can_add_its_own_activity_to_several_trips(env):
     assert _add(client, "One", [_activity(5001)]).json()["added"] == 1
     assert _add(client, "Two", [_activity(5001)]).json()["added"] == 1
 
-    assert _VICTIM_ACT not in _trip_activity_ids(engine, ids["alice"], "Two")
-    assert 5001 in _trip_activity_ids(engine, ids["alice"], "Two")
+    one = _trip_row(engine, ids["alice"], "One", 5001)
+    two = _trip_row(engine, ids["alice"], "Two", 5001)
+    assert one.id != two.id
 
 
-def test_a_companion_can_add_the_owners_activity_already_in_the_trip_as_a_no_op(env):
-    """Re-adding what the trip already holds is not taking someone's row."""
+def test_a_companion_re_adding_the_owners_activity_changes_nothing(env):
+    """Re-adding what the trip already holds finds the trip's own row by its
+    Strava id: no second row, no second item, no rename.
+
+    The route's ``added`` count is #592's U4 to correct: it still counts the
+    re-add, since the route compares the posted Strava id with row ids."""
     client, engine, ids, act_as = env
     _create_trip(client, "Japan")
     assert _add(client, "Japan", [_activity(5001)]).json()["added"] == 1
     _join(client, act_as, "alice", "carol", "Japan")
+    before = _trip_row(engine, ids["alice"], "Japan", 5001)
 
     act_as("carol")
     r = _add(client, "Japan", [_activity(5001, name="Renamed")], f"?owner={ids['alice']}")
 
     assert r.status_code == 200, r.text
-    assert r.json()["added"] == 0
-    row = _row(engine, 5001)
-    assert (row.user_info_id, row.name) == (ids["alice"], _NAME)
+    assert _trip_activity_ids(engine, ids["alice"], "Japan") == {before.id}
+    row = _row(engine, before.id)
+    assert (row.user_info_id, row.strava_user_id, row.name) == (
+        ids["alice"], ids["alice"], _NAME)
+    with Session(engine) as sess:
+        assert len(sess.exec(select(DBActivity)).all()) == 1
 
 
 # ── The writers themselves ──────────────────────────────────────────────────
 
-def test_saving_a_trip_never_takes_in_another_accounts_activity(bobs_ride):
-    """The backstop under every save: an activity reference the trip did not
-    already hold must be to one of the saver's own activities."""
+def test_saving_a_trip_never_takes_in_another_accounts_row(bobs_ride):
+    """The backstop under every save: an activity the trip did not already
+    hold becomes a row of its own, and an item naming a row of another trip
+    is left out."""
     from src.models.activity import Activity
     from src.models.project import ProjectItem
 
     client, engine, ids, act_as = bobs_ride
+    bobs_row = _bobs_row(engine, ids)
     _create_trip(client, "Mine")
     repo = project_shared_mod._repo
     with Session(engine) as sess:
         project = repo.get_project(sess, ids["alice"], "Mine")
         project.activities.append(Activity.from_strava_api(_activity(_VICTIM_ACT, name="X")))
         project.items.append(ProjectItem(item_type="activity", activity_id=_VICTIM_ACT))
+        project.items.append(ProjectItem(item_type="activity", activity_id=bobs_row))
         repo.save_project(sess, ids["alice"], project)
 
     _assert_bobs_row_untouched(engine, ids)
-    assert _VICTIM_ACT not in _trip_activity_ids(engine, ids["alice"], "Mine")
+    (mine,) = _trip_activity_ids(engine, ids["alice"], "Mine")
+    assert mine != bobs_row
+    assert (_row(engine, mine).user_info_id, _row(engine, mine).name) == (ids["alice"], "X")
 
 
 def test_background_enrichment_never_writes_another_accounts_row(bobs_ride):
@@ -373,7 +424,7 @@ def test_background_enrichment_never_writes_another_accounts_row(bobs_ride):
 
     with Session(engine) as sess:
         project_shared_mod._repo.update_activity_enrichment(
-            sess, _VICTIM_ACT, "??", None, owner_id=ids["alice"])
+            sess, _bobs_row(engine, ids), "??", None, owner_id=ids["alice"])
 
     _assert_bobs_row_untouched(engine, ids)
 
@@ -421,7 +472,7 @@ def test_an_id_that_is_not_a_plain_integer_is_not_added(bobs_ride, given):
     assert r.json()["added"] == 0
     _assert_bobs_row_untouched(engine, ids)
     assert _trip_activity_ids(engine, ids["alice"], "Mine") == set()
-    _assert_not_exposed(client, "Mine")
+    _assert_not_exposed(client, "Mine", _bobs_row(engine, ids))
 
 
 def test_a_boolean_id_is_not_added(env):
@@ -439,7 +490,7 @@ def test_a_boolean_id_is_not_added(env):
     assert r.status_code == 200, r.text
     assert r.json()["added"] == 0
     assert _trip_activity_ids(engine, ids["alice"], "Mine") == set()
-    assert _row(engine, 1).name == _NAME
+    assert _trip_row(engine, ids["bob"], "Bob trip", 1).name == _NAME
 
 
 @pytest.mark.parametrize("given", ["9001", 9001.0, True])
@@ -556,11 +607,12 @@ def test_geometry_writes_refuse_an_activity_of_an_account_outside_the_trip(bobs_
                             summary_polyline=_POLYLINE))
         sess.commit()
     _create_trip(client, "Mine")
-    _plant(engine, ids["alice"], "Mine", _VICTIM_ACT)
+    bobs_row = _bobs_row(engine, ids)
+    _plant(engine, ids["alice"], "Mine", bobs_row)
     _plant(engine, ids["alice"], "Mine", -55)
-    base = f"/api/projects/Mine/activities/{_VICTIM_ACT}"
+    base = f"/api/projects/Mine/activities/{bobs_row}"
 
-    assert _edit(client, "Mine", _VICTIM_ACT).status_code == 404
+    assert _edit(client, "Mine", bobs_row).status_code == 404
     assert client.post(f"{base}/reset").status_code == 404
     assert client.post(f"{base}/split", json={"split_index": 1}).status_code == 404
     assert client.delete("/api/projects/Mine/activities/-55/local").status_code == 404
@@ -569,32 +621,32 @@ def test_geometry_writes_refuse_an_activity_of_an_account_outside_the_trip(bobs_
     assert _row(engine, -55) is not None
 
 
-def test_geometry_writes_follow_membership(env):
+def test_geometry_writes_on_a_companions_activity_are_the_trips(env):
+    """A companion's activity belongs to the trip (plan Decision 4): its owner
+    may edit and split it, and still may once the companion has left."""
     client, engine, ids, act_as = env
     _create_trip(client, "Japan")
     _join(client, act_as, "alice", "carol", "Japan")
     owner_q = f"?owner={ids['alice']}"
     act_as("carol")
     assert _add(client, "Japan", [_activity(7001)], owner_q).json()["added"] == 1
+    row_id = _trip_row(engine, ids["alice"], "Japan", 7001).id
 
-    # The owner may edit a current member's activity...
     act_as("alice")
-    assert _edit(client, "Japan", 7001).status_code == 200
+    assert _edit(client, "Japan", row_id).status_code == 200
 
-    # ...and a split tail belongs to whoever owns what was split.
-    r = client.post("/api/projects/Japan/activities/7001/split", json={"split_index": 1})
+    # A split tail belongs to whoever owns what was split: the trip's owner.
+    r = client.post(f"/api/projects/Japan/activities/{row_id}/split", json={"split_index": 1})
     assert r.status_code == 200, r.text
-    tails = _trip_activity_ids(engine, ids["alice"], "Japan") - {7001}
+    tails = _trip_activity_ids(engine, ids["alice"], "Japan") - {row_id}
     assert len(tails) == 1
-    assert _row(engine, tails.pop()).user_info_id == ids["carol"]
+    assert _row(engine, tails.pop()).user_info_id == ids["alice"]
 
-    # Once the member has left, their activity stays in the trip but is no
-    # longer the trip's to rewrite.
     act_as("carol")
     assert client.delete(
         f"/api/projects/Japan/members/{ids['carol']}{owner_q}").status_code == 204
     act_as("alice")
-    assert _edit(client, "Japan", 7001).status_code == 404
+    assert _edit(client, "Japan", row_id).status_code == 200
 
 
 def test_the_audit_lists_items_whose_activity_does_not_exist(env):

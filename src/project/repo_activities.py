@@ -5,36 +5,85 @@ for the composed class and module docstring.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 from typing import Dict, Iterable, List, Optional, Set
 
-from sqlalchemy import and_, delete, exists, or_, update
-from sqlalchemy.orm import aliased
+from sqlalchemy import delete
 from sqlmodel import Session, select
 
 from models.db import get_session
 from models.project_db import DBActivity, DBActivityGeoPrepared, DBProject, DBProjectItem, DBProjectMember
-from models.user import UserInfo
 from src.models.activity import Activity, is_activity_id
 from src.models.prepared_geo import prepare_polyline
+from src.models.project import Project
 from src.models.simplify import PREPARED_GEO_VERSION
-from src.project.local_ids import allocate_local_activity_id
+from src.project.local_ids import allocate_activity_id
 from src.project.elevation_downsample import downsample_elevation
-from src.project.repo_core import (
-    bump_lock_version, check_and_bump_lock_version, referenced_by_others,
-)
+from src.project.repo_core import bump_lock_version, check_and_bump_lock_version
 from src.utils.encryption_check import is_encrypted_envelope
 from src.utils.logging import get_logger
 
 _log = get_logger(__name__)
 
-# Rows imported from Strava: ``source`` is NULL on every row that predates the
-# column, and "strava" is accepted for any writer that spells it out. A GPX
-# import says "gpx" and is never pruned here (issue #509).
-_STRAVA_ORIGIN = or_(DBActivity.source.is_(None), DBActivity.source.in_(("", "strava")))
+# The ``source`` of an activity from Strava: NULL on every row that predates
+# the column, and "strava" for any writer that spells it out. A GPX import
+# says "gpx".
+_STRAVA_SOURCES = (None, "", "strava")
 
 # Bound on the ids one IN (...) carries, well under SQLite's variable limit.
 _ID_CHUNK = 500
+
+
+def _chunks(ids: List[int]):
+    """*ids* in slices of at most ``_ID_CHUNK``."""
+    for i in range(0, len(ids), _ID_CHUNK):
+        yield ids[i:i + _ID_CHUNK]
+
+
+def trip_rows(project_id: int):
+    """SQL: the ids of the activity rows trip *project_id* holds — those its
+    activity items name. A row belongs to exactly one trip (#592), so this is
+    the scope of every write the trip makes to its activities."""
+    return select(DBProjectItem.activity_id).where(
+        DBProjectItem.project_id == project_id,
+        DBProjectItem.item_type == "activity",
+        DBProjectItem.activity_id.is_not(None),
+    )
+
+
+def other_trips_rows(project_id: int):
+    """SQL: the ids of the activity rows any trip but *project_id* holds —
+    rows a write made from that trip must never touch (review R1-2)."""
+    return select(DBProjectItem.activity_id).where(
+        DBProjectItem.project_id != project_id,
+        DBProjectItem.activity_id.is_not(None),
+    )
+
+
+def strava_identity(act: Activity) -> Optional[int]:
+    """The Strava id of *act*, an activity about to get a row; None for an
+    activity the app made.
+
+    ``strava_id`` when the activity carries one. Otherwise the activity comes
+    from a caller or a file that predates #592, where a positive id on a
+    Strava-sourced activity IS its Strava id (plan Decisions 3 and 8): the one
+    place an id's sign is read for meaning.
+    """
+    sid = getattr(act, "strava_id", None)
+    if is_activity_id(sid) and sid > 0:
+        return sid
+    if act.source in _STRAVA_SOURCES and is_activity_id(act.id) and act.id > 0:
+        return act.id
+    return None
+
+
+def _carries_envelope(act: Activity) -> bool:
+    """Whether *act* holds a client-side E2EE envelope in any field."""
+    return bool(
+        act.start_latlng_enc or act.end_latlng_enc or act.elevation_profile_enc
+        or is_encrypted_envelope(act.name)
+        or is_encrypted_envelope(act.summary_polyline))
 
 
 def _low_res_ep_json(ep_json: Optional[str]) -> Optional[str]:
@@ -95,6 +144,23 @@ def _parse_ep(ep_json: Optional[str]):
         return (ep.get("distances_km") or [], ep.get("elevations_m") or [])
     except Exception:
         return None
+
+
+def _ep_tuple(ep_json: str):
+    """A stored elevation_profile JSON blob as the model's ``(distances_km,
+    elevations_m)`` pair."""
+    ep = json.loads(ep_json)
+    return (ep["distances_km"], ep["elevations_m"])
+
+
+def _parsed_or_envelope(text: Optional[str], parse):
+    """``(parsed, None)`` for a plaintext JSON column, ``(None, envelope)`` for
+    one holding a client-side E2EE envelope, ``(None, None)`` when empty."""
+    if not text:
+        return None, None
+    if is_encrypted_envelope(text):
+        return None, text
+    return parse(text), None
 
 
 def _apportion_gain(stored: Optional[float], before: float, after: float) -> float:
@@ -230,11 +296,15 @@ class ActivityMixin:
         elevation_profile_json: Optional[str],
         *,
         owner_id: int,
+        project_id: Optional[int] = None,
     ) -> None:
-        """Update only the enrichment columns of an activity row.
+        """Update only the enrichment columns of the activity row *activity_id*.
 
-        ``owner_id`` is the account whose Strava streams these are; a row owned
-        by any other account is left alone.
+        Writes that one row (#592, plan Decision 6): another trip's copy of
+        the same Strava activity keeps what it has. ``owner_id`` is the
+        account whose Strava streams these are; a row whose Strava data came
+        through any other account (``strava_user_id``) is left alone. With
+        *project_id*, so is a row that trip does not hold.
 
         Skips a field whose EXISTING value is already a client-side E2EE
         ciphertext envelope (issue #29) — once a field is encrypted, a
@@ -242,7 +312,10 @@ class ActivityMixin:
         streams) must not silently overwrite it back to plaintext.
         """
         row = sess.get(DBActivity, activity_id)
-        if row is None or row.user_info_id != owner_id:
+        if row is None or row.strava_user_id != owner_id:
+            return
+        if project_id is not None and not self.trip_holds_activity(
+                sess, project_id, activity_id):
             return
         if summary_polyline is not None and not is_encrypted_envelope(row.summary_polyline):
             row.summary_polyline = summary_polyline
@@ -404,8 +477,12 @@ class ActivityMixin:
         return True
 
     @staticmethod
-    def _split_descendants(sess: Session, activity_id: int) -> List[DBActivity]:
-        """Every LOCAL piece transitively cut out of *activity_id*.
+    def _split_descendants(
+        sess: Session, project_id: int, activity_id: int
+    ) -> List[DBActivity]:
+        """Every piece transitively cut out of *activity_id* that no other trip
+        than *project_id* holds: the trip's own pieces, and pieces no trip
+        holds any more (an item unlinked while its row stayed).
 
         Walks ``split_parent_id`` breadth-first: a piece records which piece it
         was cut directly out of, so this is exactly the set that resetting
@@ -413,11 +490,12 @@ class ActivityMixin:
         — it points every piece of a family at the family's FIRST piece however
         deep the chain, which says nothing about who cut whom (issue #143).
 
-        The ``id < 0`` filter is a guard, not a subtlety: only split tails have a
-        parent and they are always local, but a Strava row is shared across every
-        project that references it and must never be row-deleted here. ``seen``
-        likewise guards a cycle that split_activity cannot create (a new tail's
-        id is always below every existing id, so parents are strictly greater).
+        A piece another trip holds is never walked (#592, review R1-2). The
+        migration leaves no split link crossing trips; this is the guard behind
+        that invariant, so a reset can never delete another trip's row. An
+        unreferenced piece is walked, so a reset deletes it rather than leave
+        it naming the head it was cut out of (U3R1-1). ``seen`` likewise guards
+        a cycle that split_activity cannot create.
         """
         found: List[DBActivity] = []
         seen = {activity_id}
@@ -425,7 +503,8 @@ class ActivityMixin:
         while frontier:
             children = sess.exec(
                 select(DBActivity).where(
-                    DBActivity.split_parent_id.in_(frontier), DBActivity.id < 0
+                    DBActivity.split_parent_id.in_(frontier),
+                    DBActivity.id.not_in(other_trips_rows(project_id)),
                 )
             ).all()
             children = [c for c in children if c.id not in seen]
@@ -445,7 +524,7 @@ class ActivityMixin:
         family, i.e. undoes the split outright (issue #141); on a piece that was
         itself split again it removes just that piece's own children (#143).
         """
-        pieces = self._split_descendants(sess, row.id)
+        pieces = self._split_descendants(sess, project_id, row.id)
         if not pieces:
             return 0
 
@@ -475,7 +554,8 @@ class ActivityMixin:
             it.position = pos
             sess.add(it)
         self._renumber_split_family(
-            sess, row.split_root_id if row.split_root_id is not None else row.id)
+            sess, project_id,
+            row.split_root_id if row.split_root_id is not None else row.id)
         return len(pieces)
 
     def reset_activity_track(
@@ -614,13 +694,19 @@ class ActivityMixin:
         return align_points(row.original_polyline, orig_ep)
 
     @staticmethod
-    def _renumber_split_family(sess: Session, root_id: int) -> None:
-        """Rename every surviving member of a split family as ``"<base> (i/N)"``,
-        1-indexed in chronological (start_date) order. Called after a split
-        creates a new piece and after a local tail is deleted, so the numbering
-        always reflects the CURRENT family size instead of accumulating suffixes
-        (issue #45 follow-up — this replaced the old ``"<name> (2)"`` scheme,
-        which produced "<name> (2) (2)" when a piece was split again).
+    def _renumber_split_family(sess: Session, project_id: int, root_id: int) -> None:
+        """Rename every member of a split family that trip *project_id* holds
+        as ``"<base> (i/N)"``, 1-indexed in chronological (start_date) order.
+        Called after a split creates a new piece and after a local tail is
+        deleted, so the numbering always reflects the CURRENT family size
+        instead of accumulating suffixes (issue #45 follow-up — this replaced
+        the old ``"<name> (2)"`` scheme, which produced "<name> (2) (2)" when a
+        piece was split again).
+
+        Only the trip's own rows are counted and renamed (#592, review R1-2):
+        no-op when another trip holds the root, which the migration leaves no
+        family in. A root no trip holds (its item removed while its pieces
+        stayed) still gives the base name.
 
         No-op if the root's name is an E2EE ciphertext envelope (issue #29) — a
         base name can't be meaningfully derived from ciphertext, so this leaves
@@ -631,10 +717,16 @@ class ActivityMixin:
         root = sess.get(DBActivity, root_id)
         if root is None or is_encrypted_envelope(root.name):
             return
+        if sess.exec(select(DBProjectItem.id).where(
+                DBProjectItem.item_type == "activity",
+                DBProjectItem.activity_id == root_id,
+                DBProjectItem.project_id != project_id)).first() is not None:
+            return
 
         members = sess.exec(
             select(DBActivity).where(
-                (DBActivity.id == root_id) | (DBActivity.split_root_id == root_id)
+                (DBActivity.id == root_id) | (DBActivity.split_root_id == root_id),
+                DBActivity.id.in_(trip_rows(project_id)),
             )
         ).all()
         if len(members) < 2:
@@ -757,7 +849,7 @@ class ActivityMixin:
         _snapshot_current(tail)
 
         self._insert_split_tail(sess, project_id, head.id, tail.id)
-        self._renumber_split_family(sess, tail.split_root_id)
+        self._renumber_split_family(sess, project_id, tail.split_root_id)
         sess.commit()
         return tail.id
 
@@ -798,7 +890,7 @@ class ActivityMixin:
         _snapshot_current(tail)
 
         self._insert_split_tail(sess, project_id, head.id, tail.id)
-        self._renumber_split_family(sess, tail.split_root_id)
+        self._renumber_split_family(sess, project_id, tail.split_root_id)
         sess.commit()
         return tail.id
 
@@ -815,8 +907,10 @@ class ActivityMixin:
         # exported from one is imported into another. The allocator also keeps
         # the property that mattered here: it checks the activity TABLE, not
         # this project's timeline, because a tail whose item was removed leaves
-        # the row behind and reusing its id would collide on INSERT.
-        tail_id = allocate_local_activity_id(sess)
+        # the row behind and reusing its id would collide on INSERT. A tail has
+        # no strava_id, whatever its head came from: there is no Strava
+        # activity to refresh it from.
+        tail_id = allocate_activity_id(sess, strava=False)
 
         # Resolve the family root: the very first piece ever split, regardless
         # of how deep this split is in the chain (splitting an already-split
@@ -828,8 +922,9 @@ class ActivityMixin:
         # only as the fallback when that's skipped, e.g. an E2EE-encrypted name).
         tail = DBActivity(
             id=tail_id,
-            # Cut out of the head, so owned by whoever owns the head: an
-            # activity row belongs to the account that created the original.
+            # Cut out of the head, so owned by whoever owns the head: the
+            # trip's owner, or the account whose key encrypted it (plan
+            # Decision 4).
             user_info_id=head.user_info_id,
             name=f"{head.name} (2)",
             split_root_id=root_id,
@@ -901,14 +996,14 @@ class ActivityMixin:
     def delete_local_activity(
         self, sess: Session, project_id: int, activity_id: int
     ) -> bool:
-        """Delete a LOCAL (negative-id) activity row and unlink it from items.
+        """Delete a LOCAL activity row and unlink it from items.
 
-        Only local activities (split tails, id < 0) may be deleted — Strava
-        activities are shared across projects and must never be row-deleted here.
-        Also renumbers any surviving split-family siblings (see
+        Local means the app made it — a split piece or a GPX import — so it has
+        no ``strava_id``; a Strava activity leaves a trip through its timeline
+        item instead. Also renumbers any surviving split-family siblings (see
         ``_renumber_split_family``) so "(i/N)" reflects the new, smaller N.
-        Returns False if the id is not local, the row is absent, or the row
-        belongs to a DIFFERENT project than *project_id*.
+        Returns False if the row is not local, is absent, or belongs to a
+        DIFFERENT project than *project_id*.
 
         That last check is issue #405. The caller's permission check proves you
         may edit *project_id*, not that the activity is one of its own, so
@@ -932,19 +1027,15 @@ class ActivityMixin:
           already take. Ids are 53-bit random (``local_ids``), so they cannot be
           walked either.
 
-        A row referenced by this project *and* another is refused rather than
-        unlinked: local rows are single-owner by construction, so that state is
-        corruption, and destroying the other project's activity is the worse
-        answer to it.
+        A row another trip holds is that trip's (#592: one row per trip), so it
+        is refused whether or not this project holds it too.
 
         Advances the project's lock_version (issue #173) so a native client's
         on-disk cache — which only ever checks that counter — notices the
         deletion.
         """
-        if activity_id >= 0:
-            return False
         row = sess.get(DBActivity, activity_id)
-        if row is None:
+        if row is None or row.strava_id is not None:
             return False
         foreign_ref = sess.exec(
             select(DBProjectItem).where(
@@ -960,9 +1051,13 @@ class ActivityMixin:
         # Adopt this row's children onto its own parent before it goes, so the
         # split chain stays connected. Left dangling they would be unreachable
         # from any ancestor, and a later reset would restore a track right over
-        # the top of them without knowing they were there (issue #143).
+        # the top of them without knowing they were there (issue #143). A piece
+        # another trip holds is that trip's, and is left alone (review R1-2).
         for child in sess.exec(
-            select(DBActivity).where(DBActivity.split_parent_id == activity_id)
+            select(DBActivity).where(
+                DBActivity.split_parent_id == activity_id,
+                DBActivity.id.not_in(other_trips_rows(project_id)),
+            )
         ).all():
             child.split_parent_id = row.split_parent_id
             sess.add(child)
@@ -988,9 +1083,104 @@ class ActivityMixin:
             it.position = pos
             sess.add(it)
         if root_id is not None:
-            self._renumber_split_family(sess, root_id)
+            self._renumber_split_family(sess, project_id, root_id)
         sess.commit()
         return True
+
+    def delete_unreferenced_activities(
+        self, sess: Session, ids: Iterable[int]
+    ) -> Set[int]:
+        """Delete the rows among *ids* that no trip item references (#592,
+        plan Decision 9), with their prepared geometry. No commit.
+
+        A row belongs to the one trip holding it, so once that trip lets go of
+        it — its item removed, or the trip deleted — nothing else reaches it.
+        Whatever the row came from: Strava, a GPX file or a split.
+
+        Split links are kept whole. A family root that a surviving piece still
+        names stays, and goes with the last piece naming it: the ancestors of
+        the rows given are considered with them, so a head no item references
+        goes when its last piece does (U3R1-1). A surviving piece
+        cut out of a deleted one is adopted by its nearest surviving ancestor,
+        as ``delete_local_activity`` does. The survivors of a family that lost
+        pieces are renumbered in the trip holding them, its ``lock_version``
+        advanced first (issue #173: names are part of what a native client
+        caches under that counter).
+
+        Returns the ids of those renumbered trips.
+        """
+        given = {i for i in ids if is_activity_id(i)}
+        # The pieces' ancestors are considered too (U3R1-1): a head whose item
+        # was removed while its pieces kept it stays only as long as they do.
+        frontier = set(given)
+        while frontier:
+            ancestors: Set[int] = set()
+            for chunk in _chunks(sorted(frontier)):
+                for root, parent in sess.exec(select(
+                        DBActivity.split_root_id, DBActivity.split_parent_id,
+                ).where(DBActivity.id.in_(chunk))).all():
+                    ancestors.update(a for a in (root, parent) if a is not None)
+            frontier = ancestors - given
+            given |= frontier
+        given = sorted(given)
+        referenced: Set[int] = set()
+        for chunk in _chunks(given):
+            referenced.update(sess.exec(select(DBProjectItem.activity_id).where(
+                DBProjectItem.activity_id.in_(chunk))).all())
+        doomed = set(given) - referenced
+        while doomed:
+            namers: Dict[int, List[int]] = {}
+            for chunk in _chunks(sorted(doomed)):
+                for aid, root in sess.exec(select(
+                        DBActivity.id, DBActivity.split_root_id,
+                ).where(DBActivity.split_root_id.in_(chunk))).all():
+                    if aid not in doomed:
+                        namers.setdefault(root, []).append(aid)
+            if not namers:
+                break
+            for root, pieces in sorted(namers.items()):
+                if not sess.exec(select(DBProjectItem.id).where(
+                        DBProjectItem.activity_id.in_(pieces))).first():
+                    # A split committed while its trip was being deleted
+                    # (review R3-3): kept, and said so.
+                    _log.warning("activity %s kept only by split tails no trip holds: %s",
+                                 root, sorted(pieces))
+            doomed -= set(namers)
+        if not doomed:
+            return set()
+
+        parent_of: Dict[int, Optional[int]] = {}
+        roots: Set[int] = set()
+        for chunk in _chunks(sorted(doomed)):
+            for aid, root, parent in sess.exec(select(
+                    DBActivity.id, DBActivity.split_root_id, DBActivity.split_parent_id,
+            ).where(DBActivity.id.in_(chunk))).all():
+                parent_of[aid] = parent
+                if root is not None:
+                    roots.add(root)
+        for chunk in _chunks(sorted(parent_of)):
+            for child in sess.exec(select(DBActivity).where(
+                    DBActivity.split_parent_id.in_(chunk))).all():
+                if child.id in parent_of:
+                    continue
+                parent = child.split_parent_id
+                while parent in parent_of:
+                    parent = parent_of[parent]
+                child.split_parent_id = parent
+                sess.add(child)
+        self._delete_activity_rows(sess, sorted(parent_of))
+
+        renamed: Set[int] = set()
+        for root_id in sorted(roots - doomed):
+            family = select(DBActivity.id).where(
+                (DBActivity.id == root_id) | (DBActivity.split_root_id == root_id))
+            for project_id in sorted(set(sess.exec(select(DBProjectItem.project_id).where(
+                    DBProjectItem.activity_id.in_(family))).all())):
+                if project_id not in renamed:
+                    bump_lock_version(sess, project_id)
+                    renamed.add(project_id)
+                self._renumber_split_family(sess, project_id, root_id)
+        return renamed
 
     def delete_unreferenced_strava_activities(
         self,
@@ -999,115 +1189,19 @@ class ActivityMixin:
         ids: Optional[Iterable[int]] = None,
         tail_ids: Optional[Iterable[int]] = None,
     ) -> Set[int]:
-        """Delete Strava activity rows no trip references any more (issue #509).
+        """Adapter for the callers in ``api/`` until #592's U5 and U6 call
+        ``delete_unreferenced_activities`` themselves: deletes the rows among
+        *ids* and *tail_ids* that no trip references, and commits.
 
-        A Strava row is shared by every trip that holds it, so it may go only
-        once nothing points at it: no project item's ``activity_id``, and no
-        other activity's ``split_root_id`` or ``split_parent_id`` (a split
-        tail still being in a trip keeps its root). Its prepared geometry goes
-        with it. GPX and other local rows are never touched.
-
-        *ids* names the rows to consider, **whoever owns them**: an owner
-        removing an activity a companion imported frees it too. Without *ids*,
-        every Strava row of *user_info_id* is considered (a disconnect).
-
-        *tail_ids* are split tails a deleted trip held. Those of a Strava
-        family that no item references are deleted first, as one set, so a
-        tail named only by another tail of the set goes too. Their roots are
-        then considered with *ids* and renumbered if they survive. Given
-        *ids*, a WARNING names any row considered and kept only by tails no
-        item references — a split committed while the trip was being deleted
-        (plan R3-3).
-
-        One write transaction, the write lock taken first (the no-op UPDATE
-        of ``src.billing.subscriptions.lock_account``): an add of the same
-        activity to another trip either committed before the "unreferenced"
-        check, so the row is kept, or waits and recreates it after the
-        delete — never commits between the check and the delete. Anything
-        the caller already wrote in *sess* commits with it.
-
-        Returns the ids of the projects whose items were renamed by the
-        renumbering, after advancing their ``lock_version``.
+        *user_info_id* is no longer read: a row is its trip's, whoever owns
+        it. Without *ids* (a Strava disconnect) nothing is deleted: an
+        activity stays in its trip when its importer disconnects (plan
+        Decision 9).
         """
-        sess.execute(
-            update(UserInfo)
-            .where(UserInfo.id == user_info_id)
-            .values(created_at=UserInfo.created_at)
-        )
-
-        referenced = exists().where(DBProjectItem.activity_id == DBActivity.id)
-        roots: Set[int] = set()
-        tails = sorted({t for t in (tail_ids or ()) if t < 0})
-        if tails:
-            doomed = sess.exec(
-                select(DBActivity)
-                .where(
-                    DBActivity.id.in_(tails),
-                    DBActivity.split_root_id > 0,
-                    _STRAVA_ORIGIN,
-                    ~referenced,
-                )
-                .execution_options(populate_existing=True)
-            ).all()
-            parent_of = {t.id: t.split_parent_id for t in doomed}
-            # A surviving piece cut out of a doomed one is adopted by its
-            # nearest surviving ancestor, as delete_local_activity does.
-            if parent_of:
-                for child in sess.exec(
-                    select(DBActivity).where(
-                        DBActivity.split_parent_id.in_(list(parent_of)),
-                        DBActivity.id.not_in(list(parent_of)),
-                    )
-                ).all():
-                    parent = child.split_parent_id
-                    while parent in parent_of:
-                        parent = parent_of[parent]
-                    child.split_parent_id = parent
-                    sess.add(child)
-            roots = {t.split_root_id for t in doomed}
-            self._delete_activity_rows(sess, list(parent_of))
-
-        considered = DBActivity.id.in_(set(ids or ()) | roots)
         if ids is None:
-            considered = or_(DBActivity.user_info_id == user_info_id, considered)
-        other = aliased(DBActivity)
-        named = exists().where(
-            other.id != DBActivity.id,
-            or_(other.split_root_id == DBActivity.id,
-                other.split_parent_id == DBActivity.id),
-        )
-        strava = and_(DBActivity.id > 0, _STRAVA_ORIGIN, considered, ~referenced)
-        self._delete_activity_rows(
-            sess, list(sess.exec(select(DBActivity.id).where(strava, ~named)).all()))
-
-        if ids is not None:
-            for kept in sess.exec(select(DBActivity.id).where(strava)).all():
-                namers = list(sess.exec(select(DBActivity.id).where(
-                    or_(DBActivity.split_root_id == kept,
-                        DBActivity.split_parent_id == kept),
-                    DBActivity.id != kept,
-                )).all())
-                if all(n < 0 for n in namers) and not sess.exec(
-                    select(DBProjectItem.id).where(DBProjectItem.activity_id.in_(namers))
-                ).first():
-                    _log.warning(
-                        "activity %s kept only by split tails no trip holds: %s",
-                        kept, sorted(namers))
-
-        renamed: Set[int] = set()
-        for root_id in sorted(roots):
-            if sess.get(DBActivity, root_id) is None:
-                continue
-            family = select(DBActivity.id).where(
-                (DBActivity.id == root_id) | (DBActivity.split_root_id == root_id))
-            holders = set(sess.exec(select(DBProjectItem.project_id).where(
-                DBProjectItem.activity_id.in_(family))).all())
-            # Bump before renaming (issue #173): the names are part of what a
-            # native client caches under that counter.
-            for project_id in sorted(holders - renamed):
-                bump_lock_version(sess, project_id)
-            renamed |= holders
-            self._renumber_split_family(sess, root_id)
+            return set()
+        renamed = self.delete_unreferenced_activities(
+            sess, list(ids) + list(tail_ids or ()))
         sess.commit()
         return renamed
 
@@ -1127,24 +1221,33 @@ class ActivityMixin:
     def force_update_activity(
         self, sess: Session, user_info_id: int, act: Activity,
         project_id: Optional[int] = None,
+        *,
+        row_id: Optional[int] = None,
     ) -> None:
-        """Overwrite ALL columns of an existing activity row (used for re-fetch).
+        """Overwrite ALL data columns of one activity row from *act*, a
+        re-fetch from Strava.
 
-        If no row exists, inserts a new one.  Unlike ``_upsert_activity``,
-        this always overwrites enrichment columns (polyline, elevation) —
-        EXCEPT any of the six E2EE-in-scope fields (issue #29) whose EXISTING
-        value is already an encrypted envelope: a "force refresh from Strava"
-        still refreshes plaintext stats (distance, counts, ...) normally, but
-        must not clobber ciphertext back to plaintext geometry/name.
+        Writes the row *row_id* (default ``act.id``) and no other (#592, plan
+        Decision 6): another trip's copy of the same Strava activity keeps
+        what it has until that trip refreshes it. Unlike a save, this always
+        overwrites enrichment columns (polyline, elevation) — EXCEPT any of
+        the six E2EE-in-scope fields (issue #29) whose EXISTING value is
+        already an encrypted envelope: a "force refresh from Strava" still
+        refreshes plaintext stats (distance, counts, ...) normally, but must
+        not clobber ciphertext back to plaintext geometry/name.
+
+        Writes nothing when the row is gone (the activity left its trip while
+        Strava was answering: a row created now would belong to no trip),
+        when its Strava data came through another account than
+        *user_info_id* (``strava_user_id``, plan Decision 5), or when
+        *project_id* is given and does not hold it.
 
         Advances *project_id*'s lock_version (issue #173) so a native client's
         on-disk cache — which only ever checks that counter — notices the
-        re-fetched polyline/elevation. Optional (defaults to no bump) because
-        an activity row is shared across every project that references it, so
-        only a caller that knows which project's cache this refresh should
-        invalidate can supply it.
+        re-fetched polyline/elevation.
         """
-        if act.id is None:
+        target = row_id if row_id is not None else act.id
+        if target is None:
             return
 
         def _iso(dt) -> str:
@@ -1159,19 +1262,18 @@ class ActivityMixin:
                 "elevations_m": act.elevation_profile[1],
             })
 
-        existing = sess.get(DBActivity, act.id)
+        existing = sess.get(DBActivity, target)
         if existing is None:
-            # The background re-fetch outlived the row: the activity left its
-            # last trip while Strava was answering, and this insert creates a
-            # row no trip references (issue #509, review guard U6-R1-1).
+            # The background re-fetch outlived the row (issue #509, review
+            # guard U6-R1-1): nothing to write it to.
             _log.warning(
-                "refresh re-inserting activity=%s user=%s: row deleted while the "
-                "re-fetch was in flight (#509 orphan)", act.id, user_info_id)
-            self._upsert_activity(sess, user_info_id, act)
+                "refresh dropped for activity=%s user=%s: row deleted while the "
+                "re-fetch was in flight", target, user_info_id)
             return
-        # An activity row belongs to one account for good: another account's
-        # refresh neither rewrites it nor takes it over.
-        if existing.user_info_id != user_info_id:
+        if existing.strava_user_id != user_info_id:
+            return
+        if project_id is not None and not self.trip_holds_activity(
+                sess, project_id, target):
             return
 
         if project_id is not None:
@@ -1246,50 +1348,32 @@ class ActivityMixin:
     def activity_e2ee_writable_by(
         self, sess: Session, activity_id: int, user_info_id: int
     ) -> bool:
-        """Whether *user_info_id* may write this activity's E2EE fields.
-
-        The row's owner may. So may the owner of every trip that references a
-        LOCAL row (negative id: a GPX import or a split piece), when at least
-        one trip does: the catch-up must be able to encrypt a piece a former
-        companion left in the owner's trips. A Strava row (positive id) stays
-        its owner's alone even then: their next sync reuses it, and it would
-        come back to them encrypted under someone else's key. An unreferenced
-        row is no one's but its owner's. False for a row that does not exist.
+        """Whether *user_info_id* may write this activity's E2EE fields: only
+        the row's owner may. That is the owner of the trip holding it, or for
+        a row already encrypted under someone else's key, that someone (plan
+        Decision 4), since no one else could read what they wrote. False for a
+        row that does not exist.
         """
         owner = sess.exec(
             select(DBActivity.user_info_id).where(DBActivity.id == activity_id)
         ).first()
-        if owner is None:
-            return False
-        if owner == user_info_id:
-            return True
-        if activity_id >= 0:
-            return False
-        trip_owners = sess.exec(
-            select(DBProject.user_info_id)
-            .join(DBProjectItem, DBProjectItem.project_id == DBProject.id)
-            .where(
-                DBProjectItem.item_type == "activity",
-                DBProjectItem.activity_id == activity_id,
-            ).distinct()
-        ).all()
-        return bool(trip_owners) and all(o == user_info_id for o in trip_owners)
+        return owner is not None and owner == user_info_id
 
     def activity_shared_with_others(
         self, sess: Session, activity_id: int, user_info_id: int
     ) -> bool:
-        """Whether a trip owned by someone other than *user_info_id* holds this
-        activity (E2EE remnants decision 15): that trip's owner cannot read an
-        envelope, so none may be stored on the row, even by its own owner."""
-        return bool(sess.exec(
-            select(referenced_by_others(activity_id, user_info_id))
-        ).one())
+        """Always False: a row belongs to one trip (#592), so no trip of
+        anyone else holds it. Kept for ``api/activities.py``'s
+        ``_refuse_shared`` until #592's U4 removes it."""
+        return False
 
     def activity_owners(self, sess: Session, activity_ids) -> Dict[int, int]:
         """Owner account of each of *activity_ids* that has a row.
 
         Only plain integers are looked up: anything else names no row here,
         though SQLite would match "9001" to 9001 (see ``is_activity_id``).
+        Kept for the ``.traxj`` import (``repo_transfer``) until #592's U6
+        gives every file activity a fresh row.
         """
         ids = {aid for aid in activity_ids if is_activity_id(aid)}
         if not ids:
@@ -1301,27 +1385,148 @@ class ActivityMixin:
     def own_activities_only(
         self, sess: Session, user_info_id: int, activities: List[Activity]
     ) -> List[Activity]:
-        """*activities* less those whose row another account owns.
+        """*activities* less those whose id is not a plain integer.
 
-        What an account adds to a trip must be its own: an activity whose id
-        already belongs to someone else is theirs, not the caller's.
+        An activity no longer has to be the caller's to be added: whatever row
+        another account has for it, the trip gets a row of its own (#592).
+        Kept for ``api/activities.py`` and ``api/strava.py`` until #592's U4
+        and U5 drop it.
         """
-        owners = self.activity_owners(sess, [a.id for a in activities])
-        return [
-            a for a in activities
-            if a.id is None
-            or (is_activity_id(a.id) and owners.get(a.id, user_info_id) == user_info_id)
-        ]
+        return [a for a in activities if a.id is None or is_activity_id(a.id)]
+
+    def trip_holds_activity(self, sess: Session, project_id: int, activity_id: int) -> bool:
+        """Whether trip *project_id* holds the activity row *activity_id*."""
+        return sess.exec(trip_rows(project_id).where(
+            DBProjectItem.activity_id == activity_id)).first() is not None
+
+    def trip_activity_ids_by_strava_id(
+        self, sess: Session, project_id: int
+    ) -> Dict[int, int]:
+        """The rows trip *project_id* holds for Strava activities, by
+        ``strava_id``: how an activity posted or synced from Strava finds the
+        trip's own row (#592, plan Decision 7)."""
+        return dict(sess.exec(
+            select(DBActivity.strava_id, DBActivity.id).where(
+                DBActivity.id.in_(trip_rows(project_id)),
+                DBActivity.strava_id.is_not(None),
+            )
+        ).all())
+
+    def _save_trip_activities(
+        self, sess: Session, project_id: int, trip_owner_id: int, adder_id: int,
+        project: Project,
+    ) -> None:
+        """Write the activities of *project*, being saved as trip
+        *project_id*, as rows of that trip alone (#592, plan Decisions 1 and
+        7). No commit.
+
+        * A row the trip already holds is left as it is. A save carries back
+          what was loaded, so there is nothing to write, and a re-add of an
+          activity the trip holds changes nothing: a split's "(i/N)" name
+          survives a sync.
+        * An activity an item names that the trip does not hold gets a new row
+          — even when another trip, or another account, has a row for the
+          same Strava activity. Unless the trip already holds a row with its
+          Strava id: then that row stands for it, and the item a re-add made
+          is dropped. A new Strava row takes a positive id, a local one a
+          negative id (plan Decision 3); a local activity keeps the id its
+          caller already allocated while no row has it.
+        * An item naming any other row is left out, so the trip never comes to
+          reference another trip's row, nor an id with nothing to create it.
+
+        A new row belongs to the trip's owner, unless it carries an envelope:
+        then to *adder_id*, the only account that can read it (plan Decision
+        4). A new Strava row records *adder_id* as ``strava_user_id``, the
+        account whose token refreshes it (plan Decision 5).
+
+        *project*'s items and activities are rewritten in place to name the
+        rows; the Activity objects the caller passed in are not changed, so a
+        retried save starts again from the same input.
+        """
+        held = set(sess.exec(trip_rows(project_id)).all())
+        wanted = {
+            it.activity_id for it in project.items
+            if it.item_type == "activity" and is_activity_id(it.activity_id)
+            and it.activity_id not in held
+        }
+        by_strava = self.trip_activity_ids_by_strava_id(sess, project_id) if held else {}
+
+        row_of: Dict[int, int] = {}
+        readded: Set[int] = set()
+        activities: List[Activity] = []
+        for act in project.activities:
+            if not is_activity_id(act.id):
+                continue
+            if act.id in held:
+                activities.append(act)
+                continue
+            if act.id not in wanted or act.id in row_of:
+                continue
+            sid = strava_identity(act)
+            if sid is not None and sid in by_strava:
+                row_of[act.id] = by_strava[sid]
+                readded.add(act.id)
+                continue
+            if sid is None and act.id < 0 and sess.get(DBActivity, act.id) is None:
+                row_id = act.id
+            else:
+                row_id = allocate_activity_id(sess, strava=sid is not None)
+            row = self._new_activity_row(
+                act, row_id, adder_id if _carries_envelope(act) else trip_owner_id)
+            row.strava_id = sid
+            row.strava_user_id = adder_id if sid is not None else None
+            sess.add(row)
+            store_prepared_geometry(sess, row)
+            row_of[act.id] = row_id
+            if sid is not None:
+                by_strava[sid] = row_id
+            activities.append(act if row_id == act.id else dataclasses.replace(act, id=row_id))
+
+        present = {
+            it.activity_id for it in project.items
+            if it.item_type == "activity" and is_activity_id(it.activity_id)
+            and it.activity_id in held
+        }
+        items = []
+        dropped = 0
+        for it in project.items:
+            aid = it.activity_id
+            if it.item_type != "activity" or aid is None:
+                items.append(it)
+                continue
+            if is_activity_id(aid) and aid in held:
+                items.append(it)
+                continue
+            row_id = row_of.get(aid) if is_activity_id(aid) else None
+            if row_id is None:
+                dropped += 1
+                continue
+            if aid in readded and row_id in present:
+                continue
+            present.add(row_id)
+            items.append(it if row_id == aid else dataclasses.replace(it, activity_id=row_id))
+        if dropped:
+            _log.warning("project id=%s: left out %d activity items naming rows the "
+                         "trip does not hold", project_id, dropped)
+        project.items = items
+        project.activities = activities
+        project.rebuild_map()
 
     def _upsert_activity(
         self, sess: Session, user_info_id: int, act: Activity
     ) -> None:
-        """Insert the activity row if it doesn't exist; skip if it does.
+        """Insert the activity row under its own id if it doesn't exist; skip
+        if it does.
+
+        Kept for the ``.traxj`` import (``repo_transfer``), which remaps ids
+        another account holds before calling this, until #592's U6 gives every
+        file activity a fresh row. Every other writer goes through
+        ``_save_trip_activities``.
 
         Enriched data (summary_polyline, elevation_profile) is only written
         for new rows — existing rows may already have richer data from a
         previous enrichment pass. A row owned by another account is never
-        written: an activity row belongs to the account that created it.
+        written.
         """
         if act.id is None:
             return
@@ -1348,6 +1553,15 @@ class ActivityMixin:
                 store_prepared_geometry(sess, existing)
             return
 
+        row = self._new_activity_row(act, act.id, user_info_id)
+        row.strava_id = strava_identity(act)
+        row.strava_user_id = user_info_id if row.strava_id is not None else None
+        sess.add(row)
+        store_prepared_geometry(sess, row)
+
+    @staticmethod
+    def _new_activity_row(act: Activity, row_id: int, owner_id: int) -> DBActivity:
+        """A new row *row_id*, owned by *owner_id*, holding *act*'s content."""
         def _iso(dt) -> str:
             if dt is None:
                 return ""
@@ -1369,9 +1583,9 @@ class ActivityMixin:
         if _ep_json is None and act.elevation_profile_enc:
             _ep_json = _low_res_json = act.elevation_profile_enc
 
-        row = DBActivity(
-            id=act.id,
-            user_info_id=user_info_id,
+        return DBActivity(
+            id=row_id,
+            user_info_id=owner_id,
             name=act.name,
             type=act.type,
             distance=act.distance,
@@ -1409,8 +1623,6 @@ class ActivityMixin:
             source=act.source,
             source_id=act.source_id,
         )
-        sess.add(row)
-        store_prepared_geometry(sess, row)
 
     @staticmethod
     def _row_to_activity(row: DBActivity, include_heavy: bool = True,
@@ -1473,7 +1685,7 @@ class ActivityMixin:
                 lr = json.loads(row.elevation_profile_low_res_json)
                 elevation_profile_low_res = (lr["distances_km"], lr["elevations_m"])
 
-        return Activity(
+        act = Activity(
             id=row.id,
             name=row.name,
             type=row.type,
@@ -1524,4 +1736,26 @@ class ActivityMixin:
             elevation_profile_enc=elevation_profile_enc or elevation_profile_low_res_enc,
             # Never deferred, so the light path reads it with no extra query.
             has_gain_snapshot=getattr(row, "original_total_elevation_gain", None) is not None,
+            strava_id=getattr(row, "strava_id", None),
+            split_root_id=getattr(row, "split_root_id", None),
+            split_base_name=getattr(row, "split_base_name", None),
         )
+        if include_heavy:
+            # The edit snapshot, which only a .traxj export carries (#592, plan
+            # Decision 8) and an export loads heavy: the light path skips
+            # parsing it. Each JSON column splits into its parsed field or its
+            # envelope, as the live columns do above.
+            act.original_polyline = getattr(row, "original_polyline", None)
+            if include_elevation:
+                act.original_elevation_profile, act.original_elevation_profile_enc = (
+                    _parsed_or_envelope(
+                        getattr(row, "original_elevation_profile_json", None), _ep_tuple))
+            act.original_start_latlng, act.original_start_latlng_enc = (
+                _parsed_or_envelope(getattr(row, "original_start_latlng_json", None), json.loads))
+            act.original_end_latlng, act.original_end_latlng_enc = (
+                _parsed_or_envelope(getattr(row, "original_end_latlng_json", None), json.loads))
+            act.original_total_elevation_gain = getattr(row, "original_total_elevation_gain", None)
+            for name in _SCALAR_SNAPSHOT:
+                if not name.endswith("_json"):
+                    setattr(act, f"original_{name}", getattr(row, f"original_{name}", None))
+        return act

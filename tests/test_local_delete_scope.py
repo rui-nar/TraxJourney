@@ -1,8 +1,7 @@
 """DELETE /{name}/activities/{id}/local must be scoped to the project (#405).
 
-``ActivityMixin.delete_local_activity`` validated that the id was local and
-that the row existed, but never that the row belonged to the project the call
-named. The route's permission check proves you may edit *that* project — so an
+``ActivityMixin.delete_local_activity`` validated that the row was local and
+existed, but never that the row belonged to the project the call named. The route's permission check proves you may edit *that* project — so an
 editor of trip B could delete trip A's local activity, bump trip B's
 lock_version, and leave trip A with an item pointing at a missing row.
 
@@ -260,8 +259,10 @@ def test_deleting_the_timeline_item_still_removes_the_local_row(env):
 
 
 def test_row_referenced_by_two_projects_is_refused_not_destroyed(env):
-    """Corruption, not a normal state — local rows are single-owner. Refusing
-    is right: deleting the row would break the other project's timeline too.
+    """Corruption, not a normal state — every row belongs to one trip (#592),
+    and the migration leaves none held by two. A row another trip holds is
+    that trip's, so neither may delete it: deleting it would break the other
+    project's timeline.
     """
     client, engine = env
     tail_id = _split_tail(client)
