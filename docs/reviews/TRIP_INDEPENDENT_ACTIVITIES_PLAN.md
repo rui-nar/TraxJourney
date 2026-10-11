@@ -333,3 +333,18 @@ Fable reviewer, Opus triager. 2 findings, no envelope questions.
 - Guard: —
 - Override: — (owner approved 2026-10-11)
 - Outcome: fixed (d7c04617, 24e16658, c54b25db, c63a1293)
+
+## Integrated review, round 2 — 2026-10-11, reviewed at 7d22aa81 (fixes since de03fc05)
+
+Fable reviewer, Opus triager. 1 finding, no envelope questions. The IR1-1 and
+IR1-2 fixes themselves were traced as correct.
+
+### IR2-1 — A head split a second time in another trip is still neither repaired nor logged
+- Trigger: "Keep both" of the user's own split trip (head H, tail P shared), then H split again in the copy before deploy → trip A holds a tail, so repair_heads skips it silently; H is a family root, so the piece rule does not see it → A keeps the twice-cut H and stale "(i/3)" names, and no log line names trip A.
+- Scores: trigger=plausible, impact=wrong-visible, detect=silent, later=expensive, fix=S/local, confidence=verified
+- Decision: Fix now (D5)
+- Revisit when: —
+- Guard: —
+- Override: — (owner approved 2026-10-12)
+- Outcome: open
+- Fix shape (triager): a log line, not a repair. H's only snapshot predates A's own first split, so a restore would undo A's split. Collect H's direct children (split_parent_id = H) in step 3 before the copy and remap. In repair_heads, for each trip in head_trips ∩ tail_trips that holds none of H's children held by another trip, call _leave(..., "head cut again by another trip's split; no snapshot of the state before that cut"). Add a test.
