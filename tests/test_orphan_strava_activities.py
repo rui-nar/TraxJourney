@@ -426,6 +426,31 @@ def test_deleting_a_trip_deletes_its_gpx_rows(engine):
     assert _prepared(engine) == set()
 
 
+def test_deleting_a_trip_deletes_exactly_its_rows(engine):
+    """Strava activity 900 is in both trips, as rows 1 and 2; the trip also
+    holds a companion's activity and a GPX row, and an unreferenced row sits
+    alongside. Deleting the trip deletes its three rows and their prepared
+    geometry, and nothing else (#592, plan Decision 9)."""
+    owner = _user(engine, "owner")
+    companion = _user(engine, "companion")
+    _activity(engine, 1, owner, strava_id=900, strava_user_id=owner)
+    _activity(engine, 2, owner, strava_id=900, strava_user_id=owner)
+    _activity(engine, 3, owner, strava_id=901, strava_user_id=companion)
+    _activity(engine, -40, owner, source="gpx")
+    _activity(engine, 4, owner, strava_id=902, strava_user_id=owner)
+    _trip(engine, owner, "Trip", [1, 3, -40], members=[companion])
+    other = _trip(engine, owner, "Other", [2])
+    with Session(engine) as sess:
+        version_before = sess.get(DBProject, other).lock_version
+
+    _delete_trip(owner, "Trip")
+
+    assert _rows(engine) == {2, 4}
+    assert _prepared(engine) == {2, 4}
+    with Session(engine) as sess:
+        assert sess.get(DBProject, other).lock_version == version_before
+
+
 # ── Strava ─────────────────────────────────────────────────────────────────────
 
 def _raw_strava_activity(act_id: int) -> dict:
