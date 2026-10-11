@@ -16,7 +16,7 @@ from models.db import get_session
 from models.project_db import DBActivity, DBActivityGeoPrepared, DBProject, DBProjectItem, DBProjectMember
 from src.models.activity import Activity, is_activity_id
 from src.models.prepared_geo import prepare_polyline
-from src.models.project import Project
+from src.models.project import Project, strava_identity
 from src.models.simplify import PREPARED_GEO_VERSION
 from src.project.local_ids import allocate_activity_id
 from src.project.elevation_downsample import downsample_elevation
@@ -25,11 +25,6 @@ from src.utils.encryption_check import is_encrypted_envelope
 from src.utils.logging import get_logger
 
 _log = get_logger(__name__)
-
-# The ``source`` of an activity from Strava: NULL on every row that predates
-# the column, and "strava" for any writer that spells it out. A GPX import
-# says "gpx".
-_STRAVA_SOURCES = (None, "", "strava")
 
 # Bound on the ids one IN (...) carries, well under SQLite's variable limit.
 _ID_CHUNK = 500
@@ -59,23 +54,6 @@ def other_trips_rows(project_id: int):
         DBProjectItem.project_id != project_id,
         DBProjectItem.activity_id.is_not(None),
     )
-
-
-def strava_identity(act: Activity) -> Optional[int]:
-    """The Strava id of *act*, an activity about to get a row; None for an
-    activity the app made.
-
-    ``strava_id`` when the activity carries one. Otherwise the activity comes
-    from a caller or a file that predates #592, where a positive id on a
-    Strava-sourced activity IS its Strava id (plan Decisions 3 and 8): the one
-    place an id's sign is read for meaning.
-    """
-    sid = getattr(act, "strava_id", None)
-    if is_activity_id(sid) and sid > 0:
-        return sid
-    if act.source in _STRAVA_SOURCES and is_activity_id(act.id) and act.id > 0:
-        return act.id
-    return None
 
 
 def _carries_envelope(act: Activity) -> bool:
@@ -1433,6 +1411,10 @@ class ActivityMixin:
           caller already allocated while no row has it.
         * An item naming any other row is left out, so the trip never comes to
           reference another trip's row, nor an id with nothing to create it.
+        * An activity named by a held row's id but carrying another Strava id
+          than that row's is not that row: a Strava id is never compared with
+          a row id. Its items cannot be told from the row's, so it is left out
+          (``Project.add_activities`` gives an added one an id of its own).
 
         A new row belongs to the trip's owner, unless it carries an envelope:
         then to *adder_id*, the only account that can read it (plan Decision
@@ -1450,6 +1432,7 @@ class ActivityMixin:
             and it.activity_id not in held
         }
         by_strava = self.trip_activity_ids_by_strava_id(sess, project_id) if held else {}
+        strava_of_row = {row_id: sid for sid, row_id in by_strava.items()}
 
         row_of: Dict[int, int] = {}
         readded: Set[int] = set()
@@ -1458,6 +1441,12 @@ class ActivityMixin:
             if not is_activity_id(act.id):
                 continue
             if act.id in held:
+                held_sid = strava_of_row.get(act.id)
+                sid = strava_identity(act)
+                if held_sid is not None and sid is not None and sid != held_sid:
+                    _log.warning("project id=%s: left out an activity naming row %s, "
+                                 "which holds another Strava activity", project_id, act.id)
+                    continue
                 activities.append(act)
                 continue
             if act.id not in wanted or act.id in row_of:
