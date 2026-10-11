@@ -52,6 +52,15 @@ def trip_rows(project_id: int):
     )
 
 
+def other_trips_rows(project_id: int):
+    """SQL: the ids of the activity rows any trip but *project_id* holds —
+    rows a write made from that trip must never touch (review R1-2)."""
+    return select(DBProjectItem.activity_id).where(
+        DBProjectItem.project_id != project_id,
+        DBProjectItem.activity_id.is_not(None),
+    )
+
+
 def strava_identity(act: Activity) -> Optional[int]:
     """The Strava id of *act*, an activity about to get a row; None for an
     activity the app made.
@@ -471,8 +480,9 @@ class ActivityMixin:
     def _split_descendants(
         sess: Session, project_id: int, activity_id: int
     ) -> List[DBActivity]:
-        """Every piece trip *project_id* holds that was transitively cut out of
-        *activity_id*.
+        """Every piece transitively cut out of *activity_id* that no other trip
+        than *project_id* holds: the trip's own pieces, and pieces no trip
+        holds any more (an item unlinked while its row stayed).
 
         Walks ``split_parent_id`` breadth-first: a piece records which piece it
         was cut directly out of, so this is exactly the set that resetting
@@ -480,10 +490,12 @@ class ActivityMixin:
         — it points every piece of a family at the family's FIRST piece however
         deep the chain, which says nothing about who cut whom (issue #143).
 
-        Only the trip's own rows are walked (#592, review R1-2). The migration
-        leaves no split link crossing trips; this is the guard behind that
-        invariant, so a reset can never delete another trip's row. ``seen``
-        likewise guards a cycle that split_activity cannot create.
+        A piece another trip holds is never walked (#592, review R1-2). The
+        migration leaves no split link crossing trips; this is the guard behind
+        that invariant, so a reset can never delete another trip's row. An
+        unreferenced piece is walked, so a reset deletes it rather than leave
+        it naming the head it was cut out of (U3R1-1). ``seen`` likewise guards
+        a cycle that split_activity cannot create.
         """
         found: List[DBActivity] = []
         seen = {activity_id}
@@ -492,7 +504,7 @@ class ActivityMixin:
             children = sess.exec(
                 select(DBActivity).where(
                     DBActivity.split_parent_id.in_(frontier),
-                    DBActivity.id.in_(trip_rows(project_id)),
+                    DBActivity.id.not_in(other_trips_rows(project_id)),
                 )
             ).all()
             children = [c for c in children if c.id not in seen]
@@ -1044,9 +1056,7 @@ class ActivityMixin:
         for child in sess.exec(
             select(DBActivity).where(
                 DBActivity.split_parent_id == activity_id,
-                DBActivity.id.not_in(select(DBProjectItem.activity_id).where(
-                    DBProjectItem.project_id != project_id,
-                    DBProjectItem.activity_id.is_not(None))),
+                DBActivity.id.not_in(other_trips_rows(project_id)),
             )
         ).all():
             child.split_parent_id = row.split_parent_id
@@ -1088,7 +1098,9 @@ class ActivityMixin:
         Whatever the row came from: Strava, a GPX file or a split.
 
         Split links are kept whole. A family root that a surviving piece still
-        names stays, and goes with the last piece naming it. A surviving piece
+        names stays, and goes with the last piece naming it: the ancestors of
+        the rows given are considered with them, so a head no item references
+        goes when its last piece does (U3R1-1). A surviving piece
         cut out of a deleted one is adopted by its nearest surviving ancestor,
         as ``delete_local_activity`` does. The survivors of a family that lost
         pieces are renumbered in the trip holding them, its ``lock_version``
@@ -1097,7 +1109,20 @@ class ActivityMixin:
 
         Returns the ids of those renumbered trips.
         """
-        given = sorted({i for i in ids if is_activity_id(i)})
+        given = {i for i in ids if is_activity_id(i)}
+        # The pieces' ancestors are considered too (U3R1-1): a head whose item
+        # was removed while its pieces kept it stays only as long as they do.
+        frontier = set(given)
+        while frontier:
+            ancestors: Set[int] = set()
+            for chunk in _chunks(sorted(frontier)):
+                for root, parent in sess.exec(select(
+                        DBActivity.split_root_id, DBActivity.split_parent_id,
+                ).where(DBActivity.id.in_(chunk))).all():
+                    ancestors.update(a for a in (root, parent) if a is not None)
+            frontier = ancestors - given
+            given |= frontier
+        given = sorted(given)
         referenced: Set[int] = set()
         for chunk in _chunks(given):
             referenced.update(sess.exec(select(DBProjectItem.activity_id).where(

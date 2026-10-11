@@ -362,6 +362,23 @@ def test_deleting_a_trip_leaves_another_trips_split_copy_alone(engine):
         assert sess.get(DBProject, other).lock_version == version_before
 
 
+def test_deleting_a_trip_after_removing_the_head_deletes_the_head_too(engine):
+    """The head left the timeline but stayed while its tails named it. The
+    trip's items name only the tails; its deletion takes the head as well,
+    leaving no row and no prepared row behind (U3R1-1)."""
+    uid = _user(engine, "owner")
+    _split_family(engine, uid)
+    _trip(engine, uid, "Trip", [111, -5, -6])
+
+    _remove(uid, "Trip", 0)
+    assert _rows(engine) == {111, -5, -6}
+
+    _delete_trip(uid, "Trip")
+
+    assert _rows(engine) == set()
+    assert _prepared(engine) == set()
+
+
 def test_deleting_a_trip_frees_a_departed_companions_split_family(engine):
     """Imported and split by a companion who has since left: the trip's
     tails are its own to delete, whoever cut them (plan R3-4)."""

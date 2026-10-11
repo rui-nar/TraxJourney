@@ -438,6 +438,75 @@ def test_a_reset_never_deletes_a_piece_another_trip_holds(engine):
     assert _items(engine, b) == [-5]
 
 
+def test_a_reset_deletes_a_piece_no_trip_holds(engine):
+    """A tail whose item was unlinked while its row stayed still names the
+    head: the reset grows the head back over it, so it goes (U3R1-1)."""
+    uid, a, b = _cross_trip_family(engine)
+    _row(engine, -7, owner=uid, name="Ride (3/3)", split_root_id=1, split_parent_id=1,
+         start_date="2024-06-01T12:00:00Z")
+    _row(engine, -8, owner=uid, name="Ride (4/4)", split_root_id=1, split_parent_id=-7,
+         start_date="2024-06-01T13:00:00Z")
+    with Session(engine) as sess:
+        sess.add(DBActivityGeoPrepared(activity_id=-7, version=1, blob=b"geo"))
+        sess.commit()
+
+    with Session(engine) as sess:
+        assert repo.reset_activity_track(sess, a, 1)
+
+    assert _get(engine, -7) is None and _get(engine, -8) is None
+    with Session(engine) as sess:
+        assert sess.get(DBActivityGeoPrepared, -7) is None
+    # The piece trip B holds is still never touched.
+    assert _get(engine, -5) is not None
+    assert _items(engine, b) == [-5]
+
+
+def test_a_reset_never_walks_through_a_piece_another_trip_holds(engine):
+    """A piece cut out of another trip's piece is out of reach, held or not."""
+    uid, a, b = _cross_trip_family(engine)
+    _row(engine, -7, owner=uid, name="Ride (3/3)", split_root_id=1, split_parent_id=-5,
+         start_date="2024-06-01T12:00:00Z")
+
+    with Session(engine) as sess:
+        assert repo.reset_activity_track(sess, a, 1)
+
+    assert _get(engine, -5) is not None and _get(engine, -7) is not None
+
+
+def test_deleting_the_pieces_alone_deletes_the_head_they_kept(engine):
+    """Given only the pieces, the head no item references goes with the last
+    of them (U3R1-1)."""
+    uid = _user(engine, "owner")
+    _row(engine, 1, owner=uid, name="Ride (1/3)", split_base_name="Ride", is_edited=True)
+    _row(engine, -5, owner=uid, name="Ride (2/3)", split_root_id=1, split_parent_id=1,
+         start_date="2024-06-01T11:00:00Z")
+    _row(engine, -6, owner=uid, name="Ride (3/3)", split_root_id=1, split_parent_id=-5,
+         start_date="2024-06-01T12:00:00Z")
+    _trip(engine, uid, "A", [])
+    with Session(engine) as sess:
+        sess.add(DBActivityGeoPrepared(activity_id=1, version=1, blob=b"geo"))
+        sess.commit()
+        repo.delete_unreferenced_activities(sess, [-5, -6])
+        sess.commit()
+
+    assert _get(engine, 1) is None
+    with Session(engine) as sess:
+        assert sess.get(DBActivityGeoPrepared, 1) is None
+
+
+def test_a_head_another_trip_holds_is_never_deleted_with_its_pieces(engine):
+    uid, a, b = _cross_trip_family(engine)
+    with Session(engine) as sess:
+        for it in sess.exec(select(DBProjectItem).where(DBProjectItem.project_id == b)):
+            sess.delete(it)
+        sess.commit()
+        repo.delete_unreferenced_activities(sess, [-5])
+        sess.commit()
+
+    assert _get(engine, -5) is None
+    assert _get(engine, 1) is not None
+
+
 def test_a_renumber_never_renames_a_piece_another_trip_holds(engine):
     uid, a, b = _cross_trip_family(engine)
     with Session(engine) as sess:
