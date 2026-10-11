@@ -240,7 +240,7 @@ def test_a_local_activity_gets_a_negative_row_and_no_strava_id(engine):
     uid = _user(engine, "owner")
     trip = _trip(engine, uid, "A")
     act = _strava_activity(sid=5)
-    act.source = "gpx"
+    act.source, act.strava_id = "gpx", None
 
     _add(engine, uid, "A", [act])
 
@@ -255,7 +255,7 @@ def test_a_local_activity_keeps_the_id_its_caller_allocated(engine):
     uid = _user(engine, "owner")
     trip = _trip(engine, uid, "A")
     act = _strava_activity(sid=5)
-    act.source = "gpx"
+    act.source, act.strava_id = "gpx", None
     with Session(engine) as sess:
         act.id = allocate_activity_id(sess, strava=False)
 
@@ -626,3 +626,53 @@ def test_a_trip_payload_carries_no_shared_with_others(engine, client):
         resp = http.get(path)
         assert resp.status_code == 200, resp.text
         assert "shared_with_others" not in resp.text
+
+
+# ── Loading a row into the model ───────────────────────────────────────────────
+
+def test_a_loaded_activity_carries_its_strava_id_split_family_and_snapshot(engine):
+    """What a .traxj export writes (plan Decision 8): an edited split head
+    with a plaintext snapshot, and a tail whose snapshot endpoints are
+    envelopes, which load into the *_enc fields as the live ones do."""
+    uid = _user(engine, "owner")
+    profile = {"distances_km": [0.0, 1.0], "elevations_m": [100.0, 120.0]}
+    _row(engine, 1, owner=uid, name="Ride (1/2)", split_base_name="Ride", is_edited=True,
+         strava_id=_STRAVA_ID, strava_user_id=uid,
+         original_polyline=_POLY, original_elevation_profile_json=json.dumps(profile),
+         original_start_latlng_json="[48.0, 2.0]", original_end_latlng_json="[48.0, 2.04]",
+         original_total_elevation_gain=60.0, original_distance=4000.0,
+         original_moving_time=1000, original_elapsed_time=1200,
+         original_average_speed=4.0, original_elev_high=140.0, original_elev_low=100.0)
+    _row(engine, -5, owner=uid, name="Ride (2/2)", split_root_id=1, split_parent_id=1,
+         is_edited=True, original_polyline=_ENVELOPE,
+         original_elevation_profile_json=_ENVELOPE,
+         original_start_latlng_json=_ENVELOPE, original_end_latlng_json=_ENVELOPE)
+    _trip(engine, uid, "A", [1, -5])
+
+    with Session(engine) as sess:
+        acts = {a.id: a for a in repo.get_project(sess, uid, "A").activities}
+        light = {a.id: a for a in repo.get_project(
+            sess, uid, "A", include_heavy=False).activities}
+
+    head, tail = acts[1], acts[-5]
+    assert (head.strava_id, head.split_root_id, head.split_base_name) == (
+        _STRAVA_ID, None, "Ride")
+    assert head.original_polyline == _POLY
+    assert head.original_elevation_profile == (profile["distances_km"], profile["elevations_m"])
+    assert (head.original_start_latlng, head.original_end_latlng) == ([48.0, 2.0], [48.0, 2.04])
+    assert head.original_elevation_profile_enc is None
+    assert (head.original_total_elevation_gain, head.original_distance,
+            head.original_moving_time, head.original_elapsed_time,
+            head.original_average_speed, head.original_elev_high,
+            head.original_elev_low) == (60.0, 4000.0, 1000, 1200, 4.0, 140.0, 100.0)
+
+    assert (tail.strava_id, tail.split_root_id, tail.split_parent_id) == (None, 1, 1)
+    assert tail.original_polyline == _ENVELOPE
+    assert (tail.original_elevation_profile, tail.original_elevation_profile_enc) == (
+        None, _ENVELOPE)
+    assert (tail.original_start_latlng_enc, tail.original_end_latlng_enc) == (
+        _ENVELOPE, _ENVELOPE)
+
+    # The light path carries the identity and family, not the snapshot.
+    assert (light[1].strava_id, light[1].split_base_name) == (_STRAVA_ID, "Ride")
+    assert light[1].original_polyline is None

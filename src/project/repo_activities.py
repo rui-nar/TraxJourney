@@ -137,6 +137,23 @@ def _parse_ep(ep_json: Optional[str]):
         return None
 
 
+def _ep_tuple(ep_json: str):
+    """A stored elevation_profile JSON blob as the model's ``(distances_km,
+    elevations_m)`` pair."""
+    ep = json.loads(ep_json)
+    return (ep["distances_km"], ep["elevations_m"])
+
+
+def _parsed_or_envelope(text: Optional[str], parse):
+    """``(parsed, None)`` for a plaintext JSON column, ``(None, envelope)`` for
+    one holding a client-side E2EE envelope, ``(None, None)`` when empty."""
+    if not text:
+        return None, None
+    if is_encrypted_envelope(text):
+        return None, text
+    return parse(text), None
+
+
 def _apportion_gain(stored: Optional[float], before: float, after: float) -> float:
     """Scale a stored elevation gain to the share *after* accounts for.
 
@@ -1694,8 +1711,26 @@ class ActivityMixin:
             elevation_profile_enc=elevation_profile_enc or elevation_profile_low_res_enc,
             # Never deferred, so the light path reads it with no extra query.
             has_gain_snapshot=getattr(row, "original_total_elevation_gain", None) is not None,
+            strava_id=getattr(row, "strava_id", None),
+            split_root_id=getattr(row, "split_root_id", None),
+            split_base_name=getattr(row, "split_base_name", None),
         )
-        # The Strava identity of the row (#592), read by the model's dict forms
-        # once it carries the field (plan U2).
-        act.strava_id = getattr(row, "strava_id", None)
+        if include_heavy:
+            # The edit snapshot, which only a .traxj export carries (#592, plan
+            # Decision 8) and an export loads heavy: the light path skips
+            # parsing it. Each JSON column splits into its parsed field or its
+            # envelope, as the live columns do above.
+            act.original_polyline = getattr(row, "original_polyline", None)
+            if include_elevation:
+                act.original_elevation_profile, act.original_elevation_profile_enc = (
+                    _parsed_or_envelope(
+                        getattr(row, "original_elevation_profile_json", None), _ep_tuple))
+            act.original_start_latlng, act.original_start_latlng_enc = (
+                _parsed_or_envelope(getattr(row, "original_start_latlng_json", None), json.loads))
+            act.original_end_latlng, act.original_end_latlng_enc = (
+                _parsed_or_envelope(getattr(row, "original_end_latlng_json", None), json.loads))
+            act.original_total_elevation_gain = getattr(row, "original_total_elevation_gain", None)
+            for name in _SCALAR_SNAPSHOT:
+                if not name.endswith("_json"):
+                    setattr(act, f"original_{name}", getattr(row, f"original_{name}", None))
         return act
