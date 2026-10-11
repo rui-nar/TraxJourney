@@ -249,7 +249,7 @@ Fable reviewer, Opus triager. 2 findings, no envelope questions.
 - Revisit when: —
 - Guard: —
 - Override: — (owner approved 2026-10-11)
-- Outcome: open
+- Outcome: fixed (da4890b7)
 
 ### U7R1-2 — An encrypted split head kept for pieces another account owns is handed to that account instead of deleted
 - Trigger: a companion's encrypted split family in the owner's trip, one tail already decrypted and handed over (R2-6); the companion deletes their account → the head row (unreadable ciphertext) is re-owned to the trip owner instead of deleted, against Decision 4 and the privacy sentence O1.
@@ -258,7 +258,7 @@ Fable reviewer, Opus triager. 2 findings, no envelope questions.
 - Revisit when: —
 - Guard: —
 - Override: — (owner approved 2026-10-11)
-- Outcome: open
+- Outcome: fixed (da4890b7)
 
 ## Unit review U4 — 2026-10-11, reviewed at b668db0d (u592/u4)
 
@@ -274,16 +274,16 @@ EQ1-1 work.
 - Revisit when: the U1 migration log lists an encrypted row kept with a companion owner who is no longer owner or member, or a user reports "Activity not in project" when deleting a local activity.
 - Guard: —
 - Override: user: Fix now — EQ1-1: any editor's removal deletes the trip's row; delete-local must match timeline removal
-- Outcome: open
+- Outcome: fixed (51915f5f, f2bb9ce6)
 
 ### U4R1-2 — Refresh job marks the row "resolved" when force_update_activity silently declines to write it
 - Trigger: the owner refreshes a companion's activity; the companion deletes their account mid-job → force_update_activity skips the write silently, and the job reports success with the old data.
 - Scores: trigger=plausible, impact=degraded-ux, detect=silent, later=cheap, fix=S/local, confidence=verified
 - Decision: Guard (D9)
 - Revisit when: —
-- Guard: (proposed) WARNING log on both silent early exits of force_update_activity (strava_user_id mismatch; trip no longer holds the row).
+- Guard: WARNING log on both silent early exits of force_update_activity (strava_user_id mismatch; trip no longer holds the row).
 - Override: — (owner approved 2026-10-11)
-- Outcome: open
+- Outcome: guard added (51915f5f)
 
 ## Unit review U5 — 2026-10-11, reviewed at 9c02faf6 (u592/u5)
 
