@@ -1,19 +1,16 @@
 // The hosted card's price on real phone widths and text sizes (issue #432).
 //
 // Widget tests normally draw every glyph a full em wide, which says nothing
-// about where real text wraps. This file loads the real Inter ExtraBold (the
-// price's weight; OFL, see test/fonts/Inter-LICENSE.txt) under the family name
-// google_fonts asks for, so the layout below is the one a reader gets.
-
-import 'dart:io';
+// about where real text wraps. The page is laid out in the real fonts
+// (test/helpers/real_fonts.dart), so the layout below is the one a reader gets.
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:traxjourney_client/src/auth/welcome_screen.dart';
 import 'package:traxjourney_client/src/billing/billing_service.dart';
+
+import '../helpers/real_fonts.dart';
 
 const _label = '€0.99 / month';
 
@@ -35,14 +32,7 @@ List<String> _lines(RenderParagraph paragraph, String label) {
 }
 
 void main() {
-  setUpAll(() async {
-    GoogleFonts.config.allowRuntimeFetching = false;
-    final bytes = File('test/fonts/Inter-ExtraBold.ttf').readAsBytesSync();
-    final loader =
-        FontLoader(GoogleFonts.inter(fontWeight: FontWeight.w800).fontFamily!)
-          ..addFont(Future.value(ByteData.sublistView(bytes)));
-    await loader.load();
-  });
+  setUpAll(loadRealFonts);
 
   for (final width in [320.0, 360.0, 390.0]) {
     for (final scale in [1.0, 2.0, 3.0]) {
@@ -55,22 +45,18 @@ void main() {
         tester.platformDispatcher.textScaleFactorTestValue = scale;
         addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
 
-        // Only the price is under test: the rest of the page (other weights,
-        // feature rows at large text) is not, so its font lookups and
-        // overflow reports are set aside.
+        // Only the price is under test. The rest of the page still overflows
+        // at 2x and 3x (issue #595; the pricing cards themselves are held by
+        // welcome_screen_overflow_test.dart), so overflow reports are set aside.
         final previous = FlutterError.onError;
         FlutterError.onError = (details) {
-          final text = details.exceptionAsString();
-          if (text.contains('overflowed') || text.contains('GoogleFonts') ||
-              text.contains('google_fonts') ||
-              text.contains('allowRuntimeFetching')) {
-            return;
-          }
+          if (details.exceptionAsString().contains('overflowed')) return;
           previous?.call(details);
         };
         addTearDown(() => FlutterError.onError = previous);
 
         await tester.pumpWidget(MaterialApp(
+            theme: landingTheme(),
             home: WelcomeScreen(loadPlans: () async => [
                   const PlanInfo(id: 'tier_1', name: 'Tier 1',
                       priceLabel: _label, features: [], purchasable: true),

@@ -8,6 +8,13 @@ library;
 /// Product name, as shown on the Android launcher and traxjourney.com.
 const kAppName = 'TraxJourney';
 
+/// The landing page's two-tone wordmark: [kWordmarkLead] plain, then
+/// [kWordmarkTail] in the gradient. Together they spell [kAppName]
+/// (test/auth/welcome_screen_overflow_test.dart). Split in two, the old name
+/// slipped past the rename guard (issue #473).
+const kWordmarkLead = 'Trax';
+const kWordmarkTail = 'Journey';
+
 /// Where the source code lives. The app is AGPL-3.0: people using the hosted
 /// service over a network must be offered the source, and Settings → About
 /// links here for that. `tests/test_license.py` keeps it equal to the

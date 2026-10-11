@@ -16,6 +16,10 @@ import '../core/legal_links.dart';
 const _kBreak = 900.0;
 const _kNavH  = 64.0;
 const _kShell = 1200.0;
+/// Below this width the page (every _Shell: the nav and each section) keeps a
+/// phone's 16 px side gutter, not 32 px: on a 320 px screen 64 px of gutter
+/// left too little for the nav and the pricing cards (issue #473).
+const _kPhone = 600.0;
 
 // ── Always-dark showcase palette ─────────────────────────────────────────────
 const _dBg   = Color(0xFF0D1B2A);
@@ -112,15 +116,21 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
 
 class _Shell extends StatelessWidget {
   final Widget child;
-  final EdgeInsets padding;
-  const _Shell({required this.child, this.padding = const EdgeInsets.symmetric(horizontal: 32)});
+  /// Vertical space only: the side gutter is the shell's, so every section
+  /// lines up with the nav (issue #473, review R1-3).
+  final double top;
+  final double bottom;
+  const _Shell({required this.child, this.top = 0, this.bottom = 0});
 
   @override
   Widget build(BuildContext context) {
+    final gutter = MediaQuery.sizeOf(context).width < _kPhone ? 16.0 : 32.0;
     return Center(
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: _kShell),
-        child: Padding(padding: padding, child: child),
+        child: Padding(
+            padding: EdgeInsets.fromLTRB(gutter, top, gutter, bottom),
+            child: child),
       ),
     );
   }
@@ -234,15 +244,24 @@ class _NavBar extends StatelessWidget {
           children: [
             const _Logo(size: 28),
             const SizedBox(width: 10),
-            _LogoWordmark(theme),
             if (wide) ...[
+              _LogoWordmark(theme),
               const SizedBox(width: 32),
               _NavLink('Features', onFeatures, theme),
               _NavLink('How it works', onHow, theme),
               _NavLink('Self-host', onSelfHost, theme),
               _NavLink('GitHub', () => _openUrl(kRepoUrl), theme),
-            ],
-            const Spacer(),
+              const Spacer(),
+            ] else
+              // On a phone the wordmark shrinks before the buttons get pushed
+              // off the edge (issue #473).
+              Expanded(
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: FittedBox(
+                      fit: BoxFit.scaleDown, child: _LogoWordmark(theme)),
+                ),
+              ),
             TextButton(
               onPressed: () => context.go('/login'),
               style: TextButton.styleFrom(
@@ -276,11 +295,11 @@ class _LogoWordmark extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Text('View', style: s),
+        Text(kWordmarkLead, style: s),
         ShaderMask(
           blendMode: BlendMode.srcIn,
           shaderCallback: (b) => _gradLogoText.createShader(b),
-          child: Text('Trip', style: s.copyWith(color: Colors.white)),
+          child: Text(kWordmarkTail, style: s.copyWith(color: Colors.white)),
         ),
       ],
     );
@@ -320,7 +339,7 @@ class _HeroSection extends StatelessWidget {
     return Container(
       color: theme.scaffoldBackgroundColor,
       child: _Shell(
-        padding: const EdgeInsets.fromLTRB(32, 80, 32, 64),
+        top: 80, bottom: 64,
         child: LayoutBuilder(
           builder: (_, c) => c.maxWidth >= _kBreak
               ? _HeroWide(theme)
@@ -375,6 +394,9 @@ class _HeroText extends StatelessWidget {
     final fg2 = theme.colorScheme.onSurfaceVariant;
     final align = centered ? TextAlign.center : TextAlign.left;
     final cross = centered ? CrossAxisAlignment.center : CrossAxisAlignment.start;
+    // 64 px puts "adventure," wider than a phone, which breaks it between
+    // two letters; phones get a size whose longest word fits (issue #473).
+    final h1 = MediaQuery.sizeOf(context).width < _kPhone ? 40.0 : 64.0;
 
     return Column(
       crossAxisAlignment: cross,
@@ -404,8 +426,12 @@ class _HeroText extends StatelessWidget {
                         .copyWith(letterSpacing: 0.05)),
               ),
               const SizedBox(width: 8),
-              Text('Self-hosted · open source · Docker',
-                  style: _mono(12, FontWeight.w500, fg2)),
+              // Wraps rather than running off a phone (issue #473).
+              Flexible(
+                child: Text('Self-hosted · open source · Docker',
+                    textAlign: align,
+                    style: _mono(12, FontWeight.w500, fg2)),
+              ),
             ],
           ),
         ),
@@ -414,12 +440,12 @@ class _HeroText extends StatelessWidget {
         // H1 — two lines
         Text('Your adventure,',
             textAlign: align,
-            style: _inter(64, FontWeight.w800, fg1, height: 1.02, spacing: -0.035)),
+            style: _inter(h1, FontWeight.w800, fg1, height: 1.02, spacing: -0.035)),
         SizedBox(
           width: double.infinity,
           child: _gradientText(
             'stitched end-to-end.',
-            _inter(64, FontWeight.w800, Colors.white, height: 1.02, spacing: -0.035),
+            _inter(h1, FontWeight.w800, Colors.white, height: 1.02, spacing: -0.035),
             textAlign: centered ? TextAlign.center : TextAlign.start,
           ),
         ),
@@ -583,8 +609,13 @@ class _WindowBar extends StatelessWidget {
           const SizedBox(width: 6),
           _TrafficDot(const Color(0xFF16A34A)),
           const SizedBox(width: 12),
-          Text('traxjourney.com / camino-portugués',
-              style: _mono(11, FontWeight.w500, theme.colorScheme.onSurfaceVariant)),
+          // Cut short like a real narrow address bar (issue #473).
+          Flexible(
+            child: Text('traxjourney.com / camino-portugués',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: _mono(11, FontWeight.w500, theme.colorScheme.onSurfaceVariant)),
+          ),
         ],
       ),
     );
@@ -606,9 +637,12 @@ class _MapView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Placed by the map's own width, not the screen's: on a wide window the
+    // map is half the screen, and screen-relative offsets put Barcelos and
+    // the memory card past its clipped edge (issue #473, review R1-1).
     return SizedBox(
       height: 280,
-      child: Stack(
+      child: LayoutBuilder(builder: (context, box) => Stack(
         fit: StackFit.expand,
         children: [
           // Map canvas
@@ -617,19 +651,19 @@ class _MapView extends StatelessWidget {
           // City labels
           Positioned(left: 24, bottom: 36,
               child: _MapLabel('Porto')),
-          Positioned(left: 0.48 * MediaQuery.sizeOf(context).width, bottom: 64,
+          Positioned(left: 0.48 * box.maxWidth, bottom: 64,
               child: _MapLabel('Barcelos')),
           Positioned(right: 8, top: 48,
               child: _MapLabel('Santiago')),
 
           // Memory card
           Positioned(
-            left: 0.32 * MediaQuery.sizeOf(context).width,
+            left: 0.32 * box.maxWidth,
             top: 40,
             child: _MemoryCard(theme),
           ),
         ],
-      ),
+      )),
     );
   }
 }
@@ -928,7 +962,7 @@ class _FeaturesSection extends StatelessWidget {
         children: [
           Divider(height: 1, color: theme.dividerColor),
           _Shell(
-            padding: const EdgeInsets.fromLTRB(32, 96, 32, 96),
+            top: 96, bottom: 96,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1077,7 +1111,7 @@ class _HowItWorksSection extends StatelessWidget {
         children: [
           Divider(height: 1, color: theme.dividerColor),
           _Shell(
-            padding: const EdgeInsets.fromLTRB(32, 96, 32, 96),
+            top: 96, bottom: 96,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1188,7 +1222,7 @@ class _ShowcaseSection extends StatelessWidget {
               // Grid overlay
               Positioned.fill(child: CustomPaint(painter: _GridPainter())),
               _Shell(
-                padding: const EdgeInsets.fromLTRB(32, 96, 32, 96),
+                top: 96, bottom: 96,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -1473,7 +1507,7 @@ class _SelfHostSectionState extends State<_SelfHostSection> {
         children: [
           Divider(height: 1, color: theme.dividerColor),
           _Shell(
-            padding: const EdgeInsets.fromLTRB(32, 96, 32, 96),
+            top: 96, bottom: 96,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1583,15 +1617,20 @@ class _TierCard extends StatelessWidget {
                   style: _inter(20, FontWeight.w700, fg1)),
               const SizedBox(height: 12),
               if (!featured)
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.baseline,
-                  textBaseline: TextBaseline.alphabetic,
-                  children: [
-                    Text('Free',
+                // One paragraph, so "· AGPL" wraps under "Free" instead of
+                // running off a phone; capped at 2x like the price below, past
+                // which "Free" alone is wider than the card (issue #473).
+                MediaQuery.withClampedTextScaling(
+                  maxScaleFactor: 2,
+                  child: Text.rich(TextSpan(children: [
+                    TextSpan(
+                        text: 'Free',
                         style: _inter(40, FontWeight.w800, fg1, spacing: -0.03)),
-                    const SizedBox(width: 6),
-                    Text('· AGPL', style: _inter(14, FontWeight.w500, fg2)),
-                  ],
+                    TextSpan(
+                        // No break between the dot and "AGPL" (review R1-2).
+                        text: '  · AGPL',
+                        style: _inter(14, FontWeight.w500, fg2)),
+                  ])),
                 )
               else if (price != null)
                 // "from" sits on its own line so the price gets the card's full
@@ -1622,11 +1661,16 @@ class _TierCard extends StatelessWidget {
               for (final f in (featured ? cloudFeatures : freeFeatures)) ...[
                 Padding(
                   padding: const EdgeInsets.only(bottom: 10),
+                  // The text wraps beside a top-aligned tick rather than
+                  // running off a phone (issue #473).
                   child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Icon(Icons.check_rounded, size: 18, color: primary),
                       const SizedBox(width: 8),
-                      Text(f, style: _inter(14, FontWeight.w400, fg2)),
+                      Expanded(
+                        child: Text(f, style: _inter(14, FontWeight.w400, fg2)),
+                      ),
                     ],
                   ),
                 ),
@@ -1699,7 +1743,7 @@ class _Footer extends StatelessWidget {
         children: [
           Divider(height: 1, color: theme.dividerColor),
           _Shell(
-            padding: const EdgeInsets.fromLTRB(32, 48, 32, 32),
+            top: 48, bottom: 32,
             child: LayoutBuilder(builder: (_, c) {
               final wide = c.maxWidth >= _kBreak;
               if (wide) {
