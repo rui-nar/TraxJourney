@@ -152,6 +152,61 @@ Widget _gradientText(String text, TextStyle style, {TextAlign? textAlign}) => Sh
   child: Text(text, textAlign: textAlign, style: style.copyWith(color: Colors.white)),
 );
 
+/// A display heading (issue #595).
+///
+/// It follows the reader's text size up to 1.5x, which is about what Android's
+/// non-linear scaling gives text this large, and is drawn smaller than its
+/// design size only when its widest word would not fit the line: Flutter
+/// breaks such a word between two letters. [gradient] draws it in the brand
+/// gradient. A heading split over two widgets passes the other's text as
+/// [sizeWith], so both lines fit to the same size.
+class _Heading extends StatelessWidget {
+  final String text;
+  final TextStyle style;
+  final TextAlign? textAlign;
+  final bool gradient;
+  final String? sizeWith;
+  const _Heading(this.text, this.style,
+      {this.textAlign, this.gradient = false, this.sizeWith});
+
+  /// The pieces a line may break between: words, split after hyphens.
+  static final _unbreakable = RegExp(r'[^\s-]+-?');
+
+  @override
+  Widget build(BuildContext context) => MediaQuery.withClampedTextScaling(
+        maxScaleFactor: 1.5,
+        child: LayoutBuilder(builder: (context, box) {
+          final scaler = MediaQuery.textScalerOf(context);
+          var fitted = style;
+          // A few passes: with non-linear scaling, a smaller size scales by a
+          // slightly larger factor, so one proportional step can fall short.
+          for (var pass = 0; pass < 3; pass++) {
+            final widest = _widestPiece(fitted, scaler);
+            if (widest <= box.maxWidth) break;
+            fitted = fitted.copyWith(
+                fontSize: fitted.fontSize! * box.maxWidth / widest * 0.99);
+          }
+          return gradient
+              ? _gradientText(text, fitted, textAlign: textAlign)
+              : Text(text, textAlign: textAlign, style: fitted);
+        }),
+      );
+
+  double _widestPiece(TextStyle style, TextScaler scaler) {
+    var widest = 0.0;
+    for (final piece in _unbreakable.allMatches('$text ${sizeWith ?? ''}')) {
+      final painter = TextPainter(
+        text: TextSpan(text: piece[0], style: style),
+        textDirection: TextDirection.ltr,
+        textScaler: scaler,
+      )..layout();
+      if (painter.width > widest) widest = painter.width;
+      painter.dispose();
+    }
+    return widest;
+  }
+}
+
 Future<void> _openUrl(String url) async {
   final uri = Uri.parse(url);
   if (await canLaunchUrl(uri)) await launchUrl(uri);
@@ -231,7 +286,9 @@ class _NavBar extends StatelessWidget {
     final isDark = theme.brightness == Brightness.dark;
     final wide = MediaQuery.sizeOf(context).width >= _kBreak;
 
-    return Container(
+    // Capped at 1.5x, as app bars commonly are: past it the two buttons alone
+    // are wider than a phone (issue #595).
+    return MediaQuery.withClampedTextScaling(maxScaleFactor: 1.5, child: Container(
       height: _kNavH,
       decoration: BoxDecoration(
         color: isDark
@@ -281,7 +338,7 @@ class _NavBar extends StatelessWidget {
           ],
         ),
       ),
-    );
+    ));
   }
 }
 
@@ -407,7 +464,9 @@ class _HeroText extends StatelessWidget {
           decoration: BoxDecoration(
             color: theme.cardColor,
             border: Border.all(color: theme.dividerColor),
-            borderRadius: BorderRadius.circular(999),
+            // A pill on one line; when large text wraps it, a rounded box
+            // rather than a 999 px-radius oval (issue #595).
+            borderRadius: BorderRadius.circular(16),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -438,15 +497,17 @@ class _HeroText extends StatelessWidget {
         const SizedBox(height: 20),
 
         // H1 — two lines
-        Text('Your adventure,',
-            textAlign: align,
-            style: _inter(h1, FontWeight.w800, fg1, height: 1.02, spacing: -0.035)),
+        _Heading('Your adventure,',
+            _inter(h1, FontWeight.w800, fg1, height: 1.02, spacing: -0.035),
+            textAlign: align, sizeWith: 'stitched end-to-end.'),
         SizedBox(
           width: double.infinity,
-          child: _gradientText(
+          child: _Heading(
             'stitched end-to-end.',
             _inter(h1, FontWeight.w800, Colors.white, height: 1.02, spacing: -0.035),
             textAlign: centered ? TextAlign.center : TextAlign.start,
+            gradient: true,
+            sizeWith: 'Your adventure,',
           ),
         ),
         const SizedBox(height: 20),
@@ -556,7 +617,9 @@ class _HeroVis extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    // A picture of the app, not text to read: it keeps its drawn size at any
+    // text size, as a screenshot would (issue #595).
+    return MediaQuery.withNoTextScaling(child: Container(
       decoration: BoxDecoration(
         color: theme.cardColor,
         border: Border.all(color: theme.dividerColor),
@@ -584,7 +647,7 @@ class _HeroVis extends StatelessWidget {
           _ElevationStrip(theme),
         ],
       ),
-    );
+    ));
   }
 }
 
@@ -966,9 +1029,9 @@ class _FeaturesSection extends StatelessWidget {
                     style: _inter(12, FontWeight.w600,
                         theme.colorScheme.primary).copyWith(letterSpacing: 0.12)),
                 const SizedBox(height: 10),
-                Text(
+                _Heading(
                   'One map. Every kilometre.\nIncluding the ones you didn\'t pedal.',
-                  style: _inter(40, FontWeight.w800, fg1, height: 1.1, spacing: -0.025),
+                  _inter(40, FontWeight.w800, fg1, height: 1.1, spacing: -0.025),
                 ),
                 const SizedBox(height: 12),
                 Text(
@@ -1115,8 +1178,8 @@ class _HowItWorksSection extends StatelessWidget {
                     style: _inter(12, FontWeight.w600,
                         theme.colorScheme.primary).copyWith(letterSpacing: 0.12)),
                 const SizedBox(height: 10),
-                Text('From Strava dump to shareable journey in three steps.',
-                    style: _inter(40, FontWeight.w800, fg1, height: 1.1, spacing: -0.025)),
+                _Heading('From Strava dump to shareable journey in three steps.',
+                    _inter(40, FontWeight.w800, fg1, height: 1.1, spacing: -0.025)),
                 const SizedBox(height: 48),
                 LayoutBuilder(builder: (_, c) {
                   final wide = c.maxWidth >= _kBreak;
@@ -1226,8 +1289,8 @@ class _ShowcaseSection extends StatelessWidget {
                         style: _inter(12, FontWeight.w600, const Color(0xFF60A5FA))
                             .copyWith(letterSpacing: 0.12)),
                     const SizedBox(height: 10),
-                    Text('Camino Portugués · 18 activities · 4 connecting segments.',
-                        style: _inter(40, FontWeight.w800, const Color(0xFFF1F5F9),
+                    _Heading('Camino Portugués · 18 activities · 4 connecting segments.',
+                        _inter(40, FontWeight.w800, const Color(0xFFF1F5F9),
                             height: 1.1, spacing: -0.025)),
                     const SizedBox(height: 12),
                     Text(
@@ -1294,7 +1357,8 @@ class _ShowStats extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Wrap(
+    // Part of the live-project mock-up: drawn at a fixed size (issue #595).
+    return MediaQuery.withNoTextScaling(child: Wrap(
       spacing: 16,
       runSpacing: 16,
       children: [
@@ -1304,7 +1368,7 @@ class _ShowStats extends StatelessWidget {
             child: _ShowStat(s.$1, s.$2, s.$3, s.$4),
           ),
       ],
-    );
+    ));
   }
 }
 
@@ -1356,7 +1420,8 @@ class _ShowPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    // Part of the live-project mock-up: drawn at a fixed size (issue #595).
+    return MediaQuery.withNoTextScaling(child: Container(
       decoration: BoxDecoration(
         color: _dCard,
         border: Border.all(color: _dBord),
@@ -1408,7 +1473,7 @@ class _ShowPanel extends StatelessWidget {
           ),
         ],
       ),
-    );
+    ));
   }
 }
 
@@ -1511,8 +1576,8 @@ class _SelfHostSectionState extends State<_SelfHostSection> {
                     style: _inter(12, FontWeight.w600,
                         theme.colorScheme.primary).copyWith(letterSpacing: 0.12)),
                 const SizedBox(height: 10),
-                Text('Run it yourself, or let us.',
-                    style: _inter(40, FontWeight.w800, fg1,
+                _Heading('Run it yourself, or let us.',
+                    _inter(40, FontWeight.w800, fg1,
                         height: 1.1, spacing: -0.025)),
                 const SizedBox(height: 12),
                 Text(
@@ -1811,7 +1876,11 @@ class _FootBrand extends StatelessWidget {
         Row(children: [
           const _Logo(size: 26),
           const SizedBox(width: 8),
-          _LogoWordmark(theme),
+          // Shrinks rather than running off a phone at large text (#595).
+          Flexible(
+            child: FittedBox(
+                fit: BoxFit.scaleDown, child: _LogoWordmark(theme)),
+          ),
         ]),
         const SizedBox(height: 14),
         Text(

@@ -46,16 +46,6 @@ void main() {
         tester.platformDispatcher.textScaleFactorTestValue = scale;
         addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
 
-        // Only the price is under test. The rest of the page still overflows
-        // at 2x and 3x (issue #595; the pricing cards themselves are held by
-        // welcome_screen_overflow_test.dart), so overflow reports are set aside.
-        final previous = FlutterError.onError;
-        FlutterError.onError = (details) {
-          if (details.exceptionAsString().contains('overflowed')) return;
-          previous?.call(details);
-        };
-        addTearDown(() => FlutterError.onError = previous);
-
         await tester.pumpWidget(MaterialApp(
             theme: lightTheme,
             home: WelcomeScreen(loadPlans: () async => [
