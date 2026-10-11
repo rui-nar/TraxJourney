@@ -338,7 +338,8 @@ def test_an_activity_without_geometry_is_left_out(client):
 def test_an_encrypted_activity_still_refuses_the_export(client):
     _import(client, "Secret", _trip_file([_RUN, _KAYAK]))
     with Session(db_module.engine) as sess:
-        row = sess.exec(select(DBActivity).where(DBActivity.id == 103)).one()
+        # The kayak's row, by its Strava id: an import gives it a new row id (#592).
+        row = sess.exec(select(DBActivity).where(DBActivity.strava_id == 103)).one()
         row.summary_polyline = "v1.d2Vr.Y2lwaGVy"
         sess.add(row)
         sess.commit()
