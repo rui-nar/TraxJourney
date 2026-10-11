@@ -248,7 +248,7 @@ Fable reviewer, Opus triager. 2 findings, no envelope questions.
 - Decision: Fix now (D3)
 - Revisit when: —
 - Guard: —
-- Override: —
+- Override: — (owner approved 2026-10-11)
 - Outcome: open
 
 ### U7R1-2 — An encrypted split head kept for pieces another account owns is handed to that account instead of deleted
@@ -257,7 +257,7 @@ Fable reviewer, Opus triager. 2 findings, no envelope questions.
 - Decision: Fix now (D5)
 - Revisit when: —
 - Guard: —
-- Override: —
+- Override: — (owner approved 2026-10-11)
 - Outcome: open
 
 ## Unit review U4 — 2026-10-11, reviewed at b668db0d (u592/u4)
@@ -270,10 +270,10 @@ EQ1-1 work.
 ### U4R1-1 — Delete-local still runs the trip-rewrite gate for non-Strava rows, so the owner is refused on a departed companion's encrypted local row
 - Trigger: a companion's encrypted GPX import kept with them by the migration (Decision 4 exception); the companion leaves; the owner presses "Delete local activity" → 404 "Activity not in project", and the row stays.
 - Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
-- Decision: Defer (D10)
+- Decision: Defer (D10), overridden to Fix now
 - Revisit when: the U1 migration log lists an encrypted row kept with a companion owner who is no longer owner or member, or a user reports "Activity not in project" when deleting a local activity.
 - Guard: —
-- Override: —
+- Override: user: Fix now — EQ1-1: any editor's removal deletes the trip's row; delete-local must match timeline removal
 - Outcome: open
 
 ### U4R1-2 — Refresh job marks the row "resolved" when force_update_activity silently declines to write it
@@ -282,7 +282,7 @@ EQ1-1 work.
 - Decision: Guard (D9)
 - Revisit when: —
 - Guard: (proposed) WARNING log on both silent early exits of force_update_activity (strava_user_id mismatch; trip no longer holds the row).
-- Override: —
+- Override: — (owner approved 2026-10-11)
 - Outcome: open
 
 ## Unit review U5 — 2026-10-11, reviewed at 9c02faf6 (u592/u5)
