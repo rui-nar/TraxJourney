@@ -47,10 +47,13 @@ class UserInfo(sqlmodel.SQLModel, table=True):
         default=None, foreign_key="localuser.id"
     )
     google_sub: str = sqlmodel.Field(default="")
+    # Sign in with Apple (#580): the account's Apple ``sub``. Every Apple
+    # sign-in is looked up by it, never matched by e-mail.
+    apple_sub: str = sqlmodel.Field(default="", index=True)
     display_name: str = sqlmodel.Field(default="")
     email: str = sqlmodel.Field(default="", index=True)
     avatar_url: str = sqlmodel.Field(default="")
-    auth_provider: str = sqlmodel.Field(default="local")  # "local" | "google"
+    auth_provider: str = sqlmodel.Field(default="local")  # "local" | "google" | "apple"
     is_admin: bool = sqlmodel.Field(default=False)
     # Email verification (issue #110). Soft gate: an unverified account is
     # fully usable, but may not send invite emails and is not matched to a
@@ -76,6 +79,21 @@ class StravaToken(sqlmodel.SQLModel, table=True):
     refresh_token: str = sqlmodel.Field(
         default="", sa_type=EncryptedString("stravatoken.refresh_token"))
     expires_at: float = sqlmodel.Field(default=0.0)
+
+
+class AppleToken(sqlmodel.SQLModel, table=True):
+    """The Apple refresh token of a Sign in with Apple account (#580),
+    encrypted at rest. Account deletion revokes it, which Apple only accepts
+    under the ``client_id`` the code was exchanged with: the bundle id for a
+    native iOS sign-in, the Services ID for web and Android."""
+
+    id: Optional[int] = sqlmodel.Field(default=None, primary_key=True)
+    user_info_id: int = sqlmodel.Field(
+        foreign_key="userinfo.id", unique=True, index=True
+    )
+    refresh_token: str = sqlmodel.Field(
+        default="", sa_type=EncryptedString("appletoken.refresh_token"))
+    client_id: str = sqlmodel.Field(default="")
 
 
 class StravaOAuthCode(sqlmodel.SQLModel, table=True):
