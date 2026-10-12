@@ -85,6 +85,19 @@ def test_every_setup_uv_pins_the_dockerfiles_uv():
     assert {name for name, _ in found} == set(UV_WORKFLOWS)
 
 
+def test_every_setup_uv_ref_is_an_exact_tag():
+    """Upstream publishes no major or minor tags after v7 (v8.0.0 release
+    notes), so `@v10` does not resolve and `@v7` is frozen. An exact,
+    immutable `vX.Y.Z` tag is what Dependabot's github-actions updates move."""
+    refs = [step["uses"].split("@", 1)[1]
+            for path in WORKFLOWS
+            for _, step in _steps(yaml.safe_load(path.read_text(encoding="utf-8")))
+            if step.get("uses", "").startswith("astral-sh/setup-uv@")]
+    assert refs, "no setup-uv step found"
+    for ref in refs:
+        assert re.fullmatch(r"v\d+\.\d+\.\d+", ref), ref
+
+
 @pytest.mark.parametrize("name", UV_WORKFLOWS)
 def test_every_uv_sync_is_locked(name):
     """`--locked` fails on a lock that does not match pyproject.toml rather
