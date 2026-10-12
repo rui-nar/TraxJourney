@@ -9,11 +9,11 @@ down once per size, so the video's icons stay sharp at any resolution.
 
 Dev-only: the SVGs are fetched from a pinned commit of
 google/material-design-icons and rasterised with CairoSVG, which is neither in
-requirements.txt nor in the app image. Run it in a throwaway container:
+pyproject.toml nor in the app image. Run it in a throwaway container:
 
-    docker run --rm -v "$PWD":/w -w /w python:3.14-slim sh -c \\
+    docker run --rm -v "$PWD":/w -w /w ghcr.io/astral-sh/uv:0.13.0-python3.14-trixie-slim sh -c \\
         "apt-get update -qq && apt-get install -y -qq libcairo2 >/dev/null \\
-         && pip install -q cairosvg && python scripts/make_video_icons.py"
+         && uv run -q --no-project --with cairosvg --with Pillow python scripts/make_video_icons.py"
 
 and commit the PNGs it writes.
 """

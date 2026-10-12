@@ -15,8 +15,8 @@
 .PREREQUISITES
     - gh CLI installed and authenticated (gh auth login).
     - git configured with push access to origin.
-    - python on PATH (for the release notes).
-    - Optional, for -Polish: pip install anthropic, and ANTHROPIC_API_KEY set.
+    - uv on PATH (for the release notes; run `uv sync` once).
+    - Optional, for -Polish: ANTHROPIC_API_KEY set (anthropic comes with `uv sync`).
 
 .EXAMPLE
     .\bump_version_and_release.ps1            # minor bump (0.36.0 -> 0.37.0)
@@ -91,7 +91,7 @@ Write-Host "  $oldVersion  ->  $newVersion  (tag: $oldTag -> $newTag)"
 Step "Writing release notes for $oldTag..$newTag"
 # scripts/release_notes.py groups the commits by type and audience, drops merge
 # commits and version bumps, and links issue refs. Preview any range without
-# releasing:  python scripts/release_notes.py --from v0.46.9 --to HEAD
+# releasing:  uv run python scripts/release_notes.py --from v0.46.9 --to HEAD
 # Python writes the notes file itself, as UTF-8, and gh reads it back. The text
 # must never pass through a PowerShell string on its way to gh: Windows
 # PowerShell 5.1 writes files in the ANSI code page (cp1252), and that turned
@@ -105,7 +105,7 @@ $notesArgs = @(
 if ($oldTag) { $notesArgs += @("--from", $oldTag) }
 if ($Polish) { $notesArgs += "--polish" }
 
-& python @notesArgs
+& uv run python @notesArgs
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $notesFile)) { Die "release_notes.py failed." }
 $releaseBody = Get-Content -Path $notesFile -Raw -Encoding UTF8
 if (-not $releaseBody) { Die "release_notes.py wrote empty notes." }
