@@ -391,5 +391,6 @@ Notes:
   - Docker Desktop was down after a reboot, then restarted mid-run under two parallel suites. Suites now run sequentially.
 - **Known flake:** tests/test_memories_photo_order.py concurrent-dedup (from #566) failed in two loaded runs and passed alone. It is a separate follow-up.
 - **Checks:**
-  - pytest at 5ac45ba4: 7134 passed. At 7d22aa81: 7136 passed. The final run is recorded in the PR.
-  - Flutter at 5ac45ba4: 2708 passed, analyze clean. No client change since.
+  - pytest at 5ac45ba4: 7134 passed. At 7d22aa81: 7136 passed. At 71c1494f: 7137 passed, 1 failed (the known #566 photo-dedup flake).
+  - Flutter at 5ac45ba4: 2708 passed, analyze clean. The feature made no client change after that.
+  - Main merged again at 0ee52827 (12 commits: bundled fonts, CanvasKit, deploy; no migration). Checks after that merge are recorded in the PR.
