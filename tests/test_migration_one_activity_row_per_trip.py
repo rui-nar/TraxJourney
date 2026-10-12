@@ -659,9 +659,9 @@ def test_a_second_run_after_a_piece_repair_changes_nothing(cfg, engine):
     assert _dump(engine) == first
 
 
-# -- a shared head cut again (IR2-1) ------------------------------------------
+# -- a shared head cut again, or a piece removed (IR2-1, IR3-1) ---------------
 
-_CUT_AGAIN = "head cut again by another trip's split"
+_CUT_AGAIN = "not every piece cut directly out of it that another trip holds"
 
 
 def _keep_both_split(engine) -> None:
@@ -679,7 +679,9 @@ def _keep_both_split(engine) -> None:
 
 def test_a_shared_head_cut_again_by_another_trip_is_left_and_logged(cfg, engine, log):
     _keep_both_split(engine)
-    # Trip 20 split the shared head again: -2 was cut out of 900.
+    # Trip 20 split the shared head again: -2 was cut out of 900. The same
+    # rows also result from both trips holding -2 and trip 10 removing it
+    # (IR3-1), which is why the line names both causes.
     _tail(engine, -2, 900)
     _item(engine, 5, 20, -2)
     before = _row(engine, 900)
@@ -689,9 +691,10 @@ def test_a_shared_head_cut_again_by_another_trip_is_left_and_logged(cfg, engine,
     after = _row(engine, 900)
     assert {k: v for k, v in after.items() if not k.startswith("strava_")} == before
     assert [m for m in log.messages if _CUT_AGAIN in m] == [
-        "one row per trip: shared split head 900 in trip 10 left as it is: head "
-        "cut again by another trip's split; no snapshot of the state before "
-        "that cut"]
+        "one row per trip: shared split head 900 in trip 10 left as it is: "
+        "holds the head and some of its pieces, but not every piece cut "
+        "directly out of it that another trip holds: either that trip cut the "
+        "head again or this trip removed a piece; no snapshot of either state"]
     _assert_invariants(engine)
 
 

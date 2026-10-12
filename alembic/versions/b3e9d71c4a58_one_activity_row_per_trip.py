@@ -35,9 +35,11 @@ in the order of the plan's Decision 10; each step relies on the ones before it.
    its head is restored from its first-edit snapshot as
    ``reset_activity_track`` restores it, without descendants; a head with an
    enveloped original or no snapshot is left and logged. If no trip holds a
-   tail, every head is left and logged. A trip that split the head but lacks
-   a direct child another trip holds had its head cut again by that trip; its
-   only snapshot predates its own split, so it is left and logged. A piece split again is repaired by
+   tail, every head is left and logged. A trip that holds the head and some
+   of its pieces, but not a piece cut directly out of it that another trip
+   holds, is left and logged: either that trip cut the head again or this
+   trip removed the piece, and no snapshot records either state. A piece
+   split again is repaired by
    the same rule, except that a restored piece keeps its split links and the
    family its trip holds is renumbered "<base> (i/N)" in start-date order.
    Then, in every trip, a tail whose
@@ -427,15 +429,20 @@ class _Run:
             for trip in sorted(head_trips):
                 row_id = self.copies.get((trip, head), head)
                 if trip in tail_trips:
-                    # The trip that split it keeps its cut head. If another
-                    # trip cut the shared head again (IR2-1), this trip's head
-                    # carries that cut too; the only snapshot predates this
-                    # trip's own split, so restoring would undo it: logged.
+                    # The trip that split it keeps its cut head. A direct
+                    # piece another trip holds and this one does not means
+                    # either that trip cut the shared head again (IR2-1) or
+                    # this trip removed the piece (IR3-1); the data cannot
+                    # tell, and the only snapshot predates this trip's own
+                    # split, so restoring could undo it: logged.
                     if any(trip not in holders and holders
                            for holders in children.values()):
-                        self._leave(row_id, trip, "head cut again by another "
-                                    "trip's split; no snapshot of the state "
-                                    "before that cut")
+                        self._leave(row_id, trip, "holds the head and some of "
+                                    "its pieces, but not every piece cut "
+                                    "directly out of it that another trip "
+                                    "holds: either that trip cut the head "
+                                    "again or this trip removed a piece; no "
+                                    "snapshot of either state")
                     continue
                 if not tail_trips:
                     self._leave(row_id, trip, "no trip holds a tail of it")
