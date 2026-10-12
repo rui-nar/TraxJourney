@@ -3,8 +3,9 @@
 A project shared with a companion can hold activities imported by DIFFERENT
 users. Every path that talks to Strava about them must use the right account:
 
-* imports record the IMPORTER's user_info_id on new activity rows;
-* "refresh from Strava" is restricted to the activity's importer (403);
+* imports record the IMPORTER as the new row's ``strava_user_id``; the row
+  itself belongs to the trip's owner (#592, plan Decisions 4 and 5);
+* "refresh from Strava" uses the importer's token, whoever presses it (#592);
 * background enrichment uses the importer's client and busts the OWNER's
   geo cache;
 * sync/check and the Strava/Polarsteps import screens run against the
@@ -21,7 +22,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 import api.activities as activities_module
 import api.polarsteps as polarsteps_module
@@ -86,6 +87,7 @@ def env(monkeypatch):
         # One activity already imported by the OWNER.
         sess.add(DBActivity(
             id=111, user_info_id=owner.id, name="Owner ride", type="Ride",
+            strava_id=111, strava_user_id=owner.id,
             distance=4000.0, moving_time=1000, elapsed_time=1200,
             summary_polyline=polyline_lib.encode(_TRACK),
             start_date="2024-06-01T10:00:00Z",
@@ -114,7 +116,18 @@ def env(monkeypatch):
 
 # ── Import attribution ────────────────────────────────────────────────────────
 
+def _row_for(engine, strava_id: int) -> DBActivity:
+    """The one row holding Strava activity *strava_id*: its row id is
+    allocated, not the Strava id (#592)."""
+    with Session(engine) as sess:
+        rows = sess.exec(select(DBActivity).where(DBActivity.strava_id == strava_id)).all()
+        assert len(rows) == 1
+        return rows[0]
+
+
 def test_companion_import_attributes_rows_to_companion(env):
+    """The companion's Strava connection is recorded as strava_user_id; the
+    row belongs to the trip's owner (#592, plan Decisions 4 and 5)."""
     client, engine, ids, act_as = env
     act_as("editor")
     r = client.post(f"/api/projects/Trip/activities?owner={ids['owner']}",
@@ -122,15 +135,19 @@ def test_companion_import_attributes_rows_to_companion(env):
     assert r.status_code == 200, r.text
     assert r.json()["added"] == 1
 
+    row = _row_for(engine, 222)
+    assert row.id != 222
+    assert row.strava_user_id == ids["editor"]
+    assert row.user_info_id == ids["owner"]
     with Session(engine) as sess:
-        assert sess.get(DBActivity, 222).user_info_id == ids["editor"]
         # The owner's pre-existing activity keeps its importer.
-        assert sess.get(DBActivity, 111).user_info_id == ids["owner"]
+        assert sess.get(DBActivity, 111).strava_user_id == ids["owner"]
 
     # The owner sees both activities in the project details.
     act_as("owner")
     detail = client.get("/api/projects/Trip").json()
-    assert {a["id"] for a in detail["activities"]} == {111, 222}
+    assert {a["strava_id"] for a in detail["activities"]} == {111, 222}
+    assert {a["id"] for a in detail["activities"]} == {111, row.id}
 
 
 def test_owner_import_still_attributes_to_owner(env):
@@ -139,39 +156,60 @@ def test_owner_import_still_attributes_to_owner(env):
     r = client.post("/api/projects/Trip/activities",
                     json={"activities": [_raw_act(333)]})
     assert r.status_code == 200, r.text
-    with Session(engine) as sess:
-        assert sess.get(DBActivity, 333).user_info_id == ids["owner"]
+    row = _row_for(engine, 333)
+    assert (row.user_info_id, row.strava_user_id) == (ids["owner"], ids["owner"])
 
 
-# ── Refresh-from-Strava importer guard ────────────────────────────────────────
+# ── Refresh from Strava uses the importer's token ─────────────────────────────
 
-def test_owner_cannot_refresh_companions_activity(env):
+def _record_tokens(monkeypatch):
+    """Every account a Strava client is built for; never connected, so the
+    refresh stops at that check with no Strava call."""
+    used = []
+
+    def _factory(uid):
+        used.append(uid)
+        return None
+
+    monkeypatch.setattr(activities_module, "_strava_client_for_user", _factory)
+    return used
+
+
+def test_owner_refreshes_companions_activity_with_companions_token(env, monkeypatch):
+    """Was a 403 for anyone but the importer. Since #592 the trip's owner
+    owns the row and may refresh it; Strava is still asked with the
+    companion's token, the only one that can see it (plan Decision 5)."""
     client, engine, ids, act_as = env
     act_as("editor")
     client.post(f"/api/projects/Trip/activities?owner={ids['owner']}",
                 json={"activities": [_raw_act(222)]})
+    row_id = _row_for(engine, 222).id
+    used = _record_tokens(monkeypatch)
     act_as("owner")
-    r = client.post("/api/projects/Trip/activities/222/refresh")
-    assert r.status_code == 403
-    assert "user who imported" in r.json()["detail"]
+    r = client.post(f"/api/projects/Trip/activities/{row_id}/refresh")
+    assert r.status_code == 409
+    assert "no longer connected" in r.json()["detail"]
+    assert used == [ids["editor"]]
 
 
-def test_companion_cannot_refresh_owners_activity(env):
+def test_companion_refreshes_owners_activity_with_owners_token(env, monkeypatch):
     client, _, ids, act_as = env
+    used = _record_tokens(monkeypatch)
     act_as("editor")
     r = client.post(f"/api/projects/Trip/activities/111/refresh?owner={ids['owner']}")
-    assert r.status_code == 403
-    assert "user who imported" in r.json()["detail"]
+    assert r.status_code == 409
+    assert "no longer connected" in r.json()["detail"]
+    assert used == [ids["owner"]]
 
 
-def test_importer_passes_refresh_guard(env):
+def test_importer_without_a_strava_connection_is_told_so(env, monkeypatch):
     client, _, ids, act_as = env
-    # The importer gets past the guard: next failure is the (expected)
-    # missing Strava connection, not a 403.
+    used = _record_tokens(monkeypatch)
     act_as("owner")
     r = client.post("/api/projects/Trip/activities/111/refresh")
-    assert r.status_code == 400
+    assert r.status_code == 409
     assert "Strava not connected" in r.json()["detail"]
+    assert used == [ids["owner"]]
 
 
 # ── Background enrichment uses the importer's client + owner's cache ─────────
@@ -216,6 +254,83 @@ def test_enrichment_uses_importer_client_and_owner_cache(env, monkeypatch):
                     json={"activities": [_raw_act(555)]})
     assert r.status_code == 200, r.text
     assert factory_calls == [ids["editor"], ids["owner"]]
+
+
+class _Streams:
+    """A Strava client recording what it was asked for."""
+    remaining_requests = 100
+
+    def __init__(self):
+        self.asked = []
+
+    def get_activity_streams(self, strava_id):
+        self.asked.append(strava_id)
+        return {"latlng": {"data": [[47.0, 1.0], [47.1, 1.1]]}}
+
+
+def test_add_enriches_the_new_row_by_its_row_id(env, monkeypatch):
+    """The Strava id no longer names the row (#592): the new row is found
+    and written, and Strava asked about its strava_id."""
+    client, engine, ids, act_as = env
+    fake = _Streams()
+    monkeypatch.setattr(activities_module, "_strava_client_for_user", lambda _uid: fake)
+    act_as("editor")
+    r = client.post(f"/api/projects/Trip/activities?owner={ids['owner']}",
+                    json={"activities": [_raw_act(444)]})
+    assert r.status_code == 200, r.text
+    assert r.json()["pending_enrichment"] == 1
+    assert fake.asked == [444]
+    row = _row_for(engine, 444)
+    assert polyline_lib.decode(row.summary_polyline)[0] == pytest.approx((47.0, 1.0), abs=1e-4)
+
+
+def test_a_re_add_counts_nothing_and_changes_nothing(env, monkeypatch):
+    """Re-adding an activity the trip holds adds no row, keeps its name (a
+    split's "(i/N)" survives a re-add) and enriches nothing (plan
+    Decision 7)."""
+    client, engine, ids, act_as = env
+    fake = _Streams()
+    monkeypatch.setattr(activities_module, "_strava_client_for_user", lambda _uid: fake)
+    with Session(engine) as sess:
+        row = sess.get(DBActivity, 111)
+        row.name = "Owner ride (1/2)"
+        sess.add(row); sess.commit()
+    act_as("owner")
+    r = client.post("/api/projects/Trip/activities",
+                    json={"activities": [_raw_act(111, name="Strava name"),
+                                         _raw_act(666)]})
+    assert r.status_code == 200, r.text
+    assert r.json()["added"] == 1
+    assert r.json()["total"] == 2
+    assert r.json()["pending_enrichment"] == 1
+    assert fake.asked == [666]
+    with Session(engine) as sess:
+        assert sess.get(DBActivity, 111).name == "Owner ride (1/2)"
+        assert len(sess.exec(select(DBActivity).where(DBActivity.strava_id == 111)).all()) == 1
+
+
+def test_enrichment_asks_nothing_once_the_importer_left_the_trip(env, monkeypatch):
+    """The companion's token serves the trip only while they are part of it
+    (review R1-5): a deferred enrichment pass after they leave calls nothing."""
+    client, engine, ids, act_as = env
+    act_as("editor")
+    # Not connected while adding, so the add's own enrichment does nothing.
+    monkeypatch.setattr(activities_module, "_strava_client_for_user", lambda _uid: None)
+    client.post(f"/api/projects/Trip/activities?owner={ids['owner']}",
+                json={"activities": [_raw_act(777)]})
+    row_id = _row_for(engine, 777).id
+    with Session(engine) as sess:
+        for member in sess.exec(select(DBProjectMember)).all():
+            sess.delete(member)
+        sess.commit()
+    used = []
+    monkeypatch.setattr(activities_module, "_strava_client_for_user",
+                        lambda uid: used.append(uid) or _Streams())
+
+    activities_module._enrich_activities_background([row_id], ids["editor"], ids["owner"], "Trip")
+
+    assert used == []
+    assert _row_for(engine, 777).summary_polyline == polyline_lib.encode(_TRACK)
 
 
 # ── sync/check runs against the caller's own Strava account ──────────────────

@@ -1762,11 +1762,13 @@ class _ActivityPanelState extends State<ActivityPanel> {
                         final statsText =
                             '${(distM / 1000).toStringAsFixed(1)} km  •  ${_formatDuration(movingSec)}';
                         final activityId = item['activity_id'];
-                        // A split-tail activity is stored locally with a
-                        // negative id; it gets a dedicated delete affordance
-                        // that hits the local-activity delete endpoint.
+                        // A local activity (GPX import, split tail) has no
+                        // Strava id; it gets a dedicated delete affordance
+                        // that hits the local-activity delete endpoint. The
+                        // row id's sign carries no meaning (#592).
                         final localActId = (a['id'] as num?)?.toInt();
-                        final isLocal = localActId != null && localActId < 0;
+                        final isLocal =
+                            localActId != null && a['strava_id'] == null;
                         return _rowDismissible(
                           isWide: isWide,
                           key: ValueKey('act_$activityId'),

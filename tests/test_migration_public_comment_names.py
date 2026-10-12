@@ -21,6 +21,7 @@ from models.user import LocalUser, UserInfo
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _OLD_REV = "b7e4d2c9a1f0"       # before the migration's down_revision
 _PREV_REV = "e3a91c5d7f20"      # down_revision of the migration
+_REV = "87200bcb9342"           # the migration; #592's after it cannot downgrade
 
 
 def _cfg(db_path: Path) -> Config:
@@ -111,11 +112,11 @@ def test_upgrade_replaces_addresses_and_blanks_with_traveller(seeded):
 
 def test_upgrade_is_idempotent(seeded):
     cfg, engine = seeded
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, _REV)
     first = _names(engine)
     command.downgrade(cfg, _PREV_REV)
     assert _names(engine) == first, "downgrade cannot restore the addresses"
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, _REV)
     assert _names(engine) == first == _expected()
 
 

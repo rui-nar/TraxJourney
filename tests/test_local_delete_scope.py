@@ -1,8 +1,7 @@
 """DELETE /{name}/activities/{id}/local must be scoped to the project (#405).
 
-``ActivityMixin.delete_local_activity`` validated that the id was local and
-that the row existed, but never that the row belonged to the project the call
-named. The route's permission check proves you may edit *that* project — so an
+``ActivityMixin.delete_local_activity`` validated that the row was local and
+existed, but never that the row belonged to the project the call named. The route's permission check proves you may edit *that* project — so an
 editor of trip B could delete trip A's local activity, bump trip B's
 lock_version, and leave trip A with an item pointing at a missing row.
 
@@ -260,8 +259,10 @@ def test_deleting_the_timeline_item_still_removes_the_local_row(env):
 
 
 def test_row_referenced_by_two_projects_is_refused_not_destroyed(env):
-    """Corruption, not a normal state — local rows are single-owner. Refusing
-    is right: deleting the row would break the other project's timeline too.
+    """Corruption, not a normal state — every row belongs to one trip (#592),
+    and the migration leaves none held by two. A row another trip holds is
+    that trip's, so neither may delete it: deleting it would break the other
+    project's timeline.
     """
     client, engine = env
     tail_id = _split_tail(client)
@@ -277,3 +278,83 @@ def test_row_referenced_by_two_projects_is_refused_not_destroyed(env):
         assert resp.status_code == 404, f"{project}: {resp.text}"
     with Session(engine) as sess:
         assert sess.get(DBActivity, tail_id) is not None
+
+
+# ── Any editor of the trip, whoever owns the row (U4R1-1) ────────────────────
+
+_ENVELOPE = "v1.d2VsY29tZQ==.Y2lwaGVydGV4dA=="
+
+
+@pytest.fixture
+def team(monkeypatch):
+    """Owner's trip "Trip" holds -40, a GPX import of a companion who
+    encrypted it, so it stayed theirs (plan Decision 4), and who then left
+    the trip. The owner's "Other" holds -41, a local row of the owner's."""
+    from models.project_db import DBActivityGeoPrepared, DBProjectMember
+
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    monkeypatch.setattr(db_module, "engine", engine)
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as sess:
+        owner = UserInfo(display_name="Owner", email="o@e.com")
+        companion = UserInfo(display_name="Companion", email="c@e.com")
+        sess.add(owner); sess.add(companion); sess.commit()
+        sess.refresh(owner); sess.refresh(companion)
+        trip = DBProject(user_info_id=owner.id, name="Trip")
+        other = DBProject(user_info_id=owner.id, name="Other")
+        sess.add(trip); sess.add(other); sess.commit()
+        sess.refresh(trip); sess.refresh(other)
+        sess.add(DBActivity(id=-40, user_info_id=companion.id, name=_ENVELOPE,
+                            summary_polyline=_ENVELOPE, type="hike", source="gpx",
+                            start_date="2026-06-01T10:00:00Z"))
+        sess.add(DBActivity(id=-41, user_info_id=owner.id, name="Walk", type="hike",
+                            source="gpx", start_date="2026-06-01T10:00:00Z"))
+        for aid in (-40, -41):
+            sess.add(DBActivityGeoPrepared(activity_id=aid, version=1, blob=b"geo"))
+        sess.add(DBProjectItem(project_id=trip.id, position=0,
+                               item_type="activity", activity_id=-40))
+        sess.add(DBProjectItem(project_id=other.id, position=0,
+                               item_type="activity", activity_id=-41))
+        member = DBProjectMember(project_id=trip.id, user_info_id=companion.id,
+                                 role="editor", invited_by=owner.id)
+        sess.add(member); sess.commit()
+        sess.delete(member); sess.commit()   # the companion left
+        owner_id = owner.id
+
+    app = FastAPI()
+    app.dependency_overrides[get_current_user] = lambda: {"sub": str(owner_id)}
+    app.include_router(activities_router)
+    app.include_router(projects_router)
+    return TestClient(app), engine
+
+
+def test_the_owner_deletes_a_departed_companions_encrypted_local_row(team):
+    """Was a 404 "Activity not in project": the trip-rewrite gate refused a
+    row whose owner is no longer part of the trip (review U4R1-1)."""
+    from models.project_db import DBActivityGeoPrepared
+    client, engine = team
+
+    resp = client.delete("/api/projects/Trip/activities/-40/local")
+
+    assert resp.status_code == 204, resp.text
+    with Session(engine) as sess:
+        assert sess.get(DBActivity, -40) is None
+        assert sess.get(DBActivityGeoPrepared, -40) is None
+        assert not sess.exec(select(DBProjectItem)
+                             .where(DBProjectItem.activity_id == -40)).first()
+
+
+def test_a_row_another_trip_holds_is_still_refused(team):
+    from models.project_db import DBActivityGeoPrepared
+    client, engine = team
+
+    resp = client.delete("/api/projects/Trip/activities/-41/local")
+
+    assert resp.status_code == 404, resp.text
+    with Session(engine) as sess:
+        assert sess.get(DBActivity, -41) is not None
+        assert sess.get(DBActivityGeoPrepared, -41) is not None

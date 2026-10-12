@@ -15,6 +15,7 @@ from __future__ import annotations
 import shutil
 import time
 
+from sqlalchemy import update
 from sqlmodel import Session, select
 
 from models.project_db import (
@@ -53,6 +54,7 @@ from models.user import (
     UserInfo,
 )
 from src.auth.strava_deauth import deauthorize_strava
+from src.project.project_repo import ProjectRepo
 from src.project.repo_core import bump_lock_version
 from src.admin import storage as _storage_mod
 from src.billing.gateway import GatewayError, get_gateway
@@ -71,6 +73,7 @@ from src.billing.withdrawal import (
     settle,
 )
 from src.exceptions.errors import AccountDeletionRefused
+from src.utils.encryption_check import is_encrypted_envelope
 from src.utils.logging import get_logger
 
 _log = get_logger(__name__)
@@ -88,6 +91,22 @@ BILLING_UNAVAILABLE = "billing_unavailable"
 #: costs a round trip, not a refusal. ``none`` is a row that never had a
 #: subscription (a free user, or an admin comp).
 _ENDED_SUBSCRIPTION_STATUSES = frozenset({"", "none", "canceled", "incomplete_expired"})
+
+#: The activity columns a client can encrypt: the list the #592 migration
+#: (``b3e9d71c4a58``) reads to keep an encrypted row with its owner.
+_ENCRYPTABLE_ACTIVITY_COLUMNS = (
+    "name", "summary_polyline", "start_latlng_json", "end_latlng_json",
+    "elevation_profile_json", "elevation_profile_low_res_json",
+    "original_polyline", "original_elevation_profile_json",
+    "original_start_latlng_json", "original_end_latlng_json",
+)
+
+
+def row_holds_envelope(row: DBActivity) -> bool:
+    """Whether activity *row* holds a client-side E2EE envelope in any field:
+    the exception to "the trip's owner owns every row" (#592, Decision 4)."""
+    return any(is_encrypted_envelope(getattr(row, c))
+               for c in _ENCRYPTABLE_ACTIVITY_COLUMNS)
 
 
 def cancel_live_subscription(sess: Session, user_info_id: int) -> list[str]:
@@ -344,6 +363,51 @@ def _billing_moved(settled: tuple | None, current: tuple | None) -> bool:
     return (status or "") not in _ENDED_SUBSCRIPTION_STATUSES
 
 
+def _unhook_split_pieces(sess: Session, head_id: int) -> None:
+    """Unhook the split pieces of *head_id*, a row about to be deleted.
+
+    Each piece is re-rooted on its nearest ancestor that its own trip holds,
+    or, when the trip holds none, detached (split columns cleared), as the
+    #592 migration repairs a family: no split link may name a missing row or
+    cross trips (plan Decision 10).
+    """
+    links = {aid: (root, parent) for aid, root, parent in sess.exec(
+        select(DBActivity.id, DBActivity.split_root_id, DBActivity.split_parent_id)
+        .where((DBActivity.split_root_id == head_id)
+               | (DBActivity.split_parent_id == head_id))
+    ).all()}
+    if not links:
+        return
+    holder = dict(sess.exec(
+        select(DBProjectItem.activity_id, DBProjectItem.project_id)
+        .where(DBProjectItem.activity_id.in_(sorted(links)))
+    ).all())
+    resolved: dict[int, tuple] = {}
+
+    def resolve(aid: int) -> tuple:
+        """``(root, parent)`` of piece *aid* once the head is gone."""
+        if aid not in resolved:
+            resolved[aid] = (None, None)    # guards a cyclic chain
+            trip = holder.get(aid)
+            seen: set[int] = set()
+            ancestor = links[aid][1]
+            while (ancestor in links and ancestor not in seen
+                   and (trip is None or holder.get(ancestor) != trip)):
+                seen.add(ancestor)
+                ancestor = links[ancestor][1]
+            if ancestor in links and trip is not None and holder.get(ancestor) == trip:
+                top, _parent = resolve(ancestor)
+                resolved[aid] = (top if top is not None else ancestor, ancestor)
+        return resolved[aid]
+
+    for aid in sorted(links):
+        root, parent = resolve(aid)
+        values = {"split_root_id": root, "split_parent_id": parent}
+        if root is None:
+            values["split_base_name"] = None
+        sess.execute(update(DBActivity).where(DBActivity.id == aid).values(**values))
+
+
 def delete_user_and_data(sess: Session, user_info_id: int) -> None:
     """Delete a ``UserInfo`` and every row it owns, directly or via a project.
 
@@ -431,29 +495,59 @@ def delete_user_and_data(sess: Session, user_info_id: int) -> None:
 
     # Travel-companion footprint (issue #106): rows this user left in OTHER
     # users' projects, and membership/invite rows in both directions. Items
-    # first (they reference the journal entries / activities being removed);
+    # first (they reference the journal entries / encrypted activities being
+    # removed);
     # own-project rows are covered again by the project block below, which is
     # harmless. The user's journal photo files live under
     # ``data/users/{id}/journal/`` and are removed by purge_user_files.
     authored_journal_ids = sess.exec(
         select(DBJournalEntry.id).where(DBJournalEntry.user_info_id == user_info_id)
     ).all()
-    activity_ids = sess.exec(
+    # Activity rows (#592, plan Decision 4). A row belongs to the one trip
+    # holding it and is owned by that trip's owner, so the rows of this user's
+    # own trips go with those trips, whoever owns them, and the rows this user
+    # brought into other users' trips stay there, the trip owner's. The one
+    # exception is a row holding encrypted fields: it keeps the account whose
+    # key encrypted it, nobody else can read it, so it goes with that account,
+    # its items too (review R2-5).
+    own_trip_rows = set(sess.exec(
+        select(DBProjectItem.activity_id).where(
+            DBProjectItem.project_id.in_(project_ids),
+            DBProjectItem.activity_id.is_not(None))
+    ).all()) if project_ids else set()
+    owned_rows = set(sess.exec(
         select(DBActivity.id).where(DBActivity.user_info_id == user_info_id)
-    ).all()
+    ).all())
+    held_elsewhere = sess.exec(
+        select(DBProjectItem.activity_id, DBProjectItem.project_id,
+               DBProject.user_info_id)
+        .join(DBProject, DBProject.id == DBProjectItem.project_id)
+        .where(DBProjectItem.activity_id.in_(sorted(owned_rows)),
+               DBProject.user_info_id != user_info_id)
+        .order_by(DBProjectItem.project_id, DBProjectItem.activity_id)
+    ).all() if owned_rows else []
+    encrypted = {row.id for row in sess.exec(select(DBActivity).where(
+        DBActivity.id.in_(sorted({aid for aid, _pid, _owner in held_elsewhere})))).all()
+        if row_holds_envelope(row)} if held_elsewhere else set()
+    withdrawn = [(aid, pid) for aid, pid, _owner in held_elsewhere if aid in encrypted]
+    # A plaintext row still owned here breaks Decision 4 (every writer hands
+    # it to the trip owner): it is handed over now, as that writer would have.
+    handed_over: dict[int, int] = {}
+    for aid, _pid, trip_owner in held_elsewhere:
+        if aid not in encrypted:
+            handed_over.setdefault(aid, trip_owner)
     # The item rows about to go can belong to *other* users' shared projects
     # (issue #106). Collect those projects before deleting, so the lock can be
     # advanced for each: a structural save_project that loaded before this
     # deletion would otherwise pass its compare-and-swap and re-insert the item
     # rows from its snapshot, pointing at journal entries and activities that no
     # longer exist. Same hazard the delete_* endpoints carry (issue #173).
-    touched_project_ids: set[int] = set()
-    for column, ids_ in ((DBProjectItem.journal_id, authored_journal_ids),
-                         (DBProjectItem.activity_id, activity_ids)):
-        if ids_:
-            touched_project_ids.update(sess.exec(
-                select(DBProjectItem.project_id).where(column.in_(ids_))
-            ).all())
+    touched_project_ids: set[int] = {pid for _aid, pid in withdrawn}
+    if authored_journal_ids:
+        touched_project_ids.update(sess.exec(
+            select(DBProjectItem.project_id)
+            .where(DBProjectItem.journal_id.in_(authored_journal_ids))
+        ).all())
     # Bump before the deletes, not after: bump_lock_version issues a Core
     # UPDATE, which autoflushes whatever is pending, so bumping last would take
     # the item rows before the project row — the inverse of save_project's
@@ -461,13 +555,26 @@ def delete_user_and_data(sess: Session, user_info_id: int) -> None:
     # SQLite (single writer) but free to get right here.
     for touched in touched_project_ids:
         bump_lock_version(sess, touched)
+    if touched_project_ids:
+        # Their cached totals counted what goes (review U7R1-1).
+        sess.execute(update(DBProject)
+                     .where(DBProject.id.in_(sorted(touched_project_ids)))
+                     .values(stats_json=None))  # recomputed on the next read
     if authored_journal_ids:
         _delete_all(DBProjectItem, DBProjectItem.journal_id.in_(authored_journal_ids))
         _delete_all(DBJournalEntry, DBJournalEntry.id.in_(authored_journal_ids))
-    if activity_ids:
-        _delete_all(DBProjectItem, DBProjectItem.activity_id.in_(activity_ids))
-        _delete_all(DBActivityGeoPrepared,
-                    DBActivityGeoPrepared.activity_id.in_(activity_ids))
+    for aid, pid in withdrawn:
+        _log.info("Deletion of account %s: encrypted activity %s removed from "
+                  "trip %s, which only that account could read",
+                  user_info_id, aid, pid)
+    if encrypted:
+        _delete_all(DBProjectItem, DBProjectItem.activity_id.in_(sorted(encrypted)))
+    for aid, trip_owner in sorted(handed_over.items()):
+        _log.warning("Deletion of account %s: plaintext activity %s it still "
+                     "owned in a trip of account %s is handed to that account",
+                     user_info_id, aid, trip_owner)
+        sess.execute(update(DBActivity).where(DBActivity.id == aid)
+                     .values(user_info_id=trip_owner))
     _delete_all(DBProjectMember, DBProjectMember.user_info_id == user_info_id)
     _delete_all(DBProjectInvite, DBProjectInvite.created_by == user_info_id)
     # Pending invites (issue #110) point at the sender via invited_by, so they
@@ -502,7 +609,43 @@ def delete_user_and_data(sess: Session, user_info_id: int) -> None:
         _delete_all(DBProjectItem, DBProjectItem.project_id.in_(project_ids))
         _delete_all(DBProject, DBProject.id.in_(project_ids))
 
-    _delete_all(DBActivity, DBActivity.user_info_id == user_info_id)
+    # Every item naming them is gone now: the rows of this user's own trips,
+    # their encrypted rows in other trips, and their rows no trip holds.
+    ProjectRepo().delete_unreferenced_activities(sess, own_trip_rows | owned_rows)
+    # What still names this user is a split head kept because pieces another
+    # trip holds name it (delete_unreferenced_activities keeps a family whole).
+    # An encrypted one goes with the account like every other encrypted row
+    # (review U7R1-2), its pieces unhooked from it. A plaintext one goes to the
+    # owner of such a piece, so no row is left owned by an account that no
+    # longer exists.
+    for aid in sess.exec(
+        select(DBActivity.id).where(DBActivity.user_info_id == user_info_id)
+    ).all():
+        if row_holds_envelope(sess.get(DBActivity, aid)):
+            _log.info("Deletion of account %s: encrypted activity %s, the head "
+                      "of split pieces, is deleted and its pieces unhooked",
+                      user_info_id, aid)
+            _unhook_split_pieces(sess, aid)
+            _delete_all(DBActivityGeoPrepared, DBActivityGeoPrepared.activity_id == aid)
+            _delete_all(DBActivity, DBActivity.id == aid)
+            continue
+        heir = sess.exec(select(DBActivity.user_info_id).where(
+            DBActivity.split_root_id == aid,
+            DBActivity.user_info_id != user_info_id)).first()
+        if heir is None:
+            _delete_all(DBActivityGeoPrepared, DBActivityGeoPrepared.activity_id == aid)
+            _delete_all(DBActivity, DBActivity.id == aid)
+            continue
+        _log.warning("Deletion of account %s: activity %s, the head of split "
+                     "pieces another account holds, is handed to account %s",
+                     user_info_id, aid, heir)
+        sess.execute(update(DBActivity).where(DBActivity.id == aid)
+                     .values(user_info_id=heir))
+    # The rows imported through this user's Strava connection stay in their
+    # trips, with no Strava account to refresh them from (Decision 5).
+    sess.execute(update(DBActivity)
+                 .where(DBActivity.strava_user_id == user_info_id)
+                 .values(strava_user_id=None))
     _delete_all(DBStravaCache, DBStravaCache.user_info_id == user_info_id)
     _delete_all(StravaToken, StravaToken.user_info_id == user_info_id)
     _delete_all(PolarstepsToken, PolarstepsToken.user_info_id == user_info_id)

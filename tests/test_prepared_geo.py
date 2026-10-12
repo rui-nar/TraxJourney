@@ -234,6 +234,9 @@ def repo_env(monkeypatch):
         dist_km = [i * 0.01 for i in range(len(_TRACK))]
         sess.add(DBActivity(
             id=111, user_info_id=uid, name="Ride", type="Ride",
+            # From Strava through the owner's connection (#592): what
+            # enrichment and a refresh write.
+            strava_id=111, strava_user_id=uid,
             distance=4000.0, moving_time=1000, elapsed_time=1200,
             summary_polyline=polyline_lib.encode(_TRACK),
             elevation_profile_json=json.dumps(
@@ -313,24 +316,20 @@ def test_a_split_writes_a_row_for_both_pieces(repo_env):
     assert len(head_flat) == 2 * 201 and len(tail_flat) == 2 * 200
 
 
-def test_an_upsert_of_a_new_activity_writes_the_row(repo_env):
-    engine, uid, _pid, repo = repo_env
+def _add_to_trip(engine, uid, repo, act: Activity) -> int:
+    """Add *act* to the trip and save it: the save gives it a row of its own
+    (#592), whose id this returns."""
     with Session(engine) as sess:
-        repo._upsert_activity(sess, uid, _activity(222))
-        sess.commit()
-    _assert_current(engine, 222)
+        project = repo.get_project(sess, uid, "Trip")
+        project.add_activities([act])
+        repo.save_project(sess, uid, project)
+        return sess.exec(select(DBActivity.id).where(DBActivity.name == act.name)).one()
 
 
-def test_an_upsert_filling_a_null_polyline_writes_the_row(repo_env):
+def test_saving_a_new_activity_writes_the_row(repo_env):
     engine, uid, _pid, repo = repo_env
-    with Session(engine) as sess:
-        sess.add(DBActivity(id=333, user_info_id=uid, name="Bare", type="Ride",
-                            start_date="2026-01-01T00:00:00Z"))
-        sess.commit()
-    with Session(engine) as sess:
-        repo._upsert_activity(sess, uid, _activity(333))
-        sess.commit()
-    _assert_current(engine, 333)
+    row_id = _add_to_trip(engine, uid, repo, _activity(222, name="Added"))
+    _assert_current(engine, row_id)
 
 
 def test_a_force_refresh_rewrites_the_row(repo_env):
@@ -356,22 +355,20 @@ def test_a_force_refresh_that_drops_the_polyline_drops_the_row(repo_env):
 
 def test_a_polyline_that_does_not_decode_fails_no_write(repo_env):
     engine, uid, _pid, repo = repo_env
+    row_id = _add_to_trip(
+        engine, uid, repo, _activity(444, name="Bad", summary_polyline="freshpoly"))
     with Session(engine) as sess:
-        repo._upsert_activity(sess, uid, _activity(444, summary_polyline="freshpoly"))
-        sess.commit()
-    with Session(engine) as sess:
-        assert sess.get(DBActivity, 444).summary_polyline == "freshpoly"
-    assert _row(engine, 444) is None
+        assert sess.get(DBActivity, row_id).summary_polyline == "freshpoly"
+    assert _row(engine, row_id) is None
 
 
 # ── encryption: the server holds no key, so it holds no prepared plaintext ──
 
-def test_an_encrypted_polyline_leaves_no_row_on_upsert(repo_env):
+def test_an_encrypted_polyline_leaves_no_row_on_save(repo_env):
     engine, uid, _pid, repo = repo_env
-    with Session(engine) as sess:
-        repo._upsert_activity(sess, uid, _activity(555, summary_polyline=_ENC_POLY))
-        sess.commit()
-    assert _row(engine, 555) is None
+    row_id = _add_to_trip(
+        engine, uid, repo, _activity(555, name="Secret", summary_polyline=_ENC_POLY))
+    assert _row(engine, row_id) is None
 
 
 def test_enrichment_of_an_encrypted_row_leaves_no_row(repo_env):
@@ -777,7 +774,8 @@ def test_the_migration_applies_to_a_database_at_the_previous_head(db_path):
 
 def test_the_migration_downgrades(db_path):
     cfg = _alembic_config(db_path)
-    command.upgrade(cfg, "head")
+    # The prepared-geo migration, not "head": #592's after it cannot downgrade.
+    command.upgrade(cfg, "04a606ace483")
     command.downgrade(cfg, _PREVIOUS_HEAD)
     assert _columns(db_path, "activity_geo_prepared") == []
 

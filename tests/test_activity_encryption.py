@@ -116,6 +116,9 @@ def repo_env(monkeypatch):
 
         encrypted = DBActivity(
             id=111, user_info_id=uid, name=_ENC_NAME, type="Ride",
+            # From Strava through this user's connection (#592): the rows
+            # enrichment and a refresh write.
+            strava_id=111, strava_user_id=uid,
             kudos_count=1,
             summary_polyline=_ENC_POLY,
             elevation_profile_json=_ENC_ELEV,
@@ -143,54 +146,44 @@ def _client(engine, uid, *routers) -> TestClient:
 # 2. CRITICAL — the three sync-stomp guards
 # ---------------------------------------------------------------------------
 
-class TestUpsertActivityGuard:
-    """ActivityMixin._upsert_activity — used on every Strava/Polarsteps sync."""
+class TestSaveActivityGuard:
+    """``save_project`` — every Strava/Polarsteps add and sync of a trip. A
+    row the trip holds is left as it is (#592), so a re-sync carrying plaintext
+    cannot stomp its ciphertext."""
+
+    @staticmethod
+    def _trip_holding_111(engine, uid, repo):
+        with Session(engine) as sess:
+            trip = DBProject(user_info_id=uid, name="Trip")
+            sess.add(trip)
+            sess.commit()
+            sess.add(DBProjectItem(project_id=trip.id, position=0,
+                                   item_type="activity", activity_id=111))
+            sess.commit()
 
     def test_encrypted_name_survives_resync(self, repo_env):
         engine, uid, repo = repo_env
+        self._trip_holding_111(engine, uid, repo)
         fresh = _make_activity(id=111, name="Renamed On Strava", kudos_count=42)
         with Session(engine) as sess:
-            repo._upsert_activity(sess, uid, fresh)
-            sess.commit()
+            project = repo.get_project(sess, uid, "Trip")
+            project.activities = [fresh]
+            repo.save_project(sess, uid, project)
         with Session(engine) as sess:
             row = sess.get(DBActivity, 111)
             assert row.name == _ENC_NAME
-            # Non-encrypted scalar field still updates normally.
-            assert row.kudos_count == 42
 
-    def test_summary_polyline_already_safe_without_extra_guard(self, repo_env):
-        """summary_polyline only fills in when the existing value is None, and
-        an encrypted envelope is never None, so it's naturally protected —
-        this pins that behaviour."""
+    def test_summary_polyline_stays_encrypted(self, repo_env):
         engine, uid, repo = repo_env
+        self._trip_holding_111(engine, uid, repo)
         fresh = _make_activity(id=111, summary_polyline="freshencodedpolyline")
         with Session(engine) as sess:
-            repo._upsert_activity(sess, uid, fresh)
-            sess.commit()
+            project = repo.get_project(sess, uid, "Trip")
+            project.activities = [fresh]
+            repo.save_project(sess, uid, project)
         with Session(engine) as sess:
             row = sess.get(DBActivity, 111)
             assert row.summary_polyline == _ENC_POLY
-
-    def test_plaintext_activity_still_updates_normally(self, repo_env):
-        """Non-regression: a never-encrypted row still gets the old
-        (null-polyline-fills-in) upsert behaviour."""
-        engine, uid, repo = repo_env
-        with Session(engine) as sess:
-            sess.add(DBActivity(id=333, user_info_id=uid, name="Plain", type="Ride",
-                                 kudos_count=1,
-                                 start_date="2026-01-01T00:00:00Z",
-                                 start_date_local="2026-01-01T00:00:00Z"))
-            sess.commit()
-        fresh = _make_activity(id=333, name="Plain Renamed", kudos_count=5,
-                                summary_polyline="freshpoly")
-        with Session(engine) as sess:
-            repo._upsert_activity(sess, uid, fresh)
-            sess.commit()
-        with Session(engine) as sess:
-            row = sess.get(DBActivity, 333)
-            assert row.name == "Plain Renamed"
-            assert row.kudos_count == 5
-            assert row.summary_polyline == "freshpoly"
 
 
 class TestUpdateActivityEnrichmentGuard:
@@ -214,6 +207,7 @@ class TestUpdateActivityEnrichmentGuard:
         engine, uid, repo = repo_env
         with Session(engine) as sess:
             sess.add(DBActivity(id=222, user_info_id=uid, name="Plain", type="Ride",
+                                 strava_id=222, strava_user_id=uid,
                                  start_date="2026-01-01T00:00:00Z",
                                  start_date_local="2026-01-01T00:00:00Z"))
             sess.commit()
@@ -259,6 +253,7 @@ class TestForceUpdateActivityGuard:
         engine, uid, repo = repo_env
         with Session(engine) as sess:
             sess.add(DBActivity(id=444, user_info_id=uid, name="Plain", type="Ride",
+                                 strava_id=444, strava_user_id=uid,
                                  start_date="2026-01-01T00:00:00Z",
                                  start_date_local="2026-01-01T00:00:00Z"))
             sess.commit()

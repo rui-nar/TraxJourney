@@ -35,7 +35,7 @@ from models.project_db import DBActivity
 from models.user import UserInfo
 from src.gpx.export_format import (
     CONNECTION_TRACK_TYPE, EXTENSION_NAMESPACE, activity_extensions,
-    read_activity_extensions, spread_times,
+    activity_identity, read_activity_extensions, spread_times,
 )
 from src.gpx.importer import candidates, map_activity_type, parse_gpx_bytes
 from src.models.great_circle import haversine_km
@@ -338,7 +338,8 @@ def test_an_activity_without_geometry_is_left_out(client):
 def test_an_encrypted_activity_still_refuses_the_export(client):
     _import(client, "Secret", _trip_file([_RUN, _KAYAK]))
     with Session(db_module.engine) as sess:
-        row = sess.exec(select(DBActivity).where(DBActivity.id == 103)).one()
+        # The kayak's row, by its Strava id: an import gives it a new row id (#592).
+        row = sess.exec(select(DBActivity).where(DBActivity.strava_id == 103)).one()
         row.summary_polyline = "v1.d2Vr.Y2lwaGVy"
         sess.add(row)
         sess.commit()
@@ -393,3 +394,27 @@ def test_a_third_party_track_carries_nothing():
     assert candidate.carried_distance_m is None
     # Several segments of one track are still one candidate.
     assert candidate.point_count == 3
+
+
+# ── Identity from strava_id (#592) ────────────────────────────────────────────
+
+def test_a_strava_activity_is_known_by_its_strava_id_not_its_row_id():
+    """Each trip holds its own row, so a row id is no Strava id."""
+    assert activity_identity(None, None, 5_000_000_001, strava_id=101) == ("strava", "101")
+    assert activity_identity("strava", None, 7, strava_id=101) == ("strava", "101")
+
+
+def test_a_row_without_a_strava_id_is_local_whatever_its_id():
+    assert activity_identity(None, None, -5, strava_id=None) == ("local", "-5")
+    # No Strava identity read from a positive id once strava_id is given.
+    assert activity_identity(None, None, 5, strava_id=None) is None
+
+
+def test_a_gpx_fingerprint_still_comes_first():
+    fingerprint = "ab" * 32
+    assert activity_identity("gpx", fingerprint, -3, strava_id=None) == ("gpx", fingerprint)
+
+
+def test_a_strava_id_the_format_cannot_carry_gives_no_identity():
+    assert activity_identity(None, None, -5, strava_id=0) is None
+    assert activity_identity(None, None, -5, strava_id=2 ** 63) is None

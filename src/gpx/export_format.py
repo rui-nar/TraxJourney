@@ -49,7 +49,7 @@ _SOURCE_ID_TAG = f"{{{EXTENSION_NAMESPACE}}}source_id"
 #: fingerprint (a SHA-256 hex digest, see ``track_fingerprint``).
 SOURCE_GPX = "gpx"
 #: ``traxj:source`` of a Strava activity, whose ``traxj:source_id`` is its
-#: Strava id: a Strava row's id IS its Strava id, always positive.
+#: Strava id (its ``strava_id``, #592), always positive.
 SOURCE_STRAVA = "strava"
 #: ``traxj:source`` of an activity with neither (a split tail, or a GPX
 #: import from before fingerprints), whose ``traxj:source_id`` is its own
@@ -92,21 +92,33 @@ def spread_times(points: Sequence[Tuple[float, float]], start: datetime,
     return times
 
 
-def activity_identity(source, source_id, activity_id) -> Optional[Identity]:
+#: ``strava_id`` not given to :func:`activity_identity`: told apart from a
+#: None, which says the activity is not from Strava.
+_NOT_GIVEN = object()
+
+
+def activity_identity(source, source_id, activity_id,
+                      strava_id=_NOT_GIVEN) -> Optional[Identity]:
     """The identity an export writes for a stored activity, or None.
 
-    A GPX import is known by its fingerprint, a Strava activity (no
-    ``source``, positive id) by its id. Anything else with a local id, such
-    as a split tail or a GPX import from before fingerprints, is known by
-    that id (PIR2-1).
+    A GPX import is known by its fingerprint, a Strava activity by its
+    *strava_id* (#592: the row id is not a Strava id). Anything else with a
+    local id, such as a split tail or a GPX import from before fingerprints,
+    is known by that id (PIR2-1).
+
+    A caller that does not give *strava_id* gets the rule from before #592,
+    where a Strava activity was one with no ``source`` and a positive id, the
+    id being its Strava id.
     """
     if source == SOURCE_GPX:
         found = _valid_identity(SOURCE_GPX, source_id)
         if found is not None:
             return found
+    if strava_id is not _NOT_GIVEN and type(strava_id) is int:
+        return _valid_identity(SOURCE_STRAVA, str(strava_id))
     if type(activity_id) is not int:
         return None
-    if source is None and activity_id > 0:
+    if strava_id is _NOT_GIVEN and source is None and activity_id > 0:
         return _valid_identity(SOURCE_STRAVA, str(activity_id))
     return _valid_identity(SOURCE_LOCAL, str(activity_id))
 

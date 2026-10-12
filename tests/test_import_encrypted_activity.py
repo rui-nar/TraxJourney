@@ -136,8 +136,12 @@ def test_the_same_account_whose_row_is_gone_gets_it_back_whole(app, name, params
 
     assert r.status_code == 201, r.text
     row = _activity_of(engine, r.json()["name"])
-    assert row.id == activity_id
+    # A fresh row (#592, plan Decision 8), local like the file's (Decision 3),
+    # holding the same envelopes; the forgotten row stays gone.
+    assert row.id != activity_id and row.id < 0
     _as_the_client_encrypted_it(row)
+    with Session(engine) as sess:
+        assert sess.get(DBActivity, activity_id) is None
 
 
 def test_the_trip_reads_back_as_an_encrypted_one(app):  # noqa: F811

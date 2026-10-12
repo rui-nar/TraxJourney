@@ -174,6 +174,8 @@ def strava_db(monkeypatch):
                              refresh_token="ref", expires_at=time.time() + 3600))
         sess.add(DBActivity(
             id=111, user_info_id=user.id, name="Ride", type="Ride", distance=2220.0,
+            # From Strava through this user's connection (#592).
+            strava_id=111, strava_user_id=user.id,
             start_date="2024-06-01T10:00:00Z", start_date_local="2024-06-01T12:00:00Z"))
         sess.add(DBProjectItem(project_id=proj.id, position=0,
                                item_type="activity", activity_id=111))

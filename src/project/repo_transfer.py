@@ -12,13 +12,14 @@ import re
 import time
 import uuid
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from sqlalchemy import delete
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from models.project_db import (
+    DBActivity,
     DBEncounter,
     DBJournalEntry,
     DBMemory,
@@ -32,11 +33,17 @@ from models.project_db import (
     DBShareMemoryContent,
 )
 from src.billing.entitlements import trip_days_used
-from src.models.activity import is_activity_id
+from src.models.activity import Activity, is_activity_id
 from src.models.person import polarsteps_from_socials
 from src.models.project import DEFAULT_SLEEPING_GROUPS, Project, day_counters_to_json
-from src.project.local_ids import allocate_local_activity_id
+from src.project.local_ids import allocate_activity_id
 from src.project.project_io import ProjectIO
+from src.project.repo_activities import (
+    _carries_envelope,
+    store_prepared_geometry,
+    strava_identity,
+    trip_rows,
+)
 from src.project.repo_core import bump_lock_version
 from src.project.staged_photos import StagedPhoto, StagedPhotos
 from src.utils.photo_paths import is_photo_name, photo_file, photo_folder
@@ -99,48 +106,68 @@ def _is_public_id_clash(exc: IntegrityError) -> bool:
 class ImportExportMixin:
     """Project file ingestion into the DB."""
 
-    def _as_importers_activities(
+    def _import_activities(
         self, sess: Session, user_info_id: int, project: Project,
-        held: Set[int] = frozenset(),
+        previous: Optional[Dict[int, Any]] = None,
     ) -> Project:
-        """*project* with every activity it holds made the importer's own.
+        """Give every activity the file carries a new row of the trip being
+        written, and return *project* with its items naming those rows (#592,
+        plan Decision 8). No commit; the project given is not changed.
 
-        An activity row belongs to the account that created it, and a file can
-        name any id. The file's activities whose id another account holds
-        become the importer's own copies under fresh local ids: the file's
-        content is kept, the other account's row is neither written nor
-        referenced. An item naming an activity the file does not carry is kept
-        only if that activity is already the importer's: one naming someone
-        else's, or an id nobody holds yet, would start naming whichever
-        account later creates it. Returns a new project; the one given is not
-        changed.
+        A row belongs to one trip, so an import never reuses one, whatever id
+        the file names: the trip's own, another trip's or another account's.
+        Each row takes a fresh id under the sign convention (plan Decision 3)
+        and the file's content, its Strava id included (``strava_identity``
+        reads an old file's positive id as one). The file's split families and
+        edit snapshots come back with it, their links remapped to the new
+        rows (see :func:`_restore_split`).
 
-        *held* are the activities the trip being written already holds, when
-        it is an existing trip (a replace): those stay as they are, whoever
-        owns them, as they do through any save of the trip.
+        A row is the importer's, who owns the trip, and its Strava data comes
+        through the importer's connection. *previous* are the rows the trip
+        held before a Replace, by id: a file activity naming one of them is
+        that same activity, so its new row keeps the account whose Strava
+        connection it came from, and its owner while it carries an envelope
+        only that owner's key opens (plan Decisions 4 and 5).
+
+        An item naming an activity the file does not carry is left out: it
+        names no row of this trip.
         """
-        activities = [a for a in project.activities if is_activity_id(a.id)]
-        carried = {a.id for a in activities}
-        owners = self.activity_owners(sess, list(carried) + [
-            it.activity_id for it in project.items if it.item_type == "activity"])
-        others = {aid for aid in carried
-                  if aid not in held and owners.get(aid, user_info_id) != user_info_id}
-
+        previous = previous or {}
         new_ids: Dict[int, int] = {}
-        for n, act in enumerate(activities):
-            if act.id in others:
-                new_ids.setdefault(act.id, allocate_local_activity_id(sess))
-                activities[n] = dataclasses.replace(act, id=new_ids[act.id])
+        carried: Dict[int, Activity] = {}
+        for act in project.activities:
+            if is_activity_id(act.id) and act.id not in new_ids:
+                new_ids[act.id] = allocate_activity_id(
+                    sess, strava=strava_identity(act) is not None)
+                carried[act.id] = act
+
+        activities: List[Activity] = []
+        settled: Set[int] = set()
+        for act in carried.values():
+            sid = strava_identity(act)
+            before = previous.get(act.id)
+            owner = (before.user_info_id
+                     if before is not None and _carries_envelope(act) else user_info_id)
+            row = self._new_activity_row(act, new_ids[act.id], owner)
+            row.strava_id = sid
+            if sid is not None:
+                row.strava_user_id = (
+                    before.strava_user_id if before is not None and before.strava_id == sid
+                    else user_info_id)
+            _restore_split(row, act, new_ids, carried, settled)
+            _restore_snapshot(row, act)
+            sess.add(row)
+            store_prepared_geometry(sess, row)
+            activities.append(dataclasses.replace(
+                act, id=row.id, strava_id=sid, split_root_id=row.split_root_id,
+                split_parent_id=row.split_parent_id))
+
         items = []
         for item in project.items:
-            if item.item_type == "activity" and item.activity_id is not None:
-                aid = item.activity_id
-                if aid in new_ids:
-                    item = dataclasses.replace(item, activity_id=new_ids[aid])
-                elif not is_activity_id(aid) or (
-                        aid not in carried and aid not in held
-                        and owners.get(aid) != user_info_id):
+            if item.item_type == "activity":
+                if not is_activity_id(item.activity_id) or item.activity_id not in new_ids:
                     continue
+                item = dataclasses.replace(item, activity_id=new_ids[item.activity_id])
             items.append(item)
 
         mine = copy.copy(project)
@@ -218,8 +245,8 @@ class ImportExportMixin:
 
         Always creates a trip: if ``db_name`` is taken, the insert fails with
         an ``IntegrityError`` and the session must be rolled back. Callers go
-        through :meth:`import_project`, which decides the name. Activity rows
-        are upserted so enriched data is never overwritten.
+        through :meth:`import_project`, which decides the name. Every activity
+        the file carries gets a new row of the trip (#592, plan Decision 8).
 
         Every row is new, so its folder holds nothing yet: a memory or journal
         entry stores only the photo names *staged* for it. Returns the staged
@@ -228,8 +255,6 @@ class ImportExportMixin:
         *span_check*, when given, runs just before the commit, with a span
         before of 0: the trip is new. If it raises, nothing is committed.
         """
-        project = self._as_importers_activities(sess, user_info_id, project)
-
         # 1. Create the project row first (name = filename slug, version from
         # JSON), so a taken name fails before anything else is written.
         row = DBProject(user_info_id=user_info_id, name=db_name)
@@ -248,7 +273,6 @@ class ImportExportMixin:
         self, sess: Session, user_info_id: int, name: str, project: Project,
         *, data_dir: Optional[str] = None, staged: Optional[StagedPhotos] = None,
         placements: Optional[List["Placement"]] = None,
-        held_activities: Optional[List[int]] = None,
         span_check: Optional[SpanCheck] = None,
     ) -> Optional[List["PhotoRemoval"]]:
         """Overwrite the content of the owner's trip *name* with *project*.
@@ -259,6 +283,8 @@ class ImportExportMixin:
         file carries is rewritten from it:
 
         * the timeline, people, groups and encounters;
+        * the activities: the trip's rows are deleted, and every activity the
+          file carries gets a new one (#592, plan Decisions 8 and 9);
         * memories, matched to the trip's own by ``public_id`` and updated in
           place, so their photos on disk, comments, likes and deep links
           survive (translations and shared content go if the text changed);
@@ -279,11 +305,6 @@ class ImportExportMixin:
         and those *staged* for it. *placements*, when given, receives the
         staged files to move into place once this has committed, less those
         already in place.
-
-        *held_activities*, when given, receives the activity ids the trip
-        held before the replace, read under its lock, once this has
-        committed: the caller frees those the file dropped and no other trip
-        holds (issue #509).
 
         Returns the photo files the caller must delete once this has
         committed, or None if the trip does not exist (any more). The caller
@@ -310,14 +331,12 @@ class ImportExportMixin:
         bump_lock_version(sess, project_id)
         removals: List[PhotoRemoval] = []
 
-        # The same ownership rules as any import, except that what the trip
-        # already holds stays, as through any save of it: a companion's
-        # activity in the owner's export is not the owner's to copy.
-        held = set(sess.exec(select(DBProjectItem.activity_id).where(
-            DBProjectItem.project_id == project_id,
-            DBProjectItem.item_type == "activity",
-        )).all())
-        project = self._as_importers_activities(sess, user_info_id, project, held=held)
+        # The trip's activity rows, read under its lock: deleted below with
+        # their items, and what the file's activities naming them carry over.
+        previous = {r.id: r for r in sess.exec(select(
+            DBActivity.id, DBActivity.user_info_id, DBActivity.strava_id,
+            DBActivity.strava_user_id,
+        ).where(DBActivity.id.in_(trip_rows(project_id)))).all()}
 
         # Memories: the trip's own, by public_id. Those the file still has are
         # kept for _write_content to update; the rest go.
@@ -353,6 +372,9 @@ class ImportExportMixin:
 
         for model in (DBProjectItem, DBEncounter):
             sess.execute(delete(model).where(model.project_id == project_id))
+        # A row belongs to the one trip holding it (#592), so with its items
+        # gone nothing references it: the file's activities get new rows.
+        self.delete_unreferenced_activities(sess, list(previous))
 
         # People and groups: by the id the export carries, like journal
         # entries. A person's avatar lives in a folder named by their id, so a
@@ -388,6 +410,7 @@ class ImportExportMixin:
             kept_memories=kept_memories, kept_journals=kept_journals,
             kept_people=kept_people, kept_groups=kept_groups,
             companion_journals=companion_journals, data_dir=data_dir, staged=staged,
+            previous=previous,
         )
         removals += written
         if span_check is not None:
@@ -395,8 +418,6 @@ class ImportExportMixin:
         sess.commit()
         if placements is not None:
             placements.extend(found)
-        if held_activities is not None:
-            held_activities.extend(aid for aid in held if aid is not None)
         return removals
 
     def _write_content(
@@ -409,6 +430,7 @@ class ImportExportMixin:
         companion_journals: Sequence[DBJournalEntry] = (),
         data_dir: Optional[str] = None,
         staged: Optional[StagedPhotos] = None,
+        previous: Optional[Dict[int, Any]] = None,
     ) -> Tuple[List["PhotoRemoval"], List["Placement"]]:
         """Write *project*'s activities, people, groups and timeline into the
         trip *project_id*, whose item rows are empty.
@@ -417,7 +439,8 @@ class ImportExportMixin:
         *kept_groups* (by id) are existing rows the file's entries update in
         place instead of creating new ones;
         *companion_journals* are other users' journal entries whose timeline
-        items are placed back among the file's by date.
+        items are placed back among the file's by date. *previous* are the
+        trip's activity rows before a Replace (see :meth:`_import_activities`).
 
         A memory's or journal entry's photos are the file's list, keeping only
         the names that have a file (#469): already in a kept row's folder
@@ -438,9 +461,9 @@ class ImportExportMixin:
             # Where a kept row's photos already are, if the data root is known.
             return photo_folder(data_dir, user_info_id, kind, row_id) if data_dir else None
 
-        # 1a. Upsert activities (do NOT overwrite enriched data if row exists)
-        for act in project.activities:
-            self._upsert_activity(sess, user_info_id, act)
+        # 1a. Every activity the file carries gets a new row, and the items
+        # name those rows (#592, plan Decision 8).
+        project = self._import_activities(sess, user_info_id, project, previous)
 
         # A memory keeps its exported public_id, which share deep links address
         # it by (#15), only while no other memory holds it: a copy of a trip
@@ -653,6 +676,92 @@ def _check_span(sess: Session, project_id: int, used: int, span_check: SpanCheck
     except Exception:
         sess.rollback()
         raise
+
+
+def _restore_split(
+    row: DBActivity, act: Activity, new_ids: Dict[int, int],
+    carried: Dict[int, Activity], settled: Set[int],
+) -> None:
+    """Link *row* into its split family as the file has it, under the new ids.
+
+    The file's links name ids of the same file (*carried*, by id). A piece
+    whose first piece the file does not carry as a family's first piece has
+    nothing left to belong to, and becomes a plain activity, as the migration
+    treats a piece cut off from its family. A piece whose parent is not of its
+    family, or which its own chain of parents loops back to (no split makes
+    one), is re-rooted on the first piece. *settled* are the pieces already
+    known to lead back to the first piece, shared across the file's pieces.
+    """
+    root_id = act.split_root_id
+    if not is_activity_id(root_id) or root_id == act.id:
+        # A family's first piece, or no family at all.
+        row.split_base_name = act.split_base_name
+        return
+    head = carried.get(root_id)
+    if head is None or head.split_root_id not in (None, root_id):
+        return
+    parent_id = act.split_parent_id
+    keep = _keeps_parent(act.id, parent_id, root_id, carried, settled)
+    row.split_root_id = new_ids[root_id]
+    row.split_parent_id = new_ids[parent_id] if keep else new_ids[root_id]
+    row.split_base_name = act.split_base_name
+
+
+def _keeps_parent(
+    piece_id: int, parent_id, root_id: int,
+    carried: Dict[int, Activity], settled: Set[int],
+) -> bool:
+    """Whether piece *piece_id* of the family *root_id* keeps the file's
+    parent *parent_id*: one of its family, and not a link in a loop through
+    the piece itself.
+
+    Following the parents from there ends at the first piece, at a piece whose
+    own parent is not of the family (re-rooted in turn), or in a loop; only a
+    loop back to *piece_id* is this piece's to break. The pieces of a walk
+    that ended are added to *settled*, so no walk goes over them again.
+    """
+    def of_family(file_id) -> bool:
+        if file_id == root_id:
+            return True
+        piece = carried.get(file_id) if is_activity_id(file_id) else None
+        return piece is not None and piece.split_root_id == root_id
+
+    if not of_family(parent_id) or parent_id == piece_id:
+        return False
+    path: List[int] = []
+    seen: Set[int] = set()
+    cur = parent_id
+    while cur != root_id and of_family(cur) and cur not in settled:
+        if cur == piece_id:
+            return False
+        if cur in seen:
+            return True  # a loop elsewhere: those pieces break it themselves
+        path.append(cur)
+        seen.add(cur)
+        cur = carried[cur].split_parent_id
+    settled.update(path)
+    return True
+
+
+def _restore_snapshot(row: DBActivity, act: Activity) -> None:
+    """Store the file's edit state on *row*: whether the track was edited, and
+    the track and figures from before the first edit, which a reset restores.
+    A snapshot field holding an envelope is stored as the envelope."""
+    row.is_edited = bool(act.is_edited)
+    row.original_polyline = act.original_polyline
+    op = act.original_elevation_profile
+    row.original_elevation_profile_json = (
+        json.dumps({"distances_km": op[0], "elevations_m": op[1]}) if op
+        else act.original_elevation_profile_enc or None)
+    row.original_start_latlng_json = (
+        json.dumps(act.original_start_latlng) if act.original_start_latlng
+        else act.original_start_latlng_enc or None)
+    row.original_end_latlng_json = (
+        json.dumps(act.original_end_latlng) if act.original_end_latlng
+        else act.original_end_latlng_enc or None)
+    for name in ("total_elevation_gain", "distance", "moving_time", "elapsed_time",
+                 "average_speed", "elev_high", "elev_low"):
+        setattr(row, f"original_{name}", getattr(act, f"original_{name}"))
 
 
 @dataclasses.dataclass

@@ -35,7 +35,7 @@ from models.db import get_session
 from api.deps import get_current_user
 from api.geo import bust_geo_cache
 from api.project_access import OwnerParam, resolve_project
-from models.project_db import DBProjectItem, DBStravaCache
+from models.project_db import DBStravaCache
 from models.user import StravaOAuthCode, StravaToken, UserInfo
 from src.api.strava_client import StravaAPI
 from src.auth.oauth import OAuth2Session
@@ -601,10 +601,10 @@ def strava_disconnect(current_user: Annotated[dict, Depends(get_current_user)]):
     """Disconnect Strava: revoke the app at Strava, then drop the stored token
     and the cached raw activity list (issue #440).
 
-    Activities still in a trip are the user's own and stay; those in none are
-    deleted (issue #509). The revoke is best effort — if Strava is unreachable
-    the local data is removed all the same, so the user is disconnected either
-    way.
+    No activity row is deleted: an activity belongs to the trip holding it,
+    and stays there (#592, plan Decision 9). The revoke is best effort — if
+    Strava is unreachable the local data is removed all the same, so the user
+    is disconnected either way.
     """
     user_info_id = int(current_user["sub"])
     # Read, then revoke outside any session — the Strava round trip (up to two
@@ -636,9 +636,6 @@ def strava_disconnect(current_user: Annotated[dict, Depends(get_current_user)]):
         if cache_row is not None:
             sess.delete(cache_row)
         _memory_cache.pop(user_info_id, None)
-        # Strava rows no trip holds any more go too (issue #509); those still
-        # in a trip, the user's or a companion's, stay.
-        _project_repo.delete_unreferenced_strava_activities(sess, user_info_id)
         sess.commit()
     if rotated is not None:
         deauthorize_strava(user_info_id, *rotated, cfg=_cfg)
@@ -720,7 +717,7 @@ def strava_activities(
 
     activities.sort(key=lambda a: a.start_date, reverse=True)
 
-    in_project_ids: set = set()
+    in_project_strava_ids: set = set()
     if project:
         with get_session() as sess:
             try:
@@ -728,13 +725,10 @@ def strava_activities(
             except HTTPException:
                 proj_row = None
             if proj_row:
-                item_rows = sess.exec(
-                    select(DBProjectItem).where(
-                        DBProjectItem.project_id == proj_row.id,
-                        DBProjectItem.item_type == "activity",
-                    )
-                ).all()
-                in_project_ids = {r.activity_id for r in item_rows if r.activity_id is not None}
+                # The trip's own rows, by Strava id: a row id is not a Strava
+                # id (#592, plan Decision 2).
+                in_project_strava_ids = set(
+                    _project_repo.trip_activity_ids_by_strava_id(sess, proj_row.id))
 
     total = len(activities)
     per_page = max(1, min(per_page, 200))
@@ -746,7 +740,7 @@ def strava_activities(
     result = []
     for a in page_activities:
         d = a.to_strava_dict()
-        d["in_project"] = a.id in in_project_ids
+        d["in_project"] = a.strava_id in in_project_strava_ids
         result.append(d)
 
     return {
@@ -786,8 +780,9 @@ def strava_sync(
     """Fetch all Strava activities and add new ones to the project.
 
     Paginates through the Strava activities endpoint (200 per page) until
-    an empty page is returned. Only activities not already in the project are
-    added. Returns the count added and the new total.
+    an empty page is returned. Only activities whose Strava id the project
+    holds no row for are added, each as a new row of this project (#592, plan
+    Decision 7). Returns the count added and the new total.
     """
     user_info_id = int(current_user["sub"])
     user_id = current_user["sub"]
@@ -809,10 +804,7 @@ def strava_sync(
         all_raw = _fetch_all_strava(client)
         _save_cache(user_info_id, all_raw)
 
-        # An id another account already holds is theirs, even when both
-        # accounts are linked to the same Strava athlete.
-        activities = _project_repo.own_activities_only(
-            sess, user_info_id, parse_activities_or_log(all_raw, "strava_sync"))
+        activities = parse_activities_or_log(all_raw, "strava_sync")
         project_row_id = row.id
 
     added_holder: Dict[str, int] = {}
@@ -828,10 +820,16 @@ def strava_sync(
                 qsess, project_row_id, owner_id,
                 *[a.start_date_local for a in activities],
             )
-        added_holder["added"] = project.add_activities(activities)
+        # Matched by Strava id against the trip's own rows, as loaded for
+        # this attempt: a row id is not a Strava id, and another trip's row
+        # for the same activity is not this trip's (#592, plan Decision 7).
+        held = {a.strava_id for a in project.activities if a.strava_id is not None}
+        added_holder["added"] = project.add_activities(
+            [a for a in activities if a.strava_id not in held])
 
-    # New activity rows record the IMPORTER (the caller), not the project
-    # owner — a companion's imports must stay tied to their Strava account.
+    # New rows belong to the trip's owner and record the caller as
+    # strava_user_id — the account whose token refreshes them, a companion's
+    # included (#592, plan Decision 5).
     # save_project_with_retry rather than a blind save_project: this is a
     # load-mutate-save, and the blind variant rewrites every field of the row
     # from the snapshot loaded before the mutation — so a PUT /day-meta (or any

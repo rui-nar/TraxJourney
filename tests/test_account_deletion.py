@@ -7,6 +7,7 @@ admin-triggered ``DELETE /api/admin/users/{id}``.
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from unittest.mock import MagicMock
@@ -25,6 +26,7 @@ from api.auth import router as auth_router
 from api.deps import get_current_user
 from models.project_db import (
     DBActivity,
+    DBActivityGeoPrepared,
     DBEncounter,
     DBMemory,
     DBMemoryComment,
@@ -237,8 +239,9 @@ class TestStravaDeauthorize:
 
 def _seed_companionship(sess, owner_id: int, companion_id: int) -> dict:
     """Owner project with the companion as editor, plus the companion's
-    footprint inside it: a journal entry, an imported activity, and the
-    timeline items referencing both (issue #106)."""
+    footprint inside it: a journal entry, an activity they imported from their
+    Strava (owned by the trip's owner, #592 Decision 4), and the timeline
+    items referencing both (issue #106)."""
     proj = DBProject(user_info_id=owner_id, name="Shared Trip")
     sess.add(proj)
     sess.commit()
@@ -252,7 +255,8 @@ def _seed_companionship(sess, owner_id: int, companion_id: int) -> dict:
                            date="2026-01-01")
     owner_entry = DBJournalEntry(project_id=proj.id, user_info_id=None,
                                  date="2026-01-02")  # legacy row = owner's
-    act = DBActivity(id=companion_id * 1000 + 7, user_info_id=companion_id, name="ride")
+    act = DBActivity(id=companion_id * 1000 + 7, user_info_id=owner_id, name="ride",
+                     strava_id=companion_id * 1000 + 7, strava_user_id=companion_id)
     sess.add(entry); sess.add(owner_entry); sess.add(act)
     sess.commit()
     sess.refresh(entry); sess.refresh(owner_entry)
@@ -333,15 +337,15 @@ class TestCompanionCleanup:
         with Session(engine) as sess:
             assert sess.get(UserInfo, cid) is None
             assert sess.exec(select(DBProjectMember)).first() is None
-            # The companion's journal entry, its item, and their activity item
-            # are gone from the owner's project…
+            # The companion's journal entry and its item are gone from the
+            # owner's project…
             assert sess.get(DBJournalEntry, ids["entry_id"]) is None
             assert sess.exec(select(DBProjectItem).where(
                 DBProjectItem.journal_id == ids["entry_id"])).first() is None
-            assert sess.exec(select(DBActivity).where(
-                DBActivity.id == ids["activity_id"])).first() is None
+            # …the activity they brought stays, the trip's (#592 Decision 4)…
+            assert sess.get(DBActivity, ids["activity_id"]).user_info_id == oid
             assert sess.exec(select(DBProjectItem).where(
-                DBProjectItem.activity_id == ids["activity_id"])).first() is None
+                DBProjectItem.activity_id == ids["activity_id"])).first() is not None
             # …while the owner's project, invite, and own (legacy) entry survive.
             assert sess.get(DBProject, ids["project_id"]) is not None
             assert sess.exec(select(DBProjectInvite)).first() is not None
@@ -368,6 +372,177 @@ class TestCompanionCleanup:
             assert sess.exec(select(DBProjectItem)).first() is None
             # The companion account itself is untouched.
             assert sess.get(UserInfo, cid) is not None
+
+
+_ENVELOPE = "v1.d3JhcHBlZA==.Y2lwaGVydGV4dA=="
+
+
+class TestActivityRowsFollowTheirTrip:
+    """#592: a row belongs to the one trip holding it and is owned by that
+    trip's owner (Decision 4), except a row holding encrypted fields, which
+    keeps the account whose key encrypted it. ``strava_user_id`` names the
+    account whose Strava it came from (Decision 5)."""
+
+    def _users(self, engine):
+        with Session(engine) as sess:
+            owner = _mk_user(sess, display_name="Owner", email="own@x.io")
+            companion = _mk_user(sess, display_name="Comp", email="comp@x.io")
+            return owner.id, companion.id
+
+    def _add_row(self, engine, project_id: int, aid: int, owner: int, **extra) -> None:
+        with Session(engine) as sess:
+            sess.add(DBActivity(**{"id": aid, "user_info_id": owner, "name": f"a{aid}", **extra}))
+            sess.add(DBProjectItem(project_id=project_id, position=10 + aid % 100,
+                                   item_type="activity", activity_id=aid))
+            sess.commit()
+
+    def test_a_companions_plaintext_activity_stays_the_owners(self, engine):
+        oid, cid = self._users(engine)
+        with Session(engine) as sess:
+            ids = _seed_companionship(sess, oid, cid)
+
+        with Session(engine) as sess:
+            delete_user_and_data(sess, cid)
+
+        with Session(engine) as sess:
+            row = sess.get(DBActivity, ids["activity_id"])
+            assert row is not None
+            assert row.user_info_id == oid
+            assert row.strava_user_id is None
+            assert row.name == "ride"
+            assert sess.exec(select(DBProjectItem).where(
+                DBProjectItem.project_id == ids["project_id"],
+                DBProjectItem.activity_id == ids["activity_id"])).first() is not None
+
+    def test_a_companions_encrypted_activity_goes_with_its_item(self, engine, caplog):
+        oid, cid = self._users(engine)
+        with Session(engine) as sess:
+            ids = _seed_companionship(sess, oid, cid)
+        enc_id = 555
+        self._add_row(engine, ids["project_id"], enc_id, cid,
+                      summary_polyline=_ENVELOPE, strava_id=555, strava_user_id=cid)
+        with Session(engine) as sess:
+            sess.add(DBActivityGeoPrepared(activity_id=enc_id, version=1, blob=b"x"))
+            sess.commit()
+            before = sess.get(DBProject, ids["project_id"]).lock_version
+
+        with caplog.at_level(logging.INFO, logger="src.auth.account_deletion"):
+            with Session(engine) as sess:
+                delete_user_and_data(sess, cid)
+
+        with Session(engine) as sess:
+            assert sess.get(DBActivity, enc_id) is None
+            assert sess.get(DBActivityGeoPrepared, enc_id) is None
+            # No item is left naming it: no dangling item (review R2-5).
+            assert sess.exec(select(DBProjectItem).where(
+                DBProjectItem.activity_id == enc_id)).first() is None
+            assert sess.get(DBProject, ids["project_id"]).lock_version > before
+            # The plaintext activity beside it stays.
+            assert sess.get(DBActivity, ids["activity_id"]) is not None
+            assert sess.exec(select(DBActivity).where(
+                DBActivity.user_info_id == cid)).first() is None
+        assert f"encrypted activity {enc_id} removed from trip {ids['project_id']}" in caplog.text
+
+    def test_a_plaintext_row_still_owned_by_the_companion_is_handed_to_the_owner(self, engine):
+        """A row a writer forgot to hand over is not lost with the companion."""
+        oid, cid = self._users(engine)
+        with Session(engine) as sess:
+            ids = _seed_companionship(sess, oid, cid)
+        self._add_row(engine, ids["project_id"], 556, cid)
+
+        with Session(engine) as sess:
+            delete_user_and_data(sess, cid)
+
+        with Session(engine) as sess:
+            assert sess.get(DBActivity, 556).user_info_id == oid
+            assert sess.exec(select(DBProjectItem).where(
+                DBProjectItem.activity_id == 556)).first() is not None
+
+    def test_an_encrypted_split_head_kept_by_its_pieces_goes_with_the_account(
+            self, engine):
+        """Never handed to another account (review U7R1-2): its pieces are
+        re-rooted on their nearest ancestor in their trip, or detached."""
+        oid, cid = self._users(engine)
+        with Session(engine) as sess:
+            ids = _seed_companionship(sess, oid, cid)
+        self._add_row(engine, ids["project_id"], 600, cid, name=_ENVELOPE,
+                      split_base_name="ride")
+        self._add_row(engine, ids["project_id"], 601, oid,
+                      split_root_id=600, split_parent_id=600)
+        self._add_row(engine, ids["project_id"], 602, oid,
+                      split_root_id=600, split_parent_id=601)
+        with Session(engine) as sess:
+            sess.add(DBActivityGeoPrepared(activity_id=600, version=1, blob=b"x"))
+            sess.commit()
+
+        with Session(engine) as sess:
+            delete_user_and_data(sess, cid)
+
+        with Session(engine) as sess:
+            assert sess.get(DBActivity, 600) is None
+            assert sess.get(DBActivityGeoPrepared, 600) is None
+            assert sess.exec(select(DBProjectItem).where(
+                DBProjectItem.activity_id == 600)).first() is None
+            first, second = sess.get(DBActivity, 601), sess.get(DBActivity, 602)
+            # The first piece has no ancestor left: detached, the family's head.
+            assert (first.split_root_id, first.split_parent_id) == (None, None)
+            # The second hangs on it now.
+            assert (second.split_root_id, second.split_parent_id) == (601, 601)
+            assert sess.exec(select(DBActivity).where(
+                DBActivity.user_info_id == cid)).first() is None
+
+    def test_a_withdrawn_activity_leaves_the_trip_totals(self, engine):
+        """Review U7R1-1: the trip's cached stats no longer count it."""
+        from src.project.project_repo import ProjectRepo
+
+        oid, cid = self._users(engine)
+        with Session(engine) as sess:
+            ids = _seed_companionship(sess, oid, cid)
+            sess.get(DBActivity, ids["activity_id"]).distance = 1000.0
+            sess.commit()
+        self._add_row(engine, ids["project_id"], 557, cid,
+                      summary_polyline=_ENVELOPE, distance=5000.0)
+        repo = ProjectRepo()
+        with Session(engine) as sess:
+            repo.compute_and_cache_stats(sess, oid, "Shared Trip")
+            assert json.loads(sess.get(DBProject, ids["project_id"]).stats_json)[
+                "total_distance_m"] == 6000.0
+
+        with Session(engine) as sess:
+            delete_user_and_data(sess, cid)
+
+        with Session(engine) as sess:
+            assert sess.get(DBProject, ids["project_id"]).stats_json is None
+            repo.compute_and_cache_stats(sess, oid, "Shared Trip")
+            assert json.loads(sess.get(DBProject, ids["project_id"]).stats_json)[
+                "total_distance_m"] == 1000.0
+
+    def test_deleting_the_owner_deletes_every_row_of_their_trips(self, engine):
+        """Including a companion's encrypted row there, and the owner's rows no
+        trip holds; another trip's copy of the same activity stays."""
+        oid, cid = self._users(engine)
+        with Session(engine) as sess:
+            ids = _seed_companionship(sess, oid, cid)
+            other = DBProject(user_info_id=cid, name="Companion trip")
+            sess.add(other)
+            sess.add(DBActivity(id=700, user_info_id=oid, name="nowhere"))
+            sess.commit()
+            other_id = other.id
+        self._add_row(engine, ids["project_id"], 701, cid, name=_ENVELOPE)
+        # The owner's Strava activity, also in the companion's trip as its own row.
+        self._add_row(engine, ids["project_id"], 702, oid, strava_id=9, strava_user_id=oid)
+        self._add_row(engine, other_id, 703, cid, strava_id=9, strava_user_id=oid)
+
+        with Session(engine) as sess:
+            delete_user_and_data(sess, oid)
+
+        with Session(engine) as sess:
+            for gone in (ids["activity_id"], 700, 701, 702):
+                assert sess.get(DBActivity, gone) is None, gone
+            kept = sess.get(DBActivity, 703)
+            assert kept.user_info_id == cid
+            assert kept.strava_user_id is None
+            assert [i.activity_id for i in sess.exec(select(DBProjectItem))] == [703]
 
 
 class TestSelfDeleteEndpoint:

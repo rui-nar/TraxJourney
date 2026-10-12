@@ -70,10 +70,16 @@ def test_models_in_sync_with_migrations(fresh_db):
 
 
 def test_downgrade_base_succeeds(fresh_db):
-    """Migrations are reversible all the way back to base (catches missing downgrades)."""
+    """Migrations are reversible all the way back to base (catches missing
+    downgrades), up to the one-row-per-trip migration b3e9d71c4a58 (#592),
+    whose downgrade refuses: its restore path is the pre-deploy backup."""
     cfg = _alembic_config(fresh_db)
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "a8d3f5c2e917")
     command.downgrade(cfg, "base")
+
+    command.upgrade(cfg, "head")
+    with pytest.raises(RuntimeError, match="Restore the database backup"):
+        command.downgrade(cfg, "a8d3f5c2e917")
 
 
 def test_existing_recovery_wraps_migrate_to_confirmed(fresh_db):

@@ -150,7 +150,7 @@ class ProjectIO:
                 "activity_types": project.filter_state.activity_types,
             },
             "items": [ProjectIO._serialise_item(i) for i in project.items],
-            "activities": [a.to_strava_dict() for a in project.activities],
+            "activities": [a.to_traxj_dict() for a in project.activities],
             "people": [_person_to_dict(p) for p in project.people],
             "groups": [_group_to_dict(g) for g in project.groups],
             "day_meta": {
@@ -188,9 +188,10 @@ class ProjectIO:
         converted from the storage format ``{"distances_km": [...], "elevations_m": [...]}``
         to a list of ``[dist_km, elev_m]`` pairs so the Flutter client can
         iterate over them directly, and an activity loaded from the database
-        carries ``plain_fields``, its E2EE columns still in plaintext, and
-        ``shared_with_others``, whether another user's trip holds it; every
-        activity carries ``has_gain_snapshot``.
+        carries ``plain_fields``, its E2EE columns still in plaintext; every
+        activity carries ``has_gain_snapshot``. ``shared_with_others`` is
+        emitted only when set, and nothing sets it now that a row belongs to
+        one trip (#592), so it is absent.
         """
         def _ep_pairs(a: Activity) -> Any:
             # Prefer the full profile; fall back to the downsampled low-res copy
@@ -318,6 +319,9 @@ class ProjectIO:
             activity_types=fs_raw.get("activity_types"),
         )
 
+        # Each with its strava_id (from a file before #592, its positive
+        # Strava-sourced id), split family and edit snapshot, as the file
+        # carries them: Activity.from_strava_api.
         activities = parse_activities_or_log(data.get("activities", []), "project_io_load")
 
         items = [ProjectIO._deserialise_item(i) for i in data["items"]]

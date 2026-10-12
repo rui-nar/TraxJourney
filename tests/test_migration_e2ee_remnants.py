@@ -214,6 +214,8 @@ def test_backfills_exactly_what_reset_restores(seeded, aid):
     assert snapshot["original_distance"] > 2.5 * edited["distance"]
     assert snapshot["original_moving_time"] > 2.5 * edited["moving_time"]
 
+    # The ORM model is the head's: bring the schema there before the reset.
+    command.upgrade(cfg, "head")
     with Session(engine) as sess:
         assert ProjectRepo().reset_activity_track(sess, 1, aid)
     restored = _values(engine, aid, _LIVE)

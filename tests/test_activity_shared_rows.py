@@ -1,13 +1,13 @@
-"""Rows another user's trip holds stay readable (E2EE remnants U16, decision 15).
+"""No activity row is shared between trips any more (#592).
 
-An activity row is shared by every trip that holds it. When a trip owned by
-someone other than the caller holds it, that trip's owner cannot read an
-envelope, so the four writes that store one — ``PUT /api/activities/{id}``,
-the encrypted track and split routes and the elevation-gain route — answer
-409 ``shared_with_other_trip`` and write nothing, lock versions included, even
-for the row's own owner. Plaintext is still taken, so the owner can decrypt
-such a row back. Each activity of a trip payload says ``shared_with_others``,
-computed in the load query; a ``.traxj`` export never carries it.
+Until #592 an activity row was shared by every trip holding it, so an envelope
+was refused on a row another user's trip held (E2EE remnants U16, decision
+15): that trip's owner could not have read it. Now every trip holds its own
+copy, tied to the others by ``strava_id`` alone, so the four writes that store
+an envelope — ``PUT /api/activities/{id}``, the encrypted track and split
+routes and the elevation-gain route — are taken on a row of the caller's trip
+whoever else holds the same activity, and touch neither the other trip's copy
+nor its lock version. No payload says ``shared_with_others``.
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import event
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine, delete, select
+from sqlmodel import Session, SQLModel, create_engine, select
 
 import api.activities as activities_mod
 import models.db as db_module
@@ -49,6 +49,9 @@ _ENCRYPTED = dict(
     timezone="Europe/Paris", source="gpx",
 )
 
+_PLAIN = dict(summary_polyline="_p~iF~ps|U_ulLnnqC", distance=10.0,
+              start_date="2026-05-03T08:00:00Z")
+
 
 def _piece(seed: int):
     return dict(
@@ -62,12 +65,9 @@ def _piece(seed: int):
 
 @pytest.fixture
 def env(monkeypatch):
-    """Owner's trip "Trip" (lock 7) holds three of the owner's rows:
-
-    * 111 — encrypted, also held by the friend's trip "Theirs" (lock 5);
-    * 112 — encrypted, held by "Trip" alone;
-    * 113 — plaintext, also held by "Theirs".
-    """
+    """Owner's trip "Trip" (lock 7) holds the owner's rows 111 (encrypted) and
+    113 (plaintext). The friend's trip "Theirs" (lock 5) holds the friend's own
+    copies of the same two activities: 211 and 213."""
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -91,15 +91,16 @@ def env(monkeypatch):
         pids = {n: t.id for n, t in trips.items()}
         sess.add(DBActivity(id=111, user_info_id=ids["owner"], name=_env(5), type="Ride",
                             **_ENCRYPTED))
-        sess.add(DBActivity(id=112, user_info_id=ids["owner"], name=_env(6), type="Ride",
-                            **_ENCRYPTED))
         sess.add(DBActivity(id=113, user_info_id=ids["owner"], name="Plain", type="Ride",
-                            summary_polyline="_p~iF~ps|U_ulLnnqC", distance=10.0,
-                            start_date="2026-05-03T08:00:00Z"))
-        for pos, aid in enumerate((111, 112, 113)):
+                            **_PLAIN))
+        sess.add(DBActivity(id=211, user_info_id=ids["friend"], name=_env(6), type="Ride",
+                            **_ENCRYPTED))
+        sess.add(DBActivity(id=213, user_info_id=ids["friend"], name="Plain", type="Ride",
+                            **_PLAIN))
+        for pos, aid in enumerate((111, 113)):
             sess.add(DBProjectItem(project_id=pids["Trip"], position=pos,
                                    item_type="activity", activity_id=aid))
-        for pos, aid in enumerate((111, 113)):
+        for pos, aid in enumerate((211, 213)):
             sess.add(DBProjectItem(project_id=pids["Theirs"], position=pos,
                                    item_type="activity", activity_id=aid))
         sess.commit()
@@ -119,11 +120,6 @@ def _row(engine, aid):
     with Session(engine) as sess:
         a = sess.get(DBActivity, aid)
         return {c: getattr(a, c) for c in DBActivity.model_fields}
-
-
-def _rows(engine):
-    with Session(engine) as sess:
-        return sorted(a.id for a in sess.exec(select(DBActivity)).all())
 
 
 def _locks(engine):
@@ -163,33 +159,26 @@ _IDS = ["fields", "fields-cas", "track", "split", "gain"]
 
 
 @pytest.mark.parametrize("write", _WRITES, ids=_IDS)
-def test_an_envelope_on_a_row_another_users_trip_holds_is_refused(env, write):
-    before, locks, rows = _row(env["engine"], 111), _locks(env["engine"]), _rows(env["engine"])
+def test_an_envelope_is_taken_whoever_else_holds_the_same_activity(env, write):
+    theirs, before = _row(env["engine"], 211), _locks(env["engine"])
+
     resp = write(env, 111)
-    assert resp.status_code == 409
-    assert resp.json()["detail"]["code"] == "shared_with_other_trip"
-    assert resp.json()["detail"]["activity_id"] == 111
-    assert _row(env["engine"], 111) == before
-    assert _locks(env["engine"]) == locks
-    assert _rows(env["engine"]) == rows
+
+    assert resp.status_code == 200, resp.text
+    assert _row(env["engine"], 211) == theirs
+    assert _locks(env["engine"])["Theirs"] == before["Theirs"]
 
 
-@pytest.mark.parametrize("write", _WRITES, ids=_IDS)
-def test_the_same_write_on_a_row_only_the_owners_trips_hold_is_taken(env, write):
-    assert write(env, 112).status_code == 200
-
-
-def test_an_envelope_on_a_shared_plaintext_row_is_refused(env):
-    before, locks = _row(env["engine"], 113), _locks(env["engine"])
+def test_an_envelope_on_a_plaintext_row_is_taken_and_the_other_copy_stays_plaintext(env):
     resp = env["client"].put("/api/activities/113",
-                             json={"name": "Renamed", "summary_polyline": _env(9)})
-    assert resp.status_code == 409
-    assert resp.json()["detail"]["code"] == "shared_with_other_trip"
-    assert _row(env["engine"], 113) == before
-    assert _locks(env["engine"]) == locks
+                             json={"name": _env(9), "summary_polyline": _env(10)})
+    assert resp.status_code == 200, resp.text
+    assert _row(env["engine"], 113)["summary_polyline"] == _env(10)
+    theirs = _row(env["engine"], 213)
+    assert (theirs["name"], theirs["summary_polyline"]) == ("Plain", _PLAIN["summary_polyline"])
 
 
-def test_the_owner_may_write_plaintext_back_to_a_shared_enveloped_row(env):
+def test_the_owner_may_write_plaintext_back_to_an_enveloped_row(env):
     resp = env["client"].put("/api/activities/111", json={
         "name": "Morning ride", "start_latlng_json": "[43.6, 1.44]",
         "project": "Trip", "lock_version": 7,
@@ -199,7 +188,7 @@ def test_the_owner_may_write_plaintext_back_to_a_shared_enveloped_row(env):
     row = _row(env["engine"], 111)
     assert row["name"] == "Morning ride"
     assert row["start_latlng_json"] == "[43.6, 1.44]"
-    assert _locks(env["engine"]) == {"Trip": 8, "Theirs": 6}
+    assert _locks(env["engine"]) == {"Trip": 8, "Theirs": 5}
 
 
 def test_text_that_only_looks_like_an_envelope_is_plaintext(env):
@@ -209,9 +198,15 @@ def test_text_that_only_looks_like_an_envelope_is_plaintext(env):
     assert _row(env["engine"], 113)["name"] == "v1.2.3"
 
 
-def test_a_stranger_still_gets_404_not_the_409(env):
-    """The refusal comes after the write permission check, so it tells no one
-    without access whether the row exists or who holds it."""
+def test_another_trips_copy_is_not_the_callers_to_write(env):
+    """The owner holds the same activity, but row 211 is the friend's."""
+    before = _row(env["engine"], 211)
+    assert _put_fields(env, 211).status_code == 404
+    assert _put_gain(env, 211).status_code == 404
+    assert _row(env["engine"], 211) == before
+
+
+def test_a_stranger_gets_404(env):
     with Session(env["engine"]) as sess:
         u = UserInfo(display_name="stranger", email="stranger@e.com")
         sess.add(u); sess.commit(); sess.refresh(u)
@@ -223,10 +218,9 @@ def test_a_stranger_still_gets_404_not_the_409(env):
 @pytest.mark.parametrize("path, method", [("track/encrypted", "put"),
                                           ("split/encrypted", "post")],
                          ids=["track", "split"])
-def test_the_trip_routes_judge_by_the_trips_owner(env, path, method):
-    """On the trip-scoped routes the trip's owner is the one who must read the
-    row: an editor member is refused on a row a third trip holds, and not on
-    one only the owner's trips hold."""
+def test_the_trip_routes_take_an_envelope_from_an_editor_member(env, path, method):
+    """No third trip holds the row, so nothing stands between an editor and
+    the trip's own encrypted row."""
     with Session(env["engine"]) as sess:
         trip = sess.exec(select(DBProject.id).where(DBProject.name == "Trip")).one()
         sess.add(DBProjectMember(project_id=trip, user_info_id=env["ids"]["friend"],
@@ -237,40 +231,13 @@ def test_the_trip_routes_judge_by_the_trips_owner(env, path, method):
             {"head": _piece(30), "tail": _piece(40), "tail_name": _env(50),
              "lock_version": 7})
 
-    def _call(aid):
-        url = f"/api/projects/Trip/activities/{aid}/{path}?owner={env['ids']['owner']}"
-        return getattr(env["client"], method)(url, json=body)
+    url = f"/api/projects/Trip/activities/111/{path}?owner={env['ids']['owner']}"
+    resp = getattr(env["client"], method)(url, json=body)
 
-    resp = _call(111)
-    assert resp.status_code == 409
-    assert resp.json()["detail"]["code"] == "shared_with_other_trip"
-    assert _call(112).status_code == 200
+    assert resp.status_code == 200, resp.text
 
 
-@pytest.mark.parametrize("write", [_put_fields, _put_fields_cas, _put_gain],
-                         ids=["fields", "fields-cas", "gain"])
-def test_a_trip_taking_the_row_before_the_write_lock_is_seen(env, write, monkeypatch):
-    """The check runs again once the lock-version bump holds the write lock,
-    and undoes the bump: here the row becomes shared between the two."""
-    answers = iter([False, True])
-    monkeypatch.setattr(_repo, "activity_shared_with_others",
-                        lambda sess, aid, uid: next(answers))
-    before, locks = _row(env["engine"], 112), _locks(env["engine"])
-    resp = write(env, 112)
-    assert resp.status_code == 409
-    assert resp.json()["detail"]["code"] == "shared_with_other_trip"
-    assert _row(env["engine"], 112) == before
-    assert _locks(env["engine"]) == locks
-
-
-# ── shared_with_others on the payload ────────────────────────────────────────
-
-_EXPECTED = {111: True, 112: False, 113: True}
-
-
-def _by_id(payload):
-    return {a["id"]: a for a in payload["activities"]}
-
+# ── No shared_with_others on the payload ─────────────────────────────────────
 
 def _build(env, builder, name="Trip", who="owner"):
     with Session(env["engine"]) as sess:
@@ -280,51 +247,30 @@ def _build(env, builder, name="Trip", who="owner"):
 
 @pytest.mark.parametrize("builder", [build_meta_payload, build_details_payload],
                          ids=["meta", "full"])
-def test_shared_with_others_says_which_rows_another_users_trip_holds(env, builder):
-    acts = _by_id(_build(env, builder))
-    assert {aid: a["shared_with_others"] for aid, a in acts.items()} == _EXPECTED
+def test_no_payload_says_shared_with_others(env, builder):
+    payload = _build(env, builder)
+    assert {a["id"] for a in payload["activities"]} == {111, 113}
+    assert all("shared_with_others" not in a for a in payload["activities"])
 
 
-def test_shared_with_others_is_relative_to_the_trip_owner(env):
-    """In the friend's trip, the rows the owner's trip also holds are shared."""
-    acts = _by_id(_build(env, build_meta_payload, name="Theirs", who="friend"))
-    assert {aid: a["shared_with_others"] for aid, a in acts.items()} == {111: True, 113: True}
+def test_the_light_path_loads_the_activities_in_one_statement(env):
+    seen = []
 
+    def _capture(conn, cursor, statement, params, context, executemany):
+        seen.append(statement)
 
-def test_the_light_path_issues_no_extra_query(env):
-    """Building /meta's payload runs the same statements whether or not a row
-    is shared: the flag comes from the load query's own row."""
-    def _statements():
-        seen = []
-
-        def _capture(conn, cursor, statement, params, context, executemany):
-            seen.append(statement)
-
-        event.listen(env["engine"], "after_cursor_execute", _capture)
-        try:
-            payload = _build(env, build_meta_payload)
-        finally:
-            event.remove(env["engine"], "after_cursor_execute", _capture)
-        return payload, seen
-
-    payload, shared = _statements()
-    assert _by_id(payload)[111]["shared_with_others"] is True
-    with Session(env["engine"]) as sess:
-        theirs = sess.exec(select(DBProject.id).where(DBProject.name == "Theirs")).one()
-        sess.exec(delete(DBProjectItem).where(DBProjectItem.project_id == theirs))
-        sess.commit()
-    payload, unshared = _statements()
-    assert {aid: a["shared_with_others"] for aid, a in _by_id(payload).items()} == {
-        111: False, 112: False, 113: False}
-    assert shared == unshared
-    act_loads = [s for s in shared if "FROM activity" in s]
-    assert len(act_loads) == 1
+    event.listen(env["engine"], "after_cursor_execute", _capture)
+    try:
+        _build(env, build_meta_payload)
+    finally:
+        event.remove(env["engine"], "after_cursor_execute", _capture)
+    assert len([s for s in seen if "FROM activity" in s]) == 1
 
 
 def test_a_traxj_export_carries_no_shared_with_others(env):
     with Session(env["engine"]) as sess:
         project = _repo.get_project(sess, env["ids"]["owner"], "Trip")
-    assert {a.id: a.shared_with_others for a in project.activities} == _EXPECTED
+    assert {a.shared_with_others for a in project.activities} == {None}
     doc = _traxj_document(project)
     assert doc["activities"]
     assert "shared_with_others" not in json.dumps(doc)

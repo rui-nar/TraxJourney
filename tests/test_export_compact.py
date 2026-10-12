@@ -190,10 +190,20 @@ def _content(export: bytes) -> dict:
     name, lock version, the database ids of its memories, journal entries,
     encounters, people and groups, and memory public ids (a copy of a trip
     that still exists gets new ones, #463). People and groups are renumbered
-    by position, and the encounters' references with them."""
+    by position, and the encounters' references with them. So are
+    activities, whose ids an import never keeps (#592: every activity gets a
+    new row), and the items' and split links' references with them."""
     data = json.loads(export)
     for key in ("name", "lock_version"):
         data.pop(key, None)
+    acts = {a.pop("id"): n for n, a in enumerate(data.get("activities", []))}
+    for a in data.get("activities", []):
+        for link in ("split_root_id", "split_parent_id"):
+            if a.get(link) is not None:
+                a[link] = acts.get(a[link], a[link])
+    for item in data["items"]:
+        if item["item_type"] == "activity":
+            item["activity_id"] = acts.get(item["activity_id"], item["activity_id"])
     groups = {g.pop("id"): n for n, g in enumerate(data.get("groups", []))}
     people = {p.pop("id"): n for n, p in enumerate(data.get("people", []))}
     for p in data.get("people", []):

@@ -45,6 +45,7 @@ def _seed(engine):
         dist_km = [i * 1.0 for i in range(len(_TRACK))]
         act = DBActivity(
             id=111, user_info_id=u.id, name="Ride", type="Ride",
+            strava_id=111, strava_user_id=u.id,
             distance=4000.0, moving_time=1000, elapsed_time=1200,
             total_elevation_gain=60.0, summary_polyline=poly,
             elevation_profile_json=json.dumps(

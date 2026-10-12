@@ -328,14 +328,18 @@ def test_replace_keeps_a_companions_journal_and_rewrites_the_owners(alps):
 
 def test_replace_refuses_a_stale_editors_save(alps):
     (client, engine, ids, act_as, _), project, lake, share, _dir = alps
-    seen = client.get("/api/projects/Alps/activities/1/track").json()["lock_version"]
+    (old_id,) = _trip_activity_ids(engine, project.id)
+    seen = client.get(f"/api/projects/Alps/activities/{old_id}/track").json()["lock_version"]
 
     r = _import(client, "Alps", _doc(
         [{"item_type": "activity", "activity_id": 1}],
         activities=[_activity(1, "Ride")]), on_conflict="replace")
     assert r.status_code == 201, r.text
 
-    r = client.put("/api/projects/Alps/activities/1/track", json={
+    # The file's activity is a new row of the trip (#592); the editor's
+    # counter is stale whichever row it then writes.
+    (new_id,) = _trip_activity_ids(engine, project.id)
+    r = client.put(f"/api/projects/Alps/activities/{new_id}/track", json={
         "points": [{"lat": 48.0, "lng": 2.0}, {"lat": 48.1, "lng": 2.1}],
         "lock_version": seen})
     assert r.status_code == 409, r.text
@@ -448,7 +452,11 @@ def _trip_activity_ids(engine, project_id: int) -> set:
             DBProjectItem.item_type == "activity"))}
 
 
-def test_replace_copies_an_activity_another_account_holds_and_leaves_it_alone(alps):
+def test_replace_gives_a_file_activity_a_new_row_and_leaves_anothers_alone(alps):
+    """Every file activity gets a new row of the trip (#592, plan Decision 8),
+    whatever row its id names: here another account's, which is neither
+    written nor referenced. An item naming an activity the file does not
+    carry names nothing of this trip and is left out."""
     (client, engine, ids, act_as, _), project, lake, share, _dir = alps
     bob = _outsider(engine)
 
@@ -462,36 +470,53 @@ def test_replace_copies_an_activity_another_account_holds_and_leaves_it_alone(al
         theirs = sess.get(DBActivity, 9001)
         assert (theirs.user_info_id, theirs.name) == (bob, "Bob ride")
     (copy_id,) = _trip_activity_ids(engine, project.id)
-    assert copy_id < 0
+    with Session(engine) as sess:
+        mine = sess.get(DBActivity, copy_id)
+        assert copy_id != 9001 and copy_id > 0  # a Strava activity: positive (Decision 3)
+        assert (mine.user_info_id, mine.name, mine.strava_id) == (ids["owner"], "Mine now", 9001)
     assert "Bob ride" not in client.get("/api/projects/Alps").text
 
 
-def test_replace_keeps_a_companions_activity_the_trip_holds(alps):
+def test_replace_keeps_a_companions_strava_connection_and_a_copy_takes_the_importers(alps):
+    """A companion's activity in the owner's trip is the trip owner's row
+    (#592, plan Decision 4) whose Strava data comes through the companion's
+    connection (Decision 5). Replacing the trip with its own export gives it a
+    new row (Decision 8) that keeps that connection: the file's activity is
+    the one the trip held. A copy is a new trip of the owner's, with no
+    companion: its rows are the owner's and come through the owner's."""
     (client, engine, ids, act_as, _), project, lake, share, _dir = alps
     act_as("companion")
     r = client.post(f"/api/projects/Alps/activities?owner={ids['owner']}",
                     json={"activities": [_activity(7001, "Companion ride")]})
     assert r.json()["added"] == 1, r.text
     act_as("owner")
+    before = _trip_activity_ids(engine, project.id)
     exported = client.get("/api/projects/Alps/export-traxj").content
 
     r = _import(client, "Alps", exported, on_conflict="replace")
 
     assert r.status_code == 201, r.text
-    assert _trip_activity_ids(engine, project.id) == {1, 7001}
+    after = _trip_activity_ids(engine, project.id)
+    assert len(after) == 2 and not after & before
     with Session(engine) as sess:
-        row = sess.get(DBActivity, 7001)
-        assert (row.user_info_id, row.name) == (ids["companion"], "Companion ride")
+        assert all(sess.get(DBActivity, aid) is None for aid in before)
+        rows = {sess.get(DBActivity, aid).strava_id: sess.get(DBActivity, aid) for aid in after}
+    assert set(rows) == {1, 7001}
+    assert (rows[7001].user_info_id, rows[7001].name, rows[7001].strava_user_id) == (
+        ids["owner"], "Companion ride", ids["companion"])
+    assert (rows[1].user_info_id, rows[1].strava_user_id) == (ids["owner"], ids["owner"])
 
-    # A copy is a new trip of the owner's: the companion's activity comes
-    # along as the owner's own copy, and the companion's row stays theirs.
     r = _import(client, "Alps", exported, on_conflict="copy")
     assert r.status_code == 201, r.text
     copied = _project(engine, ids["owner"], r.json()["name"])
     ids_in_copy = _trip_activity_ids(engine, copied.id)
-    assert 1 in ids_in_copy and 7001 not in ids_in_copy and len(ids_in_copy) == 2
+    assert len(ids_in_copy) == 2 and not ids_in_copy & after
     with Session(engine) as sess:
-        assert sess.get(DBActivity, 7001).user_info_id == ids["companion"]
+        copies = [sess.get(DBActivity, aid) for aid in ids_in_copy]
+        assert {(c.strava_id, c.user_info_id, c.strava_user_id) for c in copies} == {
+            (1, ids["owner"], ids["owner"]), (7001, ids["owner"], ids["owner"])}
+        # The replaced trip's rows are its own still.
+        assert sess.get(DBActivity, rows[7001].id).strava_user_id == ids["companion"]
 
 
 def _avatar(client, person_id: int) -> None:

@@ -1,29 +1,26 @@
-"""A Strava activity row no trip references is deleted (issue #509).
+"""An activity row its trip lets go of is deleted (issues #509, #592).
 
-Regression: removing an activity from its last trip, or deleting the trip,
-unlinked the timeline item and left the Strava row (name, track, prepared
+Regression (#509): removing an activity from its last trip, or deleting the
+trip, unlinked the timeline item and left the row (name, track, prepared
 geometry) in the database for good, reachable from nowhere. Split families
 were worse: the trip's tails stayed and kept naming the root.
 
-The rows go only when nothing references them: no project item, and no split
-piece naming them as its root or parent. A file-backed SQLite is used
-throughout, so the race test at the bottom shows two real transactions
-contending (the in-memory StaticPool shares one connection).
+Since #592 every row belongs to the one trip holding it, so "its last trip" is
+simply "its trip": another trip holding the same Strava activity has a row of
+its own and keeps it. A row goes once no item references it, unless a piece
+of its split family still names it as root: then it goes with the last such
+piece. A file-backed SQLite is used throughout, as the routes open sessions of
+their own.
 """
 from __future__ import annotations
 
 import logging
-import threading
 
 import polyline as polyline_lib
 import pytest
-from fastapi import BackgroundTasks
 from fastapi.testclient import TestClient
-from sqlalchemy import event
 from sqlmodel import Session, SQLModel, select
 
-import api.activities as activities_module
-import api.project_items as project_items_module
 import models.db as db_module
 from api.deps import get_current_user
 from api.router import app
@@ -139,7 +136,7 @@ def _prepared(engine) -> set[int]:
 
 # ── Removing an item ───────────────────────────────────────────────────────────
 
-def test_removing_an_activity_from_its_last_trip_deletes_it(engine):
+def test_removing_an_activity_from_its_trip_deletes_it(engine):
     uid = _user(engine, "owner")
     _activity(engine, 1, uid)
     _activity(engine, 2, uid)
@@ -151,21 +148,23 @@ def test_removing_an_activity_from_its_last_trip_deletes_it(engine):
     assert _prepared(engine) == {2}
 
 
-def test_removing_an_activity_from_one_of_two_trips_keeps_it(engine):
+def test_removing_an_activity_from_one_trip_keeps_the_other_trips_copy(engine):
+    """The same Strava activity in two trips is two rows (#592): removing it
+    from one deletes that trip's row only."""
     uid = _user(engine, "owner")
-    _activity(engine, 1, uid)
+    _activity(engine, 1, uid, strava_id=900, strava_user_id=uid)
+    _activity(engine, 2, uid, strava_id=900, strava_user_id=uid)
     _trip(engine, uid, "Trip", [1])
-    _trip(engine, uid, "Other", [1])
+    _trip(engine, uid, "Other", [2])
 
     _remove(uid, "Trip", 0)
 
-    assert _rows(engine) == {1}
-    assert _prepared(engine) == {1}
+    assert _rows(engine) == {2}
+    assert _prepared(engine) == {2}
 
 
 def test_owner_removing_a_companions_activity_deletes_it(engine):
-    """The row is the companion's: the cleanup considers the removed id
-    whoever owns it, not only the caller's rows (plan R1-3)."""
+    """The cleanup considers the removed row whoever owns it (plan R1-3)."""
     owner = _user(engine, "owner")
     companion = _user(engine, "companion")
     _activity(engine, 7, companion)
@@ -175,23 +174,6 @@ def test_owner_removing_a_companions_activity_deletes_it(engine):
 
     assert _rows(engine) == set()
     assert _prepared(engine) == set()
-
-
-def test_an_editor_removing_the_owners_activity_only_unlinks_it(engine):
-    """Owner decision 2026-10-03: a companion frees only their own rows. The
-    owner's activity leaves the timeline and stays, for the owner's own
-    removal or disconnect to free."""
-    owner = _user(engine, "owner")
-    companion = _user(engine, "companion")
-    _activity(engine, 1, owner)
-    _trip(engine, owner, "Trip", [1], members=[companion])
-
-    _remove(companion, "Trip", 0, owner=owner)
-
-    assert _rows(engine) == {1}
-    assert _prepared(engine) == {1}
-    with Session(engine) as sess:
-        assert sess.exec(select(DBProjectItem).where(DBProjectItem.activity_id == 1)).first() is None
 
 
 def test_an_editor_removing_their_own_activity_deletes_it(engine):
@@ -204,21 +186,6 @@ def test_an_editor_removing_their_own_activity_deletes_it(engine):
 
     assert _rows(engine) == set()
     assert _prepared(engine) == set()
-
-
-def test_an_editor_removing_a_tail_of_the_owners_split_only_unlinks_it(engine):
-    owner = _user(engine, "owner")
-    companion = _user(engine, "companion")
-    _activity(engine, 111, owner, name="Ride (1/2)", split_base_name="Ride", is_edited=True)
-    _activity(engine, -5, owner, name="Ride (2/2)", split_root_id=111, split_parent_id=111,
-              start_date="2026-06-10T10:00:00Z")
-    _trip(engine, owner, "Trip", [111, -5], members=[companion])
-
-    _remove(companion, "Trip", 1, owner=owner)
-
-    assert _rows(engine) == {111, -5}
-    with Session(engine) as sess:
-        assert sess.exec(select(DBProjectItem).where(DBProjectItem.activity_id == -5)).first() is None
 
 
 def test_removing_the_head_then_the_last_tail_deletes_the_root(engine):
@@ -309,24 +276,25 @@ def test_owner_deleting_a_departed_companions_tail_locally_frees_it_and_its_root
     assert _prepared(engine) == set()
 
 
-def test_an_editor_deleting_a_tail_of_the_owners_split_locally_is_refused(engine):
+def test_an_editor_deleting_a_tail_of_the_owners_split_locally_deletes_it(engine):
+    """Any editor of the trip may delete its local rows (#592, plan Decision 9,
+    owner answer EQ1-1): this was a 403 for anyone but the tail's account or
+    the trip's owner."""
     owner = _user(engine, "owner")
     companion = _user(engine, "companion")
     _activity(engine, 111, owner, name="Ride (1/2)", split_base_name="Ride", is_edited=True)
     _activity(engine, -5, owner, name="Ride (2/2)", split_root_id=111, split_parent_id=111,
               start_date="2026-06-10T10:00:00Z")
-    _trip(engine, owner, "Trip", [111, -5], members=[companion])
+    _activity(engine, 222, owner, name="Walk", start_date="2026-06-11T09:00:00Z")
+    _trip(engine, owner, "Trip", [111, -5, 222], members=[companion])
 
-    resp = _as(companion).delete("/api/projects/Trip/activities/-5/local",
-                                 params={"owner": owner})
+    _delete_local(companion, "Trip", -5, owner=owner)
 
-    assert resp.status_code == 403, resp.text
-    assert resp.json()["detail"] == (
-        "Only the activity's owner or the trip owner can delete this piece")
-    assert _rows(engine) == {111, -5}
-    assert _prepared(engine) == {111, -5}
+    assert _rows(engine) == {111, 222}
+    assert _prepared(engine) == {111, 222}
     with Session(engine) as sess:
-        assert sess.exec(select(DBProjectItem).where(DBProjectItem.activity_id == -5)).first()
+        assert not sess.exec(select(DBProjectItem).where(DBProjectItem.activity_id == -5)).first()
+        assert {it.activity_id for it in sess.exec(select(DBProjectItem)).all()} == {111, 222}
 
 
 def test_an_editor_deleting_a_tail_of_their_own_split_locally_frees_it_and_its_root(engine):
@@ -348,17 +316,19 @@ def test_an_editor_deleting_a_tail_of_their_own_split_locally_frees_it_and_its_r
 
 # ── Deleting a trip ────────────────────────────────────────────────────────────
 
-def test_deleting_a_trip_deletes_rows_no_other_trip_holds(engine):
+def test_deleting_a_trip_deletes_its_rows_and_keeps_the_other_trips(engine):
+    """Activity 2 is in both trips as two rows (#592): the other trip keeps
+    its own copy."""
     uid = _user(engine, "owner")
-    for aid in (1, 2, 3):
+    for aid in (1, 2, 3, 4):
         _activity(engine, aid, uid)
     _trip(engine, uid, "Trip", [1, 2])
-    _trip(engine, uid, "Other", [2, 3])
+    _trip(engine, uid, "Other", [3, 4])
 
     _delete_trip(uid, "Trip")
 
-    assert _rows(engine) == {2, 3}
-    assert _prepared(engine) == {2, 3}
+    assert _rows(engine) == {3, 4}
+    assert _prepared(engine) == {3, 4}
 
 
 def test_deleting_a_trip_deletes_its_whole_split_family(engine):
@@ -372,24 +342,42 @@ def test_deleting_a_trip_deletes_its_whole_split_family(engine):
     assert _prepared(engine) == set()
 
 
-def test_deleting_a_trip_keeps_a_root_another_trip_holds_and_renumbers_it(engine):
-    """The tails go, the root stays for the other trip, which now shows it
-    under its plain name rather than "Ride (1/3)" (plan R3-2)."""
+def test_deleting_a_trip_leaves_another_trips_split_copy_alone(engine):
+    """The other trip split its own copy: none of its rows is touched, and
+    its cached copy has nothing to notice."""
     uid = _user(engine, "owner")
     _split_family(engine, uid)
+    _activity(engine, 222, uid, name="Ride (1/2)", split_base_name="Ride", is_edited=True)
+    _activity(engine, -7, uid, name="Ride (2/2)", split_root_id=222, split_parent_id=222,
+              start_date="2026-06-10T10:00:00Z")
     _trip(engine, uid, "Trip", [111, -5, -6])
-    other = _trip(engine, uid, "Other", [111])
+    other = _trip(engine, uid, "Other", [222, -7])
     with Session(engine) as sess:
         version_before = sess.get(DBProject, other).lock_version
 
     _delete_trip(uid, "Trip")
 
-    assert _rows(engine) == {111}
-    assert _prepared(engine) == {111}
+    assert _rows(engine) == {222, -7}
     with Session(engine) as sess:
-        assert sess.get(DBActivity, 111).name == "Ride"
-        # The other trip's cached copy must notice the new name.
-        assert sess.get(DBProject, other).lock_version > version_before
+        assert sess.get(DBActivity, 222).name == "Ride (1/2)"
+        assert sess.get(DBProject, other).lock_version == version_before
+
+
+def test_deleting_a_trip_after_removing_the_head_deletes_the_head_too(engine):
+    """The head left the timeline but stayed while its tails named it. The
+    trip's items name only the tails; its deletion takes the head as well,
+    leaving no row and no prepared row behind (U3R1-1)."""
+    uid = _user(engine, "owner")
+    _split_family(engine, uid)
+    _trip(engine, uid, "Trip", [111, -5, -6])
+
+    _remove(uid, "Trip", 0)
+    assert _rows(engine) == {111, -5, -6}
+
+    _delete_trip(uid, "Trip")
+
+    assert _rows(engine) == set()
+    assert _prepared(engine) == set()
 
 
 def test_deleting_a_trip_frees_a_departed_companions_split_family(engine):
@@ -425,35 +413,45 @@ def test_a_root_kept_only_by_unreferenced_tails_is_logged(engine, caplog):
     assert warnings == ["activity 111 kept only by split tails no trip holds: [-9]"]
 
 
-def test_deleting_a_trip_keeps_gpx_rows(engine):
+def test_deleting_a_trip_deletes_its_gpx_rows(engine):
+    """Deleting a trip deletes its rows, whatever they came from (plan
+    Decision 9)."""
     uid = _user(engine, "owner")
     _activity(engine, -40, uid, source="gpx")
     _trip(engine, uid, "Trip", [-40])
 
     _delete_trip(uid, "Trip")
 
-    assert _rows(engine) == {-40}
+    assert _rows(engine) == set()
+    assert _prepared(engine) == set()
 
 
-def test_a_refresh_that_outlives_its_row_warns_as_it_reinserts(engine, caplog):
-    """Guard U6-R1-1: the background re-fetch finds the row gone — the
-    activity left its last trip while Strava was answering — and says so
-    as it recreates it."""
-    from api.project_shared import _repo
-    from src.models.activity import Activity
+def test_deleting_a_trip_deletes_exactly_its_rows(engine):
+    """Strava activity 900 is in both trips, as rows 1 and 2; the trip also
+    holds a companion's activity and a GPX row, and an unreferenced row sits
+    alongside. Deleting the trip deletes its three rows and their prepared
+    geometry, and nothing else (#592, plan Decision 9)."""
+    owner = _user(engine, "owner")
+    companion = _user(engine, "companion")
+    _activity(engine, 1, owner, strava_id=900, strava_user_id=owner)
+    _activity(engine, 2, owner, strava_id=900, strava_user_id=owner)
+    _activity(engine, 3, owner, strava_id=901, strava_user_id=companion)
+    _activity(engine, -40, owner, source="gpx")
+    _activity(engine, 4, owner, strava_id=902, strava_user_id=owner)
+    _trip(engine, owner, "Trip", [1, 3, -40], members=[companion])
+    other = _trip(engine, owner, "Other", [2])
+    with Session(engine) as sess:
+        version_before = sess.get(DBProject, other).lock_version
 
-    uid = _user(engine, "owner")
-    act = Activity.from_strava_api(_raw_strava_activity(900))
+    _delete_trip(owner, "Trip")
 
-    with caplog.at_level(logging.WARNING, logger="src.project.repo_activities"):
-        with Session(engine) as sess:
-            _repo.force_update_activity(sess, uid, act)
-
-    assert (f"refresh re-inserting activity=900 user={uid}: row deleted while the "
-            "re-fetch was in flight (#509 orphan)") in caplog.text
+    assert _rows(engine) == {2, 4}
+    assert _prepared(engine) == {2, 4}
+    with Session(engine) as sess:
+        assert sess.get(DBProject, other).lock_version == version_before
 
 
-# ── The add that races a removal (Review envelope, U6 concurrency) ─────────────
+# ── Strava ─────────────────────────────────────────────────────────────────────
 
 def _raw_strava_activity(act_id: int) -> dict:
     return {
@@ -465,53 +463,34 @@ def _raw_strava_activity(act_id: int) -> dict:
     }
 
 
-def test_an_add_to_another_trip_racing_the_removal_keeps_the_row(engine):
-    """Removing activity 500 from its only trip while the same user adds it to
-    a second trip. The add lands right after the removal checked that nothing
-    references the row: it must wait for the delete and recreate the row, not
-    commit its reference in between and be left pointing at nothing."""
+def test_a_refresh_that_outlives_its_row_warns_and_recreates_nothing(engine, caplog):
+    """Guard U6-R1-1: the background re-fetch finds the row gone — the
+    activity left its trip while Strava was answering. A row created now
+    would belong to no trip, so none is."""
+    from api.project_shared import _repo
+    from src.models.activity import Activity
+
     uid = _user(engine, "owner")
-    _activity(engine, 500, uid)
-    _trip(engine, uid, "Trip", [500])
-    other = _trip(engine, uid, "Other", [])
-    user = {"sub": str(uid), "email": "x@e.com"}
+    act = Activity.from_strava_api(_raw_strava_activity(900))
 
-    def _add():
-        activities_module.add_activities(
-            "Other", activities_module.AddActivitiesRequest(
-                activities=[_raw_strava_activity(500)]),
-            user, BackgroundTasks(), None)
+    with caplog.at_level(logging.WARNING, logger="src.project.repo_activities"):
+        with Session(engine) as sess:
+            _repo.force_update_activity(sess, uid, act)
 
-    add = threading.Thread(target=_add)
-    remover = {}
-    seen = {}
+    assert (f"refresh dropped for activity=900 user={uid}: row deleted while the "
+            "re-fetch was in flight") in caplog.text
+    assert _rows(engine) == set()
 
-    def _after_execute(_conn, _cursor, statement, _params, _context, _many):
-        # The removal's "is anything still referencing it" check has just run.
-        if (threading.current_thread() is remover.get("thread") and not seen
-                and "FROM projectitem" in statement
-                and "projectitem.activity_id = activity.id" in statement):
-            add.start()
-            add.join(1.0)
-            seen["add_blocked"] = add.is_alive()
 
-    def _removal():
-        project_items_module.delete_item("Trip", 0, user, BackgroundTasks(), None)
+def test_a_disconnect_deletes_no_activity_rows(engine):
+    """An activity stays in its trip when its importer disconnects Strava,
+    and one no trip holds is harmless (plan Decision 9, review R1-9)."""
+    uid = _user(engine, "owner")
+    _activity(engine, 1, uid, strava_id=900, strava_user_id=uid)
+    _activity(engine, 2, uid, strava_id=901, strava_user_id=uid)
+    _trip(engine, uid, "Trip", [1])
 
-    event.listen(engine, "after_cursor_execute", _after_execute)
-    try:
-        remover["thread"] = threading.Thread(target=_removal)
-        remover["thread"].start()
-        remover["thread"].join(35.0)
-        add.join(35.0)
-    finally:
-        event.remove(engine, "after_cursor_execute", _after_execute)
+    resp = _as(uid).delete("/api/strava/disconnect")
+    assert resp.status_code == 204, resp.text
 
-    assert not remover["thread"].is_alive() and not add.is_alive()
-    with Session(engine) as sess:
-        assert sess.get(DBActivity, 500) is not None
-        assert sess.exec(select(DBProjectItem).where(
-            DBProjectItem.project_id == other,
-            DBProjectItem.activity_id == 500)).first() is not None
-    # And it was the write lock that ordered them, not luck.
-    assert seen["add_blocked"] is True
+    assert _rows(engine) == {1, 2}

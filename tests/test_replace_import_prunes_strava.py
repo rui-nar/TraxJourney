@@ -1,4 +1,4 @@
-"""A Replace import frees the Strava rows the replaced trip dropped (issue #509).
+"""A Replace import deletes the replaced trip's activity rows (issues #509, #592).
 
 Regression (integrated review I-R1-2): ``on_conflict=replace`` deleted every
 item of the trip and wrote the file's, but left the Strava activity rows the
@@ -6,9 +6,10 @@ old timeline held and the file did not — name, track, prepared geometry —
 in the database for good, as deleting the trip used to. Both routes are
 covered: ``/import`` (.traxj) and ``/import-zip``.
 
-The same rule as deleting a trip: a row goes once nothing references it, so
-what the file keeps and what another trip holds stay, and a split family the
-file dropped goes whole.
+Since #592 a row belongs to the one trip holding it, and an import gives every
+file activity a new row (plan Decisions 8 and 9): a Replace deletes all of the
+trip's rows, split families whole, in the same transaction as it writes the
+file's, and never touches another trip's row of the same activity.
 """
 from __future__ import annotations
 
@@ -144,31 +145,47 @@ def _prepared(engine) -> set[int]:
 ROUTES = ["traxj", "zip"]
 
 
+def _trip_rows(engine, project_id: int) -> set[int]:
+    with Session(engine) as sess:
+        return set(sess.exec(select(DBProjectItem.activity_id).where(
+            DBProjectItem.project_id == project_id,
+            DBProjectItem.item_type == "activity")).all())
+
+
 @pytest.mark.parametrize("route", ROUTES)
-def test_replace_frees_what_the_file_dropped_and_keeps_what_it_kept(env, route):
+def test_replace_deletes_the_trips_rows_and_gives_the_files_new_ones(env, route):
     client, engine, uid = env
-    _activity(engine, 1, uid)
-    _activity(engine, 2, uid)
-    _trip(engine, uid, "Alps", [1, 2])
+    _activity(engine, 1, uid, strava_id=1)
+    _activity(engine, 2, uid, strava_id=2)
+    trip = _trip(engine, uid, "Alps", [1, 2])
 
     _replace(client, route, "Alps", [2])
 
-    assert _rows(engine) == {2}
-    assert _prepared(engine) == {2}
+    (new,) = _trip_rows(engine, trip)
+    assert _rows(engine) == {new} and new not in (1, 2)
+    with Session(engine) as sess:
+        assert sess.get(DBActivity, new).strava_id == 2
+    # The new row's geometry is prepared from the file's track; the old
+    # rows' prepared geometry went with them.
+    assert _prepared(engine) == {new}
 
 
 @pytest.mark.parametrize("route", ROUTES)
-def test_replace_keeps_what_another_trip_holds(env, route):
+def test_replace_never_touches_another_trips_row_of_the_same_activity(env, route):
     client, engine, uid = env
-    _activity(engine, 1, uid)
-    _activity(engine, 3, uid)
-    _trip(engine, uid, "Alps", [1, 3])
-    _trip(engine, uid, "Other", [3])
+    _activity(engine, 4, uid, strava_id=3)
+    _activity(engine, 3, uid, strava_id=3)
+    _trip(engine, uid, "Alps", [4])
+    other = _trip(engine, uid, "Other", [3])
+    with Session(engine) as sess:
+        version_before = sess.get(DBProject, other).lock_version
 
     _replace(client, route, "Alps", [])
 
     assert _rows(engine) == {3}
     assert _prepared(engine) == {3}
+    with Session(engine) as sess:
+        assert sess.get(DBProject, other).lock_version == version_before
 
 
 @pytest.mark.parametrize("route", ROUTES)
@@ -185,6 +202,9 @@ def test_replace_frees_a_split_family_the_file_dropped(env, route):
 
 @pytest.mark.parametrize("route", ROUTES)
 def test_replace_keeps_a_root_another_trip_holds_and_renumbers_it(env, route):
+    """A split link across trips is what the migration removes (plan
+    Decision 10); seeded here directly, the Replace still never deletes a row
+    another trip holds."""
     client, engine, uid = env
     _split_family(engine, uid)
     _trip(engine, uid, "Alps", [111, -5, -6])
@@ -201,35 +221,21 @@ def test_replace_keeps_a_root_another_trip_holds_and_renumbers_it(env, route):
 
 
 @pytest.mark.parametrize("route", ROUTES)
-def test_a_failed_prune_does_not_fail_the_import(env, route, monkeypatch, caplog):
-    """Review F2-R1-1: the import has committed by the time the prune runs,
-    so a prune failure is logged, the rows stay for a later disconnect, and
-    the caller still gets the replaced trip — its caches busted first."""
-    import logging
-
+def test_a_failed_delete_rolls_the_whole_replace_back(env, route, monkeypatch):
+    """The old rows go in the Replace's own transaction: when deleting them
+    fails, nothing of the Replace is committed, so the trip never names rows
+    that are gone nor keeps rows nothing names."""
     client, engine, uid = env
-    _activity(engine, 1, uid)
-    _activity(engine, 2, uid)
+    _activity(engine, 1, uid, strava_id=1)
     trip = _trip(engine, uid, "Alps", [1])
 
     def _fail(*_args, **_kwargs):
         raise RuntimeError("database is locked")
-    monkeypatch.setattr(transfer_mod._repo, "delete_unreferenced_strava_activities", _fail)
-    busted = []
-    real_bust = transfer_mod.bust_geo_cache
+    monkeypatch.setattr(transfer_mod._repo, "delete_unreferenced_activities", _fail)
 
-    def _bust(owner_id, name):
-        busted.append((owner_id, name))
-        real_bust(owner_id, name)
-    monkeypatch.setattr(transfer_mod, "bust_geo_cache", _bust)
-
-    with caplog.at_level(logging.WARNING, logger="api.project_transfer"):
+    with pytest.raises(RuntimeError, match="database is locked"):
         _replace(client, route, "Alps", [2])
 
-    with Session(engine) as sess:
-        assert sess.exec(select(DBProjectItem.activity_id).where(
-            DBProjectItem.project_id == trip)).all() == [2]
-    assert _rows(engine) == {1, 2}
-    assert (uid, "Alps") in busted
-    assert ("import: replaced trip 'Alps' (user=%s) but could not free the activities "
-            "it dropped [1]: RuntimeError: database is locked" % uid) in caplog.text
+    assert _trip_rows(engine, trip) == {1}
+    assert _rows(engine) == {1}
+    assert _prepared(engine) == {1}
