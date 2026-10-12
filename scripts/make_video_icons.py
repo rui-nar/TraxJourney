@@ -11,7 +11,7 @@ Dev-only: the SVGs are fetched from a pinned commit of
 google/material-design-icons and rasterised with CairoSVG, which is neither in
 pyproject.toml nor in the app image. Run it in a throwaway container:
 
-    docker run --rm -v "$PWD":/w -w /w ghcr.io/astral-sh/uv:0.13.0-python3.14-trixie-slim sh -c \\
+    docker run --rm -v "$PWD":/w -w /w ghcr.io/astral-sh/uv:0.12.19-python3.14-trixie-slim sh -c \\
         "apt-get update -qq && apt-get install -y -qq libcairo2 >/dev/null \\
          && uv run -q --no-project --with cairosvg --with Pillow python scripts/make_video_icons.py"
 

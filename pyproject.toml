@@ -93,4 +93,4 @@ release = [
 package = false
 default-groups = ["dev", "release"]
 # A floor, not a pin: an exact pin would block Dependabot and local uv.
-required-version = ">=0.13.0"
+required-version = ">=0.12.19"
