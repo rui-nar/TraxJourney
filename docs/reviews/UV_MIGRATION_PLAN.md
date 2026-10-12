@@ -96,7 +96,34 @@ Branch `chore/603-uv`, orchestrator worktree `E:/Dev/TraxJourney-603`, unit work
 | U3 | CI on uv, image checks, Dependabot | Opus | S3 | 2 | owner decision (setup-uv has no major tags after v7 → `@v10.2.0`) | yes | R1-1, R1-3, R1-5, R1-6, R2-3, R3-1 |
 | U4 | Local dev scripts and docs | Opus | S3 | 1 | owner decision (dev-server.ps1/dev.ps1 untracked → post-merge owner action) | yes | R1-2, R1-4, R2-2 |
 | F1 | Pin uv 0.12.19 (0.13.0 was 3 days old, against Decision 4) | Sonnet | — | 1 | — | yes | — |
+| U5 | Delete requirements.txt, guard against its return | Sonnet | — | 2 | — | no (guard could pass on an empty `git ls-files`; fixed in 64d67c9c) | — |
 
 Notes:
 - F1 is an orchestrator fix unit: the plan named 0.13.0 without checking its release date; U3 caught it.
 - Dev machine (owner action, done 2026-10-12): graphify moved to `%LOCALAPPDATA%\graphify\venv` (pinned 0.9.67) on the user PATH; the broken uv-tool graphify removed with owner approval. Side effect undone: running the newer graphify auto-refreshed the graphify skill; SKILL.md and the version marker restored, the refreshed copy kept as SKILL.md.0.9.86-autorefresh.
+
+## Diff review round 1 — 2026-10-13, reviewed at befe4e35 (branch chore/603-uv vs origin/main)
+
+### D1-2 — The pip-path guard needs a git index; it errors on a git-less archive copy
+- Trigger: someone runs the suite from a `git archive` copy without `git init && git add` → `git ls-files` fails (check=True) → one test errors.
+- Scores: trigger=plausible (triager corrected from concrete: the documented recipe, every run in this delivery and CI have an index), impact=cosmetic (corrected from degraded-ux), detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10) — follows the convention of seven existing `git ls-files` tests
+- Revisit when: a git-less archive (or the image, or an sdist) becomes the documented test recipe; then fix every `git ls-files` test with one shared skip-or-fallback helper.
+- Override: —
+- Outcome: open
+
+### D1-1 — uv's default `python-preference = managed` would put a uv-managed (unsigned) CPython ahead of the signed system one
+- Trigger: a uv-managed CPython matching `.python-version` gets installed on the SAC dev machine (`uv python install`, another project, a minor bump before the system install) → `uv sync` builds .venv on it → SAC blocks `.venv\Scripts\python.exe` → local `uv run python …`, the release script and deploy.ps1's probe fail.
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=inferred
+- Decision: Defer (D10) — not a duplicate of R1-2 (that fix covers the first sync only)
+- Revisit when: `uv python list --only-installed` shows a uv-managed CPython on the dev machine, `.python-version` moves to a minor with no system install, or SAC blocks `.venv\Scripts\python.exe`; then add `[tool.uv] python-preference = "system"`.
+- Override: —
+- Outcome: open
+
+### D1-3 — The `rail` group's PyYAML comment says "Test-only … Nothing at runtime imports it"
+- Trigger: a maintainer reads the comment and moves PyYAML to `dev` → the rail-extract jobs (build_rail_extract.py, route_corpus.py import yaml) would break; test_rail_group_is_exactly_osmium_requests_and_pyyaml catches it in PR CI first.
+- Scores: trigger=plausible, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: the next change touching the rail group or PyYAML's placement; correct the comment there.
+- Override: —
+- Outcome: open
