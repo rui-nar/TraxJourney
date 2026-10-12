@@ -108,3 +108,23 @@ No findings. The reviewer traced web prod and val (www redirects to the apex; va
 ## Unit review U2 (DELIVERY.md §5.3) — round 1, 2026-10-13, reviewed at 185e0627
 
 No findings. The deletion revoke and the `appletoken` delete are owed to U3 by design, so they were not raised.
+
+## Unit review U3 (DELIVERY.md §5.3) — round 1, 2026-10-13, reviewed at 96d38f25
+
+### U3R1-1 — An Apple sign-in during the deletion's network window leaves the account deleted but Apple still authorized
+- Trigger: A user deletes an Apple account while the same Apple ID signs in on another device → `apple_login` commits a new refresh token into `appletoken` during the deletion's pre-lock window → the deletion revokes only the old token, then deletes the row holding the new one → the account is gone and Apple still lists TraxJourney as authorized.
+- Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3, floor F3)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
+
+### U3R1-2 — The mirror race: a sign-in that commits after the deletion leaves a fresh Apple token unrevoked (api/auth.py, U2's code)
+- Trigger: `apple_login` reads the account and token row, Apple issues a fresh refresh token, the deletion commits first → the login's UPDATE hits a deleted row (StaleDataError → 500) → the fresh token is in no row and is never revoked → Apple shows TraxJourney authorized for an account that no longer exists.
+- Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=inferred (raised by the triager from the U3 reviewer's note)
+- Decision: Fix now (D3, floor F3)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
