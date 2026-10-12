@@ -361,4 +361,4 @@ decision, so the review stops (§6; round 3 is also the cap).
 - Revisit when: any further edit to the migration before it is deployed (reword the reason to cover both causes, and update the test's expected string), or the owner, after deploy, looks for a second split behind that log line and finds none.
 - Guard: —
 - Override: user: Fix now — the post-deploy log is the owner's only guide to manual repairs; wording only, verified without a fourth review round
-- Outcome: open
+- Outcome: fixed (a6623b5d)
