@@ -28,6 +28,8 @@ LEGAL = ROOT / "legal"
 PAGES = {
     "/privacy": ("privacy.html", "Privacy Policy"),
     "/terms": ("terms.html", "Terms of Service"),
+    # The Play Console's account-deletion URL (store distribution plan D15).
+    "/delete-account": ("delete-account.html", "Delete your account"),
 }
 
 _SPA_INDEX = "<!doctype html><html><body>spa shell</body></html>"
