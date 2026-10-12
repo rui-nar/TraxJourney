@@ -1,5 +1,6 @@
 """The dependency set lives in pyproject.toml and is locked in uv.lock (#603)."""
 import re
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -64,3 +65,32 @@ def test_sqlmodel_and_sqlalchemy_stay_exact_pins():
 
 def test_the_lock_exists_and_targets_the_same_python():
     assert LOCK["requires-python"] == PYPROJECT["project"]["requires-python"]
+
+
+# Historical plans, reviews and repro notes legitimately name the old pip path.
+_PIP_PATH_EXEMPT = ("docs/", "graphify-out/", "tools/", "flutter_client/", "uv.lock",
+                    "tests/test_python_packaging.py")
+
+
+def test_requirements_txt_is_gone():
+    assert not (ROOT / "requirements.txt").exists()
+
+
+def test_nothing_outside_the_historical_documents_reverts_to_pip():
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=ROOT, check=True, capture_output=True
+    ).stdout.decode("utf-8").split("\0")
+    offenders = []
+    for rel in filter(None, tracked):
+        if rel.startswith(_PIP_PATH_EXEMPT):
+            continue
+        path = ROOT / rel
+        if not path.is_file():
+            continue
+        data = path.read_bytes()
+        if b"\0" in data:
+            continue
+        text = data.decode("utf-8", errors="ignore")
+        if "requirements.txt" in text or re.search(r"pip\s+install\s+(\S+\s+)*-r", text):
+            offenders.append(rel)
+    assert not offenders, offenders

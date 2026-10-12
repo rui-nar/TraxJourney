@@ -313,7 +313,7 @@ def test_the_published_filtered_fixture_is_what_this_filter_produces():
     for one pyosmium and not across versions — four bytes at offsets 68-75 hold
     the zlib-compressed `generator: libosmium/x.y.z` string, so 4.0.2, 4.1.0 and
     4.3.1 each write a different file for identical contents, and
-    requirements.txt permits all three. A byte assertion there fails with
+    pyproject.toml permits all three. A byte assertion there fails with
     "regenerate the fixture", which is the wrong diagnosis and pins the file to
     whoever last regenerated it.
 
