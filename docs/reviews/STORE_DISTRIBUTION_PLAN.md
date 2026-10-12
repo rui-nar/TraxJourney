@@ -104,3 +104,7 @@ No findings. The reviewer traced web prod and val (www redirects to the apex; va
 - Guard: —
 - Override: —
 - Outcome: fixed (2313acf1: button hidden on web and Android while a custom server is set)
+
+## Unit review U2 (DELIVERY.md §5.3) — round 1, 2026-10-13, reviewed at 185e0627
+
+No findings. The deletion revoke and the `appletoken` delete are owed to U3 by design, so they were not raised.
