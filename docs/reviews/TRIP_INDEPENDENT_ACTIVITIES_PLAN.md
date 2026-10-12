@@ -348,3 +348,17 @@ IR1-2 fixes themselves were traced as correct.
 - Override: — (owner approved 2026-10-12)
 - Outcome: fixed (8a77f1af)
 - Fix shape (triager): a log line, not a repair. H's only snapshot predates A's own first split, so a restore would undo A's split. Collect H's direct children (split_parent_id = H) in step 3 before the copy and remap. In repair_heads, for each trip in head_trips ∩ tail_trips that holds none of H's children held by another trip, call _leave(..., "head cut again by another trip's split; no snapshot of the state before that cut"). Add a test.
+
+## Integrated review, round 3 — 2026-10-12, reviewed at 796ca066 (fix since 26a6f99c)
+
+Fable reviewer, Opus triager. 1 finding, no envelope questions. No Fix now
+decision, so the review stops (§6; round 3 is also the cap).
+
+### IR3-1 — The "head cut again by another trip's split" log line also fires for a trip that removed one of its own tails
+- Trigger: "Keep both" of the user's own split trip, then a tail removed from one copy (row kept by the other trip) → the migration logs "head cut again by another trip's split" for that trip, though nobody cut the head again. The data outcome (head left as it is) is right either way.
+- Scores: trigger=plausible (triager, from concrete), impact=cosmetic (triager, from wrong-visible), detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10), overridden to Fix now
+- Revisit when: any further edit to the migration before it is deployed (reword the reason to cover both causes, and update the test's expected string), or the owner, after deploy, looks for a second split behind that log line and finds none.
+- Guard: —
+- Override: user: Fix now — the post-deploy log is the owner's only guide to manual repairs; wording only, verified without a fourth review round
+- Outcome: open
