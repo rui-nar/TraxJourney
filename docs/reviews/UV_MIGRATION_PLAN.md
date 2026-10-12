@@ -84,3 +84,19 @@ Envelope question raised: the "Build reproducibility" bullet says two builds of 
 - Decision: Fix now (D7) — new evidence that the R2-1 fix does not hold, not a duplicate (D2)
 - Override: —
 - Outcome: fixed (plan: Decision 4 tests tie Dockerfile tag == setup-uv versions exactly and only floor <= tag; floor stays at the delivery version; U2 Do 1/5, U3 Do 8, DoD reworded)
+
+## Delivery
+
+Branch `chore/603-uv`, orchestrator worktree `E:/Dev/TraxJourney-603`, unit worktrees made by hand (agent worktree isolation breaks on the e:/E: drive-letter case).
+
+| Unit | Goal | Route | Rule | Attempts | Escalated | Verified first time | Findings traced |
+|---|---|---|---|---|---|---|---|
+| U1 | pyproject.toml, uv.lock, .python-version | Sonnet | — | 1 | — | yes | R2-1, R2-2, R3-1 |
+| U2 | Dockerfile on `uv sync` | Opus | S2 | 1 | — | yes | R1-6, R3-1 |
+| U3 | CI on uv, image checks, Dependabot | Opus | S3 | 2 | owner decision (setup-uv has no major tags after v7 → `@v10.2.0`) | yes | R1-1, R1-3, R1-5, R1-6, R2-3, R3-1 |
+| U4 | Local dev scripts and docs | Opus | S3 | 1 | owner decision (dev-server.ps1/dev.ps1 untracked → post-merge owner action) | yes | R1-2, R1-4, R2-2 |
+| F1 | Pin uv 0.12.19 (0.13.0 was 3 days old, against Decision 4) | Sonnet | — | 1 | — | yes | — |
+
+Notes:
+- F1 is an orchestrator fix unit: the plan named 0.13.0 without checking its release date; U3 caught it.
+- Dev machine (owner action, done 2026-10-12): graphify moved to `%LOCALAPPDATA%\graphify\venv` (pinned 0.9.67) on the user PATH; the broken uv-tool graphify removed with owner approval. Side effect undone: running the newer graphify auto-refreshed the graphify skill; SKILL.md and the version marker restored, the refreshed copy kept as SKILL.md.0.9.86-autorefresh.
