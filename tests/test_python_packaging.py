@@ -80,6 +80,9 @@ def test_nothing_outside_the_historical_documents_reverts_to_pip():
     tracked = subprocess.run(
         ["git", "ls-files", "-z"], cwd=ROOT, check=True, capture_output=True
     ).stdout.decode("utf-8").split("\0")
+    assert {"pyproject.toml", "tests/test_python_packaging.py"} <= set(tracked), (
+        "git ls-files returned no tracked files, so the guard saw nothing to scan"
+    )
     offenders = []
     for rel in filter(None, tracked):
         if rel.startswith(_PIP_PATH_EXEMPT):
