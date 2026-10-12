@@ -49,6 +49,27 @@ class AuthService {
     return data['user'] as Map<String, dynamic>;
   }
 
+  /// POST /api/auth/apple (issue #580). [nonce] is the raw nonce whose
+  /// SHA-256 Apple put in [idToken]. The names come with the first sign-in
+  /// only and are used only when the account is created.
+  Future<Map<String, dynamic>> loginWithApple({
+    required String idToken,
+    required String authorizationCode,
+    required String nonce,
+    String? givenName,
+    String? familyName,
+  }) async {
+    final data = await api.post('/api/auth/apple', {
+      'id_token': idToken,
+      'authorization_code': authorizationCode,
+      'nonce': nonce,
+      'given_name': givenName,
+      'family_name': familyName,
+    });
+    await _persist(data['access_token'] as String);
+    return data['user'] as Map<String, dynamic>;
+  }
+
   /// Registers a new account. The server requires [email] to be a valid
   /// address — it is both the login identifier and where invite mail is sent
   /// (issue #110) — and builds the display name from [firstName] / [lastName].
