@@ -60,7 +60,7 @@ else in place of pyenv / virtualenv / pip.
   (`api/translations.py`) and stays. `osmium` and `requests` are runtime
   (`src/rail/builder.py` via `scripts/fetch_rail_data.py`, which runs in the
   image).
-- Dev machine has uv 0.13.0. Smart App Control blocks unsigned uv-tool shims
+- Dev machine has uv 0.13.0 (the pins use 0.12.19, see Decision 4). Smart App Control blocks unsigned uv-tool shims
   (memory: os error 4551); the full suite is run in the py314 citest container.
 
 ## Decisions
@@ -128,8 +128,10 @@ else in place of pyenv / virtualenv / pip.
      purpose, for instance when a newer lock format requires it. Then an
      older local uv reports that it is too old, and the recovery is
      `uv self update`, which the README states (U4).
-   - The version is the newest stable at delivery (0.13.0 on the dev machine
-     today) and at least two weeks old.
+   - The version is the newest stable at delivery that is at least two
+     weeks old: 0.12.19 (released 2026-09-25). The dev machine runs 0.13.0,
+     which is above the floor. 0.13.0 itself was only three days old at
+     delivery, so it was corrected in fix unit F1.
    - **Action refs follow the repo's convention**, major tags, moved by
      Dependabot's `github-actions` updates (owner decision, round 2). The
      exception is `astral-sh/setup-uv`, which publishes no major tags after
