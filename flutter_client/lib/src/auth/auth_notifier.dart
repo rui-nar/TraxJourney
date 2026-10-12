@@ -262,6 +262,33 @@ class AuthNotifier extends ChangeNotifier {
     }
   }
 
+  Future<void> loginWithApple({
+    required String idToken,
+    required String authorizationCode,
+    required String nonce,
+    String? givenName,
+    String? familyName,
+  }) async {
+    _setLoading(true);
+    try {
+      final map = await _service.loginWithApple(
+        idToken: idToken,
+        authorizationCode: authorizationCode,
+        nonce: nonce,
+        givenName: givenName,
+        familyName: familyName,
+      );
+      _user = User.fromMap(map);
+      _error = null;
+      await _unlockEncryption();
+    } on Exception catch (e) {
+      _error = apiErrorMessage(e);
+      _user = null;
+    } finally {
+      _setLoading(false);
+    }
+  }
+
   /// [email] is the login identifier as well as the address the account is
   /// reachable at (issue #110). [firstName] / [lastName] become the display
   /// name server-side.

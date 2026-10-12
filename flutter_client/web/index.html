@@ -30,6 +30,11 @@
   <!-- Google Sign-In (required by google_sign_in_web) -->
   <meta name="google-signin-client_id" content="544571555396-gj0q3hndadfo00ifotme305jcf4ii5cc.apps.googleusercontent.com">
 
+  <!-- Sign in with Apple JS (required by sign_in_with_apple_web, issue #580).
+       defer: it must not hold up the boot splash, and it is only called on a
+       button press, long after the document has parsed. -->
+  <script defer src="https://appleid.cdn-apple.com/appleauth/static/jsapi/appleid/1/en_US/appleid.auth.js"></script>
+
   <!--
     Boot splash, shown until the Flutter engine renders its first frame and then
     removed. Deliberately a copy of lib/src/core/splash_screen.dart — same field,

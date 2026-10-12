@@ -1,4 +1,4 @@
-/// Login screen — email/password + Google Sign-In, link to register.
+/// Login screen — email/password, Google and Apple Sign-In, link to register.
 library;
 
 import 'dart:async' show StreamSubscription;
@@ -8,6 +8,8 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:provider/provider.dart';
+import 'package:sign_in_with_apple/sign_in_with_apple.dart'
+    show SignInWithAppleButton, SignInWithAppleButtonStyle;
 
 // Web-only import: renderButton() from google_sign_in_web.
 // Stubbed on non-web platforms via conditional import.
@@ -20,6 +22,7 @@ import '../core/legal_links.dart';
 import '../core/platform.dart';
 import '../core/return_to.dart';
 import '../core/server_config.dart';
+import 'apple_sign_in.dart';
 import 'auth_notifier.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -35,6 +38,11 @@ class _LoginScreenState extends State<LoginScreen> {
   final _formKey = GlobalKey<FormState>();
   bool _obscurePassword = true;
   StreamSubscription<GoogleSignInAuthenticationEvent>? _googleSignInSub;
+
+  /// Counts Apple attempts. On Android a closed Custom Tab never completes
+  /// its attempt; the plugin rejects it when the next one starts, and that
+  /// stale rejection must not show as an error.
+  int _appleAttempt = 0;
 
   @override
   void initState() {
@@ -130,6 +138,32 @@ class _LoginScreenState extends State<LoginScreen> {
       if (e.code == GoogleSignInExceptionCode.canceled) return;
       _showError('Google sign-in failed: $e');
     }
+  }
+
+  /// Apple's flow, then the server. Cancelling is silent; a failed flow shows
+  /// like Google's, and a server refusal lands in the error banner.
+  Future<void> _appleSignIn() async {
+    final attempt = ++_appleAttempt;
+    final AppleCredential credential;
+    try {
+      credential = await signInWithApple();
+    } on AppleSignInCancelled {
+      return;
+    } catch (e) {
+      if (attempt == _appleAttempt) _showError('Apple sign-in failed: $e');
+      return;
+    }
+    if (!mounted || attempt != _appleAttempt) return;
+    final auth = context.read<AuthNotifier>();
+    await auth.loginWithApple(
+      idToken: credential.idToken,
+      authorizationCode: credential.authorizationCode,
+      nonce: credential.nonce,
+      givenName: credential.givenName,
+      familyName: credential.familyName,
+    );
+    if (!mounted) return;
+    if (auth.user != null) _navigateAfterLogin();
   }
 
   void _showError(String msg) {
@@ -304,6 +338,21 @@ class _LoginScreenState extends State<LoginScreen> {
                                     const Text('Continue with Google'),
                               ),
                             ),
+
+                      // ── Apple Sign-In (issue #580) ────────────────────────
+                      if (showAppleSignIn()) ...[
+                        const SizedBox(height: 12),
+                        Consumer<AuthNotifier>(
+                          builder: (_, auth, __) => SignInWithAppleButton(
+                            onPressed: auth.isLoading ? null : _appleSignIn,
+                            text: 'Continue with Apple',
+                            height: 40,
+                            style: isDark
+                                ? SignInWithAppleButtonStyle.white
+                                : SignInWithAppleButtonStyle.black,
+                          ),
+                        ),
+                      ],
 
                       if (isNativeMobile) ...[
                         const SizedBox(height: 8),
