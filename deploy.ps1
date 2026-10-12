@@ -381,10 +381,26 @@ if ($Building) {
 # -- 1. Build Flutter web ------------------------------------------------------
 Step 1 3 "Building Flutter web..."
 Push-Location (Join-Path $SrcRoot 'flutter_client')
-flutter build web --release `
+# Flutter never deletes stale files from a reused build/web, so canvaskit/
+# would carry an older SDK's variants and moved revision directories into the
+# image. Removing it makes the build copy exactly the current SDK's set
+# (#601 review R6-1; also covers R4-2 and R5-1).
+$canvasKitOut = Join-Path (Get-Location) 'build/web/canvaskit'
+if (Test-Path $canvasKitOut) { Remove-Item -Recurse -Force $canvasKitOut }
+# --no-web-resources-cdn: CanvasKit from this build, not www.gstatic.com
+# (#601 review R2-1).
+flutter build web --release --no-web-resources-cdn `
   --dart-define=APP_VERSION=$FullVersion `
   --dart-define=MAPBOX_TOKEN=$MapboxToken
 if ($LASTEXITCODE -ne 0) { Pop-Location; Die "Flutter build failed." }
+# Self-host the web engine's fallback fonts instead of fetching them from
+# Google at run time (#601, #602; see web/flutter_bootstrap.js).
+dart run tool/mirror_fallback_fonts.dart build/web
+if ($LASTEXITCODE -ne 0) { Pop-Location; Die "Mirroring the fallback fonts failed." }
+# CanvasKit under its engine revision, as web/flutter_bootstrap.js expects
+# (#601 review R3-1).
+dart run tool/version_canvaskit.dart build/web
+if ($LASTEXITCODE -ne 0) { Pop-Location; Die "Versioning CanvasKit failed." }
 Pop-Location
 $webClient = Join-Path $SrcRoot 'web_client'
 if (Test-Path $webClient) { Remove-Item -Recurse -Force $webClient }

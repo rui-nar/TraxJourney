@@ -8,7 +8,8 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
+
+import 'design_tokens.dart' show kFontFamily;
 
 // ── Brand seed color ───────────────────────────────────────────────────────────
 const _seed = Color(0xFF0D6EFD); // TraxJourney brand blue
@@ -39,7 +40,7 @@ const _lightHint = Color(0xFF94A3B8); // slate-400
 final ThemeData darkTheme = ThemeData(
   useMaterial3: true,
   brightness: Brightness.dark,
-  fontFamily: GoogleFonts.inter().fontFamily,
+  fontFamily: kFontFamily,
   colorScheme: ColorScheme.fromSeed(
     seedColor: _seed,
     brightness: Brightness.dark,
@@ -58,7 +59,7 @@ final ThemeData darkTheme = ThemeData(
     surfaceTintColor: Colors.transparent,
     shadowColor: _darkBorder,
     centerTitle: false,
-    titleTextStyle: GoogleFonts.inter(
+    titleTextStyle: TextStyle(fontFamily: kFontFamily,
         color: _darkOnBg, fontSize: 18, fontWeight: FontWeight.w600),
     shape: const Border(bottom: BorderSide(color: _darkBorder, width: 1)),
   ),
@@ -99,7 +100,7 @@ final ThemeData darkTheme = ThemeData(
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.all(Radius.circular(8))),
       textStyle:
-          GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 15),
+          TextStyle(fontFamily: kFontFamily, fontWeight: FontWeight.w600, fontSize: 15),
     ),
   ),
   outlinedButtonTheme: OutlinedButtonThemeData(
@@ -132,14 +133,14 @@ final ThemeData darkTheme = ThemeData(
       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
       visualDensity: VisualDensity.compact,
       textStyle: WidgetStatePropertyAll(
-        GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w500),
+        TextStyle(fontFamily: kFontFamily, fontSize: 13, fontWeight: FontWeight.w500),
       ),
     ),
   ),
   dividerTheme: const DividerThemeData(color: _darkBorder, thickness: 1),
   snackBarTheme: SnackBarThemeData(
     backgroundColor: _darkCard,
-    contentTextStyle: GoogleFonts.inter(color: _darkOnBg),
+    contentTextStyle: TextStyle(fontFamily: kFontFamily, color: _darkOnBg),
   ),
 );
 
@@ -147,7 +148,7 @@ final ThemeData darkTheme = ThemeData(
 final ThemeData lightTheme = ThemeData(
   useMaterial3: true,
   brightness: Brightness.light,
-  fontFamily: GoogleFonts.inter().fontFamily,
+  fontFamily: kFontFamily,
   colorScheme: ColorScheme.fromSeed(
     seedColor: _seed,
     brightness: Brightness.light,
@@ -166,7 +167,7 @@ final ThemeData lightTheme = ThemeData(
     surfaceTintColor: Colors.transparent,
     shadowColor: _lightBorder,
     centerTitle: false,
-    titleTextStyle: GoogleFonts.inter(
+    titleTextStyle: TextStyle(fontFamily: kFontFamily,
         color: _lightOnBg, fontSize: 18, fontWeight: FontWeight.w600),
     shape: const Border(bottom: BorderSide(color: _lightBorder, width: 1)),
   ),
@@ -207,7 +208,7 @@ final ThemeData lightTheme = ThemeData(
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.all(Radius.circular(8))),
       textStyle:
-          GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 15),
+          TextStyle(fontFamily: kFontFamily, fontWeight: FontWeight.w600, fontSize: 15),
     ),
   ),
   outlinedButtonTheme: OutlinedButtonThemeData(
@@ -240,13 +241,13 @@ final ThemeData lightTheme = ThemeData(
       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
       visualDensity: VisualDensity.compact,
       textStyle: WidgetStatePropertyAll(
-        GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w500),
+        TextStyle(fontFamily: kFontFamily, fontSize: 13, fontWeight: FontWeight.w500),
       ),
     ),
   ),
   dividerTheme: const DividerThemeData(color: _lightBorder, thickness: 1),
   snackBarTheme: SnackBarThemeData(
     backgroundColor: _lightCard,
-    contentTextStyle: GoogleFonts.inter(color: _lightOnBg),
+    contentTextStyle: TextStyle(fontFamily: kFontFamily, color: _lightOnBg),
   ),
 );

@@ -543,9 +543,11 @@ def _cache_control_for(full_path: str) -> str:
     cheap), guaranteeing the latest build is picked up immediately.
 
     Only the large, rarely-changing static trees (``assets/`` bundle data,
-    ``canvaskit/`` runtime, tied to the Flutter SDK version) get a day of caching.
+    ``canvaskit/`` runtime, tied to the Flutter SDK version, and the engine's
+    ``fallback-fonts/``, whose paths carry their font version) get a day of
+    caching.
     """
-    if full_path.startswith(("assets/", "canvaskit/")):
+    if full_path.startswith(("assets/", "canvaskit/", "fallback-fonts/")):
         return _LONG_CACHE
     return _NO_CACHE
 

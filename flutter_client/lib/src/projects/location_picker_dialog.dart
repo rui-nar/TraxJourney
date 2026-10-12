@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../core/design_tokens.dart' show kMonoFontFamily;
 import '../core/brand.dart';
 import '../map/geo_point.dart';
 import '../map/great_circle.dart';
@@ -233,7 +234,7 @@ class _LocationPickerDialogState extends State<LocationPickerDialog> {
                             '${_picked!.latitude.toStringAsFixed(6)}, '
                             '${_picked!.longitude.toStringAsFixed(6)}',
                             style: theme.textTheme.bodySmall?.copyWith(
-                                fontFamily: 'monospace'),
+                                fontFamily: kMonoFontFamily),
                           ),
                   ),
                   TextButton(

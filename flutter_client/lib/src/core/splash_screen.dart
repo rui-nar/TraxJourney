@@ -11,13 +11,13 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 
 import '../auth/auth_notifier.dart';
 import 'app_version.dart';
 import 'brand.dart';
 import 'brand_mark.dart';
+import 'design_tokens.dart' show kFontFamily;
 
 const _wordmark = kAppName;
 const _tagline = 'Merge · Visualise · Export';
@@ -241,7 +241,8 @@ class _WideLayout extends StatelessWidget {
                     const SizedBox(height: 20),
                     Text(
                       _blurb,
-                      style: GoogleFonts.inter(
+                      style: TextStyle(
+                        fontFamily: kFontFamily,
                         fontSize: 15,
                         fontWeight: FontWeight.w400,
                         height: 1.6,
@@ -270,7 +271,8 @@ class _WideLayout extends StatelessWidget {
               const SizedBox(width: 10),
               Text(
                 'Loading',
-                style: GoogleFonts.inter(
+                style: TextStyle(
+                  fontFamily: kFontFamily,
                   fontSize: 11,
                   fontWeight: FontWeight.w500,
                   height: 1,
@@ -375,7 +377,8 @@ class _GridPainter extends CustomPainter {
 
 // ── Type ─────────────────────────────────────────────────────────────────────
 
-TextStyle _wordmarkStyle(double size, double letterSpacing) => GoogleFonts.inter(
+TextStyle _wordmarkStyle(double size, double letterSpacing) => TextStyle(
+      fontFamily: kFontFamily,
       fontSize: size,
       fontWeight: FontWeight.w700,
       height: 1.1,
@@ -383,7 +386,8 @@ TextStyle _wordmarkStyle(double size, double letterSpacing) => GoogleFonts.inter
       color: _wordmarkColour,
     );
 
-TextStyle _taglineStyle(double size, double letterSpacing) => GoogleFonts.inter(
+TextStyle _taglineStyle(double size, double letterSpacing) => TextStyle(
+      fontFamily: kFontFamily,
       fontSize: size,
       fontWeight: FontWeight.w500,
       height: 1.4,
@@ -391,7 +395,8 @@ TextStyle _taglineStyle(double size, double letterSpacing) => GoogleFonts.inter(
       color: _taglineColour,
     );
 
-TextStyle _footerStyle({double size = 11}) => GoogleFonts.inter(
+TextStyle _footerStyle({double size = 11}) => TextStyle(
+      fontFamily: kFontFamily,
       fontSize: size,
       fontWeight: FontWeight.w400,
       height: 1.4,

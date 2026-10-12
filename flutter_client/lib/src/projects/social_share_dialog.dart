@@ -866,7 +866,7 @@ class _ShareTargetButton extends StatelessWidget {
                       style: TextStyle(
                           color: fg,
                           fontWeight: FontWeight.w800,
-                          fontFamily: 'Georgia',
+                          fontFamily: kFontFamily,
                           fontSize: 18))
                   : Icon(icon, size: 20, color: fg),
             ),

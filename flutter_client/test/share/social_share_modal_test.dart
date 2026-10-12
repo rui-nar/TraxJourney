@@ -2,7 +2,6 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:share_plus/share_plus.dart';
 
 import 'package:traxjourney_client/src/projects/social_share_dialog.dart';
@@ -107,7 +106,6 @@ Future<_FakeTransport> _pump(WidgetTester tester) async {
 }
 
 void main() {
-  setUpAll(() => GoogleFonts.config.allowRuntimeFetching = false);
 
   testWidgets('renders header and the three include toggles', (tester) async {
     await _pump(tester);

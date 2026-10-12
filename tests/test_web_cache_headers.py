@@ -27,6 +27,9 @@ def test_static_trees_are_cacheable():
     assert _cache_control_for("assets/fonts/MaterialIcons-Regular.otf") == _LONG_CACHE
     assert _cache_control_for("canvaskit/canvaskit.wasm") == _LONG_CACHE
     assert _cache_control_for("canvaskit/canvaskit.js") == _LONG_CACHE
+    # The engine's mirrored fallback fonts: versioned paths (#601, #602).
+    assert _cache_control_for(
+        "fallback-fonts/roboto/v32/KFOmCnqEu92Fr1Me4GZLCzYlKw.woff2") == _LONG_CACHE
 
 
 def test_unknown_root_files_default_to_no_cache():
