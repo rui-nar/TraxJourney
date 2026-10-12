@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Delete your account · TraxJourney</title>
+<meta name="description" content="How to delete your TraxJourney account and your data, in the app, on the web or by email, and what is deleted and what is kept.">
+<style>
+  :root {
+    --bg: #F8FAFC; --fg: #0F172A; --fg2: #475569; --rule: #E2E8F0;
+    --link: #1D4ED8; --accent: #DC2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0B1420; --fg: #E2E8F0; --fg2: #94A3B8; --rule: #1E3350;
+      --link: #60A5FA; --accent: #EF4444;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 Inter, "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+  }
+  a { color: var(--link); }
+  header, main, footer { max-width: 46rem; margin: 0 auto; padding: 0 1.25rem; }
+  header { padding-top: 2rem; display: flex; flex-wrap: wrap; gap: .5rem 1.5rem;
+           align-items: baseline; justify-content: space-between; }
+  .brand { font-weight: 700; font-size: 1.25rem; text-decoration: none; color: var(--fg); }
+  .brand span { color: var(--accent); }
+  nav a { margin-left: 1rem; font-size: .95rem; }
+  nav a:first-child { margin-left: 0; }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 2.5rem 0 .25rem; }
+  .updated { color: var(--fg2); margin: 0 0 2rem; font-size: .95rem; }
+  h2 { font-size: 1.3rem; margin: 2.5rem 0 .5rem; padding-top: 1rem; border-top: 1px solid var(--rule); }
+  code { font-size: .9em; }
+  footer { margin-top: 3rem; padding-top: 1.5rem; padding-bottom: 3rem;
+           border-top: 1px solid var(--rule); color: var(--fg2); font-size: .9rem; }
+</style>
+</head>
+<body>
+<header>
+  <a class="brand" href="/">Trax<span>Journey</span></a>
+  <nav>
+    <a href="/privacy">Privacy</a>
+    <a href="/terms">Terms</a>
+    <a href="https://github.com/rui-nar/TraxJourney">Source code</a>
+  </nav>
+</header>
+
+<main>
+<h1>Delete your account</h1>
+<p class="updated">Last updated: 12 October 2026</p>
+
+<p>You can delete your TraxJourney account and your data at any time. This
+page explains how, and what is deleted and what is kept. The full details are
+in the <a href="/privacy">Privacy Policy</a>.</p>
+
+<h2>How to delete your account</h2>
+<ul>
+  <li><strong>In the app</strong> (Android and iOS): open <em>Settings →
+    Delete account</em> and confirm.</li>
+  <li><strong>On the web:</strong> sign in at
+    <a href="https://traxjourney.com">traxjourney.com</a>, open
+    <em>Settings → Delete account</em> and confirm.</li>
+  <li><strong>By email:</strong> if you cannot sign in, write to
+    <a href="mailto:contact@traxjourney.com">contact@traxjourney.com</a>.</li>
+</ul>
+
+<h2>What is deleted</h2>
+<p>Deleting your account permanently deletes your account, your trips, photos,
+memories, journal entries, people, comments and likes, and your Strava and
+Polarsteps connections, straight away. Deleting your account also revokes our
+access to your Strava account. If you signed in with Apple, we ask Apple to
+revoke the token it issued for your account.</p>
+<p>If you have a paid plan, deleting your account first cancels it at Stripe
+immediately, so you are not charged again, and refunds the unused part of the
+current period if you are still within your withdrawal period (see the
+<a href="/terms">Terms of Service</a>). If the cancellation cannot be
+completed, your account is not deleted and nothing is removed.</p>
+
+<h2>What is kept</h2>
+<ul>
+  <li><strong>Activities in someone else's trip:</strong> activities you add to
+    a trip someone else owns become part of that trip. They belong to its owner
+    and stay in it when you delete your account, unless the trip is encrypted
+    with your key, in which case it is deleted with your account.</li>
+  <li><strong>Refund record:</strong> if a refund we owe you could not be made
+    automatically, we keep a minimal record of it (the Stripe identifiers, the
+    amounts, the reason and when each step happened) until you are paid and it
+    is settled, even though your account is deleted.</li>
+  <li><strong>Backups:</strong> we back up the database once a day and keep the
+    last 30 backups, so deleted data can remain in a backup for up to 30
+    days.</li>
+  <li><strong>Server logs and metrics:</strong> kept for 30 days.</li>
+  <li><strong>Payment records:</strong> Stripe keeps its own records of your
+    payments, as the law requires of it.</li>
+</ul>
+</main>
+
+<footer>
+  <p>TraxJourney is free software, licensed under the
+  <a href="https://github.com/rui-nar/TraxJourney/blob/main/LICENSE">GNU Affero General Public License v3</a>.
+  <a href="https://github.com/rui-nar/TraxJourney">Get the source code</a> ·
+  <a href="/privacy">Privacy Policy</a> ·
+  <a href="/terms">Terms of Service</a></p>
+</footer>
+</body>
+</html>

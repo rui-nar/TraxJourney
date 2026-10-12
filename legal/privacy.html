@@ -56,7 +56,7 @@
 
 <main>
 <h1>Privacy Policy</h1>
-<p class="updated">Last updated: 11 October 2026</p>
+<p class="updated">Last updated: 12 October 2026</p>
 
 <p>TraxJourney turns your activities, transport legs, photos and notes into one
 journey you can keep, share and export. This policy explains what the hosted
@@ -82,6 +82,12 @@ this page only covers the service we run.</p>
   <li><strong>Sign in with Google:</strong> the identifier Google gives your
     account, your email address, your name and the address of your Google
     profile picture. We never receive your Google password.</li>
+  <li><strong>Sign in with Apple:</strong> the identifier Apple gives your
+    account, an email address, which may be a private relay address Apple
+    creates so that your real address stays hidden, and your name, which Apple
+    sends only the first time you sign in. We also keep the token Apple issues
+    for your account, encrypted, so that we can ask Apple to revoke it when you
+    delete your account. We never receive your Apple password.</li>
   <li>When your account was created, whether your email is confirmed, your
     plan, and whether you have turned on encryption.</li>
 </ul>
@@ -295,6 +301,16 @@ network address and the usual information your browser or phone sends.</p>
       of a memory's title and description sent from our server to Google Cloud
       Translation when you or a share-link visitor ask for a translation</td>
     <td>Sign-in; translation requests</td></tr>
+  <tr><td>Apple</td>
+    <td>Sign in with Apple (on the web, Apple's sign-in script is loaded on the
+      sign-in page); from our server: the authorisation code Apple gave us at
+      sign-in, and the token to revoke when you delete your account</td>
+    <td>Sign-in; account deletion</td></tr>
+  <tr><td>Apple App Store and Google Play</td>
+    <td>The mobile apps are distributed through these stores. They handle the
+      download under their own terms and privacy policies. We do not send
+      them your journey data</td>
+    <td>When you install or update the app</td></tr>
   <tr><td>Strava</td>
     <td>Authorisation requests and requests for your activities, made with
       your token</td>
@@ -359,7 +375,9 @@ network. We may also disclose data where the law requires it.</p>
     Settings.</li>
   <li><strong>Take it with you:</strong> each trip can be exported as a
     <code>.traxj</code> file, as a ZIP file with its photos, or as GPX.</li>
-  <li><strong>Delete it:</strong> <em>Settings → Delete account</em> permanently
+  <li><strong>Delete it</strong> (see also
+    <a href="/delete-account">how to delete your account</a>):
+    <em>Settings → Delete account</em> permanently
     deletes your account, your trips, photos, memories, journal entries, people,
     comments and likes, and your Strava and Polarsteps connections, straight
     away. Activities you add to a trip someone else owns become part of that
