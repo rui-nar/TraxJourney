@@ -130,9 +130,11 @@ else in place of pyenv / virtualenv / pip.
      `uv self update`, which the README states (U4).
    - The version is the newest stable at delivery (0.13.0 on the dev machine
      today) and at least two weeks old.
-   - **Action refs follow the repo's convention**, major tags such as
-     `astral-sh/setup-uv@v6`, moved by Dependabot's `github-actions` updates
-     (owner decision, round 2). "Exact pin" in the Review envelope means the
+   - **Action refs follow the repo's convention**, major tags, moved by
+     Dependabot's `github-actions` updates (owner decision, round 2). The
+     exception is `astral-sh/setup-uv`, which publishes no major tags after
+     v7. It is pinned to the exact tag `@v10.2.0` (owner decision during
+     delivery, 2026-10-12), which Dependabot also moves. "Exact pin" in the Review envelope means the
      uv binary's version, not the action ref.
 5. **CI uses `astral-sh/setup-uv` and `uv sync --locked`**, then `uv run` for
    `alembic` and `pytest`. `setup-python` goes away; uv installs 3.14 from
@@ -226,8 +228,10 @@ REVIEW.md defaults apply, with these additions:
 
 - **Supply chain.** New trusted inputs: the `ghcr.io/astral-sh/uv` image and
   the `astral-sh/setup-uv` action. The uv binary they provide is pinned to an
-  exact version in every build (Decision 4); the action ref itself follows
-  the repo's major-tag convention (owner decision, round 2). The lock file
+  exact version in every build (Decision 4). The action ref itself follows
+  the repo's major-tag convention (owner decision, round 2), except setup-uv:
+  it has no major tags after v7, so it is pinned to an exact release tag
+  (Decision 4). The lock file
   carries hashes; `--locked` builds install exactly what it lists. A
   compromised upstream release is out of envelope (as with pip today); a build
   that installs an unpinned or floating uv binary is a finding.
@@ -273,6 +277,11 @@ REVIEW.md defaults apply, with these additions:
   skips the consistency check) and never a bare `uv lock` in CI.
 
 ## Owner actions
+
+- Right after merge, in `E:\Dev\TraxJourney` on main: run `uv sync`. Then
+  the delivering session changes the local, untracked `dev-server.ps1` and
+  `dev.ps1`: their uvicorn line becomes `uv run python -m uvicorn …`, and the
+  `Activate.ps1` calls are dropped (U4 Do 5).
 
 - Before the first `uv sync` in `E:\Dev\TraxJourney`, move graphify to its
   own venv (Decision 8). Steps:
@@ -501,7 +510,10 @@ runtime-only import check covering code changes (Decision 6, R1-1).
      `uv sync`, never in the image; drop the `pip install anthropic` line.
   4. `docs/DEPLOYMENT_VPS.md:563`: the `.venv` from `uv sync`, else `python`.
   5. `dev-server.ps1` / `dev.ps1`: `uv run python -m uvicorn …` instead of
-     activating `.venv`.
+     activating `.venv`. *Delivery note:* both files are gitignored and
+     untracked (8e7ca151 untracked them because they hold local env vars), so
+     no unit can change them. Moved to Owner actions: the delivering session
+     edits the local copies right after merge (owner decision, 2026-10-12).
   6. `launch flutter only.bat`: drop the dead venv activation block (it
      starts no Python) — **only if** nothing below it uses Python; otherwise
      change its message to `uv sync`.
