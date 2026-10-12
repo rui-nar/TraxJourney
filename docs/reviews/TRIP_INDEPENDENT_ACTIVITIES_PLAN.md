@@ -362,3 +362,34 @@ decision, so the review stops (§6; round 3 is also the cap).
 - Guard: —
 - Override: user: Fix now — the post-deploy log is the owner's only guide to manual repairs; wording only, verified without a fourth review round
 - Outcome: fixed (a6623b5d)
+
+## Delivery
+
+| Unit | Goal | Route | Rule | Attempts | Escalated | Verified first time | Findings traced |
+|---|---|---|---|---|---|---|---|
+| U1 | Migration: one row per trip | Opus | S4 | 3, plus fix units IR1-1, IR2-1, IR3-1 | X3: six migration tests widened into Scope | yes | U1R1-1, EQ-U1-1, IR1-1, IR2-1, IR3-1 |
+| U9 | Privacy policy sentence | Sonnet | — | 2 | blocked: Docker Desktop was down | yes | — |
+| U2 | Model and file formats carry strava_id | Opus | S4 | 2 | follow-ups outside Scope routed to U3 and U6 | yes | — |
+| U3 | Repository: rows belong to one trip | Opus | S4 | 3 | X3: 33 failures in later units' files, assigned to wave 3a | yes | U3R1-1, U3R1-2, IR1-2 |
+| U4 | Activity routes per trip | Opus | S4 | 4 | X3: seed fix, EQ1-1 test, ownership assertion | yes | U4R1-1, U4R1-2 |
+| U5 | Strava sync, picker, trip deletion | Opus | S4 | 1 | X3: a seed in U4's file (resolved by U4) | yes | — |
+| U6 | Import, items, segments | Opus | S4 | 2 | X3: 8 test files widened into Scope | yes | U6R1-1 |
+| U7 | Account deletion and audit | Opus | S4 | 2 | — | yes | U7R1-1, U7R1-2 |
+| U8 | Client reads strava_id | Sonnet | — | 1 | — | yes | — |
+| U10 | Added activities match by strava_id (follow-up from U5) | Opus | S4 | 1 | — | yes | — |
+| IR1-2 | Drop the sharing-era helpers and stale docs | Sonnet | — | 4 | X3: docs/ENCRYPTION.md widened, swept | yes | IR1-2 |
+
+Notes:
+- **Waves:** W1 U1 and U9; W2 U2 and U3; W3a U4, U5, U6 and U7; W3b U8, plus U10 as a follow-up unit; then the unit-review fix wave, then the integrated-review fixes.
+- **Unit reviews (§5.3):** run for U1, U3, U4, U5, U6, U7 and U10. Integrated review: rounds 1-3, and round 3 found no Fix now.
+- **Owner overrides:** U4R1-1 to Fix now, IR3-1 to Fix now. EQ1-1 applied to delete-local and timeline removal (supersedes #509).
+- **W1 slips:** U4 and U5 both edited tests/test_orphan_strava_activities.py, and U6 and U7 both edited tests/test_activity_ownership.py, in different functions. Both merged cleanly. Recorded as an orchestrator scheduling slip (Scope widened mid-wave).
+- **Unlisted dependency:** U6 on U4 for the GPX round trip (U6R1-1). Integrating U4 first covered it.
+- **U3's intermediate state:** the branch was red between waves 2 and 3a (33 assigned failures), by decision. Wave 3a ended fully green.
+- **Process lessons:**
+  - Once main moved past the feature base, agent isolation worktrees could not fast-forward, and an implementer that stops with an empty worktree loses it. Unit worktrees were then created by the orchestrator from the feature head.
+  - Docker Desktop was down after a reboot, then restarted mid-run under two parallel suites. Suites now run sequentially.
+- **Known flake:** tests/test_memories_photo_order.py concurrent-dedup (from #566) failed in two loaded runs and passed alone. It is a separate follow-up.
+- **Checks:**
+  - pytest at 5ac45ba4: 7134 passed. At 7d22aa81: 7136 passed. The final run is recorded in the PR.
+  - Flutter at 5ac45ba4: 2708 passed, analyze clean. No client change since.
