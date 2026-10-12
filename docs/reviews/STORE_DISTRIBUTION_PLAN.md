@@ -93,3 +93,14 @@ No findings. The reviewer traced web prod and val (www redirects to the apex; va
 - Guard: —
 - Override: —
 - Outcome: open
+
+## Unit review U9 (DELIVERY.md §5.3) — round 1, 2026-10-12, reviewed at 4b7a7add
+
+### U9R1-1 — With a self-hosted server set, the Apple button sends an unregistered redirect URI and fails silently
+- Trigger: A self-hoster runs the official APK, sets their own server URL and taps Continue with Apple → the Custom Tab asks Apple for `https://<their-host>/api/auth/apple/callback` under TraxJourney's Services ID → Apple refuses; the user closes the tab → the plugin reports cancel → the app shows nothing.
+- Scores: trigger=concrete (triage raised it from plausible), impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
