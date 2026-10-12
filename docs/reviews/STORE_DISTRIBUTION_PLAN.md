@@ -82,3 +82,14 @@ Envelope: plan section "Review envelope" + REVIEW.md defaults
 ## Round 3 — 2026-10-12, fix for R2-1 (plan uncommitted, on 48029e8f)
 
 No findings. The reviewer traced web prod and val (www redirects to the apex; val is its own origin), Android (the baked `https://traxjourney.com` matches prod's `APPLE_REDIRECT_URI`), dev builds (always a non-empty base) and iOS (native, no redirect_uri). The review is closed: this round has no Fix now decision (§6).
+
+## Unit review U1 (DELIVERY.md §5.3) — round 1, 2026-10-12, reviewed at 1427c1ff
+
+### U1R1-1 — A malformed JWKS answer during the unknown-kid refetch is reported as an invalid token, not an Apple outage
+- Trigger: Apple signs a token with a newly rotated key while our 1 h key-set cache holds the old set → the refetch of `/auth/keys` returns a malformed 200 → PyJWT raises a parse/set error → `_signing_key` maps it to `AppleTokenInvalid("unknown_kid")` → 401 instead of 502 for a valid token.
+- Scores: trigger=plausible, impact=degraded-ux (triage lowered it from wrong-visible), detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: Logs show a burst of unknown_kid 401s across several users, an Apple JWKS incident is seen, or clients start treating 401 differently from 502 for Apple sign-in.
+- Guard: —
+- Override: —
+- Outcome: open
