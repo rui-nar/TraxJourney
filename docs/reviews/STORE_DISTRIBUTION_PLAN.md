@@ -103,4 +103,4 @@ No findings. The reviewer traced web prod and val (www redirects to the apex; va
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (2313acf1: button hidden on web and Android while a custom server is set)
