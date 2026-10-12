@@ -1,0 +1,169 @@
+name: Build and upload iOS to TestFlight
+
+# Runs alongside android-release.yml on every vX.Y.Z tag and on the floating
+# `validation` tag (issue #190): TestFlight is the only way onto a real iPhone,
+# and validation is where device testing happens
+# (docs/STORE_DISTRIBUTION_PLAN.md D12). Submitting for App Store review is
+# done by hand. Setup and debugging without a Mac: docs/IOS.md.
+on:
+  push:
+    tags:
+      - 'v*'
+      - 'validation'
+
+jobs:
+  testflight:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read   # gh release list
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Fail fast without App Store Connect secrets
+        # Signing is cloud-managed (D10): with the API key, Xcode creates and
+        # renews the distribution certificate and profile itself. Without it
+        # nothing can be signed or uploaded, so say so before the build.
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          KEY_P8: ${{ secrets.APP_STORE_CONNECT_KEY_P8_BASE64 }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          missing=""
+          [ -n "$KEY_ID" ] || missing="$missing APP_STORE_CONNECT_KEY_ID"
+          [ -n "$ISSUER_ID" ] || missing="$missing APP_STORE_CONNECT_ISSUER_ID"
+          [ -n "$KEY_P8" ] || missing="$missing APP_STORE_CONNECT_KEY_P8_BASE64"
+          [ -n "$TEAM_ID" ] || missing="$missing APPLE_TEAM_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository secrets:$missing. See docs/IOS.md."
+            exit 1
+          fi
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Resolve build version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          RUN: ${{ github.run_number }}
+        run: |
+          if [ "$TAG" = "validation" ]; then
+            # Same lookup as android-release.yml: skip the `validation` release
+            # itself, which is always the most recently published one.
+            LATEST_TAG=$(gh release list --exclude-drafts -L 30 --json tagName \
+              --jq '[.[] | select(.tagName | test("^v[0-9]"))][0].tagName' || true)
+            # Filed under the latest release with the patch bumped, numbered
+            # <latest code>.<run> (D11): see scripts/ios_build_number.py.
+            OUT=$(python3 scripts/ios_build_number.py "$TAG" \
+              --validation-run "$RUN" --latest-tag "$LATEST_TAG")
+            APP_VERSION="validation-$(git rev-parse --short HEAD)"
+          else
+            OUT=$(python3 scripts/ios_build_number.py "$TAG")
+            APP_VERSION="$TAG"
+          fi
+          read -r BUILD_NAME BUILD_NUMBER <<< "$OUT"
+          echo "iOS build for $TAG: $BUILD_NAME ($BUILD_NUMBER)"
+          echo "build_name=$BUILD_NAME" >> "$GITHUB_OUTPUT"
+          echo "build_number=$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "app_version=$APP_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Write the App Store Connect API key
+        # Into the runner's temp directory only, never the workspace, and never
+        # printed. The last step deletes it whatever happens.
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          KEY_P8: ${{ secrets.APP_STORE_CONNECT_KEY_P8_BASE64 }}
+        run: |
+          KEY_PATH="$RUNNER_TEMP/AuthKey_$KEY_ID.p8"
+          (umask 077; printf '%s' "$KEY_P8" | base64 --decode > "$KEY_PATH")
+          echo "ASC_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: Configure the Xcode project
+        # --config-only writes the build name, number and dart-defines into
+        # Generated.xcconfig and installs the pods; xcodebuild does the build.
+        # --no-codesign: Flutter's own signing check looks for a certificate in
+        # the keychain, and there is none until xcodebuild fetches one.
+        run: |
+          cd flutter_client
+          flutter pub get
+          flutter build ios --release --config-only --no-codesign \
+            --build-number="${{ steps.version.outputs.build_number }}" \
+            --build-name="${{ steps.version.outputs.build_name }}" \
+            --dart-define=APP_VERSION="${{ steps.version.outputs.app_version }}" \
+            --dart-define=MAPBOX_TOKEN="${{ secrets.MAPBOX_TOKEN }}" \
+            --dart-define=API_BASE_URL=https://traxjourney.com \
+            --dart-define=APPLE_SERVICES_ID="${{ vars.APPLE_SERVICES_ID }}"
+
+      - name: Archive
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcodebuild -workspace flutter_client/ios/Runner.xcworkspace \
+            -scheme Runner -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/Runner.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$KEY_ID" \
+            -authenticationKeyIssuerID "$ISSUER_ID" \
+            archive \
+            DEVELOPMENT_TEAM="$TEAM_ID" CODE_SIGN_STYLE=Automatic
+
+      - name: Verify the archived app
+        # A profile without the capabilities signs fine and uploads fine; the
+        # app then opens share links in Safari and the Apple button fails on
+        # device. Check what was actually signed in, and the version D11 chose.
+        env:
+          BUILD_NAME: ${{ steps.version.outputs.build_name }}
+          BUILD_NUMBER: ${{ steps.version.outputs.build_number }}
+        run: |
+          APP="$RUNNER_TEMP/Runner.xcarchive/Products/Applications/Runner.app"
+          PB=/usr/libexec/PlistBuddy
+          codesign -d --entitlements :- "$APP" > "$RUNNER_TEMP/entitlements.plist"
+          cat "$RUNNER_TEMP/entitlements.plist"
+          "$PB" -c "Print :com.apple.developer.associated-domains" "$RUNNER_TEMP/entitlements.plist" \
+            | grep -Eq '^ *applinks:traxjourney\.com$' \
+            || { echo "::error::The signed app lacks applinks:traxjourney.com (Associated Domains, docs/IOS.md A1)."; exit 1; }
+          "$PB" -c "Print :com.apple.developer.applesignin" "$RUNNER_TEMP/entitlements.plist" \
+            | grep -Eq '^ *Default$' \
+            || { echo "::error::The signed app lacks com.apple.developer.applesignin (Sign in with Apple, docs/IOS.md A1)."; exit 1; }
+          NAME=$("$PB" -c "Print :CFBundleShortVersionString" "$APP/Info.plist")
+          NUMBER=$("$PB" -c "Print :CFBundleVersion" "$APP/Info.plist")
+          echo "Archived $NAME ($NUMBER)"
+          if [ "$NAME" != "$BUILD_NAME" ] || [ "$NUMBER" != "$BUILD_NUMBER" ]; then
+            echo "::error::Archived version $NAME ($NUMBER) is not the resolved $BUILD_NAME ($BUILD_NUMBER)."
+            exit 1
+          fi
+
+      - name: Export and upload to TestFlight
+        # ExportOptions.plist has destination=upload, so the export itself
+        # uploads. The team id is filled into a copy, not the checked-in file.
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          OPTIONS="$RUNNER_TEMP/ExportOptions.plist"
+          cp flutter_client/ios/ExportOptions.plist "$OPTIONS"
+          plutil -replace teamID -string "$TEAM_ID" "$OPTIONS"
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/Runner.xcarchive" \
+            -exportOptionsPlist "$OPTIONS" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$KEY_ID" \
+            -authenticationKeyIssuerID "$ISSUER_ID"
+
+      - name: Delete the API key
+        if: always()
+        run: rm -f "$RUNNER_TEMP"/AuthKey_*.p8

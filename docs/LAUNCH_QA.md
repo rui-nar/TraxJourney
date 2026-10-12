@@ -25,6 +25,9 @@ Trip ZIP import and the GPX share sheet on web and Android are checked separatel
 | Android (Play) | | | | |
 | iOS (TestFlight) | | | | |
 
+- **Play build:** install it from the internal track as a Play internal tester ([ANDROID.md](ANDROID.md)), not by sideloading the APK.
+- **TestFlight build:** install it from the TestFlight app as an internal tester, after answering the build's export-compliance question ([IOS.md](IOS.md)).
+
 ## Accounts
 
 | Id | Check | Web Chrome | Web Safari/Firefox | Android | iOS |
