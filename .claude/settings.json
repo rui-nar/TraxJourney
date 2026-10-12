@@ -1,8 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(.venv/Scripts/pip install:*)",
-      "Bash(.venv/Scripts/python -m pytest tests/ -q)"
+      "Bash(uv sync:*)",
+      "Bash(uv run python -m pytest tests/ -q)"
     ]
   },
   "hooks": {

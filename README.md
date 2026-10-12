@@ -54,15 +54,21 @@ Database migrations run automatically on startup (`alembic upgrade head`).
 
 ### Backend
 
-```bash
-python -m venv .venv
-.venv/Scripts/activate          # Windows
-# source .venv/bin/activate     # Linux/macOS
+Install CPython 3.14 ([python.org](https://www.python.org/downloads/), or the
+Python install manager on Windows) and [uv](https://docs.astral.sh/uv/getting-started/installation/),
+then:
 
-pip install -r requirements.txt
-alembic upgrade head
-uvicorn api.router:app --host 0.0.0.0 --port 8000 --reload --no-access-log
+```bash
+uv sync
+uv run python -m alembic upgrade head
+uv run python -m uvicorn api.router:app --host 0.0.0.0 --port 8000 --reload --no-access-log
 ```
+
+`uv sync` creates `.venv` from `pyproject.toml` and `uv.lock`, using the
+installed 3.14 (`.python-version`) rather than downloading one. On Windows with
+Smart App Control, run tools as `uv run python -m <tool>`: the `.exe` launchers
+uv writes into `.venv\Scripts` are unsigned and get blocked. If uv says it is
+older than the project's `required-version`, run `uv self update`.
 
 Backend API available at `http://localhost:8000/api/...`.
 

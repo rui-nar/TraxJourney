@@ -55,7 +55,7 @@
       e. 30 s after all that passed, (b) and (c) still hold.
     The banner shows the version from (d) before anything starts.
     The checks live in scripts/deploy_verify.py, which needs Python 3 (the
-    repo's .venv, or python on PATH).
+    repo's .venv from `uv sync`, or python on PATH).
 
     THE OTHER WAY TO CUT :validation
     A session with no local Docker (a web Claude Code session, say) can produce
@@ -282,16 +282,16 @@ if ($Building -and -not $MapboxToken) {
     $MapboxToken = $Config['MAPBOX_TOKEN']
 }
 
-# Verification runs in Python: the repo's .venv if there is one, else python
-# on PATH. The Windows Store "python" alias exists without Python installed,
-# so the interpreter is proven by running it.
+# Verification runs in Python: the repo's .venv (from `uv sync`) if there is
+# one, else python on PATH. The Windows Store "python" alias exists without
+# Python installed, so the interpreter is proven by running it.
 $Python = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
 if (-not (Test-Path $Python)) { $Python = 'python' }
 $ErrorActionPreference = "Continue"
 & $Python -c "import sys; sys.exit(sys.version_info < (3, 9))" 2>$null | Out-Null
 $pythonOk = ($LASTEXITCODE -eq 0)
 $ErrorActionPreference = "Stop"
-if (-not $pythonOk) { Die "Python 3.9+ is needed to verify the deploy; none found in .venv or on PATH." }
+if (-not $pythonOk) { Die "Python 3.9+ is needed to verify the deploy; none found in .venv or on PATH. Run uv sync." }
 $Verifier = Join-Path $PSScriptRoot 'scripts\deploy_verify.py'
 
 $Worktree = $null
