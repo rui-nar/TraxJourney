@@ -1,3 +1,8 @@
+# uv, pinned to an exact version so every build installs with the same tool
+# (#603). Dependabot's docker updates move this tag; the setup-uv `version:` in
+# the CI workflows must move with it.
+FROM ghcr.io/astral-sh/uv:0.13.0 AS uv
+
 FROM python:3.14-slim
 
 # The source label is what links a package pushed to ghcr.io back to its
@@ -30,8 +35,21 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ffmpeg \
  && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Python dependencies come from uv.lock (#603). --locked fails the build if the
+# lock does not match pyproject.toml instead of resolving afresh, and
+# --no-default-groups leaves the dev and release groups (pytest, anthropic) out.
+# The venv is /app/.venv on the base image's own Python; putting its bin first
+# on PATH keeps entrypoint.sh, worker-entrypoint.sh and
+# `docker compose run --entrypoint python` working unchanged. The lock files are
+# copied before the code so this layer is cached across code-only changes.
+COPY --from=uv /uv /bin/uv
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_NO_CACHE=1 \
+    PATH="/app/.venv/bin:$PATH"
+COPY pyproject.toml uv.lock .python-version ./
+RUN uv sync --locked --no-default-groups
 
 COPY . .
 
