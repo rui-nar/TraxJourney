@@ -44,9 +44,16 @@ class _LoginScreenState extends State<LoginScreen> {
   /// stale rejection must not show as an error.
   int _appleAttempt = 0;
 
+  /// Whether a self-hosting override is saved; null until the read returns,
+  /// which keeps the Apple button hidden rather than flashing it.
+  bool? _customServer;
+
   @override
   void initState() {
     super.initState();
+    readCustomServerUrl().then((url) {
+      if (mounted) setState(() => _customServer = url != null);
+    });
     // GoogleSignIn.instance.initialize() is called once in main() before runApp.
     _googleSignInSub = GoogleSignIn.instance.authenticationEvents.listen(
       _handleAuthEvent,
@@ -340,7 +347,7 @@ class _LoginScreenState extends State<LoginScreen> {
                             ),
 
                       // ── Apple Sign-In (issue #580) ────────────────────────
-                      if (showAppleSignIn()) ...[
+                      if (showAppleSignIn(customServer: _customServer ?? true)) ...[
                         const SizedBox(height: 12),
                         Consumer<AuthNotifier>(
                           builder: (_, auth, __) => SignInWithAppleButton(

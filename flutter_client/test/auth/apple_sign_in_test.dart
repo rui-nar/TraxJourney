@@ -140,6 +140,26 @@ void main() {
           isTrue);
     });
 
+    test('a custom server hides it on web and Android, not on iOS', () {
+      expect(
+          showAppleSignIn(isWeb: true, servicesId: 'sid', customServer: true),
+          isFalse);
+      expect(
+          showAppleSignIn(
+              isWeb: false,
+              platform: TargetPlatform.android,
+              servicesId: 'sid',
+              customServer: true),
+          isFalse);
+      expect(
+          showAppleSignIn(
+              isWeb: false,
+              platform: TargetPlatform.iOS,
+              servicesId: '',
+              customServer: true),
+          isTrue);
+    });
+
     test('desktop never shows it', () {
       for (final p in [
         TargetPlatform.windows,

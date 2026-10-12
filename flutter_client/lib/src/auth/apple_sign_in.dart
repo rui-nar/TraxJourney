@@ -72,18 +72,24 @@ AppleCredentialRequester requestAppleCredential = ({
 /// Whether the login screen offers Sign in with Apple. Always on an iOS
 /// build, which uses the native sheet. On web and Android only when the
 /// build carries a Services ID. Never on desktop, which ships neither.
+///
+/// [customServer] is true when a self-hosting URL override is saved. The web
+/// flow then sends Apple a redirect URI on the self-hoster's host under
+/// TraxJourney's Services ID, which Apple refuses, so web and Android hide
+/// the button. iOS needs no redirect URI and is unaffected.
 bool showAppleSignIn({
   bool isWeb = kIsWeb,
   TargetPlatform? platform,
   String? servicesId,
+  bool customServer = false,
 }) {
   final id = servicesId ?? appleServicesId;
-  if (isWeb) return id.isNotEmpty;
+  if (isWeb) return id.isNotEmpty && !customServer;
   switch (platform ?? defaultTargetPlatform) {
     case TargetPlatform.iOS:
       return true;
     case TargetPlatform.android:
-      return id.isNotEmpty;
+      return id.isNotEmpty && !customServer;
     default:
       return false;
   }
