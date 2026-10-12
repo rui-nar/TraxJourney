@@ -638,7 +638,7 @@ These happen in the store consoles, in order where it matters.
   `https://traxjourney.com/api/auth/apple/callback` (and the val one). Create a
   Sign in with Apple key (`.p8`). Note the team id and key id.
 - **A2 — CI access.** App Store Connect: create the app record, and an API key
-  with the **Admin** role (cloud signing needs it). Add the four `APP_STORE_*`
+  with the **Admin** role (cloud signing needs it). Add the three `APP_STORE_CONNECT_*`
   and `APPLE_TEAM_ID` repository secrets. Add the iPhone-owning tester as an
   App Store Connect user and internal tester.
 - **A3 — Server config.** Set the `APPLE_*` env vars on val and prod
