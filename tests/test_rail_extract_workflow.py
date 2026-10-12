@@ -17,6 +17,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -341,6 +342,23 @@ def _step(job: dict, name: str) -> dict:
     raise AssertionError(f"no step named {name!r}")
 
 
+def _uv_shim(fake_bin: Path) -> None:
+    """`uv run CMD` in a step runs CMD in the job's synced environment, and
+    never syncs first (the workflow sets UV_NO_SYNC). Here that environment
+    is PATH, so the `python` the step reaches is the one the test put there."""
+    (fake_bin / "uv").write_text(
+        chr(10).join([
+            "#!/bin/sh",
+            '[ "$1" = run ] || { echo "fake uv: only uv run is modelled: $*" >&2; exit 9; }',
+            "shift",
+            'exec "$@"',
+            "",
+        ]),
+        encoding="utf-8", newline="\n",
+    )
+    (fake_bin / "uv").chmod(0o755)
+
+
 @pytest.mark.skipif(BASH is None, reason="needs a working POSIX shell")
 @pytest.mark.parametrize(
     "requested, release_exists, expected_exit",
@@ -625,8 +643,29 @@ def test_the_corpus_gate_adds_no_job(jobs):
 
 def test_the_publish_job_installs_what_the_corpus_imports(jobs):
     """The runner resolves legs with the server's resolver, which imports
-    metrics, redis and SQLAlchemy as well as pyosmium for the builder."""
-    assert "pip install -r requirements.txt" in _steps_text(jobs["publish"])
+    metrics, redis and SQLAlchemy as well as pyosmium for the builder: the
+    runtime set plus `rail` (PyYAML), not the rail group alone."""
+    publish = _steps_text(jobs["publish"])
+    assert "uv sync --locked --no-default-groups --group rail" in publish
+    assert "--only-group" not in publish
+
+
+@pytest.mark.parametrize("job", ["plan", "build"])
+def test_the_plan_and_build_jobs_install_the_rail_group_alone(jobs, job):
+    """Neither imports the server, so neither installs its dependencies."""
+    assert "uv sync --locked --no-default-groups --only-group rail" in \
+        _steps_text(jobs[job])
+
+
+def test_every_python_runs_in_the_synced_environment(jobs):
+    """A bare `python` is the runner's system interpreter, which has none of
+    what the job synced."""
+    for name, job in jobs.items():
+        for step in job["steps"]:
+            run = step.get("run", "")
+            for match in re.finditer(r"\bpython\b", run):
+                assert run[:match.start()].endswith("uv run "), \
+                    (name, step.get("name"), run[match.start():match.start() + 40])
 
 
 CARRIED_BYTES = b"carried sweden\n"
@@ -732,6 +771,7 @@ def _run_corpus_step(tmp_path, jobs, *, requested="", force="",
     )
     for tool in ("gh", "python"):
         (fake_bin / tool).chmod(0o755)
+    _uv_shim(fake_bin)
 
     runner_temp = tmp_path / "runner-temp"
     runner_temp.mkdir()
@@ -950,6 +990,7 @@ def _run_layers_step(jobs, tmp_path, variable: str | None):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     _python_shim(fake_bin)
+    _uv_shim(fake_bin)
     github_output = tmp_path / "github_output"
     github_output.write_text("", encoding="utf-8")
     env = {**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
