@@ -166,3 +166,14 @@ No findings. The deletion revoke and the `appletoken` delete are owed to U3 by d
 - Guard: —
 - Override: user 2026-10-13: fix in this branch rather than a separate issue
 - Outcome: fixed in wording (f832b5fe: privacy.html says Google's script loads on every web page); code fix tracked in #611
+
+## Integrated review — round 2, 2026-10-13, fixes d5151bbe..f7ae44ba (G1, G2, H1)
+
+### I2-1 — A tap that beats the on-demand Apple script load opens Apple's popup outside the click
+- Trigger: A web user on a slow connection taps "Continue with Apple" before appleid.auth.js has loaded → the sign-in waits for the load, then opens the popup in a later task → the browser's popup blocker refuses it → an error shows, and the second tap works.
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=inferred
+- Decision: Defer (D10)
+- Revisit when: A failed first Apple sign-in on web or a blocked Apple popup is reported. Fix then with a three-state button (loading = disabled, loaded = enabled, failed = enabled so the tap retries and reports). Do not just disable it until the load finishes: preloadAppleJs swallows failures, so a failed load would leave the button stuck.
+- Guard: —
+- Override: —
+- Outcome: open
