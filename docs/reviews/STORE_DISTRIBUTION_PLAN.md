@@ -204,3 +204,7 @@ Delivery notes:
 - U9 started before U1 was integrated (it was disjoint and built against the plan's contract). U7 and U3 also started as soon as their own dependencies were in.
 - Agent worktree isolation failed repeatedly on a drive-letter case mismatch (`e:` vs `E:`), so from F1 on the worktrees were created by the orchestrator under `E:\Dev\TraxJourney-fixes\` and the agents were pinned to them.
 - CI on the integrated branch hit two failures that came from main, not this branch. Starlette 1.8.0 broke a test fake: fixed in PR #614 and merged. A storage-counter race made a photo test flaky: issue #612, fixed on its own branch.
+
+## Integrated review — round 3, 2026-10-13, fix 83622dc9 (J1, for I2-1)
+
+No findings. The review traced every state transition of the Apple script loader: unmount mid-load, several login screens sharing the loader, no Apple call after an await on web, the StateError being unreachable from every caller, and the interaction with the U9 stale-attempt guard and F4's kept-name logic. It also confirmed the two removed tests are covered by the new ones. The integrated review is closed.
