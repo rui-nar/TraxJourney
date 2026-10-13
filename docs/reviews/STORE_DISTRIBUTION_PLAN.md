@@ -59,7 +59,7 @@ Envelope: plan section "Review envelope" + REVIEW.md defaults
 - Revisit when: A val or prod deployment shows web or Android Apple sign-ins failing with code_rejected after its Apple setup, or a third deployment or Services-ID client is added.
 - Guard: —
 - Override: user 2026-10-13: Fix now — owner asked to fix every open finding before the package merges
-- Outcome: open
+- Outcome: fixed (c3211472: Services ID left out of the accepted audiences without APPLE_REDIRECT_URI, one warning per process)
 
 ### R2-3 — The 4xx → code_rejected mapping hides Apple's OAuth error code
 - Trigger: The owner configures a wrong key id or Services ID → Apple answers invalid_client → every sign-in logs "code_rejected", the same as a replayed or expired code.
@@ -68,7 +68,7 @@ Envelope: plan section "Review envelope" + REVIEW.md defaults
 - Revisit when: A code_rejected failure on val or prod is first traced to server configuration (invalid_client or unauthorized_client), or debugging the Apple setup stalls on the logs.
 - Guard: —
 - Override: user 2026-10-13: Fix now — owner asked to fix every open finding before the package merges
-- Outcome: open
+- Outcome: fixed (already logged by U1's exchange; c3211472 adds the test that invalid_client and invalid_grant log differently)
 
 ### R2-4 — The "before any release" validation case is reachable only through a swallowed `gh release list` failure
 - Trigger: A validation run's `gh release list ... || true` fails → no latest tag → the build uploads as 0.0.1 / 0.<run> → App Store Connect refuses it, or TestFlight shows a bogus 0.0.1 build.
@@ -92,7 +92,7 @@ No findings. The reviewer traced web prod and val (www redirects to the apex; va
 - Revisit when: Logs show a burst of unknown_kid 401s across several users, an Apple JWKS incident is seen, or clients start treating 401 differently from 502 for Apple sign-in.
 - Guard: —
 - Override: user 2026-10-13: Fix now — owner asked to fix every open finding before the package merges
-- Outcome: open
+- Outcome: fixed (c3211472: a bad key set on the unknown-kid refetch is AppleUnavailable; refetch path now tested)
 
 ## Unit review U9 (DELIVERY.md §5.3) — round 1, 2026-10-12, reviewed at 4b7a7add
 
