@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import func, text
+from sqlalchemy import delete, event, func, text
 from sqlmodel import Session, SQLModel, create_engine, select
 
 import models.db as db_module
@@ -77,9 +77,11 @@ class FakeApple:
         self.verify_calls: list[tuple] = []
         self.secret_calls: list[tuple] = []
         self.exchange_calls: list[tuple] = []
+        self.revoke_calls: list[tuple] = []
         monkeypatch.setattr(apple, "verify_identity_token", self._verify)
         monkeypatch.setattr(apple, "client_secret", self._secret)
         monkeypatch.setattr(apple, "exchange_code", self._exchange)
+        monkeypatch.setattr(apple, "revoke", self._revoke)
 
     def _verify(self, token, nonce, audiences):
         self.verify_calls.append((token, nonce, tuple(audiences)))
@@ -96,6 +98,10 @@ class FakeApple:
         if self.exchange_error:
             raise self.exchange_error
         return self.refresh_token
+
+    def _revoke(self, refresh_token, client_id, secret):
+        self.revoke_calls.append((refresh_token, client_id, secret))
+        return True
 
 
 def _identity(**overrides) -> apple.AppleIdentity:
@@ -356,6 +362,79 @@ def test_admin_email_promotes_an_existing_account(client, fake, monkeypatch):
     monkeypatch.setenv("ADMIN_EMAILS", "boss@example.com")
 
     assert client.post("/api/auth/apple", json=_body()).json()["user"]["is_admin"] is True
+
+
+# ── An account deleted while its sign-in runs (U3R1-2) ────────────────────────
+
+def _delete_account(engine) -> None:
+    """The deletion's own commit, from another connection."""
+    with Session(engine) as sess:
+        for model in (AppleToken, UserInfo, LocalUser):
+            sess.exec(delete(model))
+        sess.commit()
+
+
+@pytest.fixture
+def delete_mid_sign_in(engine):
+    """Arms a one-shot deletion inside the next sign-in's session: just before
+    it looks the token row up, or just before it writes (both lookups done)."""
+    armed: list[tuple] = []
+
+    def arm(point: str) -> None:
+        fired: list[bool] = []
+
+        def fire() -> None:
+            if not fired:
+                fired.append(True)
+                _delete_account(engine)
+
+        if point == "before_write":
+            def hook(session, flush_context, instances):
+                fire()
+            name = "before_flush"
+        else:
+            def hook(orm_state):
+                described = orm_state.statement.column_descriptions if orm_state.is_select else []
+                if any(d.get("entity") is AppleToken for d in described):
+                    fire()
+            name = "do_orm_execute"
+        event.listen(Session, name, hook)
+        armed.append((name, hook))
+
+    yield arm
+    for name, hook in armed:
+        event.remove(Session, name, hook)
+
+
+@pytest.mark.parametrize("point, promote", [
+    ("before_write", False),         # UPDATE of a deleted token row: StaleDataError
+    ("before_token_lookup", False),  # INSERT of a token for a deleted account
+    ("before_token_lookup", True),   # the admin promotion's UPDATE autoflushes first
+])
+def test_account_deleted_mid_sign_in_revokes_the_fresh_token(
+        client, fake, engine, monkeypatch, server_log, metric, delete_mid_sign_in, point, promote):
+    fake.identity = _identity(email="boss@example.com")
+    assert client.post("/api/auth/apple", json=_body()).status_code == 200
+    if promote:
+        monkeypatch.setenv("ADMIN_EMAILS", "boss@example.com")
+    # The second sign-in runs under the Services ID, so the revoke must use the
+    # fresh token's client_id, not the deleted row's.
+    fake.identity = _identity(email="boss@example.com", aud=SERVICES_ID)
+    fake.refresh_token = SECRET_REFRESH
+    failures = metric("traxjourney_logins_total", provider="apple", result="failure")
+    delete_mid_sign_in(point)
+
+    resp = client.post("/api/auth/apple", json=_body())
+
+    assert resp.status_code == 401
+    assert resp.json() == {"detail": "Invalid Apple id_token"}
+    assert fake.revoke_calls == [(SECRET_REFRESH, SERVICES_ID, "client-secret-jwt")]
+    assert fake.secret_calls[-1] == ("TEAM123456", "KEY1234567", SERVICES_ID)
+    assert _counts(engine) == (0, 0, 0)
+    assert metric("traxjourney_logins_total", provider="apple", result="failure") == failures + 1
+    text_ = _log_text(server_log)
+    assert "reason=account_gone" in text_
+    assert SECRET_REFRESH not in text_ and "client-secret-jwt" not in text_
 
 
 # ── Callback ──────────────────────────────────────────────────────────────────
