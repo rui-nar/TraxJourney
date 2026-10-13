@@ -22,6 +22,7 @@ import '../core/legal_links.dart';
 import '../core/platform.dart';
 import '../core/return_to.dart';
 import '../core/server_config.dart';
+import 'apple_js_loader.dart' show preloadAppleJs;
 import 'apple_sign_in.dart';
 import 'auth_notifier.dart';
 
@@ -52,7 +53,10 @@ class _LoginScreenState extends State<LoginScreen> {
   void initState() {
     super.initState();
     readCustomServerUrl().then((url) {
-      if (mounted) setState(() => _customServer = url != null);
+      if (!mounted) return;
+      setState(() => _customServer = url != null);
+      // Apple's script is fetched only once its button is shown (I1-3).
+      if (showAppleSignIn(customServer: url != null)) preloadAppleJs();
     });
     // GoogleSignIn.instance.initialize() is called once in main() before runApp.
     _googleSignInSub = GoogleSignIn.instance.authenticationEvents.listen(

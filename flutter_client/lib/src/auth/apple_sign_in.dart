@@ -19,6 +19,7 @@ import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import '../api/client.dart';
 import '../crypto/device_key_store.dart'
     show FlutterSecureKvStore, SecureKvStore;
+import 'apple_js_loader.dart' show appleJsReady, loadAppleJs;
 
 /// The Services ID web and Android sign in with. Empty when the build was
 /// made without `--dart-define=APPLE_SERVICES_ID`, which hides the button on
@@ -220,6 +221,9 @@ bool isAppleSignInCancel(Object e) {
 /// A name Apple sends is kept until a sign-in succeeds, and a credential
 /// without one gets the kept name back ([withPendingAppleName]).
 Future<AppleCredential> signInWithApple() async {
+  // Web only: Apple JS must be on the page (I1-3). Awaited only when it is
+  // not, so a loaded script keeps the popup inside the tap.
+  if (!appleJsReady) await loadAppleJs();
   final rawNonce = generateRawNonce();
   final nativeSheet = !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
   final AuthorizationCredentialAppleID credential;
