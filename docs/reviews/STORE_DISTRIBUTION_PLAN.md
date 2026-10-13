@@ -156,12 +156,12 @@ No findings. The deletion revoke and the `appletoken` delete are owed to U3 by d
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (06fcd3c6: script removed from index.html, loaded by the login screen when the Apple button shows)
 
 ### I1-4 — Google's sign-in script also loads on every web page, share links included (pre-existing, raised by triage of I1-3)
 - Trigger: A visitor opens a public share link → `main.dart` calls `GoogleSignIn.instance.initialize()` before `runApp`, so google_sign_in_web loads Google's GSI script → Google receives the visitor's IP while privacy.html says Google is involved only at sign-in.
 - Scores: trigger=concrete, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
-- Decision: Fix now (D3, floor F3) — code this branch did not write; the owner asked for it to be fixed here
+- Decision: Fix now (D3, floor F3) — google_sign_in_web loads GSI in its constructor before main(), so our code cannot defer it; owner 2026-10-13: reword privacy.html now, patch the plugin in a follow-up issue
 - Revisit when: —
 - Guard: —
 - Override: user 2026-10-13: fix in this branch rather than a separate issue
