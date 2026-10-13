@@ -86,8 +86,16 @@ def _raw_get(app, raw_path: str):
     }
     sent = []
 
+    requested = False
+
     async def receive():
-        return {"type": "http.request", "body": b"", "more_body": False}
+        # Like a server: hand over the request once, then nothing until the
+        # client leaves (Starlette >= 1.8 FileResponse listens for disconnect).
+        nonlocal requested
+        if not requested:
+            requested = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await asyncio.Event().wait()
 
     async def send(message):
         sent.append(message)
