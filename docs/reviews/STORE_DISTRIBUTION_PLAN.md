@@ -39,7 +39,7 @@ Envelope: plan section "Review envelope" + REVIEW.md defaults
 - Revisit when: Apple sign-up failures (502s or dropped first calls) show in the logs after launch, or a user reports a relay-address display name after an Apple sign-up.
 - Guard: —
 - Override: user 2026-10-13: Fix now — owner asked to fix every open finding before the package merges
-- Outcome: open
+- Outcome: fixed (c8a6b253, 2f1bf42b: names kept in secure storage keyed by userIdentifier or the token's sub until a sign-in succeeds)
 
 ## Round 2 — 2026-10-12, fixes for R1-1..R1-3 (plan uncommitted, on 48029e8f)
 
