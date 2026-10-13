@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
@@ -46,6 +47,9 @@ _JWKS_TIMEOUT_SECONDS = 5
 # Apple rotates its signing keys rarely, and an unknown kid forces a refetch
 # anyway, so the key set can be held for an hour.
 _JWKS_LIFESPAN_SECONDS = 3600
+# An unknown kid refetches the set at most this often, so tokens with made-up
+# kids cannot make every sign-in fetch from Apple.
+_JWKS_REFETCH_COOLDOWN_SECONDS = 30
 
 # The OAuth error codes Apple documents for /auth/token. Only these are
 # logged: anything else in the body is Apple's free text and is dropped.
@@ -98,15 +102,21 @@ class AppleConfig:
     @property
     def audiences(self) -> tuple[str, ...]:
         """The bundle id (native iOS) and the Services ID (web, Android),
-        whichever are set."""
-        return tuple(a for a in (self.bundle_id, self.services_id) if a)
+        whichever are set. The Services ID counts only with a redirect URI:
+        its codes cannot be exchanged without one (R2-2), so its tokens are
+        refused as a wrong audience rather than after a failed exchange."""
+        services_id = self.services_id if self.redirect_uri else ""
+        return tuple(a for a in (self.bundle_id, services_id) if a)
+
+
+_warned_missing_redirect_uri = False
 
 
 def load_apple_config(environ: Mapping[str, str] | None = None) -> AppleConfig:
     """Read the ``APPLE_*`` runtime env vars. The private key may be given on
     one line with literal ``\\n`` sequences, as env files require."""
     env = os.environ if environ is None else environ
-    return AppleConfig(
+    config = AppleConfig(
         team_id=env.get("APPLE_TEAM_ID", "").strip(),
         key_id=env.get("APPLE_SIGNIN_KEY_ID", "").strip(),
         private_key=env.get("APPLE_SIGNIN_PRIVATE_KEY", "").replace("\\n", "\n").strip(),
@@ -114,38 +124,68 @@ def load_apple_config(environ: Mapping[str, str] | None = None) -> AppleConfig:
         services_id=env.get("APPLE_SERVICES_ID", "").strip(),
         redirect_uri=env.get("APPLE_REDIRECT_URI", "").strip(),
     )
+    global _warned_missing_redirect_uri
+    if config.services_id and not config.redirect_uri and not _warned_missing_redirect_uri:
+        _warned_missing_redirect_uri = True
+        _log.warning("APPLE_SERVICES_ID is set without APPLE_REDIRECT_URI: web and "
+                     "Android Apple sign-ins are refused (reason=no_redirect_uri)")
+    return config
 
 
-def _new_jwks_client() -> jwt.PyJWKClient:
-    # No per-kid LRU (cache_keys): it never expires, so a key Apple withdrew
-    # would stay trusted for the life of the process. The key-set cache
-    # expires and refreshes on an unknown kid.
-    return jwt.PyJWKClient(
-        APPLE_KEYS_URL,
-        cache_jwk_set=True,
-        lifespan=_JWKS_LIFESPAN_SECONDS,
-        timeout=_JWKS_TIMEOUT_SECONDS,
-    )
+class _AppleKeys:
+    """Apple's key set, cached by PyJWKClient. The unknown-kid refetch is
+    done here, not by ``PyJWKClient.get_signing_key``, whose one error type
+    covers both a refetch that failed and a kid the set does not hold
+    (U1R1-1): only the second is the token's fault."""
+
+    def __init__(self) -> None:
+        # No per-kid LRU (cache_keys): it never expires, so a key Apple
+        # withdrew would stay trusted for the life of the process. The
+        # key-set cache expires and refreshes on an unknown kid.
+        self._client = jwt.PyJWKClient(
+            APPLE_KEYS_URL,
+            cache_jwk_set=True,
+            lifespan=_JWKS_LIFESPAN_SECONDS,
+            timeout=_JWKS_TIMEOUT_SECONDS,
+        )
+        self._lock = threading.Lock()
+        self._last_refetch: float | None = None
+
+    def _keys(self, refresh: bool) -> list[jwt.PyJWK]:
+        try:
+            return self._client.get_signing_keys(refresh=refresh)
+        except (jwt.PyJWTError, ValueError) as exc:
+            _log.warning("Apple JWKS unavailable: %s (reason=jwks)", type(exc).__name__)
+            raise AppleUnavailable("jwks") from None
+
+    def _may_refetch(self) -> bool:
+        # A failed refetch counts too: Apple being down is no reason to ask
+        # it again on every sign-in.
+        with self._lock:
+            now = time.monotonic()
+            if self._last_refetch is not None and now - self._last_refetch < _JWKS_REFETCH_COOLDOWN_SECONDS:
+                return False
+            self._last_refetch = now
+            return True
+
+    def signing_key(self, kid: str) -> Any:
+        key = self._client.match_kid(self._keys(refresh=False), kid)
+        if key is None and self._may_refetch():
+            key = self._client.match_kid(self._keys(refresh=True), kid)
+        if key is None:
+            raise AppleTokenInvalid("unknown_kid")
+        return key.key
+
+
+def _new_jwks_client() -> _AppleKeys:
+    return _AppleKeys()
 
 
 _jwks_client = _new_jwks_client()
 
 
 def _signing_key(kid: str) -> Any:
-    try:
-        # Loads (or serves from cache) the whole set first, so a fetch or
-        # parse failure is told apart from a kid the set does not hold.
-        _jwks_client.get_signing_keys()
-    except (jwt.PyJWTError, ValueError) as exc:
-        _log.warning("Apple JWKS unavailable: %s (reason=jwks)", type(exc).__name__)
-        raise AppleUnavailable("jwks") from None
-    try:
-        return _jwks_client.get_signing_key(kid).key
-    except jwt.PyJWKClientConnectionError as exc:
-        _log.warning("Apple JWKS unavailable: %s (reason=jwks)", type(exc).__name__)
-        raise AppleUnavailable("jwks") from None
-    except (jwt.PyJWTError, ValueError):
-        raise AppleTokenInvalid("unknown_kid") from None
+    return _jwks_client.signing_key(kid)
 
 
 def _claim_bool(value: Any) -> bool:

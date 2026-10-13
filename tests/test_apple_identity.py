@@ -246,6 +246,74 @@ def test_jwks_is_cached_between_verifications(jwks):
     assert jwks.calls == 1
 
 
+# The unknown-kid refetch (U1R1-1). The clock is moved past any refetch
+# cooldown, so each test reaches the refetch itself, not the cooldown branch.
+
+ROTATED_KID = "rotated-in"
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """time.monotonic, moved forward by hand."""
+    now = [time.monotonic()]
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+    return now
+
+
+def _warm_cache_then_pass_cooldown(jwks, clock):
+    _verify(_token())
+    assert jwks.calls == 1
+    clock[0] += 60
+
+
+def test_rotated_kid_is_found_by_the_refetch(jwks, clock):
+    _warm_cache_then_pass_cooldown(jwks, clock)
+    jwks.payload = _jwks((KID, _RSA_KEY), (ROTATED_KID, _OTHER_RSA_KEY))
+
+    identity = _verify(_token(kid=ROTATED_KID, key=_OTHER_RSA_KEY))
+
+    assert identity.sub == "001234.abcdef.1234"
+    assert jwks.calls == 2
+
+
+@pytest.mark.parametrize("payload", [
+    b"<html>not json</html>",
+    [],
+    {"keys": []},
+    {"nope": 1},
+    {"keys": [{"kty": "nope", "kid": ROTATED_KID}]},
+], ids=["not-json", "not-object", "empty-set", "no-keys", "unusable-key"])
+def test_unusable_refetch_is_unavailable_not_unknown_kid(jwks, clock, payload):
+    _warm_cache_then_pass_cooldown(jwks, clock)
+    jwks.payload = payload
+
+    with pytest.raises(apple.AppleUnavailable) as info:
+        _verify(_token(kid=ROTATED_KID, key=_OTHER_RSA_KEY))
+
+    assert info.value.reason == "jwks"
+    assert jwks.calls == 2
+
+
+def test_kid_still_missing_after_a_good_refetch_is_unknown_kid(jwks, clock):
+    _warm_cache_then_pass_cooldown(jwks, clock)
+
+    with pytest.raises(apple.AppleTokenInvalid) as info:
+        _verify(_token(kid=ROTATED_KID, key=_OTHER_RSA_KEY))
+
+    assert info.value.reason == "unknown_kid"
+    assert jwks.calls == 2
+
+
+def test_unknown_kids_refetch_at_most_once_per_cooldown(jwks, clock):
+    _warm_cache_then_pass_cooldown(jwks, clock)
+    for kid in ("first-unknown", "second-unknown"):
+        with pytest.raises(apple.AppleTokenInvalid):
+            _verify(_token(kid=kid, key=_OTHER_RSA_KEY))
+    assert jwks.calls == 2
+    _verify(_token())  # a known kid is still served from the cache
+    assert jwks.calls == 2
+
+
 @pytest.mark.parametrize("value, expected", [
     ("true", True),
     ("false", False),
@@ -367,6 +435,27 @@ def test_exchange_4xx_is_code_rejected(status, server_log):
     _assert_clean(server_log, SECRET, CODE, CLIENT_SECRET)
 
 
+def test_exchange_4xx_logs_tell_a_config_fault_from_a_bad_code(server_log):
+    """R2-3: invalid_client (a wrong key id or Services ID) and invalid_grant
+    (a replayed or expired code) both raise code_rejected, but their log
+    lines differ by Apple's OAuth code — and never carry its free text."""
+    lines = {}
+    for error in ("invalid_client", "invalid_grant"):
+        server_log.clear()
+        with patch.object(apple.requests, "post", return_value=_response(
+            400, {"error": error, "error_description": f"{SECRET} {error} details"},
+        )):
+            with pytest.raises(apple.AppleTokenInvalid) as info:
+                apple.exchange_code(CODE, SERVICES_ID, CLIENT_SECRET, REDIRECT)
+        assert info.value.reason == "code_rejected"
+        lines[error] = _log_text(server_log)
+        assert f"error={error}" in lines[error]
+        _assert_clean(server_log, SECRET, "details", CODE, CLIENT_SECRET)
+    assert lines["invalid_client"] != lines["invalid_grant"]
+    assert "invalid_grant" not in lines["invalid_client"]
+    assert "invalid_client" not in lines["invalid_grant"]
+
+
 def test_exchange_undocumented_error_is_not_logged(server_log):
     with patch.object(apple.requests, "post", return_value=_response(400, {"error": SECRET})):
         with pytest.raises(apple.AppleTokenInvalid):
@@ -472,3 +561,32 @@ def test_config_not_configured_without_team_key_or_private_key(missing):
 def test_config_bundle_id_override():
     cfg = apple.load_apple_config({"APPLE_BUNDLE_ID": "com.example.other"})
     assert cfg.bundle_id == "com.example.other"
+
+
+def test_config_services_id_without_redirect_uri_is_left_out_and_warned_once(server_log, monkeypatch):
+    """R2-2: Services-ID codes cannot be exchanged without the redirect URI,
+    so the Services ID is not accepted as an audience: web and Android tokens
+    are refused up front, and the log names the missing variable once."""
+    monkeypatch.setattr(apple, "_warned_missing_redirect_uri", False)
+    env = {
+        "APPLE_TEAM_ID": "TEAM123",
+        "APPLE_SIGNIN_KEY_ID": "KEY456",
+        "APPLE_SIGNIN_PRIVATE_KEY": _EC_PEM,
+        "APPLE_SERVICES_ID": SERVICES_ID,
+    }
+    for _ in range(3):
+        cfg = apple.load_apple_config(env)
+        assert cfg.configured
+        assert cfg.services_id == SERVICES_ID
+        assert cfg.audiences == ("com.traxjourney.app",)
+    warnings = [r for r in server_log.records if "APPLE_REDIRECT_URI" in r.getMessage()]
+    assert len(warnings) == 1
+    assert warnings[0].levelno == logging.WARNING
+    assert SERVICES_ID not in warnings[0].getMessage()
+
+
+def test_config_services_id_with_redirect_uri_is_not_warned(server_log, monkeypatch):
+    monkeypatch.setattr(apple, "_warned_missing_redirect_uri", False)
+    cfg = apple.load_apple_config({"APPLE_SERVICES_ID": SERVICES_ID, "APPLE_REDIRECT_URI": REDIRECT})
+    assert cfg.audiences == ("com.traxjourney.app", SERVICES_ID)
+    assert "APPLE_REDIRECT_URI" not in _log_text(server_log)
