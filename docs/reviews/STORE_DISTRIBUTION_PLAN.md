@@ -38,7 +38,7 @@ Envelope: plan section "Review envelope" + REVIEW.md defaults
 - Decision: Defer (D10)
 - Revisit when: Apple sign-up failures (502s or dropped first calls) show in the logs after launch, or a user reports a relay-address display name after an Apple sign-up.
 - Guard: —
-- Override: —
+- Override: user 2026-10-13: Fix now — owner asked to fix every open finding before the package merges
 - Outcome: open
 
 ## Round 2 — 2026-10-12, fixes for R1-1..R1-3 (plan uncommitted, on 48029e8f)
@@ -58,7 +58,7 @@ Envelope: plan section "Review envelope" + REVIEW.md defaults
 - Decision: Defer (D10)
 - Revisit when: A val or prod deployment shows web or Android Apple sign-ins failing with code_rejected after its Apple setup, or a third deployment or Services-ID client is added.
 - Guard: —
-- Override: —
+- Override: user 2026-10-13: Fix now — owner asked to fix every open finding before the package merges
 - Outcome: open
 
 ### R2-3 — The 4xx → code_rejected mapping hides Apple's OAuth error code
@@ -67,7 +67,7 @@ Envelope: plan section "Review envelope" + REVIEW.md defaults
 - Decision: Defer (D10)
 - Revisit when: A code_rejected failure on val or prod is first traced to server configuration (invalid_client or unauthorized_client), or debugging the Apple setup stalls on the logs.
 - Guard: —
-- Override: —
+- Override: user 2026-10-13: Fix now — owner asked to fix every open finding before the package merges
 - Outcome: open
 
 ### R2-4 — The "before any release" validation case is reachable only through a swallowed `gh release list` failure
@@ -76,7 +76,7 @@ Envelope: plan section "Review envelope" + REVIEW.md defaults
 - Decision: Defer (D10)
 - Revisit when: An iOS or Android validation run produces a 0.0.1, 0.<run> or BASE=0 build, or its log shows `gh release list` failing.
 - Guard: —
-- Override: —
+- Override: user 2026-10-13: Fix now — owner asked to fix every open finding before the package merges
 - Outcome: open
 
 ## Round 3 — 2026-10-12, fix for R2-1 (plan uncommitted, on 48029e8f)
@@ -91,7 +91,7 @@ No findings. The reviewer traced web prod and val (www redirects to the apex; va
 - Decision: Defer (D10)
 - Revisit when: Logs show a burst of unknown_kid 401s across several users, an Apple JWKS incident is seen, or clients start treating 401 differently from 502 for Apple sign-in.
 - Guard: —
-- Override: —
+- Override: user 2026-10-13: Fix now — owner asked to fix every open finding before the package merges
 - Outcome: open
 
 ## Unit review U9 (DELIVERY.md §5.3) — round 1, 2026-10-12, reviewed at 4b7a7add
