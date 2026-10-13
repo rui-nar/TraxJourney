@@ -22,7 +22,13 @@ import '../core/legal_links.dart';
 import '../core/platform.dart';
 import '../core/return_to.dart';
 import '../core/server_config.dart';
-import 'apple_js_loader.dart' show preloadAppleJs;
+import 'apple_js_loader.dart'
+    show
+        appleJsLoading,
+        appleJsReady,
+        appleJsState,
+        loadAppleJs,
+        preloadAppleJs;
 import 'apple_sign_in.dart';
 import 'auth_notifier.dart';
 
@@ -153,7 +159,21 @@ class _LoginScreenState extends State<LoginScreen> {
 
   /// Apple's flow, then the server. Cancelling is silent; a failed flow shows
   /// like Google's, and a server refusal lands in the error banner.
+  ///
+  /// On the web, a tap before Apple's script has loaded (the preload failed)
+  /// only retries the load: Apple's popup opened after it would be outside
+  /// the click and blocked (I2-1). Once it loads, the user taps again.
   Future<void> _appleSignIn() async {
+    if (!appleJsReady) {
+      try {
+        await loadAppleJs();
+      } catch (e) {
+        _showError('Apple sign-in failed: $e');
+        return;
+      }
+      _showError('Apple sign-in is ready. Tap Continue with Apple again.');
+      return;
+    }
     final attempt = ++_appleAttempt;
     final AppleCredential credential;
     try {
@@ -358,14 +378,21 @@ class _LoginScreenState extends State<LoginScreen> {
                       // ── Apple Sign-In (issue #580) ────────────────────────
                       if (showAppleSignIn(customServer: _customServer ?? true)) ...[
                         const SizedBox(height: 12),
-                        Consumer<AuthNotifier>(
-                          builder: (_, auth, __) => SignInWithAppleButton(
-                            onPressed: auth.isLoading ? null : _appleSignIn,
-                            text: 'Continue with Apple',
-                            height: 40,
-                            style: isDark
-                                ? SignInWithAppleButtonStyle.white
-                                : SignInWithAppleButtonStyle.black,
+                        // Disabled while Apple's script loads (web), so a
+                        // tap never opens Apple's popup after the click.
+                        ValueListenableBuilder(
+                          valueListenable: appleJsState,
+                          builder: (_, __, ___) => Consumer<AuthNotifier>(
+                            builder: (_, auth, __) => SignInWithAppleButton(
+                              onPressed: auth.isLoading || appleJsLoading
+                                  ? null
+                                  : _appleSignIn,
+                              text: 'Continue with Apple',
+                              height: 40,
+                              style: isDark
+                                  ? SignInWithAppleButtonStyle.white
+                                  : SignInWithAppleButtonStyle.black,
+                            ),
                           ),
                         ),
                       ],
