@@ -172,7 +172,7 @@ class _LoginScreenState extends State<LoginScreen> {
     // Before the mounted check: the server has the name even if this screen
     // is gone.
     if (auth.user != null) {
-      await forgetPendingAppleName(credential.userIdentifier);
+      await forgetPendingAppleName(credential);
     }
     if (!mounted) return;
     if (auth.user != null) _navigateAfterLogin();

@@ -531,21 +531,16 @@ void main() {
       expect(find.text('PROJECTS'), findsOneWidget);
     });
 
-    // Web and Android credentials carry no userIdentifier: nothing to key on.
-    _testOn(TargetPlatform.android, 'without a userIdentifier nothing is kept',
+    // Web and Android credentials carry no userIdentifier: the id_token's
+    // sub, the same Apple user id, is the key.
+    _testOn(TargetPlatform.android,
+        'without a userIdentifier the id_token sub keys the kept name',
         (tester) async {
       appleServicesId = 'com.traxjourney.web';
+      final token = _jwt({'sub': 'apple-sub-1', 'aud': 'com.traxjourney.web'});
       appleReturns([
-        _credential,
-        const AuthorizationCredentialAppleID(
-          userIdentifier: null,
-          givenName: null,
-          familyName: null,
-          authorizationCode: 'the-code',
-          email: null,
-          identityToken: 'the-id-token',
-          state: null,
-        ),
+        _webShaped(token, given: 'Ada', family: 'Lovelace'),
+        _webShaped(token),
       ]);
       serve(502, {'detail': 'Apple sign-in unavailable'});
       await _pumpLogin(tester);
@@ -553,15 +548,69 @@ void main() {
       await _tapApple(tester);
 
       expect(bodyOf(posts.single)['given_name'], 'Ada');
-      expect(kept.values, isEmpty);
+      expect(jsonDecode(kept.values['apple_pending_name_v1_apple-sub-1']!),
+          {'given_name': 'Ada', 'family_name': 'Lovelace'});
 
       serve(200, ok);
       await _tapApple(tester);
 
       expect(posts, hasLength(2));
-      expect(bodyOf(posts[1])['given_name'], isNull);
+      expect(bodyOf(posts[1])['given_name'], 'Ada');
+      expect(bodyOf(posts[1])['family_name'], 'Lovelace');
       expect(kept.values, isEmpty);
       expect(find.text('PROJECTS'), findsOneWidget);
     });
+
+    // No userIdentifier and no readable sub: nothing to key on.
+    for (final (label, token) in [
+      ('not a JWT', 'the-id-token'),
+      ('a payload that is not base64url', 'h.%%%.s'),
+      ('a payload that is not JSON', 'h.${_b64('not json')}.s'),
+      ('a payload without sub', _jwt({'aud': 'x'})),
+      ('a payload that is a list', 'h.${_b64('["sub"]')}.s'),
+    ]) {
+      _testOn(TargetPlatform.android, '$label: nothing is kept, no crash',
+          (tester) async {
+        appleServicesId = 'com.traxjourney.web';
+        appleReturns([
+          _webShaped(token, given: 'Ada', family: 'Lovelace'),
+          _webShaped(token),
+        ]);
+        serve(502, {'detail': 'Apple sign-in unavailable'});
+        await _pumpLogin(tester);
+
+        await _tapApple(tester);
+
+        expect(bodyOf(posts.single)['given_name'], 'Ada');
+        expect(kept.values, isEmpty);
+
+        serve(200, ok);
+        await _tapApple(tester);
+
+        expect(posts, hasLength(2));
+        expect(bodyOf(posts[1])['given_name'], isNull);
+        expect(kept.values, isEmpty);
+        expect(find.text('PROJECTS'), findsOneWidget);
+      });
+    }
   });
 }
+
+String _b64(String s) => base64Url.encode(utf8.encode(s)).replaceAll('=', '');
+
+/// An unsigned id_token shape: only the payload is read client-side.
+String _jwt(Map<String, dynamic> payload) =>
+    '${_b64('{"alg":"ES256"}')}.${_b64(jsonEncode(payload))}.sig';
+
+/// What Apple JS and the Android redirect return: no userIdentifier.
+AuthorizationCredentialAppleID _webShaped(String idToken,
+        {String? given, String? family}) =>
+    AuthorizationCredentialAppleID(
+      userIdentifier: null,
+      givenName: given,
+      familyName: family,
+      authorizationCode: 'the-code',
+      email: null,
+      identityToken: idToken,
+      state: null,
+    );

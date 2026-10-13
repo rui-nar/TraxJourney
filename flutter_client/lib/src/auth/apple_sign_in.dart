@@ -54,19 +54,38 @@ class AppleCredential {
 @visibleForTesting
 SecureKvStore applePendingNameStore = FlutterSecureKvStore();
 
-String _pendingNameKey(String userIdentifier) =>
-    'apple_pending_name_v1_$userIdentifier';
+String _pendingNameKey(String appleUserId) =>
+    'apple_pending_name_v1_$appleUserId';
+
+/// The Apple user a kept name belongs to: the credential's userIdentifier
+/// (iOS), else the id_token's `sub`, which is the same id (web, Android).
+/// The token is only read, not verified: this is a local cache key, and the
+/// server verifies the token. Null when neither is there or the token does
+/// not parse.
+String? _appleUserId(AppleCredential c) {
+  final id = c.userIdentifier;
+  if (id != null && id.isNotEmpty) return id;
+  try {
+    final parts = c.idToken.split('.');
+    if (parts.length != 3) return null;
+    final payload = jsonDecode(
+        utf8.decode(base64Url.decode(base64Url.normalize(parts[1]))));
+    final sub = payload is Map ? payload['sub'] : null;
+    return sub is String && sub.isNotEmpty ? sub : null;
+  } catch (_) {
+    return null;
+  }
+}
 
 /// Apple sends the name on the first authorization only. When that sign-in
 /// fails to reach the server, the retry would carry none and the account
 /// would be named after the relay address. So a name Apple sends is kept,
-/// keyed by [AppleCredential.userIdentifier], and a later credential without
-/// one gets it back. Without a userIdentifier (web, Android) nothing is kept.
-/// A storage failure never blocks a sign-in: the credential goes as Apple
-/// gave it.
+/// keyed by the Apple user ([_appleUserId]), and a later credential without
+/// one gets it back. Without a user id nothing is kept. A storage failure
+/// never blocks a sign-in: the credential goes as Apple gave it.
 Future<AppleCredential> withPendingAppleName(AppleCredential c) async {
-  final id = c.userIdentifier;
-  if (id == null || id.isEmpty) return c;
+  final id = _appleUserId(c);
+  if (id == null) return c;
   try {
     if (c.givenName != null || c.familyName != null) {
       await applePendingNameStore.write(
@@ -86,7 +105,7 @@ Future<AppleCredential> withPendingAppleName(AppleCredential c) async {
       nonce: c.nonce,
       givenName: names['given_name'] as String?,
       familyName: names['family_name'] as String?,
-      userIdentifier: id,
+      userIdentifier: c.userIdentifier,
     );
   } catch (_) {
     return c;
@@ -94,10 +113,11 @@ Future<AppleCredential> withPendingAppleName(AppleCredential c) async {
 }
 
 /// Drops the kept name once a sign-in has succeeded: the server has it now.
-Future<void> forgetPendingAppleName(String? userIdentifier) async {
-  if (userIdentifier == null || userIdentifier.isEmpty) return;
+Future<void> forgetPendingAppleName(AppleCredential c) async {
+  final id = _appleUserId(c);
+  if (id == null) return;
   try {
-    await applePendingNameStore.delete(_pendingNameKey(userIdentifier));
+    await applePendingNameStore.delete(_pendingNameKey(id));
   } catch (_) {
     // A leftover entry only resends a name the server no longer uses.
   }
