@@ -135,7 +135,7 @@ Notes:
 - Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
 - Decision: Defer (D10)
 - Revisit when: the suite runs on a full checkout without git, or the walk flags gitignored paths; apply the shared ROOT/.git fix.
-- Override: —
+- Override: user: Fix now — option 1: decide git vs walk by ROOT/.git existence (2026-10-13).
 - Outcome: open
 
 ### D2-2 — The not-a-repo detection matches English stderr text
@@ -143,7 +143,7 @@ Notes:
 - Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=inferred
 - Decision: Defer (D10)
 - Revisit when: an archive copy is tested under a non-English git; apply the shared ROOT/.git fix.
-- Override: —
+- Override: user: Fix now — option 1: decide git vs walk by ROOT/.git existence (2026-10-13).
 - Outcome: open
 
 ### D2-3 — An archive copy inside another repo's work tree gets an empty `git ls-files`
@@ -151,5 +151,5 @@ Notes:
 - Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=inferred
 - Decision: Defer (D10)
 - Revisit when: an archive copy is extracted inside another work tree, or the "no candidate files" check fires on one; apply the shared ROOT/.git fix.
-- Override: —
+- Override: user: Fix now — option 1: decide git vs walk by ROOT/.git existence (2026-10-13).
 - Outcome: open
