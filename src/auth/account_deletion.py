@@ -467,8 +467,10 @@ def delete_user_and_data(sess: Session, user_info_id: int) -> None:
         select(AppleToken.refresh_token, AppleToken.client_id)
         .where(AppleToken.user_info_id == user_info_id)
     ).first()
+    revoked_apple = None
     if apple_token is not None and apple_token.refresh_token:
-        _revoke_apple(user_info_id, apple_token.refresh_token, apple_token.client_id)
+        revoked_apple = apple_token.refresh_token
+        _revoke_apple(user_info_id, revoked_apple, apple_token.client_id)
     # Stripe was called without holding any lock (never hold SQLite's write
     # lock across the network). A webhook can land in that window and record
     # a first purchase on the row — a customer this deletion never cancelled.
@@ -505,6 +507,18 @@ def delete_user_and_data(sess: Session, user_info_id: int) -> None:
     ).first()
     if current_token is not None and current_token.refresh_token != revoked_refresh:
         rotated = (current_token.access_token, current_token.refresh_token)
+    # An Apple sign-in on another device can likewise commit a new refresh
+    # token while Apple was being called (review U3R1-1), possibly under the
+    # other client_id (bundle id vs Services ID). Same re-read, same rule;
+    # the revoke uses the client_id read here, not the one revoked above.
+    rotated_apple = None
+    current_apple = sess.execute(
+        select(AppleToken.refresh_token, AppleToken.client_id)
+        .where(AppleToken.user_info_id == user_info_id)
+    ).first()
+    if (current_apple is not None and current_apple.refresh_token
+            and current_apple.refresh_token != revoked_apple):
+        rotated_apple = (current_apple.refresh_token, current_apple.client_id)
 
     project_ids = sess.exec(
         select(DBProject.id).where(DBProject.user_info_id == user_info_id)
@@ -717,6 +731,8 @@ def delete_user_and_data(sess: Session, user_info_id: int) -> None:
     sess.commit()
     if rotated is not None:
         deauthorize_strava(user_info_id, *rotated)
+    if rotated_apple is not None:
+        _revoke_apple(user_info_id, *rotated_apple)
 
 
 def purge_user_files(user_id: int) -> None:

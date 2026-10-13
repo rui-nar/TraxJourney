@@ -233,6 +233,46 @@ class TestRevoke:
         assert len(revoke.calls) == 1
         assert _apple_rows(engine, other) == 1
 
+    def test_a_token_a_sign_in_swapped_in_during_the_revoke_is_revoked_too(
+        self, engine, configured, monkeypatch, caplog,
+    ):
+        """Review U3R1-1: an Apple sign-in on another device commits a new
+        refresh token, here under the app's bundle id rather than the Services
+        ID, while the deletion is calling Apple. The row it deletes holds that
+        new token, so it is revoked too, after the commit, under its own
+        client_id."""
+        new_refresh, bundle_id = "apple-refresh-swapped-in", "com.traxjourney.app"
+        uid = _user(engine)
+        calls: list[tuple[str, str, str]] = []
+
+        def revoke_then_sign_in(refresh_token, client_id, secret):
+            calls.append((refresh_token, client_id, secret))
+            if len(calls) == 1:
+                # The other device's sign-in commits on its own connection,
+                # in the window before the deletion takes the account lock.
+                with Session(engine) as other:
+                    row = other.exec(select(AppleToken).where(
+                        AppleToken.user_info_id == uid)).one()
+                    row.refresh_token, row.client_id = new_refresh, bundle_id
+                    other.add(row)
+                    other.commit()
+            return True
+        monkeypatch.setattr(apple, "revoke", revoke_then_sign_in)
+
+        with caplog.at_level(logging.DEBUG):
+            with Session(engine) as sess:
+                delete_user_and_data(sess, uid)
+
+        assert [c[:2] for c in calls] == [(REFRESH, SERVICES_ID),
+                                          (new_refresh, bundle_id)]
+        claims = jwt.decode(calls[1][2], options={"verify_signature": False})
+        assert claims["sub"] == bundle_id
+        assert _apple_rows(engine, uid) == 0
+        with Session(engine) as sess:
+            assert sess.get(UserInfo, uid) is None
+        assert REFRESH not in caplog.text
+        assert new_refresh not in caplog.text
+
 
 class TestEndpoints:
     def test_self_delete_revokes(self, engine, configured, revoke):
