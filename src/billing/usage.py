@@ -18,6 +18,8 @@ import time
 from pathlib import Path
 from typing import Iterable
 
+from sqlalchemy import case, update
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
 import src.admin.storage as _storage
@@ -40,6 +42,24 @@ def bytes_of(*paths: Path | str) -> int:
     return total
 
 
+def _add_in_db(sess, uid: int, delta_bytes: int, now: float) -> int:
+    """Add *delta_bytes* to *uid*'s counter in one UPDATE; returns the rows hit.
+
+    The sum is computed by the database, never read into Python and written
+    back: two uploads saved at once would both read the same total and one
+    addition would be lost (#612). Clamped at zero: a delete counted twice must
+    not make the account look like it has negative usage (and thus infinite
+    headroom).
+    """
+    total = UserUsage.storage_bytes + delta_bytes
+    result = sess.execute(
+        update(UserUsage)
+        .where(UserUsage.user_info_id == uid)
+        .values(storage_bytes=case((total < 0, 0), else_=total), updated_at=now)
+    )
+    return result.rowcount
+
+
 def record_delta(user_id: str | int, delta_bytes: int) -> None:
     """Add ``delta_bytes`` (may be negative) to a user's counted storage.
 
@@ -53,17 +73,23 @@ def record_delta(user_id: str | int, delta_bytes: int) -> None:
     except (TypeError, ValueError):
         return
     try:
+        now = time.time()
         with get_session() as sess:
-            row = sess.exec(
-                select(UserUsage).where(UserUsage.user_info_id == uid)
-            ).first()
-            if row is None:
-                row = UserUsage(user_info_id=uid)
-            # Clamp at zero: a delete counted twice must not make the account
-            # look like it has negative usage (and thus infinite headroom).
-            row.storage_bytes = max(0, row.storage_bytes + delta_bytes)
-            row.updated_at = time.time()
-            sess.add(row)
+            if not _add_in_db(sess, uid, delta_bytes, now):
+                # No counter yet: create it. A concurrent first upload may
+                # create it first, which the unique user_info_id refuses;
+                # the row then exists and the update applies.
+                sess.add(UserUsage(user_info_id=uid,
+                                   storage_bytes=max(0, delta_bytes),
+                                   updated_at=now))
+                try:
+                    sess.commit()
+                    return
+                except IntegrityError:
+                    sess.rollback()
+                    if not _add_in_db(sess, uid, delta_bytes, now):
+                        # Not a racing insert after all (e.g. no such user).
+                        raise
             sess.commit()
     except Exception:  # pragma: no cover - defensive; accounting is best-effort
         _log.warning("storage accounting failed for user %s", user_id, exc_info=True)
