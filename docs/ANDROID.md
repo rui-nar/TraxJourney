@@ -226,7 +226,8 @@ never moves. Installing a *lower* versionCode over a higher one fails with
 
 Every real `vX.Y.Z` tag also builds a signed App Bundle (`traxjourney-vX.Y.Z.aab`),
 attaches it to the release next to the APK, and uploads it to Play's **internal**
-track with [play_upload.py](../scripts/play_upload.py). The `validation` tag never
+track with [play_upload.py](../scripts/play_upload.py), run through uv with only the
+locked `play` dependency group (google-auth, requests). The `validation` tag never
 uploads: its versionCode (latest + 1) would block the next real release, because
 Play needs each upload's versionCode strictly above every earlier one. Promotion
 to closed testing or production is done by hand in Play Console. The APK stays on

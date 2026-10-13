@@ -17,6 +17,10 @@ env:
   # the previous year's Android API level). Bump this when Play's deadline
   # moves; the gate below then fails the build before the upload does.
   PLAY_MIN_TARGET_SDK: '35'
+  # The Play upload syncs its environment once, explicitly, with --locked; without
+  # this `uv run` would first re-sync to the default groups (test.yml does the
+  # same, docs/UV_MIGRATION_PLAN.md).
+  UV_NO_SYNC: "1"
 
 jobs:
   build-apk:
@@ -206,6 +210,18 @@ jobs:
             gh release upload "$TAG" "$RUNNER_TEMP/traxjourney-$TAG.aab" --clobber
           fi
 
+      - name: Set up uv
+        # Only for the Play upload, which needs google-auth and requests; the
+        # version scripts above are stdlib-only and run on the runner's python3.
+        # The uv version is the Dockerfile's uv stage tag, exactly
+        # (tests/test_ci_workflows.py). No cache: this job holds the signing
+        # and Play secrets, so it installs from the lock, not a restored cache.
+        if: steps.version.outputs.play_release == 'true'
+        uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version: "0.12.19"
+          enable-cache: false
+
       - name: Upload the App Bundle to Play's internal track
         # The service-account key reaches the script through the environment
         # only: never argv, never echoed. Without it the APK still ships.
@@ -218,6 +234,7 @@ jobs:
             echo "::warning::PLAY_SERVICE_ACCOUNT_JSON is not set; skipping the Play upload. The APK is still on the release (docs/ANDROID.md)."
             exit 0
           fi
-          python3 -m pip install --quiet google-auth requests
-          python3 scripts/play_upload.py "$RUNNER_TEMP/traxjourney-$TAG.aab" \
+          # The `play` group alone (google-auth, requests), not the server's set.
+          uv sync --locked --only-group play
+          uv run python scripts/play_upload.py "$RUNNER_TEMP/traxjourney-$TAG.aab" \
             --package com.traxjourney.app --track internal --release-name "$TAG"
