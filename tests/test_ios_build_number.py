@@ -34,9 +34,19 @@ def test_validation_after_a_release_files_under_the_next_patch():
     assert ibn.build_number("validation", 17, "v1.0.0") == ("1.0.1", "10000.17")
 
 
-def test_validation_before_any_release():
-    assert ibn.build_number("validation", 17, None) == ("0.0.1", "0.17")
-    assert ibn.build_number("validation", 17, "") == ("0.0.1", "0.17")
+@pytest.mark.parametrize("latest", [None, ""])
+def test_validation_needs_a_latest_release(latest):
+    with pytest.raises(ValueError, match="--latest-tag"):
+        ibn.build_number("validation", 17, latest)
+
+
+@pytest.mark.parametrize("extra", [[], ["--latest-tag", ""]])
+def test_cli_fails_a_validation_build_without_a_latest_tag(capsys, extra):
+    argv = ["ios_build_number.py", "validation", "--validation-run", "17", *extra]
+    assert ibn.main(argv) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "--latest-tag" in captured.err
 
 
 @pytest.mark.parametrize("run", [1, 9, 10, 17, 999])

@@ -104,10 +104,10 @@ Store, it accepts no more builds under it.
 |---|---|---|---|
 | `vX.Y.Z` | `X.Y.Z` | Android's versionCode, `X*10000 + Y*100 + Z` | `v1.0.0` gives `1.0.0`, `10000` |
 | `validation` | the latest release, patch bumped | `<latest code>.<run number>` | after `v1.0.0`, run 17 gives `1.0.1`, `10000.17` |
-| `validation`, before any release | `0.0.1` | `0.<run number>` | run 17 gives `0.0.1`, `0.17` |
 
 Build numbers compare number by number, so `10000.17` sorts above `10000.16`
-and below the `10001` that the real `v1.0.1` gets. A validation build never
+and below the `10001` that the real `v1.0.1` gets. A validation build needs a
+published `vX.Y.Z` release; without one the build fails. A validation build never
 lands under a released version, because `1.0.1` is not released until its tag
 ships.
 

@@ -56,9 +56,15 @@ jobs:
         run: |
           if [ "$TAG" = "validation" ]; then
             # Same lookup as android-release.yml: skip the `validation` release
-            # itself, which is always the most recently published one.
+            # itself, which is always the most recently published one. Unlike
+            # Android, a failed lookup or no release at all fails the build: an
+            # iOS validation build is filed under a real release (D11).
             LATEST_TAG=$(gh release list --exclude-drafts -L 30 --json tagName \
-              --jq '[.[] | select(.tagName | test("^v[0-9]"))][0].tagName' || true)
+              --jq '[.[] | select(.tagName | test("^v[0-9]"))][0].tagName')
+            if ! [[ "$LATEST_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::No vX.Y.Z release found (latest: '$LATEST_TAG'). A validation build needs a published release. See docs/IOS.md."
+              exit 1
+            fi
             # Filed under the latest release with the patch bumped, numbered
             # <latest code>.<run> (D11): see scripts/ios_build_number.py.
             OUT=$(python3 scripts/ios_build_number.py "$TAG" \
