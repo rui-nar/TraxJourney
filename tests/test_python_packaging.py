@@ -1,4 +1,5 @@
 """The dependency set lives in pyproject.toml and is locked in uv.lock (#603)."""
+import os
 import re
 import subprocess
 import tomllib
@@ -54,6 +55,10 @@ def test_a_plain_sync_gives_a_developer_everything():
     assert UV["package"] is False
 
 
+def test_uv_prefers_the_signed_system_python():
+    assert UV["python-preference"] == "system"
+
+
 def test_required_uv_is_a_floor_not_a_pin():
     assert re.fullmatch(r">=\d+\.\d+\.\d+", UV["required-version"]), UV["required-version"]
 
@@ -76,12 +81,31 @@ def test_requirements_txt_is_gone():
     assert not (ROOT / "requirements.txt").exists()
 
 
+_WALK_SKIP_DIRS = {".git", ".venv", "node_modules", "__pycache__", ".pytest_cache"}
+
+
+def _candidate_files() -> list[str]:
+    """Tracked files via git; a tree walk where git is missing or this is no work tree."""
+    try:
+        done = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True)
+    except FileNotFoundError:
+        done = None
+    if done is not None and done.returncode == 0:
+        return done.stdout.decode("utf-8").split("\0")
+    if done is not None and b"not a git repository" not in done.stderr:
+        raise RuntimeError(done.stderr.decode("utf-8", errors="replace"))
+    found = []
+    for dirpath, dirnames, filenames in os.walk(ROOT):
+        dirnames[:] = [d for d in dirnames if d not in _WALK_SKIP_DIRS]
+        base = Path(dirpath)
+        found += [(base / f).relative_to(ROOT).as_posix() for f in filenames]
+    return found
+
+
 def test_nothing_outside_the_historical_documents_reverts_to_pip():
-    tracked = subprocess.run(
-        ["git", "ls-files", "-z"], cwd=ROOT, check=True, capture_output=True
-    ).stdout.decode("utf-8").split("\0")
+    tracked = _candidate_files()
     assert {"pyproject.toml", "tests/test_python_packaging.py"} <= set(tracked), (
-        "git ls-files returned no tracked files, so the guard saw nothing to scan"
+        "no candidate files were found, so the guard saw nothing to scan"
     )
     offenders = []
     for rel in filter(None, tracked):

@@ -71,9 +71,10 @@ dependencies = [
 rail = [
     "osmium>=4.0.0,<5.0.0",
     "requests>=2.28.0",
-    # Test-only: tests/test_worker_topology.py parses docker-compose.yml.example to
-    # check the worker topology against the queue bounds in src/jobs/queue.py (#188).
-    # Nothing at runtime imports it.
+    # Imported by scripts/build_rail_extract.py and scripts/route_corpus.py, which
+    # rail-extract.yml runs with this group; tests/test_worker_topology.py also parses
+    # docker-compose.yml.example with it, to check the worker topology against the
+    # queue bounds in src/jobs/queue.py (#188). The server and the image never import it.
     "PyYAML>=6.0",
 ]
 dev = [
@@ -94,3 +95,7 @@ package = false
 default-groups = ["dev", "release"]
 # A floor, not a pin: an exact pin would block Dependabot and local uv.
 required-version = ">=0.12.19"
+# Prefer the installed, signed CPython over a uv-managed one (Smart App Control blocks
+# unsigned interpreters on the dev machine); uv still downloads one where no system
+# 3.14 exists (CI).
+python-preference = "system"
