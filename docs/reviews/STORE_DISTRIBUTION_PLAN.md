@@ -165,4 +165,4 @@ No findings. The deletion revoke and the `appletoken` delete are owed to U3 by d
 - Revisit when: —
 - Guard: —
 - Override: user 2026-10-13: fix in this branch rather than a separate issue
-- Outcome: open
+- Outcome: fixed in wording (f832b5fe: privacy.html says Google's script loads on every web page); code fix tracked in #611
