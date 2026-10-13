@@ -127,3 +127,29 @@ Notes:
 - Revisit when: the next change touching the rail group or PyYAML's placement; correct the comment there.
 - Override: user: Fix now — owner overrode all three diff-review deferrals (2026-10-13).
 - Outcome: open
+
+## Diff review round 2 — 2026-10-13, reviewed fix commit 08d10149 (F2)
+
+### D2-1 — The pip guard's tree-walk fallback ignores .gitignore
+- Trigger: full checkout run without a git binary (e.g. bind-mounted into a git-less container) → the walk scans gitignored `.claude/worktrees/*` (old copies with `pip install -r requirements.txt`), `data/`, `web_client/`, `*.osm.pbf` → false offenders, large files read whole.
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: the suite runs on a full checkout without git, or the walk flags gitignored paths; apply the shared ROOT/.git fix.
+- Override: —
+- Outcome: open
+
+### D2-2 — The not-a-repo detection matches English stderr text
+- Trigger: archive copy tested where git prints translated messages → "not a git repository" not found → RuntimeError instead of the walk.
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=inferred
+- Decision: Defer (D10)
+- Revisit when: an archive copy is tested under a non-English git; apply the shared ROOT/.git fix.
+- Override: —
+- Outcome: open
+
+### D2-3 — An archive copy inside another repo's work tree gets an empty `git ls-files`
+- Trigger: archive extracted under an unrelated git work tree → `git ls-files` exits 0 with nothing → the non-empty assertion fails instead of walking.
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=inferred
+- Decision: Defer (D10)
+- Revisit when: an archive copy is extracted inside another work tree, or the "no candidate files" check fires on one; apply the shared ROOT/.git fix.
+- Override: —
+- Outcome: open
