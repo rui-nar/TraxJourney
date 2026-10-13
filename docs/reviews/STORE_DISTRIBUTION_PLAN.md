@@ -175,7 +175,7 @@ No findings. The deletion revoke and the `appletoken` delete are owed to U3 by d
 - Decision: Defer (D10)
 - Revisit when: A failed first Apple sign-in on web or a blocked Apple popup is reported. Fix then with a three-state button (loading = disabled, loaded = enabled, failed = enabled so the tap retries and reports). Do not just disable it until the load finishes: preloadAppleJs swallows failures, so a failed load would leave the button stuck.
 - Guard: —
-- Override: —
+- Override: user 2026-10-13: Fix now — three-state Apple button
 - Outcome: open
 
 ## Delivery
