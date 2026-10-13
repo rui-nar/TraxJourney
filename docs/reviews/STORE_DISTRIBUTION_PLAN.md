@@ -176,7 +176,7 @@ No findings. The deletion revoke and the `appletoken` delete are owed to U3 by d
 - Revisit when: A failed first Apple sign-in on web or a blocked Apple popup is reported. Fix then with a three-state button (loading = disabled, loaded = enabled, failed = enabled so the tap retries and reports). Do not just disable it until the load finishes: preloadAppleJs swallows failures, so a failed load would leave the button stuck.
 - Guard: —
 - Override: user 2026-10-13: Fix now — three-state Apple button
-- Outcome: open
+- Outcome: fixed (83622dc9: three-state Apple button on web; review round 3 clean)
 
 ## Delivery
 
@@ -199,6 +199,7 @@ No findings. The deletion revoke and the `appletoken` delete are owed to U3 by d
 | G1 | Services ID in web/Android builds, codesign --xml (I1-1, I1-2) | Sonnet | — | 1 | X3 (deploy.env.example, test_deploy_script.py) | yes | — |
 | G2 | Apple script only on the sign-in page (I1-3) | Opus | S5 | 1 | X2 for I1-4 (plugin loads GSI before main; owner chose reword + #611) | yes | I2-1 |
 | H1 | Privacy wording for Google's script (I1-4) | Sonnet | — | 2 | — | yes (verifier asked for one wording change) | — |
+| J1 | Three-state Apple button on web (I2-1) | Opus | S5 | 1 | — | yes | — |
 
 Delivery notes:
 - U9 started before U1 was integrated (it was disjoint and built against the plan's contract). U7 and U3 also started as soon as their own dependencies were in.
