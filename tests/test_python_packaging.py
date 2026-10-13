@@ -5,6 +5,8 @@ import subprocess
 import tomllib
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 LOCK = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
@@ -85,15 +87,21 @@ _WALK_SKIP_DIRS = {".git", ".venv", "node_modules", "__pycache__", ".pytest_cach
 
 
 def _candidate_files() -> list[str]:
-    """Tracked files via git; a tree walk where git is missing or this is no work tree."""
-    try:
-        done = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True)
-    except FileNotFoundError:
-        done = None
-    if done is not None and done.returncode == 0:
+    """Tracked files via git when ROOT has a .git, else a tree walk.
+
+    The rule is the presence of ROOT/.git (a directory in a clone, a file in a
+    worktree), never git's exit text. A `git archive` copy has no ignored
+    content, so a walk is exact there; a checkout does have ignored content
+    (.venv, .claude/worktrees), and only git knows which files it is.
+    """
+    if (ROOT / ".git").exists():
+        try:
+            done = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"],
+                                  capture_output=True, check=True)
+        except FileNotFoundError:
+            pytest.skip("git is not installed; the tree has a .git, "
+                        "so a walk would scan ignored files")
         return done.stdout.decode("utf-8").split("\0")
-    if done is not None and b"not a git repository" not in done.stderr:
-        raise RuntimeError(done.stderr.decode("utf-8", errors="replace"))
     found = []
     for dirpath, dirnames, filenames in os.walk(ROOT):
         dirnames[:] = [d for d in dirnames if d not in _WALK_SKIP_DIRS]
