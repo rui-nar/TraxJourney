@@ -109,7 +109,7 @@ Notes:
 - Scores: trigger=plausible (triager corrected from concrete: the documented recipe, every run in this delivery and CI have an index), impact=cosmetic (corrected from degraded-ux), detect=user-visible, later=cheap, fix=S/local, confidence=verified
 - Decision: Defer (D10) — follows the convention of seven existing `git ls-files` tests
 - Revisit when: a git-less archive (or the image, or an sdist) becomes the documented test recipe; then fix every `git ls-files` test with one shared skip-or-fallback helper.
-- Override: —
+- Override: user: Fix now — owner overrode all three diff-review deferrals (2026-10-13).
 - Outcome: open
 
 ### D1-1 — uv's default `python-preference = managed` would put a uv-managed (unsigned) CPython ahead of the signed system one
@@ -117,7 +117,7 @@ Notes:
 - Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=inferred
 - Decision: Defer (D10) — not a duplicate of R1-2 (that fix covers the first sync only)
 - Revisit when: `uv python list --only-installed` shows a uv-managed CPython on the dev machine, `.python-version` moves to a minor with no system install, or SAC blocks `.venv\Scripts\python.exe`; then add `[tool.uv] python-preference = "system"`.
-- Override: —
+- Override: user: Fix now — owner overrode all three diff-review deferrals (2026-10-13).
 - Outcome: open
 
 ### D1-3 — The `rail` group's PyYAML comment says "Test-only … Nothing at runtime imports it"
@@ -125,5 +125,5 @@ Notes:
 - Scores: trigger=plausible, impact=maintainability, detect=user-visible, later=cheap, fix=S/local, confidence=verified
 - Decision: Defer (D10)
 - Revisit when: the next change touching the rail group or PyYAML's placement; correct the comment there.
-- Override: —
+- Override: user: Fix now — owner overrode all three diff-review deferrals (2026-10-13).
 - Outcome: open
