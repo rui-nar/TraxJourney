@@ -146,7 +146,7 @@ No findings. The deletion revoke and the `appletoken` delete are owed to U3 by d
 - Decision: Defer (D10)
 - Revisit when: A run's "Verify the archived app" log shows a text entitlements dump or a PlistBuddy parse error, codesign's `:` deprecation becomes an error, or ios-release.yml is edited for another reason.
 - Guard: —
-- Override: —
+- Override: user 2026-10-13: Fix now — one flag, and a failed first TestFlight run costs a full setup round
 - Outcome: open
 
 ### I1-3 — The privacy policy says Apple's script loads on the sign-in page; index.html loads it on every page, share links included
@@ -156,4 +156,13 @@ No findings. The deletion revoke and the `appletoken` delete are owed to U3 by d
 - Revisit when: —
 - Guard: —
 - Override: —
+- Outcome: open
+
+### I1-4 — Google's sign-in script also loads on every web page, share links included (pre-existing, raised by triage of I1-3)
+- Trigger: A visitor opens a public share link → `main.dart` calls `GoogleSignIn.instance.initialize()` before `runApp`, so google_sign_in_web loads Google's GSI script → Google receives the visitor's IP while privacy.html says Google is involved only at sign-in.
+- Scores: trigger=concrete, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3, floor F3) — code this branch did not write; the owner asked for it to be fixed here
+- Revisit when: —
+- Guard: —
+- Override: user 2026-10-13: fix in this branch rather than a separate issue
 - Outcome: open
