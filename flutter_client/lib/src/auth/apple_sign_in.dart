@@ -17,6 +17,8 @@ import 'package:flutter/foundation.dart'
 import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 
 import '../api/client.dart';
+import '../crypto/device_key_store.dart'
+    show FlutterSecureKvStore, SecureKvStore;
 
 /// The Services ID web and Android sign in with. Empty when the build was
 /// made without `--dart-define=APPLE_SERVICES_ID`, which hides the button on
@@ -33,13 +35,72 @@ class AppleCredential {
   final String? givenName;
   final String? familyName;
 
+  /// Apple's stable id for the user. Only the iOS sheet returns it; Apple JS
+  /// (web) and the Android redirect leave it null.
+  final String? userIdentifier;
+
   const AppleCredential({
     required this.idToken,
     required this.authorizationCode,
     required this.nonce,
     this.givenName,
     this.familyName,
+    this.userIdentifier,
   });
+}
+
+/// Where a name Apple sent is kept until a sign-in carrying it succeeds
+/// (R1-4). Not final so tests can swap in an in-memory store.
+@visibleForTesting
+SecureKvStore applePendingNameStore = FlutterSecureKvStore();
+
+String _pendingNameKey(String userIdentifier) =>
+    'apple_pending_name_v1_$userIdentifier';
+
+/// Apple sends the name on the first authorization only. When that sign-in
+/// fails to reach the server, the retry would carry none and the account
+/// would be named after the relay address. So a name Apple sends is kept,
+/// keyed by [AppleCredential.userIdentifier], and a later credential without
+/// one gets it back. Without a userIdentifier (web, Android) nothing is kept.
+/// A storage failure never blocks a sign-in: the credential goes as Apple
+/// gave it.
+Future<AppleCredential> withPendingAppleName(AppleCredential c) async {
+  final id = c.userIdentifier;
+  if (id == null || id.isEmpty) return c;
+  try {
+    if (c.givenName != null || c.familyName != null) {
+      await applePendingNameStore.write(
+          _pendingNameKey(id),
+          jsonEncode({
+            'given_name': c.givenName,
+            'family_name': c.familyName,
+          }));
+      return c;
+    }
+    final stored = await applePendingNameStore.read(_pendingNameKey(id));
+    if (stored == null) return c;
+    final names = jsonDecode(stored) as Map<String, dynamic>;
+    return AppleCredential(
+      idToken: c.idToken,
+      authorizationCode: c.authorizationCode,
+      nonce: c.nonce,
+      givenName: names['given_name'] as String?,
+      familyName: names['family_name'] as String?,
+      userIdentifier: id,
+    );
+  } catch (_) {
+    return c;
+  }
+}
+
+/// Drops the kept name once a sign-in has succeeded: the server has it now.
+Future<void> forgetPendingAppleName(String? userIdentifier) async {
+  if (userIdentifier == null || userIdentifier.isEmpty) return;
+  try {
+    await applePendingNameStore.delete(_pendingNameKey(userIdentifier));
+  } catch (_) {
+    // A leftover entry only resends a name the server no longer uses.
+  }
 }
 
 /// The user dismissed Apple's sheet, popup or page. Not an error to show.
@@ -135,6 +196,9 @@ bool isAppleSignInCancel(Object e) {
 ///
 /// On Android the future never completes if the user closes the Custom Tab;
 /// the plugin rejects it when the next attempt starts.
+///
+/// A name Apple sends is kept until a sign-in succeeds, and a credential
+/// without one gets the kept name back ([withPendingAppleName]).
 Future<AppleCredential> signInWithApple() async {
   final rawNonce = generateRawNonce();
   final nativeSheet = !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
@@ -157,13 +221,14 @@ Future<AppleCredential> signInWithApple() async {
   if (idToken == null || idToken.isEmpty) {
     throw Exception('no ID token received');
   }
-  return AppleCredential(
+  return withPendingAppleName(AppleCredential(
     idToken: idToken,
     authorizationCode: credential.authorizationCode,
     nonce: rawNonce,
     givenName: _name(credential.givenName),
     familyName: _name(credential.familyName),
-  );
+    userIdentifier: credential.userIdentifier,
+  ));
 }
 
 /// Apple sends the name on the first sign-in only, possibly blank. The
