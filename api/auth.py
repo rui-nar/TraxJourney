@@ -25,6 +25,7 @@ from fastapi.responses import RedirectResponse
 from google.auth.transport import requests as google_requests
 from google.oauth2.id_token import verify_oauth2_token
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy.orm.exc import StaleDataError
 from sqlmodel import select
 
 from src.auth import apple
@@ -456,6 +457,7 @@ def apple_login(body: AppleTokenRequest):
         email = identity.email or ""
         admin = identity.email_verified and _is_admin_email(email)
 
+        token = None
         if user_info is None:
             REGISTRATIONS.labels("apple").inc()  # first sight of this Apple account
             # Apple sends the name on the first sign-in only.
@@ -483,17 +485,37 @@ def apple_login(body: AppleTokenRequest):
             sess.add(user_info)
             sess.flush()
             token = AppleToken(user_info_id=user_info.id)
-        else:
-            if admin and not user_info.is_admin:
-                user_info.is_admin = True
-                sess.add(user_info)
-            token = sess.exec(
-                select(AppleToken).where(AppleToken.user_info_id == user_info.id)
-            ).first() or AppleToken(user_info_id=user_info.id)
 
-        token.refresh_token = refresh_token
-        token.client_id = client_id
-        sess.add(token)
+        # An account deleted after the lookup leaves the fresh token in no row
+        # its deletion could revoke (U3R1-2): its UPDATEs match nothing, and
+        # SQLite takes an AppleToken INSERT for the gone account, so the
+        # account is looked up again once this session holds the write lock.
+        try:
+            if token is None:  # an existing account
+                if admin and not user_info.is_admin:
+                    user_info.is_admin = True
+                    sess.add(user_info)
+                token = sess.exec(
+                    select(AppleToken).where(AppleToken.user_info_id == user_info.id)
+                ).first() or AppleToken(user_info_id=user_info.id)
+            token.refresh_token = refresh_token
+            token.client_id = client_id
+            sess.add(token)
+            sess.flush()
+            gone = sess.exec(
+                select(UserInfo.id).where(UserInfo.id == user_info.id)
+            ).first() is None
+        except StaleDataError:
+            gone = True
+        if gone:
+            sess.rollback()
+            apple.revoke(refresh_token, client_id, secret)
+            _log.warning("Apple sign-in failed: account deleted during sign-in (reason=account_gone)")
+            LOGINS.labels("apple", "failure").inc()
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid Apple id_token",
+            )
         sess.commit()
         sess.refresh(user_info)
 
