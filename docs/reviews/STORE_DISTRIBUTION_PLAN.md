@@ -138,7 +138,7 @@ No findings. The deletion revoke and the `appletoken` delete are owed to U3 by d
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (9e80e9a2: APK, AAB, Docker web and deploy.ps1 builds pass APPLE_SERVICES_ID)
 
 ### I1-2 — The TestFlight entitlement check may read a text dump from `codesign -d --entitlements :-` and fail every run
 - Trigger: On a macOS image whose codesign no longer writes XML for the `:` form → PlistBuddy can't parse the file → under pipefail the step blames the Developer portal → nothing uploads.
@@ -147,7 +147,7 @@ No findings. The deletion revoke and the `appletoken` delete are owed to U3 by d
 - Revisit when: A run's "Verify the archived app" log shows a text entitlements dump or a PlistBuddy parse error, codesign's `:` deprecation becomes an error, or ios-release.yml is edited for another reason.
 - Guard: —
 - Override: user 2026-10-13: Fix now — one flag, and a failed first TestFlight run costs a full setup round
-- Outcome: open
+- Outcome: fixed (9e80e9a2: codesign --entitlements - --xml)
 
 ### I1-3 — The privacy policy says Apple's script loads on the sign-in page; index.html loads it on every page, share links included
 - Trigger: A visitor opens a public share link → index.html fetches appleid.auth.js from Apple's CDN → Apple receives the visitor's IP while the policy says it only receives data at sign-in.
