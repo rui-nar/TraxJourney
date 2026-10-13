@@ -97,6 +97,10 @@ Branch `chore/603-uv`, orchestrator worktree `E:/Dev/TraxJourney-603`, unit work
 | U4 | Local dev scripts and docs | Opus | S3 | 1 | owner decision (dev-server.ps1/dev.ps1 untracked → post-merge owner action) | yes | R1-2, R1-4, R2-2 |
 | F1 | Pin uv 0.12.19 (0.13.0 was 3 days old, against Decision 4) | Sonnet | — | 1 | — | yes | — |
 | U5 | Delete requirements.txt, guard against its return | Sonnet | — | 2 | — | no (guard could pass on an empty `git ls-files`; fixed in 64d67c9c) | — |
+| F2 | Fix D1-1 (python-preference=system), D1-2 (guard without git), D1-3 (PyYAML comment) | Sonnet | — | 1 | — | yes | D1-1, D1-2, D1-3 |
+| F3 | Fix D2-1..D2-3: decide git vs walk by `.git` existence | Sonnet | — | 1 | — | yes | D2-1, D2-2, D2-3 |
+
+Checks: full suite in the py314 citest container with uv 0.12.19 — 7213 passed after wave 1 + F1, 7215 after U5, 7216 after F2 (39 skipped each); the 6 packaging/CI/Docker test files 136 passed after F3 (test-only change); alembic check clean. Image built, booted (/api/version 200), no pytest inside. PR CI (test, image, flutter, android) not yet run: it needs the PR.
 
 Notes:
 - F1 is an orchestrator fix unit: the plan named 0.13.0 without checking its release date; U3 caught it.
