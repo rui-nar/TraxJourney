@@ -1,7 +1,7 @@
 # uv, pinned to an exact version so every build installs with the same tool
 # (#603). Dependabot's docker updates move this tag; the setup-uv `version:` in
 # the CI workflows must move with it.
-FROM ghcr.io/astral-sh/uv:0.12.19 AS uv
+FROM ghcr.io/astral-sh/uv:0.13.0 AS uv
 
 FROM python:3.14-slim
 
