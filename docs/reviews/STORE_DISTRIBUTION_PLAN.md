@@ -200,6 +200,7 @@ No findings. The deletion revoke and the `appletoken` delete are owed to U3 by d
 | G2 | Apple script only on the sign-in page (I1-3) | Opus | S5 | 1 | X2 for I1-4 (plugin loads GSI before main; owner chose reword + #611) | yes | I2-1 |
 | H1 | Privacy wording for Google's script (I1-4) | Sonnet | — | 2 | — | yes (verifier asked for one wording change) | — |
 | J1 | Three-state Apple button on web (I2-1) | Opus | S5 | 1 | — | yes | — |
+| K1 | Merge main (uv #613); Play upload installs a uv `play` group | Opus | S2 | 2 | X3 (owner chose: allow-list android-release.yml in test_ci_workflows.py, plus a narrow `play` group) | yes | — |
 
 Delivery notes:
 - U9 started before U1 was integrated (it was disjoint and built against the plan's contract). U7 and U3 also started as soon as their own dependencies were in.
