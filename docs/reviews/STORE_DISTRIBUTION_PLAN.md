@@ -118,7 +118,7 @@ No findings. The deletion revoke and the `appletoken` delete are owed to U3 by d
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (9048ce0d: token re-read under the lock, a swapped-in token revoked after commit with its own client_id)
 
 ### U3R1-2 — The mirror race: a sign-in that commits after the deletion leaves a fresh Apple token unrevoked (api/auth.py, U2's code)
 - Trigger: `apple_login` reads the account and token row, Apple issues a fresh refresh token, the deletion commits first → the login's UPDATE hits a deleted row (StaleDataError → 500) → the fresh token is in no row and is never revoked → Apple shows TraxJourney authorized for an account that no longer exists.
