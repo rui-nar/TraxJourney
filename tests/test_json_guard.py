@@ -109,8 +109,9 @@ def test_its_answers_carry_the_request_id(app):  # noqa: F811
 def test_the_floor_is_a_fastapi_that_refuses_a_body_without_a_content_type():
     """FastAPI 0.132 made strict_content_type the default: before it, a body
     without a Content-Type was parsed as JSON, so the guard judges it too."""
-    req = (Path(__file__).resolve().parents[1] / "requirements.txt").read_text()
-    line = next(line for line in req.splitlines() if line.startswith("fastapi"))
+    import tomllib
+    project = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml").read_text())
+    line = next(d for d in project["project"]["dependencies"] if d.startswith("fastapi"))
     floor = tuple(int(p) for p in line.split(">=")[1].strip().split("."))
 
     assert floor >= (0, 132, 0), line

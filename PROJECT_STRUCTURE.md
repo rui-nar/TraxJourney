@@ -95,7 +95,9 @@ TraxJourney/
 ├── alembic.ini                   # Alembic configuration
 ├── Dockerfile                    # Container image (FastAPI + uvicorn + bundled web build)
 ├── entrypoint.sh                 # Container entrypoint
-├── requirements.txt              # Python dependencies
+├── pyproject.toml                # Python dependencies (runtime + dev/release/rail groups)
+├── uv.lock                       # Locked versions, from `uv lock`
+├── .python-version               # Python version uv uses (3.14)
 ├── deploy.ps1                    # Build + push image + deploy to the VPS, then verify
 ├── deploy.env.example            # Template for the gitignored deploy.env (host settings)
 ├── PROJECT_STRUCTURE.md          # This file

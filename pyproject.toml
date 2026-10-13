@@ -1,0 +1,101 @@
+[project]
+name = "traxjourney"
+# Placeholder: the release version lives in the git tag, not here.
+version = "0.0.0"
+description = "TraxJourney server (FastAPI)"
+requires-python = ">=3.14"
+# What the server and the in-image scripts import (Docker, CI, and local dev).
+dependencies = [
+    "fastapi>=0.132.0",
+    "scalar-fastapi>=1.8.2",
+    "python-multipart>=0.0.9",
+    "uvicorn>=0.30.0",
+    "gunicorn>=21.0.0",
+    # Pinned: SQLModel's exec() is SELECT-oriented; the ORM/Core behaviour these
+    # pins guarantee is what the repo (optimistic-lock CAS via sess.execute) is
+    # tested against. Leaving them unpinned let the Docker image resolve to a newer
+    # SQLModel whose result handling differed, surfacing as 500s in production.
+    "sqlmodel==0.0.37",
+    "sqlalchemy==2.0.48",
+    "alembic>=1.13.0",
+    "PyJWT>=2.8.0",
+    "bcrypt>=4.0.0",
+    "google-auth>=2.28.0",
+    # AES-256-GCM for the third-party credentials stored in the database
+    # (src/auth/credentials_crypto.py). google-auth pulls it in too; listed because
+    # the app imports it directly.
+    "cryptography>=42.0.0",
+    "requests>=2.28.0",
+    # Imported directly by src/utils/safe_fetch.py (pinned connections, v2 API;
+    # 2.6 bounds decompression).
+    "urllib3>=2.6,<3",
+    "gpxpy>=1.5.0",
+    # The zone a GPX track was recorded in, from its first point, offline (issue
+    # #365, src/gpx/timezone.py). Its wheel carries its own boundary data (~3 MB).
+    "tzfpy>=2.1.0",
+    # The IANA database zoneinfo falls back to when the system one lacks a zone
+    # tzfpy names (issue #365, src/gpx/timezone.py); without it such a track is
+    # stored in Etc/UTC.
+    "tzdata>=2024.1",
+    "polyline>=2.0.0",
+    "Pillow>=10.0.0",
+    "mercantile>=1.2.0",
+    "apscheduler>=3.10.0",
+    "httpx>=0.27.0",
+    # Transactional email (issue #113): SMTP transport + template rendering.
+    "aiosmtplib>=3.0.0",
+    "jinja2>=3.1.0",
+    # Payments (issue #121): Stripe Checkout / Customer Portal / webhook signature
+    # verification. Imported lazily — a self-hosted instance with no provider
+    # configured never loads it.
+    "stripe>=11.0.0",
+    # Prometheus metrics (issue #125): client library + FastAPI request middleware.
+    "prometheus-client>=0.21.0",
+    "prometheus-fastapi-instrumentator>=7.0.0",
+    # Background job queue (issue #173): Redis broker + RQ workers. Both are
+    # OPTIONAL at runtime — with REDIS_URL unset the app runs every job in-process
+    # via FastAPI BackgroundTasks, which is the supported self-hosted setup and the
+    # rollback path for the deployment.
+    "redis>=5.0.0",
+    "rq>=1.16.0",
+    # Rail extracts and store (issue #345): scripts/build_rail_extract.py filters
+    # the Geofabrik extracts in CI (Phase 1) and src/rail/builder.py turns the
+    # result into the per-region SQLite store (Phase 2). Pinned to a major version
+    # because pyosmium's reader API changed in 4.x.
+    "osmium>=4.0.0,<5.0.0",
+]
+
+[dependency-groups]
+# What rail-extract.yml's plan and build jobs need without the server's
+# dependencies. osmium/requests repeat the runtime specifiers exactly.
+rail = [
+    "osmium>=4.0.0,<5.0.0",
+    "requests>=2.28.0",
+    # Imported by scripts/build_rail_extract.py and scripts/route_corpus.py, which
+    # rail-extract.yml runs with this group; tests/test_worker_topology.py also parses
+    # docker-compose.yml.example with it, to check the worker topology against the
+    # queue bounds in src/jobs/queue.py (#188). The server and the image never import it.
+    "PyYAML>=6.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    # Backs the queue tests so CI needs no broker container (issue #173).
+    "fakeredis>=2.21.0",
+    { include-group = "rail" },
+]
+# release_notes.py --polish; never in the image.
+release = [
+    "anthropic",
+]
+
+[tool.uv]
+# An application run from its root, not an installable package.
+package = false
+default-groups = ["dev", "release"]
+# A floor, not a pin: an exact pin would block Dependabot and local uv.
+required-version = ">=0.12.19"
+# Prefer the installed, signed CPython over a uv-managed one (Smart App Control blocks
+# unsigned interpreters on the dev machine); uv still downloads one where no system
+# 3.14 exists (CI).
+python-preference = "system"
