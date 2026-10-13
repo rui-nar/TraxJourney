@@ -110,7 +110,7 @@ Notes:
 - Decision: Defer (D10) — follows the convention of seven existing `git ls-files` tests
 - Revisit when: a git-less archive (or the image, or an sdist) becomes the documented test recipe; then fix every `git ls-files` test with one shared skip-or-fallback helper.
 - Override: user: Fix now — owner overrode all three diff-review deferrals (2026-10-13).
-- Outcome: open
+- Outcome: fixed (F2, 08d10149)
 
 ### D1-1 — uv's default `python-preference = managed` would put a uv-managed (unsigned) CPython ahead of the signed system one
 - Trigger: a uv-managed CPython matching `.python-version` gets installed on the SAC dev machine (`uv python install`, another project, a minor bump before the system install) → `uv sync` builds .venv on it → SAC blocks `.venv\Scripts\python.exe` → local `uv run python …`, the release script and deploy.ps1's probe fail.
@@ -118,7 +118,7 @@ Notes:
 - Decision: Defer (D10) — not a duplicate of R1-2 (that fix covers the first sync only)
 - Revisit when: `uv python list --only-installed` shows a uv-managed CPython on the dev machine, `.python-version` moves to a minor with no system install, or SAC blocks `.venv\Scripts\python.exe`; then add `[tool.uv] python-preference = "system"`.
 - Override: user: Fix now — owner overrode all three diff-review deferrals (2026-10-13).
-- Outcome: open
+- Outcome: fixed (F2, 08d10149)
 
 ### D1-3 — The `rail` group's PyYAML comment says "Test-only … Nothing at runtime imports it"
 - Trigger: a maintainer reads the comment and moves PyYAML to `dev` → the rail-extract jobs (build_rail_extract.py, route_corpus.py import yaml) would break; test_rail_group_is_exactly_osmium_requests_and_pyyaml catches it in PR CI first.
@@ -126,7 +126,7 @@ Notes:
 - Decision: Defer (D10)
 - Revisit when: the next change touching the rail group or PyYAML's placement; correct the comment there.
 - Override: user: Fix now — owner overrode all three diff-review deferrals (2026-10-13).
-- Outcome: open
+- Outcome: fixed (F2, 08d10149)
 
 ## Diff review round 2 — 2026-10-13, reviewed fix commit 08d10149 (F2)
 
@@ -136,7 +136,7 @@ Notes:
 - Decision: Defer (D10)
 - Revisit when: the suite runs on a full checkout without git, or the walk flags gitignored paths; apply the shared ROOT/.git fix.
 - Override: user: Fix now — option 1: decide git vs walk by ROOT/.git existence (2026-10-13).
-- Outcome: open
+- Outcome: fixed (F3, 28060976)
 
 ### D2-2 — The not-a-repo detection matches English stderr text
 - Trigger: archive copy tested where git prints translated messages → "not a git repository" not found → RuntimeError instead of the walk.
@@ -144,7 +144,7 @@ Notes:
 - Decision: Defer (D10)
 - Revisit when: an archive copy is tested under a non-English git; apply the shared ROOT/.git fix.
 - Override: user: Fix now — option 1: decide git vs walk by ROOT/.git existence (2026-10-13).
-- Outcome: open
+- Outcome: fixed (F3, 28060976)
 
 ### D2-3 — An archive copy inside another repo's work tree gets an empty `git ls-files`
 - Trigger: archive extracted under an unrelated git work tree → `git ls-files` exits 0 with nothing → the non-empty assertion fails instead of walking.
@@ -152,4 +152,16 @@ Notes:
 - Decision: Defer (D10)
 - Revisit when: an archive copy is extracted inside another work tree, or the "no candidate files" check fires on one; apply the shared ROOT/.git fix.
 - Override: user: Fix now — option 1: decide git vs walk by ROOT/.git existence (2026-10-13).
+- Outcome: fixed (F3, 28060976)
+
+## Diff review round 3 — 2026-10-13, reviewed fix commit 28060976 (F3)
+
+Round 3 confirms D2-1, D2-2 and D2-3 closed by option 1.
+
+### D3-1 — With a `.git` that git refuses to read, the guard errors without git's reason, where four sibling helpers skip
+- Trigger: suite run on a copy whose `.git` git rejects (dubious-ownership bind mount, or a worktree's `.git` file pointing at a Windows gitdir after copying into Linux) → `check=True` raises CalledProcessError, uncaught → the test errors with "exit status 128" and no message.
+- Scores: trigger=plausible, impact=cosmetic (triager corrected from wrong-visible: no false pass or false offender), detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10). Round cap reached: a Fix now would need a fourth round, which only the owner can ask for.
+- Revisit when: the guard errors with "exit status 128" anywhere, or the next change to the git ls-files helpers; then `except (OSError, subprocess.CalledProcessError)` → pytest.skip with the decoded stderr, ideally in one shared helper (see D1-2).
+- Override: —
 - Outcome: open
