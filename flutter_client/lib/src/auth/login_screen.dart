@@ -169,6 +169,11 @@ class _LoginScreenState extends State<LoginScreen> {
       givenName: credential.givenName,
       familyName: credential.familyName,
     );
+    // Before the mounted check: the server has the name even if this screen
+    // is gone.
+    if (auth.user != null) {
+      await forgetPendingAppleName(credential);
+    }
     if (!mounted) return;
     if (auth.user != null) _navigateAfterLogin();
   }

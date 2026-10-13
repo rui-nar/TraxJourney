@@ -23,6 +23,8 @@ import 'package:traxjourney_client/src/auth/apple_sign_in.dart';
 import 'package:traxjourney_client/src/auth/auth_notifier.dart';
 import 'package:traxjourney_client/src/auth/auth_service.dart';
 import 'package:traxjourney_client/src/auth/login_screen.dart';
+import 'package:traxjourney_client/src/crypto/device_key_store.dart'
+    show SecureKvStore;
 
 /// What the fake plugin was asked for.
 class _AppleCall {
@@ -40,6 +42,44 @@ const _credential = AuthorizationCredentialAppleID(
   identityToken: 'the-id-token',
   state: null,
 );
+
+/// What the iOS sheet returns on the first authorization: names and an id.
+const _firstIos = AuthorizationCredentialAppleID(
+  userIdentifier: 'apple-user-1',
+  givenName: 'Ada',
+  familyName: 'Lovelace',
+  authorizationCode: 'the-code',
+  email: null,
+  identityToken: 'the-id-token',
+  state: null,
+);
+
+/// What it returns on every later one: the id, no names.
+const _laterIos = AuthorizationCredentialAppleID(
+  userIdentifier: 'apple-user-1',
+  givenName: null,
+  familyName: null,
+  authorizationCode: 'the-code',
+  email: null,
+  identityToken: 'the-id-token',
+  state: null,
+);
+
+const _keptKey = 'apple_pending_name_v1_apple-user-1';
+
+/// In-memory stand-in for the keystore that keeps Apple's name (R1-4).
+class _MemoryKv implements SecureKvStore {
+  final values = <String, String>{};
+
+  @override
+  Future<String?> read(String key) async => values[key];
+
+  @override
+  Future<void> write(String key, String value) async => values[key] = value;
+
+  @override
+  Future<void> delete(String key) async => values.remove(key);
+}
 
 /// Pumps LoginScreen under a router, so a successful sign-in can navigate.
 Future<void> _pumpLogin(WidgetTester tester) async {
@@ -79,6 +119,8 @@ void main() {
   late ApiClient originalApi;
   late String originalServicesId;
   late AppleCredentialRequester originalRequester;
+  late SecureKvStore originalNameStore;
+  late _MemoryKv kept;
   late List<http.Request> posts;
 
   setUp(() {
@@ -88,6 +130,9 @@ void main() {
     originalApi = api;
     originalServicesId = appleServicesId;
     originalRequester = requestAppleCredential;
+    originalNameStore = applePendingNameStore;
+    kept = _MemoryKv();
+    applePendingNameStore = kept;
     posts = [];
   });
 
@@ -95,6 +140,7 @@ void main() {
     api = originalApi;
     appleServicesId = originalServicesId;
     requestAppleCredential = originalRequester;
+    applePendingNameStore = originalNameStore;
   });
 
   /// Answers POST /api/auth/apple with [status] and [body]; anything else
@@ -411,4 +457,160 @@ void main() {
       });
     }
   });
+
+  // R1-4: Apple sends the name on the first authorization only. A first
+  // sign-in that fails must not lose it for the retry.
+  group('kept name', () {
+    const ok = {
+      'access_token': 'jwt',
+      'token_type': 'bearer',
+      'user': {'id': 7},
+    };
+    Map<String, dynamic> bodyOf(http.Request r) =>
+        jsonDecode(r.body) as Map<String, dynamic>;
+    void appleReturns(List<AuthorizationCredentialAppleID> answers) {
+      var i = 0;
+      requestAppleCredential = (
+              {required String nonce,
+              WebAuthenticationOptions? webAuthenticationOptions}) async =>
+          answers[i++];
+    }
+
+    _testOn(
+        TargetPlatform.iOS,
+        'a failed first sign-in keeps the name, the nameless retry sends it, '
+        'and the success forgets it', (tester) async {
+      appleReturns([_firstIos, _laterIos]);
+      serve(502, {'detail': 'Apple sign-in unavailable'});
+      await _pumpLogin(tester);
+
+      await _tapApple(tester);
+
+      expect(posts, hasLength(1));
+      expect(bodyOf(posts[0])['given_name'], 'Ada');
+      expect(jsonDecode(kept.values[_keptKey]!),
+          {'given_name': 'Ada', 'family_name': 'Lovelace'});
+      expect(find.byType(LoginScreen), findsOneWidget);
+
+      serve(200, ok);
+      await _tapApple(tester);
+
+      expect(posts, hasLength(2));
+      expect(bodyOf(posts[1])['given_name'], 'Ada');
+      expect(bodyOf(posts[1])['family_name'], 'Lovelace');
+      expect(kept.values, isEmpty);
+      expect(find.text('PROJECTS'), findsOneWidget);
+    });
+
+    _testOn(TargetPlatform.iOS, 'names Apple sends replace the kept ones',
+        (tester) async {
+      kept.values[_keptKey] =
+          jsonEncode({'given_name': 'Old', 'family_name': 'Name'});
+      appleReturns([_firstIos]);
+      serve(502, {'detail': 'Apple sign-in unavailable'});
+      await _pumpLogin(tester);
+
+      await _tapApple(tester);
+
+      expect(bodyOf(posts.single)['given_name'], 'Ada');
+      expect(bodyOf(posts.single)['family_name'], 'Lovelace');
+      expect(jsonDecode(kept.values[_keptKey]!),
+          {'given_name': 'Ada', 'family_name': 'Lovelace'});
+    });
+
+    _testOn(TargetPlatform.iOS,
+        'a nameless sign-in with nothing kept sends no name', (tester) async {
+      appleReturns([_laterIos]);
+      serve(200, ok);
+      await _pumpLogin(tester);
+
+      await _tapApple(tester);
+
+      expect(bodyOf(posts.single)['given_name'], isNull);
+      expect(bodyOf(posts.single)['family_name'], isNull);
+      expect(find.text('PROJECTS'), findsOneWidget);
+    });
+
+    // Web and Android credentials carry no userIdentifier: the id_token's
+    // sub, the same Apple user id, is the key.
+    _testOn(TargetPlatform.android,
+        'without a userIdentifier the id_token sub keys the kept name',
+        (tester) async {
+      appleServicesId = 'com.traxjourney.web';
+      final token = _jwt({'sub': 'apple-sub-1', 'aud': 'com.traxjourney.web'});
+      appleReturns([
+        _webShaped(token, given: 'Ada', family: 'Lovelace'),
+        _webShaped(token),
+      ]);
+      serve(502, {'detail': 'Apple sign-in unavailable'});
+      await _pumpLogin(tester);
+
+      await _tapApple(tester);
+
+      expect(bodyOf(posts.single)['given_name'], 'Ada');
+      expect(jsonDecode(kept.values['apple_pending_name_v1_apple-sub-1']!),
+          {'given_name': 'Ada', 'family_name': 'Lovelace'});
+
+      serve(200, ok);
+      await _tapApple(tester);
+
+      expect(posts, hasLength(2));
+      expect(bodyOf(posts[1])['given_name'], 'Ada');
+      expect(bodyOf(posts[1])['family_name'], 'Lovelace');
+      expect(kept.values, isEmpty);
+      expect(find.text('PROJECTS'), findsOneWidget);
+    });
+
+    // No userIdentifier and no readable sub: nothing to key on.
+    for (final (label, token) in [
+      ('not a JWT', 'the-id-token'),
+      ('a payload that is not base64url', 'h.%%%.s'),
+      ('a payload that is not JSON', 'h.${_b64('not json')}.s'),
+      ('a payload without sub', _jwt({'aud': 'x'})),
+      ('a payload that is a list', 'h.${_b64('["sub"]')}.s'),
+    ]) {
+      _testOn(TargetPlatform.android, '$label: nothing is kept, no crash',
+          (tester) async {
+        appleServicesId = 'com.traxjourney.web';
+        appleReturns([
+          _webShaped(token, given: 'Ada', family: 'Lovelace'),
+          _webShaped(token),
+        ]);
+        serve(502, {'detail': 'Apple sign-in unavailable'});
+        await _pumpLogin(tester);
+
+        await _tapApple(tester);
+
+        expect(bodyOf(posts.single)['given_name'], 'Ada');
+        expect(kept.values, isEmpty);
+
+        serve(200, ok);
+        await _tapApple(tester);
+
+        expect(posts, hasLength(2));
+        expect(bodyOf(posts[1])['given_name'], isNull);
+        expect(kept.values, isEmpty);
+        expect(find.text('PROJECTS'), findsOneWidget);
+      });
+    }
+  });
 }
+
+String _b64(String s) => base64Url.encode(utf8.encode(s)).replaceAll('=', '');
+
+/// An unsigned id_token shape: only the payload is read client-side.
+String _jwt(Map<String, dynamic> payload) =>
+    '${_b64('{"alg":"ES256"}')}.${_b64(jsonEncode(payload))}.sig';
+
+/// What Apple JS and the Android redirect return: no userIdentifier.
+AuthorizationCredentialAppleID _webShaped(String idToken,
+        {String? given, String? family}) =>
+    AuthorizationCredentialAppleID(
+      userIdentifier: null,
+      givenName: given,
+      familyName: family,
+      authorizationCode: 'the-code',
+      email: null,
+      identityToken: idToken,
+      state: null,
+    );
