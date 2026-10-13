@@ -77,7 +77,7 @@ Envelope: plan section "Review envelope" + REVIEW.md defaults
 - Revisit when: An iOS or Android validation run produces a 0.0.1, 0.<run> or BASE=0 build, or its log shows `gh release list` failing.
 - Guard: —
 - Override: user 2026-10-13: Fix now — owner asked to fix every open finding before the package merges
-- Outcome: open
+- Outcome: fixed (c9ae995f: validation needs a published vX.Y.Z release; the lookup failure fails the step)
 
 ## Round 3 — 2026-10-12, fix for R2-1 (plan uncommitted, on 48029e8f)
 

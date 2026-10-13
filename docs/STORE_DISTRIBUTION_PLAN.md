@@ -610,7 +610,7 @@ REVIEW.md defaults apply, plus:
      debug a failing run".
 - **Acceptance:** `tests/test_ios_build_number.py` covers: a real tag; a
   validation build after `v1.0.0`, which gives `1.0.1` and `10000.<run>`, not
-  `1.0.0`; a validation build before any release (`0.0.1`, `0.<run>`); a
+  `1.0.0`; a validation build with no published release fails (R2-4); a
   validation build number that sorts below the real code of its short version
   (`10000.N < 10001`) and above the previous run's; and a bad tag.
   `pytest tests/test_ios_build_number.py` passes. **Owner check:** a
