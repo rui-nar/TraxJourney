@@ -177,3 +177,30 @@ No findings. The deletion revoke and the `appletoken` delete are owed to U3 by d
 - Guard: —
 - Override: —
 - Outcome: open
+
+## Delivery
+
+| Unit | Goal | Route | Rule | Attempts | Escalated | Verified first time | Findings traced |
+|---|---|---|---|---|---|---|---|
+| U1 | Apple identity library | Opus | S5 | 1 | — | yes | U1R1-1 |
+| U2 | Apple login endpoint, callback, schema | Opus | S4 | 1 | X3 (two existing tests outside Scope) | yes | U3R1-2 |
+| U3 | Revoke Apple on account deletion | Opus | S5 | 1 | — | yes | U3R1-1 |
+| U4 | AASA, /delete-account, privacy update | Sonnet | — | 1 | — | yes | I1-3 |
+| U6 | iOS entitlements, privacy manifest, PR build | Opus | S2 | 1 | — | yes (static; CI ios job green) | — |
+| U7 | iOS release workflow to TestFlight | Opus | S2 | 1 | — | yes | R2-4, I1-2 |
+| U8 | AAB and Play upload | Sonnet | — | 1 | — | yes | I1-1 |
+| U9 | Sign in with Apple in the client | Opus | S5 | 1 | X3 (auth_notifier.dart) | yes | U9R1-1, R1-4, I1-3, I2-1 |
+| U9a | Hide Apple on a custom server (U9R1-1) | Sonnet | — | 1 | — | yes | — |
+| F1 | Deletion race (U3R1-1) | Opus | S5 | 1 | — | yes | — |
+| F2 | Sign-in race (U3R1-2) | Opus | S5 | 1 | — | yes | — |
+| F3 | Config, OAuth error and key-set fixes (R2-2, R2-3, U1R1-1) | Opus | S5 | 1 | — | yes | — |
+| F4 | Keep Apple's first-sign-in name (R1-4) | Opus | S5 | 2 | — (acceptance widened by the orchestrator to key on the token's sub) | yes | — |
+| F5 | Validation build needs a release (R2-4) | Sonnet | — | 1 | — | yes | — |
+| G1 | Services ID in web/Android builds, codesign --xml (I1-1, I1-2) | Sonnet | — | 1 | X3 (deploy.env.example, test_deploy_script.py) | yes | — |
+| G2 | Apple script only on the sign-in page (I1-3) | Opus | S5 | 1 | X2 for I1-4 (plugin loads GSI before main; owner chose reword + #611) | yes | I2-1 |
+| H1 | Privacy wording for Google's script (I1-4) | Sonnet | — | 2 | — | yes (verifier asked for one wording change) | — |
+
+Delivery notes:
+- U9 started before U1 was integrated (it was disjoint and built against the plan's contract). U7 and U3 also started as soon as their own dependencies were in.
+- Agent worktree isolation failed repeatedly on a drive-letter case mismatch (`e:` vs `E:`), so from F1 on the worktrees were created by the orchestrator under `E:\Dev\TraxJourney-fixes\` and the agents were pinned to them.
+- CI on the integrated branch hit two failures that came from main, not this branch. Starlette 1.8.0 broke a test fake: fixed in PR #614 and merged. A storage-counter race made a photo test flaky: issue #612, fixed on its own branch.
