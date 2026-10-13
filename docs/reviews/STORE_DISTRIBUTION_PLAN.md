@@ -128,3 +128,32 @@ No findings. The deletion revoke and the `appletoken` delete are owed to U3 by d
 - Guard: —
 - Override: —
 - Outcome: fixed (ed217271: account re-checked after flush; if gone, roll back, revoke the fresh token, 401)
+
+## Integrated review (DELIVERY.md §5.2) — round 1, 2026-10-13, reviewed at c76aa00d
+
+### I1-1 — No official web or Android build carries APPLE_SERVICES_ID, so the Apple button never appears outside iOS
+- Trigger: The owner sets the `APPLE_SERVICES_ID` repository variable and tags a release → the APK, the Play AAB and the Docker web image are built without `--dart-define=APPLE_SERVICES_ID` → the button is hidden on web and Android → an Apple-only user can't sign in there (DoD 4).
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
+
+### I1-2 — The TestFlight entitlement check may read a text dump from `codesign -d --entitlements :-` and fail every run
+- Trigger: On a macOS image whose codesign no longer writes XML for the `:` form → PlistBuddy can't parse the file → under pipefail the step blames the Developer portal → nothing uploads.
+- Scores: trigger=plausible (triage lowered it from concrete), impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=inferred
+- Decision: Defer (D10)
+- Revisit when: A run's "Verify the archived app" log shows a text entitlements dump or a PlistBuddy parse error, codesign's `:` deprecation becomes an error, or ios-release.yml is edited for another reason.
+- Guard: —
+- Override: —
+- Outcome: open
+
+### I1-3 — The privacy policy says Apple's script loads on the sign-in page; index.html loads it on every page, share links included
+- Trigger: A visitor opens a public share link → index.html fetches appleid.auth.js from Apple's CDN → Apple receives the visitor's IP while the policy says it only receives data at sign-in.
+- Scores: trigger=concrete, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3, floor F3) — load the script only from the login screen, not reword the policy
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: open
