@@ -127,4 +127,4 @@ No findings. The deletion revoke and the `appletoken` delete are owed to U3 by d
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: open
+- Outcome: fixed (ed217271: account re-checked after flush; if gone, roll back, revoke the fresh token, 401)
