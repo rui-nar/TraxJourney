@@ -18,7 +18,8 @@ The floating ``validation`` tag has no version of its own and is moved by hand
 numbered ``<latest real code>.<run>``:
 
     validation, run 17, latest v1.0.0  ->  1.0.1 10000.17
-    validation, run 17, no release yet ->  0.0.1 0.17
+
+A validation build needs a published release: without --latest-tag it fails.
 
 The latest released version may already be closed, so the patch-bumped one is
 used instead: it is never a released version until its real tag ships. Its
@@ -71,7 +72,7 @@ def build_number(
 
     ``validation_run`` (the workflow's run number) is required for the
     ``validation`` tag and refused for any other. ``latest_tag`` is the latest
-    real release, or None/empty before the first one.
+    real release, required for the ``validation`` tag.
 
     Raises ValueError on anything else, so a mistyped tag fails the build
     rather than uploading a build App Store Connect will refuse.
@@ -90,7 +91,10 @@ def build_number(
             f"the {VALIDATION_TAG!r} tag needs --validation-run N (N >= 1)"
         )
     if not latest_tag:
-        return "0.0.1", f"0.{validation_run}"
+        raise ValueError(
+            f"the {VALIDATION_TAG!r} tag needs --latest-tag vX.Y.Z "
+            "(a published release)"
+        )
     major, minor, patch = _parse(latest_tag)
     return (
         f"{major}.{minor}.{patch + 1}",
@@ -111,8 +115,8 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument(
         "--latest-tag",
-        help="the latest real vX.Y.Z release (validation tag only; "
-        "omit or leave empty before the first release)",
+        help="the latest real vX.Y.Z release (required for the validation "
+        "tag, refused for any other)",
     )
     args = parser.parse_args(argv[1:])
     try:

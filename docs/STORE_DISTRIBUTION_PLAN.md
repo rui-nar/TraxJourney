@@ -127,9 +127,10 @@ cloud signing turns out not to work on the runner (see Escalate in U7).
 A `validation` build gets its own numbering:
 
 - Its short version is the latest real tag with the **patch bumped**: after
-  `v1.0.0` it is `1.0.1`. Before any release it is `0.0.1`.
+  `v1.0.0` it is `1.0.1`. A validation build needs a published `vX.Y.Z`
+  release; without one it fails.
 - Its build number is `<latest real code>.<github.run_number>`, for example
-  `10000.17`. Before any release it is `0.<run>`.
+  `10000.17`.
 
 That build number is unique, increases from one run to the next, and stays
 below the code the real `1.0.1` would get (`10001`). *Why:* App Store Connect
