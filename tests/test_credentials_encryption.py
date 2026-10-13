@@ -1,8 +1,8 @@
 """Third-party credentials are stored encrypted, under a key held outside the
 database (src/auth/credentials_crypto.py).
 
-Covers the four columns (Strava access and refresh tokens, Polarsteps
-remember_token, Immich API key): what reaches the table, the round trip, the
+Covers the five columns (Strava access and refresh tokens, Polarsteps
+remember_token, Immich API key, Apple refresh token): what reaches the table, the round trip, the
 column binding, key rotation and its script, the startup check, the data
 migration that encrypts existing rows, and that a Strava token refresh writes
 nothing outside the database.
@@ -26,7 +26,7 @@ from sqlmodel import Session, SQLModel, select
 
 import models.db as db_module
 import scripts.rotate_credentials_key as rotation
-from models.user import ImmichToken, PolarstepsToken, StravaToken, UserInfo
+from models.user import AppleToken, ImmichToken, PolarstepsToken, StravaToken, UserInfo
 from src.auth import credentials_crypto as crypto
 from src.auth.credentials_crypto import (
     PREFIX,
@@ -40,12 +40,16 @@ from src.auth.credentials_crypto import (
 KEY_A = "11" * 32
 KEY_B = "22" * 32
 
-# (model, attribute, table, column)
-COLUMNS = [
+# (model, attribute, table, column): the columns migration e3a91c5d7f20 encrypts.
+MIGRATED_COLUMNS = [
     (StravaToken, "access_token", "stravatoken", "access_token"),
     (StravaToken, "refresh_token", "stravatoken", "refresh_token"),
     (PolarstepsToken, "remember_token", "polarstepstoken", "remember_token"),
     (ImmichToken, "api_key", "immichtoken", "api_key"),
+]
+# Every encrypted column; appletoken (#580) was created encrypted, after it.
+COLUMNS = MIGRATED_COLUMNS + [
+    (AppleToken, "refresh_token", "appletoken", "refresh_token"),
 ]
 
 SECRETS = {
@@ -76,7 +80,8 @@ def engine(tmp_path):
 
 
 def _seed(engine) -> int:
-    """One user connected to all three services. Returns the user id."""
+    """One user connected to all four services. Returns the user id. Strava
+    and Apple refresh tokens share a ``SECRETS`` value, keyed by attribute."""
     with Session(engine) as sess:
         user = UserInfo(email="a@x.io", display_name="A")
         sess.add(user)
@@ -87,6 +92,8 @@ def _seed(engine) -> int:
         sess.add(PolarstepsToken(user_info_id=uid, remember_token=SECRETS["remember_token"]))
         sess.add(ImmichToken(user_info_id=uid, server_url="https://immich.example",
                              api_key=SECRETS["api_key"]))
+        sess.add(AppleToken(user_info_id=uid, refresh_token=SECRETS["refresh_token"],
+                            client_id="com.traxjourney.app"))
         sess.commit()
     return uid
 
@@ -221,12 +228,12 @@ def test_the_rotation_script_reencrypts_under_the_current_key(engine, monkeypatc
     _seed(engine)
     _use_keys(monkeypatch, KEY_B, retired=KEY_A)
     id_b = credentials_keyring().current_id
-    before = {c: _raw(engine, t, c) for _m, _a, t, c in COLUMNS}
+    before = {(t, c): _raw(engine, t, c) for _m, _a, t, c in COLUMNS}
 
     assert rotation.main([], engine=engine) == 0  # dry run
-    assert {c: _raw(engine, t, c) for _m, _a, t, c in COLUMNS} == before
+    assert {(t, c): _raw(engine, t, c) for _m, _a, t, c in COLUMNS} == before
     out = capsys.readouterr().out
-    assert "To re-encrypt: 4" in out and "Dry run" in out
+    assert "To re-encrypt: 5" in out and "Dry run" in out
 
     assert rotation.main(["--apply"], engine=engine) == 0
     for _m, _a, table, column in COLUMNS:
@@ -239,7 +246,7 @@ def test_the_rotation_script_reencrypts_under_the_current_key(engine, monkeypatc
     for model, attr, _t, _c in COLUMNS:
         assert _orm(engine, model, attr) == SECRETS[attr]
     assert rotation.main([], engine=engine) == 0
-    assert "Already under the current key: 4" in capsys.readouterr().out
+    assert "Already under the current key: 5" in capsys.readouterr().out
 
 
 def test_the_rotation_script_reports_values_no_key_decrypts(engine, monkeypatch, capsys):
@@ -340,7 +347,7 @@ def test_migration_encrypts_existing_values_and_downgrade_restores_them(tmp_path
     command.upgrade(cfg, _REV)
 
     with eng.connect() as conn:
-        for _m, attr, table, column in COLUMNS:
+        for _m, attr, table, column in MIGRATED_COLUMNS:
             stored = conn.execute(text(
                 f"SELECT {column} FROM {table} WHERE user_info_id = 1")).scalar_one()
             assert stored.startswith(PREFIX)
@@ -356,7 +363,7 @@ def test_migration_encrypts_existing_values_and_downgrade_restores_them(tmp_path
     command.downgrade(cfg, _PREV_REV)
 
     with eng.connect() as conn:
-        for _m, attr, table, column in COLUMNS:
+        for _m, attr, table, column in MIGRATED_COLUMNS:
             assert conn.execute(text(
                 f"SELECT {column} FROM {table} WHERE user_info_id = 1")).scalar_one() == SECRETS[attr]
         assert conn.execute(text(

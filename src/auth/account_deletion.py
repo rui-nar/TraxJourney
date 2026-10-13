@@ -46,6 +46,7 @@ from models.project_db import (
 )
 from models.billing import Subscription, SubscriptionRefund, UserUsage
 from models.user import (
+    AppleToken,
     EmailVerification,
     ImmichToken,
     LocalUser,
@@ -53,6 +54,7 @@ from models.user import (
     StravaToken,
     UserInfo,
 )
+from src.auth import apple
 from src.auth.strava_deauth import deauthorize_strava
 from src.project.project_repo import ProjectRepo
 from src.project.repo_core import bump_lock_version
@@ -408,6 +410,30 @@ def _unhook_split_pieces(sess: Session, head_id: int) -> None:
         sess.execute(update(DBActivity).where(DBActivity.id == aid).values(**values))
 
 
+def _revoke_apple(user_info_id: int, refresh_token: str, client_id: str) -> None:
+    """Revoke the account's Apple refresh token, best effort (#580).
+
+    Never raises: Apple not configured here, a key that cannot sign and a
+    failed revoke are each logged — class and fixed label, never the token —
+    and the deletion goes on.
+    """
+    config = apple.load_apple_config()
+    if not config.configured:
+        _log.warning("Deletion of account %s: Apple token not revoked, Apple "
+                     "sign-in is not configured (reason=not_configured)", user_info_id)
+        return
+    try:
+        secret = apple.client_secret(config.team_id, config.key_id,
+                                     config.private_key, client_id)
+    except Exception as exc:
+        _log.warning("Deletion of account %s: Apple token not revoked: %s "
+                     "(reason=client_secret)", user_info_id, type(exc).__name__)
+        return
+    if not apple.revoke(refresh_token, client_id, secret):
+        _log.warning("Deletion of account %s: Apple token not revoked "
+                     "(reason=revoke_failed)", user_info_id)
+
+
 def delete_user_and_data(sess: Session, user_info_id: int) -> None:
     """Delete a ``UserInfo`` and every row it owns, directly or via a project.
 
@@ -435,6 +461,14 @@ def delete_user_and_data(sess: Session, user_info_id: int) -> None:
     if strava_token is not None:
         access, revoked_refresh = strava_token.access_token, strava_token.refresh_token
         deauthorize_strava(user_info_id, access, revoked_refresh)
+    # Revoke the Apple token the same way (#580): plain fields, no lock, best
+    # effort. Apple only accepts it under the client_id it was issued to (D5).
+    apple_token = sess.execute(
+        select(AppleToken.refresh_token, AppleToken.client_id)
+        .where(AppleToken.user_info_id == user_info_id)
+    ).first()
+    if apple_token is not None and apple_token.refresh_token:
+        _revoke_apple(user_info_id, apple_token.refresh_token, apple_token.client_id)
     # Stripe was called without holding any lock (never hold SQLite's write
     # lock across the network). A webhook can land in that window and record
     # a first purchase on the row — a customer this deletion never cancelled.
@@ -648,6 +682,7 @@ def delete_user_and_data(sess: Session, user_info_id: int) -> None:
                  .values(strava_user_id=None))
     _delete_all(DBStravaCache, DBStravaCache.user_info_id == user_info_id)
     _delete_all(StravaToken, StravaToken.user_info_id == user_info_id)
+    _delete_all(AppleToken, AppleToken.user_info_id == user_info_id)
     _delete_all(PolarstepsToken, PolarstepsToken.user_info_id == user_info_id)
     _delete_all(DBDeviceKey, DBDeviceKey.user_info_id == user_info_id)
     _delete_all(DBRecoveryWrap, DBRecoveryWrap.user_info_id == user_info_id)
