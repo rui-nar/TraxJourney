@@ -60,7 +60,10 @@ In App Store Connect:
   with Apple and serves `/.well-known/apple-app-site-association`, which share
   links need to open the app.
 - Add `APPLE_SERVICES_ID` as a repository **variable** (not a secret). The
-  client builds read it; without it web and Android hide the Apple button.
+  CI client builds (web image, Android, iOS) read it; without it web and
+  Android hide the Apple button. For web builds made by `deploy.ps1`, put
+  `APPLE_SERVICES_ID=<the Services ID>` in `deploy.env` (optional; empty keeps
+  the button hidden). The server's own `.env` value is separate.
 
 ### A4: E-mail to private relay addresses
 
