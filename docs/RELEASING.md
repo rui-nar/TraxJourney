@@ -142,8 +142,8 @@ labelled with the raw scope name rather than something a reader recognises.
 ## Previewing any range
 
 ```powershell
-python scripts/release_notes.py --from v0.46.9 --to HEAD
-python scripts/release_notes.py --from v0.46.0 --to v0.46.9 --version v0.46.9
+uv run python scripts/release_notes.py --from v0.46.9 --to HEAD
+uv run python scripts/release_notes.py --from v0.46.0 --to v0.46.9 --version v0.46.9
 ```
 
 Useful for checking how a commit will read *before* it's tagged — and for
@@ -163,7 +163,6 @@ seeing whether a change needs a `Release-Note:` trailer.
 It is entirely optional:
 
 ```powershell
-pip install anthropic          # not in requirements.txt — release tooling only
 $env:ANTHROPIC_API_KEY = "..."  # or: ant auth login
 .\bump_version_and_release.ps1 -Polish
 ```
@@ -172,8 +171,10 @@ Missing package, missing key, network failure, or a refusal all degrade to the
 same thing: a warning on stderr and the notes rendered without the paragraph.
 A release is never blocked by it.
 
-`anthropic` is deliberately kept out of `requirements.txt` — it would ship in
-the server image for no reason.
+`anthropic` is in the `release` dependency group of `pyproject.toml`, which
+`uv sync` installs by default, so `-Polish` needs nothing beyond the key. It is
+never in the server image, which installs no groups — it would ship there for
+no reason.
 
 ## Privacy policy and terms of service
 

@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+# Each job syncs the environment once, explicitly, with --locked. Without this
+# every `uv run` would first re-sync to the default groups, undoing a narrower
+# sync and resolving work the job already did (docs/UV_MIGRATION_PLAN.md).
+env:
+  UV_NO_SYNC: "1"
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -13,13 +19,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      # uv installs the Python of .python-version, the one pin CI and the image
+      # share (tests/test_python_version_alignment.py). The uv version is the
+      # Dockerfile's uv stage tag, exactly (tests/test_ci_workflows.py).
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.3.0
         with:
-          python-version: "3.14"
+          version: "0.12.19"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: uv sync --locked
 
       - name: Check migrations are in sync with models
         # Applies every migration to a fresh SQLite database, then asks Alembic
@@ -29,15 +40,88 @@ jobs:
         env:
           DATABASE_URL: sqlite:///./ci_alembic_check.db
         run: |
-          alembic upgrade head
-          alembic check
+          uv run alembic upgrade head
+          uv run alembic check
           rm -f ci_alembic_check.db
 
       - name: Install ffmpeg (trip-video renderer tests)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
 
       - name: Run tests
-        run: pytest tests/ --ignore=tests/test_gui.py --ignore=tests/test_gui_launch.py --ignore=tests/test_map_widget.py --ignore=tests/test_export_options_widget.py --ignore=tests/test_filter_widget.py --ignore=tests/test_stats_bar.py --ignore=tests/test_toast.py -v --tb=short
+        run: uv run pytest tests/ --ignore=tests/test_gui.py --ignore=tests/test_gui_launch.py --ignore=tests/test_map_widget.py --ignore=tests/test_export_options_widget.py --ignore=tests/test_filter_widget.py --ignore=tests/test_stats_bar.py --ignore=tests/test_toast.py -v --tb=short
+
+      - name: Import the server from the runtime dependencies alone
+        # The suite runs with every group installed (dev, release, rail), so it
+        # cannot see server code that imports a package only one of those
+        # groups provides: green here, ModuleNotFoundError in the image, which
+        # installs the runtime dependencies alone. So sync exactly that set into
+        # a second environment and import the server and the worker from it,
+        # with the same environment as the image job's import.
+        env:
+          DATABASE_URL: sqlite:////tmp/ci-import-check.db
+          JWT_SECRET: ci-import-check-not-a-secret
+        run: |
+          UV_PROJECT_ENVIRONMENT=$RUNNER_TEMP/runtime uv sync --locked --no-default-groups
+          "$RUNNER_TEMP/runtime/bin/python" -c "import api.router, src.jobs.worker"
+          "$RUNNER_TEMP/runtime/bin/python" scripts/fetch_rail_data.py --help
+
+  image:
+    # The image is otherwise built only when a release is tagged
+    # (docker-build.yml), so a change that breaks it — a Dependabot lock bump
+    # included — would first fail at release time. This builds it and checks it
+    # imports and runs; it pushes nothing and needs no secret. The Flutter
+    # client is not built: an import check does not need web_client/.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # A pull request checks out its merge commit; its first parent is the
+          # base the change is compared against below.
+          fetch-depth: 2
+
+      - name: Does this change touch the image?
+        # `paths:` filters a whole workflow, not a job, so the filter is here.
+        # A push to main always builds. Code-only changes are covered by the
+        # test job's runtime-only import.
+        id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          build=false
+          if grep -qxE 'Dockerfile|\.dockerignore|pyproject\.toml|uv\.lock|\.python-version|entrypoint\.sh|worker-entrypoint\.sh' <<< "$changed"; then
+            build=true
+          fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "image inputs changed: $build"
+
+      - name: Build the image
+        if: steps.filter.outputs.build == 'true'
+        run: docker build -t traxjourney:ci .
+
+      - name: Smoke-test the image
+        if: steps.filter.outputs.build == 'true'
+        # The server and the worker import; pyosmium loads (scripts/
+        # fetch_rail_data.py runs in the image); pytest, a dev-only dependency,
+        # is absent; alembic, which entrypoint.sh runs first, starts.
+        env:
+          DATABASE_URL: sqlite:////tmp/ci-import-check.db
+          JWT_SECRET: ci-import-check-not-a-secret
+        run: |
+          image=traxjourney:ci
+          docker run --rm -e DATABASE_URL -e JWT_SECRET --entrypoint python "$image" \
+            -c "import api.router, src.jobs.worker"
+          docker run --rm --entrypoint python "$image" -c "import osmium"
+          if docker run --rm --entrypoint python "$image" -c "import pytest"; then
+            echo "::error::pytest is importable in the image: a dev-only dependency reached production"
+            exit 1
+          fi
+          docker run --rm --entrypoint alembic "$image" --help
 
   flutter:
     runs-on: ubuntu-latest
@@ -72,7 +156,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Set up JDK
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '25'

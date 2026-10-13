@@ -17,7 +17,7 @@ build is affordable — Germany, the largest region, is ~12 s and ~200 MB peak �
 and the extract is a fraction of the size of the store it produces — Germany
 10 MB against 58 MB, a sixth; Luxembourg, measured on the real published
 asset, 0.33 MB against 1.36 MB, a quarter — so building locally moves *less*
-over the network, not more. ``osmium`` is already in requirements.txt and
+over the network, not more. ``osmium`` is already a runtime dependency in pyproject.toml and
 therefore already in the image.
 
 Four properties, in the order they matter:

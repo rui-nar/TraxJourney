@@ -3,15 +3,6 @@ REM ── TraxJourney development launcher ────────────
 REM Starts the FastAPI server (port 8000) and the Flutter web client (port 5500)
 REM in separate terminal windows.
 
-REM ── Activate Python venv ──────────────────────────────────────────────────
-if exist ".venv\Scripts\activate.bat" (
-    call .venv\Scripts\activate.bat
-) else if exist "venv\Scripts\activate.bat" (
-    call venv\Scripts\activate.bat
-) else (
-    echo WARNING: no venv found, using system Python
-)
-
 REM ── Find Flutter SDK ──────────────────────────────────────────────────────
 set FLUTTER_CMD=flutter
 for %%D in (

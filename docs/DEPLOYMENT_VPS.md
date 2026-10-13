@@ -560,8 +560,8 @@ were touched (host check, push or pull failed) or after `up -d`. The summary
 lists the expected, previous and served versions, the registry digest and image
 ID that were pulled, and every container's state.
 
-The checks need Python 3 on the dev machine: the repository's `.venv` if it
-exists, otherwise `python` on `PATH`.
+The checks need Python 3 on the dev machine: the repository's `.venv` (from
+`uv sync`) if it exists, otherwise `python` on `PATH`.
 
 ### The other way to cut `:validation`
 

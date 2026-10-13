@@ -1059,7 +1059,7 @@ def test_the_image_can_import_osmium():
     ``python:*-slim`` provides no libexpat.so.1 — CPython statically links its
     own copy for ``pyexpat`` — so pyosmium's extension module fails to import
     there however it was installed. Verified against the base image: with the
-    whole of requirements.txt installed and no libexpat1, ``import osmium``
+    whole of pyproject.toml's runtime dependencies installed and no libexpat1, ``import osmium``
     raises ``ImportError: libexpat.so.1``.
 
     Nothing else in the image imports osmium, which is exactly why this is

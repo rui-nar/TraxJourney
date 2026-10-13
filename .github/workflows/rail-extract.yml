@@ -40,6 +40,12 @@ concurrency:
 permissions:
   contents: read
 
+# Each job syncs the environment once, explicitly, with --locked. Without this
+# every `uv run` would first re-sync to the default groups, reinstalling the
+# whole dev set on every leg of the build matrix.
+env:
+  UV_NO_SYNC: "1"
+
 jobs:
   # Coverage lives in config/rail_regions.yml, so the matrix has to be read at
   # run time — adding a country must never require editing this file.
@@ -51,11 +57,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v6
+      - uses: astral-sh/setup-uv@v10.3.0
         with:
-          python-version: "3.14"
+          version: "0.12.19"
 
-      - run: pip install PyYAML
+      - run: uv sync --locked --no-default-groups --only-group rail
 
       - name: Resolve the region matrix
         id: regions
@@ -65,9 +71,9 @@ jobs:
           REQUESTED: ${{ inputs.regions }}
         run: |
           if [ -n "$REQUESTED" ]; then
-            regions=$(python -c 'import json, os; print(json.dumps(os.environ["REQUESTED"].replace(",", " ").split()))')
+            regions=$(uv run python -c 'import json, os; print(json.dumps(os.environ["REQUESTED"].replace(",", " ").split()))')
           else
-            regions=$(python scripts/build_rail_extract.py regions --json)
+            regions=$(uv run python scripts/build_rail_extract.py regions --json)
           fi
           echo "regions=$regions" >> "$GITHUB_OUTPUT"
           echo "$regions"
@@ -81,7 +87,7 @@ jobs:
         env:
           REQUESTED_LAYERS: ${{ vars.RAIL_PUBLISH_LAYERS }}
         run: |
-          layers=$(python scripts/build_rail_extract.py layers "$REQUESTED_LAYERS")
+          layers=$(uv run python scripts/build_rail_extract.py layers "$REQUESTED_LAYERS")
           echo "layers=$layers" >> "$GITHUB_OUTPUT"
           echo "publishing: $layers"
 
@@ -101,9 +107,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v6
+      - uses: astral-sh/setup-uv@v10.3.0
         with:
-          python-version: "3.14"
+          version: "0.12.19"
 
       - name: Install osmium
         # The C++ CLI does the pass over the raw extract. The equivalent
@@ -112,7 +118,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends osmium-tool
 
-      - run: pip install osmium requests PyYAML
+      - run: uv sync --locked --no-default-groups --only-group rail
 
       - name: Filter ${{ matrix.region }}
         # A layer this run does not publish is not built: it would only be
@@ -121,7 +127,7 @@ jobs:
           REGION: ${{ matrix.region }}
           LAYERS: ${{ needs.plan.outputs.layers }}
         run: |
-          python scripts/build_rail_extract.py build "$REGION" \
+          uv run python scripts/build_rail_extract.py build "$REGION" \
             --out-dir dist/rail \
             --work-dir "$RUNNER_TEMP/rail-work" \
             --layers "$LAYERS"
@@ -175,7 +181,7 @@ jobs:
           REGION: ${{ matrix.region }}
         run: echo "slug=${REGION##*/}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: rail-${{ steps.slug.outputs.slug }}
           path: dist/rail/
@@ -203,16 +209,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v6
+      - uses: astral-sh/setup-uv@v10.3.0
         with:
-          python-version: "3.14"
+          version: "0.12.19"
 
-      # Everything, not the builder's three: the corpus gate below resolves
-      # legs with the server's own resolver, which imports what the server
-      # imports, and a hand-picked list breaks on its next new import.
-      - run: pip install -r requirements.txt
+      # The server's dependencies, not the builder's three: the corpus gate
+      # below resolves legs with the server's own resolver, which imports what
+      # the server imports, and a hand-picked list breaks on its next new
+      # import. The rail group adds PyYAML for scripts/route_corpus.py.
+      - run: uv sync --locked --no-default-groups --group rail
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist/rail
           pattern: rail-*
@@ -291,7 +298,7 @@ jobs:
           if [ "$FORCE" = "true" ]; then
             force="--force"
           fi
-          python scripts/build_rail_extract.py manifest \
+          uv run python scripts/build_rail_extract.py manifest \
             --out-dir dist/rail \
             --base released/manifest.json \
             --expect "$EXPECTED" \
@@ -344,7 +351,7 @@ jobs:
           # `-e` sees a failure in it. The legs of the published layers go to
           # their own corpus file, which is the one the runner reads.
           corpus="$RUNNER_TEMP/route-corpus.yml"
-          python -c '
+          uv run python -c '
           import json, os, sys, yaml
           from src.rail.store import store_filename
           layers = os.environ["LAYERS"].split()
@@ -373,13 +380,13 @@ jobs:
               echo "$sha  $pbf" | sha256sum -c -
             fi
             echo "building $region $layer from $pbf"
-            python -m src.rail.builder "$pbf" "$stores/$store" --region "$region" --layer "$layer"
+            uv run python -m src.rail.builder "$pbf" "$stores/$store" --region "$region" --layer "$layer"
           done < "$RUNNER_TEMP/corpus-regions.tsv"
           require_all=""
           if [ -z "$REQUESTED" ]; then
             require_all="--require-all"
           fi
-          python scripts/route_corpus.py "$stores" --corpus "$corpus" $require_all
+          uv run python scripts/route_corpus.py "$stores" --corpus "$corpus" $require_all
 
       - name: Publish the release
         # A release asset, not a Docker layer: baking the data into the image

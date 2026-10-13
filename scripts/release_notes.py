@@ -542,7 +542,7 @@ def _ask(prompt: str, *, model: str, max_tokens: int, what: str) -> Optional[str
     try:
         import anthropic
     except ImportError:
-        print("note: `pip install anthropic` to enable --polish", file=sys.stderr)
+        print("note: run `uv sync` to enable --polish", file=sys.stderr)
         return None
 
     try:
