@@ -134,7 +134,7 @@ jobs:
         run: |
           APP="$RUNNER_TEMP/Runner.xcarchive/Products/Applications/Runner.app"
           PB=/usr/libexec/PlistBuddy
-          codesign -d --entitlements :- "$APP" > "$RUNNER_TEMP/entitlements.plist"
+          codesign -d --entitlements - --xml "$APP" > "$RUNNER_TEMP/entitlements.plist"
           cat "$RUNNER_TEMP/entitlements.plist"
           "$PB" -c "Print :com.apple.developer.associated-domains" "$RUNNER_TEMP/entitlements.plist" \
             | grep -Eq '^ *applinks:traxjourney\.com$' \
