@@ -80,6 +80,10 @@ class _Calls {
 /// around it is nowhere near the far-away one the pan tests move to.
 const _vp = GeoBox(7.30, 45.30, 7.50, 45.50);
 
+/// A camera box far enough from [_vp] that no fetch box around one contains
+/// the other.
+const _far = GeoBox(12.30, 47.30, 12.50, 47.50);
+
 /// [lodStatus] lets a test make the simplified endpoint fail, to exercise the
 /// fallback an older server would take; [lodDelay] holds the response so a
 /// test can watch what is on screen while a refetch is in flight.
@@ -106,8 +110,8 @@ ApiClient _api(_Calls calls,
           final z = req.url.queryParameters['zoom']!;
           calls.zooms.add(z);
           calls.boxes.add(req.url.queryParameters['bbox']);
-          if (calls.failLod) return http.Response('nope', 500);
           if (lodDelay > Duration.zero) await Future<void>.delayed(lodDelay);
+          if (calls.failLod) return http.Response('nope', 500);
           // Point count scales with zoom, as real simplification does.
           return _json(_geoWith(double.parse(z).ceil()));
         }
@@ -403,6 +407,101 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 200));
       expect(calls.inFlightPeak, lessThanOrEqualTo(1),
           reason: 'refetches must not overlap');
+    });
+
+    // Issue #568. The single-flight guard above used to drop the camera event
+    // outright. The answer in flight was fetched for where the camera WAS, so
+    // a pan made during it was never served — and the self-healing disarm read
+    // the moved camera as an unsatisfiable box and switched box refetches off
+    // for the rest of the session.
+
+    test('a pan made during a refetch is fetched once that refetch lands',
+        () async {
+      final calls = _Calls();
+      api = _api(calls, lodDelay: const Duration(milliseconds: 150));
+      final n = ProjectNotifier(ProjectService())
+        ..setMapZoom(9, viewport: _vp)
+        ..zoomRefetchDebounce = const Duration(milliseconds: 10);
+
+      await n.load(_ref);
+      expect(await _waitFor(() => _points(n) == 9), isTrue);
+      n.setMapZoom(15, viewport: _vp);
+      expect(await _waitFor(() => calls.zooms.length == 2), isTrue,
+          reason: 'the zoom refetch is in flight');
+
+      n.setMapZoom(15, viewport: _far);
+      expect(
+          await _waitFor(() => n.geoFacet.lod.box?.contains(_far) ?? false),
+          isTrue,
+          reason: 'the pan must be fetched, not dropped');
+    });
+
+    test('a later pan still refetches after a pan made during a refetch',
+        () async {
+      // The disarm's side of the bug: it must not fire for a camera that
+      // merely moved, or box refetches stay off for the session.
+      final calls = _Calls();
+      api = _api(calls, lodDelay: const Duration(milliseconds: 150));
+      final n = ProjectNotifier(ProjectService())
+        ..setMapZoom(9, viewport: _vp)
+        ..zoomRefetchDebounce = const Duration(milliseconds: 10);
+
+      await n.load(_ref);
+      expect(await _waitFor(() => _points(n) == 9), isTrue);
+      n.setMapZoom(15, viewport: _vp);
+      expect(await _waitFor(() => calls.zooms.length == 2), isTrue);
+      n.setMapZoom(15, viewport: _far);
+      expect(
+          await _waitFor(() => n.geoFacet.lod.box?.contains(_far) ?? false),
+          isTrue);
+
+      n.setMapZoom(15, viewport: _vp);
+      expect(
+          await _waitFor(() => n.geoFacet.lod.box?.contains(_vp) ?? false),
+          isTrue,
+          reason: 'box refetching must still be armed');
+    });
+
+    test('a zoom change made during a refetch is fetched once that refetch '
+        'lands', () async {
+      // The answer in flight is for a level nobody is looking at any more and
+      // is discarded; the level the camera settled on must still be fetched.
+      final calls = _Calls();
+      api = _api(calls, lodDelay: const Duration(milliseconds: 150));
+      final n = ProjectNotifier(ProjectService())
+        ..setMapZoom(9, viewport: _vp)
+        ..zoomRefetchDebounce = const Duration(milliseconds: 10);
+
+      await n.load(_ref);
+      expect(await _waitFor(() => _points(n) == 9), isTrue);
+      n.setMapZoom(15, viewport: _vp);
+      expect(await _waitFor(() => calls.zooms.length == 2), isTrue);
+
+      n.setMapZoom(12, viewport: _vp);
+      expect(await _waitFor(() => _points(n) == 12), isTrue,
+          reason: 'the zoom the camera settled on must be fetched');
+    });
+
+    test('a failing refetch retries once per dropped camera event, not on its '
+        'own', () async {
+      final calls = _Calls();
+      api = _api(calls, lodDelay: const Duration(milliseconds: 100));
+      final n = ProjectNotifier(ProjectService())
+        ..setMapZoom(9, viewport: _vp)
+        ..zoomRefetchDebounce = const Duration(milliseconds: 10);
+
+      await n.load(_ref);
+      expect(await _waitFor(() => _points(n) == 9), isTrue);
+      calls.failLod = true;
+      n.setMapZoom(15, viewport: _vp);
+      expect(await _waitFor(() => calls.zooms.length == 2), isTrue);
+      n.setMapZoom(15, viewport: _far);
+
+      expect(await _waitFor(() => calls.zooms.length == 3), isTrue,
+          reason: 'the dropped pan is retried');
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      expect(calls.zooms, hasLength(3),
+          reason: 'a failure alone must never schedule another request');
     });
   });
 
