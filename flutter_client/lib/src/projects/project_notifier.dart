@@ -1563,6 +1563,11 @@ class ProjectNotifier extends ChangeNotifier
     // can leave the detail slightly stale, where clearing it would fire a
     // whole-trip fetch off a transient reading.
     if (viewport != null) _mapViewport = viewport;
+    // Remembered whether or not it is stale now: staleness is judged against
+    // the geometry on hand, and the answer in flight is about to replace it.
+    // A pan back into the current box during a refetch would otherwise be
+    // left outside the box that lands (issue #568).
+    if (_refetchInFlight) _refetchDroppedWhileInFlight = true;
     _scheduleZoomRefetch();
   }
 
@@ -1670,8 +1675,8 @@ class ProjectNotifier extends ChangeNotifier
       // that is still fresh. The BOX is deliberately
       // not re-checked: a result for the right level but a stale region is
       // still better than the older geometry it replaces, and if the camera
-      // has left the box, the pan events that took it there were remembered
-      // by the single-flight guard and are retried when this one finishes.
+      // has left the box, the camera events that took it there were
+      // remembered while this was in flight and are retried when it finishes.
       if (_bucketIsStale(bucket, _mapZoom)) return;
       reconcileSegmentOverlay(next, requestedAt: fetched.requestedAt);
       // Not applied when a newer answer is already on screen — the refresh

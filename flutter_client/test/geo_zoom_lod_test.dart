@@ -462,6 +462,36 @@ void main() {
           reason: 'box refetching must still be armed');
     });
 
+    test('a pan back into the old box during a refetch is fetched once that '
+        'refetch lands', () async {
+      // Review R1-1. The pan back is not stale against the box on hand when it
+      // is made, so it was never remembered — but the answer in flight replaces
+      // that box with one the camera is no longer in.
+      final calls = _Calls();
+      api = _api(calls, lodDelay: const Duration(milliseconds: 150));
+      final n = ProjectNotifier(ProjectService())
+        ..setMapZoom(9, viewport: _vp)
+        ..zoomRefetchDebounce = const Duration(milliseconds: 10);
+
+      await n.load(_ref);
+      expect(await _waitFor(() => _points(n) == 9), isTrue);
+      n.setMapZoom(15, viewport: _vp);
+      expect(
+          await _waitFor(() => n.geoFacet.lod.box?.contains(_vp) ?? false),
+          isTrue);
+
+      n.setMapZoom(15, viewport: _far);
+      expect(await _waitFor(() => calls.zooms.length == 3), isTrue,
+          reason: 'the pan away is in flight');
+      n.setMapZoom(15, viewport: _vp);
+
+      expect(await _waitFor(() => calls.zooms.length == 4), isTrue,
+          reason: 'the pan back must be fetched once the pan away lands');
+      expect(
+          await _waitFor(() => n.geoFacet.lod.box?.contains(_vp) ?? false),
+          isTrue);
+    });
+
     test('a zoom change made during a refetch is fetched once that refetch '
         'lands', () async {
       // The answer in flight is for a level nobody is looking at any more and
