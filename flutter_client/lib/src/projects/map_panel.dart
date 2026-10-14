@@ -2423,6 +2423,11 @@ class ManageMapPanelState extends State<ManageMapPanel>
       _tileProvider = NetworkTileProvider();
     }
     listenToFacets(widget.notifier);
+    // Seeded from the notifier so the first build is not a selection change:
+    // with auto-zoom on, one resets the fit flag, and opening the edit map
+    // would refit the whole trip over a viewport carried from view mode
+    // (issue #573).
+    _selectionTarget = _SelectionTarget(widget.notifier.selectionFacet);
   }
 
   @override

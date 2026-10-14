@@ -179,4 +179,47 @@ void main() {
   setUp(() => TestWidgetsFlutterBinding.ensureInitialized());
   _suite('MapPanel', _viewPanel);
   _suite('ManageMapPanel', _managePanel);
+
+  // Issue #573. The edit panel's first build counted as a selection change,
+  // which with auto-zoom on reset the fit flag and refit the whole trip over
+  // the viewport carried from view mode.
+  group('ManageMapPanel opened with auto-zoom on', () {
+    for (final selected in [false, true]) {
+      testWidgets(
+          'keeps the carried viewport${selected ? ' with a day selected' : ''}',
+          (tester) async {
+        _bigView(tester);
+        final c = AnimatedMapController(vsync: const TestVSync());
+        addTearDown(c.dispose);
+        final n = _notifier();
+        if (selected) n.selectionFacetWriter.setSelectedDays({'2026-05-02'});
+
+        await tester.pumpWidget(_managePanel(n, c, true));
+        await _settle(tester);
+
+        final camera = c.mapController.camera;
+        expect(camera.center.latitude, closeTo(20.0, 0.001));
+        expect(camera.center.longitude, closeTo(30.0, 0.001));
+        expect(camera.zoom, closeTo(3.0, 0.001));
+      });
+    }
+
+    testWidgets('a selection made after opening is still fitted',
+        (tester) async {
+      _bigView(tester);
+      final c = AnimatedMapController(vsync: const TestVSync());
+      addTearDown(c.dispose);
+      final n = _notifier();
+
+      await tester.pumpWidget(_managePanel(n, c, true));
+      await _settle(tester);
+      n.selectionFacetWriter.setSelectedDays({'2026-05-02'});
+      n.notifyListeners();
+      await _settle(tester);
+
+      final camera = c.mapController.camera;
+      expect(camera.center.latitude, closeTo(38.725, 0.2));
+      expect(camera.center.longitude, closeTo(-9.15, 0.2));
+    });
+  });
 }
