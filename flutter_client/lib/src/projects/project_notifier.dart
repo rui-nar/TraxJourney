@@ -1563,6 +1563,16 @@ class ProjectNotifier extends ChangeNotifier
     // can leave the detail slightly stale, where clearing it would fire a
     // whole-trip fetch off a transient reading.
     if (viewport != null) _mapViewport = viewport;
+    // Remembered whether or not it is stale now: staleness is judged against
+    // the geometry on hand, and the answer in flight is about to replace it.
+    // A pan back into the current box during a refetch would otherwise be
+    // left outside the box that lands (issue #568).
+    if (_refetchInFlight) _refetchDroppedWhileInFlight = true;
+    _scheduleZoomRefetch();
+  }
+
+  /// Debounces a refetch if the geometry is wrong for the camera.
+  void _scheduleZoomRefetch() {
     // Client-built geometry (E2EE) has no server counterpart to refetch.
     if (encryption.isUnlocked) return;
     if (_isDisposed || !_geoIsStaleForCamera()) return;
@@ -1585,7 +1595,15 @@ class ProjectNotifier extends ChangeNotifier
     // this a new one starts every time the camera settles while the last is
     // still running, and each of those copies `geo` into a compute() isolate.
     // Measured on device: a 2.6 GB Dart heap and an ANR.
-    if (_refetchInFlight) return;
+    //
+    // The camera that asked is remembered, though: the answer in flight was
+    // fetched for where the camera WAS, and dropping the request outright left
+    // a pan or a zoom made during it unserved until the next camera event
+    // (issue #568).
+    if (_refetchInFlight) {
+      _refetchDroppedWhileInFlight = true;
+      return;
+    }
     _refetchInFlight = true;
     // Always counted. The perf report is written at load time and read from
     // Settings, so an app stuck in a refetch loop never reaches it — but the
@@ -1597,10 +1615,18 @@ class ProjectNotifier extends ChangeNotifier
       await _refetchGeoForZoomInner(r);
     } finally {
       _refetchInFlight = false;
+      // Retried through the debounce, and only when a camera event was
+      // actually dropped, so a refetch that keeps failing retries once per
+      // camera event the user makes, never on its own.
+      if (_refetchDroppedWhileInFlight) {
+        _refetchDroppedWhileInFlight = false;
+        _scheduleZoomRefetch();
+      }
     }
   }
 
   bool _refetchInFlight = false;
+  bool _refetchDroppedWhileInFlight = false;
   int _geoRefetchCount = 0;
 
   /// True while the refetch that captured [token] and [r] is still the one to
@@ -1649,8 +1675,8 @@ class ProjectNotifier extends ChangeNotifier
       // that is still fresh. The BOX is deliberately
       // not re-checked: a result for the right level but a stale region is
       // still better than the older geometry it replaces, and if the camera
-      // has left the box, the pan events that took it there have already
-      // scheduled the next refetch.
+      // has left the box, the camera events that took it there were
+      // remembered while this was in flight and are retried when it finishes.
       if (_bucketIsStale(bucket, _mapZoom)) return;
       reconcileSegmentOverlay(next, requestedAt: fetched.requestedAt);
       // Not applied when a newer answer is already on screen — the refresh
@@ -1668,16 +1694,22 @@ class ProjectNotifier extends ChangeNotifier
       }
       // Self-healing, and the reason this cannot loop again.
       //
-      // A refetch exists to make `_geoIsStaleForCamera` false. If it is still
-      // true right after a *successful* one, the predicate is not satisfiable
-      // by the action taken to satisfy it — which is precisely the bug that
-      // took the app to a 2.6 GB heap and an ANR (issue #332): every camera
-      // event scheduled another refetch, forever. fetchBoxFor now guarantees
-      // its box contains its viewport, so this should be unreachable; if it
-      // ever is reachable again, dropping the box disarms the box branch for
-      // the rest of the session and the map falls back to whole-trip
-      // geometry — slightly coarser, never wedged.
-      if (_geoIsStaleForCamera()) {
+      // A refetch exists to make `_geoIsStaleForCamera` false for the camera
+      // it was fetched for. If the box it fetched does not contain that
+      // camera's viewport, the predicate is not satisfiable by the action
+      // taken to satisfy it — which is precisely the bug that took the app to
+      // a 2.6 GB heap and an ANR (issue #332): every camera event scheduled
+      // another refetch, forever. fetchBoxFor now guarantees its box contains
+      // its viewport, so this should be unreachable; if it ever is reachable
+      // again, dropping the box disarms the box branch for the rest of the
+      // session and the map falls back to whole-trip geometry — slightly
+      // coarser, never wedged.
+      //
+      // Tested against the CAPTURED viewport, not the camera now. A camera
+      // that moved during the fetch is not evidence the box was unsatisfiable,
+      // and treating it as such disarmed box refetches for the session after
+      // any pan made during a refetch (issue #568).
+      if (viewport != null && box != null && !box.contains(viewport)) {
         geoFacetWriter.forgetBox();
         perfSpans.note('geo_box_unsatisfiable', 'yes');
       }
@@ -2462,6 +2494,7 @@ class ProjectNotifier extends ChangeNotifier
   /// test fails on a field that is neither.
   void clear() {
     _zoomRefetchTimer?.cancel();
+    _refetchDroppedWhileInFlight = false;
     _mapViewport = null;
     _stopPhotoPolling();
     stopDegradedRouteWatch();
