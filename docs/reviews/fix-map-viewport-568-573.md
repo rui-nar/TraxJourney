@@ -22,3 +22,7 @@ Envelope: REVIEW.md defaults
 - Guard: —
 - Override: —
 - Outcome: open (the seed is kept as the pre-refactor guard restored; the PR states #573 was latent)
+
+## Round 2 — 2026-10-14, reviewed at 98476e82
+
+No findings. Reviews stop (§6).
