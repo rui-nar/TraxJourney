@@ -147,8 +147,8 @@ def test_example_lists_exactly_the_keys_the_script_reads():
 
 
 def test_every_host_setting_is_required():
-    """Only MAPBOX_TOKEN is optional: -MapboxToken can stand in, and only builds need it."""
-    assert _required_keys() == _keys_read() - {"MAPBOX_TOKEN"}
+    """Only MAPBOX_TOKEN and APPLE_SERVICES_ID are optional: -MapboxToken can stand in, and only builds need it."""
+    assert _required_keys() == _keys_read() - {"MAPBOX_TOKEN", "APPLE_SERVICES_ID"}
 
 
 def test_example_carries_no_host_user_or_token():

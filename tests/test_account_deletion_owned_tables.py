@@ -104,6 +104,8 @@ def engine(monkeypatch, tmp_path):
     monkeypatch.setattr(storage_mod, "_DATA_DIR", str(tmp_path))
     # The seeded Strava token is placeholder text: never send it anywhere.
     monkeypatch.setattr(deletion_mod, "deauthorize_strava", lambda *a, **k: False)
+    # Nor the seeded Apple token.
+    monkeypatch.setattr(deletion_mod.apple, "revoke", lambda *a, **k: False)
     SQLModel.metadata.create_all(test_engine)
     return test_engine
 
@@ -121,8 +123,8 @@ def _mk_user(sess, email) -> int:
 def test_the_scan_finds_the_tables_it_guards():
     """The guard is only as good as the scan: it must see the known owners."""
     names = {cls.__tablename__ for cls, _ in _owned_models()}
-    assert {"immichtoken", "posterjob", "videojob", "routejob", "stravatoken",
-            "project", "subscription"} <= names
+    assert {"appletoken", "immichtoken", "posterjob", "videojob", "routejob",
+            "stravatoken", "project", "subscription"} <= names
     for table, column in _KEPT:
         assert column in _owner_columns(SQLModel.metadata.tables[table]), (
             f"_KEPT names {table}.{column}, which is no longer an owner column")

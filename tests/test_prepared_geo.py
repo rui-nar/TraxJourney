@@ -745,23 +745,26 @@ def test_the_migration_applies_to_a_database_at_the_previous_head(db_path):
     # migration, but the CURRENT model has since dropped columns that schema
     # still has NOT NULL (#442's heart-rate flags), so the row is inserted
     # through the reflected historical table, with those given their type's
-    # zero value — the idiom the other migration tests use.
+    # zero value — the idiom the other migration tests use. The user goes in
+    # the same way: the current model has columns that schema lacks (#580).
     engine = create_engine(f"sqlite:///{db_path.as_posix()}")
-    with Session(engine) as sess:
-        sess.add(UserInfo(id=1, display_name="a", email="a@b.c"))
-        sess.commit()
+
+    def historical_insert(conn, table_name, model_row):
+        data = {k: v for k, v in model_row.__dict__.items() if not k.startswith("_sa_")}
+        tbl = Table(table_name, MetaData(), autoload_with=engine)
+        data = {k: v for k, v in data.items() if k in tbl.columns}
+        for col in tbl.columns:
+            if (col.name not in data and not col.nullable and not col.primary_key
+                    and col.server_default is None):
+                data[col.name] = col.type.python_type()
+        conn.execute(insert(tbl), data)
+
     act = DBActivity(id=111, user_info_id=1, name="Ride", type="Ride",
                      summary_polyline=polyline_lib.encode(_TRACK),
                      start_date="2026-01-01T00:00:00Z")
-    data = {k: v for k, v in act.__dict__.items() if not k.startswith("_sa_")}
-    tbl = Table("activity", MetaData(), autoload_with=engine)
-    data = {k: v for k, v in data.items() if k in tbl.columns}
-    for col in tbl.columns:
-        if (col.name not in data and not col.nullable and not col.primary_key
-                and col.server_default is None):
-            data[col.name] = col.type.python_type()
     with engine.begin() as conn:
-        conn.execute(insert(tbl), data)
+        historical_insert(conn, "userinfo", UserInfo(id=1, display_name="a", email="a@b.c"))
+        historical_insert(conn, "activity", act)
     engine.dispose()
     command.upgrade(cfg, "head")
     assert _columns(db_path, "activity_geo_prepared") == ["activity_id", "version", "blob"]

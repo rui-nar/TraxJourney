@@ -389,9 +389,14 @@ $canvasKitOut = Join-Path (Get-Location) 'build/web/canvaskit'
 if (Test-Path $canvasKitOut) { Remove-Item -Recurse -Force $canvasKitOut }
 # --no-web-resources-cdn: CanvasKit from this build, not www.gstatic.com
 # (#601 review R2-1).
+# APPLE_SERVICES_ID is optional in deploy.env: empty keeps the Apple button
+# hidden on the web build (#580 review I1-1).
+$AppleServicesId = ''
+if ($Config.Contains('APPLE_SERVICES_ID')) { $AppleServicesId = $Config['APPLE_SERVICES_ID'] }
 flutter build web --release --no-web-resources-cdn `
   --dart-define=APP_VERSION=$FullVersion `
-  --dart-define=MAPBOX_TOKEN=$MapboxToken
+  --dart-define=MAPBOX_TOKEN=$MapboxToken `
+  --dart-define=APPLE_SERVICES_ID=$AppleServicesId
 if ($LASTEXITCODE -ne 0) { Pop-Location; Die "Flutter build failed." }
 # Self-host the web engine's fallback fonts instead of fetching them from
 # Google at run time (#601, #602; see web/flutter_bootstrap.js).

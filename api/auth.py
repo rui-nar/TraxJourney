@@ -4,6 +4,8 @@ Routes:
     POST   /api/auth/token           — email + password → JWT
     POST   /api/auth/register        — create account → JWT
     POST   /api/auth/google          — Google id_token → JWT
+    POST   /api/auth/apple           — Apple id_token + authorization code → JWT
+    POST   /api/auth/apple/callback  — Apple's form_post, relayed to the Android app
     POST   /api/auth/verify-email    — confirm an address from an emailed token
     POST   /api/auth/resend-verification — reissue and resend that token
     GET    /api/auth/me              — current user profile
@@ -15,14 +17,18 @@ Routes:
 from __future__ import annotations
 
 from typing import Annotated, Literal
+from urllib.parse import parse_qsl, quote, urlencode
 
 import bcrypt
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi.responses import RedirectResponse
 from google.auth.transport import requests as google_requests
 from google.oauth2.id_token import verify_oauth2_token
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy.orm.exc import StaleDataError
 from sqlmodel import select
 
+from src.auth import apple
 from src.auth.email_verification import (
     consume_token,
     issue_token,
@@ -34,7 +40,7 @@ from src.utils.rate_limit import consume_rate_limit
 from models.db import get_session
 from models.user import LocalUser
 
-from models.user import UserInfo
+from models.user import AppleToken, UserInfo
 from api.deps import create_access_token, get_current_user
 import os
 
@@ -71,6 +77,17 @@ def _google_failure_reason(exc: Exception) -> str:
         if keyword in message:
             return reason
     return "other"
+
+
+# Sign in with Apple (#580). Each value posted to the login route or relayed
+# by the callback is at most 8 KiB; Apple's id_tokens are about 1 KiB.
+_APPLE_FIELD_MAX = 8 * 1024
+# The callback relays these form fields to the Android app, and no others.
+_APPLE_CALLBACK_FIELDS = ("code", "id_token", "state", "user", "error")
+# Bounds the callback's form body before it is parsed: five fields of 8 KiB,
+# with room for percent-encoding.
+_APPLE_CALLBACK_BODY_MAX = 128 * 1024
+_APPLE_INTENT_SUFFIX = "#Intent;package=com.traxjourney.app;scheme=signinwithapple;end"
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -136,6 +153,21 @@ class RegisterRequest(BaseModel):
 
 class GoogleTokenRequest(BaseModel):
     id_token: str = Field(description="JWT credential from Google One Tap or GIS")
+
+class AppleTokenRequest(BaseModel):
+    id_token: str = Field(max_length=_APPLE_FIELD_MAX, description="identityToken from Sign in with Apple")
+    authorization_code: str = Field(
+        max_length=_APPLE_FIELD_MAX,
+        description="authorizationCode from the same sign-in; the server redeems it")
+    nonce: str = Field(
+        max_length=_APPLE_FIELD_MAX,
+        description="The raw nonce; Apple was given its SHA-256")
+    given_name: str | None = Field(
+        None, max_length=100,
+        description="Sent by Apple on the first sign-in only; used when the account is created")
+    family_name: str | None = Field(
+        None, max_length=100,
+        description="Sent by Apple on the first sign-in only; used when the account is created")
 
 class UpdateProfileRequest(BaseModel):
     display_name: str = Field(description="New public display name")
@@ -360,6 +392,175 @@ def google_login(body: GoogleTokenRequest):
 
         LOGINS.labels("google", "success").inc()
         return _token_response(user_info)
+
+
+def _apple_failure(exc: Exception, status_code: int, detail: str) -> HTTPException:
+    """Log an Apple failure as its class and fixed reason label — never the
+    token, the code or the exception text — and build the client's error."""
+    _log.warning(
+        "Apple sign-in failed: %s (reason=%s)",
+        type(exc).__name__, getattr(exc, "reason", "other"),
+    )
+    LOGINS.labels("apple", "failure").inc()
+    return HTTPException(status_code=status_code, detail=detail)
+
+
+@router.post("/apple", response_model=TokenResponse, summary="Login with Apple")
+def apple_login(body: AppleTokenRequest):
+    """Verify an Apple id_token, redeem its authorization code and return a JWT.
+
+    The code is exchanged on every sign-in and the refresh token stored, so a
+    deleted account can always be revoked at Apple: a sign-in whose exchange
+    fails is refused. Accounts are keyed by the Apple ``sub`` and never linked
+    to another account by e-mail.
+    """
+    config = apple.load_apple_config()
+    if not config.configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Apple auth not configured",
+        )
+    try:
+        identity = apple.verify_identity_token(body.id_token, body.nonce, config.audiences)
+    except apple.AppleTokenInvalid as exc:
+        raise _apple_failure(exc, status.HTTP_401_UNAUTHORIZED, "Invalid Apple id_token")
+    except apple.AppleUnavailable as exc:
+        raise _apple_failure(exc, status.HTTP_502_BAD_GATEWAY, "Apple sign-in unavailable")
+
+    # The code is redeemed under the client the token was issued to (D5).
+    # Services-ID codes (web, Android) were requested with a redirect URI,
+    # which the exchange must repeat; native iOS codes carry none.
+    client_id = identity.aud
+    redirect_uri = (config.redirect_uri or None) if client_id == config.services_id else None
+    try:
+        secret = apple.client_secret(config.team_id, config.key_id, config.private_key, client_id)
+    except Exception as exc:
+        # The configured key cannot sign: a deployment fault, not the user's.
+        _log.warning("Apple client secret failed: %s (reason=client_secret)", type(exc).__name__)
+        LOGINS.labels("apple", "failure").inc()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Apple auth not configured",
+        )
+    try:
+        refresh_token = apple.exchange_code(body.authorization_code, client_id, secret, redirect_uri)
+    except apple.AppleTokenInvalid as exc:
+        raise _apple_failure(exc, status.HTTP_401_UNAUTHORIZED, "Invalid Apple id_token")
+    except apple.AppleUnavailable as exc:
+        raise _apple_failure(exc, status.HTTP_502_BAD_GATEWAY, "Apple sign-in unavailable")
+
+    with get_session() as sess:
+        user_info = sess.exec(
+            select(UserInfo).where(UserInfo.apple_sub == identity.sub)
+        ).first()
+        # An address Apple has not verified never promotes to admin.
+        email = identity.email or ""
+        admin = identity.email_verified and _is_admin_email(email)
+
+        token = None
+        if user_info is None:
+            REGISTRATIONS.labels("apple").inc()  # first sight of this Apple account
+            # Apple sends the name on the first sign-in only.
+            name = " ".join(
+                n.strip() for n in (body.given_name, body.family_name) if n and n.strip()
+            ) or email.split("@")[0]
+            # One commit for the shadow user, the profile and the token: an
+            # account must never exist without the token that revokes it.
+            shadow = LocalUser()  # type: ignore
+            shadow.username = f"apple_{identity.sub}"
+            shadow.password_hash = b""
+            shadow.enabled = True
+            sess.add(shadow)
+            sess.flush()
+
+            user_info = UserInfo(
+                local_auth_id=shadow.id,
+                apple_sub=identity.sub,
+                display_name=name,
+                email=email,
+                auth_provider="apple",
+                email_verified=identity.email_verified,
+                is_admin=admin,
+            )
+            sess.add(user_info)
+            sess.flush()
+            token = AppleToken(user_info_id=user_info.id)
+
+        # An account deleted after the lookup leaves the fresh token in no row
+        # its deletion could revoke (U3R1-2): its UPDATEs match nothing, and
+        # SQLite takes an AppleToken INSERT for the gone account, so the
+        # account is looked up again once this session holds the write lock.
+        try:
+            if token is None:  # an existing account
+                if admin and not user_info.is_admin:
+                    user_info.is_admin = True
+                    sess.add(user_info)
+                token = sess.exec(
+                    select(AppleToken).where(AppleToken.user_info_id == user_info.id)
+                ).first() or AppleToken(user_info_id=user_info.id)
+            token.refresh_token = refresh_token
+            token.client_id = client_id
+            sess.add(token)
+            sess.flush()
+            gone = sess.exec(
+                select(UserInfo.id).where(UserInfo.id == user_info.id)
+            ).first() is None
+        except StaleDataError:
+            gone = True
+        if gone:
+            sess.rollback()
+            apple.revoke(refresh_token, client_id, secret)
+            _log.warning("Apple sign-in failed: account deleted during sign-in (reason=account_gone)")
+            LOGINS.labels("apple", "failure").inc()
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid Apple id_token",
+            )
+        sess.commit()
+        sess.refresh(user_info)
+
+        LOGINS.labels("apple", "success").inc()
+        return _token_response(user_info)
+
+
+@router.post("/apple/callback", status_code=status.HTTP_303_SEE_OTHER,
+             summary="Relay Apple's form_post to the Android app",
+             response_class=RedirectResponse)
+async def apple_callback(request: Request):
+    """Apple's web flow posts its result here (``response_mode=form_post``);
+    this hands it to the Android app's Custom Tab through an ``intent://``
+    redirect.
+
+    Public, so it trusts nothing: only the five fields the app reads are
+    relayed, each at most 8 KiB, and the redirect always goes to the app.
+    Nothing is verified or logged here; ``POST /api/auth/apple`` does that.
+    """
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw.extend(chunk)
+        if len(raw) > _APPLE_CALLBACK_BODY_MAX:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail="Request too large",
+            )
+    # A field's first occurrence decides: an oversized one is dropped, not
+    # replaced by a later duplicate.
+    seen: set[str] = set()
+    fields: dict[str, str] = {}
+    for key, value in parse_qsl(raw.decode("utf-8", errors="replace")):
+        if key not in _APPLE_CALLBACK_FIELDS or key in seen:
+            continue
+        seen.add(key)
+        if len(value.encode("utf-8")) <= _APPLE_FIELD_MAX:
+            fields[key] = value
+    query = urlencode(
+        [(k, fields[k]) for k in _APPLE_CALLBACK_FIELDS if k in fields], quote_via=quote,
+    )
+    return RedirectResponse(
+        f"intent://callback?{query}{_APPLE_INTENT_SUFFIX}",
+        status_code=status.HTTP_303_SEE_OTHER,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.post("/verify-email", response_model=OkOut, summary="Confirm an email address")

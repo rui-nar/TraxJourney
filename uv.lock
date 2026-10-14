@@ -1376,6 +1376,10 @@ dev = [
     { name = "pyyaml" },
     { name = "requests" },
 ]
+play = [
+    { name = "google-auth" },
+    { name = "requests" },
+]
 rail = [
     { name = "osmium" },
     { name = "pyyaml" },
@@ -1426,6 +1430,10 @@ dev = [
     { name = "pytest", specifier = ">=7.0.0" },
     { name = "pytest-cov", specifier = ">=4.0.0" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "requests", specifier = ">=2.28.0" },
+]
+play = [
+    { name = "google-auth", specifier = ">=2.28.0" },
     { name = "requests", specifier = ">=2.28.0" },
 ]
 rail = [

@@ -30,6 +30,10 @@
   <!-- Google Sign-In (required by google_sign_in_web) -->
   <meta name="google-signin-client_id" content="544571555396-gj0q3hndadfo00ifotme305jcf4ii5cc.apps.googleusercontent.com">
 
+  <!-- Sign in with Apple JS is not loaded here: the login screen loads it
+       when it shows the Apple button (lib/src/auth/apple_js_loader.dart), so
+       Apple never sees visitors of other pages (I1-3). -->
+
   <!--
     Boot splash, shown until the Flutter engine renders its first frame and then
     removed. Deliberately a copy of lib/src/core/splash_screen.dart — same field,

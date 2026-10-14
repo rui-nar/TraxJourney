@@ -25,7 +25,7 @@ from tests.test_rail_extract_workflow import BASH
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW_DIR = ROOT / ".github" / "workflows"
 WORKFLOWS = sorted(WORKFLOW_DIR.glob("*.yml"))
-UV_WORKFLOWS = ["test.yml", "rail-extract.yml"]
+UV_WORKFLOWS = ["test.yml", "rail-extract.yml", "android-release.yml"]
 DEPENDABOT = ROOT / ".github" / "dependabot.yml"
 DOCKERFILE = ROOT / "Dockerfile"
 

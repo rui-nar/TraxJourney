@@ -1,4 +1,4 @@
-/// Login screen — email/password + Google Sign-In, link to register.
+/// Login screen — email/password, Google and Apple Sign-In, link to register.
 library;
 
 import 'dart:async' show StreamSubscription;
@@ -8,6 +8,8 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:provider/provider.dart';
+import 'package:sign_in_with_apple/sign_in_with_apple.dart'
+    show SignInWithAppleButton, SignInWithAppleButtonStyle;
 
 // Web-only import: renderButton() from google_sign_in_web.
 // Stubbed on non-web platforms via conditional import.
@@ -20,6 +22,14 @@ import '../core/legal_links.dart';
 import '../core/platform.dart';
 import '../core/return_to.dart';
 import '../core/server_config.dart';
+import 'apple_js_loader.dart'
+    show
+        appleJsLoading,
+        appleJsReady,
+        appleJsState,
+        loadAppleJs,
+        preloadAppleJs;
+import 'apple_sign_in.dart';
 import 'auth_notifier.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -36,9 +46,24 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _obscurePassword = true;
   StreamSubscription<GoogleSignInAuthenticationEvent>? _googleSignInSub;
 
+  /// Counts Apple attempts. On Android a closed Custom Tab never completes
+  /// its attempt; the plugin rejects it when the next one starts, and that
+  /// stale rejection must not show as an error.
+  int _appleAttempt = 0;
+
+  /// Whether a self-hosting override is saved; null until the read returns,
+  /// which keeps the Apple button hidden rather than flashing it.
+  bool? _customServer;
+
   @override
   void initState() {
     super.initState();
+    readCustomServerUrl().then((url) {
+      if (!mounted) return;
+      setState(() => _customServer = url != null);
+      // Apple's script is fetched only once its button is shown (I1-3).
+      if (showAppleSignIn(customServer: url != null)) preloadAppleJs();
+    });
     // GoogleSignIn.instance.initialize() is called once in main() before runApp.
     _googleSignInSub = GoogleSignIn.instance.authenticationEvents.listen(
       _handleAuthEvent,
@@ -130,6 +155,51 @@ class _LoginScreenState extends State<LoginScreen> {
       if (e.code == GoogleSignInExceptionCode.canceled) return;
       _showError('Google sign-in failed: $e');
     }
+  }
+
+  /// Apple's flow, then the server. Cancelling is silent; a failed flow shows
+  /// like Google's, and a server refusal lands in the error banner.
+  ///
+  /// On the web, a tap before Apple's script has loaded (the preload failed)
+  /// only retries the load: Apple's popup opened after it would be outside
+  /// the click and blocked (I2-1). Once it loads, the user taps again.
+  Future<void> _appleSignIn() async {
+    if (!appleJsReady) {
+      try {
+        await loadAppleJs();
+      } catch (e) {
+        _showError('Apple sign-in failed: $e');
+        return;
+      }
+      _showError('Apple sign-in is ready. Tap Continue with Apple again.');
+      return;
+    }
+    final attempt = ++_appleAttempt;
+    final AppleCredential credential;
+    try {
+      credential = await signInWithApple();
+    } on AppleSignInCancelled {
+      return;
+    } catch (e) {
+      if (attempt == _appleAttempt) _showError('Apple sign-in failed: $e');
+      return;
+    }
+    if (!mounted || attempt != _appleAttempt) return;
+    final auth = context.read<AuthNotifier>();
+    await auth.loginWithApple(
+      idToken: credential.idToken,
+      authorizationCode: credential.authorizationCode,
+      nonce: credential.nonce,
+      givenName: credential.givenName,
+      familyName: credential.familyName,
+    );
+    // Before the mounted check: the server has the name even if this screen
+    // is gone.
+    if (auth.user != null) {
+      await forgetPendingAppleName(credential);
+    }
+    if (!mounted) return;
+    if (auth.user != null) _navigateAfterLogin();
   }
 
   void _showError(String msg) {
@@ -304,6 +374,28 @@ class _LoginScreenState extends State<LoginScreen> {
                                     const Text('Continue with Google'),
                               ),
                             ),
+
+                      // ── Apple Sign-In (issue #580) ────────────────────────
+                      if (showAppleSignIn(customServer: _customServer ?? true)) ...[
+                        const SizedBox(height: 12),
+                        // Disabled while Apple's script loads (web), so a
+                        // tap never opens Apple's popup after the click.
+                        ValueListenableBuilder(
+                          valueListenable: appleJsState,
+                          builder: (_, __, ___) => Consumer<AuthNotifier>(
+                            builder: (_, auth, __) => SignInWithAppleButton(
+                              onPressed: auth.isLoading || appleJsLoading
+                                  ? null
+                                  : _appleSignIn,
+                              text: 'Continue with Apple',
+                              height: 40,
+                              style: isDark
+                                  ? SignInWithAppleButtonStyle.white
+                                  : SignInWithAppleButtonStyle.black,
+                            ),
+                          ),
+                        ),
+                      ],
 
                       if (isNativeMobile) ...[
                         const SizedBox(height: 8),

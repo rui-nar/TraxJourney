@@ -11,6 +11,17 @@ on:
       - 'v*'
       - 'validation'
 
+env:
+  # Google Play rejects uploads whose targetSdkVersion is below its current
+  # requirement, and raises that requirement every August (updates must target
+  # the previous year's Android API level). Bump this when Play's deadline
+  # moves; the gate below then fails the build before the upload does.
+  PLAY_MIN_TARGET_SDK: '35'
+  # The Play upload syncs its environment once, explicitly, with --locked; without
+  # this `uv run` would first re-sync to the default groups (test.yml does the
+  # same, docs/UV_MIGRATION_PLAN.md).
+  UV_NO_SYNC: "1"
+
 jobs:
   build-apk:
     runs-on: ubuntu-latest
@@ -66,6 +77,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
+          if echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            # Only real vX.Y.Z tags go to Play (docs/STORE_DISTRIBUTION_PLAN.md
+            # D8): the validation versionCode (latest + 1) would block the next
+            # real upload, so validation builds stay APK-only.
+            echo "play_release=true" >> "$GITHUB_OUTPUT"
+          fi
           if [ "$TAG" = "validation" ]; then
             # The `validation` tag/release (issue #190) is the trigger for this
             # build, not a real version: it's created and moved by hand (there's
@@ -120,6 +137,7 @@ jobs:
             --build-name="${{ steps.version.outputs.build_name }}" \
             --dart-define=APP_VERSION="${{ steps.version.outputs.app_version }}" \
             --dart-define=MAPBOX_TOKEN="${{ secrets.MAPBOX_TOKEN }}" \
+            --dart-define=APPLE_SERVICES_ID="${{ vars.APPLE_SERVICES_ID }}" \
             --dart-define=API_BASE_URL=https://traxjourney.com
           mv build/app/outputs/flutter-apk/app-release.apk \
              "$RUNNER_TEMP/traxjourney-$TAG.apk"
@@ -138,6 +156,35 @@ jobs:
             echo "::error::APK is signed with the debug key."
             exit 1
           fi
+
+      - name: Check the target SDK against Play's requirement
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          AAPT2=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
+          TARGET=$("$AAPT2" dump badging "$RUNNER_TEMP/traxjourney-$TAG.apk" \
+            | sed -n "s/^targetSdkVersion:'\([0-9]*\)'.*/\1/p" | head -1)
+          echo "targetSdkVersion: $TARGET (Play requires >= $PLAY_MIN_TARGET_SDK)"
+          if [ -z "$TARGET" ] || [ "$TARGET" -lt "$PLAY_MIN_TARGET_SDK" ]; then
+            echo "::error::targetSdkVersion '$TARGET' is below Play's minimum $PLAY_MIN_TARGET_SDK (PLAY_MIN_TARGET_SDK in android-release.yml)."
+            exit 1
+          fi
+
+      - name: Build signed App Bundle
+        if: steps.version.outputs.play_release == 'true'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          cd flutter_client
+          flutter build appbundle --release \
+            --build-number="${{ steps.version.outputs.build_number }}" \
+            --build-name="${{ steps.version.outputs.build_name }}" \
+            --dart-define=APP_VERSION="${{ steps.version.outputs.app_version }}" \
+            --dart-define=MAPBOX_TOKEN="${{ secrets.MAPBOX_TOKEN }}" \
+            --dart-define=APPLE_SERVICES_ID="${{ vars.APPLE_SERVICES_ID }}" \
+            --dart-define=API_BASE_URL=https://traxjourney.com
+          mv build/app/outputs/bundle/release/app-release.aab \
+             "$RUNNER_TEMP/traxjourney-$TAG.aab"
 
       - name: Attach the APK to the release
         env:
@@ -159,3 +206,35 @@ jobs:
             gh release create "$TAG" --title "TraxJourney $TAG" --generate-notes
           fi
           gh release upload "$TAG" "$RUNNER_TEMP/traxjourney-$TAG.apk" --clobber
+          if [ -f "$RUNNER_TEMP/traxjourney-$TAG.aab" ]; then
+            gh release upload "$TAG" "$RUNNER_TEMP/traxjourney-$TAG.aab" --clobber
+          fi
+
+      - name: Set up uv
+        # Only for the Play upload, which needs google-auth and requests; the
+        # version scripts above are stdlib-only and run on the runner's python3.
+        # The uv version is the Dockerfile's uv stage tag, exactly
+        # (tests/test_ci_workflows.py). No cache: this job holds the signing
+        # and Play secrets, so it installs from the lock, not a restored cache.
+        if: steps.version.outputs.play_release == 'true'
+        uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version: "0.12.19"
+          enable-cache: false
+
+      - name: Upload the App Bundle to Play's internal track
+        # The service-account key reaches the script through the environment
+        # only: never argv, never echoed. Without it the APK still ships.
+        if: steps.version.outputs.play_release == 'true'
+        env:
+          TAG: ${{ github.ref_name }}
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -z "$PLAY_SERVICE_ACCOUNT_JSON" ]; then
+            echo "::warning::PLAY_SERVICE_ACCOUNT_JSON is not set; skipping the Play upload. The APK is still on the release (docs/ANDROID.md)."
+            exit 0
+          fi
+          # The `play` group alone (google-auth, requests), not the server's set.
+          uv sync --locked --only-group play
+          uv run python scripts/play_upload.py "$RUNNER_TEMP/traxjourney-$TAG.aab" \
+            --package com.traxjourney.app --track internal --release-name "$TAG"

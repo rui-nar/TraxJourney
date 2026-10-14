@@ -10,7 +10,7 @@ APK and attaches it to the same GitHub release.
 |---|---|
 | applicationId | `com.traxjourney.app` — permanent; see below |
 | Launcher label | TraxJourney |
-| Distribution | Signed arm64-v8a APK on the GitHub release (sideload). No Play Store. |
+| Distribution | Signed arm64-v8a APK on the GitHub release (sideload), and a signed App Bundle uploaded to Google Play's internal track on every `vX.Y.Z` tag. |
 | API endpoint | Baked at build time: `--dart-define=API_BASE_URL=https://traxjourney.com` |
 
 ## Running it on an emulator
@@ -197,17 +197,18 @@ shell, where an unquoted `&` ends the command and drops `reason=denied`.
 
 Nothing extra: `.\bump_version_and_release.ps1` as usual (see
 [RELEASING.md](RELEASING.md)). The tag triggers the APK build, which attaches
-`traxjourney-vX.Y.Z.apk` to the release once it finishes — a few minutes after
+`traxjourney-vX.Y.Z.apk` (and the `.aab`) to the release once it finishes — a few minutes after
 the release page appears.
 
 The build targets `android-arm64` only (`--target-platform android-arm64` in
 [android-release.yml](../.github/workflows/android-release.yml)) and runs with
 R8 minification and resource shrinking on
 ([proguard-rules.pro](../flutter_client/android/app/proguard-rules.pro)). Every
-phone sold since ~2017 is 64-bit, and this app is sideload-only, so there's no
-Play Store to hand a 32-bit or x86_64 slice to anyone who'd need one — bundling
-them would only bloat the one file everyone downloads. A 32-bit-only device
-cannot install this APK.
+phone sold since ~2017 is 64-bit, and the APK is a sideload file, so there is no
+per-device splitting to hand a 32-bit or x86_64 slice to anyone who'd need one —
+bundling them would only bloat the one file everyone downloads. A 32-bit-only
+device cannot install this APK. (The App Bundle for Play is not restricted this
+way; Play splits it per device.)
 
 To sanity-check a build after touching `build.gradle.kts` or
 `proguard-rules.pro` — R8 stripping something it shouldn't is a runtime
@@ -220,6 +221,47 @@ result before tagging for real.
 because Android identifies an upgrade by that number alone and pubspec's `+1`
 never moves. Installing a *lower* versionCode over a higher one fails with
 `INSTALL_FAILED_VERSION_DOWNGRADE`; uninstall first.
+
+## Google Play
+
+Every real `vX.Y.Z` tag also builds a signed App Bundle (`traxjourney-vX.Y.Z.aab`),
+attaches it to the release next to the APK, and uploads it to Play's **internal**
+track with [play_upload.py](../scripts/play_upload.py), run through uv with only the
+locked `play` dependency group (google-auth, requests). The `validation` tag never
+uploads: its versionCode (latest + 1) would block the next real release, because
+Play needs each upload's versionCode strictly above every earlier one. Promotion
+to closed testing or production is done by hand in Play Console. The APK stays on
+the release for sideloading and self-hosters.
+
+Two guards in [android-release.yml](../.github/workflows/android-release.yml):
+
+- **Target SDK gate.** The built APK's `targetSdkVersion` must be at least
+  `PLAY_MIN_TARGET_SDK` (a workflow env value). Play raises its requirement every
+  August; bump the value then, and the build fails before the upload does.
+- **Missing credential.** Without the `PLAY_SERVICE_ACCOUNT_JSON` secret the
+  upload step prints a warning and is skipped, so the APK still ships.
+
+Owner steps, in the Play and Google Cloud consoles:
+
+1. **First release, by hand.** Create the app `com.traxjourney.app` in Play
+   Console. Upload the first AAB by hand to the internal track, taking it from a
+   release's assets. When asked about app signing, **choose to upload your own
+   key (PEPK) with the existing release keystore. Do not accept Google's default:
+   this choice is permanent.** A Google-generated key would orphan every sideload
+   install (one cannot update the other) and need a second fingerprint in
+   `ANDROID_CERT_FINGERPRINTS` and the Android OAuth client. Then confirm that
+   the app-signing SHA-256 Play shows equals `ANDROID_CERT_FINGERPRINTS`, and
+   that the SHA-1 equals the Android OAuth client's.
+2. **CI upload.** In Google Cloud, create a service account and grant it release
+   permission for this app in Play Console. Add its JSON key as the
+   `PLAY_SERVICE_ACCOUNT_JSON` repository secret. The script reads it from the
+   environment only and never prints it.
+3. **Store forms.** Play Console app content: privacy policy (`/privacy`),
+   account deletion (`/delete-account`), the data-safety form (from
+   `privacy.html`), content rating, target audience (18+ per the terms), and the
+   store listing.
+4. **Closed test.** Recruit 12 or more closed testers early; the 14-day closed
+   test starts once the in-app purchase work (#581) ships.
 
 ## Changing the icon
 
@@ -251,4 +293,4 @@ The mark's geometry lives in three places that must move together:
 - Poster PNG "download" and GPX export are web-only paths
   (`image_download_stub.dart`, `download_stub.dart` are no-ops on native);
   sharing works, saving to the device does not.
-- No Play Store listing.
+- No Play Store listing (the owner steps above).

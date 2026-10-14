@@ -66,6 +66,11 @@ dependencies:
   exif: ^3.3.0
   image: ^4.8.0
 
+  # Sign in with Apple (#580): native sheet on iOS, Apple JS popup on web, a
+  # Custom Tab on Android. crypto hashes the nonce given to Apple.
+  sign_in_with_apple: ^8.2.0
+  crypto: ^3.0.7
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

@@ -174,3 +174,45 @@ jobs:
         # Debug, so no signing secrets are needed and forks can run it.
         working-directory: flutter_client
         run: flutter build apk --debug
+
+  ios:
+    # Same reason as the android job: with no Mac in the loop, a broken Xcode
+    # project, entitlements wiring or plugin set would otherwise only surface
+    # when a release tag is pushed (#579).
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install dependencies
+        working-directory: flutter_client
+        run: flutter pub get
+
+      - name: Lint the new plists
+        working-directory: flutter_client/ios
+        run: plutil -lint Runner/Runner.entitlements Runner/PrivacyInfo.xcprivacy ExportOptions.plist
+
+      - name: Build iOS release (unsigned)
+        # No signing, so no secrets are needed and forks can run it.
+        working-directory: flutter_client
+        run: flutter build ios --release --no-codesign
+
+      - name: Check the privacy manifest is in the bundle
+        working-directory: flutter_client
+        run: |
+          test -f build/ios/iphoneos/Runner.app/PrivacyInfo.xcprivacy
+          echo "PrivacyInfo.xcprivacy is in Runner.app"
+
+      - name: Check the entitlements are wired in
+        working-directory: flutter_client/ios
+        run: |
+          for config in Debug Release Profile; do
+            xcodebuild -project Runner.xcodeproj -target Runner -configuration "$config" -showBuildSettings \
+              | grep -E '^ +CODE_SIGN_ENTITLEMENTS = Runner/Runner\.entitlements$'
+            echo "$config: CODE_SIGN_ENTITLEMENTS is set"
+          done

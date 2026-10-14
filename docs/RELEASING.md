@@ -24,6 +24,8 @@ the gap, a new app build talks to the old server and falls back to the
 whole-map day-notes save, which is only safe on a server that predates the
 per-day endpoint. Keep the gap short.
 
+The tag also uploads an iOS build to TestFlight: see [IOS.md](IOS.md).
+
 ## Raising the minimum client version
 
 The server reports `min_client_version` on `GET /api/version`, from the

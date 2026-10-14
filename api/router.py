@@ -491,6 +491,40 @@ async def android_assetlinks():
     )
 
 
+IOS_BUNDLE_ID = "com.traxjourney.app"
+
+
+@app.get("/.well-known/apple-app-site-association", include_in_schema=False)
+async def apple_app_site_association():
+    """Universal Links file that lets the iOS app claim our URLs.
+
+    Same three path prefixes as the Android intent filters. Apple fetches it
+    directly and does not follow redirects, so it is served in place with a
+    JSON content type (the file has no extension). 404s when APPLE_TEAM_ID is
+    unset, as assetlinks does: the app ID cannot be built without it.
+    """
+    team_id = os.getenv("APPLE_TEAM_ID", "").strip()
+    if not team_id:
+        return JSONResponse(status_code=404, content={"detail": "Not configured"})
+    return JSONResponse(
+        content={
+            "applinks": {
+                "details": [
+                    {
+                        "appIDs": [f"{team_id}.{IOS_BUNDLE_ID}"],
+                        "components": [
+                            {"/": "/share/*"},
+                            {"/": "/join/*"},
+                            {"/": "/verify-email/*"},
+                        ],
+                    }
+                ]
+            }
+        },
+        media_type="application/json",
+    )
+
+
 # ── Privacy policy and terms of service (issue #421) ─────────────────────────
 # Served by the API itself, not copied into the Flutter web build: Google's
 # OAuth verification and the Play Console fetch these URLs without running JS,
@@ -521,6 +555,12 @@ async def privacy_policy():
 @app.api_route("/terms", methods=["GET", "HEAD"], include_in_schema=False)
 async def terms_of_service():
     return _legal_page("terms.html")
+
+
+# Public so the Play Console's account-deletion URL works without the app.
+@app.api_route("/delete-account", methods=["GET", "HEAD"], include_in_schema=False)
+async def delete_account_page():
+    return _legal_page("delete-account.html")
 
 
 # ── Flutter web SPA — must be registered last so /api/... routes take priority ─
