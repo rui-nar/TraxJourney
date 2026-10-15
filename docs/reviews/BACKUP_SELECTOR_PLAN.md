@@ -13,3 +13,15 @@ Envelope: plan section "Review envelope" (REVIEW.md defaults)
 - Guard: —
 - Override: —
 - Outcome: fixed
+
+## Round 2 — 2026-10-15, reviewed at 0d05d615
+
+Integrated diff (flutter_client only). No findings, no envelope questions.
+
+## Delivery
+
+| Unit | Goal | Route | Rule | Attempts | Escalated | Verified first time | Findings traced |
+|---|---|---|---|---|---|---|---|
+| U1 | Backups card drop-down + single Restore | Sonnet | — | 2 | — | no | R1-1 |
+
+Notes: the split stop was skipped (owner said "start delivery"). Attempt 1 failed static verification (new widget tests tapped offscreen widgets at 800x600); fixed by the 800x4000 surface used in display_name_test.dart. Docker/WSL were down locally, so the widget tests first ran in CI (PR #627, `flutter` job green).
