@@ -2424,9 +2424,8 @@ class ManageMapPanelState extends State<ManageMapPanel>
     }
     listenToFacets(widget.notifier);
     // Seeded from the notifier so the first build is not a selection change:
-    // with auto-zoom on, one resets the fit flag, and opening the edit map
-    // would refit the whole trip over a viewport carried from view mode
-    // (issue #573).
+    // with auto-zoom on, one would move the camera over a viewport carried
+    // from view mode (issue #573).
     _selectionTarget = _SelectionTarget(widget.notifier.selectionFacet);
   }
 
@@ -2655,7 +2654,10 @@ class ManageMapPanelState extends State<ManageMapPanel>
     final geoOrStyleChanged2 = specKey != _specKey;
     if (geoOrStyleChanged2 || selectionWritten2 || refitSelection2) {
       perfRebuiltLayers = true;
-      if (selectionChanged2 && widget.autoZoom) widget.fittedNotifier.value = false;
+      // A selection change never resets the whole-trip fit, as in
+      // _MapPanelState (issue #34): auto-zoom moves the camera only to what
+      // was selected, and a selection with nothing to fit — a memory, a
+      // journal entry, a cleared selection — leaves it where it is (#624).
       _specKey = specKey;
       // Multi-select takes priority over single-day selection.
       final effectiveDays = selDays.isNotEmpty
