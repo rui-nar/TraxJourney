@@ -113,8 +113,11 @@ None.
      untouched.
   5. Tests — make the fake service's backup list configurable (default one
      backup, so existing tests keep their meaning) and record restore calls;
-     update the "Restore button per backup" test name/assertions to the new
-     layout; add:
+     update every existing assertion on the bare date text to the new item
+     text (`'2026-01-01 · 2 KB'`): the "Restore button per backup" test
+     (rename it to the new layout), `loads backups when admin status arrives
+     after the screen is up`, and the non-admin test's `findsNothing` check
+     (so it still proves no backup is rendered); add:
      - `shows one selector and one Restore button for several backups` — 3
        backups: exactly one `DropdownButtonFormField<String>`, exactly one
        Restore `TextButton`, only the newest date visible before opening.
