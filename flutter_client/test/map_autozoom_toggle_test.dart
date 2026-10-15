@@ -149,6 +149,56 @@ void _suite(String name, _Build build) {
       expect(camera.zoom, closeTo(3.0, 0.001));
     });
 
+    // Issue #624. A memory or journal entry has no track to fit, and the edit
+    // panel used to answer one with the whole-trip fit instead.
+    for (final (what, select) in <(String, void Function(ProjectNotifier))>[
+      ('a memory', (n) => n.selectionFacetWriter.selectMemory('m1')),
+      ('a journal entry', (n) => n.selectionFacetWriter.selectJournal('j1')),
+    ]) {
+      testWidgets('selecting $what with auto-zoom on does not move the camera',
+          (tester) async {
+        _bigView(tester);
+        final c = AnimatedMapController(vsync: const TestVSync());
+        addTearDown(c.dispose);
+        final n = _notifier();
+
+        await tester.pumpWidget(build(n, c, true));
+        await _settle(tester);
+        select(n);
+        n.notifyListeners();
+        await _settle(tester);
+
+        final camera = c.mapController.camera;
+        expect(camera.center.latitude, closeTo(20.0, 0.001));
+        expect(camera.center.longitude, closeTo(30.0, 0.001));
+        expect(camera.zoom, closeTo(3.0, 0.001));
+      });
+    }
+
+    testWidgets('clearing the selection with auto-zoom on does not move the '
+        'camera', (tester) async {
+      _bigView(tester);
+      final c = AnimatedMapController(vsync: const TestVSync());
+      addTearDown(c.dispose);
+      final n = _notifier();
+
+      await tester.pumpWidget(build(n, c, true));
+      await _settle(tester);
+      n.selectionFacetWriter.setSelectedDays({'2026-05-02'});
+      n.notifyListeners();
+      await _settle(tester);
+      final before = c.mapController.camera;
+
+      n.selectionFacetWriter.setSelectedDays({});
+      n.notifyListeners();
+      await _settle(tester);
+
+      final camera = c.mapController.camera;
+      expect(camera.center.latitude, closeTo(before.center.latitude, 0.001));
+      expect(camera.center.longitude, closeTo(before.center.longitude, 0.001));
+      expect(camera.zoom, closeTo(before.zoom, 0.001));
+    });
+
     testWidgets('toggling off does nothing', (tester) async {
       _bigView(tester);
       final c = AnimatedMapController(vsync: const TestVSync());
