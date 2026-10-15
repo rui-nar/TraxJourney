@@ -106,6 +106,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   List<Map<String, dynamic>> _backups = [];
   bool _backupsLoading = false;
   bool _backupsRequested = false;
+  String? _selectedBackupDate;
   String? _restoringDate;
 
   // ── Account state ─────────────────────────────────────────────────────────
@@ -507,6 +508,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (mounted) setState(() => _backupsLoading = false);
     }
   }
+
+  String _backupSizeLabel(int bytes) => bytes < 1024 * 1024
+      ? '${(bytes / 1024).toStringAsFixed(0)} KB'
+      : '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
 
   Future<void> _restoreBackup(String date) async {
     final confirmed = await showDialog<bool>(
@@ -1023,40 +1028,55 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   style: theme.textTheme.bodySmall,
                                 ),
                                 const SizedBox(height: 12),
-                                ..._backups.map((b) {
-                                  final date = b['date'] as String;
-                                  final bytes = b['size_bytes'] as int;
-                                  final sizeLabel = bytes < 1024 * 1024
-                                      ? '${(bytes / 1024).toStringAsFixed(0)} KB'
-                                      : '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-                                  final isRestoring = _restoringDate == date;
-                                  return Padding(
-                                    padding: const EdgeInsets.only(bottom: 6),
-                                    child: Row(
-                                      children: [
-                                        Expanded(
-                                          child: Column(
-                                            crossAxisAlignment: CrossAxisAlignment.start,
-                                            children: [
-                                              Text(date, style: theme.textTheme.bodyMedium),
-                                              Text(sizeLabel, style: theme.textTheme.bodySmall),
-                                            ],
+                                Builder(builder: (context) {
+                                  final dates = [
+                                    for (final b in _backups) b['date'] as String,
+                                  ];
+                                  // Newest first from the API; fall back to it
+                                  // when nothing (or a vanished date) is selected.
+                                  final selected =
+                                      dates.contains(_selectedBackupDate)
+                                          ? _selectedBackupDate!
+                                          : dates.first;
+                                  return Row(
+                                    children: [
+                                      Expanded(
+                                        child: DropdownButtonFormField<String>(
+                                          key: ValueKey('backup-${dates.join(',')}'),
+                                          isExpanded: true,
+                                          initialValue: selected,
+                                          decoration: const InputDecoration(
+                                            labelText: 'Backup',
+                                            isDense: true,
+                                            border: OutlineInputBorder(),
                                           ),
-                                        ),
-                                        isRestoring
-                                            ? const SizedBox(
-                                                width: 20,
-                                                height: 20,
-                                                child: CircularProgressIndicator(strokeWidth: 2),
-                                              )
-                                            : TextButton(
-                                                onPressed: _restoringDate != null
-                                                    ? null
-                                                    : () => _restoreBackup(date),
-                                                child: const Text('Restore'),
+                                          items: [
+                                            for (final b in _backups)
+                                              DropdownMenuItem(
+                                                value: b['date'] as String,
+                                                child: Text(
+                                                  '${b['date']} · ${_backupSizeLabel(b['size_bytes'] as int)}',
+                                                ),
                                               ),
-                                      ],
-                                    ),
+                                          ],
+                                          onChanged: _restoringDate != null
+                                              ? null
+                                              : (d) => setState(
+                                                  () => _selectedBackupDate = d),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 12),
+                                      _restoringDate != null
+                                          ? const SizedBox(
+                                              width: 20,
+                                              height: 20,
+                                              child: CircularProgressIndicator(strokeWidth: 2),
+                                            )
+                                          : TextButton(
+                                              onPressed: () => _restoreBackup(selected),
+                                              child: const Text('Restore'),
+                                            ),
+                                    ],
                                   );
                                 }),
                               ],
