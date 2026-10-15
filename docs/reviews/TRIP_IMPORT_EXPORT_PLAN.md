@@ -1,6 +1,6 @@
 # Review ledger — Trip import and export plan (#492, #367, #365, #368, #408)
 
-Subject: docs/TRIP_IMPORT_EXPORT_PLAN.md
+Subject: docs/plans/TRIP_IMPORT_EXPORT_PLAN.md
 Envelope: the plan's `## Review envelope` plus REVIEW.md §2 defaults
 
 ## Round 1 — 2026-10-03, reviewed at a44519c8 (plan uncommitted in the working tree)

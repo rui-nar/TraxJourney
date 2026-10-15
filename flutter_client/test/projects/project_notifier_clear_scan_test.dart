@@ -1,6 +1,6 @@
 // ProjectNotifier.clear() has to drop everything a load and the session put
 // in the app-wide notifier (issue #418, Decision 2 of
-// docs/CLIENT_STATE_MAP_PLAN.md). It used to miss a dozen fields, and nothing
+// docs/plans/CLIENT_STATE_MAP_PLAN.md). It used to miss a dozen fields, and nothing
 // noticed: a field added later is invisible to a behaviour test that lists
 // the fields it knows about. Flutter has no reflection, so this reads the
 // source instead.
@@ -11,7 +11,7 @@
 // survives a clear.
 //
 // The same goes for the state that has moved into the notifier's facets
-// (issue #294, Decision 19 of docs/CLIENT_STATE_MAP_PLAN.md): a facet's
+// (issue #294, Decision 19 of docs/plans/CLIENT_STATE_MAP_PLAN.md): a facet's
 // fields must be written by a method of its own that clear() reaches, through
 // the notifier's `…FacetWriter.reset()`. Methods are keyed by class, so a
 // facet's `reset` is only reached through a field of that facet's type.

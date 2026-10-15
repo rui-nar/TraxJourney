@@ -98,7 +98,7 @@ class AppleToken(sqlmodel.SQLModel, table=True):
 
 class StravaOAuthCode(sqlmodel.SQLModel, table=True):
     """Which Strava connect a returned code belongs to: the state it first
-    arrived with at the callback (docs/STRAVA_CONNECT_BINDING_PLAN.md D9).
+    arrived with at the callback (docs/plans/STRAVA_CONNECT_BINDING_PLAN.md D9).
 
     ``POST /api/strava/complete`` only exchanges a code bound to the state it
     is given, so a code taken from the return URL cannot be paired with

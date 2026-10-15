@@ -1,5 +1,5 @@
 // A resolve started before the trip was opened still reaches the map
-// (issue #278, Decision 11 of docs/CLIENT_STATE_MAP_PLAN.md).
+// (issue #278, Decision 11 of docs/plans/CLIENT_STATE_MAP_PLAN.md).
 //
 // Polling used to start only from the resolve button, so a resolve started
 // earlier in the session, before the app was closed, or on another device left

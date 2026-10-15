@@ -1,4 +1,4 @@
-"""Fetch a render's map tiles ahead of the frame loop (docs/VIDEO_RENDER_TIME_PLAN.md
+"""Fetch a render's map tiles ahead of the frame loop (docs/plans/VIDEO_RENDER_TIME_PLAN.md
 D2–D7, D9).
 
 A video render asks for its tiles one at a time, on the thread that draws the

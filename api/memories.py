@@ -397,7 +397,7 @@ def create_memory(
                 return {"id": by_id.id}
 
         # A trip's memories are encrypted under its owner's key (decision 3 of
-        # docs/E2EE_REMNANTS_PLAN.md), whoever writes them.
+        # docs/plans/E2EE_REMNANTS_PLAN.md), whoever writes them.
         raise_if_encryption_mismatch(_user_encrypted(sess, owner_id), body.name, body.description)
 
         if body.polarsteps_step_id is not None:

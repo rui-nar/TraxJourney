@@ -1,5 +1,5 @@
 /// The facets of a `ProjectNotifier`'s state (issue #294, Decisions 7, 17 and
-/// 18 of docs/CLIENT_STATE_MAP_PLAN.md).
+/// 18 of docs/plans/CLIENT_STATE_MAP_PLAN.md).
 ///
 /// A facet is one slice of a trip's state — geometry, selection, style,
 /// items, elevation — that widgets can listen to without being told about

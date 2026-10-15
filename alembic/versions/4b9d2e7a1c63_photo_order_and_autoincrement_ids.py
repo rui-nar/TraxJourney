@@ -1,7 +1,7 @@
 """photo order state; dense photos_json; memory/journal ids never reused (#237, #511)
 
 Three steps, on ``memory`` and ``journalentry`` alike
-(docs/PHOTOS_ORDER_ORIENTATION_PLAN.md, D3 and D4c):
+(docs/plans/PHOTOS_ORDER_ORIENTATION_PLAN.md, D3 and D4c):
 
 1. A nullable ``photo_order_json`` column holds the placement state
    ``{"epoch": int, "ranks": {uuid: int}}`` (see ``api/photo_order.py``).

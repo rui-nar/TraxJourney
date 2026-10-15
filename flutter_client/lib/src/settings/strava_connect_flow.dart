@@ -1,5 +1,5 @@
 /// Strava connect bound to the client that started it
-/// (docs/STRAVA_CONNECT_BINDING_PLAN.md, D2 and D7).
+/// (docs/plans/STRAVA_CONNECT_BINDING_PLAN.md, D2 and D7).
 ///
 /// [StravaConnectFlow.start] makes a fresh PKCE-style verifier, keeps it as
 /// the one pending connect and sends only its SHA-256 challenge to the

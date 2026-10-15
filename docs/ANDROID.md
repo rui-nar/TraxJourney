@@ -178,7 +178,7 @@ by naming the package explicitly, which `run-android.ps1 -DeepLink` does.
 After Strava consent in the system browser, the server's OAuth callback sends
 an app-started connect to this URI, and the app finishes the connect and opens
 Settings. It is a custom scheme, not an App Link
-([STRAVA_CONNECT_BINDING_PLAN.md](STRAVA_CONNECT_BINDING_PLAN.md), D4): it needs
+([STRAVA_CONNECT_BINDING_PLAN.md](plans/STRAVA_CONNECT_BINDING_PLAN.md), D4): it needs
 no `assetlinks.json` verification and does not depend on the API host, so
 release, val and debug builds all return. Any app could claim the scheme, but
 the code it would read is bound to its state, and the state to a verifier that

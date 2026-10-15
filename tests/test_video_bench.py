@@ -1,5 +1,5 @@
 """Stage-timing instrumentation (``renderer.py``) and the benchmark/frame-dump
-CLI (``bench.py``) added for docs/VIDEO_CAMERA_QUALITY_PLAN.md, D4/U1.
+CLI (``bench.py``) added for docs/plans/VIDEO_CAMERA_QUALITY_PLAN.md, D4/U1.
 
 Reuses ``tests/test_video_renderer.py``'s fakes and DB fixture rather than
 duplicating them (``fake_tile``, ``timeline30``, ``SMALL``, ``needs_ffmpeg``,

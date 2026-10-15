@@ -175,7 +175,7 @@ class PerfTiming {
 //
 // Frame percentiles above answer "was that window janky"; they cannot answer
 // "which pipeline stage caused it". Every phase of the map-load plan
-// (docs/PERF_MAP_LOAD.md) needs a before/after number attached to a specific
+// (docs/plans/PERF_MAP_LOAD.md) needs a before/after number attached to a specific
 // stage, so the load path is instrumented with named spans instead.
 //
 // Two kinds, deliberately distinct — conflating them is what makes most

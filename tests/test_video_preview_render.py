@@ -1,4 +1,4 @@
-"""The preview render (docs/VIDEO_PREVIEW_PLAN.md D1, D4, Convention 3; U2):
+"""The preview render (docs/plans/VIDEO_PREVIEW_PLAN.md D1, D4, Convention 3; U2):
 ``render_preview``, its ``FrameRenderer`` and ``bench.py --preview``.
 
 Reuses ``tests/test_video_renderer.py``'s fakes, DB fixture and golden-image
@@ -275,7 +275,7 @@ def test_the_webp_decodes_to_its_pre_encode_frames(mode, tmp_path, monkeypatch):
         assert far <= WEBP_CODEC_FAR_TOLERANCE, f"{mode} frame {k}: codec far {far:.2%}"
 
 
-# ── tile prefetching (docs/VIDEO_RENDER_TIME_PLAN.md U2b) ───────────────────
+# ── tile prefetching (docs/plans/VIDEO_RENDER_TIME_PLAN.md U2b) ───────────────────
 
 @pytest.mark.parametrize("mode", CAMERA_MODES)
 def test_preview_frames_are_bit_identical_with_and_without_prefetching(mode, tmp_path,

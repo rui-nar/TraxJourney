@@ -1,5 +1,5 @@
 # The route corpus: real legs and the shape their route is known to have
-# (issue #345, docs/LOCAL_TRANSPORT_DATA_PLAN.md Decisions 3-4).
+# (issue #345, docs/plans/LOCAL_TRANSPORT_DATA_PLAN.md Decisions 3-4).
 #
 #     python scripts/route_corpus.py <store dir> [--require-all]
 #

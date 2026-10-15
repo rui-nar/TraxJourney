@@ -1,5 +1,5 @@
 /// Shows a trip video preview, an animated WebP
-/// (docs/VIDEO_PREVIEW_PLAN.md, U4; review R1-4).
+/// (docs/plans/VIDEO_PREVIEW_PLAN.md, U4; review R1-4).
 ///
 /// `Image.memory` animates WebP on Android and iOS, but on the web that
 /// depends on the browser's image decoding, so the web build shows it in a

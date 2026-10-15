@@ -94,7 +94,7 @@ Future<String?> authRedirectTarget(
   // /verify-email/ above: reached from an email, possibly with no session.
   if (loc.startsWith('/poster/')) return null;
 
-  // Video-ready/failed notification links (docs/TRIP_VIDEO_PLAN.md, U7) —
+  // Video-ready/failed notification links (docs/plans/TRIP_VIDEO_PLAN.md, U7) —
   // same as /poster/: the token is the credential, a session is optional.
   if (loc.startsWith('/video/')) return null;
 
@@ -113,7 +113,7 @@ Future<String?> authRedirectTarget(
     return '/login?return_to=${Uri.encodeComponent(loc)}';
   }
 
-  // The Android return from Strava consent (docs/STRAVA_CONNECT_BINDING_PLAN.md
+  // The Android return from Strava consent (docs/plans/STRAVA_CONNECT_BINDING_PLAN.md
   // D4) completes a connect for the signed-in account, so it needs a session.
   // Not carried as return_to: the pending verifier only matches the account
   // that started the connect, and the server's account check covers a
@@ -310,7 +310,7 @@ GoRouter buildRouter(BuildContext context) {
       ),
       GoRoute(
         // Android opens traxjourney://app/strava-return?… after Strava
-        // consent (docs/STRAVA_CONNECT_BINDING_PLAN.md D4). The route sees
+        // consent (docs/plans/STRAVA_CONNECT_BINDING_PLAN.md D4). The route sees
         // the URI's path; scheme and host stay on state.uri.
         path: kStravaReturnRoute,
         builder: (context, state) {

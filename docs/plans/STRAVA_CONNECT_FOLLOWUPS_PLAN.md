@@ -3,7 +3,7 @@
 ## Problem
 
 Three loose ends from the Strava connect binding fix
-(`docs/STRAVA_CONNECT_BINDING_PLAN.md`, PR #585, released in v0.53.1):
+(`docs/plans/STRAVA_CONNECT_BINDING_PLAN.md`, PR #585, released in v0.53.1):
 
 - **#584.** When an Android connect finishes in the browser, the server sends
   it straight back into the app. Nothing tells the person who approved on

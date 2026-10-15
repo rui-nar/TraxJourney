@@ -18,7 +18,7 @@ decision can be checked against the rule it claims to follow.
 
 A plan's work is split into **units** (`U1`, `U2`, …). A unit is a hand-off:
 the implementer gets the unit and nothing else, so everything it needs is in it.
-This is the shape the execution units of `docs/LOGGING_OBSERVABILITY_PLAN.md`
+This is the shape the execution units of `docs/plans/LOGGING_OBSERVABILITY_PLAN.md`
 already have, with the fields routing needs added.
 
 | Field | Content |

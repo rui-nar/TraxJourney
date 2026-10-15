@@ -1,6 +1,6 @@
 # Review ledger — Store distribution plan (#579, #582, #580)
 
-Subject: docs/STORE_DISTRIBUTION_PLAN.md
+Subject: docs/plans/STORE_DISTRIBUTION_PLAN.md
 Envelope: plan section "Review envelope" + REVIEW.md defaults
 
 ## Round 1 — 2026-10-12, reviewed at 48029e8f (plan uncommitted)

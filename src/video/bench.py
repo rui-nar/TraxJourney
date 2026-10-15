@@ -1,6 +1,6 @@
 """Benchmark a real trip video render on the server, in any camera mode, with
 candidate encoder settings — and dump frames for the sharpness comparison
-(docs/VIDEO_CAMERA_QUALITY_PLAN.md, D4; U1)::
+(docs/plans/VIDEO_CAMERA_QUALITY_PLAN.md, D4; U1)::
 
     python -m src.video.bench --project "Tour de France" --owner 3 \\
         --length 90 --height 1080 [--camera variable] [--crf 20] \\
@@ -85,7 +85,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--height", type=int, default=720, help="video height in pixels (width: 16:9)")
     ap.add_argument("--camera", choices=CAMERA_MODES, default="variable")
     ap.add_argument("--preview", action="store_true",
-                    help="render the low-resolution animated WebP preview (docs/VIDEO_PREVIEW_PLAN.md "
+                    help="render the low-resolution animated WebP preview (docs/plans/VIDEO_PREVIEW_PLAN.md "
                          "D1) instead of the MP4; --crf/--tune/--dump-frames don't apply")
     ap.add_argument("--crf", type=int, default=None,
                     help="override the encoder's -crf (default: the renderer's, 20)")

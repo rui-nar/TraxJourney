@@ -351,7 +351,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         await stravaConnect.connectWeb();
       } else {
         // The app returns through traxjourney://app/strava-return, which
-        // finishes the connect (docs/STRAVA_CONNECT_BINDING_PLAN.md, U3).
+        // finishes the connect (docs/plans/STRAVA_CONNECT_BINDING_PLAN.md, U3).
         final url = await stravaConnect.start(app: true);
         await launchUrl(url, mode: LaunchMode.externalApplication);
       }

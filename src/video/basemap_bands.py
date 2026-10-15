@@ -1,5 +1,5 @@
 """Basemap of every frame of a trip video, from a few stitched *sheets*
-(docs/TRIP_VIDEO_PLAN.md, U5).
+(docs/plans/TRIP_VIDEO_PLAN.md, U5).
 
 The camera's zoom is continuous; map tiles come in integer zoom levels. Each
 frame is drawn from the integer *band* at or just below its zoom, stitched at
@@ -211,7 +211,7 @@ def plan_bands(shots: Sequence[Shot], size: Size, max_tiles: int = MAX_TILES) ->
 def plan_requests(plan: BandPlan) -> List[Tuple[int, int, int]]:
     """Every tile request a render of *plan* makes, in order: frame by frame,
     each frame's sheets in turn, each sheet's :attr:`Sheet.requests` at its
-    first use (docs/VIDEO_RENDER_TIME_PLAN.md D3)."""
+    first use (docs/plans/VIDEO_RENDER_TIME_PLAN.md D3)."""
     out: List[Tuple[int, int, int]] = []
     seen = set()
     for refs in plan.frames:
@@ -250,7 +250,7 @@ class Basemaps:
 
     While the shot doesn't change (the overview camera, a card), the cropped
     and scaled image of the previous frame is reused rather than recomputed
-    (docs/VIDEO_CAMERA_QUALITY_PLAN.md D9). Every frame gets its own copy:
+    (docs/plans/VIDEO_CAMERA_QUALITY_PLAN.md D9). Every frame gets its own copy:
     the overlay draws on it in place, and must never draw on the kept one."""
 
     def __init__(self, shots: Sequence[Shot], size: Size, plan: BandPlan, *,

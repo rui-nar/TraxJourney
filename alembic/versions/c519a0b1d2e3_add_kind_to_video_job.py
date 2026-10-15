@@ -1,7 +1,7 @@
 """add kind to video job (trip video preview, issue #519)
 
 A short free preview is a ``videojob`` row of ``kind = 'preview'`` (see
-docs/VIDEO_PREVIEW_PLAN.md D2): it reuses the job lifecycle, paths and sweeps
+docs/plans/VIDEO_PREVIEW_PLAN.md D2): it reuses the job lifecycle, paths and sweeps
 of a full render. Previews never count toward the monthly video quota, which
 now filters ``kind = 'video'``; they count only toward the hourly preview rate
 limit. Every row that exists before this migration is a full video, so the

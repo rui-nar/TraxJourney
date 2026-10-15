@@ -1,5 +1,5 @@
 """The hourly poster sweep: finished jobs' rows and files go 30 days after
-``completed_at`` (docs/E2EE_REMNANTS_PLAN.md, decision 11, unit U5)."""
+``completed_at`` (docs/plans/E2EE_REMNANTS_PLAN.md, decision 11, unit U5)."""
 from __future__ import annotations
 
 import time

@@ -1,5 +1,5 @@
 // ProjectNotifier.clear() leaves the notifier as a freshly constructed one
-// would be (issue #418, Decision 2 of docs/CLIENT_STATE_MAP_PLAN.md).
+// would be (issue #418, Decision 2 of docs/plans/CLIENT_STATE_MAP_PLAN.md).
 //
 // The notifier is app-wide and the signed-in account owns its lifetime: an
 // account change clears it, and whatever clear() misses is the next account's

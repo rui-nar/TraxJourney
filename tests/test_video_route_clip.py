@@ -1,4 +1,4 @@
-"""Drawing only the on-screen runs of each leg (docs/VIDEO_ROUTE_DRAWING_PLAN.md,
+"""Drawing only the on-screen runs of each leg (docs/plans/VIDEO_ROUTE_DRAWING_PLAN.md,
 U1; #523).
 
 ``Overlay._draw_route`` converts and draws only the runs of each visible leg

@@ -1,6 +1,6 @@
 # Review ledger — Local transport data, phases 4–6 (#345)
 
-Subject: docs/LOCAL_TRANSPORT_DATA_PLAN.md
+Subject: docs/plans/LOCAL_TRANSPORT_DATA_PLAN.md
 Envelope: the plan's `## Review envelope` section (E7 GitHub Actions, E8 Geofabrik, scale and concurrency notes) on top of REVIEW.md defaults; E1 covers SQLite only (owner, 2026-09-28)
 
 ## Round 1 — 2026-10-04, reviewed at 0ce8ab09

@@ -118,7 +118,7 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
   // same reasoning as _mapController/_mapFitted above.
   final PosterStatusNotifier _posterStatusNotifier = PosterStatusNotifier();
 
-  // Trip-video status card (docs/TRIP_VIDEO_PLAN.md, U7) — same lifetime and
+  // Trip-video status card (docs/plans/TRIP_VIDEO_PLAN.md, U7) — same lifetime and
   // rules as the poster card above; see video_status_card.dart.
   final VideoStatusNotifier _videoStatusNotifier = VideoStatusNotifier();
 
@@ -475,7 +475,7 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
     }
   }
 
-  // ── Trip video (docs/TRIP_VIDEO_PLAN.md, U7) ──────────────────────────────
+  // ── Trip video (docs/plans/TRIP_VIDEO_PLAN.md, U7) ──────────────────────────────
   // One dialog (plan, consent, create); the status card takes over from there
   // and the user is emailed a link when the render is done.
 

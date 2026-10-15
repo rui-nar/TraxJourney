@@ -1,7 +1,7 @@
 # Trip import and export — Plan for #492, #367, #365, #368 and #408
 
 Package D also lists #469 and #484. They already have their own reviewed
-plan, `docs/TRIP_ZIP_IMPORT_PLAN.md` (on `feat/469-zip-import`), and a delivery
+plan, `docs/plans/TRIP_ZIP_IMPORT_PLAN.md` (on `feat/469-zip-import`), and a delivery
 that stopped partway on 2026-09-28. **That delivery is resumed and finished
 first** (owner decision, 2026-10-03), under its own plan. This plan covers the
 other five issues and starts once #469 is on main.

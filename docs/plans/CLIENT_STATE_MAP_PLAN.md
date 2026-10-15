@@ -21,7 +21,7 @@ Package C groups client-side defects and debt around the app-wide
   - Every notify rebuilds every listener, the map included.
   - `map_panel.dart` holds about 30 `_lastX` identity guards in two copies
     to undo that.
-  - Measurements (#296 comment, `docs/PERF_MAP_LOAD.md` Phase 3) show this
+  - Measurements (#296 comment, `docs/plans/PERF_MAP_LOAD.md` Phase 3) show this
     is no longer a performance problem. The owner chose the full facet split
     (2026-10-04) as a maintainability change.
 - **#379: an edit bypasses the zoom level of detail.** Three

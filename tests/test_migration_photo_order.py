@@ -5,7 +5,7 @@ Revision 4b9d2e7a1c63 adds ``photo_order_json`` to ``memory`` and
 in ``photos_json``, and rebuilds both tables as AUTOINCREMENT so a deleted
 memory's or journal entry's id is never handed to the next one — a photo write
 still in flight for the deleted row would otherwise land in a stranger
-(docs/PHOTOS_ORDER_ORIENTATION_PLAN.md, D3 and D4c). These tests run it on a
+(docs/plans/PHOTOS_ORDER_ORIENTATION_PLAN.md, D3 and D4c). These tests run it on a
 database that already holds rows.
 """
 from __future__ import annotations

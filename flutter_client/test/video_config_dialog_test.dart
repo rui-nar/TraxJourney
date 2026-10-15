@@ -1,9 +1,9 @@
-// Widget tests for the trip-video dialog (docs/TRIP_VIDEO_PLAN.md, U7): the
+// Widget tests for the trip-video dialog (docs/plans/TRIP_VIDEO_PLAN.md, U7): the
 // consent dialog on an encrypted trip (geometry sent only after "Send and
 // continue", nothing on "Decline"), the upgrade message on a 402 and the
 // unavailable state; tracks /meta deferred fetched with progress; and no way
 // to close the dialog while a job is being created (U7a); and the preview
-// (docs/VIDEO_PREVIEW_PLAN.md, U4): its messages, deadlines on a fake clock,
+// (docs/plans/VIDEO_PREVIEW_PLAN.md, U4): its messages, deadlines on a fake clock,
 // the out-of-date state, a 360 dp phone, and one consent for preview and video;
 // and the preview when no video can be made, whose consent keeps that (F-a)
 // and brings the real clip counts of an encrypted trip (F2-1).

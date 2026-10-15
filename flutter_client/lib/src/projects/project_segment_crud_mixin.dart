@@ -749,7 +749,7 @@ mixin ProjectSegmentCrudMixin on ChangeNotifier {
   ///
   /// It also returns `servedFrom`, the start of the request that produced the
   /// answer, which orders answers against each other (Decision 24 of
-  /// docs/CLIENT_STATE_MAP_PLAN.md): this request's own start, or — when
+  /// docs/plans/CLIENT_STATE_MAP_PLAN.md): this request's own start, or — when
   /// [fetch] hands back the very Future of a request already in flight, as the
   /// service's dedup does — that request's start, because its answer is the
   /// one this caller gets. A join the service hides behind a Future of its own

@@ -1,6 +1,6 @@
 # Review ledger — PRIVACY_FOLLOWUPS_A_PLAN
 
-Subject: docs/PRIVACY_FOLLOWUPS_A_PLAN.md (issues #470, #507, #508, #509, #510, #512)
+Subject: docs/plans/PRIVACY_FOLLOWUPS_A_PLAN.md (issues #470, #507, #508, #509, #510, #512)
 Envelope: the plan's "Review envelope" section (REVIEW.md defaults + SQLite only, U6 concurrency, U5 startup work)
 
 ## Round 1 — 2026-10-03, reviewed the plan as first written (uncommitted draft)

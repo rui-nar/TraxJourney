@@ -1,5 +1,5 @@
 // The selection facet holds what the user has selected and filtered (issue
-// #294, Decisions 17 and 19 of docs/CLIENT_STATE_MAP_PLAN.md): a selection
+// #294, Decisions 17 and 19 of docs/plans/CLIENT_STATE_MAP_PLAN.md): a selection
 // change bumps only its version, each notifier call still notifies once, and
 // clear() puts it all back.
 

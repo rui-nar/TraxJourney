@@ -1,4 +1,4 @@
-/// Consent for rendering an encrypted trip (docs/TRIP_VIDEO_PLAN.md, D2).
+/// Consent for rendering an encrypted trip (docs/plans/TRIP_VIDEO_PLAN.md, D2).
 ///
 /// The server can't read an encrypted activity, so a video of it needs the
 /// device to send the decrypted tracks for this one render. This dialog says

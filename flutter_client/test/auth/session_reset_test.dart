@@ -1,5 +1,5 @@
 // The end of one account's session is the end of its client state (issue
-// #418, Decisions 1, 3, 4 and 5 of docs/CLIENT_STATE_MAP_PLAN.md).
+// #418, Decisions 1, 3, 4 and 5 of docs/plans/CLIENT_STATE_MAP_PLAN.md).
 //
 // Two root causes, both covered here:
 //  - a restored session's user id was '' until a fresh login, because

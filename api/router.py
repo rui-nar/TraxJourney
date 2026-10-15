@@ -195,7 +195,7 @@ async def lifespan(_app: FastAPI):
                        id="prepared_geometry_backfill", replace_existing=True)
     # Video jobs are failed by age, never at API startup: the video worker may
     # still be rendering or about to run what a restart would call orphaned
-    # (docs/TRIP_VIDEO_PLAN.md, Convention 6). Hourly: fail jobs past their
+    # (docs/plans/TRIP_VIDEO_PLAN.md, Convention 6). Hourly: fail jobs past their
     # time limit, expire 30-day-old MP4s, delete consent geometry left behind
     # by a terminal job. On its own minute, away from the other hourly jobs.
     _scheduler.add_job(sweep_video_jobs, "cron", minute=40,

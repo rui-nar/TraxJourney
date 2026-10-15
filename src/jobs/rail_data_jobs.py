@@ -38,7 +38,7 @@ from src.utils.metrics import RAIL_DATA_AGE_DAYS, RAIL_DATA_REGIONS
 _log = get_logger(__name__)
 
 # One monthly build cycle plus a missed retry, for val (refreshes on the 4th)
-# and prod (the 5th) alike — docs/LOCAL_TRANSPORT_DATA_PLAN.md, Decision 2.
+# and prod (the 5th) alike — docs/plans/LOCAL_TRANSPORT_DATA_PLAN.md, Decision 2.
 RAIL_DATA_MAX_AGE_DAYS = 40
 
 # The monthly refresh. Off with RAIL_AUTO_REFRESH=0; the day of the month it

@@ -1,4 +1,4 @@
-"""The follow camera of a trip video (docs/TRIP_VIDEO_PLAN.md, "Camera (U2)").
+"""The follow camera of a trip video (docs/plans/TRIP_VIDEO_PLAN.md, "Camera (U2)").
 
 :func:`camera` gives the map centre and zoom of any frame. The title and end
 cards show the whole trip; a clip follows the marker at a zoom that fits the
@@ -7,7 +7,7 @@ clip, clip to clip, a jump between legs) is a 0.6 s eased fly-to that lands
 on the next view as it starts.
 
 That is the ``"variable"`` camera. Three more modes
-(docs/VIDEO_CAMERA_QUALITY_PLAN.md, D1-D3): ``"overview"`` holds the title
+(docs/plans/VIDEO_CAMERA_QUALITY_PLAN.md, D1-D3): ``"overview"`` holds the title
 card's view of the whole trip on every frame; ``"fixed"`` and
 ``"fixed_strict"`` follow the marker with the same machinery at one integer
 zoom chosen by :func:`fixed_zoom` — ``"fixed"`` pulls out to the clip's fit
@@ -152,7 +152,7 @@ Box = Tuple[float, float, float, float]   # (x0, y0, x1, y1) in world units
 
 def _world_points(legs: Iterable[Leg]) -> Iterator[Tuple[float, float]]:
     """Every point of *legs* in world units, one at a time: a trip's points
-    are never all held as tuples (docs/VIDEO_PREVIEW_PLAN.md, D11)."""
+    are never all held as tuples (docs/plans/VIDEO_PREVIEW_PLAN.md, D11)."""
     for leg in legs:
         for lon, lat in leg.points():
             yield lonlat_to_world(lon, lat)
@@ -551,7 +551,7 @@ def _marker_steps(timeline: Timeline, fps: int, size: Size) -> Dict[Tuple[int, i
 
 def fixed_zoom(timeline: Timeline, size: Size, mode: str) -> int:
     """The integer zoom ``Z`` of a ``"fixed"`` or ``"fixed_strict"`` path
-    (docs/VIDEO_CAMERA_QUALITY_PLAN.md, D3): the highest z from
+    (docs/plans/VIDEO_CAMERA_QUALITY_PLAN.md, D3): the highest z from
     :data:`FIXED_TOP_ZOOM` down to the mode's :func:`fixed_floor` that
 
     - ``"fixed"``: is at most the floor of the median ``CLIP_FILL`` fit zoom

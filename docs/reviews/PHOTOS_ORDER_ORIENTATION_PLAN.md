@@ -1,6 +1,6 @@
 # Review ledger — Photos: upright thumbnails and kept order (#511, #237)
 
-Subject: docs/PHOTOS_ORDER_ORIENTATION_PLAN.md
+Subject: docs/plans/PHOTOS_ORDER_ORIENTATION_PLAN.md
 Envelope: plan section "Review envelope" + REVIEW.md defaults
 
 ## Round 1 — 2026-10-04, reviewed at 622c5619 (plan uncommitted)

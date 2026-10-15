@@ -1,6 +1,6 @@
 # Review ledger — Strava connect binding (GHSA-66h3-p265-gw7c)
 
-Subject: docs/STRAVA_CONNECT_BINDING_PLAN.md
+Subject: docs/plans/STRAVA_CONNECT_BINDING_PLAN.md
 Envelope: plan section "Review envelope" (REVIEW.md defaults + custom-scheme boundary, unauthenticated callback, E5 cut accepted, no iOS)
 
 ## Round 1 — 2026-10-08, reviewed at 1418d07d

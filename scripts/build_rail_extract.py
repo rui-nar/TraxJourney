@@ -10,7 +10,7 @@ is three orders of magnitude smaller: Denmark 494 MB -> 0.8 MB, Germany
 
 Ferry and bus resolution ask Overpass the same kind of question, so the same
 download is filtered into three **layers**, one file each — ``rail``,
-``ferry`` and ``bus`` (docs/LOCAL_TRANSPORT_DATA_PLAN.md, Decision 7). Separate
+``ferry`` and ``bus`` (docs/plans/LOCAL_TRANSPORT_DATA_PLAN.md, Decision 7). Separate
 files and separate stores because bus ways are roads: one graph would let a rail
 Dijkstra walk down a high street.
 
@@ -144,7 +144,7 @@ def entry_name(slug: str, layer: str) -> str:
 # ---------------------------------------------------------------------------
 #
 # Four rows, each one an Overpass query the resolver issues today. The queries
-# are the specification; docs/LOCAL_RAIL_DATA_PLAN.md restates them and was
+# are the specification; docs/plans/LOCAL_RAIL_DATA_PLAN.md restates them and was
 # wrong once already (#349), so check any change here against that source file
 # rather than against the plan.
 #

@@ -1,5 +1,5 @@
 """The timeline of a trip video: title card, clips, end card, on one clock
-(docs/TRIP_VIDEO_PLAN.md, "Pacing and timeline design").
+(docs/plans/TRIP_VIDEO_PLAN.md, "Pacing and timeline design").
 
 :meth:`Timeline.sample` is a pure function of the timeline and *t*: the
 renderer and the camera ask it where the marker is, what it is travelling on

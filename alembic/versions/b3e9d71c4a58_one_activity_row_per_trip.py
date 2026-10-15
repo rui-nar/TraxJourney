@@ -3,7 +3,7 @@
 An ``activity`` row used to be one global row whose primary key was the Strava
 id, and trips only referenced it. Every write went to the shared row, so a
 split, a reset, a rename or a Strava refresh in one trip reached every other
-trip holding it (docs/TRIP_INDEPENDENT_ACTIVITIES_PLAN.md). From here on every
+trip holding it (docs/plans/TRIP_INDEPENDENT_ACTIVITIES_PLAN.md). From here on every
 row is held by exactly one trip. This migration brings the stored data there,
 in the order of the plan's Decision 10; each step relies on the ones before it.
 

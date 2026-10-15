@@ -1,5 +1,5 @@
 """Poster consent on encrypted trips, and the scrubbed request a finished job
-keeps (docs/E2EE_REMNANTS_PLAN.md, decision 11, unit U5)."""
+keeps (docs/plans/E2EE_REMNANTS_PLAN.md, decision 11, unit U5)."""
 from __future__ import annotations
 
 import json

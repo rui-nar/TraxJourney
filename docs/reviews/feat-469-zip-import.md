@@ -1,6 +1,6 @@
 # Review ledger — feat/469-zip-import
 
-Subject: plan docs/TRIP_ZIP_IMPORT_PLAN.md (issues #469, #484), then its delivery
+Subject: plan docs/plans/TRIP_ZIP_IMPORT_PLAN.md (issues #469, #484), then its delivery
 Envelope: the plan's `## Review envelope` plus REVIEW.md defaults
 
 ## Round 1 — 2026-09-28, plan draft reviewed on origin/main 27a2d645

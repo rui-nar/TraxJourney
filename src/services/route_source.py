@@ -10,9 +10,9 @@ or bus leg with three strategies, and between them they ask two questions:
 :class:`RouteSource` is those two questions. ``LocalRouteSource`` answers them
 from the per-region ferry and bus stores, ``OverpassRouteSource`` — beside the
 queries it wraps, in ``overpass_service`` — over the network. This is phase 3
-of ``docs/LOCAL_RAIL_DATA_PLAN.md`` again, for the other two modes, and it is
+of ``docs/plans/LOCAL_RAIL_DATA_PLAN.md`` again, for the other two modes, and it is
 built the same way: the strategies are unchanged and only read their elements
-through the source (docs/LOCAL_TRANSPORT_DATA_PLAN.md, Decision 9).
+through the source (docs/plans/LOCAL_TRANSPORT_DATA_PLAN.md, Decision 9).
 
 A class *mask* rather than a strategy name, because the mask is what the store
 indexes and what Decision 9 defines: strategy B asks for bit 0 and strategy C

@@ -19,7 +19,7 @@ enum GeoLodKind {
 }
 
 /// The level of detail the geometry on screen was built for (issue #379,
-/// Decision 10 of docs/CLIENT_STATE_MAP_PLAN.md).
+/// Decision 10 of docs/plans/CLIENT_STATE_MAP_PLAN.md).
 ///
 /// It travels with the geometry: [GeoFacetWriter.replace] takes both, so the
 /// two can no longer disagree — which is how a post-mutation reload could hold

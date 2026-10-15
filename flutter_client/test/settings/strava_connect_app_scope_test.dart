@@ -1,4 +1,4 @@
-// A web Strava connect is app-scoped (docs/STRAVA_CONNECT_BINDING_PLAN.md,
+// A web Strava connect is app-scoped (docs/plans/STRAVA_CONNECT_BINDING_PLAN.md,
 // U2, review finding U2-1): leaving the screen that started it must not lose
 // it, and its outcome reaches the app-level messenger once.
 

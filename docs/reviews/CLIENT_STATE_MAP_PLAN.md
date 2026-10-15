@@ -1,6 +1,6 @@
 # Review ledger — Client state and the map (package C)
 
-Subject: docs/CLIENT_STATE_MAP_PLAN.md
+Subject: docs/plans/CLIENT_STATE_MAP_PLAN.md
 Envelope: the plan's `## Review envelope` section plus REVIEW.md §2 defaults
 
 ## Round 1 — 2026-10-04, reviewed at a97701a7

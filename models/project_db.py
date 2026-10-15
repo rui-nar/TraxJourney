@@ -314,7 +314,7 @@ class DBActivity(sqlmodel.SQLModel, table=True):
     #: The scalars the activity had before its first edit, snapshotted beside
     #: the geometry so a reset can restore them verbatim instead of recomputing
     #: them from the original track — which it cannot do once that track is a
-    #: client-side E2EE envelope (docs/E2EE_REMNANTS_PLAN.md decision 7). NULL
+    #: client-side E2EE envelope (docs/plans/E2EE_REMNANTS_PLAN.md decision 7). NULL
     #: on an unedited row, and on an edited row snapshotted before these columns
     #: existed whose original geometry is encrypted or missing (migration
     #: c4e2a9f1b7d3 backfilled the rest).
@@ -663,7 +663,7 @@ class DBPosterJob(sqlmodel.SQLModel, table=True):
 
 
 class DBVideoJob(sqlmodel.SQLModel, table=True):
-    """An async server-side trip-video render job (docs/TRIP_VIDEO_PLAN.md).
+    """An async server-side trip-video render job (docs/plans/TRIP_VIDEO_PLAN.md).
 
     Mirrors :class:`DBPosterJob`. ``user_info_id`` is the *requester*, not
     necessarily the trip's owner: on a shared trip the companion who asked for
@@ -672,7 +672,7 @@ class DBVideoJob(sqlmodel.SQLModel, table=True):
     The rows are also the monthly quota (D3): every ``kind='video'`` job created
     in the current UTC calendar month counts unless it ``failed``, so the
     (user, created_at) index is what the quota check reads. ``kind='preview'``
-    rows are short free previews (docs/VIDEO_PREVIEW_PLAN.md D2): they never
+    rows are short free previews (docs/plans/VIDEO_PREVIEW_PLAN.md D2): they never
     count toward that quota, only toward the hourly preview rate limit (D6).
     ``request_json`` never holds decrypted geometry — that lives only in the
     job's ``geometry.json`` (D2).

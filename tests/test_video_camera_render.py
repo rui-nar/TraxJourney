@@ -1,5 +1,5 @@
 """Camera modes through the renderer, still-camera basemap reuse, and the
-encoder defaults (docs/VIDEO_CAMERA_QUALITY_PLAN.md D1, D7, D9; U3).
+encoder defaults (docs/plans/VIDEO_CAMERA_QUALITY_PLAN.md D1, D7, D9; U3).
 
 Reuses ``tests/test_video_renderer.py``'s fakes and DB fixture (``fake_tile``,
 ``timeline30``, ``SMALL``, ``needs_ffmpeg``, ``db``, the benchmark trip).

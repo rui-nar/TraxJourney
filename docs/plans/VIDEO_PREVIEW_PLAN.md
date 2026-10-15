@@ -81,8 +81,8 @@ sharpness or map detail: the zoom level differs, so labels differ.
 
 ## Review envelope
 
-REVIEW.md defaults, the trip video envelope (docs/TRIP_VIDEO_PLAN.md, including the
-E6 exception for consented geometry) and #518's (docs/VIDEO_CAMERA_QUALITY_PLAN.md)
+REVIEW.md defaults, the trip video envelope (docs/plans/TRIP_VIDEO_PLAN.md, including the
+E6 exception for consented geometry) and #518's (docs/plans/VIDEO_CAMERA_QUALITY_PLAN.md)
 apply. New points:
 
 - **Previews share the `default` queue** with share tiles and stats, on two

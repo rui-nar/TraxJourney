@@ -1,4 +1,4 @@
-"""REST trip-video endpoints (docs/TRIP_VIDEO_PLAN.md, U6).
+"""REST trip-video endpoints (docs/plans/TRIP_VIDEO_PLAN.md, U6).
 
 Routes:
     POST /api/projects/{name}/video/plan               — what a video of this trip would be
@@ -29,7 +29,7 @@ three differences that matter:
   job's ``geometry.json`` after the row commits, and never logged, stored in
   the row or echoed in an error (Convention 2).
 
-Previews (docs/VIDEO_PREVIEW_PLAN.md) are video jobs of ``kind='preview'``,
+Previews (docs/plans/VIDEO_PREVIEW_PLAN.md) are video jobs of ``kind='preview'``,
 reached only through the ``/video/preview`` routes: the full-video routes,
 the token routes and the monthly quota never see them. They are free, and
 limited instead to ``PREVIEWS_PER_HOUR`` per requester (D6, 429 with
@@ -98,7 +98,7 @@ PREVIEWS_PER_HOUR = 10
 
 VideoLength = Literal[30, 60, 90]
 VideoHeight = Literal[720, 1080]
-# docs/VIDEO_CAMERA_QUALITY_PLAN.md D1: src.video.camera.CAMERA_MODES.
+# docs/plans/VIDEO_CAMERA_QUALITY_PLAN.md D1: src.video.camera.CAMERA_MODES.
 CameraMode = Literal["variable", "overview", "fixed", "fixed_strict"]
 
 # Bounds on decrypted_geometry, checked before a line is decoded: the JSON
@@ -543,7 +543,7 @@ def download_video(
     return _file_response(job)
 
 
-# ── Previews (docs/VIDEO_PREVIEW_PLAN.md) ────────────────────────────────────
+# ── Previews (docs/plans/VIDEO_PREVIEW_PLAN.md) ────────────────────────────────────
 
 @router.post("/{name}/video/preview", status_code=status.HTTP_201_CREATED,
              response_model=JobIdOut, summary="Start a low-resolution trip video preview")

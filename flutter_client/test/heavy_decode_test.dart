@@ -1,5 +1,5 @@
 // Issue #292 — the heavy project payloads must not be decoded on the UI
-// isolate. See docs/PERF_MAP_LOAD.md.
+// isolate. See docs/plans/PERF_MAP_LOAD.md.
 //
 // The load-bearing test here is `main isolate stays responsive`: it starts a
 // 1 ms periodic timer and counts its ticks while a large geo payload is

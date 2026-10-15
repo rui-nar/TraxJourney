@@ -1,7 +1,7 @@
 // The geometry facet records the level of detail its geometry was built for,
 // and orders server answers by the start of the request that produced them
 // (issues #294 and #379; Decisions 10, 21 and 24 of
-// docs/CLIENT_STATE_MAP_PLAN.md).
+// docs/plans/CLIENT_STATE_MAP_PLAN.md).
 
 import 'dart:async';
 import 'dart:convert';

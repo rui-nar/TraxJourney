@@ -1,4 +1,4 @@
-"""Lifecycle of a trip-video render job (docs/TRIP_VIDEO_PLAN.md, U6).
+"""Lifecycle of a trip-video render job (docs/plans/TRIP_VIDEO_PLAN.md, U6).
 
 ``run_video_job`` runs on the ``video`` RQ worker, never in the API process
 (D7). It owns the job row's status, calls the renderer (Convention 5), and
@@ -15,7 +15,7 @@ else while it waits or renders —
 A runner that finds its row no longer where it left it stops, deletes what it
 wrote and sends nothing, so a job failed by a sweep never later reports done.
 
-A preview (``kind='preview'``, docs/VIDEO_PREVIEW_PLAN.md D2) goes through the
+A preview (``kind='preview'``, docs/plans/VIDEO_PREVIEW_PLAN.md D2) goes through the
 same lifecycle, started by ``run_video_preview_job`` on the ``default`` queue
 (D5). It is disposable (D7): no email on any path, a WebP kept for an hour,
 and it is failed only by age in the hourly sweep — never by the ``video``

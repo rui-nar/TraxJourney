@@ -1,4 +1,4 @@
-"""Everything a trip video draws over the basemap (docs/TRIP_VIDEO_PLAN.md, U5):
+"""Everything a trip video draws over the basemap (docs/plans/TRIP_VIDEO_PLAN.md, U5):
 the faint whole route, the travelled route in each mode's colour, the marker
 (mode icon in a halo), the speed badge, per-mode distance counters, the date
 ticker, and the title and end cards.
@@ -75,7 +75,7 @@ _ROUTE_CELL = 32
 _SPRITE_SS = 4
 # Each zoom level's kept points are cut into blocks of this many segments,
 # each with its world bbox, so finding a leg's on-screen runs skips the blocks
-# off screen (docs/VIDEO_ROUTE_DRAWING_PLAN.md, D3).
+# off screen (docs/plans/VIDEO_ROUTE_DRAWING_PLAN.md, D3).
 _BLOCK = 64
 # Only the runs of each leg that can touch the frame are converted and drawn
 # (#523, D2). Pixel-neutral: the tests switch it off to show no frame changes.
@@ -201,7 +201,7 @@ class _Scaled:
 class _Route:
     """The legs in world units, decimated once per integer zoom they are
     drawn at. Each leg's points are a flat ``array('d')``, each level's kept
-    indices an ``array('i')`` (docs/VIDEO_PREVIEW_PLAN.md, D11), with their
+    indices an ``array('i')`` (docs/plans/VIDEO_PREVIEW_PLAN.md, D11), with their
     blocks' bboxes (:func:`_blocks`, about 0.5 byte per kept point)."""
 
     def __init__(self, timeline: Timeline) -> None:

@@ -1,6 +1,6 @@
 """remove what encrypted accounts still kept in plaintext; scalar edit snapshots
 
-Part of docs/E2EE_REMNANTS_PLAN.md (unit U4). Four changes:
+Part of docs/plans/E2EE_REMNANTS_PLAN.md (unit U4). Four changes:
 
 * ``stravacache``: rows of users with ``encryption_enabled`` are deleted. The
   blob is Strava's raw activity list — names and tracks in plaintext — and

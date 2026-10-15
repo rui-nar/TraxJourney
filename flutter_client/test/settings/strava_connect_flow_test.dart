@@ -1,5 +1,5 @@
 // Strava connect bound to the client that started it
-// (docs/STRAVA_CONNECT_BINDING_PLAN.md, U2): the verifier/challenge pair, the
+// (docs/plans/STRAVA_CONNECT_BINDING_PLAN.md, U2): the verifier/challenge pair, the
 // pending connect's storage and expiry, and how server answers map to
 // outcomes.
 

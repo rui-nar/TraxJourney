@@ -87,7 +87,7 @@ class QueuedOut(BaseModel):
 
 def _raise_if_author_mismatch(sess, user_info_id: int, description: Optional[str]) -> None:
     """Journal entries are author-private, so their text belongs under the
-    author's key (decision 3 of docs/E2EE_REMNANTS_PLAN.md)."""
+    author's key (decision 3 of docs/plans/E2EE_REMNANTS_PLAN.md)."""
     author = sess.get(UserInfo, user_info_id)
     raise_if_encryption_mismatch(bool(author is not None and author.encryption_enabled), description)
 

@@ -8,7 +8,7 @@ on:
 
 # Each job syncs the environment once, explicitly, with --locked. Without this
 # every `uv run` would first re-sync to the default groups, undoing a narrower
-# sync and resolving work the job already did (docs/UV_MIGRATION_PLAN.md).
+# sync and resolving work the job already did (docs/plans/UV_MIGRATION_PLAN.md).
 env:
   UV_NO_SYNC: "1"
 

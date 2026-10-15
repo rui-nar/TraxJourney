@@ -67,7 +67,7 @@
             source: payload
             name: workflow_run.head_branch
       # GitHub sends the repository's current name. Before the rename to
-      # TraxJourney this rule never matches (docs/RENAME_TRAXJOURNEY_RUNBOOK.md).
+      # TraxJourney this rule never matches (docs/plans/RENAME_TRAXJOURNEY_RUNBOOK.md).
       - match:
           type: value
           value: "rui-nar/TraxJourney"

@@ -1,4 +1,4 @@
-"""Trip-video previews and the quotas (docs/VIDEO_PREVIEW_PLAN.md D2, D3, D6).
+"""Trip-video previews and the quotas (docs/plans/VIDEO_PREVIEW_PLAN.md D2, D3, D6).
 
 A preview is a videojob row of ``kind='preview'``. It never counts toward the
 monthly video quota; it counts toward an hourly rate limit instead, read from

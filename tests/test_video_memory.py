@@ -1,4 +1,4 @@
-"""Memory of the video pipeline per GPS point (docs/VIDEO_PREVIEW_PLAN.md, D11, U2b).
+"""Memory of the video pipeline per GPS point (docs/plans/VIDEO_PREVIEW_PLAN.md, D11, U2b).
 
 The route's points are stored as flat ``array('d')`` from the legs through the
 camera to the overlay, so a trip costs about 50 bytes per point in the Python
@@ -17,7 +17,7 @@ code before U2b peaked at 391 (variable), 467 (overview), 349 (fixed) and 349
 (fixed_strict) bytes per point; U2b's at 112, 81, 81 and 81.
 
 Drawing one frame of a long leg zoomed in costs what is on screen, not the
-leg's length (#523, docs/VIDEO_ROUTE_DRAWING_PLAN.md U1): the overlay converts
+leg's length (#523, docs/plans/VIDEO_ROUTE_DRAWING_PLAN.md U1): the overlay converts
 and draws only the runs of the leg that can touch the frame. Measured in the
 Linux image at zoom 16 and 1080p: 180.5 MB for a 500,000-point leg and 36.0 MB
 for a 100,000-point one before, 0.13 and 0.14 MB after.

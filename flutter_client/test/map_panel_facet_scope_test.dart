@@ -1,4 +1,4 @@
-// Issue #294 (Decision 9 of docs/CLIENT_STATE_MAP_PLAN.md) — both map panels
+// Issue #294 (Decision 9 of docs/plans/CLIENT_STATE_MAP_PLAN.md) — both map panels
 // key their caches on facet versions, not on the identity of what they read.
 //
 // The geometry specs are keyed on the geometry and style versions, the item

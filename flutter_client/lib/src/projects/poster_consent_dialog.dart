@@ -1,5 +1,5 @@
 /// Consent for printing an encrypted trip's memory text on a poster
-/// (docs/E2EE_REMNANTS_PLAN.md, decision 11).
+/// (docs/plans/E2EE_REMNANTS_PLAN.md, decision 11).
 ///
 /// The server can't read encrypted memory text, so printing it needs the device
 /// to send it decrypted for this one poster. Modelled on

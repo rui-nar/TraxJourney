@@ -1,5 +1,5 @@
 /// Where Android brings the user back after Strava consent in the system
-/// browser (docs/STRAVA_CONNECT_BINDING_PLAN.md, D4 and U3).
+/// browser (docs/plans/STRAVA_CONNECT_BINDING_PLAN.md, D4 and U3).
 ///
 /// The callback sends the browser to
 /// `traxjourney://app/strava-return?strava=code&code=…&state=…`, or

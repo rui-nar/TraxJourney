@@ -1,7 +1,7 @@
 """Local rail store — build, read, index correctness and resource bounds (#345).
 
 The fixture is a real rail-only extract of Luxembourg, cut with the selection
-table in docs/LOCAL_RAIL_DATA_PLAN.md; see ``tests/fixtures/rail/README.md``. A
+table in docs/plans/LOCAL_RAIL_DATA_PLAN.md; see ``tests/fixtures/rail/README.md``. A
 synthetic extract covers the shapes a single country's mappers may simply not
 have used — polygon stations, a relation whose only nearby member is a platform
 — which no real extract can be relied on to contain.

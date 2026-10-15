@@ -57,7 +57,7 @@
                  not an App Link, so debug and val builds return too; another
                  app claiming the scheme gets nothing usable, because the code
                  is bound to a state bound to this app's verifier
-                 (docs/STRAVA_CONNECT_BINDING_PLAN.md, D4). -->
+                 (docs/plans/STRAVA_CONNECT_BINDING_PLAN.md, D4). -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>
@@ -69,7 +69,7 @@
                  holds the file for lib/src/projects/incoming_gpx.dart and keeps
                  its content:// address away from the router. Only GPX's own
                  types for now: application/octet-stream would list the app for
-                 every binary file (see docs/TRIP_IMPORT_EXPORT_PLAN.md, Open
+                 every binary file (see docs/plans/TRIP_IMPORT_EXPORT_PLAN.md, Open
                  decisions). No scheme is given, so these match content: and
                  file: only, never an https link. -->
             <intent-filter>

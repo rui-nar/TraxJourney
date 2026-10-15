@@ -7,7 +7,7 @@
 // now fetch simplified geometry at the camera's level and box, from a request
 // of their own, and an older zoom or load answer still in flight cannot put
 // the pre-write geometry back (Decisions 10, 20 and 24 of
-// docs/CLIENT_STATE_MAP_PLAN.md).
+// docs/plans/CLIENT_STATE_MAP_PLAN.md).
 
 import 'dart:async';
 import 'dart:convert';

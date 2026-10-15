@@ -1,4 +1,4 @@
-"""Trip video job lifecycle: runner, interrupt path, sweeps (docs/TRIP_VIDEO_PLAN.md, U6).
+"""Trip video job lifecycle: runner, interrupt path, sweeps (docs/plans/TRIP_VIDEO_PLAN.md, U6).
 
 Every transition is a compare-and-set (Convention 6), and the consent
 geometry of D2 is gone after every terminal path (Convention 2). The renderer
@@ -115,7 +115,7 @@ def test_happy_path_renders_emails_and_deletes_the_geometry(env, monkeypatch):
 
 def test_the_stored_camera_reaches_the_renderer(env, monkeypatch):
     """The job's request, camera included, is what the renderer gets
-    (docs/VIDEO_CAMERA_QUALITY_PLAN.md D1); a row written before the field
+    (docs/plans/VIDEO_CAMERA_QUALITY_PLAN.md D1); a row written before the field
     existed reaches it without one, which ``render_video`` reads as
     ``"variable"`` (tests/test_video_camera_render.py)."""
     calls = _fake_renderer(monkeypatch)
@@ -385,7 +385,7 @@ def test_geometry_round_trips_and_delete_is_idempotent(env):
     assert paths.read_job_geometry(env.uid, 5) is None
 
 
-# ── previews (docs/VIDEO_PREVIEW_PLAN.md D2, D5, D7) ─────────────────────────
+# ── previews (docs/plans/VIDEO_PREVIEW_PLAN.md D2, D5, D7) ─────────────────────────
 
 def _fake_preview_renderer(monkeypatch, *, raises=None, during=None):
     """The preview renderer, faked; the video renderer must not be called."""

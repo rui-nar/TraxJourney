@@ -1,5 +1,5 @@
 // The facet write/notify contract (issue #294, Decision 17 of
-// docs/CLIENT_STATE_MAP_PLAN.md).
+// docs/plans/CLIENT_STATE_MAP_PLAN.md).
 //
 // A facet write marks the facet changed and notifies nobody; the notifier's
 // notifyListeners() notifies each changed facet once, then its own listeners

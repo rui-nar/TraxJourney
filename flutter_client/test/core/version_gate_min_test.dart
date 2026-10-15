@@ -1,5 +1,5 @@
 // Tests for the minimum-client-version gate (Decision 15 of
-// docs/CLIENT_STATE_MAP_PLAN.md): the pure comparison, and the blocking screen
+// docs/plans/CLIENT_STATE_MAP_PLAN.md): the pure comparison, and the blocking screen
 // (native) / non-dismissable bar (web) VersionGate shows below the minimum.
 
 import 'dart:convert';

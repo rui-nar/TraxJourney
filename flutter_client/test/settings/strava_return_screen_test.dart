@@ -1,4 +1,4 @@
-// The Android return from Strava consent (docs/STRAVA_CONNECT_BINDING_PLAN.md,
+// The Android return from Strava consent (docs/plans/STRAVA_CONNECT_BINDING_PLAN.md,
 // U3): traxjourney://app/strava-return completes the pending connect once,
 // after any session restore, and lands on Settings with the outcome shown.
 // Outcomes of a completed connect come from the app-wide messenger, wired here

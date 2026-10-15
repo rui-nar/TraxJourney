@@ -1,6 +1,6 @@
 version: 2
 
-# Keeps the lock, uv and the actions current (docs/UV_MIGRATION_PLAN.md,
+# Keeps the lock, uv and the actions current (docs/plans/UV_MIGRATION_PLAN.md,
 # Decision 7). Merging stays manual. Security advisories open their own PRs
 # regardless of this schedule.
 updates:

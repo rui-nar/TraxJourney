@@ -1,4 +1,4 @@
-"""Trip video timeline: legs, clips, pacing and sampling (docs/TRIP_VIDEO_PLAN.md, U1)."""
+"""Trip video timeline: legs, clips, pacing and sampling (docs/plans/TRIP_VIDEO_PLAN.md, U1)."""
 from __future__ import annotations
 
 import json

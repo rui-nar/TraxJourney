@@ -96,7 +96,7 @@ buy (owner decision, 2026-09-29). Making rendering faster in general stays in
 ## Review envelope
 
 `docs/REVIEW.md` defaults apply, plus the trip video envelope in
-`docs/TRIP_VIDEO_PLAN.md`: the E6 exception for per-job consent geometry,
+`docs/plans/TRIP_VIDEO_PLAN.md`: the E6 exception for per-job consent geometry,
 `ffmpeg` as a local binary, Mapbox as the existing basemap provider, and one
 `video` worker running one job at a time. This change adds no trust boundary
 and no external service. New points:

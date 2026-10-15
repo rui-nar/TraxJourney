@@ -1,4 +1,4 @@
-/// Landing screen for `/video/{token}` (docs/TRIP_VIDEO_PLAN.md, U7), the
+/// Landing screen for `/video/{token}` (docs/plans/TRIP_VIDEO_PLAN.md, U7), the
 /// link in the "your video is ready/failed" email — the counterpart of
 /// `poster_download_screen.dart`. Opens with or without a session: the token
 /// is the credential (`GET /api/video/{token}`), so this screen talks only to

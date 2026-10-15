@@ -1,6 +1,6 @@
 ---
 name: deliver-plan
-description: Implement an approved plan file by splitting it into units and handing them to implementer agents on Sonnet or Opus, following docs/DELIVERY.md. Use when the user asks to implement, deliver, build or orchestrate a plan file (docs/*_PLAN.md), says "deliver the plan", "build this plan with agents" or "orchestrate this", or approves a plan and asks to go ahead. Not for small direct requests (fix a bug, rename, add a test), which are done in the session. For a large request with no plan yet, offer write-plan first.
+description: Implement an approved plan file by splitting it into units and handing them to implementer agents on Sonnet or Opus, following docs/DELIVERY.md. Use when the user asks to implement, deliver, build or orchestrate a plan file (docs/plans/*_PLAN.md), says "deliver the plan", "build this plan with agents" or "orchestrate this", or approves a plan and asks to go ahead. Not for small direct requests (fix a bug, rename, add a test), which are done in the session. For a large request with no plan yet, offer write-plan first.
 ---
 
 # Deliver a plan

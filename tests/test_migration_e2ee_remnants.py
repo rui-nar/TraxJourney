@@ -1,4 +1,4 @@
-"""Data-migration test for c4e2a9f1b7d3 — E2EE remnants (docs/E2EE_REMNANTS_PLAN.md U4).
+"""Data-migration test for c4e2a9f1b7d3 — E2EE remnants (docs/plans/E2EE_REMNANTS_PLAN.md U4).
 
 Builds a throwaway SQLite DB at the migration's parent revision, seeds the
 cases it distinguishes, upgrades to it, and asserts:

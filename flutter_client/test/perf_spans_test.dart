@@ -2,7 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:traxjourney_client/src/core/perf_timing.dart';
 
 /// Issue #291. The span recorder is the measurement seam the whole map-load
-/// plan (docs/PERF_MAP_LOAD.md) is verified against, so its aggregation and
+/// plan (docs/plans/PERF_MAP_LOAD.md) is verified against, so its aggregation and
 /// its over-budget verdict are pinned here — a harness that quietly reports
 /// the wrong number is worse than no harness.
 void main() {

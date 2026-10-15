@@ -1,4 +1,4 @@
-// `/video/{token}` (docs/TRIP_VIDEO_PLAN.md, U7): the emailed link opens
+// `/video/{token}` (docs/plans/TRIP_VIDEO_PLAN.md, U7): the emailed link opens
 // without a session and offers the download. Exercised through the real
 // buildRouter() — the auth guard and the route both — plus the screen's own
 // states.

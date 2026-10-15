@@ -125,7 +125,7 @@ class ActivitiesPageOut(BaseModel):
 #: ``(fetched_at, activities_json)``, the two columns a ``DBStravaCache`` row
 #: would hold. The raw list carries activity names and tracks in plaintext,
 #: which such an account must not have on disk, so it lives in this process
-#: only (docs/E2EE_REMNANTS_PLAN.md decision 8) — enough with one API process.
+#: only (docs/plans/E2EE_REMNANTS_PLAN.md decision 8) — enough with one API process.
 #: Lost on restart, which costs one Strava refetch.
 _memory_cache: Dict[int, tuple[float, str]] = {}
 
@@ -313,7 +313,7 @@ def _persist_rotated_token(user_info_id: int, token_data: Dict[str, Any]) -> Non
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
-#: Where an app-started flow returns (docs/STRAVA_CONNECT_BINDING_PLAN.md D4).
+#: Where an app-started flow returns (docs/plans/STRAVA_CONNECT_BINDING_PLAN.md D4).
 #: Host ``app`` so the app's router sees the path ``/strava-return``.
 _APP_RETURN_URI = "traxjourney://app/strava-return"
 

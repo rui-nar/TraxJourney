@@ -203,7 +203,7 @@ def videos_this_month(sess, user_info_id: int, now: float | None = None) -> int:
     one: the user did not get a video, so it must not cost them one. The month
     is UTC rather than the user's local one so nobody can buy an extra render
     by moving their clock across a timezone. Previews (``kind='preview'``) are
-    free and never count (docs/VIDEO_PREVIEW_PLAN.md D3).
+    free and never count (docs/plans/VIDEO_PREVIEW_PLAN.md D3).
     """
     start, end = _utc_month_bounds(time.time() if now is None else now)
     return int(
@@ -219,7 +219,7 @@ def videos_this_month(sess, user_info_id: int, now: float | None = None) -> int:
     )
 
 
-#: The rolling window of the preview rate limit (docs/VIDEO_PREVIEW_PLAN.md D6).
+#: The rolling window of the preview rate limit (docs/plans/VIDEO_PREVIEW_PLAN.md D6).
 PREVIEW_WINDOW_S = 3600.0
 #: How long a pending or running preview keeps counting. Past this it is taken
 #: as lost (its worker died, its enqueue vanished) and stops costing the user.

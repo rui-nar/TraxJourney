@@ -1,7 +1,7 @@
 # Review ledger — E2EE plaintext remnants (#504, #505, #506, #366)
 
-Subject: docs/E2EE_REMNANTS_PLAN.md
-Envelope: docs/E2EE_REMNANTS_PLAN.md § Review envelope
+Subject: docs/plans/E2EE_REMNANTS_PLAN.md
+Envelope: docs/plans/E2EE_REMNANTS_PLAN.md § Review envelope
 
 ## Round 1 — 2026-10-04, reviewed at 622c5619 (+ uncommitted plan)
 

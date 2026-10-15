@@ -1,5 +1,5 @@
 """Server backstop on journal writes (#505, #506; decisions 3 and 13 of
-docs/E2EE_REMNANTS_PLAN.md).
+docs/plans/E2EE_REMNANTS_PLAN.md).
 
 Journal entries are author-private, so the author's key is the one their text
 belongs under: an encrypted author may only store envelopes

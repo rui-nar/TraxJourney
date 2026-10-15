@@ -16,7 +16,7 @@ decision can be checked against the rule it claims to follow.
 
 ## 1. Scope
 
-Applies to adversarial reviews of plans (`docs/*_PLAN.md` and the like) and of
+Applies to adversarial reviews of plans (`docs/plans/*_PLAN.md` and the like) and of
 diffs. Findings from other sources — a PR review bot, a person, a pasted list —
 go through the same triage.
 

@@ -4,7 +4,7 @@ For a valid ``ret=app`` state with a code, ``GET /api/strava/callback`` binds
 the code, then answers a page instead of redirecting into the app: a fixed
 warning first, then the state's account by display name, a Continue link to
 the app return and a Cancel that stays on the page
-(docs/STRAVA_CONNECT_FOLLOWUPS_PLAN.md D1, D2). Web and error returns still
+(docs/plans/STRAVA_CONNECT_FOLLOWUPS_PLAN.md D1, D2). Web and error returns still
 redirect.
 
 Fixtures are copied from tests/test_strava_connect_binding.py.

@@ -1,4 +1,4 @@
-/// Request flow for a trip video (docs/TRIP_VIDEO_PLAN.md, U7): plan, the
+/// Request flow for a trip video (docs/plans/TRIP_VIDEO_PLAN.md, U7): plan, the
 /// consent step for encrypted trips (D2), then the job.
 ///
 /// [VideoRequestNotifier] is a plain [ChangeNotifier] so the flow is
@@ -10,7 +10,7 @@
 /// track `/meta` deferred fetched and decrypted here. It is held only in
 /// memory for this one request and sent only after
 /// [VideoRequestNotifier.acceptConsent]; a declined request sends nothing.
-/// A preview (docs/VIDEO_PREVIEW_PLAN.md, D8) re-sends the same geometry, so
+/// A preview (docs/plans/VIDEO_PREVIEW_PLAN.md, D8) re-sends the same geometry, so
 /// one consent covers the previews and the video of a dialog session.
 library;
 
@@ -131,7 +131,7 @@ Future<(double, double)?> _latLng(
   return ((v[0] as num).toDouble(), (v[1] as num).toDouble());
 }
 
-/// Where a preview is (docs/VIDEO_PREVIEW_PLAN.md, U4). Independent of
+/// Where a preview is (docs/plans/VIDEO_PREVIEW_PLAN.md, U4). Independent of
 /// [VideoRequestPhase]: the video can be created while a preview renders.
 enum VideoPreviewPhase {
   /// None asked for, or the last one expired.

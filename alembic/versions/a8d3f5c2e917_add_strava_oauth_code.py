@@ -2,7 +2,7 @@
 
 The OAuth callback records, for every code it relays, the ``jti`` of the
 state Strava returned it with; ``POST /api/strava/complete`` exchanges a code
-only together with that state (docs/STRAVA_CONNECT_BINDING_PLAN.md D9). Rows
+only together with that state (docs/plans/STRAVA_CONNECT_BINDING_PLAN.md D9). Rows
 hold the code's sha256 only and live as long as their state (10 minutes).
 Nothing existing is migrated.
 

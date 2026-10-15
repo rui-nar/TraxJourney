@@ -1,5 +1,5 @@
 // The closed-versus-message decision for the Strava OAuth popup
-// (docs/STRAVA_CONNECT_FOLLOWUPS_PLAN.md, D3, R1-2 and R2-3), on a fake clock.
+// (docs/plans/STRAVA_CONNECT_FOLLOWUPS_PLAN.md, D3, R1-2 and R2-3), on a fake clock.
 
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';

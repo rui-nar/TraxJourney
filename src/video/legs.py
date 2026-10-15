@@ -1,4 +1,4 @@
-"""Legs: one per drawable trip item, in map order (docs/TRIP_VIDEO_PLAN.md).
+"""Legs: one per drawable trip item, in map order (docs/plans/TRIP_VIDEO_PLAN.md).
 
 A leg carries what pacing and sampling need and nothing else: the geometry
 with its prefix distances, the mode, the real duration it stands for, the
@@ -13,7 +13,7 @@ boxes and the camera then take its short way with no special case.
 A leg's points are stored flat, ``array('d')`` of ``lon0, lat0, lon1, lat1,
 …``, and its prefix distances as ``array('d')`` too: a trip of 1.6 M points
 costs ~24 bytes a point that way, where tuples of tuples cost ~150
-(docs/VIDEO_PREVIEW_PLAN.md, D11). :meth:`Leg.point` and :meth:`Leg.points`
+(docs/plans/VIDEO_PREVIEW_PLAN.md, D11). :meth:`Leg.point` and :meth:`Leg.points`
 read them back as ``(lon, lat)``.
 
 :func:`feature_coords` also lives here, rather than in ``api/geo.py`` whose
