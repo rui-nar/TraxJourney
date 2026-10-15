@@ -81,8 +81,14 @@ void main() {
         };
 
     Future<_FakeBackupSettingsService> pumpScreen(WidgetTester tester,
-        {required bool isAdmin, AuthNotifier? authNotifier}) async {
-      final svc = _FakeBackupSettingsService();
+        {required bool isAdmin,
+        AuthNotifier? authNotifier,
+        List<Map<String, dynamic>>? backups}) async {
+      // Tall enough that the Backups card is on screen and taps hit it.
+      tester.view.physicalSize = const Size(800, 4000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final svc = _FakeBackupSettingsService(backups);
       final auth = authNotifier ?? AuthNotifier(AuthService())
         ..updateUser(userMap(isAdmin: isAdmin));
       await tester.pumpWidget(MultiProvider(
@@ -101,17 +107,17 @@ void main() {
       final svc = await pumpScreen(tester, isAdmin: false);
 
       expect(find.text('Backups'), findsNothing);
-      expect(find.text('2026-01-01'), findsNothing);
+      expect(find.text('2026-01-01 · 2 KB'), findsNothing);
       expect(find.widgetWithText(TextButton, 'Restore'), findsNothing);
       expect(svc.listCalls, 0);
     });
 
-    testWidgets('is shown to admins with a Restore button per backup',
+    testWidgets('is shown to admins with a selector and a Restore button',
         (tester) async {
       final svc = await pumpScreen(tester, isAdmin: true);
 
       expect(find.text('Backups'), findsOneWidget);
-      expect(find.text('2026-01-01'), findsOneWidget);
+      expect(find.text('2026-01-01 · 2 KB'), findsOneWidget);
       expect(find.widgetWithText(TextButton, 'Restore'), findsOneWidget);
       expect(svc.listCalls, 1);
     });
@@ -130,14 +136,97 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Backups'), findsOneWidget);
-      expect(find.text('2026-01-01'), findsOneWidget);
+      expect(find.text('2026-01-01 · 2 KB'), findsOneWidget);
       expect(svc.listCalls, 1);
+    });
+
+    final threeBackups = [
+      {'date': '2026-01-03', 'size_bytes': 2048},
+      {'date': '2026-01-02', 'size_bytes': 2048},
+      {'date': '2026-01-01', 'size_bytes': 2048},
+    ];
+
+    testWidgets('shows one selector and one Restore button for several backups',
+        (tester) async {
+      await pumpScreen(tester, isAdmin: true, backups: threeBackups);
+
+      expect(find.byType(DropdownButtonFormField<String>), findsOneWidget);
+      expect(find.widgetWithText(TextButton, 'Restore'), findsOneWidget);
+      expect(find.text('2026-01-03 · 2 KB'), findsOneWidget);
+      expect(find.text('2026-01-02 · 2 KB'), findsNothing);
+      expect(find.text('2026-01-01 · 2 KB'), findsNothing);
+    });
+
+    testWidgets('defaults to the newest backup and restores it',
+        (tester) async {
+      final svc =
+          await pumpScreen(tester, isAdmin: true, backups: threeBackups);
+
+      await tester.tap(find.widgetWithText(TextButton, 'Restore'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('backup from 2026-01-03'), findsOneWidget);
+
+      await tester.tap(find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.widgetWithText(TextButton, 'Restore')));
+      await tester.pumpAndSettle();
+
+      expect(svc.restored, ['2026-01-03']);
+    });
+
+    testWidgets('restores the backup picked in the drop-down', (tester) async {
+      final svc =
+          await pumpScreen(tester, isAdmin: true, backups: threeBackups);
+
+      await tester.tap(find.byType(DropdownButtonFormField<String>));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('2026-01-02 · 2 KB').last);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(TextButton, 'Restore'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('backup from 2026-01-02'), findsOneWidget);
+
+      await tester.tap(find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.widgetWithText(TextButton, 'Restore')));
+      await tester.pumpAndSettle();
+
+      expect(svc.restored, ['2026-01-02']);
+    });
+
+    testWidgets('size label is shown in the item', (tester) async {
+      await pumpScreen(tester, isAdmin: true, backups: [
+        {'date': '2026-01-02', 'size_bytes': 5 * 1024 * 1024},
+        {'date': '2026-01-01', 'size_bytes': 2048},
+      ]);
+
+      expect(find.text('2026-01-02 · 5.0 MB'), findsOneWidget);
+
+      await tester.tap(find.byType(DropdownButtonFormField<String>));
+      await tester.pumpAndSettle();
+      expect(find.text('2026-01-01 · 2 KB'), findsOneWidget);
     });
   });
 }
 
 class _FakeBackupSettingsService extends SettingsService {
+  _FakeBackupSettingsService([List<Map<String, dynamic>>? backups])
+      : _backups = backups ??
+            [
+              {'date': '2026-01-01', 'size_bytes': 2048},
+            ];
+
+  final List<Map<String, dynamic>> _backups;
   int listCalls = 0;
+  final List<String> restored = [];
+
+  // Throws so the screen's reloadApp() is never reached.
+  @override
+  Future<void> restoreBackup(String date) async {
+    restored.add(date);
+    throw Exception('stop');
+  }
 
   @override
   Future<bool> getStravaStatus() async => false;
@@ -160,8 +249,6 @@ class _FakeBackupSettingsService extends SettingsService {
   @override
   Future<List<Map<String, dynamic>>> listBackups() async {
     listCalls++;
-    return [
-      {'date': '2026-01-01', 'size_bytes': 2048},
-    ];
+    return _backups;
   }
 }
