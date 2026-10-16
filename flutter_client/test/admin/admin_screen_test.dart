@@ -388,7 +388,8 @@ void main() {
     expect(find.byIcon(Icons.open_in_new), findsOneWidget);
   });
 
-  testWidgets('reset is enabled for None/Low, disabled for Medium/High',
+  // Every tier is resettable (#630): the password is not in the E2EE key chain.
+  testWidgets('reset is enabled at every encryption tier',
       (tester) async {
     final svc = _FakeAdminService()
       ..searchResult = [
@@ -405,8 +406,8 @@ void main() {
         .widgetList<OutlinedButton>(find.widgetWithText(OutlinedButton, 'Reset password'))
         .toList();
     expect(buttons, hasLength(2));
-    expect(buttons[0].onPressed, isNotNull); // low → enabled
-    expect(buttons[1].onPressed, isNull); // high → disabled
+    expect(buttons[0].onPressed, isNotNull); // low
+    expect(buttons[1].onPressed, isNotNull); // high
 
     // The Logging card (issue #208) pushes this section below the fixed test
     // viewport — scroll the target into view before tapping, same reasoning

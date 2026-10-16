@@ -1,5 +1,5 @@
-/// Admin dashboard — aggregate metrics, per-user breakdown, and a tier-gated
-/// user search + password-reset tool. Shown only to admins (see app_router).
+/// Admin dashboard — aggregate metrics, per-user breakdown, and a user
+/// search + password-reset tool. Shown only to admins (see app_router).
 ///
 /// Never renders memory/journal content: the backend only exposes counts,
 /// sizes, and profile fields.
@@ -900,13 +900,10 @@ class _AdminShieldIcon extends StatelessWidget {
 
 const Map<String, String> _tierExplanations = {
   'none': 'No encryption. Content is stored and searchable in plaintext.',
-  'low': 'Server-recoverable encryption. An admin can still reset this '
-      'password without losing data.',
-  'medium': 'Zero-knowledge encryption. An admin password reset would '
-      'destroy this user\'s encrypted data — resets are blocked.',
-  'high': 'Zero-knowledge encryption with device-only recovery. An admin '
-      'password reset would destroy this user\'s encrypted data — resets '
-      'are blocked.',
+  'low': 'Server-recoverable encryption.',
+  'medium': 'Zero-knowledge encryption, recoverable with security questions.',
+  'high': 'Zero-knowledge encryption, recoverable only with the user\'s '
+      'recovery key or passphrase.',
 };
 
 class _LevelChip extends StatelessWidget {
@@ -1071,8 +1068,6 @@ class _SearchRow extends StatelessWidget {
     final theme = Theme.of(context);
     final tier = user['encryption_tier'] as String? ?? 'none';
     final isAdmin = user['is_admin'] == true;
-    // Reset is enabled only for None/Low tiers (server hard-blocks Medium/High).
-    final canReset = tier == 'none' || tier == 'low';
     final label = (user['display_name'] as String?)?.isNotEmpty == true
         ? user['display_name'] as String
         : (user['email'] as String? ?? '#${user['id']}');
@@ -1104,7 +1099,7 @@ class _SearchRow extends StatelessWidget {
         ? const SizedBox(
             width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
         : OutlinedButton(
-            onPressed: canReset ? onReset : null,
+            onPressed: onReset,
             child: const Text('Reset password'),
           );
 
@@ -1138,14 +1133,7 @@ class _SearchRow extends StatelessWidget {
         _TierChip(tier: tier),
         adminButton,
         deleteButton,
-        canReset
-            ? resetButton
-            : Tooltip(
-                message:
-                    'Blocked: $tier-tier encryption is zero-knowledge. A reset '
-                    'would destroy the user\'s encrypted data.',
-                child: resetButton,
-              ),
+        resetButton,
       ],
     );
 
