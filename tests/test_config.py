@@ -56,6 +56,27 @@ class TestConfig:
                 data = json.load(f)
             assert data["strava"]["client_id"] == "my_client_id"
 
+    def test_missing_config_file_is_not_created(self):
+        """Reading the config must not write one (#638): importing the API
+        used to create config/config.json in the working directory."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "config.json"
+            config = Config(str(config_file))
+
+            assert config.get("app.log_level") == "INFO"
+            assert not config_file.exists()
+
+    def test_set_does_not_leak_into_another_instance(self):
+        """api/strava.py sets credentials from env on its own Config; a fresh
+        default Config must not inherit them (#638)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            first = Config(str(Path(tmpdir) / "a.json"))
+            first.set("strava.client_id", "real-id")
+
+            second = Config(str(Path(tmpdir) / "b.json"))
+            assert second.get("strava.client_id") == ""
+            assert Config.DEFAULT_CONFIG["strava"]["client_id"] == ""
+
     def test_config_set_and_get(self):
         """Test setting and getting config values."""
         with tempfile.TemporaryDirectory() as tmpdir:
