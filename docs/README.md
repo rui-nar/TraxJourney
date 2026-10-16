@@ -12,7 +12,7 @@ the code. Plans and review ledgers are the record of how it got there.
 | [LOGGING](LOGGING.md) | Log format, levels and privacy rules |
 | [METRICS](METRICS.md) | Prometheus metrics and the dashboards that read them |
 | [OBSERVABILITY](OBSERVABILITY.md) | The Loki / Prometheus / Grafana stack |
-| [ADMIN](ADMIN.md) | The admin dashboard |
+| [ADMIN](ADMIN.md) | The admin dashboard and the admin-only backups card |
 | [BILLING](BILLING.md) | Plans, Stripe, refunds and withdrawal |
 
 ## Clients and stores
@@ -28,7 +28,7 @@ the code. Plans and review ledgers are the record of how it got there.
 | Doc | What it covers |
 |---|---|
 | [ENCRYPTION](ENCRYPTION.md) | End-to-end encryption: tiers, keys, what is encrypted |
-| [ENCOUNTERS](ENCOUNTERS.md) | Encounters on the map |
+| [ENCOUNTERS](ENCOUNTERS.md) | People, groups and encounters met along a trip |
 | [VIDEO](VIDEO.md) | Trip video rendering, its stages and benchmarks |
 
 ## How we work

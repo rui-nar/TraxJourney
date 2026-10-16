@@ -83,12 +83,12 @@ The in-progress gauge is what tells a slow request apart from a stuck one
 
 | Metric | Labels |
 |---|---|
-| `traxjourney_logins_total` | `provider` (`password`\|`google`), `result` (`success`\|`failure`) |
+| `traxjourney_logins_total` | `provider` (`password`\|`google`\|`apple`), `result` (`success`\|`failure`) |
 | `traxjourney_registrations_total` | `provider` |
 | `traxjourney_app_opens_total` | `session_state` (`resumed`\|`login_required`) |
 
-Google sign-in has no separate sign-up call, so `registrations_total{provider="google"}`
-fires on first sight of an account and never again.
+Google and Apple sign-in have no separate sign-up call, so `registrations_total{provider="google"}`
+(or `"apple"`) fires on first sight of an account and never again.
 
 `traxjourney_logins_total` only counts a fresh credential submission — it misses
 every launch where a cached session was simply resumed. `app_opens_total`
@@ -103,7 +103,7 @@ once per launch, `resumed` when the cached session was still valid and
 | `traxjourney_external_requests_total` | `service`, `endpoint`, `outcome` |
 | `traxjourney_external_request_duration_seconds` | `service`, `endpoint` |
 
-`service` ∈ `strava`, `polarsteps`, `google_translate`, `smtp`. `endpoint` is
+`service` ∈ `strava`, `polarsteps`, `hafas`, `nominatim`, `google_translate`, `smtp`. `endpoint` is
 templated (`/activities/{id}/streams`). `outcome` ∈ `success`, `client_error`,
 `auth_error`, `rate_limited`, `server_error`, `exception`.
 
@@ -295,5 +295,7 @@ between scrapes. The pool-utilisation panel divides `in_use` by capacity
 - **No label may carry user data.** Paths go through `normalise_path` and SQL
   through the operation keyword before being labelled. A label whose values
   come from user input creates one time series per distinct value.
-- There is **no Prometheus/Grafana deployment yet** — this issue ships the
-  endpoint only. Standing up the scraper is tracked separately.
+- The deployed scraper is the VPS-side Alloy (`config/alloy-config.river.example`),
+  which scrapes `traxjourney:8000/metrics` over the compose network and
+  remote-writes to the Prometheus/Grafana stack in `nas/`; see
+  `docs/OBSERVABILITY.md`.

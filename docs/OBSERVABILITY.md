@@ -63,7 +63,7 @@ however it got its UID.
 Five dashboards are provisioned from `nas/grafana/provisioning/dashboards/`
 (a **TraxJourney** folder, read-only in the UI): **HTTP & Traffic**, **Jobs &
 Database**, **Integrations & Auth**, **Logs**, and **Host Resources**. They
-render the metrics table above and the LogQL queries below directly — see
+render the metrics in `docs/METRICS.md` and the LogQL queries below directly — see
 `nas/README.md` §3 for where to find them once Grafana is up.
 
 **Host Resources** is the odd one out: it's `node_*` metrics from Alloy's
@@ -111,11 +111,11 @@ node_exporter, not the app).
 Log lines look like:
 
 ```
-2026-08-10 18:06:58,123 - api.polarsteps - WARNING - request_id=a1b2c3d4 user_id=42 - polarsteps connect failed user_id=42
+2026-08-10 18:06:58,123 - api.polarsteps - ERROR - request_id=a1b2c3d4 user_id=42 - polarsteps connect failed user_id=42
 ```
 
 `request_id=` and `user_id=` are real logfmt tokens — `| logfmt` extracts
-them as labels for the query. `%(levelname)s` (`WARNING` above) is
+them as labels for the query. `%(levelname)s` (`ERROR` above) is
 **positional, not a `level=` key** (see `docs/LOGGING.md`), so level
 filtering is a substring match, not a logfmt field.
 

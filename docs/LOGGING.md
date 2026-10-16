@@ -18,9 +18,9 @@ from src.utils.logging import get_logger
 _log = get_logger(__name__)
 ```
 
-Never bare `logging.getLogger(__name__)`. Three files still do this
-(`api/poster.py`, `src/email/service.py`, `src/tile_renderer.py`) — fix it if
-you touch one of them, but don't go looking for others outside your change.
+Never bare `logging.getLogger(__name__)`. A few files still do this
+(`api/poster.py`, `src/email/service.py` and others under `api/` and `src/`) —
+fix it if you touch one of them, but don't go looking for others outside your change.
 
 ## Levels
 
@@ -123,9 +123,9 @@ that. The privacy policy states what the access log holds and for how long
 
 `src/utils/metrics.py:track_external()` is the single choke point for
 logging (and metrics) around any outbound call to a third-party service. It
-already wraps Strava, Polarsteps, Google Translate and SMTP for Prometheus
-metrics, and is being upgraded to log too (`INFO` on success, `WARNING` on
-failure) as part of issue #205.
+wraps Strava, Polarsteps, HAFAS, Nominatim, Google Translate and SMTP, and
+records Prometheus metrics and a log line for each call (`INFO` on success,
+`WARNING` on failure; issue #205).
 
 If you're adding a new external HTTP call, wrap it in `track_external`
 instead of hand-rolling your own try/except + log pattern:
