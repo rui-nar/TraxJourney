@@ -44,9 +44,14 @@ x-logging: &default-logging
 # is sized closest to the measured resolve peak; `worker-poster` gets the
 # largest share on top of that because an A0 render is the single most
 # memory-heavy thing this app does. `worker-video` renders one trip video at a
-# time from frames it streams into ffmpeg; its number is NOT yet measured — it
-# is what is left under the 4 GB total tests/test_worker_topology.py enforces.
-# Measure a 1080p render and revise it (and this total) from that.
+# time from frames it streams into ffmpeg. Its limit is sized from a measured
+# 60 s 1080p render (docs/VIDEO.md, "Benchmark"): peak RSS 363 MB for the
+# renderer plus 318 MB for ffmpeg, about 680 MB together, which leaves roughly
+# 200 MB of headroom under 896M. That render was run under this very limit and
+# was only ~4% slower than without it. The cgroup's own peak (855 MB) is higher
+# only because it counts page cache from writing the MP4, which the kernel
+# reclaims before it OOM-kills. Re-measure if the renderer, ffmpeg's thread cap
+# or the output resolution changes.
 #
 # These five limits sum to ~4.2 GB — on the documented 4 GB VPS
 # (docs/DEPLOYMENT_VPS.md), that leaves too little for the OS plus a second
