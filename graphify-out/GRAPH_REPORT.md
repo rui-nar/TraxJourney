@@ -387,7 +387,7 @@
 - QuotaExceeded
 - Configuration Management
 - Custom Exception Types
-- ViewTrip Core Package
+- TraxJourney Core Package
 - test_a_rate_limit_or_timeout_is_never_stored_as_absence
 - Poster Generation Package
 - test_migration_photo_order.py
