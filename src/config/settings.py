@@ -1,5 +1,6 @@
 """Configuration management for TraxJourney."""
 
+import copy
 import json
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -74,8 +75,9 @@ class Config:
             except json.JSONDecodeError as e:
                 raise ConfigurationError(f"Invalid JSON in config file: {e}")
         else:
-            self._config = self.DEFAULT_CONFIG.copy()
-            self.save()
+            # In memory only: reading the config must not create the file, and
+            # each instance needs its own nested dicts — set() writes into them.
+            self._config = copy.deepcopy(self.DEFAULT_CONFIG)
 
     def save(self) -> None:
         """Save current configuration to file."""
