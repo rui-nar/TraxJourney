@@ -46,7 +46,7 @@ def test_registered_ahead_of_the_spa_catch_all():
 
     paths = [getattr(route, "path", None) for route in router.app.routes]
     assert "/.well-known/assetlinks.json" in paths, "no explicit route — the SPA fallback would answer with index.html"
-    catch_alls = [i for i, path in enumerate(paths) if path == "/{full_path:path}"]
+    catch_alls = [i for i, path in enumerate(paths) if path == "/{full_path:spa_path}"]
     if catch_alls:
         assert paths.index("/.well-known/assetlinks.json") < catch_alls[0]
 

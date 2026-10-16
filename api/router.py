@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from scalar_fastapi import get_scalar_api_reference
+from starlette.convertors import PathConvertor, register_url_convertor
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src.brand import APP_NAME
@@ -623,17 +624,28 @@ def _web_file(web_dir: str, full_path: str):
     return resolved, os.path.relpath(resolved, web_root).replace(os.sep, "/")
 
 
+class _SpaPathConvertor(PathConvertor):
+    """A path that is never /api or /api/... .
+
+    An unknown /api/... path is a missing endpoint, never a client route.
+    Answering it with index.html and a 200 lets an out-of-date client take the
+    page for a real response — e.g. save it as a project backup after an export
+    route was renamed. Keeping /api out of the catch-all's pattern (rather than
+    raising a 404 inside it) also keeps it from partially matching API paths:
+    a POST to /api/projects would otherwise get a 405 from this GET route
+    instead of the slash redirect to /api/projects/, so the API would answer
+    differently depending on whether a web build is present.
+    """
+
+    regex = r"(?!api(?:/|$)).*"
+
+
+register_url_convertor("spa_path", _SpaPathConvertor())
+
 if os.path.isdir(_web_dir):
-    @app.get("/{full_path:path}", include_in_schema=False)
+    @app.get("/{full_path:spa_path}", include_in_schema=False)
     async def spa_fallback(full_path: str):
         """Serve the Flutter web build; fall back to index.html for SPA routing."""
-        # An unknown /api/... path is a missing endpoint, never a client route.
-        # Answering it with index.html and a 200 lets an out-of-date client
-        # take the page for a real response — e.g. save it as a project backup
-        # after an export route was renamed. Raise the same 404 an unmatched
-        # route gets when no web build is present.
-        if full_path == "api" or full_path.startswith("api/"):
-            raise StarletteHTTPException(status_code=404)
         candidate, relative = _web_file(_web_dir, full_path)
         if candidate is not None:
             resp = FileResponse(candidate)

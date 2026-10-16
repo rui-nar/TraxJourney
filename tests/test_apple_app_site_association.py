@@ -104,7 +104,7 @@ def test_not_shadowed_by_the_spa_fallback(monkeypatch, tmp_path):
     importlib.reload(router)
     monkeypatch.setattr(os.path, "isdir", real_isdir)
     monkeypatch.setattr(router, "_web_dir", str(tmp_path))
-    assert any(getattr(r, "path", None) == "/{full_path:path}" for r in router.app.routes)
+    assert any(getattr(r, "path", None) == "/{full_path:spa_path}" for r in router.app.routes)
     try:
         monkeypatch.setenv("APPLE_TEAM_ID", TEAM)
         response = TestClient(router.app).get(URL)

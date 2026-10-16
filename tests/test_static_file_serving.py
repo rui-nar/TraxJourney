@@ -1,6 +1,6 @@
 """The web build's catch-all route serves only files inside the web build.
 
-``api/router.py`` serves ``/{full_path:path}`` from the Flutter web build and
+``api/router.py`` serves ``/{full_path:spa_path}`` from the Flutter web build and
 falls back to ``index.html`` for client-side routes. A path that resolves
 outside the build directory, by any spelling, must be a plain 404: never a file
 from elsewhere on disk, and not the SPA shell either.
@@ -54,7 +54,7 @@ def site(monkeypatch, tmp_path):
     importlib.reload(router)
     monkeypatch.setattr(os.path, "isdir", real_isdir)
     monkeypatch.setattr(router, "_web_dir", str(web))
-    assert any(getattr(r, "path", None) == "/{full_path:path}" for r in router.app.routes), (
+    assert any(getattr(r, "path", None) == "/{full_path:spa_path}" for r in router.app.routes), (
         "SPA catch-all was not registered; the fixture no longer reproduces production"
     )
     try:

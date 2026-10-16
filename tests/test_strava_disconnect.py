@@ -204,11 +204,13 @@ def test_503_is_retried_once_then_succeeds(client, engine, post, caplog):
     assert "strava revoke failed" not in caplog.text
 
 
-def test_strava_not_configured_still_clears_local_data(client, engine, post, monkeypatch):
+def test_strava_not_configured_still_clears_local_data(client, engine, post, monkeypatch, tmp_path):
     """OAuth2Session refuses to build without client_id/secret — that must not
     turn disconnect into a 500 or leave the data behind."""
     tc, uid = client
-    monkeypatch.setattr(strava_module, "_cfg", Config())
+    # A file that doesn't exist yet: Config() alone would read a developer's
+    # config/config.json (real credentials), or write one into the checkout.
+    monkeypatch.setattr(strava_module, "_cfg", Config(str(tmp_path / "config.json")))
 
     resp = tc.delete("/api/strava/disconnect")
 
