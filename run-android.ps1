@@ -85,10 +85,17 @@ $adb = Sdk-Tool 'platform-tools\adb.exe' 'adb'
 $emulator = Sdk-Tool 'emulator\emulator.exe' 'emulator'
 
 # ── JDK ───────────────────────────────────────────────────────────────────────
-# Gradle 8.14 (flutter_client/android/gradle/wrapper) supports JDK 17-24; AGP
-# needs 17+. A JAVA_HOME left pointing at an uninstalled JDK — what happens
-# after a JDK update bumps the version in the path — fails the build with a
-# message that says nothing about JAVA_HOME, so check it explicitly.
+# Gradle 9.3.1 (flutter_client/android/gradle/wrapper) runs on JDK 17-25; AGP
+# needs 17+. Revisit $JDK_MAX when the wrapper moves. The JDK CI builds with is
+# flutter_client/android/.java-version (setup-java reads the same file), and is
+# preferred here so a local build matches CI. A JAVA_HOME left pointing at an
+# uninstalled JDK — what happens after a JDK update bumps the version in the
+# path — fails the build with a message that says nothing about JAVA_HOME, so
+# check it explicitly.
+$JDK_MIN = 17
+$JDK_MAX = 25
+$JDK_CI = [int](Get-Content (Join-Path $CLIENT 'android\.java-version') -TotalCount 1).Trim()
+
 function Get-JavaMajor([string]$javaHome) {
     $exe = Join-Path $javaHome 'bin\java.exe'
     if (-not (Test-Path $exe)) { return $null }
@@ -117,13 +124,13 @@ function Resolve-Jdk {
     $usable = @()
     foreach ($candidate in $candidates) {
         $major = Get-JavaMajor $candidate
-        if ($major -ne $null -and $major -ge 17 -and $major -le 24) {
+        if ($major -ne $null -and $major -ge $JDK_MIN -and $major -le $JDK_MAX) {
             $usable += [pscustomobject]@{ Path = $candidate; Major = $major }
         }
     }
     if (-not $usable) { return $null }
-    # Prefer 21 (what CI builds with), then the newest supported.
-    $preferred = $usable | Where-Object { $_.Major -eq 21 } | Select-Object -First 1
+    # Prefer what CI builds with, then the newest supported.
+    $preferred = $usable | Where-Object { $_.Major -eq $JDK_CI } | Select-Object -First 1
     if ($preferred) { return $preferred }
     return $usable | Sort-Object Major -Descending | Select-Object -First 1
 }
@@ -132,11 +139,11 @@ Step 'Resolving a JDK for Gradle'
 if ($env:JAVA_HOME -and -not (Test-Path (Join-Path $env:JAVA_HOME 'bin\java.exe'))) {
     Warn "JAVA_HOME points at a JDK that is not there: $env:JAVA_HOME"
     Warn '  (a JDK update renames the directory; the variable keeps the old path)'
-    Warn '  Fix permanently:  setx JAVA_HOME "<path to a JDK 21>"'
+    Warn "  Fix permanently:  setx JAVA_HOME `"<path to a JDK $JDK_CI>`""
 }
 $jdk = Resolve-Jdk
 if (-not $jdk) {
-    Die "No JDK 17-24 found. Gradle 8.14 does not support JDK 25. Install Temurin/Microsoft JDK 21 and set JAVA_HOME."
+    Die "No JDK $JDK_MIN-$JDK_MAX found. Install Temurin/Microsoft JDK $JDK_CI and set JAVA_HOME."
 }
 $env:JAVA_HOME = $jdk.Path
 Note "JDK $($jdk.Major) at $($jdk.Path)"
