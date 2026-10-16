@@ -1,8 +1,9 @@
 """Per-user encryption tier for the admin dashboard.
 
-The E2EE tables do NOT exist on this branch, so ``user_encryption_tier`` is a
-stub returning ``"none"`` for everyone. A future E2EE merge will read the user's
-E2EE row and feed it through the pure :func:`tier_from` mapping.
+Read from ``UserInfo.encryption_enabled`` and the user's ``DBRecoveryWrap``
+method, then fed through the pure :func:`tier_from` mapping. The tier is
+informational: the login password is not part of the E2EE key chain, so an
+admin password reset never touches encrypted data whatever the tier (#630).
 
 Tiers, ordered by strength:
   * none   — no encryption
@@ -12,12 +13,21 @@ Tiers, ordered by strength:
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
+
+from sqlmodel import select
+
+from models.project_db import DBRecoveryWrap
+from models.user import UserInfo
+
 _METHOD_TO_TIER = {
     "escrow": "low",
     "qna": "medium",
     "recovery_key": "high",
     "passphrase": "high",
 }
+
+_TIER_RANK = {"none": 0, "low": 1, "medium": 2, "high": 3}
 
 
 def tier_from(enabled: bool, method: str | None) -> str:
@@ -32,10 +42,32 @@ def tier_from(enabled: bool, method: str | None) -> str:
     return _METHOD_TO_TIER.get(method or "", "none")
 
 
-def user_encryption_tier(sess, user_info_id: int) -> str:
-    """Encryption tier for a user. Stub → ``"none"`` (E2EE tables absent here).
+def user_encryption_tiers(sess, user_info_ids: Iterable[int]) -> dict[int, str]:
+    """Encryption tier for each of ``user_info_ids``, in at most two queries.
 
-    Signature takes ``(sess, user_info_id)`` so a future E2EE merge can read the
-    user's row and delegate to :func:`tier_from` without changing callers.
+    A user holding several recovery wraps reports the strongest one. An id with
+    no ``UserInfo`` row reports ``"none"``.
     """
-    return "none"
+    tiers = {uid: "none" for uid in user_info_ids}
+    if not tiers:
+        return tiers
+    enabled = set(sess.exec(
+        select(UserInfo.id).where(
+            UserInfo.id.in_(tiers), UserInfo.encryption_enabled == True  # noqa: E712
+        )
+    ).all())
+    if not enabled:
+        return tiers
+    for uid, method in sess.exec(
+        select(DBRecoveryWrap.user_info_id, DBRecoveryWrap.method)
+        .where(DBRecoveryWrap.user_info_id.in_(enabled))
+    ).all():
+        tier = tier_from(True, method)
+        if _TIER_RANK[tier] > _TIER_RANK[tiers[uid]]:
+            tiers[uid] = tier
+    return tiers
+
+
+def user_encryption_tier(sess, user_info_id: int) -> str:
+    """Encryption tier for one user. See :func:`user_encryption_tiers`."""
+    return user_encryption_tiers(sess, [user_info_id])[user_info_id]

@@ -2,7 +2,7 @@
 
 Covers gating, metrics, per-user isolation, recent-signup windowing, seeded
 admin + forced change, ADMIN_EMAILS promotion, token/me fields, user search,
-and the tier-gated password reset (including the key E2EE-safety block).
+and the password reset (which leaves E2EE key material untouched).
 """
 from __future__ import annotations
 
@@ -21,7 +21,9 @@ import src.utils.logging as logging_mod
 from api.admin import router as admin_router
 from api.deps import get_current_user
 from models.billing import Subscription
-from models.project_db import DBActivity, DBMemory, DBProject
+from models.project_db import (
+    DBActivity, DBDeviceKey, DBMemory, DBProject, DBRecoveryWrap,
+)
 from models.user import LocalUser, UserInfo
 from src.billing.subscriptions import get_subscription
 
@@ -72,6 +74,20 @@ def _mk_user(sess, *, display_name, email, is_admin=False, provider="local",
     sess.commit()
     sess.refresh(ui)
     return ui, local
+
+
+def _encrypt(sess, user_info_id, *methods):
+    """Turn on E2EE for a user the way /api/encryption/enable leaves it: the
+    flag, one trusted device key, and one recovery wrap per method."""
+    ui = sess.get(UserInfo, user_info_id)
+    ui.encryption_enabled = True
+    sess.add(ui)
+    sess.add(DBDeviceKey(user_info_id=user_info_id, public_key="pk", approved=True,
+                         wrapped_cmk="dev-wrap", ephemeral_public_key="epk"))
+    for m in methods:
+        sess.add(DBRecoveryWrap(user_info_id=user_info_id, method=m,
+                                wrapped_cmk=f"{m}-wrap", salt="salt"))
+    sess.commit()
 
 
 @pytest.fixture
@@ -204,8 +220,18 @@ class TestStats:
         assert rows[bid]["project_count"] == 1
         assert rows[bid]["activity_count"] == 1
         assert rows[bid]["memory_count"] == 1
-        # Every row carries an encryption tier (stub → none).
+        # Neither user has encryption on.
         assert all(r["encryption_tier"] == "none" for r in rows.values())
+
+    def test_per_user_tier_read_from_e2ee_rows(self, engine):
+        aid, bid = self._seed_two_users(engine)
+        with Session(engine) as sess:
+            _encrypt(sess, bid, "qna")
+        payload = {"sub": str(aid), "email": "a@x.io", "auth_provider": "local"}
+        client = TestClient(_admin_app(engine, payload))
+        rows = {r["id"]: r for r in client.get("/api/admin/stats").json()["users"]}
+        assert rows[aid]["encryption_tier"] == "none"
+        assert rows[bid]["encryption_tier"] == "medium"
 
     def test_no_content_fields_returned(self, engine):
         aid, _ = self._seed_two_users(engine)
@@ -298,6 +324,14 @@ class TestSearch:
         res = client.get("/api/admin/users/search?q=charlie").json()
         assert res[0]["encryption_tier"] == "none"
 
+    def test_results_carry_real_tier(self, client, engine):
+        with Session(engine) as sess:
+            charlie = sess.exec(
+                select(UserInfo).where(UserInfo.display_name == "Charlie Brown")).one()
+            _encrypt(sess, charlie.id, "recovery_key")
+        res = client.get("/api/admin/users/search?q=charlie").json()
+        assert res[0]["encryption_tier"] == "high"
+
 
 # ── 13/14/15. Password reset ──────────────────────────────────────────────────
 
@@ -333,27 +367,38 @@ class TestResetPassword:
             assert local.password_change_required is True
             assert local.verify(temp)  # new hash matches the returned temp password
 
-    def test_reset_low_tier_allowed(self, ctx, monkeypatch):
+    # Every tier is resettable (#630): the password is not in the E2EE key
+    # chain, so a reset leaves the device keys and recovery wraps untouched.
+    @pytest.mark.parametrize("method, tier", [
+        ("escrow", "low"),
+        ("qna", "medium"),
+        ("recovery_key", "high"),
+        ("passphrase", "high"),
+    ])
+    def test_reset_encrypted_account_keeps_key_material(self, ctx, method, tier):
         client, engine, tid, _ = ctx
-        monkeypatch.setattr(admin_mod, "user_encryption_tier", lambda s, u: "low")
+        with Session(engine) as sess:
+            _encrypt(sess, tid, method)
+        assert client.get("/api/admin/users/search?q=target").json()[0][
+            "encryption_tier"] == tier
+
         resp = client.post(f"/api/admin/users/{tid}/reset-password", json={})
         assert resp.status_code == 200
+        temp = resp.json()["temp_password"]
 
-    def test_reset_medium_blocked_409(self, ctx, monkeypatch):
-        client, engine, tid, _ = ctx
-        monkeypatch.setattr(admin_mod, "user_encryption_tier", lambda s, u: "medium")
-        resp = client.post(f"/api/admin/users/{tid}/reset-password", json={})
-        assert resp.status_code == 409
-        with Session(engine) as sess:  # password untouched
+        with Session(engine) as sess:
             ui = sess.get(UserInfo, tid)
+            assert ui.encryption_enabled is True
             local = sess.get(LocalUser, ui.local_auth_id)
-            assert local.password_change_required is False
-
-    def test_reset_high_blocked_409(self, ctx, monkeypatch):
-        client, _, tid, _ = ctx
-        monkeypatch.setattr(admin_mod, "user_encryption_tier", lambda s, u: "high")
-        resp = client.post(f"/api/admin/users/{tid}/reset-password", json={})
-        assert resp.status_code == 409
+            assert local.verify(temp)
+            assert local.password_change_required is True
+            wraps = sess.exec(select(DBRecoveryWrap).where(
+                DBRecoveryWrap.user_info_id == tid)).all()
+            assert [(w.method, w.wrapped_cmk) for w in wraps] == [
+                (method, f"{method}-wrap")]
+            dev = sess.exec(select(DBDeviceKey).where(
+                DBDeviceKey.user_info_id == tid)).one()
+            assert (dev.approved, dev.wrapped_cmk) == (True, "dev-wrap")
 
     def test_reset_google_user_409(self, ctx):
         client, _, _, gid = ctx

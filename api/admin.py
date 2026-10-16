@@ -29,7 +29,7 @@ from models.db import get_session
 from models.project_db import DBActivity, DBMemory, DBProject
 from models.user import LocalUser, UserInfo
 from src.admin.storage import cached_user_storage, refresh_storage_cache
-from src.admin.tiers import user_encryption_tier
+from src.admin.tiers import user_encryption_tier, user_encryption_tiers
 from src.billing.entitlements import plan_display_name, plan_from_subscription
 from src.billing.plans import FREE, PLAN_ORDER
 from src.billing.subscriptions import lock_account, set_admin_override
@@ -61,11 +61,6 @@ _RECENT_SIGNUP_WINDOW_SECONDS = 7 * 24 * 3600
 
 # Length (bytes) of the random reset password; hex-encoded → 32 chars.
 _RESET_PASSWORD_BYTES = 16
-
-# Tiers for which an admin password reset is permitted. Medium/High are
-# zero-knowledge enough that a server-side reset would silently destroy the
-# user's encrypted data, so they are hard-blocked.
-_RESETTABLE_TIERS = frozenset({"none", "low"})
 
 # Longest a live log-level override may run before an admin has to re-apply it
 # (issue #208). Bounds the worst case of a forgotten DEBUG override quietly
@@ -270,7 +265,7 @@ def stats(_admin: Annotated[dict, Depends(require_admin)]):
             ).all()
         }
 
-        tiers = {u.id: user_encryption_tier(sess, u.id) for u in users}
+        tiers = user_encryption_tiers(sess, [u.id for u in users])
         # One bulk fetch for every user's subscription row, same reasoning as
         # the GROUP BY counts above: N+1 here would mean one query per user.
         subs_by_user = {
@@ -353,6 +348,7 @@ def search_users(
             )
             .limit(limit)
         ).all()
+        tiers = user_encryption_tiers(sess, [ui.id for ui, _, _ in rows])
         return [
             SearchResult(
                 id=ui.id,
@@ -360,7 +356,7 @@ def search_users(
                 username=lu.username if lu else "",
                 display_name=ui.display_name,
                 auth_provider=ui.auth_provider,
-                encryption_tier=user_encryption_tier(sess, ui.id),
+                encryption_tier=tiers[ui.id],
                 is_admin=bool(ui.is_admin),
                 **_billing_fields(sub),
             )
@@ -622,16 +618,18 @@ def settle_owed_refund(
 
 @router.post("/users/{user_info_id}/reset-password",
              response_model=ResetPasswordResponse,
-             summary="Reset a user's password (None/Low tiers only)")
+             summary="Reset a user's password")
 def reset_password(
     user_info_id: int,
     _admin: Annotated[dict, Depends(require_admin)],
 ):
-    """Set a random temp password + force change. Blocked for Medium/High tiers.
+    """Set a random temp password + force change. Google accounts → 409.
 
-    Medium/High encryption is zero-knowledge enough that overwriting the server
-    password would orphan the user's encrypted data, so those are refused (409).
-    Google accounts have no server password → 409.
+    Allowed at every encryption tier (#630): the login password is not part of
+    the E2EE key chain — the content key is wrapped only to the user's device
+    keys and recovery method — so a reset never touches encrypted data. The
+    user's trusted devices still unlock after it; a new device still needs a
+    trusted device's approval or the user's recovery secret.
     """
     with get_session() as sess:
         user_info = sess.get(UserInfo, user_info_id)
@@ -641,15 +639,6 @@ def reset_password(
             )
 
         tier = user_encryption_tier(sess, user_info_id)
-        if tier not in _RESETTABLE_TIERS:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    "Password reset is unavailable for this account: its "
-                    f"encryption tier ({tier}) is zero-knowledge, so the server "
-                    "cannot reset the password without destroying encrypted data."
-                ),
-            )
 
         local_user = sess.get(LocalUser, user_info.local_auth_id)
         if local_user is None or not local_user.password_hash:
