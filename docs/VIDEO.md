@@ -14,7 +14,7 @@ ffmpeg as raw RGB:
 ```
 ffmpeg -f rawvideo -pix_fmt rgb24 -s WxH -r 30 -i - -an
        -c:v libx264 -preset veryfast -crf 20 -threads 4
-       -pix_fmt yuv420p -movflags +faststart  video.part.mp4
+       -pix_fmt yuv420p -movflags +faststart -f mp4  video.part.mp4
 ```
 
 `-crf 20`, no `-tune`, is D7's choice: sharper than the earlier `-crf 23`
@@ -218,7 +218,7 @@ count, wall time, setup time, ms per frame for each stage, sheets, tiles, the
 tile fetch figures, and peak RSS of the renderer and of ffmpeg:
 
 ```
-video render summary: frames=1800 elapsed_s=112.32 setup_s=0.05 ms_per_frame=62.4
+video render summary: kind=video camera=variable frames=1800 elapsed_s=112.32 setup_s=0.05 ms_per_frame=62.4
 fetch_ms=18.10 stitch_ms=9.40 basemap_ms=21.60 overlay_ms=11.20 write_ms=2.10
 sheets=86 tiles=1479 tile_ms=52.3 prefetch_misses=0
 peak_rss_renderer_mb=363 peak_rss_ffmpeg_mb=318
@@ -256,13 +256,16 @@ summary line, without going through a job row, quota or the queue:
 
 ```
 python -m src.video.bench --project "Tour de France" --owner 3 \
-    --length 90 --height 1080 [--camera variable] [--crf 20] \
+    --length 90 --height 1080 [--camera variable] [--preview] [--crf 20] \
     [--tune animation] [--dump-frames 450,1350,2250] [--out DIR] \
     [--profile FILE]
 ```
 
 - `--camera` is passed to the renderer as-is: `variable` (default),
   `overview`, `fixed` or `fixed_strict`.
+- `--preview` renders the low-resolution animated WebP preview
+  (docs/plans/VIDEO_PREVIEW_PLAN.md D1) instead of the MP4;
+  `--crf`/`--tune`/`--dump-frames` don't apply to it.
 - `--crf`/`--tune` override the encoder for one run, to compare candidates
   (D7) without touching the shipped defaults.
 - `--dump-frames` (comma-separated frame numbers) writes each of those frames
