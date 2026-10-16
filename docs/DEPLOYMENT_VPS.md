@@ -687,14 +687,9 @@ prod on every release would remove `deploy.ps1 -Target Prod`'s existing
 manual gate, which is a bigger safety call than "keep val fresh" and not
 something to fold in as a side effect of this.
 
-**Status: not live yet.** Until issue #422, GitHub had no webhook configured, so
-this never ran. What is verified: the rules and flags against the
-[webhook 2.8.0 source](https://github.com/adnanh/webhook/tree/2.8.0) and its
-[docs](https://github.com/adnanh/webhook/tree/master/docs), the payload fields
-against [GitHub's `workflow_run` docs](https://docs.github.com/en/webhooks/webhook-events-and-payloads#workflow_run)
-and this repository's real runs, and the script against a fake `docker` and
-`curl` (`tests/test_validation_webhook.py`). The live install stays unverified
-until step 10 below passes. When it does, replace this paragraph with the date.
+**Status: live.** GitHub's webhook was configured under issue #422 (closed
+2026-09-23); the owner confirmed on 2026-10-16 that step 10 below passes and
+validation redeploys on its own.
 
 **Do it after the rename cut-over** (`docs/plans/RENAME_TRAXJOURNEY_RUNBOOK.md`).
 `hooks.yaml` only accepts runs of `rui-nar/TraxJourney`, and GitHub sends the
