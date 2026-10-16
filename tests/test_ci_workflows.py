@@ -197,23 +197,22 @@ def _run_filter(tmp_path, event: str, changed: list[str]) -> tuple[int, str, str
     """Run the filter step for real against a fake `git` that reports *changed*."""
     job = _load("test.yml")["jobs"]["image"]
     script = _step(job, "Does this change touch the image?")["run"]
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
     listing = tmp_path / "changed.txt"
     listing.write_text("".join(f"{path}\n" for path in changed), encoding="utf-8")
     log = tmp_path / "git.log"
-    (fake_bin / "git").write_text(
-        "#!/bin/sh\n"
-        f'printf "%s\\n" "$*" >> "{log.as_posix()}"\n'
-        f'cat "{listing.as_posix()}"\n',
-        encoding="utf-8", newline="\n",
+    # A shell function, not a fake binary on PATH: Git for Windows' bash.exe
+    # puts its own /mingw64/bin ahead of the PATH it is given, so the real git
+    # would win there.
+    fake_git = (
+        "git() {\n"
+        f'  printf "%s\\n" "$*" >> "{log.as_posix()}"\n'
+        f'  cat "{listing.as_posix()}"\n'
+        "}\n"
     )
-    (fake_bin / "git").chmod(0o755)
     output = tmp_path / "github_output"
     output.write_text("", encoding="utf-8")
-    env = {**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
-           "GITHUB_OUTPUT": output.as_posix(), "EVENT": event}
-    result = subprocess.run([BASH, "-e", "-o", "pipefail", "-c", script],
+    env = {**os.environ, "GITHUB_OUTPUT": output.as_posix(), "EVENT": event}
+    result = subprocess.run([BASH, "-e", "-o", "pipefail", "-c", fake_git + script],
                             cwd=tmp_path, env=env, capture_output=True, text=True)
     outputs = dict(line.split("=", 1) for line in
                    output.read_text(encoding="utf-8").splitlines() if line)

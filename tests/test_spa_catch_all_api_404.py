@@ -1,6 +1,6 @@
 """The Flutter-web catch-all must not answer unknown /api/... paths (issue #151).
 
-``api/router.py`` registers ``/{full_path:path}`` last and serves ``index.html``
+``api/router.py`` registers ``/{full_path:spa_path}`` last and serves ``index.html``
 for anything it doesn't recognise, so client-side routes deep-link correctly.
 Before this guard it did the same for ``/api/...``: a client calling an endpoint
 that no longer exists (``/export-viewtrip``, since renamed to ``/export-traxj``)
@@ -44,7 +44,7 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(os.path, "isdir", real_isdir)
     # spa_fallback reads the module global at request time.
     monkeypatch.setattr(router, "_web_dir", str(tmp_path))
-    assert any(getattr(r, "path", None) == "/{full_path:path}" for r in router.app.routes), (
+    assert any(getattr(r, "path", None) == "/{full_path:spa_path}" for r in router.app.routes), (
         "SPA catch-all was not registered; the fixture no longer reproduces production"
     )
     try:
@@ -103,3 +103,13 @@ def test_real_api_route_still_reachable(client):
 
     assert resp.status_code == 200
     assert "version" in resp.json()
+
+
+def test_api_collection_without_slash_redirects_like_without_a_web_build(client):
+    """A POST to /api/projects must get the slash redirect, as it does when no
+    web build is present — not a 405 from the GET-only catch-all partially
+    matching the path."""
+    resp = client.post("/api/projects", json={"name": "Trip"}, follow_redirects=False)
+
+    assert resp.status_code == 307
+    assert resp.headers["location"].endswith("/api/projects/")

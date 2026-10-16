@@ -68,7 +68,7 @@ def spa_client(monkeypatch, tmp_path):
     importlib.reload(router)
     monkeypatch.setattr(os.path, "isdir", real_isdir)
     monkeypatch.setattr(router, "_web_dir", str(tmp_path))
-    assert any(getattr(r, "path", None) == "/{full_path:path}" for r in router.app.routes), (
+    assert any(getattr(r, "path", None) == "/{full_path:spa_path}" for r in router.app.routes), (
         "SPA catch-all was not registered; the fixture no longer reproduces production"
     )
     try:
