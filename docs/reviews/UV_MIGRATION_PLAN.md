@@ -1,6 +1,6 @@
 # Review ledger — Move to uv (#603)
 
-Subject: docs/UV_MIGRATION_PLAN.md
+Subject: docs/plans/UV_MIGRATION_PLAN.md
 Envelope: plan section "Review envelope" + REVIEW.md defaults
 
 ## Round 1 — 2026-10-12, reviewed at 48029e8f (plan uncommitted)

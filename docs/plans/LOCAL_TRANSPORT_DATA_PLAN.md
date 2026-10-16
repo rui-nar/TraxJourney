@@ -1,6 +1,6 @@
 # Local transport data, phases 4–6 — Plan for #345
 
-Follows `docs/LOCAL_RAIL_DATA_PLAN.md`, whose phases 1–3 and delivery step are
+Follows `docs/plans/LOCAL_RAIL_DATA_PLAN.md`, whose phases 1–3 and delivery step are
 merged. That plan's phases 4–6 were written before the cutover happened and
 before anyone measured what still talks to Overpass; this plan replaces them.
 
@@ -172,7 +172,7 @@ Rail sizes are the published `rail-data-2026-09-08` assets.
    CI; the cross-region merge already answers cross-border routes).
 8. **Cross-border routes use the existing merge contract.** A bbox query asks
    every region whose layer bbox overlaps and merges, deduplicating ways and
-   relations by id (`docs/LOCAL_RAIL_DATA_PLAN.md`, "Region bboxes overlap").
+   relations by id (`docs/plans/LOCAL_RAIL_DATA_PLAN.md`, "Region bboxes overlap").
    A relation whose members are split across Denmark and Germany is whole
    again after the merge. What is in neither extract — open-sea legs outside
    every polygon — is a local miss, and **a local miss always falls back to
@@ -274,7 +274,7 @@ REVIEW.md defaults apply, with these additions:
 2. **What to retire, and when.** After local ferry and bus have run for 30
    days, U3's counters say how many requests a day still reach Overpass and
    for what. Proposed rule: if all purposes together stay under 100 requests
-   a day (the main instance's fair-use figure, `docs/LOCAL_RAIL_DATA_PLAN.md`),
+   a day (the main instance's fair-use figure, `docs/plans/LOCAL_RAIL_DATA_PLAN.md`),
    remove the concurrency slot and its Redis set, and keep the cache and the
    cooldowns, which are the cheap part and the ban insurance. Decided by the
    owner from the numbers; a follow-up issue, not a unit here.
@@ -407,7 +407,7 @@ Ships alone, before any layer data exists (*Boundaries crossed*).
 #### U8 — Stores and readers learn layers (ships first)
 - **Goal:** store schema 3 with `way.cls`, layer-aware store names, and a box that reads manifest schemas 2 and 3 — all before any layer data exists.
 - **Scope:** `src/rail/store.py`, `src/rail/builder.py`, `scripts/fetch_rail_data.py`, `src/services/rail_source.py`, `docs/DEPLOYMENT_VPS.md` (§9), `tests/test_rail_store.py`, `tests/test_rail_store_schema2.py`, `tests/test_rail_data_fetch.py`, `tests/test_rail_source.py`, new `tests/test_rail_store_schema3.py`.
-- **Context:** the schema 1 → 2 bump in PR #361 is the example to follow — `_SUPPORTED_SCHEMAS`, v1 roles read as `""`, the sidecar holding `<digest> <schema>`, and the three traps recorded for it in `docs/LOCAL_RAIL_DATA_PLAN.md`. `store_filename` (`store.py:110-115`) and its users (`fetch_rail_data.py:186-187`, `:264-276`, `:378-389`; `store.py:606`); `load_coverage` (`rail_source.py:164-208`).
+- **Context:** the schema 1 → 2 bump in PR #361 is the example to follow — `_SUPPORTED_SCHEMAS`, v1 roles read as `""`, the sidecar holding `<digest> <schema>`, and the three traps recorded for it in `docs/plans/LOCAL_RAIL_DATA_PLAN.md`. `store_filename` (`store.py:110-115`) and its users (`fetch_rail_data.py:186-187`, `:264-276`, `:378-389`; `store.py:606`); `load_coverage` (`rail_source.py:164-208`).
 - **Do:**
   1. Store schema 3: `way.cls` bitmask per Decision 9; `_SUPPORTED_SCHEMAS = (1, 2, 3)`, a v1/v2 `rail` flag read as `cls` bit 0. Every query that filters `w.rail = 1` filters `cls & 1`; `ways_in_bbox` / `vertex_counts_in_bbox` take a class mask defaulting to bit 0.
   2. The builder takes `--layer` (default `rail`), fills `cls` for that layer's selection, and refuses a store and measures its extent over the layer's **routable set** (Decision 9's table) — not bit 0 alone.
@@ -430,8 +430,8 @@ Not a unit. Nothing in Wave 5 merges until both boxes run U8's reader: a box wit
 
 #### U7 — Filter ferry and bus layers in the extract build
 - **Goal:** each region's build publishes up to three filtered files — rail, ferry, bus — from one download, and a missing ferry or bus layer never blocks the rail release.
-- **Scope:** `scripts/build_rail_extract.py`, `.github/workflows/rail-extract.yml`, `tests/test_rail_extract.py`, `tests/test_rail_extract_workflow.py`, `tests/fixtures/` (fixture extended), `docs/LOCAL_RAIL_DATA_PLAN.md` (contract table).
-- **Context:** `select()` and its predicates (`is_rail_way`, `is_route_relation`, `is_station`); the Phase 1/Phase 2 contract in `docs/LOCAL_RAIL_DATA_PLAN.md`; the selections in `_via_route_relation_type`, `_via_way_type_fallback`, `_via_ferry_yes_fallback`; the size guard at `rail-extract.yml:110-114`; the base-schema refusal at `build_rail_extract.py:709-721`.
+- **Scope:** `scripts/build_rail_extract.py`, `.github/workflows/rail-extract.yml`, `tests/test_rail_extract.py`, `tests/test_rail_extract_workflow.py`, `tests/fixtures/` (fixture extended), `docs/plans/LOCAL_RAIL_DATA_PLAN.md` (contract table).
+- **Context:** `select()` and its predicates (`is_rail_way`, `is_route_relation`, `is_station`); the Phase 1/Phase 2 contract in `docs/plans/LOCAL_RAIL_DATA_PLAN.md`; the selections in `_via_route_relation_type`, `_via_way_type_fallback`, `_via_ferry_yes_fallback`; the size guard at `rail-extract.yml:110-114`; the base-schema refusal at `build_rail_extract.py:709-721`.
 - **Do:**
   1. Predicates for the ferry layer (`route=ferry` relations and their member ways; `route=ferry` ways; `ferry=yes` ways) and the bus layer (`route=bus` relations and member ways; `route=bus` ways).
   2. `select()` writes one file per layer in the same passes. A layer is `empty`, and publishes no file, when its **routable set** (Decision 9's table) is empty — the same set U8's builder refuses on and both measure the bbox over (R2-3).
@@ -452,7 +452,7 @@ Not a unit. Nothing in Wave 5 merges until both boxes run U8's reader: a box wit
 #### U9 — Ferry and bus resolve from local stores first
 - **Goal:** ferry and bus resolves read local stores through a source interface, falling back to Overpass on any local miss, and the resolve counter says which source answered.
 - **Scope:** `src/services/overpass_service.py` (ferry/bus section), `src/services/rail_source.py` (or a new `src/services/route_source.py`), `api/segments.py`, new `tests/test_route_source_ferry_bus.py`, `tests/test_route_source_metrics.py`, `tests/test_overpass_fallback.py` (it indexes the getters' return value — R2-1).
-- **Context:** phase 3 of `docs/LOCAL_RAIL_DATA_PLAN.md` and its implementation (`RailSource`, `LocalRailSource`, `OverpassRailSource`, `get_rail_geometry`'s fallback, `overpass_service.py:333-399`) is the example to mirror; U8's class mask; U3's resolve counter in `_compute_segment_geometry` (`api/segments.py:60-139`).
+- **Context:** phase 3 of `docs/plans/LOCAL_RAIL_DATA_PLAN.md` and its implementation (`RailSource`, `LocalRailSource`, `OverpassRailSource`, `get_rail_geometry`'s fallback, `overpass_service.py:333-399`) is the example to mirror; U8's class mask; U3's resolve counter in `_compute_segment_geometry` (`api/segments.py:60-139`).
 - **Do:**
   1. `RouteSource` with `relations_in_bbox(mode, bbox)` and `ways_in_bbox(mode, cls_mask, bbox)`; local and Overpass implementations; strategy A reads relations, B asks for bit 0, C for bit 1 — logic unchanged.
   2. Fallback: local result missing or the strategy chain fails → the same chain against Overpass, with the wide guard and the vertex ceiling as for rail.

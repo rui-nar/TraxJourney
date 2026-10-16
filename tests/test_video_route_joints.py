@@ -1,4 +1,4 @@
-"""Round joints as disks (docs/VIDEO_ROUTE_DRAWING_PLAN.md, U2; #525).
+"""Round joints as disks (docs/plans/VIDEO_ROUTE_DRAWING_PLAN.md, U2; #525).
 
 ``Overlay._draw_route`` draws the travelled route's casing and colour as
 plain lines plus a disk at each interior vertex, the size of Pillow's own

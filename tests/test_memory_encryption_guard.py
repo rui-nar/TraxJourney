@@ -1,5 +1,5 @@
 """Server backstop on memory writes (#505, #506; decisions 3 and 13 of
-docs/E2EE_REMNANTS_PLAN.md).
+docs/plans/E2EE_REMNANTS_PLAN.md).
 
 A trip's memories belong under its owner's key: an encrypted owner's trip
 refuses plaintext (`encryption_locked` — a locked device or an old build), a

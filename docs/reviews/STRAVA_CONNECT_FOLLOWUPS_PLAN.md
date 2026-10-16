@@ -1,7 +1,7 @@
 # Review ledger — Strava connect follow-ups (#584, #587, #438)
 
-Subject: docs/STRAVA_CONNECT_FOLLOWUPS_PLAN.md
-Envelope: plan section "Review envelope" (REVIEW.md defaults + docs/STRAVA_CONNECT_BINDING_PLAN.md envelope as amended + unauthenticated app page, untrusted display name, no iOS build, browser-only popup behaviour)
+Subject: docs/plans/STRAVA_CONNECT_FOLLOWUPS_PLAN.md
+Envelope: plan section "Review envelope" (REVIEW.md defaults + docs/plans/STRAVA_CONNECT_BINDING_PLAN.md envelope as amended + unauthenticated app page, untrusted display name, no iOS build, browser-only popup behaviour)
 
 ## Round 1 — 2026-10-08, reviewed at 5a9c034b
 

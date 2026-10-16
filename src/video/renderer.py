@@ -1,4 +1,4 @@
-"""Render a trip video to MP4 (docs/TRIP_VIDEO_PLAN.md, U5; Convention 5).
+"""Render a trip video to MP4 (docs/plans/TRIP_VIDEO_PLAN.md, U5; Convention 5).
 
 ``render_video`` is what ``src.video.job_runner`` calls on the ``video``
 worker. It loads the trip, builds its timeline and camera path, and pipes
@@ -46,7 +46,7 @@ ProgressFn = Callable[[float, str], None]
 
 # The job's progress is written to its row this often.
 PROGRESS_EVERY = 30
-# docs/VIDEO_CAMERA_QUALITY_PLAN.md D7, chosen at gate G1 (docs/VIDEO.md):
+# docs/plans/VIDEO_CAMERA_QUALITY_PLAN.md D7, chosen at gate G1 (docs/VIDEO.md):
 # sharper route lines and map labels than crf 23, for files ~1.5x larger;
 # ``-tune animation`` softened the map imagery, so no tune.
 _DEFAULT_CRF = 20
@@ -105,7 +105,7 @@ class _LazyDefaultFetcher:
     ``render_basemap`` would build it itself, so a render that never needs a
     tile never needs ``MAPBOX_TOKEN``. It holds no reference to the renderer:
     the prefetcher's pool threads hold it, and must not keep a dropped
-    renderer alive (docs/VIDEO_RENDER_TIME_PLAN.md D7). The pool calls it
+    renderer alive (docs/plans/VIDEO_RENDER_TIME_PLAN.md D7). The pool calls it
     from several threads, so the client is built under a lock, once."""
 
     def __init__(self) -> None:
@@ -125,7 +125,7 @@ class _TimedFetcher:
     """Times every tile fetch into *timings* (Do 1). Once the frame loop
     starts, *fetcher* is the renderer's :class:`TilePrefetcher`, so ``fetch``
     is the time the frame loop waits for tiles, not network time
-    (docs/VIDEO_RENDER_TIME_PLAN.md D9)."""
+    (docs/plans/VIDEO_RENDER_TIME_PLAN.md D9)."""
 
     def __init__(self, fetcher: TileFetcher, timings: StageTimes) -> None:
         self.fetcher = fetcher
@@ -211,7 +211,7 @@ def _log_render_summary(*, kind: str = "video", camera: str, frames: int, elapse
     time before *elapsed* started, which no stage covers (#539). *tile_ms* is
     the mean network time per tile, measured on the prefetcher's threads, and
     *prefetch_misses* the tiles the frame loop had to fetch itself
-    (docs/VIDEO_RENDER_TIME_PLAN.md D9)."""
+    (docs/plans/VIDEO_RENDER_TIME_PLAN.md D9)."""
     per_frame = (lambda s: s / frames * 1000) if frames else (lambda s: 0.0)
     _log.info(
         "video render summary: kind=%s camera=%s frames=%d elapsed_s=%.2f setup_s=%.2f ms_per_frame=%.1f "
@@ -238,7 +238,7 @@ class FrameRenderer:
     overlay's overview HUD layout.
 
     Tiles are fetched ahead of the frames through a :class:`TilePrefetcher`
-    (docs/VIDEO_RENDER_TIME_PLAN.md D2, D7), created on the first
+    (docs/plans/VIDEO_RENDER_TIME_PLAN.md D2, D7), created on the first
     :meth:`frame` (or :meth:`basemap`) call with the plan's requests from that
     frame on. :meth:`close` stops it; a renderer dropped without ``close()``
     stops it when it is collected. Once closed, tiles are fetched
@@ -474,7 +474,7 @@ def render_video(job_id: int, user_info_id: int, project_id: int, request: dict,
                            progress=progress, tile_fetcher=tile_fetcher, camera=camera)
 
 
-# ── preview render (docs/VIDEO_PREVIEW_PLAN.md D1, D4, Convention 3; U2) ────
+# ── preview render (docs/plans/VIDEO_PREVIEW_PLAN.md D1, D4, Convention 3; U2) ────
 
 PREVIEW_FPS = 8
 PREVIEW_SIZE: Size = (320, 180)

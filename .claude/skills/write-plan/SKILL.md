@@ -1,6 +1,6 @@
 ---
 name: write-plan
-description: Write an implementation plan for a feature or change in the shape that adversarial-review and deliver-plan consume, saved as docs/<NAME>_PLAN.md. Use when the user asks to plan a feature, write or draft a plan, plan an issue ("write a plan for #345"), or asks for something large enough to need several units of work before any code is written.
+description: Write an implementation plan for a feature or change in the shape that adversarial-review and deliver-plan consume, saved as docs/plans/<NAME>_PLAN.md. Use when the user asks to plan a feature, write or draft a plan, plan an issue ("write a plan for #345"), or asks for something large enough to need several units of work before any code is written.
 ---
 
 # Write a plan
@@ -10,7 +10,7 @@ reviewer, who needs the envelope; and by `deliver-plan`, which turns its units
 into hand-offs. Write it for all three.
 
 Read `docs/DELIVERY.md` §1 (the unit) and `docs/REVIEW.md` §2 (the envelope)
-first. The existing `docs/LOGGING_OBSERVABILITY_PLAN.md` is a good example of
+first. The existing `docs/plans/LOGGING_OBSERVABILITY_PLAN.md` is a good example of
 the level of detail units need.
 
 ## Before writing
@@ -23,7 +23,7 @@ the level of detail units need.
 
 ## The file
 
-`docs/<NAME>_PLAN.md`, with these sections in this order. Leave out a section
+`docs/plans/<NAME>_PLAN.md`, with these sections in this order. Leave out a section
 only where the note says it is optional.
 
 1. **Title** — `# <Feature> — Plan for #<issue>` when there is an issue.

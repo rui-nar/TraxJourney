@@ -1,6 +1,6 @@
 # Review ledger — Trip video route drawing: speed and memory (#525, with #523)
 
-Subject: docs/VIDEO_ROUTE_DRAWING_PLAN.md
+Subject: docs/plans/VIDEO_ROUTE_DRAWING_PLAN.md
 Envelope: plan section "Review envelope" (REVIEW.md defaults; no new concurrency or service; trips up to ~1.6 M points, single legs up to 500 k)
 
 ## Round 1 — 2026-10-02, reviewed at 66c33d29

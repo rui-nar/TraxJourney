@@ -87,7 +87,7 @@ alongside prod and val on 40 GB. Build the artifact in CI and ship only the resu
   Verify any change to this table against `src/services/overpass_service.py`
   directly — the queries there are the specification, not this document.
 
-  **Ferry and bus** (docs/LOCAL_TRANSPORT_DATA_PLAN.md, Decision 7) are two
+  **Ferry and bus** (docs/plans/LOCAL_TRANSPORT_DATA_PLAN.md, Decision 7) are two
   more layers filtered from the same download into files of their own, so that
   a bus road never joins the rail graph. Their selections mirror
   `_get_route_geometry`'s three strategies:
@@ -550,7 +550,7 @@ question arises. The operational procedure is in `docs/DEPLOYMENT_VPS.md`, §9.
 
 ## Phase 4 — Comparison and cutover
 
-> **Superseded (2026-10-04)** for phases 4–6 by `docs/LOCAL_TRANSPORT_DATA_PLAN.md`:
+> **Superseded (2026-10-04)** for phases 4–6 by `docs/plans/LOCAL_TRANSPORT_DATA_PLAN.md`:
 > the cutover happened, ferry and bus still depend on Overpass, and what follows
 > was written before either was known.
 

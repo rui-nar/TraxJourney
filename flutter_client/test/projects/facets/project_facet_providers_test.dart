@@ -1,5 +1,5 @@
 // ProjectFacetProviders hands out the facets of the right notifier (issue
-// #294, Decision 18 of docs/CLIENT_STATE_MAP_PLAN.md): the app-wide one's,
+// #294, Decision 18 of docs/plans/CLIENT_STATE_MAP_PLAN.md): the app-wide one's,
 // following it across account changes, and inside a ViewScreen the view
 // notifier's.
 

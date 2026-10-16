@@ -1,4 +1,4 @@
-"""Trip video frame renderer and encoder (docs/TRIP_VIDEO_PLAN.md, U5).
+"""Trip video frame renderer and encoder (docs/plans/TRIP_VIDEO_PLAN.md, U5).
 
 Every render uses a fake tile fetcher, so nothing touches Mapbox. The tests
 that encode need ``ffmpeg``/``ffprobe``: CI installs them, a dev machine
@@ -141,7 +141,7 @@ NY_WALK_2 = [(40.7620 + 0.0004 * i, -73.9775 + 0.0003 * i) for i in range(15)]
 
 def paris_new_york() -> Project:
     """Short walks in Paris, a flight to New York, short walks there. The
-    flight is fast at ``fixed``'s zoom Z (docs/VIDEO_CAMERA_QUALITY_PLAN.md
+    flight is fast at ``fixed``'s zoom Z (docs/plans/VIDEO_CAMERA_QUALITY_PLAN.md
     D3): ``fixed`` flies over it and keeps the walks' Z, ``fixed_strict``
     drops to a lower Z that follows it too."""
     w1 = _activity(1, "Walk", date(2026, 5, 1), PARIS_WALK_1, 800.0, 600)
@@ -361,7 +361,7 @@ def test_golden_comparison_catches_a_moved_route():
     assert mean > 2.0 or far > 0.01
 
 
-# ── the new camera modes (docs/VIDEO_CAMERA_QUALITY_PLAN.md #518 U6) ────────
+# ── the new camera modes (docs/plans/VIDEO_CAMERA_QUALITY_PLAN.md #518 U6) ────────
 
 def test_the_new_york_flight_is_fast_at_fixeds_zoom():
     """Precondition for the goldens below: on this fixture "fixed" flies over
@@ -573,7 +573,7 @@ def test_missing_ffmpeg_is_a_fixed_error(tmp_path, monkeypatch):
                         tile_fetcher=fake_tile, frame_range=range(0, 5))
 
 
-# ── tile prefetching (docs/VIDEO_RENDER_TIME_PLAN.md U2b) ───────────────────
+# ── tile prefetching (docs/plans/VIDEO_RENDER_TIME_PLAN.md U2b) ───────────────────
 #
 # The prefetcher calls the fetcher from its pool threads, so the fakes here
 # count and record under a lock (Conventions). A test that waits on threads

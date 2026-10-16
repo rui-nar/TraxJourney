@@ -1,6 +1,6 @@
 # Review ledger — Trip video export P1 + P2
 
-Subject: docs/TRIP_VIDEO_PLAN.md (round 1 reviewed its draft at C:\Users\rui_n\.claude\plans\trip-video-p1-p2.md, before it was reshaped to the write-plan format)
+Subject: docs/plans/TRIP_VIDEO_PLAN.md (round 1 reviewed its draft at C:\Users\rui_n\.claude\plans\trip-video-p1-p2.md, before it was reshaped to the write-plan format)
 Envelope: plan section "Review envelope" (REVIEW.md defaults + stated E6 exception for per-job consent)
 
 ## Round 1 — 2026-09-27, reviewed at eaaeee78 (plan draft, uncommitted)
@@ -70,7 +70,7 @@ Reviewer: Fable (general-purpose agent carrying adversarial-reviewer's instructi
 - Override: —
 - Outcome: fixed (plan D7 + U6 step 2 ordering: broker check before any write; enqueue(allow_inline=False) failure ⇒ failed row + geometry deleted)
 
-## Round 2 — 2026-09-28, reviewed docs/TRIP_VIDEO_PLAN.md at eaaeee78 (uncommitted; fixes for R1-1..R1-5, R1-7 + owner decisions D10–D13)
+## Round 2 — 2026-09-28, reviewed docs/plans/TRIP_VIDEO_PLAN.md at eaaeee78 (uncommitted; fixes for R1-1..R1-5, R1-7 + owner decisions D10–D13)
 
 Reviewer: Fable; triager: Opus (same arrangement as round 1).
 
@@ -128,7 +128,7 @@ Reviewer: Fable; triager: Opus (same arrangement as round 1).
 - Override: —
 - Outcome: fixed (U3 step 3: <PREFIX>_MAX_VIDEOS_PER_MONTH / <PREFIX>_MAX_VIDEO_HEIGHT, .env.example, env-reset test)
 
-## Round 3 — 2026-09-28, reviewed docs/TRIP_VIDEO_PLAN.md at eaaeee78 (uncommitted; fixes for R2-1, R2-2, R2-4, R2-5, R2-6)
+## Round 3 — 2026-09-28, reviewed docs/plans/TRIP_VIDEO_PLAN.md at eaaeee78 (uncommitted; fixes for R2-1, R2-2, R2-4, R2-5, R2-6)
 
 Reviewer: Fable; triager: Opus (same arrangement as rounds 1–2).
 

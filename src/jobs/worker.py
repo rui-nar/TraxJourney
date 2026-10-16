@@ -51,7 +51,7 @@ _INTERRUPT_HANDLERS: dict[str, tuple[str, str]] = {
         "src.video.job_runner.mark_video_job_interrupted",
         "The render was stopped unexpectedly (likely out of memory) — try a "
         "shorter video or a lower resolution."),
-    # A preview runs on ``default`` (docs/VIDEO_PREVIEW_PLAN.md D5); the same
+    # A preview runs on ``default`` (docs/plans/VIDEO_PREVIEW_PLAN.md D5); the same
     # handler fails it, and sends no email for it (D7).
     "src.video.job_runner.run_video_preview_job": (
         "src.video.job_runner.mark_video_job_interrupted",
@@ -147,10 +147,10 @@ def main(argv: list[str] | None = None) -> int:
     if QUEUE_VIDEO in queues:
         # This worker is the video queue's only consumer, so nothing is
         # rendering right now: a "running" video row belongs to a work-horse
-        # that died with the previous worker (docs/TRIP_VIDEO_PLAN.md,
+        # that died with the previous worker (docs/plans/TRIP_VIDEO_PLAN.md,
         # Convention 6). The sweep acts on full videos only: previews run on
         # ``default``, whose other consumer may be rendering one
-        # (docs/VIDEO_PREVIEW_PLAN.md D5). Imported here so other workers
+        # (docs/plans/VIDEO_PREVIEW_PLAN.md D5). Imported here so other workers
         # never load it.
         from src.video.job_runner import sweep_stale_running_video_jobs
 

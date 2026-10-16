@@ -1,5 +1,5 @@
 // The style facet holds how the trip is drawn (issue #294, Decisions 17 and
-// 19 of docs/CLIENT_STATE_MAP_PLAN.md): a style change bumps only its version,
+// 19 of docs/plans/CLIENT_STATE_MAP_PLAN.md): a style change bumps only its version,
 // each notifier call still notifies once, load() fills it and clear() puts it
 // all back.
 

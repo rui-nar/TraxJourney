@@ -1,6 +1,6 @@
 # Logging & Observability — Plan for #205
 
-Status: **plan only, nothing implemented yet.** This document is the handoff
+Status: **delivered** in PR #206 (2026-08-10). This document was the handoff
 artifact for implementation — written so each numbered unit below can be
 given to a separate agent/session to execute independently. Read the whole
 "Conventions" section before starting any unit; it's the shared contract

@@ -5,7 +5,7 @@ Conventions for adding or reviewing `logger.*()` calls anywhere in `api/` or
 service file and need to know what level to use, how to format a message, or
 what never gets logged, this page has it. For the *why* (issue #205's audit,
 the infrastructure plan, open decisions) see
-`docs/LOGGING_OBSERVABILITY_PLAN.md`; if the two ever disagree, the plan doc
+`docs/plans/LOGGING_OBSERVABILITY_PLAN.md`; if the two ever disagree, the plan doc
 is the source of truth and both should be updated together.
 
 ## Getting a logger
@@ -178,7 +178,7 @@ def test_malformed_activity_logs_warning(caplog):
 
 ## See also
 
-- `docs/LOGGING_OBSERVABILITY_PLAN.md` — the full plan: audit of where
+- `docs/plans/LOGGING_OBSERVABILITY_PLAN.md` — the full plan: audit of where
   logging is missing, infrastructure (Loki/Grafana/Alloy) decisions, open
   questions.
 - `docs/METRICS.md` — Prometheus metrics; same cardinality discipline

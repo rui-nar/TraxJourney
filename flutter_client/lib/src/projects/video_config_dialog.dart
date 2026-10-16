@@ -1,10 +1,10 @@
-/// Dialog for requesting a trip video (docs/TRIP_VIDEO_PLAN.md, U7): pick a
+/// Dialog for requesting a trip video (docs/plans/TRIP_VIDEO_PLAN.md, U7): pick a
 /// length (30/60/90 s, D11), a resolution the plan allows (D10) and a camera
-/// (docs/VIDEO_CAMERA_QUALITY_PLAN.md, D1), see the monthly quota (D3), then
+/// (docs/plans/VIDEO_CAMERA_QUALITY_PLAN.md, D1), see the monthly quota (D3), then
 /// create. Renders a [VideoRequestNotifier] and runs
 /// its consent step (D2) through [showVideoConsentDialog]. A Preview button
 /// shows a low-resolution animation of the chosen settings first
-/// (docs/VIDEO_PREVIEW_PLAN.md, U4).
+/// (docs/plans/VIDEO_PREVIEW_PLAN.md, U4).
 ///
 /// Pops itself when the job has started (handing the id to [onStarted]) or
 /// when the user declines consent. It can't be closed while the job is being

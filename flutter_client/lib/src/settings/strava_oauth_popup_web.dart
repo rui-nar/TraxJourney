@@ -5,7 +5,7 @@
 ///
 /// Message format from oauth_callback.html: a plain object
 /// `{type: "strava_oauth", status: "code" | "error", code, state, reason}`
-/// (docs/STRAVA_CONNECT_BINDING_PLAN.md, D8). Only messages from this
+/// (docs/plans/STRAVA_CONNECT_BINDING_PLAN.md, D8). Only messages from this
 /// origin are read. A popup the user closes is reported by
 /// [PopupResultArbiter], which also gives a message the time to arrive.
 library;

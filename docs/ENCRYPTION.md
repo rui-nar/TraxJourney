@@ -343,7 +343,7 @@ encryption time, from the code:
 
 ## Trip videos — plaintext by consent, for one render
 
-A trip video is rendered on the server (docs/TRIP_VIDEO_PLAN.md, D1), which
+A trip video is rendered on the server (docs/plans/TRIP_VIDEO_PLAN.md, D1), which
 cannot read an encrypted track. So for an encrypted trip the server asks, and
 the user decides, per video:
 

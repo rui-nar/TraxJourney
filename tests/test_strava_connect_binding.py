@@ -5,7 +5,7 @@ so it never touches a token: it binds the code to the state it arrived with
 and relays both back to the client the signed state names. Only
 ``POST /api/strava/complete`` links an account, and only when the bearer is
 the state's user, the verifier matches the state's challenge and the code is
-bound to that state (docs/STRAVA_CONNECT_BINDING_PLAN.md D1-D6, D9).
+bound to that state (docs/plans/STRAVA_CONNECT_BINDING_PLAN.md D1-D6, D9).
 
 Strava's token exchange is mocked on ``OAuth2Session.exchange_code``; the
 network is never touched. Fixtures are copied from

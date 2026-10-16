@@ -1,4 +1,4 @@
-// The non-web VideoPreviewImage (docs/VIDEO_PREVIEW_PLAN.md, U4) shows the
+// The non-web VideoPreviewImage (docs/plans/VIDEO_PREVIEW_PLAN.md, U4) shows the
 // preview with Image.memory, which animates WebP on Android and iOS; the web
 // one wraps a browser <img> and only builds for the web.
 

@@ -1,5 +1,5 @@
-"""Trip video follow camera (docs/TRIP_VIDEO_PLAN.md, U2) and its camera
-modes (docs/VIDEO_CAMERA_QUALITY_PLAN.md, U2)."""
+"""Trip video follow camera (docs/plans/TRIP_VIDEO_PLAN.md, U2) and its camera
+modes (docs/plans/VIDEO_CAMERA_QUALITY_PLAN.md, U2)."""
 from __future__ import annotations
 
 import math

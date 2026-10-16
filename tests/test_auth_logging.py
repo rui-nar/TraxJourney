@@ -4,7 +4,7 @@
 expired token, a tampered/forged token, and a malformed ``sub`` claim were all
 indistinguishable 401/403s with nothing server-side to investigate from.
 
-Per docs/LOGGING_OBSERVABILITY_PLAN.md Section 5's open decision #3, plain
+Per docs/plans/LOGGING_OBSERVABILITY_PLAN.md Section 5's open decision #3, plain
 expiry (routine, high-volume — every issued token expires eventually) and
 actually-suspicious failures (bad signature, malformed claims — possible
 forged/tampered token or a client bug) get two distinct signals: expiry stays
@@ -44,7 +44,7 @@ class TestExpiredTokenIsQuiet:
                 decode_token(token)
         assert exc.value.status_code == 401
 
-        # Chosen behavior (see docs/LOGGING_OBSERVABILITY_PLAN.md Section 5,
+        # Chosen behavior (see docs/plans/LOGGING_OBSERVABILITY_PLAN.md Section 5,
         # open decision #3): plain expiry is routine/high-volume and is not
         # logged at all, so no WARNING (or any) record should appear.
         assert caplog.records == []

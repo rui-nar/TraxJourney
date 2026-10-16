@@ -5,7 +5,7 @@
 /// iOS uses the native sheet. Web (Apple JS popup) and Android (a Custom Tab
 /// that returns through the server's callback) use Apple's web flow, which
 /// needs the Services ID and a redirect URI on this deployment
-/// (docs/STORE_DISTRIBUTION_PLAN.md, D1 and D5).
+/// (docs/plans/STORE_DISTRIBUTION_PLAN.md, D1 and D5).
 library;
 
 import 'dart:convert';

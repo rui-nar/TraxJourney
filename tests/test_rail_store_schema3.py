@@ -1,7 +1,7 @@
 """Store schema 3: `way.cls`, layers, and reading a schema 1 or 2 file (#345, U8).
 
 Schema 3 replaces the one `way.rail` flag with a class bitmask
-(docs/LOCAL_TRANSPORT_DATA_PLAN.md, Decision 9) so the same store format can
+(docs/plans/LOCAL_TRANSPORT_DATA_PLAN.md, Decision 9) so the same store format can
 hold the ferry and bus layers and answer each resolver strategy's own
 selection: bit 0 the layer's routable class (strategy B), bit 1 `ferry=yes`
 (strategy C), bit 2 a member of one of the layer's route relations.

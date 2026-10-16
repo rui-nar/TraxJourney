@@ -63,7 +63,7 @@ SCHEMA_VERSION = 4
 #      a rail store, it answers a bit-0 query as it always did, and any other
 #      bit with nothing.
 #   3  `way.cls`, the class bitmask below, so one store format serves the
-#      rail, ferry and bus layers (docs/LOCAL_TRANSPORT_DATA_PLAN.md,
+#      rail, ferry and bus layers (docs/plans/LOCAL_TRANSPORT_DATA_PLAN.md,
 #      Decision 9).
 #   4  current. Same tables as 3; the number records that a ferry or bus store
 #      locates every stop its relations name, not only uic_ref ones. A rail
@@ -397,7 +397,7 @@ class RailStore:
         come back located. Emitting them in the same place means the resolver's
         stop anchor (#363) reads ``rel["members"]`` and works on both sources
         with no branch — a store-only accessor would have been a fix that only
-        the local source got, which Phase 4 of docs/LOCAL_RAIL_DATA_PLAN.md
+        the local source got, which Phase 4 of docs/plans/LOCAL_RAIL_DATA_PLAN.md
         exists to prevent.
 
         Two differences from Overpass, both deliberate. **Ways come first, then

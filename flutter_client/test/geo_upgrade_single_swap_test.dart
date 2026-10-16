@@ -1,5 +1,5 @@
 // Issue #293 — the low-res -> full-res geo upgrade must reach the UI as ONE
-// swap, not a staged reveal. See docs/PERF_MAP_LOAD.md.
+// swap, not a staged reveal. See docs/plans/PERF_MAP_LOAD.md.
 //
 // _loadFullGeoProgressively used to replace the track a few activities at a
 // time, notifying after each batch (~8 repaints, 80 ms apart). Every one of

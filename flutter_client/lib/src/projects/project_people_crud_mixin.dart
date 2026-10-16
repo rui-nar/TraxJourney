@@ -40,7 +40,7 @@ mixin ProjectPeopleCrudMixin on ChangeNotifier, ProjectQuotaMixin {
   /// Replaces the item list with one without the items [drop] matches, when
   /// there are any: the list is left as it is otherwise, so deleting a person
   /// or group with no encounters changes people only (Decision 23 of
-  /// docs/CLIENT_STATE_MAP_PLAN.md).
+  /// docs/plans/CLIENT_STATE_MAP_PLAN.md).
   void _dropItemsWhere(bool Function(Map<String, dynamic> item) drop) {
     final kept = _items.where((it) => !drop(it)).toList();
     if (kept.length != _items.length) itemsFacetWriter.setItems(kept);

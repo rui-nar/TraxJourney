@@ -29,7 +29,7 @@ def render_strava_return_confirm(
 
     ``display_name`` is the account owner's free choice, so it is untrusted:
     it is escaped, cut to 40 characters and shown only after the fixed
-    warning (docs/STRAVA_CONNECT_FOLLOWUPS_PLAN.md D1). An empty or blank
+    warning (docs/plans/STRAVA_CONNECT_FOLLOWUPS_PLAN.md D1). An empty or blank
     name gets the neutral wording. ``cancel_url`` must be ``#cancelled``,
     the in-page anchor the template's ``:target`` rule names.
     """

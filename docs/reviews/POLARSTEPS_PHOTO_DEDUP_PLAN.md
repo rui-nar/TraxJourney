@@ -1,6 +1,6 @@
 # Review ledger — Polarsteps photo dedup (#566)
 
-Subject: docs/POLARSTEPS_PHOTO_DEDUP_PLAN.md
+Subject: docs/plans/POLARSTEPS_PHOTO_DEDUP_PLAN.md
 Envelope: plan § Review envelope, plus REVIEW.md defaults
 
 ## Round 1 — 2026-10-10, reviewed at b41aae9e

@@ -145,7 +145,7 @@ void main() {
     testWidgets('a resolve still pending past the old 2-minute deadline sets '
         'no error and lands when it finishes (issue #278)', (tester) async {
       // Replaces the #213 test that expected an error at the deadline: that
-      // deadline is removed by decision (docs/CLIENT_STATE_MAP_PLAN.md,
+      // deadline is removed by decision (docs/plans/CLIENT_STATE_MAP_PLAN.md,
       // Decision 11), because it only moved the cliff.
       final server = _Server()..segments['seg-1'] = _seg('seg-1', status: 'pending');
       final n = _notifierOn(server);

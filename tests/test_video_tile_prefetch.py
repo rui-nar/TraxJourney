@@ -1,5 +1,5 @@
 """Tests for the tile prefetcher (src/video/tile_prefetch.py) and the request
-order it walks (``Sheet.requests``, ``plan_requests``), docs/VIDEO_RENDER_TIME_PLAN.md
+order it walks (``Sheet.requests``, ``plan_requests``), docs/plans/VIDEO_RENDER_TIME_PLAN.md
 U2a.
 
 The fakes here are called from several threads, so each counts and records

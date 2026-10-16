@@ -221,7 +221,7 @@ else in place of pyenv / virtualenv / pip.
    code (see Owner actions).
 9. **Historical documents are not rewritten**: `docs/*_PLAN.md`,
    `docs/reviews/`, `docs/repro/keepalive_502/`, and
-   `docs/RENAME_TRAXJOURNEY_RUNBOOK.md` (a completed one-off runbook) describe
+   `docs/plans/RENAME_TRAXJOURNEY_RUNBOOK.md` (a completed one-off runbook) describe
    what was true when they were written. `tools/flutter-test/` has no Python.
 
 ## Review envelope

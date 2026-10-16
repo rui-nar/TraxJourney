@@ -1,5 +1,5 @@
 /// Client for the trip-video endpoints in `api/video.py`
-/// (docs/TRIP_VIDEO_PLAN.md, U7):
+/// (docs/plans/TRIP_VIDEO_PLAN.md, U7):
 ///
 ///   POST /api/projects/{name}/video/plan              -> [VideoPlan]
 ///   POST /api/projects/{name}/video                   -> {job_id}
@@ -30,7 +30,7 @@ import 'client.dart';
 /// The lengths every plan may pick (D11).
 const kVideoLengths = [30, 60, 90];
 
-/// The server's camera modes (docs/VIDEO_CAMERA_QUALITY_PLAN.md, D1):
+/// The server's camera modes (docs/plans/VIDEO_CAMERA_QUALITY_PLAN.md, D1):
 /// `variable` (default), `overview`, `fixed` and `fixed_strict`.
 const kVideoCameraDefault = 'variable';
 
@@ -149,7 +149,7 @@ class VideoConsentRequired {
   }
 }
 
-/// A preview's 429 (docs/VIDEO_PREVIEW_PLAN.md, D6): too many previews in
+/// A preview's 429 (docs/plans/VIDEO_PREVIEW_PLAN.md, D6): too many previews in
 /// the last hour. The wait is read from the body's `retry_after_s`, since a
 /// web app on another origin can't read the `Retry-After` header.
 class VideoPreviewRateLimited {
@@ -259,7 +259,7 @@ Future<int> createVideoJob({
 }
 
 /// Starts a low-resolution preview of the video these settings would make
-/// (docs/VIDEO_PREVIEW_PLAN.md) and returns its job id. [height] is the
+/// (docs/plans/VIDEO_PREVIEW_PLAN.md) and returns its job id. [height] is the
 /// resolution of that video, which the preview frames like.
 Future<int> createVideoPreview({
   required ProjectRef ref,

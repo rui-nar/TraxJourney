@@ -130,7 +130,7 @@ def create_access_token(
 STRAVA_OAUTH_AUDIENCE = "strava_oauth"
 _STRAVA_STATE_EXPIRY_MINUTES = 10
 #: Where the callback sends the browser back to: the web popup page or the
-#: app's custom scheme (docs/STRAVA_CONNECT_BINDING_PLAN.md D4, D5).
+#: app's custom scheme (docs/plans/STRAVA_CONNECT_BINDING_PLAN.md D4, D5).
 STRAVA_RETURN_TARGETS = frozenset({"web", "app"})
 
 
@@ -253,7 +253,7 @@ def decode_token(token: str) -> dict:
         # Not logged: every issued token expires eventually, so on a running app
         # with several concurrent users this is routine and high-volume, not a
         # signal worth a line per occurrence (open decision #3,
-        # docs/LOGGING_OBSERVABILITY_PLAN.md Section 5). InvalidTokenError below
+        # docs/plans/LOGGING_OBSERVABILITY_PLAN.md Section 5). InvalidTokenError below
         # (bad signature / malformed token) is the one that's actually suspicious.
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired"

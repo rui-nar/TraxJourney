@@ -1,5 +1,5 @@
 /// Small, passive status card for the trip-video job this client started or
-/// resumed (docs/TRIP_VIDEO_PLAN.md, U7) — the video counterpart of
+/// resumed (docs/plans/TRIP_VIDEO_PLAN.md, U7) — the video counterpart of
 /// `poster_status_card.dart`, whose rules it follows: polling only drives
 /// this card, never blocks, a long render is never turned into a failure by
 /// a client timeout (only the server's `failed` counts), polling stops

@@ -1,6 +1,6 @@
 # Store distribution — Plan for #579, #582, #580
 
-Status: **plan only, nothing implemented yet.**
+Status: **delivered** in PR #610 (2026-10-14).
 
 ## 1. Problem
 
@@ -34,19 +34,19 @@ Owner constraints (2026-10-12):
 
 | Area | Today | File |
 |---|---|---|
-| Android release | Signed arm64 APK on every `v*` and `validation` tag; fails fast without the `ANDROID_*` secrets; real APKs ship (v0.53.1 has one) | [android-release.yml](../.github/workflows/android-release.yml) |
-| Build number | `vX.Y.Z → X·10000 + Y·100 + Z` | [scripts/android_version_code.py](../scripts/android_version_code.py) |
-| PR build check | `android` job builds a debug APK on every PR | [test.yml](../.github/workflows/test.yml) |
-| App Links | `/.well-known/assetlinks.json` from `ANDROID_CERT_FINGERPRINTS`, 404 when unset | [api/router.py:450-490](../api/router.py#L450-L490), [tests/test_assetlinks.py](../tests/test_assetlinks.py) |
-| Deep-link paths | `/share`, `/join`, `/verify-email` on `traxjourney.com` | [AndroidManifest.xml:49-51](../flutter_client/android/app/src/main/AndroidManifest.xml#L49-L51) |
-| iOS project | bundle id set; `CODE_SIGN_STYLE = Automatic`, no team; `TARGETED_DEVICE_FAMILY = "1,2"` (iPhone + iPad); no entitlements file; deployment target 13.0; Google and `traxjourney` URL schemes declared; `FlutterDeepLinkingEnabled` | [project.pbxproj](../flutter_client/ios/Runner.xcodeproj/project.pbxproj), [Info.plist](../flutter_client/ios/Runner/Info.plist) |
-| Google login | `POST /api/auth/google`: verify the id_token, look up `UserInfo.google_sub`, create a shadow `LocalUser` + `UserInfo` on first sight, no linking by e-mail | [api/auth.py:292-362](../api/auth.py#L292-L362), [tests/test_google_auth.py](../tests/test_google_auth.py) |
-| Account deletion | `delete_user_and_data` settles billing, then revokes Strava best-effort before taking the account lock | [src/auth/account_deletion.py:347-380](../src/auth/account_deletion.py#L347-L380), [src/auth/strava_deauth.py](../src/auth/strava_deauth.py) |
-| Encrypted tokens | `EncryptedString` column type, e.g. `StravaToken` | [models/user.py:67-77](../models/user.py#L67-L77) |
-| Legal pages | `/privacy`, `/terms` served from `legal/` by the API; placeholder gate test | [api/router.py:494-523](../api/router.py#L494-L523), [tests/test_legal_pages.py](../tests/test_legal_pages.py) |
-| Client auth | `AuthService.loginWithGoogle`; login screen with the GIS button on web and a native picker on mobile | [auth_service.dart](../flutter_client/lib/src/auth/auth_service.dart), [login_screen.dart](../flutter_client/lib/src/auth/login_screen.dart), [test/auth/login_screen_test.dart](../flutter_client/test/auth/login_screen_test.dart) |
-| Dependencies | `PyJWT`, `cryptography`, `google-auth`, `requests`, `httpx` already installed | [requirements.txt](../requirements.txt) |
-| Launch QA | rows A4 (Apple, hidden e-mail) and A6 (in-app deletion) per platform | [docs/LAUNCH_QA.md](LAUNCH_QA.md) |
+| Android release | Signed arm64 APK on every `v*` and `validation` tag; fails fast without the `ANDROID_*` secrets; real APKs ship (v0.53.1 has one) | [android-release.yml](../../.github/workflows/android-release.yml) |
+| Build number | `vX.Y.Z → X·10000 + Y·100 + Z` | [scripts/android_version_code.py](../../scripts/android_version_code.py) |
+| PR build check | `android` job builds a debug APK on every PR | [test.yml](../../.github/workflows/test.yml) |
+| App Links | `/.well-known/assetlinks.json` from `ANDROID_CERT_FINGERPRINTS`, 404 when unset | [api/router.py:450-490](../../api/router.py#L450-L490), [tests/test_assetlinks.py](../../tests/test_assetlinks.py) |
+| Deep-link paths | `/share`, `/join`, `/verify-email` on `traxjourney.com` | [AndroidManifest.xml:49-51](../../flutter_client/android/app/src/main/AndroidManifest.xml#L49-L51) |
+| iOS project | bundle id set; `CODE_SIGN_STYLE = Automatic`, no team; `TARGETED_DEVICE_FAMILY = "1,2"` (iPhone + iPad); no entitlements file; deployment target 13.0; Google and `traxjourney` URL schemes declared; `FlutterDeepLinkingEnabled` | [project.pbxproj](../../flutter_client/ios/Runner.xcodeproj/project.pbxproj), [Info.plist](../../flutter_client/ios/Runner/Info.plist) |
+| Google login | `POST /api/auth/google`: verify the id_token, look up `UserInfo.google_sub`, create a shadow `LocalUser` + `UserInfo` on first sight, no linking by e-mail | [api/auth.py:292-362](../../api/auth.py#L292-L362), [tests/test_google_auth.py](../../tests/test_google_auth.py) |
+| Account deletion | `delete_user_and_data` settles billing, then revokes Strava best-effort before taking the account lock | [src/auth/account_deletion.py:347-380](../../src/auth/account_deletion.py#L347-L380), [src/auth/strava_deauth.py](../../src/auth/strava_deauth.py) |
+| Encrypted tokens | `EncryptedString` column type, e.g. `StravaToken` | [models/user.py:67-77](../../models/user.py#L67-L77) |
+| Legal pages | `/privacy`, `/terms` served from `legal/` by the API; placeholder gate test | [api/router.py:494-523](../../api/router.py#L494-L523), [tests/test_legal_pages.py](../../tests/test_legal_pages.py) |
+| Client auth | `AuthService.loginWithGoogle`; login screen with the GIS button on web and a native picker on mobile | [auth_service.dart](../../flutter_client/lib/src/auth/auth_service.dart), [login_screen.dart](../../flutter_client/lib/src/auth/login_screen.dart), [test/auth/login_screen_test.dart](../../flutter_client/test/auth/login_screen_test.dart) |
+| Dependencies | `PyJWT`, `cryptography`, `google-auth`, `requests`, `httpx` already installed | [pyproject.toml](../../pyproject.toml) |
+| Launch QA | rows A4 (Apple, hidden e-mail) and A6 (in-app deletion) per platform | [docs/LAUNCH_QA.md](../LAUNCH_QA.md) |
 
 ## 3. Decisions
 
@@ -276,7 +276,7 @@ REVIEW.md defaults apply, plus:
   client secret, exchanges a code and revokes a token.
 - **Scope:** `src/auth/apple.py` (new), `tests/test_apple_identity.py` (new).
 - **Context:** Read D3–D5 and Conventions. Follow the shape of
-  [src/auth/strava_deauth.py](../src/auth/strava_deauth.py): plain arguments,
+  [src/auth/strava_deauth.py](../../src/auth/strava_deauth.py): plain arguments,
   no ORM, logs without tokens. Use PyJWT (`PyJWKClient` against
   `https://appleid.apple.com/auth/keys`, with caching) and `requests`, as the
   Strava revoke does.
@@ -330,7 +330,7 @@ REVIEW.md defaults apply, plus:
   `tests/test_legal_pages.py`, `.env.example` (only the `APPLE_TEAM_ID` line,
   with a comment).
 - **Context:** D14, D15. Follow `android_assetlinks` and
-  [tests/test_assetlinks.py](../tests/test_assetlinks.py) for the AASA route,
+  [tests/test_assetlinks.py](../../tests/test_assetlinks.py) for the AASA route,
   and `/privacy` with its placeholder gate for the page. Register both before
   the SPA catch-all.
 - **Do:**
@@ -371,8 +371,8 @@ REVIEW.md defaults apply, plus:
   `flutter_client/ios/Runner/Info.plist`, `.github/workflows/test.yml` (a new
   `ios` job only).
 - **Context:** D10, D13, D14 and O1/O2. Follow the `android` job in
-  [test.yml](../.github/workflows/test.yml). The data types in the privacy
-  manifest come from [legal/privacy.html](../legal/privacy.html), which is
+  [test.yml](../../.github/workflows/test.yml). The data types in the privacy
+  manifest come from [legal/privacy.html](../../legal/privacy.html), which is
   written from what the code does.
 - **Do:**
   1. Entitlements: `com.apple.developer.associated-domains =
@@ -411,7 +411,7 @@ REVIEW.md defaults apply, plus:
 - **Scope:** `.github/workflows/android-release.yml`, `scripts/play_upload.py`
   (new), `tests/test_play_upload.py` (new), `docs/ANDROID.md`.
 - **Context:** D6–D9. Follow
-  [scripts/android_version_code.py](../scripts/android_version_code.py) for the
+  [scripts/android_version_code.py](../../scripts/android_version_code.py) for the
   script shape (a docstring that explains why, `main(argv)`, explicit errors).
   The Android Publisher v3 edits API is documented at
   developers.google.com/android-publisher.
@@ -467,8 +467,8 @@ REVIEW.md defaults apply, plus:
   Android activity and the web script. `<origin>` is
   `api.baseUrl.isEmpty ? Uri.base.origin : api.baseUrl`: the web build has no
   `API_BASE_URL` and posts same-origin
-  ([client.dart:12-14](../flutter_client/lib/src/api/client.dart#L12-L14)).
-  Follow [share_link_resolver_impl.dart:21-23](../flutter_client/lib/src/share/share_link_resolver_impl.dart#L21-L23),
+  ([client.dart:12-14](../../flutter_client/lib/src/api/client.dart#L12-L14)).
+  Follow [share_link_resolver_impl.dart:21-23](../../flutter_client/lib/src/share/share_link_resolver_impl.dart#L21-L23),
   which does the same (R2-1).
 - **Do:**
   1. In `apple_sign_in.dart`: generate a 32-byte random nonce, request a
@@ -512,8 +512,8 @@ REVIEW.md defaults apply, plus:
   `tests/test_apple_auth.py` (new), `.env.example` (the Apple lines other than
   `APPLE_TEAM_ID`).
 - **Context:** D2, D3, D5 and Conventions. Follow `google_login`
-  ([api/auth.py:292-362](../api/auth.py#L292-L362)) and its tests in
-  [tests/test_google_auth.py](../tests/test_google_auth.py). Follow
+  ([api/auth.py:292-362](../../api/auth.py#L292-L362)) and its tests in
+  [tests/test_google_auth.py](../../tests/test_google_auth.py). Follow
   `StravaToken` for the encrypted column. Read the DB migrations memory rule:
   Alembic only, and check `alembic heads` after rebasing.
 - **Do:**
@@ -562,7 +562,7 @@ REVIEW.md defaults apply, plus:
   `tests/test_account_deletion_owned_tables.py` (only if it lists owned
   tables).
 - **Context:** Follow the Strava revoke block in
-  [account_deletion.py:362-374](../src/auth/account_deletion.py#L362-L374): read
+  [account_deletion.py:362-374](../../src/auth/account_deletion.py#L362-L374): read
   the fields, make the call without holding the lock, best effort.
 - **Do:** Next to the Strava revoke, read the `AppleToken` row, build the
   client secret, and call `revoke` with the stored `client_id`. Delete the row
@@ -588,7 +588,7 @@ REVIEW.md defaults apply, plus:
   `docs/LAUNCH_QA.md` (only the Setup lines for TestFlight and Play, if any are
   missing).
 - **Context:** D10–D12. Mirror
-  [android-release.yml](../.github/workflows/android-release.yml): fail fast
+  [android-release.yml](../../.github/workflows/android-release.yml): fail fast
   without secrets, resolve the version, build, verify. Follow
   `scripts/android_version_code.py` and its tests, and import `version_code`
   from it rather than copying the formula.

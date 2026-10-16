@@ -5,7 +5,7 @@ import '../project_notifier.dart';
 import 'project_facet.dart';
 
 /// Provides the five facets of the nearest [T] to [child] (issue #294,
-/// Decision 18 of docs/CLIENT_STATE_MAP_PLAN.md).
+/// Decision 18 of docs/plans/CLIENT_STATE_MAP_PLAN.md).
 ///
 /// [T] names the provider to follow, because a screen with its own notifier
 /// provides it under its own type (`ViewProjectNotifier`,

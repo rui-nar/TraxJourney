@@ -1,5 +1,5 @@
 """Migration a8d3f5c2e917: the Strava code-binding table
-(docs/STRAVA_CONNECT_BINDING_PLAN.md D9).
+(docs/plans/STRAVA_CONNECT_BINDING_PLAN.md D9).
 
 One new table keyed by the code's hash; nothing existing is migrated, and the
 downgrade drops it.

@@ -1,4 +1,4 @@
-"""An encrypted account's Strava list never reaches the disk (docs/E2EE_REMNANTS_PLAN.md decision 8).
+"""An encrypted account's Strava list never reaches the disk (docs/plans/E2EE_REMNANTS_PLAN.md decision 8).
 
 The Strava picker caches the raw activity list for an hour. For most users it
 is a ``stravacache`` row; that blob holds every activity's name and track in

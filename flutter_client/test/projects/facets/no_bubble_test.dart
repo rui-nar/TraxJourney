@@ -1,5 +1,5 @@
 // The root stops re-notifying facet changes (issue #294, unit U19 of
-// docs/CLIENT_STATE_MAP_PLAN.md, Decision 17).
+// docs/plans/CLIENT_STATE_MAP_PLAN.md, Decision 17).
 //
 // ProjectNotifier.notifyListeners() flushes the facets written since the last
 // notify, then notifies its own listeners only when root state — a field not

@@ -1,8 +1,8 @@
-// Tests the trip-video request flow (docs/TRIP_VIDEO_PLAN.md, U7) against a
+// Tests the trip-video request flow (docs/plans/TRIP_VIDEO_PLAN.md, U7) against a
 // fake HTTP client: the polyline encoder the consent geometry is sent in,
 // building that geometry on the device, and VideoRequestNotifier's phases —
 // above all that decrypted geometry leaves the device only after consent —
-// and the preview flow (docs/VIDEO_PREVIEW_PLAN.md, U4) on a fake clock,
+// and the preview flow (docs/plans/VIDEO_PREVIEW_PLAN.md, U4) on a fake clock,
 // including when no video can be made, the phase a preview's consent step
 // puts back (F-a) and the plan it reloads with the geometry (F2-1).
 

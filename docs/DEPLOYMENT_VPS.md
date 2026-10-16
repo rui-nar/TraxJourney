@@ -8,7 +8,7 @@ replaced the Synology NAS:
 
 A host still laid out under the app's old name (`/opt/viewtrip`, service
 `viewtripweb`, `viewtripweb.db`) is moved to these names with
-`docs/RENAME_TRAXJOURNEY_RUNBOOK.md` (issue #151).
+`docs/plans/RENAME_TRAXJOURNEY_RUNBOOK.md` (issue #151).
 
 Validation moved off the NAS because its firewall could not be opened up enough
 to serve the environment. Nothing about TraxJourney forced the move, so there is
@@ -521,7 +521,7 @@ web client.
 
 A checkout that still has the old, untracked `deploy.ps1` must move it aside
 before `git pull` can bring in the tracked one; the steps, and which old
-variable goes to which key, are in `docs/RENAME_TRAXJOURNEY_RUNBOOK.md` step B4.
+variable goes to which key, are in `docs/plans/RENAME_TRAXJOURNEY_RUNBOOK.md` step B4.
 
 ### What "Deployed and verified" checks
 
@@ -694,7 +694,7 @@ and this repository's real runs, and the script against a fake `docker` and
 `curl` (`tests/test_validation_webhook.py`). The live install stays unverified
 until step 10 below passes. When it does, replace this paragraph with the date.
 
-**Do it after the rename cut-over** (`docs/RENAME_TRAXJOURNEY_RUNBOOK.md`).
+**Do it after the rename cut-over** (`docs/plans/RENAME_TRAXJOURNEY_RUNBOOK.md`).
 `hooks.yaml` only accepts runs of `rui-nar/TraxJourney`, and GitHub sends the
 repository's current name, so installed earlier it never fires.
 

@@ -1,5 +1,5 @@
 // Every listener reads only what it listens to (issue #294, unit U18 of
-// docs/CLIENT_STATE_MAP_PLAN.md).
+// docs/plans/CLIENT_STATE_MAP_PLAN.md).
 //
 // Once the root stops re-notifying facet changes (U19), a widget rebuilt by
 // the root that reads facet state shows that state as it was at the last root

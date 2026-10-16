@@ -1,5 +1,5 @@
 // The side panels listen to the facets they read, not to the whole notifier
-// (issue #294, unit U17 of docs/CLIENT_STATE_MAP_PLAN.md): the elevation chart
+// (issue #294, unit U17 of docs/plans/CLIENT_STATE_MAP_PLAN.md): the elevation chart
 // follows the elevation facet, the day carousel the items and the selection,
 // the filter sheet the items and the selection, the activity panel's tiles
 // the selection. Each harness here has no parent that rebuilds on the

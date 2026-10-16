@@ -1,4 +1,4 @@
-"""Trip video endpoints (docs/TRIP_VIDEO_PLAN.md, U6).
+"""Trip video endpoints (docs/plans/TRIP_VIDEO_PLAN.md, U6).
 
 Runs against the real app (for the 402 mapping and the request logging) on a
 file-backed SQLite database: the concurrency test sends two requests from two

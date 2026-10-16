@@ -917,7 +917,7 @@ mixin _PolarstepsOverlayFit<T extends StatefulWidget> on State<T> {
 // Shared by _MapPanelState and ManageMapPanelState: rebuilds the panel when a
 // facet it draws from changes — geometry, selection, style, items — rather
 // than on every change to the notifier (issue #294, Decision 9 of
-// docs/CLIENT_STATE_MAP_PLAN.md). Whether a rebuild redoes any work is decided
+// docs/plans/CLIENT_STATE_MAP_PLAN.md). Whether a rebuild redoes any work is decided
 // by the version keys in build(), not here. The root state the panels also
 // read (isLoading, the Polarsteps overlay, photo headers) still reaches them
 // through the parent screen's rebuild.

@@ -3,7 +3,7 @@
 Every build pins uv to one exact version: the Dockerfile's uv stage and every
 setup-uv step. Dependabot moves the Dockerfile's tag; the equality below is
 what makes that PR fail until the workflows move with it, which is how a uv
-update reaches the owner (docs/UV_MIGRATION_PLAN.md, Decision 4).
+update reaches the owner (docs/plans/UV_MIGRATION_PLAN.md, Decision 4).
 
 The suite itself runs with every dependency group installed, so it cannot see
 server code that needs a dev-only package. Two checks in test.yml can: an

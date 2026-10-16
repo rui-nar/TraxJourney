@@ -5,7 +5,7 @@ part of 'project_facet.dart';
 /// filter options, the day list and the per-day stats).
 ///
 /// Besides [version], which goes up on every write, four versions say which
-/// part changed (Decision 23 of docs/CLIENT_STATE_MAP_PLAN.md), so a widget
+/// part changed (Decision 23 of docs/plans/CLIENT_STATE_MAP_PLAN.md), so a widget
 /// can key a cache on the part it draws:
 /// - [listVersion]: the item list, and which of its fields stayed encrypted;
 /// - [activitiesVersion]: the activity data, elevation merges included;

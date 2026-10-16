@@ -1,5 +1,5 @@
 // Only ProjectNotifier and its mixins write facet state (issue #294, the
-// Conventions of docs/CLIENT_STATE_MAP_PLAN.md).
+// Conventions of docs/plans/CLIENT_STATE_MAP_PLAN.md).
 //
 // A facet's own API is read-only; writing takes its ProjectFacetWriter, which
 // the notifier holds. Dart cannot keep those writers from the rest of lib/:

@@ -1,7 +1,7 @@
 """Build a per-region rail store from a filtered rail-only ``.osm.pbf``.
 
 The input is Phase 1's artifact — the extract already reduced to the selection
-table in docs/LOCAL_RAIL_DATA_PLAN.md (railway ways without ``service``, route
+table in docs/plans/LOCAL_RAIL_DATA_PLAN.md (railway ways without ``service``, route
 relations, every node carrying a ``uic_ref``, and station/halt nodes, ways and
 relations with one). This module makes no tag decisions of its own beyond
 recognising those, so changing coverage stays a Phase 1 concern.
@@ -13,7 +13,7 @@ is Phase 2's decision and this is the step that implements it)::
         --region europe/germany --source-date 2026-09-05
 
 ``--layer ferry`` or ``--layer bus`` builds the same store format from that
-layer's filtered file (docs/LOCAL_TRANSPORT_DATA_PLAN.md, Decision 7): only
+layer's filtered file (docs/plans/LOCAL_TRANSPORT_DATA_PLAN.md, Decision 7): only
 which ways carry which ``cls`` bit, and which relations are kept, differ.
 
 ``osmium`` (pyosmium) is imported lazily: only the builder needs it, and the

@@ -1,4 +1,4 @@
-"""Monthly trip-video quota and resolution limit (docs/TRIP_VIDEO_PLAN.md D3, D6, D10).
+"""Monthly trip-video quota and resolution limit (docs/plans/TRIP_VIDEO_PLAN.md D3, D6, D10).
 
 The quota is the videojob rows themselves: every job created in the current UTC
 calendar month counts unless it failed. The resolution cap is a plan limit so

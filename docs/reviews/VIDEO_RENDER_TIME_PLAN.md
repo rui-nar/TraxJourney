@@ -1,6 +1,6 @@
 # Review ledger — Trip video render time: tile fetching (#517)
 
-Subject: docs/VIDEO_RENDER_TIME_PLAN.md
+Subject: docs/plans/VIDEO_RENDER_TIME_PLAN.md
 Envelope: plan section "Review envelope" (REVIEW.md defaults + fetch threads inside one render, Mapbox's per-account rate limit, RQ timeout)
 
 ## Round 1 — 2026-10-01, reviewed at 2dc0cb22

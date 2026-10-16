@@ -3,7 +3,7 @@
 Mints a short ``request_id`` for every request, resolves ``user_id`` from the
 Authorization header ahead of route dependencies, and logs one access-log
 line per request — DEBUG for the chatty/polled routes listed in
-``DEBUG_ROUTE_TEMPLATES`` (docs/LOGGING_OBSERVABILITY_PLAN.md Section 3),
+``DEBUG_ROUTE_TEMPLATES`` (docs/plans/LOGGING_OBSERVABILITY_PLAN.md Section 3),
 INFO for everything else.
 
 That line is the only access log the server keeps (uvicorn's own is off, see

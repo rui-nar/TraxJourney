@@ -8,7 +8,7 @@ relations, 101 nodes carrying a `uic_ref` — 66 of them stations — and 8 pair
 UIC codes that share a relation, which is what strategy A asks about.
 
 It was cut from `https://download.geofabrik.de/europe/luxembourg-latest.osm.pbf`
-(2026-09-05) with the selection table in `docs/LOCAL_RAIL_DATA_PLAN.md`, i.e.
+(2026-09-05) with the selection table in `docs/plans/LOCAL_RAIL_DATA_PLAN.md`, i.e.
 what `osmium tags-filter` produces for
 
     w/railway=rail,narrow_gauge,light_rail  (without a service tag)

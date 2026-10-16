@@ -1,5 +1,5 @@
 // The elevation facet holds the full track, the per-activity tracks and the
-// totals (issue #294, Decisions 17 and 19 of docs/CLIENT_STATE_MAP_PLAN.md):
+// totals (issue #294, Decisions 17 and 19 of docs/plans/CLIENT_STATE_MAP_PLAN.md):
 // a rebuild bumps only its version, a dropped rebuild still notifies only when
 // the caller does, and clear() puts it all back.
 

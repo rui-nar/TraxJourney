@@ -1,6 +1,6 @@
 # Trip video rendering
 
-How the `video` worker turns a trip into an MP4 (docs/TRIP_VIDEO_PLAN.md, D1,
+How the `video` worker turns a trip into an MP4 (docs/plans/TRIP_VIDEO_PLAN.md, D1,
 D8, D10; unit U5). The job lifecycle, quota and consent are in
 `src/video/job_runner.py` and `api/video.py`; this page is about the pixels.
 
@@ -37,7 +37,7 @@ draws.
 ## Camera (`src/video/camera.py`)
 
 `camera_path(timeline, fps, size, mode)` offers four camera values
-(docs/VIDEO_CAMERA_QUALITY_PLAN.md D1), cached per those four arguments and
+(docs/plans/VIDEO_CAMERA_QUALITY_PLAN.md D1), cached per those four arguments and
 returned frame by frame:
 
 - **`variable`** (default) — today's camera, unchanged by this plan: a clip
@@ -131,7 +131,7 @@ a track in Fiji) is animated, framed and drawn along its short way.
   bus #FFB300, boat #26C6DA, and #FFA726 for anything else.
 - **Anti-aliasing.** The route is drawn as one colour layer plus one coverage
   mask, `ROUTE_SS` times larger than the frame, over the route's bounding box
-  (`poster_renderer._draw_route`'s supersampling, docs/VIDEO_CAMERA_QUALITY_PLAN.md
+  (`poster_renderer._draw_route`'s supersampling, docs/plans/VIDEO_CAMERA_QUALITY_PLAN.md
   D5). Only the grid cells the route actually touches are reduced back down
   and pasted, since most of that box is empty. `ROUTE_SS = 3`, chosen at gate
   G1 within its allowed 2–4 range; see [Gate G2
@@ -158,7 +158,7 @@ a track in Fiji) is animated, framed and drawn along its short way.
   px, only at a width over 4) at every interior vertex, on the colour layer
   and the mask alike; the ends stay flat. The faint line has no joints. The
   result differs from Pillow's joints within the bounds of
-  docs/VIDEO_ROUTE_DRAWING_PLAN.md D5, checked by
+  docs/plans/VIDEO_ROUTE_DRAWING_PLAN.md D5, checked by
   `tests/test_video_route_joints.py` on a dense synthetic trip. On the owner's
   test trip at 1080p: mean difference 0.007 (overview 0.029), 0.03% of pixels
   (overview 0.07%), the overlay 1.7–1.8× faster than with clipping alone.
@@ -346,7 +346,7 @@ Same VPS, same trip and settings as G1, on the wave-2 code (sharper overlay, CRF
 
 ## Gate G1 measurements (#517, 2026-10-01)
 
-Tile prefetching (docs/VIDEO_RENDER_TIME_PLAN.md) on the same VPS and the same trip as #518's G2, variable camera, 90 s at 1080p (2,700 frames):
+Tile prefetching (docs/plans/VIDEO_RENDER_TIME_PLAN.md) on the same VPS and the same trip as #518's G2, variable camera, 90 s at 1080p (2,700 frames):
 
 | Stage (ms per frame) | #518 G2 (before) | #517 G1 |
 |---|---|---|
@@ -368,7 +368,7 @@ Tile prefetching (docs/VIDEO_RENDER_TIME_PLAN.md) on the same VPS and the same t
 
 ## Gate G1 measurements (#525, 2026-10-02)
 
-Route clipping and disk joints (docs/VIDEO_ROUTE_DRAWING_PLAN.md) on the same VPS and the same trip as #517's G1. The first #525 run used 4 prefetch threads; the owner then raised them to 8 (#517 D6, amended) and the bench ran again.
+Route clipping and disk joints (docs/plans/VIDEO_ROUTE_DRAWING_PLAN.md) on the same VPS and the same trip as #517's G1. The first #525 run used 4 prefetch threads; the owner then raised them to 8 (#517 D6, amended) and the bench ran again.
 
 | Stage (ms per frame), 90 s 1080p variable | #517 G1 | #525, 4 threads | #525, 8 threads (final) |
 |---|---|---|---|

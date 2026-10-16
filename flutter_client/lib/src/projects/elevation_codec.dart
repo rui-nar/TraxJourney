@@ -9,7 +9,7 @@
 /// This exists so the client can stop fetching the full project details
 /// payload purely to obtain elevation — 33 MB on a 180-day trip, ~9 s to
 /// fetch and ~5 s to decode, and retained in memory afterwards. See
-/// docs/PERF_MAP_LOAD.md.
+/// docs/plans/PERF_MAP_LOAD.md.
 library;
 
 const double _kDistScale = 1000.0; // km -> m

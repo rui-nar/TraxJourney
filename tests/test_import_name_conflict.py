@@ -373,7 +373,7 @@ def test_concurrent_copies_each_get_their_own_name(env):
     """Tested below the HTTP route, where the race still exists.
 
     The import routes take one import at a time (#469, Decision 12 of
-    docs/TRIP_ZIP_IMPORT_PLAN.md), so overlapping requests no longer reach the
+    docs/plans/TRIP_ZIP_IMPORT_PLAN.md), so overlapping requests no longer reach the
     ingest together: the second gets 503 (tests/test_import_guard.py). The
     ingest's retry on a lost name still protects every writer below that
     guard, so it is raced here directly, as the route calls it.

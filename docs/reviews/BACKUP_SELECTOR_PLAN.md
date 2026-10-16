@@ -1,6 +1,6 @@
 # Review ledger — Backup drop-down selector (#625)
 
-Subject: docs/BACKUP_SELECTOR_PLAN.md
+Subject: docs/plans/BACKUP_SELECTOR_PLAN.md
 Envelope: plan section "Review envelope" (REVIEW.md defaults)
 
 ## Round 1 — 2026-10-15, reviewed at a1fd2c11

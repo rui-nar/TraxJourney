@@ -1,4 +1,4 @@
-"""Trip video preview endpoints (docs/VIDEO_PREVIEW_PLAN.md, U3).
+"""Trip video preview endpoints (docs/plans/VIDEO_PREVIEW_PLAN.md, U3).
 
 Runs on the same app and file-backed SQLite fixture as tests/test_video_api.py:
 the concurrency test sends two requests from two threads, which an in-memory

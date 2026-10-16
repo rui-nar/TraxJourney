@@ -1,5 +1,5 @@
 // The items facet holds the trip's content (issue #294, Decisions 17, 19 and
-// 23 of docs/CLIENT_STATE_MAP_PLAN.md): load() fills it, clear() empties it,
+// 23 of docs/plans/CLIENT_STATE_MAP_PLAN.md): load() fills it, clear() empties it,
 // and each kind of change bumps only its own part's version — the item list,
 // the activity data, people and groups, or the day-meta — and only this
 // facet, or this facet and the geometry where the geometry changes too.

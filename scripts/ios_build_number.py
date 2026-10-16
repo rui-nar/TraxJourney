@@ -26,7 +26,7 @@ used instead: it is never a released version until its real tag ships. Its
 builds stay unique and increasing from one run to the next, and App Store
 Connect compares build numbers component by component, so ``10000.17`` sorts
 below the ``10001`` that the real ``v1.0.1`` will get.
-(docs/STORE_DISTRIBUTION_PLAN.md D11.)
+(docs/plans/STORE_DISTRIBUTION_PLAN.md D11.)
 
 Used by .github/workflows/ios-release.yml:
 

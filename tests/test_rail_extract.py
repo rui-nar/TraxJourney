@@ -48,7 +48,7 @@ assertion pass vacuously, and those keep each row of the contract represented.
 filter: the selection's expected output, checked in so that a change to what is
 selected has to be shown in a diff rather than only in a count.
 
-The ferry and bus layers (docs/LOCAL_TRANSPORT_DATA_PLAN.md, U7) are filtered
+The ferry and bus layers (docs/plans/LOCAL_TRANSPORT_DATA_PLAN.md, U7) are filtered
 from the same box. Its bus data is real — 11 ``route=bus`` relations, 128 of
 whose member roads lie inside it, and 21 of whose stop nodes do — and Mannheim
 has no ferry, so the rest is **synthetic** again, ids
@@ -563,7 +563,7 @@ def test_bbox_is_not_the_starting_sentinel_when_no_rail_node_is_located(tmp_path
 def test_bbox_agrees_with_the_store_phase_2_builds_from_it(filtered, tmp_path):
     """The same box, computed independently by both phases.
 
-    `docs/LOCAL_RAIL_DATA_PLAN.md` promises phase 3 one region extent; phase 1
+    `docs/plans/LOCAL_RAIL_DATA_PLAN.md` promises phase 3 one region extent; phase 1
     writes it into the manifest and phase 2 writes it into the store's meta from
     the same file. Two definitions of "where this region reaches" is a bug
     waiting for the first country where they differ.
@@ -615,7 +615,7 @@ def test_metadata_is_dropped(filtered):
 
 
 # ---------------------------------------------------------------------------
-# The ferry and bus layers (docs/LOCAL_TRANSPORT_DATA_PLAN.md, U7)
+# The ferry and bus layers (docs/plans/LOCAL_TRANSPORT_DATA_PLAN.md, U7)
 # ---------------------------------------------------------------------------
 
 FERRY_WAY = 9000000000111       # route=ferry

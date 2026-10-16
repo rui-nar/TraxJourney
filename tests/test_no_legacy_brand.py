@@ -51,7 +51,7 @@ ALLOWED: dict[str, tuple[str, str]] = {
     "docs/DEPLOYMENT_VPS.md": (
         "pre-rename host layout and the NAS -> VPS migration history",
         r"/opt/viewtrip|/volume2/docker/viewtrip|`viewtripweb`|viewtripweb\.db"),
-    "docs/RENAME_TRAXJOURNEY_RUNBOOK.md": ("the cut-over runbook names the old layout", r"."),
+    "docs/plans/RENAME_TRAXJOURNEY_RUNBOOK.md": ("the cut-over runbook names the old layout", r"."),
     "graphify-out/GRAPH_REPORT.md": ("generated; regenerated after the local folder rename", r"."),
     "tests/test_no_legacy_brand.py": ("this file", r"."),
 }

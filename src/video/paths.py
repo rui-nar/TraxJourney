@@ -1,4 +1,4 @@
-"""Where a video job's files live (docs/TRIP_VIDEO_PLAN.md, Convention 1).
+"""Where a video job's files live (docs/plans/TRIP_VIDEO_PLAN.md, Convention 1).
 
 Everything a job writes sits in ``data/users/<uid>/videos/<job_id>/``: the
 rendered ``video.mp4`` and, for an encrypted trip whose owner consented, the

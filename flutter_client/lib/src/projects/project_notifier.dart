@@ -3149,7 +3149,7 @@ class ProjectNotifier extends ChangeNotifier
 
   /// Notifies the listeners of every facet written since the last notify,
   /// each once, then this notifier's own listeners if root state changed
-  /// (Decision 17 of docs/CLIENT_STATE_MAP_PLAN.md, issue #294). Writes
+  /// (Decision 17 of docs/plans/CLIENT_STATE_MAP_PLAN.md, issue #294). Writes
   /// notify nobody by themselves, so each call keeps telling everyone whose
   /// state changed at the moment it always did; a call after facet writes
   /// alone — selecting a day, a geometry upgrade — no longer rebuilds every

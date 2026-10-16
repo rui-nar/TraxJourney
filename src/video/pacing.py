@@ -1,4 +1,4 @@
-"""Clips and their screen time (docs/TRIP_VIDEO_PLAN.md, D4/D5).
+"""Clips and their screen time (docs/plans/TRIP_VIDEO_PLAN.md, D4/D5).
 
 Legs are grouped into clips until the clip count fits the length the user
 picked, then a :class:`PacingPolicy` shares the clip time between them. Every

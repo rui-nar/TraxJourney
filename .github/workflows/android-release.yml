@@ -19,7 +19,7 @@ env:
   PLAY_MIN_TARGET_SDK: '35'
   # The Play upload syncs its environment once, explicitly, with --locked; without
   # this `uv run` would first re-sync to the default groups (test.yml does the
-  # same, docs/UV_MIGRATION_PLAN.md).
+  # same, docs/plans/UV_MIGRATION_PLAN.md).
   UV_NO_SYNC: "1"
 
 jobs:
@@ -78,7 +78,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           if echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-            # Only real vX.Y.Z tags go to Play (docs/STORE_DISTRIBUTION_PLAN.md
+            # Only real vX.Y.Z tags go to Play (docs/plans/STORE_DISTRIBUTION_PLAN.md
             # D8): the validation versionCode (latest + 1) would block the next
             # real upload, so validation builds stay APK-only.
             echo "play_release=true" >> "$GITHUB_OUTPUT"

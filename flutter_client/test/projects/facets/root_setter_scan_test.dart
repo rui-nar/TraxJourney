@@ -1,5 +1,5 @@
 // The root's "changed" flag is complete by construction (issue #294, Decision
-// 17 and P2-R1-3 of docs/CLIENT_STATE_MAP_PLAN.md).
+// 17 and P2-R1-3 of docs/plans/CLIENT_STATE_MAP_PLAN.md).
 //
 // ProjectNotifier notifies its own listeners only when root state — anything
 // not in a facet — changed since its last notify. A root write that does not

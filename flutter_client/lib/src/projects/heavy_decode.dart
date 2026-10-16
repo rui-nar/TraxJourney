@@ -7,7 +7,7 @@
 /// produces their input ran inline in `ApiClient._handle` for every endpoint,
 /// including the ~12 MB details payload and the full-res geo, with no
 /// threshold guard at all — the largest unguarded main-thread block left in
-/// the app. See docs/PERF_MAP_LOAD.md.
+/// the app. See docs/plans/PERF_MAP_LOAD.md.
 ///
 /// The functions here are top-level and take plain byte/JSON input so they can
 /// run under [compute]. Note there is deliberately no `dart:isolate` import:
@@ -135,13 +135,13 @@ Future<Map<String, dynamic>> decodeJsonMapOffIsolate(Uint8List bytes) =>
 /// main thread, so there the conversion and the midpoint pass still happen on
 /// the UI thread — front-loaded into the decode rather than removed from it.
 /// Web's answer is to stop shipping payloads this size at all (Phase 4 of
-/// docs/PERF_MAP_LOAD.md), not more [compute] calls.
+/// docs/plans/PERF_MAP_LOAD.md), not more [compute] calls.
 ///
 /// The trip's *render* geometry deliberately stays `List<LatLng>`, which the
 /// original plan proposed replacing with `Float64List` buffers: flutter_map's
 /// `Polyline` takes `List<LatLng>`, so typed buffers would have to be
 /// materialised back into exactly this list on the render path — moving the
-/// cost rather than removing it. See docs/PERF_MAP_LOAD.md.
+/// cost rather than removing it. See docs/plans/PERF_MAP_LOAD.md.
 ///
 /// The *track builder's* geometry is a different consumer with the opposite
 /// need — it crosses an isolate boundary, where one Dart list per point is

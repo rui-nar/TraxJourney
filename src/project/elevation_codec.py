@@ -18,7 +18,7 @@ that varint packs into one or two bytes instead of twenty.
 This deliberately does not downsample. Resolution decisions belong to the
 caller (the chart caps itself at 300 points; the map-to-chart cursor wants
 more), and folding them into the wire format would make the two impossible to
-reason about separately. See docs/PERF_MAP_LOAD.md.
+reason about separately. See docs/plans/PERF_MAP_LOAD.md.
 
 **There are two storage shapes and this module refuses to guess between
 them.** ``Activity.elevation_profile`` is ``(distances_km[], elevations_m[])``

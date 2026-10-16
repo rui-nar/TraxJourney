@@ -1,7 +1,7 @@
 """One trip import at a time, and no upload received from a stranger (#469).
 
 Both import routes, ``.traxj`` and ZIP, share one guard (Decision 12 of
-docs/TRIP_ZIP_IMPORT_PLAN.md). It is taken in the capped upload route's
+docs/plans/TRIP_ZIP_IMPORT_PLAN.md). It is taken in the capped upload route's
 wrapper, before any of the body is received, so a second import is refused
 with 503 at once instead of being spooled to disk first. It is released
 however the import ends: success, any error, or a body cut off at the cap.

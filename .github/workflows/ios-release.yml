@@ -3,7 +3,7 @@ name: Build and upload iOS to TestFlight
 # Runs alongside android-release.yml on every vX.Y.Z tag and on the floating
 # `validation` tag (issue #190): TestFlight is the only way onto a real iPhone,
 # and validation is where device testing happens
-# (docs/STORE_DISTRIBUTION_PLAN.md D12). Submitting for App Store review is
+# (docs/plans/STORE_DISTRIBUTION_PLAN.md D12). Submitting for App Store review is
 # done by hand. Setup and debugging without a Mac: docs/IOS.md.
 on:
   push:

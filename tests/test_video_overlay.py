@@ -1,4 +1,4 @@
-"""Trip video overlay drawing quality (docs/VIDEO_CAMERA_QUALITY_PLAN.md, U4):
+"""Trip video overlay drawing quality (docs/plans/VIDEO_CAMERA_QUALITY_PLAN.md, U4):
 the route is anti-aliased by supersampling, the mode icons come from 512 px
 sources, and the overlay needs nothing at runtime but Pillow.
 

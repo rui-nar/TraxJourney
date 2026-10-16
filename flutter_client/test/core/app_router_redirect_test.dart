@@ -114,7 +114,7 @@ class _FakeStravaService extends SettingsService {
 }
 
 /// The URI the server's OAuth callback sends an app-started Strava connect
-/// back to (docs/STRAVA_CONNECT_BINDING_PLAN.md, D4).
+/// back to (docs/plans/STRAVA_CONNECT_BINDING_PLAN.md, D4).
 const _stravaReturn =
     'traxjourney://app/strava-return?strava=code&code=the-code&state=the-state';
 
@@ -461,7 +461,7 @@ void main() {
   // `data.toString()`): as the platform's default route on a cold start, and
   // as a pushed route when the app is already running. go_router keeps the
   // scheme and host on the URI and matches on its path, `/strava-return`
-  // (docs/STRAVA_CONNECT_BINDING_PLAN.md, D4 and U3).
+  // (docs/plans/STRAVA_CONNECT_BINDING_PLAN.md, D4 and U3).
   group('Strava return (traxjourney://app/strava-return)', () {
     final realReturnStore = stravaReturnStore;
     setUp(() => stravaReturnStore = _MemKv());
