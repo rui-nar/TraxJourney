@@ -78,7 +78,7 @@ For E2, record which pair of platforms was used in the notes.
 | C6 | Export a trip | | | | |
 | C7 | Share and invite links open the app (App Links / Universal Links) | n/a | n/a | | |
 | C8 | Offline: open a saved trip with no network | | | | |
-| C9 | "Open in TraxJourney" for a `.gpx` from Mail and Files (declared in `Info.plist`, never verified; moved from #559) | n/a | n/a | n/a | |
+| C9 | "Open in TraxJourney" for a `.gpx` from Mail and Files (declared in `Info.plist` and `AndroidManifest.xml`, never verified; moved from #559) | n/a | n/a | | |
 
 ## Notes
 

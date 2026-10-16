@@ -157,9 +157,7 @@ service (`docs/ENCRYPTION.md`). Two starting rules in Grafana Alerting:
 
 ## Dozzle
 
-Already deployed (`/opt/dozzle` on the VPS, port 8892) and keeps covering
-live-tail — not part of this stack, and this doesn't replace it. Loki adds
-"filter by user/request after the fact, across concurrent traffic, after a
-deploy has recycled the container" — which Dozzle was never meant to do.
-Worth a one-time check that it isn't reachable without auth on a
-publicly-routed port (Dozzle has none built in).
+Not running. It was planned for live-tail (`/opt/dozzle` on the VPS) but is
+not deployed; `docker compose logs -f` on the VPS, or Grafana's Explore live
+tail on Loki, covers that. If it is ever deployed, keep it off any
+publicly-routed port: Dozzle has no auth built in.

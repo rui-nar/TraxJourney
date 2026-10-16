@@ -30,25 +30,17 @@ publish user counts, route names, error rates and DB size to anyone who asks.
 
 ## Scraping
 
-```yaml
-scrape_configs:
-  - job_name: traxjourney
-    scheme: https
-    static_configs:
-      - targets: ["traxjourney.com"]
-    authorization:
-      credentials: "<METRICS_TOKEN>"   # or credentials_file: /etc/prometheus/traxjourney.token
-```
+Alloy on the VPS scrapes `traxjourney:8000/metrics` over the compose network
+every 30 s, sending the same token, and remote-writes to Prometheus on the NAS
+(`config/alloy-config.river.example`, `docs/OBSERVABILITY.md`). Nothing scrapes
+the public URL.
 
-Defence in depth — block the path at the proxy so only a local scraper (or an
-SSH tunnel to `127.0.0.1:8000`) can reach it:
-
-```
-traxjourney.com {
-    handle /metrics { respond 403 }
-    reverse_proxy 127.0.0.1:8000
-}
-```
+Caddy has no `/metrics` block, so `https://traxjourney.com/metrics` is
+reachable and the token is the only thing guarding it. Never unset
+`METRICS_TOKEN` to "close" it: the endpoint answers 404 and Alloy's scrape
+stops with it. To take the path off the internet as well, add
+`handle /metrics { respond 403 }` before `reverse_proxy` in the Caddyfile;
+Alloy does not go through Caddy, so it is unaffected.
 
 Quick check:
 

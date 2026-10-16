@@ -657,15 +657,14 @@ is a documented starting point to adapt, the same spirit
 Grafana on the NAS (`TraxJourney / Host Resources` dashboard) before relying
 on it for an incident.
 
-### Dropping `/metrics`'s public exposure
+### `/metrics` and its token
 
-Once Alloy's scrape is confirmed working, `/metrics` no longer needs the
-bearer-token + Caddy-block setup in `docs/METRICS.md` — Alloy reaches it
-over the internal compose network, never the public internet. Remove the
-`handle /metrics { respond 403 }` Caddy block (from `docs/METRICS.md`) and unset
-`METRICS_TOKEN`, or leave the token as defence in depth and just drop the
-Caddy exposure — either is fine, but the token alone was always the weaker
-of the two.
+Alloy reaches `/metrics` over the internal compose network, never the public
+internet, but it still sends `METRICS_TOKEN`: the endpoint requires it on
+every request and answers 404 when it is unset, so **keep the token set**.
+The Caddyfile has no `/metrics` block, so the public path is guarded by the
+token alone; `docs/METRICS.md` ("Scraping") has the one-line block that would
+close it without affecting Alloy.
 
 ### Keep local rotation regardless
 
