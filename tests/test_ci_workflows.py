@@ -295,3 +295,41 @@ def test_dependabot_never_proposes_a_new_cpython_minor(dependabot):
     assert len(ignored) == 1
     assert set(ignored[0]["update-types"]) == {
         "version-update:semver-minor", "version-update:semver-major"}
+
+
+# ---------------------------------------------------------------------------
+# One JDK version for CI and the local Android build (#631)
+# ---------------------------------------------------------------------------
+
+JAVA_VERSION_FILE = "flutter_client/android/.java-version"
+RUN_ANDROID = ROOT / "run-android.ps1"
+
+
+def _setup_java_steps():
+    for path in WORKFLOWS:
+        for job, step in _steps(_load(path.name)):
+            if str(step.get("uses", "")).startswith("actions/setup-java@"):
+                yield path.name, job, step
+
+
+def test_every_setup_java_reads_the_shared_java_version_file():
+    steps = list(_setup_java_steps())
+    assert steps, "no workflow sets up a JDK any more; drop this test"
+    for name, job, step in steps:
+        assert step["with"].get("java-version-file") == JAVA_VERSION_FILE, (name, job)
+        assert "java-version" not in step["with"], (name, job)
+
+
+def _run_android_int(var: str) -> int:
+    match = re.search(rf"^\${var} = (\d+)\s*$",
+                      RUN_ANDROID.read_text(encoding="utf-8"), re.M)
+    assert match, f"run-android.ps1 no longer sets ${var}"
+    return int(match.group(1))
+
+
+def test_run_android_accepts_and_prefers_the_ci_jdk():
+    ci = int((ROOT / JAVA_VERSION_FILE).read_text(encoding="utf-8").strip())
+    assert _run_android_int("JDK_MIN") <= ci <= _run_android_int("JDK_MAX")
+    script = RUN_ANDROID.read_text(encoding="utf-8")
+    assert "android\.java-version" in script
+    assert "$_.Major -eq $JDK_CI" in script

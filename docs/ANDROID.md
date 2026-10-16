@@ -29,11 +29,12 @@ use `flutter run`, so `r` hot-reloads.
 
 Three things it handles that otherwise waste an afternoon:
 
-- **JDK.** The script finds a JDK 17–24 (21 preferred) and uses it for that
-  run. That range dates from Gradle 8.14; the wrapper is now Gradle 9.3.1 and
-  CI builds with JDK 25, which the script does not accept yet. If `JAVA_HOME`
-  points at a directory that no longer exists — what a JDK update leaves behind, since the version is in the path —
-  it says so; fix it with `setx JAVA_HOME "<path to a JDK 21>"`.
+- **JDK.** The script finds a JDK 17–25 (the range Gradle 9.3.1 runs on) and
+  uses it for that run, preferring the version CI builds with. That version is
+  in `flutter_client/android/.java-version`, which CI's `setup-java` reads too,
+  so change it there only. If `JAVA_HOME` points at a directory that no longer
+  exists — what a JDK update leaves behind, since the version is in the path —
+  it says so; fix it with `setx JAVA_HOME "<path to a JDK 25>"`.
 - **TLS trust.** A JDK carries its own CA list and ignores the Windows one, so
   behind TLS inspection every dependency download fails with `PKIX path building
   failed` even though browsers on the same machine work. The script sets
