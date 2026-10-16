@@ -30,25 +30,17 @@ publish user counts, route names, error rates and DB size to anyone who asks.
 
 ## Scraping
 
-```yaml
-scrape_configs:
-  - job_name: traxjourney
-    scheme: https
-    static_configs:
-      - targets: ["traxjourney.com"]
-    authorization:
-      credentials: "<METRICS_TOKEN>"   # or credentials_file: /etc/prometheus/traxjourney.token
-```
+Alloy on the VPS scrapes `traxjourney:8000/metrics` over the compose network
+every 30 s, sending the same token, and remote-writes to Prometheus on the NAS
+(`config/alloy-config.river.example`, `docs/OBSERVABILITY.md`). Nothing scrapes
+the public URL.
 
-Defence in depth — block the path at the proxy so only a local scraper (or an
-SSH tunnel to `127.0.0.1:8000`) can reach it:
-
-```
-traxjourney.com {
-    handle /metrics { respond 403 }
-    reverse_proxy 127.0.0.1:8000
-}
-```
+Caddy has no `/metrics` block, so `https://traxjourney.com/metrics` is
+reachable and the token is the only thing guarding it. Never unset
+`METRICS_TOKEN` to "close" it: the endpoint answers 404 and Alloy's scrape
+stops with it. To take the path off the internet as well, add
+`handle /metrics { respond 403 }` before `reverse_proxy` in the Caddyfile;
+Alloy does not go through Caddy, so it is unaffected.
 
 Quick check:
 
@@ -83,12 +75,12 @@ The in-progress gauge is what tells a slow request apart from a stuck one
 
 | Metric | Labels |
 |---|---|
-| `traxjourney_logins_total` | `provider` (`password`\|`google`), `result` (`success`\|`failure`) |
+| `traxjourney_logins_total` | `provider` (`password`\|`google`\|`apple`), `result` (`success`\|`failure`) |
 | `traxjourney_registrations_total` | `provider` |
 | `traxjourney_app_opens_total` | `session_state` (`resumed`\|`login_required`) |
 
-Google sign-in has no separate sign-up call, so `registrations_total{provider="google"}`
-fires on first sight of an account and never again.
+Google and Apple sign-in have no separate sign-up call, so `registrations_total{provider="google"}`
+(or `"apple"`) fires on first sight of an account and never again.
 
 `traxjourney_logins_total` only counts a fresh credential submission — it misses
 every launch where a cached session was simply resumed. `app_opens_total`
@@ -103,7 +95,7 @@ once per launch, `resumed` when the cached session was still valid and
 | `traxjourney_external_requests_total` | `service`, `endpoint`, `outcome` |
 | `traxjourney_external_request_duration_seconds` | `service`, `endpoint` |
 
-`service` ∈ `strava`, `polarsteps`, `google_translate`, `smtp`. `endpoint` is
+`service` ∈ `strava`, `polarsteps`, `hafas`, `nominatim`, `google_translate`, `smtp`. `endpoint` is
 templated (`/activities/{id}/streams`). `outcome` ∈ `success`, `client_error`,
 `auth_error`, `rate_limited`, `server_error`, `exception`.
 
@@ -295,5 +287,7 @@ between scrapes. The pool-utilisation panel divides `in_use` by capacity
 - **No label may carry user data.** Paths go through `normalise_path` and SQL
   through the operation keyword before being labelled. A label whose values
   come from user input creates one time series per distinct value.
-- There is **no Prometheus/Grafana deployment yet** — this issue ships the
-  endpoint only. Standing up the scraper is tracked separately.
+- The deployed scraper is the VPS-side Alloy (`config/alloy-config.river.example`),
+  which scrapes `traxjourney:8000/metrics` over the compose network and
+  remote-writes to the Prometheus/Grafana stack in `nas/`; see
+  `docs/OBSERVABILITY.md`.

@@ -169,7 +169,7 @@ ever set `keepalive` explicitly in the Caddyfile, keep it below uvicorn's value;
 ## 3. App deployment
 
 `/opt/traxjourney/docker-compose.yml` mirrors the NAS prod compose
-(`/volume2/docker/viewtrip/docker-compose.yml`), with three differences:
+(`/volume2/docker/viewtrip/docker-compose.yml`), with five differences:
 
 - Port bound to loopback (`127.0.0.1:8000:8000`) instead of `7777:8000`.
 - `FORWARDED_ALLOW_IPS=127.0.0.1,172.16.0.0/12` in `.env` (issue #443).
@@ -467,6 +467,7 @@ passed, so nothing leaves the machine for a host that would not pull it.
 .\deploy.ps1 -FromMain            # build a clean export of origin/main instead
 .\deploy.ps1 -SkipBuild           # deploy the :validation CI already published
 .\deploy.ps1 -Target Prod         # pull :latest, no build
+.\deploy.ps1 -TagOnly             # move the validation tag to origin/main, then stop
 ```
 
 `-FromMain` builds a pristine export of `origin/main` in a throwaway git
@@ -512,6 +513,7 @@ Copy-Item deploy.env.example deploy.env   # then fill in the blanks
 | `DEPLOY_VAL_DIR`, `DEPLOY_VAL_URL` | validation's compose directory on the host, and its public URL |
 | `DEPLOY_PROD_DIR`, `DEPLOY_PROD_URL` | the same for prod |
 | `MAPBOX_TOKEN` | public token baked into a local web build (same name as the CI secret); `-MapboxToken` overrides it |
+| `APPLE_SERVICES_ID` | optional Apple Services ID baked into a local web build; empty hides Sign in with Apple on the web |
 
 It is parsed with the same rules as `.env` (`Load-DotEnv.ps1`), but into a table
 rather than `$env:`, so a variable left over in your shell can't stand in for a
@@ -655,15 +657,14 @@ is a documented starting point to adapt, the same spirit
 Grafana on the NAS (`TraxJourney / Host Resources` dashboard) before relying
 on it for an incident.
 
-### Dropping `/metrics`'s public exposure
+### `/metrics` and its token
 
-Once Alloy's scrape is confirmed working, `/metrics` no longer needs the
-bearer-token + Caddy-block setup in `docs/METRICS.md` — Alloy reaches it
-over the internal compose network, never the public internet. Remove the
-`handle /metrics { respond 403 }` Caddy block (§2) and unset
-`METRICS_TOKEN`, or leave the token as defence in depth and just drop the
-Caddy exposure — either is fine, but the token alone was always the weaker
-of the two.
+Alloy reaches `/metrics` over the internal compose network, never the public
+internet, but it still sends `METRICS_TOKEN`: the endpoint requires it on
+every request and answers 404 when it is unset, so **keep the token set**.
+The Caddyfile has no `/metrics` block, so the public path is guarded by the
+token alone; `docs/METRICS.md` ("Scraping") has the one-line block that would
+close it without affecting Alloy.
 
 ### Keep local rotation regardless
 
@@ -685,14 +686,9 @@ prod on every release would remove `deploy.ps1 -Target Prod`'s existing
 manual gate, which is a bigger safety call than "keep val fresh" and not
 something to fold in as a side effect of this.
 
-**Status: not live yet.** Until issue #422, GitHub had no webhook configured, so
-this never ran. What is verified: the rules and flags against the
-[webhook 2.8.0 source](https://github.com/adnanh/webhook/tree/2.8.0) and its
-[docs](https://github.com/adnanh/webhook/tree/master/docs), the payload fields
-against [GitHub's `workflow_run` docs](https://docs.github.com/en/webhooks/webhook-events-and-payloads#workflow_run)
-and this repository's real runs, and the script against a fake `docker` and
-`curl` (`tests/test_validation_webhook.py`). The live install stays unverified
-until step 10 below passes. When it does, replace this paragraph with the date.
+**Status: live.** GitHub's webhook was configured under issue #422 (closed
+2026-09-23); the owner confirmed on 2026-10-16 that step 10 below passes and
+validation redeploys on its own.
 
 **Do it after the rename cut-over** (`docs/plans/RENAME_TRAXJOURNEY_RUNBOOK.md`).
 `hooks.yaml` only accepts runs of `rui-nar/TraxJourney`, and GitHub sends the

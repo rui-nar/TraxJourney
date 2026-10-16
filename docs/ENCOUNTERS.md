@@ -13,16 +13,18 @@ Log the people you meet on a trip and where/when you met them.
   place (map pin, defaulting to the day's location, editable) and an optional
   note. Rendered as an ordered timeline item, like memories and journal entries.
 
-## Privacy (owner-only)
+## Privacy (owner and trip members only)
 People and encounters are **never** exposed in shared views (full or no-memories
-tokens) — they hold third-party PII. The `GET /api/projects/{name}` owner payload
-includes a `people` array + encounter items; the share endpoints strip both, and
-the shared geo endpoints never emit encounter pins.
+tokens) — they hold third-party PII. They are visible to the trip's owner and
+its members (companions, #109): any member can read them, editors and above can
+change them. The `GET /api/projects/{name}` payload includes a `people` array +
+encounter items; the share endpoints strip both, and the shared geo endpoints
+never emit encounter pins.
 
 Keyword search runs **client-side** over already-loaded data (person fields +
-encounter notes), so it stays compatible with the planned zero-knowledge
-encryption work (#26): those text fields are the encrypt-on-write set when E2EE
-lands.
+encounter notes). End-to-end encryption (#26) has landed but does **not** cover
+people, groups or encounters: every field stays plaintext and readable by the
+server operator (see "What stays plaintext" in [ENCRYPTION.md](ENCRYPTION.md)).
 
 ## Data model (per-project, Alembic `f40e0c0de001`, extended by `f7e8d9c0b1a2`, `124a1d7b0d32`)
 - `person` — `id`, `project_id`, `name?`, `email?`, `phone?`, `polarsteps?`,
@@ -44,6 +46,9 @@ shares).
   the person's own encounters **plus the ones logged against their group**, see
   Groups below), avatar
   `POST/DELETE /api/people/{id}/avatar`, `GET .../avatar[/thumb]`.
+- A person's shared Polarsteps trips (view-only, through the caller's own
+  Polarsteps connection): `GET /api/people/{id}/polarsteps/trips` and
+  `GET /api/people/{id}/polarsteps/trips/{trip_id}/steps`.
 - Encounters: `POST /api/encounters`, `PUT/DELETE /api/encounters/{id}` — the
   body takes either `person_id` or `group_id` (exactly one, issue #56).
 - Residence city autocomplete: `GET /api/geo/places?q=` — proxies OSM Nominatim
@@ -57,7 +62,10 @@ shares).
 - Add an encounter from the day add-item sheet, the "+" speed-dial, or a person;
   the dialog's combined picker lists groups and people in labeled sections
   (issue #56), and a "+" menu creates a new person or group inline.
-- Encounters appear inline on their day and as owner-only pins on the manage map.
+- Encounters appear inline on their day and as pins on the manage map and the
+  view-mode map (which has an "Encounters" layer toggle); never on the shared map.
+- From a person's sheet, one of their Polarsteps trips can be drawn on the map as
+  a view-only overlay.
 - **Edit / delete from anywhere they're listed** (issue #175): the trip timeline
   (swipe or the pencil) and the person and group detail sheets (trailing pencil +
   bin). An encounter inherited from a group is editable from a member's sheet too
@@ -76,8 +84,8 @@ silently. The Android and iOS apps are unaffected.
 
 ## Groups (#50)
 Bundle several people into a named **group** (e.g. a family or a travel crew).
-Like people, groups are per-project and owner-only, and never appear in shared
-views.
+Like people, groups are per-project, limited to the trip's owner and members,
+and never appear in shared views.
 
 - **PersonGroup** — an optional `name` plus its own `nationalities` and social
   links (same shape as a person). A person belongs to **at most one** group via

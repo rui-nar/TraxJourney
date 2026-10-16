@@ -29,9 +29,10 @@ use `flutter run`, so `r` hot-reloads.
 
 Three things it handles that otherwise waste an afternoon:
 
-- **JDK.** Gradle 8.14 supports JDK 17–24, not 25. The script finds a usable JDK
-  and uses it for that run. If `JAVA_HOME` points at a directory that no longer
-  exists — what a JDK update leaves behind, since the version is in the path —
+- **JDK.** The script finds a JDK 17–24 (21 preferred) and uses it for that
+  run. That range dates from Gradle 8.14; the wrapper is now Gradle 9.3.1 and
+  CI builds with JDK 25, which the script does not accept yet. If `JAVA_HOME`
+  points at a directory that no longer exists — what a JDK update leaves behind, since the version is in the path —
   it says so; fix it with `setx JAVA_HOME "<path to a JDK 21>"`.
 - **TLS trust.** A JDK carries its own CA list and ignores the Windows one, so
   behind TLS inspection every dependency download fails with `PKIX path building
@@ -45,7 +46,7 @@ Three things it handles that otherwise waste an afternoon:
   [network_security_config.xml](../flutter_client/android/app/src/debug/res/xml/network_security_config.xml),
   scoped to `10.0.2.2` and `localhost`. Release builds have no such exemption.
 
-`-Local` needs the API server running on the host (`uvicorn api.router:app --port 8000 --no-access-log`).
+`-Local` needs the API server running on the host (`uv run python -m uvicorn api.router:app --port 8000 --no-access-log`).
 
 ### SDK packages
 
@@ -266,7 +267,7 @@ Owner steps, in the Play and Google Cloud consoles:
 ## Changing the icon
 
 ```powershell
-python scripts/generate_icons.py          # redraw every raster from the mark
+uv run python scripts/generate_icons.py   # redraw every raster from the mark
 cd flutter_client; dart run flutter_launcher_icons
 ```
 
@@ -289,7 +290,6 @@ The mark's geometry lives in three places that must move together:
 
 ## Not yet done
 
-- iOS is untouched by this work — same Flutter code, no signing or store setup.
 - Poster PNG "download" and GPX export are web-only paths
   (`image_download_stub.dart`, `download_stub.dart` are no-ops on native);
   sharing works, saving to the device does not.

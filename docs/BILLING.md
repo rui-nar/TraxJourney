@@ -16,6 +16,8 @@ client, and every account has unlimited trips and storage. The landing page's
 | Trips | 1 | 2 | 10 | unlimited |
 | Photo storage | 500 MB | 5 GB | 20 GB | 50 GB |
 | Days per trip | 10 | 100 | 365 | unlimited |
+| Videos per month | 1 | 10 | 30 | unlimited |
+| Video resolution | 720p | 1080p | 1080p | 1080p |
 
 Every number is an environment variable (`FREE_MAX_TRIP_DAYS`,
 `TIER_2_MAX_STORAGE_MB`, …), read per request — retuning them is a container
@@ -27,7 +29,9 @@ written alongside them: when both were maintained by hand they drifted apart
 within a day.
 
 Nothing else is gated. Strava/Polarsteps sync, posters, sharing, companions and
-encounters are on every plan.
+encounters are on every plan. The video limits count renders started in the
+current UTC calendar month (failed ones don't count); 1080p is the renderer's own
+maximum, so a deployment without billing renders at it too.
 
 ### Only advertise what exists
 
@@ -75,6 +79,11 @@ Storage and trip length are attributed to the **trip owner**: a companion
 uploading photos to a shared trip, or dating a memory outside its span, spends
 the owner's allowance, because it is the owner's trip and the owner's directory
 the files land in.
+
+Videos are the exception: on a shared trip the **requester** renders and is
+charged — a companion's render counts against the companion's own monthly quota
+and resolution limit (`ensure_video_quota` in `src/billing/entitlements.py`).
+Rendered videos are not counted as photo storage.
 
 ## Turning it on
 
@@ -138,8 +147,8 @@ past 500 MB before the limits existed is locked out the moment you deploy.
    - `charge.refund.updated`
 
    The three `refund` events report a withdrawal refund that failed *after*
-   Stripe accepted it (a closed card, say). The installed SDK (stripe 15.6.1,
-   API 2026-08-26.dahlia) knows all three; `refund.failed` is the dedicated
+   Stripe accepted it (a closed card, say). The installed SDK (stripe 16.0.0,
+   API 2026-09-30.endive) knows all three; `refund.failed` is the dedicated
    one, and the other two carry the refund with its new status. Without them,
    such a refund stays recorded as done
    (see [Owed refunds](#owed-refunds)).
@@ -167,7 +176,7 @@ past 500 MB before the limits existed is locked out the moment you deploy.
 
    The server cannot check this ahead of time: Stripe's account API does not
    expose the setting (`Account.business_profile` has no terms URL; checked
-   against stripe 15.6.1). A missing URL shows up on the first checkout. That
+   against stripe 16.0.0). A missing URL shows up on the first checkout. That
    request fails with 502, and the log gets an ERROR naming this setting,
    recognised by Stripe blaming `consent_collection` or mentioning "terms of
    service". After deploying, open one checkout in each account to confirm.
@@ -212,8 +221,8 @@ A refused action returns **402** with the numbers the client needs:
  "plan": "free", "limit": 10, "used": 10, "needed": 30}
 ```
 
-`resource` is `projects`, `storage` or `trip_days`. `needed` is what the refused
-action would have required — the client uses it to recommend the *cheapest* tier
+`resource` is `projects`, `storage`, `trip_days`, `videos` or `video_height`.
+`needed` is what the refused action would have required — the client uses it to recommend the *cheapest* tier
 that would have allowed it, rather than always pushing the most expensive.
 
 ## How it holds together
@@ -541,7 +550,7 @@ Issue #441. The owner set this policy on 2026-09-23 and refined it on
   refund_amount, metadata)` refunds the invoice's payment. It is also what
   reverses the VAT in Stripe Tax's reports, and it gives the customer a
   document. The same path is used whether or not `STRIPE_AUTOMATIC_TAX` is on.
-  - Verified against the installed SDK (stripe 15.6.1): `amount` is
+  - Verified against the installed SDK (stripe 16.0.0): `amount` is
     documented as the credit note's total and `refund_amount` as the amount
     refunded to the invoice's charge.
   - Not verified against a live account: how Stripe splits `amount` between
@@ -558,7 +567,7 @@ Issue #441. The owner set this policy on 2026-09-23 and refined it on
   `attempt` goes up only when Stripe answers `IdempotencyError`; the credit
   note is then retried once, in the same request, under the next key. A
   second conflict is a transient failure, never an owed refund.
-- **How a Stripe error is classified** (by exception class, stripe 15.6.1),
+- **How a Stripe error is classified** (by exception class, stripe 16.0.0),
   the same way for every call a refund makes (the basis, the pending items,
   the plan, the credit note):
   - `InvalidRequestError` / `CardError` with a definite refusal code are
@@ -782,7 +791,7 @@ VAT. €3.99 is what the customer pays, and the VAT is part of it.
      recorded as done.
 4. Make the prices tax-inclusive by running the provisioner. Run the dry run
    first and read it: an existing price is reported as `SET tax_behavior
-   unspecified → inclusive (in place)`. Stripe allows that one change on an
+   unspecified → inclusive on price_… (in place; subscribers keep it)`. Stripe allows that one change on an
    existing price, so current subscribers are covered too. A replacement would
    leave them on an untagged price that Stripe Tax taxes by the account
    default. An `exclusive` price, or an amount change, goes through the
@@ -823,5 +832,5 @@ provider redirects the *browser* back to it by URL, with
   and plan changes open the provider in an external browser on every platform;
   the plan page makes them more prominent, which is worth remembering when the
   iOS build is submitted.
-- Feature gates beyond trip count, storage and trip length.
+- Feature gates beyond trip count, storage, trip length and videos.
 - Dunning and receipt emails (Stripe sends its own for now).
