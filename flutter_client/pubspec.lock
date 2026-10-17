@@ -486,7 +486,7 @@ packages:
     source: hosted
     version: "6.3.1"
   google_sign_in_platform_interface:
-    dependency: transitive
+    dependency: "direct dev"
     description:
       name: google_sign_in_platform_interface
       sha256: "7f59208c42b415a3cca203571128d6f84f885fead2d5b53eb65a9e27f2965bb5"
@@ -496,10 +496,9 @@ packages:
   google_sign_in_web:
     dependency: "direct main"
     description:
-      name: google_sign_in_web
-      sha256: d473003eeca892f96a01a64fc803378be765071cb0c265ee872c7f8683245d14
-      url: "https://pub.dev"
-    source: hosted
+      path: "third_party/google_sign_in_web"
+      relative: true
+    source: path
     version: "1.1.3"
   gsettings:
     dependency: transitive
