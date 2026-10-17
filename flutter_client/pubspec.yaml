@@ -84,6 +84,9 @@ dev_dependencies:
   # Referenced directly by test/helpers/fake_url_launcher.dart, which stands in
   # for the platform so link tests can see which URL a tap opens (#421).
   url_launcher_platform_interface: ^2.3.2
+  # Referenced directly by test/auth/google_sign_in_init_test.dart, which
+  # stands in for the platform to see when the login screen initialises (#611).
+  google_sign_in_platform_interface: ^3.1.0
   plugin_platform_interface: ^2.1.8
   # Referenced directly by test/settings/strava_popup_arbiter_test.dart, which
   # drives the popup arbiter's timers on a fake clock (#587).
@@ -92,6 +95,13 @@ dev_dependencies:
   # Not part of any build — run by hand when the brand mark changes:
   #   python scripts/generate_icons.py && dart run flutter_launcher_icons
   flutter_launcher_icons: ^0.14.0
+
+# google_sign_in_web 1.1.3 with Google's script loaded in init() instead of at
+# plugin registration, so only the sign-in page fetches it (#611,
+# flutter/flutter#194640). See third_party/google_sign_in_web/README.md.
+dependency_overrides:
+  google_sign_in_web:
+    path: third_party/google_sign_in_web
 
 flutter:
   uses-material-design: true

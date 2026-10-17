@@ -2,7 +2,6 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_web_plugins/url_strategy.dart';
 import 'package:go_router/go_router.dart';
-import 'package:google_sign_in/google_sign_in.dart';
 import 'package:provider/provider.dart';
 
 import 'src/api/client.dart';
@@ -27,12 +26,6 @@ import 'src/core/splash_screen.dart';
 import 'src/core/theme.dart';
 import 'src/core/version_gate.dart';
 
-// Server client ID used on Android/iOS to receive an idToken.
-// On web, GIS reads the client ID from <meta name="google-signin-client_id">
-// in web/index.html — so serverClientId must be null on web.
-const _kGoogleServerClientId =
-    '544571555396-gj0q3hndadfo00ifotme305jcf4ii5cc.apps.googleusercontent.com';
-
 /// The app-level ScaffoldMessenger, for messages that outlive the screen
 /// that caused them.
 final scaffoldMessengerKey = GlobalKey<ScaffoldMessengerState>();
@@ -45,11 +38,6 @@ void main() async {
   // Event-loop stall watchdog — the only instrument that sees a freeze, since
   // a blocked main thread emits no frame timings at all (issue #276).
   perfSpans.start();
-  // Fire-and-forget: login_screen.initState calls attemptLightweightAuthentication()
-  // which handles ordering internally. Deferring unblocks the first frame.
-  GoogleSignIn.instance.initialize(
-    serverClientId: kIsWeb ? null : _kGoogleServerClientId,
-  );
   // A saved self-hosting override (login screen's "Self-hosting?" link) takes
   // effect on the next cold start — swap the singleton before anything reads
   // it. Two fast local reads, awaited here rather than gated behind their own

@@ -31,6 +31,7 @@ import 'apple_js_loader.dart'
         preloadAppleJs;
 import 'apple_sign_in.dart';
 import 'auth_notifier.dart';
+import 'google_sign_in_init.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -64,17 +65,26 @@ class _LoginScreenState extends State<LoginScreen> {
       // Apple's script is fetched only once its button is shown (I1-3).
       if (showAppleSignIn(customServer: url != null)) preloadAppleJs();
     });
-    // GoogleSignIn.instance.initialize() is called once in main() before runApp.
     _googleSignInSub = GoogleSignIn.instance.authenticationEvents.listen(
       _handleAuthEvent,
       onError: _handleAuthError,
     );
-    // Best-effort: if the platform isn't ready (initialize() never ran —
-    // e.g. a widget test that doesn't run main(), or a misconfigured client
-    // ID on a real device), this can fail either as a synchronous throw or
-    // as a rejected Future depending on how the platform call is wrapped —
-    // cover both, since the user still has the manual email/password form
-    // either way.
+    // Initialised here, not in main(): on the web this loads Google's script,
+    // which only the sign-in page should fetch (#611).
+    ensureGoogleSignInInitialized().then((_) {
+      if (!mounted) return;
+      _attemptLightweightAuthentication();
+    }, onError: (_) {
+      // A failed initialize() (no platform implementation in a widget test, a
+      // misconfigured client ID) leaves the email/password form usable.
+    });
+  }
+
+  void _attemptLightweightAuthentication() {
+    // Best-effort: this can fail either as a synchronous throw or as a
+    // rejected Future depending on how the platform call is wrapped — cover
+    // both, since the user still has the manual email/password form either
+    // way.
     try {
       GoogleSignIn.instance.attemptLightweightAuthentication()?.catchError((_) => null);
     } catch (_) {}

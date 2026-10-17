@@ -146,6 +146,15 @@ jobs:
         working-directory: flutter_client
         run: flutter test
 
+      # The vendored google_sign_in_web's patch (#611): no Google script before
+      # init(). Only a browser can see the page's script tags; the runner's
+      # Chrome runs it.
+      - name: Test vendored google_sign_in_web
+        working-directory: flutter_client/third_party/google_sign_in_web
+        run: |
+          flutter pub get
+          flutter test --platform chrome
+
   android:
     # The Android build is the only thing that exercises the gradle config, the
     # manifest merge and the plugin set on that platform — `flutter test` runs on
