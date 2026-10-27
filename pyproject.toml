@@ -15,8 +15,8 @@ dependencies = [
     # pins guarantee is what the repo (optimistic-lock CAS via sess.execute) is
     # tested against. Leaving them unpinned let the Docker image resolve to a newer
     # SQLModel whose result handling differed, surfacing as 500s in production.
-    "sqlmodel==0.0.37",
-    "sqlalchemy==2.0.48",
+    "sqlmodel==0.0.48",
+    "sqlalchemy==2.1.6",
     "alembic>=1.13.0",
     "PyJWT>=2.8.0",
     "bcrypt>=4.0.0",
