@@ -217,7 +217,7 @@ jobs:
         # (tests/test_ci_workflows.py). No cache: this job holds the signing
         # and Play secrets, so it installs from the lock, not a restored cache.
         if: steps.version.outputs.play_release == 'true'
-        uses: astral-sh/setup-uv@v10.3.0
+        uses: astral-sh/setup-uv@v10.3.2
         with:
           version: "0.13.0"
           enable-cache: false
