@@ -23,7 +23,7 @@ jobs:
       # share (tests/test_python_version_alignment.py). The uv version is the
       # Dockerfile's uv stage tag, exactly (tests/test_ci_workflows.py).
       - name: Set up uv
-        uses: astral-sh/setup-uv@v10.3.0
+        uses: astral-sh/setup-uv@v10.3.2
         with:
           version: "0.13.0"
           enable-cache: true
