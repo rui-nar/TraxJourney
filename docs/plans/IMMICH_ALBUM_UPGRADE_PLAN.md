@@ -66,12 +66,15 @@ The design work also found five defects in the code that exists:
   `{"epoch", "ranks", "hashes"}`. `replace` gives the old photo's rank and
   sha256 to the new UUID, so a re-import does not bring back a photo the user
   replaced.
-- **Writing a photo list.** Seven places read `photos_json` and
-  `photo_order_json`, change them, and write them back with a plain ORM
-  update:
+- **Writing a photo list.** Eight places read `photos_json` and
+  `photo_order_json`, or `photos_json` alone, change them, and write them
+  back with a plain ORM update:
   - in `api/memories.py`: the clear at 637, placement at 680, delete at 815
     and replace at 865;
-  - in `api/journal.py`: placement at 214, delete at 541 and replace at 590.
+  - in `api/journal.py`: placement at 214, delete at 541 and replace at 590;
+  - in `api/project_transfer.py`: `_drop_unplaced` at 545. After a ZIP
+    import has committed, it removes a photo whose file could not be put in
+    place.
 
   They are serialised only by `photo_lock`
   ([api/photo_locks.py](../../api/photo_locks.py)), a `threading.Lock` per
@@ -79,6 +82,16 @@ The design work also found five defects in the code that exists:
   Project-level writes already use a cross-process compare-and-set instead:
   `bump_lock_version` in
   [src/project/repo_core.py:69](../../src/project/repo_core.py#L69).
+- **Replace imports.** A ZIP or .traxj import with `on_conflict=replace`
+  rewrites the photo lists of the trip's kept memories and journal entries
+  (`_update_memory` and `_update_journal`,
+  [src/project/repo_transfer.py:862-899](../../src/project/repo_transfer.py#L862-L899)).
+  - It keeps a name the file lists when that photo's file is in the row's
+    folder, and returns the names the file no longer lists, to be deleted.
+  - It writes inside the transaction that `bump_lock_version` opens
+    ([src/project/repo_transfer.py:331](../../src/project/repo_transfer.py#L331)).
+    On SQLite, no other process can commit until it does.
+  - It takes no `photo_lock`.
 - **Replace endpoints:** `PUT /api/memories/{id}/photos/{old}/replace`
   ([api/memories.py:823](../../api/memories.py#L823)) and its journal twin
   ([api/journal.py:549](../../api/journal.py#L549)). The two are near
@@ -205,6 +218,12 @@ Scans per person:
   delete those earlier scans.
 - A failed scan therefore leaves the previous review and its rejections in
   place.
+- An apply cannot start while the same person has a scan in progress on the
+  trip, and a scan cannot start while an apply is in progress (U10). As a
+  backstop for two requests that pass those checks at once, a new scan
+  never deletes an earlier scan whose apply is `pending` or `running`. That
+  scan stays until a later scan or the 30-day sweep removes it (revised for
+  R2-2).
 
 Retention:
 - An hourly sweep deletes scans older than 30 days.
@@ -289,10 +308,20 @@ anyway.
 - The apply job writes photo lists from the worker process while the API
   writes the same lists, and `photo_lock` cannot serialise across
   processes.
-- So each of the seven read-modify-write sites becomes an `UPDATE … WHERE
+- So each of the eight read-modify-write sites becomes an `UPDATE … WHERE
   id = :id AND photos_json = :read AND photo_order_json IS :read`, through
   one helper (U14). On a conflict, the writer re-reads and recomputes, up to
   5 times.
+- A Replace import is the exception (revised for R2-1).
+  - Its writes cannot be interleaved: they run inside the write transaction
+    `bump_lock_version` opens.
+  - Its race with an apply is about files. An apply that has committed A'
+    in place of A deletes A's files only afterwards. An import in that
+    window still finds A's file, lists A again and deletes A' as dropped.
+    The apply then deletes A's files.
+  - So a Replace import is refused while an apply on the trip is `pending`
+    or `running` (U15). The check runs inside the import's write
+    transaction, where no apply can start or commit until the import does.
 - Side effects that depend on the outcome (deleting files, busting caches)
   happen only after the update succeeds.
 - `photo_lock` stays, so writers in one process queue instead of retrying.
@@ -322,10 +351,12 @@ REVIEW.md §2 defaults apply, with these additions:
 - **Two processes write photo lists.** The API and `worker-poster` both do.
   - Every write is a compare-and-set (D13), so either side may lose a race
     and retry, but never overwrite the other.
-  - While a scan or apply runs, the user and companions may delete, reorder,
-    replace or re-import the same photos. A photo gone since the scan makes
-    its row `stale`.
-  - Each person has at most one active scan and one apply per trip.
+  - While a scan or apply runs, the user and companions may delete, reorder
+    or replace the same photos, or re-import them from Polarsteps. A photo
+    gone since the scan makes its row `stale`.
+  - A Replace import of the trip is refused while any apply on it is
+    `pending` or `running` (D13, U15).
+  - Each person has at most one scan or apply in progress per trip (U10).
 - **Memory.** HEIC decode is bounded by `MAX_PHOTO_PIXELS`, as PNG decode
   already is. It runs in the API container (768 MB) for uploads and in
   `worker-poster` (1280 MB) for applies. Each job handles one photo at a
@@ -345,6 +376,13 @@ REVIEW.md §2 defaults apply, with these additions:
     unchanged.
   - The photo write routes keep their responses. Losing a write race 5
     times in a row answers 409, which today cannot happen.
+  - A Replace import, ZIP or .traxj, answers 409 with `code:
+    photo_upgrade_running` while an apply on the trip is `pending` or
+    `running`.
+    - The app opens its name dialog only for `code: name_conflict`
+      (`_conflictName`, `projects_notifier.dart:270`). For this 409 it shows
+      the detail, as it does for any failed import (`_msg`).
+    - Old clients do the same.
 - **Schema.** Three new tables in one Alembic migration on top of the
   current head `e5c3a7b91d24`. After rebasing on main there must still be a
   single head.
@@ -385,8 +423,16 @@ REVIEW.md §2 defaults apply, with these additions:
     helper.
   - Every photo replacement goes through the replace core in
     `api/photo_replace.py` (U8).
-  - Scripts run with the API stopped, and archive import writes rows it has
-    just created, so both are exempt.
+  - Exempt:
+    - scripts, whose runbooks take the whole stack down, workers included
+      (`docker compose down`, `docs/RELEASING.md`);
+    - an import that creates a trip, which writes only rows it has just
+      created;
+    - a Replace import's writes to kept rows, which run inside its write
+      transaction (D13). It is refused while an apply on the trip is
+      `pending` or `running` (U15).
+  - Not exempt: `_drop_unplaced`. It runs after the import's commit, so it
+    goes through U14's helper.
 - **Job contract.** The function names other units import are fixed here:
   - `src/photo_upgrade/scan_job.py`: `start_scan(scan_id: int) -> None` and
     `mark_scan_interrupted(scan_id: int, reason: str) -> None`.
@@ -436,7 +482,7 @@ wait for them.
 |---|---|
 | 0 | U1 |
 | 1 | U2, U3, U4, U5, U6, U7, U14 |
-| 2 | U8, U9 |
+| 2 | U8, U9, U15 |
 | 3 | U11 |
 | 4 | U10, U13 |
 | 5 | U12 |
@@ -877,14 +923,17 @@ wait for them.
   overwritten.
 - **Scope:**
   - `api/photo_write.py` (new)
-  - `api/memories.py`, the seven sites listed in Current state and their
-    callers' handling of the result (four of the seven are here)
+  - `api/memories.py`, the four memory sites listed in Current state and
+    their callers' handling of the result
   - `api/journal.py`, the three journal sites
+  - `api/project_transfer.py`, only `_drop_unplaced`
   - `tests/test_photo_write_cas.py` (new)
+  - `tests/test_import_zip.py`
 - **Context:**
-  - The seven sites: `api/memories.py` 637 (`_clear_memory_photos`), 680
+  - The eight sites: `api/memories.py` 637 (`_clear_memory_photos`), 680
     (`_write_memory_photo`), 815 (`delete_photo`), 865 (`replace_photo`);
-    `api/journal.py` 214, 541 and 590.
+    `api/journal.py` 214, 541 and 590; `_drop_unplaced` in
+    `api/project_transfer.py` 545.
   - Example to follow for a compare-and-set in SQL: `bump_lock_version` in
     `src/project/repo_core.py:69`, and `_cas` in `src/video/job_runner.py`.
   - Memory note: threaded and concurrent tests need a file-backed SQLite,
@@ -906,7 +955,7 @@ wait for them.
        transaction as any other column `compute` set on the row;
      - it re-reads and recomputes on a conflict;
      - it raises `PhotoWriteConflict` after the last attempt.
-  3. Convert each of the seven sites:
+  3. Convert each of the eight sites:
      - side effects that depend on the outcome (deleting the files of a
        removed or replaced photo, deleting the new files of a placement
        that was refused, busting caches) run only after the write
@@ -914,29 +963,40 @@ wait for them.
      - the per-row `photo_lock` stays around the call;
      - a route that gets `PhotoWriteConflict` answers 409; a background
        placement logs it and deletes its new files.
-  4. Behaviour seen through the routes is otherwise unchanged.
+  4. `_drop_unplaced` computes with `photo_order.remove`, so the photo's
+     rank and hash go with it. On `PhotoWriteConflict` it logs an error
+     naming the row and the photo, as it logs today, and leaves the name
+     listed.
+  5. Behaviour seen through the routes is otherwise unchanged.
 - **Acceptance:**
   - `pytest tests/test_photo_write_cas.py tests/test_memories_photo_order.py
     tests/test_journal_photo_order.py tests/test_photo_replace_api.py
     tests/test_memories_photo_poll.py tests/test_memories_thumb_concurrency.py
-    tests/test_polarsteps_dedup.py tests/test_quota_enforcement.py` passes.
+    tests/test_polarsteps_dedup.py tests/test_quota_enforcement.py
+    tests/test_import_zip.py` passes.
   - New tests use a file-backed SQLite and a second session that writes
     between the read and the write. They cover:
     - a delete racing a placement: both photos end correct;
     - a replace racing a delete of the same photo: the delete wins, the new
       files are removed, the route answers 404;
     - five straight conflicts answering 409;
-    - a CAS update leaving the row's other columns as they were.
+    - a CAS update leaving the row's other columns as they were;
+    - `_drop_unplaced` racing another session's replace of a different
+      photo of the row: the replacement is kept, and only the unplaced name
+      goes.
 - **Out of scope:**
-  - scripts, which run with the API stopped;
-  - archive import, which writes rows it has just created;
+  - scripts, which run with the whole stack down;
+  - the import writes in `src/project/repo_transfer.py`: a new trip's rows
+    are its own, and a Replace runs inside its write transaction (D13; its
+    race with an apply is U15's);
   - `api/photo_order.py`;
   - any change to what the routes return when there is no race.
 - **Latitude:** local design inside `api/photo_write.py`; none in the
   route files.
 - **Escalate if:**
   - a site also writes a column whose race this cannot cover;
-  - a writer of these columns turns up outside the seven;
+  - a writer of these columns turns up outside the eight and the import
+    writes named above;
   - a file outside Scope must change (X3).
 - **Depends on:** —
 
@@ -1077,7 +1137,9 @@ wait for them.
        for high-confidence proposals (D2);
      - set `ready`;
      - only then delete the person's earlier scans of this trip, with their
-       rows.
+       rows, except those whose apply is `pending` or `running` (D8). The
+       condition goes in the `DELETE` itself, so an apply that starts
+       during the match is honoured.
   6. Without a broker, `start_scan` runs the chain in one in-process loop.
   7. An unreachable Immich or a 403 fails the scan with a sentence the app
      can show.
@@ -1095,6 +1157,8 @@ wait for them.
     - a companion's scan covering only their own journal entries;
     - rejected pairs carried over from an earlier scan;
     - earlier scans deleted only once the new one is `ready`;
+    - an earlier scan whose apply is `pending` or `running` kept by the new
+      scan's match;
     - a failed scan leaving the earlier scan and its rejections in place;
     - `ImmichTooManyAssets` and the 5,000 limit failing the scan;
     - Immich unreachable;
@@ -1110,6 +1174,79 @@ wait for them.
     project;
   - a file outside Scope must change (X3).
 - **Depends on:** U2, U5, U6.
+
+#### U15 — Replace import refused while photos are being upgraded (R2-1)
+- **Goal:** a Replace import of a trip, ZIP or .traxj, is refused with 409
+  while any apply on that trip is `pending` or `running`. Nothing of it is
+  written.
+- **Scope:**
+  - `src/project/repo_transfer.py`, only `replace_project` and a new
+    exception beside `ProjectNameTaken`
+  - `api/project_transfer.py`, only the two import routes and
+    `_ingest_zip`
+  - `tests/test_import_replace_during_upgrade.py` (new)
+- **Context:**
+  - `replace_project` from `bump_lock_version` onwards
+    (`src/project/repo_transfer.py:272-340`), and `_stored_photos`, which
+    keeps a listed name whose file is in the row's folder.
+  - The two callers: the .traxj import (`api/project_transfer.py:380-410`)
+    and the ZIP import (`_ingest_zip` and `import_project_zip`, 499-636).
+  - Example to follow for an import refusal the app must not misread:
+    `_name_conflict` at `api/project_transfer.py:291`. The app keys on
+    `code` (`_conflictName`, `projects_notifier.dart:270`).
+  - Example to follow for the tests: `tests/test_import_replace.py`.
+  - Decision D13 (the Replace import exception); U6's `photoupgradescan`.
+- **Do:**
+  1. In `replace_project`, right after `bump_lock_version` and before any
+     memory, journal entry or item row is read or written, check whether
+     any scan of the project has
+     `apply_status` `pending` or `running`. If one has, raise
+     `PhotoUpgradeRunning`.
+     - The session is closed without a commit, so the lock-version bump is
+       rolled back too.
+     - The check must stay after the bump. There, the import holds
+       SQLite's write lock: no apply can become `pending`, and no apply
+       batch can commit, until the import commits.
+  2. Both routes answer 409 with `{"detail": "Photos on this trip are being
+     upgraded from Immich. Try again once that has finished.", "code":
+     "photo_upgrade_running", "request_id": …}`.
+     - The ZIP route still removes its staged files, as it does on any
+       refused import.
+  3. The ZIP route also runs the same check before it reads the archive,
+     beside the name check (`api/project_transfer.py:600`). A large upload
+     is then refused before minutes of reading. The check inside
+     `replace_project` is still the one that decides.
+- **Acceptance:**
+  - `pytest tests/test_import_replace_during_upgrade.py
+    tests/test_import_replace.py tests/test_import_zip.py
+    tests/test_import_name_conflict.py tests/test_replace_import_prunes_strava.py`
+    passes.
+  - New tests cover:
+    - a ZIP Replace refused with 409 and its code while an apply is
+      `pending`, and while one is `running`;
+    - the same for a .traxj Replace;
+    - after a refusal, the trip's rows, photo lists and `lock_version` are
+      as they were, and no staged file is left;
+    - a Replace allowed when every apply is `idle`, `stopped` or `done`;
+    - a companion's running apply on their own entries blocking the
+      owner's Replace too;
+    - an import under a new name, or as a copy, never refused.
+- **Out of scope:**
+  - refusing an apply while an import runs. The import's write transaction
+    holds the apply's writes until it commits. After that, `_drop_unplaced`
+    goes through U14's helper;
+  - any Flutter change: the app already shows the detail;
+  - imports that create a trip.
+- **Latitude:** local design for the check itself: one function in
+  `src/project/repo_transfer.py`, used by `replace_project` and by the ZIP
+  route's early check. None elsewhere.
+- **Escalate if:**
+  - `replace_project` reads a memory, a journal entry or a photo list
+    before `bump_lock_version` (today only the project row and its day
+    count come first);
+  - the session does not roll back the bump when the exception leaves it;
+  - a file outside Scope must change (X3).
+- **Depends on:** U6, U14 (U14 edits `api/project_transfer.py` first).
 
 ### Wave 3
 
@@ -1213,7 +1350,10 @@ wait for them.
      - `include_memories` needs the owner role, otherwise 403;
      - refuses with 409 while the caller has an active scan, or an apply
        `pending` or `running`, on this trip;
-     - inserts a new scan row and calls `start_scan`;
+     - inserts a new scan row and calls `start_scan`. An insert refused by
+       the partial unique index answers the same 409 (revised for R2-3). It
+       comes from a second request that passed the check at the same time,
+       such as a double tap;
      - answers 202 with the scan.
   3. `GET /api/projects/{name}/photo-upgrade/scans/latest` returns:
      - `scan`: the caller's newest `ready` scan, or null, with its summary.
@@ -1237,7 +1377,10 @@ wait for them.
        chooser;
      - `POST …/apply` sets `apply_status=pending` and calls `start_apply`.
        This is allowed when the apply is `idle`, `stopped` or `done`, and
-       answers 409 while it is `pending` or `running`;
+       answers 409 while it is `pending` or `running`. It also answers 409
+       while the caller has a scan `pending` or `scanning` on this trip, or
+       an apply `pending` or `running` on another of their scans of it.
+       This mirrors the scan route's rule (revised for R2-2);
      - `DELETE …` discards the scan, refused while an apply is `pending` or
        `running`.
   5. The hourly sweep in `api/router.py`:
@@ -1264,6 +1407,11 @@ wait for them.
     - select-confident;
     - resume after `stopped`;
     - 409 on a scan, apply or delete during an apply;
+    - 409 on an apply of an earlier review while a newer scan is `pending`
+      or `scanning`;
+    - 409, not 500, when the insert of a scan is refused by the partial
+      unique index. To simulate the second request, insert an active scan
+      after the route's check;
     - each sweep branch.
 - **Out of scope:** the job internals (U9, U11); Flutter.
 - **Latitude:** local design for response shapes, listed in the report and
@@ -1417,6 +1565,11 @@ wait for them.
   nothing rejected. A failed second scan leaves the first review in place.
 - Deleting or re-importing photos while an apply runs never loses a photo
   and never leaves a listed photo without its files (D13).
+- A Replace import of a trip, ZIP or .traxj, while an apply on it is pending
+  or running is refused with 409, and nothing of it is written.
+- A person never has a scan and an apply, or two applies, in progress on one
+  trip. A new scan never deletes a review whose apply is in progress.
+- A double-tapped Scan answers 409 to the second request, never 500.
 - A worker killed mid-scan or mid-apply leaves the scan failed or the apply
   stopped as interrupted, within 30 minutes at most. The apply can be
   resumed.

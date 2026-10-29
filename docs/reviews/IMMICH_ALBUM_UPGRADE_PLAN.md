@@ -85,3 +85,32 @@ Envelope: the plan's `## Review envelope` section, on top of REVIEW.md §2 defau
 - Guard: —
 - Override: —
 - Outcome: fixed
+
+## Round 2 — 2026-10-28, reviewed at 9ad99045
+
+### R2-1 — U14 exempts archive import, but a ZIP replace-import rewrites existing photo lists blind
+- Trigger (corrected by triage): the owner replace-imports a trip ZIP while an apply runs on it → (a) the worker's compare-and-set commits [A'] just before the import's write transaction, the import still finds A on disk and stores [A], deleting A' as dropped; or (b) a staged photo fails placement and `_drop_unplaced` (api/project_transfer.py:545-561) writes its stale read over [A'], serialised only by the API-local photo_lock → A listed with no file, A' deleted or orphaned and still counted. The reviewer's original interleaving cannot happen on SQLite: bump_lock_version (src/project/repo_transfer.py:331) opens the write transaction before the kept rows are read.
+- Scores: trigger=plausible, impact=data-loss, detect=user-visible, later=cheap, fix=M/shared, confidence=verified
+- Decision: Fix now (D3)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: fixed
+
+### R2-2 — Apply is not refused while a newer scan is active, so the new scan's match deletes the scan being applied
+- Trigger: a user starts a new scan, then presses Apply on the earlier ready review from a second tab or device → when the new scan becomes ready it deletes the earlier scan; the next apply batch finds no rows, the review answers 404, remaining ticks and picks are gone, no stop reason is shown.
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: a client shows an earlier ready review with its Apply bar while a newer scan is pending or scanning, or a user reports a review disappearing or an apply stopping partway with no reason.
+- Guard: —
+- Override: user: Fix now — owner chose to fix rather than ship known gaps (2026-10-29)
+- Outcome: fixed
+
+### R2-3 — Two concurrent POST scans: the second fails on the partial unique index as a 500
+- Trigger: a user double-taps Scan or retries a slow request → both pass the active-scan check, the second insert violates the partial unique index → logged 500 while the first scan runs.
+- Scores (corrected by triage): trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: the unhandled-exception log (api/router.py:417) shows an IntegrityError from POST /api/projects/{name}/photo-upgrade/scans, or a user reports an error on Scan although the scan started.
+- Guard: —
+- Override: user: Fix now — owner chose to fix rather than ship known gaps (2026-10-29)
+- Outcome: fixed
