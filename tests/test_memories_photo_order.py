@@ -50,6 +50,7 @@ from sqlmodel import Session, SQLModel, select
 
 import api.journal as journal_mod
 import api.memories as mem_mod
+import api.photo_replace as photo_replace_mod
 import models.db as db_module
 import src.billing.usage as usage_mod
 from api.deps import get_current_user
@@ -460,13 +461,14 @@ class TestReplaceRacingDelete:
     def test_replacing_a_photo_deleted_meanwhile_answers_404_and_leaves_no_files(self, env, monkeypatch):
         client, engine, user_id, memory_id, _ = env
         old = _land(user_id, memory_id, order=0)
-        original_save = mem_mod._save_photo_files
+        original_save = photo_replace_mod.save_photo_files
 
         def delete_old_then_save(*args):
             mem_mod.delete_photo(memory_id, old, _user(user_id))
             original_save(*args)
 
-        monkeypatch.setattr(mem_mod, "_save_photo_files", delete_old_then_save)
+        # The replace writes its files through api/photo_replace.py.
+        monkeypatch.setattr(photo_replace_mod, "save_photo_files", delete_old_then_save)
         resp = client.put(f"/api/memories/{memory_id}/photos/{old}/replace",
                           files={"file": ("n.jpg", _jpeg_bytes(), "image/jpeg")})
         assert resp.status_code == 404
@@ -479,13 +481,13 @@ class TestReplaceRacingDelete:
             self, env, monkeypatch):
         client, engine, user_id, memory_id, _ = env
         old = _land(user_id, memory_id, order=0)
-        original_save = mem_mod._save_photo_files
+        original_save = photo_replace_mod.save_photo_files
 
         def delete_memory_then_save(*args):
             mem_mod.delete_memory(memory_id, _user(user_id))
             original_save(*args)
 
-        monkeypatch.setattr(mem_mod, "_save_photo_files", delete_memory_then_save)
+        monkeypatch.setattr(photo_replace_mod, "save_photo_files", delete_memory_then_save)
         resp = client.put(f"/api/memories/{memory_id}/photos/{old}/replace",
                           files={"file": ("n.jpg", _jpeg_bytes(), "image/jpeg")})
         assert resp.status_code == 404

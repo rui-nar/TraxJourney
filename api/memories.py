@@ -51,8 +51,9 @@ from api.project_access import (
 )
 from api.photo_locks import photo_lock
 from api.photo_order import clear as clear_order, has_hash, load_state, place
-from api.photo_order import remove as remove_from_order, replace as replace_in_order
+from api.photo_order import remove as remove_from_order
 from api.photo_write import PHOTO_CONFLICT_DETAIL, PhotoWriteConflict, mutate_photos
+from api.photo_replace import PhotoGone, replace_photo_bytes
 from api.project_shared import bust_project_payloads, project_cache_ref
 from api.translations import translate_text
 from models.project_db import DBMemory, DBMemoryComment, DBMemoryLike, DBMemoryTranslation, DBProject, DBProjectItem
@@ -61,7 +62,7 @@ from src.models.value_bounds import Lat, Lon
 from src.billing.entitlements import ensure_storage_quota, ensure_trip_days_quota
 from src.billing.usage import unlink_and_record
 from src.utils.photo_paths import photo_file, photo_files, photo_folder
-from src.utils.photo_store import InvalidPhoto, PhotoTooLarge, save_photo_files
+from src.utils.photo_store import InvalidPhoto, PhotoTooLarge, photo_media_type, save_photo_files
 from src.utils.safe_fetch import fetch_bytes
 from src.exceptions.errors import QuotaExceeded
 from src.models.memory import Memory
@@ -881,31 +882,26 @@ async def replace_photo(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=f"Photo exceeds the {_MAX_PHOTO_UPLOAD_BYTES // (1024 * 1024)}MB upload limit",
         )
-    with get_session() as sess:
-        ensure_storage_quota(sess, int(owner_dir), len(raw))
-    new_uuid = str(uuid_lib.uuid4())
-    await run_in_threadpool(_save_photo_files, owner_dir, memory_id, new_uuid, raw)
-
-    def swap(photos, state, row):
-        # Same position and rank, not remove+append: photos_json order is
-        # display order. None when the old photo was deleted meanwhile.
-        return replace_in_order([p for p in photos if p], state, old_uuid, new_uuid)
-
-    with photo_lock("memory", memory_id):
-        try:
-            replaced = mutate_photos("memory", memory_id, swap)
-        except PhotoWriteConflict:
-            _delete_photo_files(owner_dir, memory_id, [new_uuid])
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=PHOTO_CONFLICT_DETAIL)
-        if replaced is None:
-            # The memory or the old photo went while the new files were
-            # written: they have nowhere to go (#237).
-            _delete_photo_files(owner_dir, memory_id, [new_uuid])
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
-        bust_project_payloads(replaced.cache_ref)
-        # Still under the lock: a delete_memory's folder sweep would otherwise
-        # size these same files and uncount them a second time.
-        _delete_photo_files(owner_dir, memory_id, [old_uuid])
+    # Storage, hashes, files and the list write: api/photo_replace.py. The
+    # decode is CPU-bound, so it runs off the event loop. The quota is the
+    # owner's: the bytes land in their tree.
+    try:
+        new_uuid = await run_in_threadpool(
+            replace_photo_bytes, "memory", memory_id, old_uuid, raw, owner_dir=owner_dir)
+    except PhotoGone:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
+    except PhotoWriteConflict:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=PHOTO_CONFLICT_DETAIL)
+    except PhotoTooLarge as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"This photo is too large: {exc}.",
+        ) from exc
+    except InvalidPhoto as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Invalid image file",
+        ) from exc
     return {"uuid": new_uuid}
 
 
@@ -927,7 +923,7 @@ def serve_photo(
     full_path = photo_file(photo_folder(_DATA_DIR, owner_dir, "memories", memory_id), photo_uuid)
     if full_path is None or not full_path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
-    return FileResponse(str(full_path), media_type="image/jpeg")
+    return FileResponse(str(full_path), media_type=photo_media_type(full_path))
 
 
 def stripped_photo_response(original: Path, headers: Dict[str, str]) -> FileResponse:
@@ -999,7 +995,7 @@ def serve_photo_thumb(
         if thumb_path is None or not thumb_path.exists():
             full_path = photo_file(photo_path, photo_uuid)
             if full_path is not None and full_path.exists():
-                return FileResponse(str(full_path), media_type="image/jpeg")
+                return FileResponse(str(full_path), media_type=photo_media_type(full_path))
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
         return FileResponse(str(thumb_path), media_type="image/jpeg")
     finally:
