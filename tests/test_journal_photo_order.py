@@ -28,6 +28,7 @@ from PIL import Image
 from sqlmodel import Session, SQLModel, select
 
 import api.journal as journal_mod
+import api.photo_replace as photo_replace_mod
 import models.db as db_module
 from api.deps import get_current_user
 from api.journal import router as journal_router
@@ -279,13 +280,14 @@ class TestDeletedEntry:
         client, engine, ids = env
         journal_id = ids["journal"]
         old = _land(ids, journal_id, order=0)
-        original_save = journal_mod._save_photo_files
+        original_save = photo_replace_mod.save_photo_files
 
         def delete_old_then_save(*args):
             journal_mod.delete_photo(journal_id, old, _user(ids["author"]))
             original_save(*args)
 
-        monkeypatch.setattr(journal_mod, "_save_photo_files", delete_old_then_save)
+        # The replace writes its files through api/photo_replace.py.
+        monkeypatch.setattr(photo_replace_mod, "save_photo_files", delete_old_then_save)
         resp = client.put(f"/api/journal/{journal_id}/photos/{old}/replace",
                           files={"file": ("n.jpg", _jpeg_bytes(), "image/jpeg")})
         assert resp.status_code == 404
@@ -298,13 +300,13 @@ class TestDeletedEntry:
         client, engine, ids = env
         journal_id = ids["journal"]
         old = _land(ids, journal_id, order=0)
-        original_save = journal_mod._save_photo_files
+        original_save = photo_replace_mod.save_photo_files
 
         def delete_entry_then_save(*args):
             _delete_entry(ids, journal_id)
             original_save(*args)
 
-        monkeypatch.setattr(journal_mod, "_save_photo_files", delete_entry_then_save)
+        monkeypatch.setattr(photo_replace_mod, "save_photo_files", delete_entry_then_save)
         resp = client.put(f"/api/journal/{journal_id}/photos/{old}/replace",
                           files={"file": ("n.jpg", _jpeg_bytes(), "image/jpeg")})
         assert resp.status_code == 404

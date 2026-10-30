@@ -50,7 +50,7 @@ from api.project_access import (
     translate_insert_after,
 )
 from api.photo_locks import photo_lock
-from api.photo_order import clear as clear_order, has_hash, load_state, place
+from api.photo_order import fill_hashes, has_hash, load_state, place
 from api.photo_order import remove as remove_from_order
 from api.photo_write import PHOTO_CONFLICT_DETAIL, PhotoWriteConflict, mutate_photos
 from api.photo_replace import PhotoGone, replace_photo_bytes
@@ -334,21 +334,25 @@ def _find_namedate_match(sess, project_id: int, body: "MemoryBody") -> Optional[
 
 
 def _adopt_and_refresh(sess, user_id: str, mem_row: DBMemory, body: "MemoryBody") -> int:
-    """Adopt an existing memory for a Polarsteps re-import: backfill the step id,
-    overwrite scalar fields from the step (Polarsteps is source of truth), and
-    clear photos so the client's re-upload repopulates a fresh set. Returns the
-    memory id; never creates a second row or project item.
+    """Adopt an existing memory for a Polarsteps re-import: backfill the step id
+    and overwrite scalar fields from the step (Polarsteps is source of truth).
+    Returns the memory id; never creates a second row or project item.
 
-    The photo lock is held from before the clear until after the commit, so no
-    photo placement can land between the two (#237): one that waits on the
-    lock lands after the commit, where the clear's epoch bump decides its fate.
-    Nothing inside the window takes ``photo_lock`` again (it is not re-entrant).
-    The refreshed fields are written with the clear, in its transaction; when
-    the photo list keeps changing under it, nothing is written and this
-    answers 409.
+    Its photos all stay, upgraded and hand-added ones included (F5 of
+    docs/plans/IMMICH_ALBUM_UPGRADE_PLAN.md, #33). Each listed photo with no
+    hash yet gets the sha256 of its full-size file, so the client's
+    re-download of a photo the memory already has is skipped by the hash
+    check, and one it lacks is placed. Nothing is cleared, so the epoch stays.
+
+    The files are hashed before the photo lock is taken. The refreshed fields
+    and the hashes are written in one compare-and-set transaction; when the
+    photo list keeps changing under it, nothing is written and this answers
+    409. Nothing inside the lock takes ``photo_lock`` again (it is not
+    re-entrant).
     """
     memory_id = mem_row.id
     lat, lon = _resolve_body_geo(sess, mem_row.project_id, body)
+    hashes = _hash_unhashed_photos(user_id, mem_row)
     with photo_lock("memory", memory_id):
         mem_row.name = body.name
         mem_row.date = body.date
@@ -359,7 +363,7 @@ def _adopt_and_refresh(sess, user_id: str, mem_row: DBMemory, body: "MemoryBody"
         mem_row.lon = lon
         mem_row.polarsteps_step_id = body.polarsteps_step_id
         try:
-            _clear_memory_photos(sess, user_id, mem_row)
+            _write_refresh(sess, mem_row, hashes)
         except PhotoWriteConflict:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=PHOTO_CONFLICT_DETAIL)
     return memory_id
@@ -625,38 +629,45 @@ def _delete_photo_files(user_id: str, memory_id: int, photo_uuids: List[str]) ->
             remove_share_copy(full)
 
 
-def _clear_memory_photos(sess, user_id: str, mem_row: DBMemory) -> None:
-    """Drop all photos from *mem_row*: delete files, empty the list and ranks,
-    and bump the epoch so downloads queued before the clear are dropped.
+def _hash_unhashed_photos(user_id: str, mem_row: DBMemory) -> Dict[str, str]:
+    """``{uuid: sha256}`` of the full-size file of each photo listed on
+    *mem_row* that has no hash yet. A photo whose file is missing is left
+    out. Reads files under *user_id*'s tree; takes no lock.
+    """
+    known = load_state(mem_row.photo_order_json)["hashes"]
+    folder = photo_folder(_DATA_DIR, user_id, "memories", mem_row.id)
+    hashes: Dict[str, str] = {}
+    for photo_uuid in json.loads(mem_row.photos_json or "[]"):
+        if not photo_uuid or photo_uuid in known:
+            continue
+        full = photo_file(folder, photo_uuid)
+        if full is not None and full.is_file():
+            hashes[photo_uuid] = hashlib.sha256(full.read_bytes()).hexdigest()
+    return hashes
 
-    Used when a Polarsteps re-import adopts an existing memory and refreshes it,
-    so the client's subsequent ``from-url`` uploads repopulate a clean set rather
-    than appending duplicates onto the previously imported photos. The caller
-    holds ``photo_lock``; this does not take it.
 
-    The clear is a compare-and-set on the row as it is now (D13), and the
-    fields the caller changed on *mem_row*, not yet flushed in *sess*, are
-    written in the same transaction; *mem_row* is then expired in *sess*. The
-    files go only once the clear has committed. Raises
+def _write_refresh(sess, mem_row: DBMemory, hashes: Dict[str, str]) -> None:
+    """Write the fields the caller changed on *mem_row*, not yet flushed in
+    *sess*, and record *hashes* for the listed photos that still have none,
+    in one compare-and-set transaction (D13). The photo list, ranks, sources
+    and epoch are left as they are. *mem_row* is then expired in *sess*.
+
+    The caller holds ``photo_lock``; this does not take it. Raises
     ``PhotoWriteConflict``, having written nothing, when the list kept
     changing under it.
     """
-    memory_id = mem_row.id
     changed = {attr.key: attr.value for attr in inspect(mem_row).attrs if attr.history.has_changes()}
-    cleared: List[str] = []
 
-    def clear(photos, state, row):
+    def refresh(photos, state, row):
         for key, value in changed.items():
             setattr(row, key, value)
-        cleared[:] = [p for p in photos if p]
-        return [], clear_order(state)
+        # Always a result: the refreshed fields are written with it.
+        return photos, fill_hashes(photos, state, hashes)
 
-    written = mutate_photos("memory", memory_id, clear)
+    written = mutate_photos("memory", mem_row.id, refresh)
     sess.expire(mem_row)
     if written is not None:
         bust_project_payloads(written.cache_ref)
-        if cleared:
-            _delete_photo_files(user_id, memory_id, cleared)
 
 
 def _write_memory_photo(
