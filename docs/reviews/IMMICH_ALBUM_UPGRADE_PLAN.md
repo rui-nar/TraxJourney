@@ -114,3 +114,14 @@ Envelope: the plan's `## Review envelope` section, on top of REVIEW.md §2 defau
 - Guard: —
 - Override: user: Fix now — owner chose to fix rather than ship known gaps (2026-10-29)
 - Outcome: fixed
+
+## Round 3 — 2026-10-29, reviewed at 46477da0
+
+### R3-1 — The scripts exemption says their runbooks take the whole stack down, but the #237 reorder runbook runs with the API and workers up
+- Trigger: a future script author, or the U14 implementer, reads "scripts need no compare-and-set because their runbooks stop the stack", writes a plain read-modify-write of photos_json and photo_order_json, and gives it a runbook like the #237 reorder step ("with the API running", docs/RELEASING.md:237-295) → the script and worker-poster's apply overwrite each other's photo lists. No current script does this: `_write_reorder` (scripts/reorder_polarsteps_memory_photos.py:172-196) is already a compare-and-set, dedupe_memory_photos.py and backfill_thumbnail_orientation.py need `--api-stopped` and `docker compose down`, and the other scripts never write photo lists. The exemption holds; its stated reason does not.
+- Scores: trigger=theoretical, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Reject (D11)
+- Revisit when: —
+- Guard: —
+- Override: user: Fix now — the plan must not state a false reason, even for an exemption that holds (2026-10-30)
+- Outcome: fixed

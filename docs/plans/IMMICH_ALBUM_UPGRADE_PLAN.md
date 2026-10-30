@@ -424,8 +424,12 @@ REVIEW.md §2 defaults apply, with these additions:
   - Every photo replacement goes through the replace core in
     `api/photo_replace.py` (U8).
   - Exempt:
-    - scripts, whose runbooks take the whole stack down, workers included
-      (`docker compose down`, `docs/RELEASING.md`);
+    - scripts. Each one either runs with the whole stack down, workers
+      included (`--api-stopped` and `docker compose down`,
+      `docs/RELEASING.md`), or already writes by compare-and-set
+      (`_write_reorder` in `scripts/reorder_polarsteps_memory_photos.py`,
+      whose runbook keeps the API up). A new script that writes photo lists
+      must do one or the other;
     - an import that creates a trip, which writes only rows it has just
       created;
     - a Replace import's writes to kept rows, which run inside its write
@@ -985,7 +989,8 @@ wait for them.
       photo of the row: the replacement is kept, and only the unplaced name
       goes.
 - **Out of scope:**
-  - scripts, which run with the whole stack down;
+  - scripts, which run with the whole stack down or already write by
+    compare-and-set (Conventions, Writes);
   - the import writes in `src/project/repo_transfer.py`: a new trip's rows
     are its own, and a Replace runs inside its write transaction (D13; its
     race with an apply is U15's);
