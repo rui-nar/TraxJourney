@@ -155,20 +155,13 @@ class _PhotoUpgradeDialogState extends State<_PhotoUpgradeDialog> {
 
     // EXIF-as-UTC convention (see photo_source.dart's _parseExifDateTime):
     // the trip's local day is treated as a UTC day, matching classifyDayGeoMatch's
-    // localOffset: Duration.zero elsewhere in this file.
-    final parts = date.split('-');
-    final dayStartUtc = DateTime.utc(
-      int.parse(parts[0]),
-      int.parse(parts[1]),
-      int.parse(parts[2]),
-    );
-    final dayEndUtc = dayStartUtc.add(const Duration(days: 1));
-
-    final raw = await fetchImmichCandidatesForDay(
+    // localOffset: Duration.zero elsewhere in this file. The search window is
+    // widened by 14 h each side so no timezone's photos fall outside it; the
+    // filter below buckets on the photo's local capture time.
+    final raw = await fetchImmichCandidatesForLocalDay(
       baseUrl: widget.notifier.apiBaseUrl,
       authHeaders: widget.notifier.photoAuthHeaders,
-      dayStartUtc: dayStartUtc,
-      dayEndUtc: dayEndUtc,
+      date: date,
     );
     return filterImmichCandidatesForDay(
       date: date,
