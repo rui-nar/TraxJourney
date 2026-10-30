@@ -199,3 +199,26 @@ Answer (owner, 2026-10-30): HEIC/HEIF capped at 50 MP on the coded size of every
 - Guard: —
 - Override: —
 - Outcome: —
+
+## U4 unit review round 2 — 2026-10-30, reviewed at c0817a59
+
+Envelope question to the owner: the 50 MP cap refuses real files the 100 MP cap accepted (Android "Hi-Res" HEIF at 8192x6144, 50.3 MP; Sony A7R V / A7CR HEIF at 60.2 MP). Nudge the cap?
+Owner answer (2026-10-30): raise it to 51 MP, and decode HEIC/HEIF in a child process with a hard memory limit, so the cap is a clear refusal and the limit is the protection. Both findings below are fixed that way, plus `decode_threads=1`. The plan's envelope Memory bullet is updated.
+
+### U4-R2-1 — The HEIF cap reads `ispe`, but the HEVC decoder sizes its frame from the bitstream's SPS
+- Trigger: a signed-in user uploads a HEIC whose `hvc1` item declares `ispe` 4000x3000 but carries an HEVC stream whose SPS declares 25000x25000 → the check passes on 12 MP → libde265 allocates a 625 MP frame → the API container is OOM-killed, repeatably.
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=M/local, confidence=inferred (pillow-heif adopting the decoded size is confirmed; libheif not bounding libde265 to `ispe` is not)
+- Decision: Fix now (D6)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: —
+
+### U4-R2-2 — libheif decodes grid tiles on up to 4 threads, which the process lock cannot see
+- Trigger: a signed-in user uploads a HEIC with a small grid of four tiles, each with an honest 48 MP `ispe` → every per-item check passes → libheif decodes the tiles concurrently, about 600-700 MB → OOM.
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=inferred (`decode_threads=4` confirmed; libheif's parallel tile decode not read in source)
+- Decision: Fix now (D6)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: —

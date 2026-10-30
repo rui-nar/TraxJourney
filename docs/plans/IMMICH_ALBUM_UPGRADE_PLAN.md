@@ -357,11 +357,16 @@ REVIEW.md §2 defaults apply, with these additions:
   - A Replace import of the trip is refused while any apply on it is
     `pending` or `running` (D13, U15).
   - Each person has at most one scan or apply in progress per trip (U10).
-- **Memory** (revised by the owner after the U4 unit review, 2026-10-30).
-  - A HEIC decode holds libheif's copy and Pillow's at once, so HEIC and
-    HEIF are capped at 50 MP (`HEIF_MAX_PIXELS`). Current phones stay
-    under that. The cap is read from the coded size of every image item
-    in the file, not from the size after cropping.
+- **Memory** (revised by the owner after the U4 unit reviews, 2026-10-30).
+  - HEIC and HEIF are decoded in a child process with a hard memory limit
+    (revised after the U4 unit review round 2). Whatever size a file
+    declares, an allocation past the limit ends only the child, and the
+    photo is refused as invalid. libheif decodes on one thread.
+  - Before that, HEIC and HEIF are capped at 51 MP (`HEIF_MAX_PIXELS`),
+    read from the coded size of every image item in the file, not from
+    the size after cropping. The cap gives a clear "too large" answer;
+    the child's limit is the protection. Current phones, Android 50 MP
+    "Hi-Res" files included, stay under it.
   - Other formats keep `MAX_PHOTO_PIXELS` (100 MP).
   - Each process decodes one full image at a time, whatever its format.
   - Decoding runs in the API container (768 MB) for uploads and in
