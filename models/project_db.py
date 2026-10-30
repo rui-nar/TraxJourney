@@ -745,6 +745,125 @@ class DBRouteJob(sqlmodel.SQLModel, table=True):
     attempts: int = sqlmodel.Field(default=0)
 
 
+class DBPhotoUpgradeScan(sqlmodel.SQLModel, table=True):
+    """One scan of an Immich album against a trip's photos (issue #33, D8).
+
+    ``user_info_id`` is the person who ran the scan: on a shared trip each
+    person has their own scans. A person may keep several scans of a trip but
+    only one active (``pending`` or ``scanning``), which the partial unique
+    index enforces; "latest" is decided by ``created_at``. The apply columns
+    track the batches that replace the selected photos. Rows hold ids, dates,
+    sizes and progress only, never image data.
+    """
+
+    __tablename__ = "photoupgradescan"
+    __table_args__ = (
+        Index("ix_photoupgradescan_project_user_created",
+              "project_id", "user_info_id", "created_at"),
+        # One active scan per (trip, person). Mirrors migration
+        # f4a8c2d61e37, so the constraint travels with the model metadata.
+        Index(
+            "uq_photoupgradescan_active",
+            "project_id",
+            "user_info_id",
+            unique=True,
+            sqlite_where=text("status IN ('pending', 'scanning')"),
+            postgresql_where=text("status IN ('pending', 'scanning')"),
+        ),
+    )
+
+    id: Optional[int] = sqlmodel.Field(default=None, primary_key=True)
+    project_id: int = sqlmodel.Field(foreign_key="project.id", index=True)
+    user_info_id: int = sqlmodel.Field(foreign_key="userinfo.id", index=True)
+    album_id: str
+    album_name: Optional[str] = sqlmodel.Field(default=None)
+    include_memories: bool = sqlmodel.Field(default=True)
+    include_journal: bool = sqlmodel.Field(default=True)
+    status: str = sqlmodel.Field(default="pending")  # pending | scanning | ready | failed
+    stage: Optional[str] = sqlmodel.Field(default=None)  # human-readable progress label
+    progress_done: int = sqlmodel.Field(default=0)
+    progress_total: int = sqlmodel.Field(default=0)
+    error_message: Optional[str] = sqlmodel.Field(default=None)
+    heartbeat_at: Optional[float] = sqlmodel.Field(default=None)
+    apply_status: str = sqlmodel.Field(default="idle")  # idle | pending | running | done | stopped
+    apply_stopped_reason: Optional[str] = sqlmodel.Field(default=None)  # storage_full | interrupted
+    apply_heartbeat_at: Optional[float] = sqlmodel.Field(default=None)
+    created_at: float = sqlmodel.Field(default_factory=time.time)
+    completed_at: Optional[float] = sqlmodel.Field(default=None)
+
+
+class DBPhotoUpgradeAsset(sqlmodel.SQLModel, table=True):
+    """One photo of a scan's album, with its fingerprints (issue #33, D8).
+
+    The scan's fingerprint jobs keep their progress here (``fingerprinted``),
+    and the "Choose another" chooser reads the fingerprinted rows.
+    ``ahash``/``dhash`` are 64-bit hashes as 16 hex characters, since SQLite
+    integers are signed.
+    """
+
+    __tablename__ = "photoupgradeasset"
+    __table_args__ = (
+        Index("ix_photoupgradeasset_scan_local_date", "scan_id", "local_date"),
+        Index("ix_photoupgradeasset_scan_fingerprinted", "scan_id", "fingerprinted"),
+    )
+
+    id: Optional[int] = sqlmodel.Field(default=None, primary_key=True)
+    scan_id: int = sqlmodel.Field(foreign_key="photoupgradescan.id", index=True)
+    asset_id: str                                # Immich asset id
+    local_date: str                              # "YYYY-MM-DD", local capture day
+    lat: Optional[float] = sqlmodel.Field(default=None)
+    lon: Optional[float] = sqlmodel.Field(default=None)
+    mime: Optional[str] = sqlmodel.Field(default=None)
+    file_bytes: Optional[int] = sqlmodel.Field(default=None)
+    width: Optional[int] = sqlmodel.Field(default=None)
+    height: Optional[int] = sqlmodel.Field(default=None)
+    ahash: Optional[str] = sqlmodel.Field(default=None)
+    dhash: Optional[str] = sqlmodel.Field(default=None)
+    fingerprinted: bool = sqlmodel.Field(default=False)
+    fetch_failed: bool = sqlmodel.Field(default=False)
+
+
+class DBPhotoUpgradeSuggestion(sqlmodel.SQLModel, table=True):
+    """One trip photo of a scan and the album photo proposed for it (issue #33, D8).
+
+    ``artifact_kind``/``artifact_id`` name the memory or journal entry holding
+    ``photo_uuid``, and ``position`` is its place in that photo list, so the
+    review lists photos in trip order. ``state`` is one of ``proposed |
+    no_match | already_original | rejected | applying | applied | failed |
+    stale``; ``error_code`` says why a ``failed`` row failed.
+    """
+
+    __tablename__ = "photoupgradesuggestion"
+    __table_args__ = (
+        Index("ix_photoupgradesuggestion_scan_state", "scan_id", "state"),
+        Index("ix_photoupgradesuggestion_scan_order",
+              "scan_id", "date", "artifact_kind", "artifact_id", "position"),
+    )
+
+    id: Optional[int] = sqlmodel.Field(default=None, primary_key=True)
+    scan_id: int = sqlmodel.Field(foreign_key="photoupgradescan.id", index=True)
+    artifact_kind: str                           # memory | journal
+    artifact_id: int
+    photo_uuid: str
+    position: int
+    date: str                                    # "YYYY-MM-DD"
+    state: str = sqlmodel.Field(default="proposed")
+    confidence: Optional[str] = sqlmodel.Field(default=None)  # high | low
+    selected: bool = sqlmodel.Field(default=False)
+    asset_id: Optional[str] = sqlmodel.Field(default=None)
+    score: Optional[int] = sqlmodel.Field(default=None)
+    alternatives_json: str = sqlmodel.Field(default="[]")
+    asset_bytes: Optional[int] = sqlmodel.Field(default=None)
+    asset_width: Optional[int] = sqlmodel.Field(default=None)
+    asset_height: Optional[int] = sqlmodel.Field(default=None)
+    asset_mime: Optional[str] = sqlmodel.Field(default=None)
+    current_bytes: Optional[int] = sqlmodel.Field(default=None)
+    current_width: Optional[int] = sqlmodel.Field(default=None)
+    current_height: Optional[int] = sqlmodel.Field(default=None)
+    error_code: Optional[str] = sqlmodel.Field(default=None)
+    applied_uuid: Optional[str] = sqlmodel.Field(default=None)
+
+
 class DBShareVisit(sqlmodel.SQLModel, table=True):
     """One visitor record for a shared-project link.
 

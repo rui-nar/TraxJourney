@@ -12,12 +12,12 @@ import time
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import and_, case, func, not_, update
+from sqlalchemy import and_, case, delete, func, not_, update
 from sqlalchemy.orm import defer as _sa_defer
 from sqlmodel import Session, select
 
 from src.utils.logging import get_logger
-from models.project_db import DBActivity, DBEncounter, DBJournalEntry, DBMemory, DBMemoryComment, DBMemoryLike, DBPerson, DBPersonGroup, DBProject, DBProjectItem
+from models.project_db import DBActivity, DBEncounter, DBJournalEntry, DBMemory, DBMemoryComment, DBMemoryLike, DBPerson, DBPersonGroup, DBPhotoUpgradeAsset, DBPhotoUpgradeScan, DBPhotoUpgradeSuggestion, DBProject, DBProjectItem
 from src.models.activity import Activity
 from src.models.journal import JournalEntry
 from src.models.memory import Memory
@@ -452,6 +452,18 @@ class ProjectCoreMixin:
             select(DBPersonGroup).where(DBPersonGroup.project_id == row.id)
         ).all():
             sess.delete(group)
+
+        # Photo-upgrade scans of every person on this trip, with their album
+        # photos and suggestions (issue #33, D8). Bulk deletes: a scan can
+        # hold thousands of album-photo rows.
+        scan_ids = select(DBPhotoUpgradeScan.id).where(
+            DBPhotoUpgradeScan.project_id == row.id)
+        sess.execute(delete(DBPhotoUpgradeAsset)
+                     .where(DBPhotoUpgradeAsset.scan_id.in_(scan_ids)))
+        sess.execute(delete(DBPhotoUpgradeSuggestion)
+                     .where(DBPhotoUpgradeSuggestion.scan_id.in_(scan_ids)))
+        sess.execute(delete(DBPhotoUpgradeScan)
+                     .where(DBPhotoUpgradeScan.project_id == row.id))
 
         sess.delete(row)
         sess.commit()
