@@ -157,7 +157,7 @@ Envelope: the plan's `## Review envelope` section, on top of REVIEW.md §2 defau
 - Revisit when: —
 - Guard: `if not where: raise ValueError(...)` at the top of the helper, with a test that a call with no condition raises and deletes nothing.
 - Override: —
-- Outcome: —
+- Outcome: guard added
 
 ## U4 unit review — 2026-10-30, reviewed at 6b6c7725
 
@@ -171,7 +171,7 @@ Answer (owner, 2026-10-30): HEIC/HEIF capped at 50 MP on the coded size of every
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: —
+- Outcome: fixed
 
 ### U4-R1-2 — Under the cap, a HEIF decode holds libheif's and Pillow's full copies at once
 - Trigger: a signed-in user uploads a 99 MP HEIC (a few hundred KB for a flat image) → libheif's buffer stays alive while Pillow fills its own (Pillow stores RGB at 4 bytes per pixel), about 700-800 MB at peak → the API container is OOM-killed.
@@ -180,7 +180,7 @@ Answer (owner, 2026-10-30): HEIC/HEIF capped at 50 MP on the coded size of every
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: —
+- Outcome: fixed
 
 ### U4-R1-3 — A HEIC with more than 65533 bytes of EXIF is refused as not a readable image
 - Trigger: a user uploads a valid HEIC with an EXIF block over the JPEG marker limit → Pillow's JPEG writer raises, mapped to a 422. No known phone or camera writes such a block.
@@ -212,7 +212,7 @@ Owner answer (2026-10-30): raise it to 51 MP, and decode HEIC/HEIF in a child pr
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: —
+- Outcome: fixed
 
 ### U4-R2-2 — libheif decodes grid tiles on up to 4 threads, which the process lock cannot see
 - Trigger: a signed-in user uploads a HEIC with a small grid of four tiles, each with an honest 48 MP `ispe` → every per-item check passes → libheif decodes the tiles concurrently, about 600-700 MB → OOM.
@@ -221,7 +221,7 @@ Owner answer (2026-10-30): raise it to 51 MP, and decode HEIC/HEIF in a child pr
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: —
+- Outcome: fixed
 
 ## U4 unit review round 3 — 2026-10-30, reviewed at 228fbbc8
 
@@ -252,3 +252,9 @@ Run at the owner's request, past the 3-round cap. No findings.
 
 Envelope question to the owner: with the child limit at 576 MiB, the measured caps refuse 10-bit 4:2:2 above 31 MP, which covers Canon R5 (45 MP) and Fujifilm X-T5 (40 MP) HEIF, while a JPEG of the same size from the same camera is accepted. The same limit also bounds the apply worker (1280 MB container), which could afford about 709 MiB. Is refusing those files intended for both uploads and Immich applies, or should the worker run the child with a higher limit and caps derived from it?
 Owner answer (2026-10-30): the worker gets a higher limit. Each process sets its own limit through `HEIF_DECODE_MEMORY_MIB` (default 576 MiB), and the caps are computed from it. Plan envelope, U9 and U13 updated.
+
+## U4 unit review round 5 — 2026-10-30, reviewed at 3ff50f45
+
+Per-process child limit (`HEIF_DECODE_MEMORY_MIB`, default 576, worker-poster 896) and caps computed from it. Run at the owner's request. No findings.
+
+Envelope question to the owner: an unusable `HEIF_DECODE_MEMORY_MIB` fails on the first HEIC decode (a 500 for that upload), not at process start. Is first-use failure intended, or should the API and the worker refuse to start?
