@@ -312,6 +312,13 @@ def _heic_bytes(size=(20, 20), color=(200, 30, 30)) -> bytes:
     return buf.getvalue()
 
 
+def _heic_declaring(width: int, height: int) -> bytes:
+    """A small HEIC whose 'ispe' box declares *width* × *height*."""
+    raw = _heic_bytes()
+    at = raw.index(b"ispe")
+    return raw[:at + 8] + width.to_bytes(4, "big") + height.to_bytes(4, "big") + raw[at + 16:]
+
+
 def _stored_originals(photo_dir):
     return [p for p in photo_dir.glob("*.jpg") if not p.stem.endswith("_thumb")]
 
@@ -348,3 +355,33 @@ class TestHeicUpload:
         assert len(stored) == 1
         with Image.open(stored[0]) as img:
             assert img.format == "JPEG"
+
+    def test_memory_upload_refuses_a_heic_over_50_megapixels(self, env, tmp_path):
+        client, user_id, project_id, engine = env
+        memory_id = _insert_memory(engine, project_id)
+
+        resp = client.post(
+            f"/api/memories/{memory_id}/photos",
+            files={"file": ("p.heic", _heic_declaring(10_000, 6_000), "image/heic")},
+        )
+        assert resp.status_code == 422
+        assert "50 megapixels" in resp.json()["detail"]
+
+        photo_dir = tmp_path / "users" / str(user_id) / "memories" / str(memory_id)
+        assert list(photo_dir.glob("*.jpg")) == []
+
+    def test_memory_upload_refuses_unreadable_heif_boxes(self, env, tmp_path):
+        client, user_id, project_id, engine = env
+        memory_id = _insert_memory(engine, project_id)
+        raw = _heic_bytes()
+        meta = raw.index(b"meta") - 4
+        broken = raw[:meta] + (9).to_bytes(4, "big") + raw[meta + 4:]
+
+        resp = client.post(
+            f"/api/memories/{memory_id}/photos",
+            files={"file": ("p.heic", broken, "image/heic")},
+        )
+        assert resp.status_code == 422
+
+        photo_dir = tmp_path / "users" / str(user_id) / "memories" / str(memory_id)
+        assert list(photo_dir.glob("*.jpg")) == []
