@@ -39,6 +39,10 @@ dependencies = [
     "tzdata>=2024.1",
     "polyline>=2.0.0",
     "Pillow>=10.0.0",
+    # HEIC and HEIF photos, decoded so they are stored as JPEG (issue #33,
+    # src/utils/photo_store.py). Its wheels bundle libheif, libde265 (LGPL-3)
+    # and x265 (GPL-2.0-or-later), all compatible with the AGPL-3 licence.
+    "pillow-heif>=1.8.1",
     "mercantile>=1.2.0",
     "apscheduler>=3.10.0",
     "httpx>=0.27.0",

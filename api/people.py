@@ -15,7 +15,6 @@ Routes:
 """
 from __future__ import annotations
 
-import io
 import json
 import os
 import uuid as uuid_lib
@@ -26,7 +25,6 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from models.db import get_session
-from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 from sqlmodel import select
 
@@ -52,6 +50,7 @@ from src.api.polarsteps_client import format_step, format_trip
 from src.billing.entitlements import ensure_storage_quota
 from src.billing.usage import record_written, unlink_and_record
 from src.utils.photo_paths import photo_file, photo_files, photo_folder
+from src.utils.photo_store import InvalidPhoto, photo_media_type, write_photo_files
 from src.models.person import polarsteps_from_socials
 from src.utils.logging import get_logger
 
@@ -60,7 +59,6 @@ router = APIRouter(prefix="/api/people", tags=["people"])
 _log = get_logger(__name__)
 
 _DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
-_THUMB_SIZE = (400, 400)
 # Same cap as memory and journal photos — see api/memories.py's
 # _MAX_PHOTO_UPLOAD_BYTES for why 25MB.
 _MAX_AVATAR_UPLOAD_BYTES = 25 * 1024 * 1024
@@ -94,21 +92,15 @@ def _avatar_folder(owner_dir: str, person_id: int) -> Path:
 
 def _save_avatar_files(owner_dir: str, person_id: int, uuid_str: str, raw: bytes) -> None:
     """Write the avatar and its thumbnail in the owner's folder and charge the
-    owner. Decodes first, so a non-image upload leaves nothing on disk."""
+    owner. Written by the shared photo writer, so a HEIC avatar is stored as
+    a JPEG (#33) and a non-image upload leaves nothing on disk."""
     try:
-        img = Image.open(io.BytesIO(raw)).convert("RGB")
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        full, thumb = write_photo_files(_avatar_folder(owner_dir, person_id), uuid_str, raw)
+    except InvalidPhoto as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Invalid image file",
         ) from exc
-    folder = _avatar_folder(owner_dir, person_id)
-    folder.mkdir(parents=True, exist_ok=True)
-    full = folder / f"{uuid_str}.jpg"
-    thumb = folder / f"{uuid_str}_thumb.jpg"
-    full.write_bytes(raw)
-    img.thumbnail(_THUMB_SIZE, Image.LANCZOS)
-    img.save(str(thumb), "JPEG", quality=85)
     record_written(owner_dir, full, thumb)
 
 
@@ -458,7 +450,7 @@ def serve_avatar(
     full_path = photo_file(_avatar_folder(owner_dir, person_id), uuid_str)
     if full_path is None or not full_path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
-    return FileResponse(str(full_path), media_type="image/jpeg")
+    return FileResponse(str(full_path), media_type=photo_media_type(full_path))
 
 
 @router.get("/{person_id}/avatar/thumb", summary="Serve avatar thumbnail")
@@ -479,7 +471,7 @@ def serve_avatar_thumb(
     if thumb_path is None or not thumb_path.exists():
         full_path = photo_file(photo_dir, uuid_str)
         if full_path is not None and full_path.exists():
-            return FileResponse(str(full_path), media_type="image/jpeg")
+            return FileResponse(str(full_path), media_type=photo_media_type(full_path))
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     return FileResponse(str(thumb_path), media_type="image/jpeg")
 
