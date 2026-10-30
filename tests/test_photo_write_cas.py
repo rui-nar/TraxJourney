@@ -324,7 +324,7 @@ def test_a_cas_update_leaves_the_rows_other_columns_as_they_were(env):
             other.add(other_row)
             other.commit()
 
-        state = {"epoch": 0, "ranks": {"a": 0}, "hashes": {"a": _HASH}}
+        state = {"epoch": 0, "ranks": {"a": 0}, "hashes": {"a": _HASH}, "sources": {}}
         assert photo_write.cas_photo_columns(
             sess, DBMemory, ids["memory"], read_photos_json=read_photos,
             read_order_json=read_order, photos=["a"], state=state)
@@ -360,7 +360,7 @@ def test_drop_unplaced_racing_a_replace_keeps_the_replacement(env, monkeypatch, 
     row_id = ids[kind]
     _other_process_writes(engine, kind, row_id, lambda p, s: (
         ["keep", "drop"],
-        {"epoch": 0, "ranks": {"keep": 0, "drop": 1}, "hashes": {"keep": _HASH, "drop": "b" * 64}}))
+        {"epoch": 0, "ranks": {"keep": 0, "drop": 1}, "hashes": {"keep": _HASH, "drop": "b" * 64}, "sources": {}}))
 
     _between_read_and_write(monkeypatch, lambda: _other_process_writes(
         engine, kind, row_id, lambda p, s: replace_in_order(p, s, "keep", "upgraded")))
@@ -368,7 +368,7 @@ def test_drop_unplaced_racing_a_replace_keeps_the_replacement(env, monkeypatch, 
 
     assert _photos(engine, kind, row_id) == ["upgraded"]
     assert load_state(_row(engine, kind, row_id).photo_order_json) == {
-        "epoch": 0, "ranks": {"upgraded": 0}, "hashes": {"upgraded": _HASH}}
+        "epoch": 0, "ranks": {"upgraded": 0}, "hashes": {"upgraded": _HASH}, "sources": {}}
 
 
 def test_drop_unplaced_that_keeps_conflicting_logs_and_leaves_the_name(env, monkeypatch, caplog):
