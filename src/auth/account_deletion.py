@@ -15,7 +15,7 @@ from __future__ import annotations
 import shutil
 import time
 
-from sqlalchemy import delete, or_, update
+from sqlalchemy import or_, update
 from sqlmodel import Session, select
 
 from models.project_db import (
@@ -26,9 +26,7 @@ from models.project_db import (
     DBMemoryTranslation,
     DBPerson,
     DBPersonGroup,
-    DBPhotoUpgradeAsset,
     DBPhotoUpgradeScan,
-    DBPhotoUpgradeSuggestion,
     DBProject,
     DBProjectInvite,
     DBProjectItem,
@@ -46,6 +44,7 @@ from models.project_db import (
     DBDeviceKey,
     DBJournalEntry,
     DBRecoveryWrap,
+    delete_photo_upgrade_scans,
 )
 from models.billing import Subscription, SubscriptionRefund, UserUsage
 from models.user import (
@@ -650,18 +649,12 @@ def delete_user_and_data(sess: Session, user_info_id: int) -> None:
     _delete_all(DBRouteJob, DBRouteJob.user_info_id == user_info_id)
     # Photo-upgrade scans (issue #33, D8): this user's own, on any trip, and
     # every scan of this user's trips, which go with the trips. Their album
-    # photos and suggestions first. Bulk deletes: a scan can hold thousands
-    # of album-photo rows.
+    # photos and suggestions with them.
     scan_owned = DBPhotoUpgradeScan.user_info_id == user_info_id
     if project_ids:
         scan_owned = or_(scan_owned,
                          DBPhotoUpgradeScan.project_id.in_(project_ids))
-    scan_ids = select(DBPhotoUpgradeScan.id).where(scan_owned)
-    sess.execute(delete(DBPhotoUpgradeAsset)
-                 .where(DBPhotoUpgradeAsset.scan_id.in_(scan_ids)))
-    sess.execute(delete(DBPhotoUpgradeSuggestion)
-                 .where(DBPhotoUpgradeSuggestion.scan_id.in_(scan_ids)))
-    sess.execute(delete(DBPhotoUpgradeScan).where(scan_owned))
+    delete_photo_upgrade_scans(sess, scan_owned)
 
     if project_ids:
         _delete_all(DBMemory, DBMemory.project_id.in_(project_ids))

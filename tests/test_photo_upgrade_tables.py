@@ -23,6 +23,7 @@ from models.project_db import (
     DBPhotoUpgradeScan,
     DBPhotoUpgradeSuggestion,
     DBProject,
+    delete_photo_upgrade_scans,
 )
 from models.user import LocalUser, UserInfo
 from src.auth.account_deletion import delete_user_and_data
@@ -120,6 +121,37 @@ def test_deleting_an_account_removes_its_scans_in_other_peoples_projects(engine)
         assert _scans(sess) == {kept}
         assert _scan_ids(sess, DBPhotoUpgradeAsset) == {kept}
         assert _scan_ids(sess, DBPhotoUpgradeSuggestion) == {kept}
+
+
+def test_the_helper_deletes_only_the_selected_scans_with_their_rows(engine):
+    """A predicate selecting some scans of a trip removes those and every row
+    of theirs; the other scans keep their rows."""
+    with Session(engine) as sess:
+        uid = _mk_user(sess, "a@x.io")
+        pid = _mk_project(sess, uid, "Trip")
+        gone = {_mk_scan(sess, pid, uid, status="ready"),
+                _mk_scan(sess, pid, uid, status="failed")}
+        kept = {_mk_scan(sess, pid, uid, status="pending")}
+        applying = _mk_scan(sess, pid, uid, status="ready")
+        sess.get(DBPhotoUpgradeScan, applying).apply_status = "running"
+        sess.commit()
+        kept.add(applying)
+
+        n = delete_photo_upgrade_scans(
+            sess,
+            DBPhotoUpgradeScan.project_id == pid,
+            DBPhotoUpgradeScan.status.in_(("ready", "failed")),
+            DBPhotoUpgradeScan.apply_status.not_in(("pending", "running")),
+        )
+        sess.commit()
+        assert n == 2
+
+    with Session(engine) as sess:
+        assert _scans(sess) == kept
+        assert _scan_ids(sess, DBPhotoUpgradeAsset) == kept
+        assert _scan_ids(sess, DBPhotoUpgradeSuggestion) == kept
+        assert delete_photo_upgrade_scans(
+            sess, DBPhotoUpgradeScan.id.in_(sorted(gone))) == 0
 
 
 @pytest.mark.parametrize("first", ["pending", "scanning"])
