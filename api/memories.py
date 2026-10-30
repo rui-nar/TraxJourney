@@ -35,6 +35,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from models.db import get_session
 from pydantic import BaseModel, Field
+from sqlalchemy import inspect
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
@@ -49,8 +50,9 @@ from api.project_access import (
     translate_insert_after,
 )
 from api.photo_locks import photo_lock
-from api.photo_order import clear as clear_order, dump_state, has_hash, load_state, place
+from api.photo_order import clear as clear_order, has_hash, load_state, place
 from api.photo_order import remove as remove_from_order, replace as replace_in_order
+from api.photo_write import PHOTO_CONFLICT_DETAIL, PhotoWriteConflict, mutate_photos
 from api.project_shared import bust_project_payloads, project_cache_ref
 from api.translations import translate_text
 from models.project_db import DBMemory, DBMemoryComment, DBMemoryLike, DBMemoryTranslation, DBProject, DBProjectItem
@@ -340,12 +342,13 @@ def _adopt_and_refresh(sess, user_id: str, mem_row: DBMemory, body: "MemoryBody"
     photo placement can land between the two (#237): one that waits on the
     lock lands after the commit, where the clear's epoch bump decides its fate.
     Nothing inside the window takes ``photo_lock`` again (it is not re-entrant).
+    The refreshed fields are written with the clear, in its transaction; when
+    the photo list keeps changing under it, nothing is written and this
+    answers 409.
     """
+    memory_id = mem_row.id
     lat, lon = _resolve_body_geo(sess, mem_row.project_id, body)
-    with photo_lock("memory", mem_row.id):
-        # The row was read before the lock: a photo placed since then must be
-        # in the list the clear deletes, or its files would be orphaned.
-        sess.refresh(mem_row)
+    with photo_lock("memory", memory_id):
         mem_row.name = body.name
         mem_row.date = body.date
         mem_row.time = body.time
@@ -354,12 +357,11 @@ def _adopt_and_refresh(sess, user_id: str, mem_row: DBMemory, body: "MemoryBody"
         mem_row.lat = lat
         mem_row.lon = lon
         mem_row.polarsteps_step_id = body.polarsteps_step_id
-        _clear_memory_photos(sess, user_id, mem_row)
-        sess.add(mem_row)
-        cache_ref = project_cache_ref(sess, mem_row.project_id)
-        sess.commit()
-    bust_project_payloads(cache_ref)
-    return mem_row.id
+        try:
+            _clear_memory_photos(sess, user_id, mem_row)
+        except PhotoWriteConflict:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=PHOTO_CONFLICT_DETAIL)
+    return memory_id
 
 
 class MemoryBody(BaseModel):
@@ -629,13 +631,31 @@ def _clear_memory_photos(sess, user_id: str, mem_row: DBMemory) -> None:
     Used when a Polarsteps re-import adopts an existing memory and refreshes it,
     so the client's subsequent ``from-url`` uploads repopulate a clean set rather
     than appending duplicates onto the previously imported photos. The caller
-    holds ``photo_lock`` through its commit; this does not take it.
+    holds ``photo_lock``; this does not take it.
+
+    The clear is a compare-and-set on the row as it is now (D13), and the
+    fields the caller changed on *mem_row*, not yet flushed in *sess*, are
+    written in the same transaction; *mem_row* is then expired in *sess*. The
+    files go only once the clear has committed. Raises
+    ``PhotoWriteConflict``, having written nothing, when the list kept
+    changing under it.
     """
-    existing: List[str] = [p for p in json.loads(mem_row.photos_json or "[]") if p]
-    if existing:
-        _delete_photo_files(user_id, mem_row.id, existing)
-    mem_row.photos_json = "[]"
-    mem_row.photo_order_json = dump_state(clear_order(load_state(mem_row.photo_order_json)))
+    memory_id = mem_row.id
+    changed = {attr.key: attr.value for attr in inspect(mem_row).attrs if attr.history.has_changes()}
+    cleared: List[str] = []
+
+    def clear(photos, state, row):
+        for key, value in changed.items():
+            setattr(row, key, value)
+        cleared[:] = [p for p in photos if p]
+        return [], clear_order(state)
+
+    written = mutate_photos("memory", memory_id, clear)
+    sess.expire(mem_row)
+    if written is not None:
+        bust_project_payloads(written.cache_ref)
+        if cleared:
+            _delete_photo_files(user_id, memory_id, cleared)
 
 
 def _write_memory_photo(
@@ -665,24 +685,31 @@ def _write_memory_photo(
     (a concurrent download of the same photo placed first), this one is a
     duplicate and its files are deleted the same way. Manual uploads pass
     none and are never refused.
+
+    The write is a compare-and-set (``api/photo_write.py``). When the list
+    keeps changing under it, the files are deleted the same way and
+    ``PhotoWriteConflict`` propagates.
     """
+    def place_photo(photos, state, row):
+        photos = [p for p in photos if p]
+        if ((epoch is not None and state["epoch"] != epoch)
+                or (content_hash is not None and has_hash(state, photos, content_hash))):
+            return None
+        return place(photos, state, uuid_str, order, content_hash=content_hash)
+
     with photo_lock("memory", memory_id):
-        with get_session() as sess:
-            mem_row = sess.get(DBMemory, memory_id)
-            state = load_state(mem_row.photo_order_json) if mem_row is not None else None
-            photos = [p for p in json.loads(mem_row.photos_json or "[]") if p] if mem_row is not None else []
-            if (mem_row is None or (epoch is not None and state["epoch"] != epoch)
-                    or (content_hash is not None and has_hash(state, photos, content_hash))):
-                if owner_dir is not None:
-                    _delete_photo_files(owner_dir, memory_id, [uuid_str])
-                return False
-            photos, state = place(photos, state, uuid_str, order, content_hash=content_hash)
-            mem_row.photos_json = json.dumps(photos)
-            mem_row.photo_order_json = dump_state(state)
-            sess.add(mem_row)
-            cache_ref = project_cache_ref(sess, mem_row.project_id)
-            sess.commit()
-            bust_project_payloads(cache_ref)
+        try:
+            placed = mutate_photos("memory", memory_id, place_photo)
+        except PhotoWriteConflict:
+            # Refused like any other placement, but the caller says why.
+            if owner_dir is not None:
+                _delete_photo_files(owner_dir, memory_id, [uuid_str])
+            raise
+        if placed is None:
+            if owner_dir is not None:
+                _delete_photo_files(owner_dir, memory_id, [uuid_str])
+            return False
+        bust_project_payloads(placed.cache_ref)
     return True
 
 
@@ -724,7 +751,10 @@ def _download_photo_from_url(
         return
     uuid_str = str(uuid_lib.uuid4())
     _save_photo_files(user_id, memory_id, uuid_str, content)
-    _write_memory_photo(memory_id, uuid_str, order, epoch, owner_dir=user_id, content_hash=content_hash)
+    try:
+        _write_memory_photo(memory_id, uuid_str, order, epoch, owner_dir=user_id, content_hash=content_hash)
+    except PhotoWriteConflict:
+        _log.error("Photo download for memory %s not placed: its photo list kept changing", memory_id)
 
 
 class PhotoFromUrlIn(BaseModel):
@@ -766,7 +796,11 @@ async def upload_photo(
     # semaphore comment above — but here via FastAPI's thread pool instead of
     # a sync route, since the rest of this handler needs to stay async).
     await run_in_threadpool(_save_photo_files, owner_dir, memory_id, photo_uuid, raw)
-    if not _write_memory_photo(memory_id, photo_uuid, owner_dir=owner_dir):
+    try:
+        placed = _write_memory_photo(memory_id, photo_uuid, owner_dir=owner_dir)
+    except PhotoWriteConflict:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=PHOTO_CONFLICT_DETAIL)
+    if not placed:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Memory not found")
     return {"uuid": photo_uuid}
 
@@ -803,21 +837,25 @@ def delete_photo(
 ):
     """Remove a photo from a memory and delete its files from disk."""
     user_info_id = int(current_user["sub"])
-    with photo_lock("memory", memory_id), get_session() as sess:
-        mem_row = _get_owned_memory(sess, memory_id, user_info_id)
-        photos: List[str] = json.loads(mem_row.photos_json or "[]")
+
+    def drop(photos, state, row):
         if photo_uuid not in photos:
+            return None
+        return remove_from_order(photos, state, photo_uuid)
+
+    with photo_lock("memory", memory_id):
+        with get_session() as sess:
+            mem_row = _get_owned_memory(sess, memory_id, user_info_id)
+            owner_dir = _owner_dir_id(sess, mem_row)
+        try:
+            removed = mutate_photos("memory", memory_id, drop)
+        except PhotoWriteConflict:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=PHOTO_CONFLICT_DETAIL)
+        if removed is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
-
-        _delete_photo_files(_owner_dir_id(sess, mem_row), memory_id, [photo_uuid])
-
-        photos, state = remove_from_order(photos, load_state(mem_row.photo_order_json), photo_uuid)
-        mem_row.photos_json = json.dumps(photos)
-        mem_row.photo_order_json = dump_state(state)
-        sess.add(mem_row)
-        cache_ref = project_cache_ref(sess, mem_row.project_id)
-        sess.commit()
-        bust_project_payloads(cache_ref)
+        bust_project_payloads(removed.cache_ref)
+        # Only once the list no longer names the photo.
+        _delete_photo_files(owner_dir, memory_id, [photo_uuid])
 
 
 @router.put("/{memory_id}/photos/{old_uuid}/replace", status_code=status.HTTP_200_OK,
@@ -848,26 +886,23 @@ async def replace_photo(
     new_uuid = str(uuid_lib.uuid4())
     await run_in_threadpool(_save_photo_files, owner_dir, memory_id, new_uuid, raw)
 
-    with photo_lock("memory", memory_id), get_session() as sess:
-        mem_row = sess.get(DBMemory, memory_id)
+    def swap(photos, state, row):
         # Same position and rank, not remove+append: photos_json order is
         # display order. None when the old photo was deleted meanwhile.
-        replaced = None if mem_row is None else replace_in_order(
-            [p for p in json.loads(mem_row.photos_json or "[]") if p],
-            load_state(mem_row.photo_order_json), old_uuid, new_uuid,
-        )
+        return replace_in_order([p for p in photos if p], state, old_uuid, new_uuid)
+
+    with photo_lock("memory", memory_id):
+        try:
+            replaced = mutate_photos("memory", memory_id, swap)
+        except PhotoWriteConflict:
+            _delete_photo_files(owner_dir, memory_id, [new_uuid])
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=PHOTO_CONFLICT_DETAIL)
         if replaced is None:
             # The memory or the old photo went while the new files were
             # written: they have nowhere to go (#237).
             _delete_photo_files(owner_dir, memory_id, [new_uuid])
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
-        photos, state = replaced
-        mem_row.photos_json = json.dumps(photos)
-        mem_row.photo_order_json = dump_state(state)
-        sess.add(mem_row)
-        cache_ref = project_cache_ref(sess, mem_row.project_id)
-        sess.commit()
-        bust_project_payloads(cache_ref)
+        bust_project_payloads(replaced.cache_ref)
         # Still under the lock: a delete_memory's folder sweep would otherwise
         # size these same files and uncount them a second time.
         _delete_photo_files(owner_dir, memory_id, [old_uuid])
