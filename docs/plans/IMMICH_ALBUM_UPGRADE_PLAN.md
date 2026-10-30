@@ -357,10 +357,16 @@ REVIEW.md §2 defaults apply, with these additions:
   - A Replace import of the trip is refused while any apply on it is
     `pending` or `running` (D13, U15).
   - Each person has at most one scan or apply in progress per trip (U10).
-- **Memory.** HEIC decode is bounded by `MAX_PHOTO_PIXELS`, as PNG decode
-  already is. It runs in the API container (768 MB) for uploads and in
-  `worker-poster` (1280 MB) for applies. Each job handles one photo at a
-  time.
+- **Memory** (revised by the owner after the U4 unit review, 2026-10-30).
+  - A HEIC decode holds libheif's copy and Pillow's at once, so HEIC and
+    HEIF are capped at 50 MP (`HEIF_MAX_PIXELS`). Current phones stay
+    under that. The cap is read from the coded size of every image item
+    in the file, not from the size after cropping.
+  - Other formats keep `MAX_PHOTO_PIXELS` (100 MP).
+  - Each process decodes one full image at a time, whatever its format.
+  - Decoding runs in the API container (768 MB) for uploads and in
+    `worker-poster` (1280 MB) for applies. Each job handles one photo at a
+    time.
 - **No new end-to-end encryption surface.** Photos are documented as
   unencrypted. Scans read no memory or journal text.
 
@@ -1455,6 +1461,11 @@ wait for them.
      prod to `poster photos default resolve`, then `docker compose up -d`.
      Check with a scan on val. Until this is done, scans answer 503.
   4. The deployment doc gets the same command.
+  4a. The published image now ships `pillow-heif`'s bundled libheif and
+     libde265 (LGPL-3.0) and x265 (GPL-2.0-or-later). Add a third-party
+     notice to the README's licence section: name the three libraries,
+     their licences and versions, and link the exact upstream source of
+     each version, as the source offer (owner decision, 2026-10-30).
   5. The plans index row of this plan gets the PR that delivers it.
 - **Acceptance:**
   - `pytest tests/test_release_notes.py tests/test_worker_topology.py`

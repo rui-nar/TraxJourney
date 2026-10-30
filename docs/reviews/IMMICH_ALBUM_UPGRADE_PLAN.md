@@ -125,3 +125,77 @@ Envelope: the plan's `## Review envelope` section, on top of REVIEW.md §2 defau
 - Guard: —
 - Override: user: Fix now — the plan must not state a false reason, even for an exemption that holds (2026-10-30)
 - Outcome: fixed
+
+## U3 unit review — 2026-10-30, reviewed at fa88eaa5
+
+### U3-R1-1 — U3 edited two test files outside its Scope without the X3 escalation
+- Trigger (corrected by triage): the reviewer could not see the delivery. The U3 implementer did escalate under X3 before editing anything, and the orchestrator widened the Scope to tests/test_memories_photo_order.py and tests/test_reorder_polarsteps_memory_photos.py, only to add "sources": {} to full-state assertions. What remains needs an orchestrator that skips the DELIVERY.md §6 row, which no current step produces.
+- Scores (corrected by triage): trigger=theoretical, impact=maintainability, detect=logged, later=cheap, fix=S/local, confidence=inferred
+- Decision: Reject (D11)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: —
+
+## U6 unit review — 2026-10-30, reviewed at 112b884c
+
+### U6-R1-1 — The three-table scan cascade is hand-written at each delete site, with no foreign-key enforcement to catch a site that forgets a child table
+- Trigger: the U9 or U10 implementer writes one of the three later scan-deleting sites (U9 Do 5, the U10 DELETE route, the 30-day sweep) as a single `delete(DBPhotoUpgradeScan)` → the scan's asset and suggestion rows stay forever, with no error, since SQLite runs without `PRAGMA foreign_keys` (models/db.py:93-97).
+- Scores (corrected by triage): trigger=theoretical, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Reject (D11)
+- Revisit when: —
+- Guard: —
+- Override: user: Fix now — owner chose to fix rather than ship known gaps (2026-10-30)
+- Outcome: fixed
+
+## U6 unit review round 2 — 2026-10-30, reviewed at 17ff74d5
+
+### U6-R2-1 — delete_photo_upgrade_scans with no condition silently deletes every scan, album photo and suggestion of every user
+- Trigger: a U9 or U10 implementer calls the helper with a condition list that is empty on some path → the three DELETEs carry no WHERE, and the commit empties all three tables for every user, with a non-zero count that looks like success. Both current callers pass one fixed condition, so nothing does this today.
+- Scores: trigger=theoretical, impact=data-loss, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Guard (D4), flagged to the user
+- Revisit when: —
+- Guard: `if not where: raise ValueError(...)` at the top of the helper, with a test that a call with no condition raises and deletes nothing.
+- Override: —
+- Outcome: —
+
+## U4 unit review — 2026-10-30, reviewed at 6b6c7725
+
+Envelope question to the owner: is 100 MP still the bound for the 768 MB API container, given that a near-cap PNG needs about 700 MB at its RGB conversion and a HEIF decode holds two or three full copies, with uploads decoding in parallel?
+Answer (owner, 2026-10-30): HEIC/HEIF capped at 50 MP on the coded size of every image item; one full decode at a time per process; other formats keep 100 MP. The plan's envelope is amended.
+
+### U4-R1-1 — The HEIF pixel cap is read from the size after cropping, so a `clap`-cropped HEIC decodes at its full coded size
+- Trigger: any signed-in user uploads a crafted HEIC whose `ispe` declares about 30000x30000 with a `clap` crop to 100x100 → the 100 MP check passes on (100, 100), libheif decodes the full image (about 2.7 GB) → the API container (768 MB) is OOM-killed, for every user, repeatably.
+- Scores (corrected by triage): trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=M/local, confidence=inferred
+- Decision: Fix now (D6)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: —
+
+### U4-R1-2 — Under the cap, a HEIF decode holds libheif's and Pillow's full copies at once
+- Trigger: a signed-in user uploads a 99 MP HEIC (a few hundred KB for a flat image) → libheif's buffer stays alive while Pillow fills its own (Pillow stores RGB at 4 bytes per pixel), about 700-800 MB at peak → the API container is OOM-killed.
+- Scores (corrected by triage): trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=inferred
+- Decision: Fix now (D6). Depends on the envelope question: a lower HEIF cap is the fix; keeping 100 MP with a larger container budget would make this D1.
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: —
+
+### U4-R1-3 — A HEIC with more than 65533 bytes of EXIF is refused as not a readable image
+- Trigger: a user uploads a valid HEIC with an EXIF block over the JPEG marker limit → Pillow's JPEG writer raises, mapped to a 422. No known phone or camera writes such a block.
+- Scores: trigger=theoretical, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Reject (D11)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: —
+
+### U4-R1-4 — A HEIC whose rotation is only in its EXIF is stored sideways, and the original is not kept
+- Trigger: a user uploads a HEIC with EXIF orientation and no `irot`/`imir` → pillow-heif resets the tag without rotating, and the JPEG is stored sideways. HEIF readers are specified to use `irot`/`imir`, and no known producer writes EXIF-only orientation.
+- Scores: trigger=theoretical, impact=wrong-visible, detect=user-visible, later=expensive, fix=S/local, confidence=inferred
+- Decision: Reject (D11)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: —
