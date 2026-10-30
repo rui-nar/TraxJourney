@@ -235,7 +235,7 @@ Owner answer (2026-10-30): yes, in scope. A 10-bit file the child cannot decode 
 - Revisit when: the "HEIF decode failed" warning appears for an upload under `HEIF_MAX_PIXELS` that did not time out; a user reports a camera HEIF refused as unreadable; or a measured 40-46 MP 10-bit HEIF fails at `HEIF_CHILD_MEMORY`.
 - Guard: —
 - Override: user: Fix now — 10-bit camera HEIF is in scope; measure it, and refuse early by bit depth if it does not fit (2026-10-30)
-- Outcome: —
+- Outcome: fixed
 
 ### U4-R3-2 — The decoding child inherits the API's full environment, so a decoder exploit could read server secrets
 - Trigger: an attacker uploads a HEIC exploiting a memory-safety bug in libheif/libde265 (none known in 1.23.6) → code runs in the child → reads the database URL, signing keys and Stripe/Immich credentials from its environment.
@@ -244,4 +244,10 @@ Owner answer (2026-10-30): yes, in scope. A 10-bit file the child cannot decode 
 - Revisit when: the guard fires.
 - Guard: in `_heif_to_jpeg`, log at ERROR "HEIF decoder crashed: signal N, sha256=<hash>, bytes=<len>" when the child dies on SIGSEGV, SIGBUS, SIGILL or SIGFPE (not SIGABRT/MemoryError, which is the normal limit outcome).
 - Override: user: Fix now — start the child with a PATH-only environment as well as adding the guard (2026-10-30)
-- Outcome: —
+- Outcome: fixed
+
+## U4 unit review round 4 — 2026-10-30, reviewed at e639129d
+
+Run at the owner's request, past the 3-round cap. No findings.
+
+Envelope question to the owner: with the child limit at 576 MiB, the measured caps refuse 10-bit 4:2:2 above 31 MP, which covers Canon R5 (45 MP) and Fujifilm X-T5 (40 MP) HEIF, while a JPEG of the same size from the same camera is accepted. The same limit also bounds the apply worker (1280 MB container), which could afford about 709 MiB. Is refusing those files intended for both uploads and Immich applies, or should the worker run the child with a higher limit and caps derived from it?
