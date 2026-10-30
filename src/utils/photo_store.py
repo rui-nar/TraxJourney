@@ -63,43 +63,91 @@ MAX_PHOTO_PIXELS = 100_000_000
 #: at once. Current phones stay under it (a 48 MP iPhone photo is 48.8 MP).
 #: Read from the coded size of every image item in the file
 #: (:func:`_check_heif_size`), not from the size after cropping, which is all
-#: Pillow reports. An early, explained refusal: the hard bound is
-#: :data:`HEIF_CHILD_MEMORY`.
+#: Pillow reports. An early, explained refusal: the hard bound is the
+#: decoding process's memory limit (:func:`heif_decode_memory_mib`). Every
+#: format's cap (:func:`heif_pixel_cap`) is at most this.
 HEIF_MAX_PIXELS = 51_000_000
 
 #: Quality of the JPEG a HEIC or HEIF photo is stored as (#33, D4).
 HEIF_JPEG_QUALITY = 92
 
-#: Address space, in bytes, of the process that decodes a HEIC or HEIF photo
-#: (src/utils/heif_child.py). Measured on Linux (python:3.14-slim, libheif
-#: 1.23.6, one decode thread) on honest 51 MP HEICs: the smallest limit that
-#: decodes them lies between 460 and 480 MiB (peak resident 427-440 MiB), so
-#: 576 MiB leaves 20 % headroom. Beside the API process (~155 MiB resident
-#: once started), that still fits the API container's 768 MB.
-HEIF_CHILD_MEMORY = 576 * 1024 * 1024
+#: The runtime variable that sets, per process, the address space in MiB of
+#: the process that decodes a HEIC or HEIF photo (src/utils/heif_child.py).
+#: Read on every decode, so a deploy changes it without a rebuild.
+HEIF_DECODE_MEMORY_ENV = "HEIF_DECODE_MEMORY_MIB"
 
-#: Lower pixel caps for coded formats that cost more to decode than 8-bit
-#: 4:2:0, keyed by (deeper than 8 bits, chroma format: 1 4:2:0, 2 4:2:2,
-#: 3 4:4:4), read from each coded image's 'hvcC' (:func:`_check_heif_size`).
-#: 8-bit 4:2:0 (and monochrome) keeps :data:`HEIF_MAX_PIXELS`.
+#: Its default, the API's: an honest 8-bit 4:2:0 51 MP HEIC needs 472 MiB
+#: (peak resident 427-440 MiB), so 576 MiB leaves 20 % headroom, and beside
+#: the API process (~155 MiB resident once started) it fits the API
+#: container's 768 MB.
 #:
-#: Measured like :data:`HEIF_CHILD_MEMORY`, as the smallest address-space limit
-#: each honest file decodes under: 8-bit 4:2:0 needs about 74 MiB + 7.8 MiB per
-#: MP (472 MiB at 50.8 MP); 8-bit 4:2:2 9.9, 8-bit 4:4:4 10.9, 10-bit 4:2:0
-#: 9.4, 10-bit 4:2:2 14.1 and 10-bit 4:4:4 16.0 MiB per MP (from 576, 627,
-#: 541, 709 and 795 MiB at 45-51 MP). Each cap keeps the decode near or
-#: under 529 MiB, about 10 % below the limit, and was checked at its value:
-#: 8-bit 4:2:2 at 45 MP needs 529 MiB, 8-bit 4:4:4 at 41 MP 529, 10-bit 4:2:0
-#: at 47 MP 512, 10-bit 4:2:2 at 31 MP 498, 10-bit 4:4:4 at 28 MP 520; the
-#: caps below are one MP lower where that measured value was above 524 MiB.
-#: Measured on 10-bit files; any depth above 8 bits takes the 10-bit cap.
-HEIF_MAX_PIXELS_BY_FORMAT: Dict[Tuple[bool, int], int] = {
-    (False, 2): 44_000_000,
-    (False, 3): 40_000_000,
-    (True, 1): 47_000_000,
-    (True, 2): 31_000_000,
-    (True, 3): 28_000_000,
+#: worker-poster sets 896: under its 1280 MiB container, the worker process
+#: (55 MiB resident once it has imported src/jobs/worker.py and rq), its work
+#: horse (122 MiB with every job module of the queues it serves, plus up to
+#: 50 MiB for the photo and its JPEG while the child runs) and 128 MiB (10 %)
+#: of slack leave 925 MiB, rounded down. Measured under it, honest 10-bit 4:2:2
+#: HEIFs of 40, 45 and 51 MP decode (they need 636, 701 and 773 MiB), and a
+#: 10-bit 4:4:4 one at its 46 MP cap (799 MiB).
+HEIF_DECODE_MEMORY_MIB_DEFAULT = 576
+
+#: What decoding a HEIC or HEIF costs, as the smallest address-space limit an
+#: honest file decodes under: about :data:`HEIF_DECODE_BASE_MIB` plus these MiB
+#: per megapixel, keyed by (deeper than 8 bits, chroma format: 1 4:2:0, 2
+#: 4:2:2, 3 4:4:4), read from each coded image's 'hvcC'. Measured on Linux
+#: (python:3.14-slim, libheif 1.23.6, one decode thread), the higher of two
+#: sizes per format: 8-bit 4:2:0 262 MiB at 24 MP and 472 at 50.8; 8-bit 4:2:2
+#: 529 at 45 and 576 at 50.8; 8-bit 4:4:4 529 at 41 and 627 at 50.8; 10-bit
+#: 4:2:0 503 at 45 and 541 at 50.8; 10-bit 4:2:2 498 at 31 and 709 at 45;
+#: 10-bit 4:4:4 520 at 28 and 795 at 45. Measured on 10-bit files; any depth
+#: above 8 bits costs as 10 bits. Monochrome costs no more than 4:2:0.
+HEIF_DECODE_MIB_PER_MP: Dict[Tuple[bool, int], float] = {
+    (False, 1): 7.84,
+    (False, 2): 10.11,
+    (False, 3): 11.10,
+    (True, 1): 9.53,
+    (True, 2): 14.11,
+    (True, 3): 16.02,
 }
+
+#: The part of that cost that does not grow with the photo.
+HEIF_DECODE_BASE_MIB = 74
+
+#: Each format's cap keeps its decode this far below the limit (10 %).
+HEIF_DECODE_HEADROOM = 1.1
+
+
+class HeifDecodeConfigError(RuntimeError):
+    """:data:`HEIF_DECODE_MEMORY_ENV` is set to something other than a
+    positive whole number of MiB. Not the photo's fault: every HEIC or HEIF
+    decode fails with this until the setting is fixed."""
+
+
+def heif_decode_memory_mib() -> int:
+    """The decoding process's memory limit, in MiB, from
+    :data:`HEIF_DECODE_MEMORY_ENV` (default
+    :data:`HEIF_DECODE_MEMORY_MIB_DEFAULT`). A value that is not a positive
+    whole number raises :class:`HeifDecodeConfigError` rather than decode under
+    a limit nobody chose."""
+    value = os.environ.get(HEIF_DECODE_MEMORY_ENV)
+    if value is None or value.strip() == "":
+        return HEIF_DECODE_MEMORY_MIB_DEFAULT
+    try:
+        mib = int(value.strip())
+    except ValueError:
+        mib = 0
+    if mib <= 0:
+        raise HeifDecodeConfigError(
+            f"{HEIF_DECODE_MEMORY_ENV} must be a positive whole number of MiB, not {value!r}")
+    return mib
+
+
+def heif_pixel_cap(deep: bool, chroma: int, memory_mib: int) -> int:
+    """The most pixels a coded image of this format may have, so that its
+    decode stays :data:`HEIF_DECODE_HEADROOM` below *memory_mib*: whole
+    megapixels, never above :data:`HEIF_MAX_PIXELS`."""
+    per_mp = HEIF_DECODE_MIB_PER_MP[(deep, max(chroma, 1))]
+    megapixels = int((memory_mib / HEIF_DECODE_HEADROOM - HEIF_DECODE_BASE_MIB) // per_mp)
+    return max(0, min(HEIF_MAX_PIXELS, megapixels * 1_000_000))
 
 #: Seconds the HEIC or HEIF decode may take. A 51 MP photo takes about 2 s on
 #: the measuring machine; this allows a slower server many times that.
@@ -127,8 +175,7 @@ class InvalidPhoto(ValueError):
 
 class PhotoTooLarge(InvalidPhoto):
     """The image is over :data:`MAX_PHOTO_PIXELS`, or a HEIC or HEIF one over
-    :data:`HEIF_MAX_PIXELS` or its format's cap
-    (:data:`HEIF_MAX_PIXELS_BY_FORMAT`)."""
+    its format's cap (:func:`heif_pixel_cap`)."""
 
 
 def _too_large(limit: Optional[int] = None) -> PhotoTooLarge:
@@ -333,22 +380,23 @@ def _canvas_pixels(kind: bytes, head: bytes) -> int:
     return r.uint(field) * r.uint(field)
 
 
-def _heif_pixel_limit(formats: set) -> int:
+def _heif_pixel_limit(formats: set, memory_mib: int) -> int:
     """The pixel cap of a file whose coded images have these
     :func:`_hevc_format` values: the lowest of theirs, and never above
-    :data:`HEIF_MAX_PIXELS`. Monochrome costs no more than 4:2:0."""
-    return min([HEIF_MAX_PIXELS] + [HEIF_MAX_PIXELS_BY_FORMAT.get((deep, max(chroma, 1)), HEIF_MAX_PIXELS)
-                                    for deep, chroma in formats])
+    :data:`HEIF_MAX_PIXELS`. A file with no HEVC image is held to 8-bit
+    4:2:0."""
+    return min(heif_pixel_cap(deep, chroma, memory_mib) for deep, chroma in formats | {(False, 1)})
 
 
 def _check_heif_size(raw: bytes) -> None:
     """Refuse the HEIC or HEIF *raw* when any image libheif could decode from
-    it is over the pixel cap its coded format affords
-    (:data:`HEIF_MAX_PIXELS_BY_FORMAT`), before anything is decoded: every
+    it is over the pixel cap its coded format affords under this process's
+    decoding limit (:func:`heif_pixel_cap`), before anything is decoded: every
     'ispe' property, every grid and overlay canvas, against the costliest
     format of any coded image in the file. A file whose boxes cannot be read,
     with an image item of no 'ispe', or a coded HEVC image of no 'hvcC', is
     refused too rather than decoded blind."""
+    memory_mib = heif_decode_memory_mib()
     try:
         metas = [(s, e) for kind, s, e in _boxes(raw, 0, len(raw)) if kind == b"meta"]
         if len(metas) != 1:
@@ -384,7 +432,7 @@ def _check_heif_size(raw: bytes) -> None:
                 largest = max(largest, _canvas_pixels(kind, heads[item_id]))
     except (ValueError, IndexError) as exc:
         raise InvalidPhoto("it is not a readable image") from exc
-    limit = _heif_pixel_limit(formats)
+    limit = _heif_pixel_limit(formats, memory_mib)
     if largest > limit:
         raise _too_large(limit)
 
@@ -457,16 +505,17 @@ def _child_env() -> Dict[str, str]:
 
 def _heif_to_jpeg(raw: bytes) -> bytes:
     """The upright JPEG stored in place of the HEIC or HEIF *raw*, already
-    checked against :data:`HEIF_MAX_PIXELS`, made by src/utils/heif_child.py in
-    a process limited to :data:`HEIF_CHILD_MEMORY` (on Windows, a development
-    machine, the child runs without a limit). A decode that fails, runs out of
-    memory, is killed or overruns :data:`HEIF_CHILD_TIMEOUT` refuses the photo.
-    Called with :data:`_DECODE_LOCK` held, so one child runs at a time.
+    checked against its format's cap, made by src/utils/heif_child.py in a
+    process limited to :func:`heif_decode_memory_mib` (on Windows, a
+    development machine, the child runs without a limit). A decode that fails,
+    runs out of memory, is killed or overruns :data:`HEIF_CHILD_TIMEOUT`
+    refuses the photo. Called with :data:`_DECODE_LOCK` held, so one child
+    runs at a time.
 
     The child gets no environment but PATH: it reads untrusted bytes with a
     C decoder, and the API's environment holds its secrets.
     """
-    command = [sys.executable, "-I", str(_HEIF_CHILD), str(HEIF_CHILD_MEMORY),
+    command = [sys.executable, "-I", str(_HEIF_CHILD), str(heif_decode_memory_mib() * 1024 * 1024),
                str(HEIF_JPEG_QUALITY)]
     try:
         done = subprocess.run(command, input=raw, capture_output=True, env=_child_env(),

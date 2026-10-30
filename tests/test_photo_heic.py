@@ -42,6 +42,12 @@ from src.utils.photo_store import (
     write_photo_files,
 )
 
+@pytest.fixture(autouse=True)
+def _default_decode_memory(monkeypatch):
+    """Every test starts from the default limit, whatever the shell sets."""
+    monkeypatch.delenv("HEIF_DECODE_MEMORY_MIB", raising=False)
+
+
 NAME = "0b8f2c4e-1a2b-4c3d-8e9f-0123456789ab"
 TAKEN = "2024:05:06 07:08:09"
 ORIENTATION = 0x0112
@@ -261,6 +267,44 @@ def test_a_costlier_format_has_its_own_cap(monkeypatch, chroma, bits, cap):
     photo_store._open(_with_ispe(plain, width, cap // width + 1))
 
 
+TODAYS_CAPS = {
+    (False, 1): 51_000_000,
+    (False, 2): 44_000_000,
+    (False, 3): 40_000_000,
+    (True, 1): 47_000_000,
+    (True, 2): 31_000_000,
+    (True, 3): 28_000_000,
+}
+
+
+def test_the_default_limit_reproduces_the_measured_caps():
+    """At 576 MiB the caps computed from the cost model are the ones each
+    format was measured to decode under (e639129d)."""
+    assert photo_store.heif_decode_memory_mib() == 576
+    for (deep, chroma), cap in TODAYS_CAPS.items():
+        assert photo_store.heif_pixel_cap(deep, chroma, 576) == cap, (deep, chroma)
+    assert photo_store.heif_pixel_cap(False, 0, 576) == 51_000_000  # monochrome
+
+
+def test_the_worker_limit_caps():
+    """worker-poster's 896 MiB admits 51 MP in every format but 10-bit 4:4:4."""
+    caps = {key: photo_store.heif_pixel_cap(*key, 896) for key in TODAYS_CAPS}
+    assert caps == {**{key: 51_000_000 for key in TODAYS_CAPS}, (True, 3): 46_000_000}
+    assert all(cap <= photo_store.MAX_PHOTO_PIXELS for cap in caps.values())
+
+
+def test_the_caps_follow_the_memory_setting(monkeypatch):
+    """A 45 MP 10-bit 4:2:2 camera HEIF: refused under the API's 576 MiB,
+    admitted under worker-poster's 896."""
+    _no_decode(monkeypatch)
+    raw = _with_ispe(_heic_format((64, 64), 422, 10), 7_500, 6_000)
+
+    with pytest.raises(PhotoTooLarge, match="31 megapixels"):
+        photo_store._open(raw)
+    monkeypatch.setenv("HEIF_DECODE_MEMORY_MIB", "896")
+    assert photo_store._open(raw).size == (7_500, 6_000)
+
+
 def test_a_grid_canvas_takes_the_cap_of_its_tiles_format():
     """A 36 MP grid of 8-bit 4:2:0 tiles passes; of 10-bit 4:2:2 tiles, not."""
     raw = _heif({1: b"grid", 2: b"hvc1", 3: b"hvc1"}, [(6_000, 6_000), (512, 512)],
@@ -366,7 +410,14 @@ def test_other_decoder_failures_are_not_logged_as_errors(tmp_path, monkeypatch, 
     assert [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
-def test_the_decoding_process_gets_its_limits(tmp_path, monkeypatch):
+@pytest.mark.parametrize("env,mib", [(None, 576), ("896", 896), (" 700 ", 700)])
+def test_the_decoding_process_gets_its_limits(tmp_path, monkeypatch, env, mib):
+    """The memory limit comes from HEIF_DECODE_MEMORY_MIB, read on every
+    decode (576 MiB by default)."""
+    if env is None:
+        monkeypatch.delenv("HEIF_DECODE_MEMORY_MIB", raising=False)
+    else:
+        monkeypatch.setenv("HEIF_DECODE_MEMORY_MIB", env)
     commands = []
     real_run = subprocess.run
 
@@ -379,8 +430,29 @@ def test_the_decoding_process_gets_its_limits(tmp_path, monkeypatch):
 
     (command, timeout), = commands
     assert command[1] == "-I" and command[2].endswith("heif_child.py")
-    assert command[3:] == [str(photo_store.HEIF_CHILD_MEMORY), str(photo_store.HEIF_JPEG_QUALITY)]
+    assert command[3:] == [str(mib * 1024 * 1024), str(photo_store.HEIF_JPEG_QUALITY)]
     assert timeout == photo_store.HEIF_CHILD_TIMEOUT
+
+
+@pytest.mark.parametrize("value", ["0", "-576", "576.0", "576MiB", "lots"])
+def test_an_invalid_memory_setting_fails_loudly(tmp_path, monkeypatch, value):
+    """Not the photo's fault, so not a 422: every HEIC decode fails, naming the
+    setting, rather than run under a limit nobody chose."""
+    monkeypatch.setenv("HEIF_DECODE_MEMORY_MIB", value)
+    started = []
+    monkeypatch.setattr(photo_store.subprocess, "run", lambda *a, **k: started.append(a))
+
+    with pytest.raises(photo_store.HeifDecodeConfigError, match="HEIF_DECODE_MEMORY_MIB"):
+        write_photo_files(tmp_path / "f", NAME, _heic(_quartered((64, 64))))
+    assert not isinstance(photo_store.HeifDecodeConfigError("x"), InvalidPhoto)
+    assert started == [] and not (tmp_path / "f").exists()
+
+
+def test_a_jpeg_does_not_read_the_memory_setting(tmp_path, monkeypatch):
+    monkeypatch.setenv("HEIF_DECODE_MEMORY_MIB", "lots")
+    buf = io.BytesIO()
+    _quartered((64, 64)).save(buf, "JPEG")
+    write_photo_files(tmp_path, NAME, buf.getvalue())
 
 
 def test_libheif_decodes_on_one_thread(monkeypatch):
@@ -409,15 +481,18 @@ def test_libheif_decodes_on_one_thread(monkeypatch):
 @pytest.mark.skipif(resource is None, reason="the memory limit needs the resource module (Linux)")
 def test_a_decode_over_the_memory_limit_ends_the_child_not_the_server(tmp_path, monkeypatch):
     # Measured on Linux: a 64×64 HEIC decodes under 150 MiB, a 24 MP one
-    # needs more than 250 MiB.
-    monkeypatch.setattr(photo_store, "HEIF_CHILD_MEMORY", 160 * 1024 * 1024)
+    # needs more than 250 MiB. The size check, which would refuse the 24 MP
+    # one early under such a limit, is skipped: the child's limit is under test.
+    monkeypatch.setenv("HEIF_DECODE_MEMORY_MIB", "160")
+    monkeypatch.setattr(photo_store, "_check_heif_size", lambda raw: None)
     small = _heic(_quartered((64, 64)))
     write_photo_files(tmp_path / "small", NAME, small)
 
     large = io.BytesIO()
     Image.new("RGB", (6000, 4000), (40, 90, 160)).save(large, "HEIF")
-    with pytest.raises(InvalidPhoto):
+    with pytest.raises(InvalidPhoto) as refused:
         write_photo_files(tmp_path / "f", NAME, large.getvalue())
+    assert not isinstance(refused.value, PhotoTooLarge)
     assert not (tmp_path / "f").exists()
 
 
