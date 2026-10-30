@@ -356,7 +356,7 @@ class TestHeicUpload:
         with Image.open(stored[0]) as img:
             assert img.format == "JPEG"
 
-    def test_memory_upload_refuses_a_heic_over_50_megapixels(self, env, tmp_path):
+    def test_memory_upload_refuses_a_heic_over_51_megapixels(self, env, tmp_path):
         client, user_id, project_id, engine = env
         memory_id = _insert_memory(engine, project_id)
 
@@ -365,7 +365,7 @@ class TestHeicUpload:
             files={"file": ("p.heic", _heic_declaring(10_000, 6_000), "image/heic")},
         )
         assert resp.status_code == 422
-        assert "50 megapixels" in resp.json()["detail"]
+        assert "51 megapixels" in resp.json()["detail"]
 
         photo_dir = tmp_path / "users" / str(user_id) / "memories" / str(memory_id)
         assert list(photo_dir.glob("*.jpg")) == []

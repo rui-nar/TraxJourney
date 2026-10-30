@@ -5,12 +5,15 @@ archive (#469) all go through :func:`write_photo_files`: the image is decoded
 before anything is written, the raw bytes are stored as they came, and a
 400×400 JPEG thumbnail, turned upright by the original's EXIF orientation, is
 generated from them. A HEIC or HEIF photo is the one exception: no browser but
-Safari shows it, so it is stored as an upright JPEG instead (#33, D4). Nothing
-here knows about HTTP: a caller turns :class:`InvalidPhoto` into its own error.
+Safari shows it, so it is stored as an upright JPEG instead (#33, D4), made by
+src/utils/heif_child.py in a process of its own. Nothing here knows about
+HTTP: a caller turns :class:`InvalidPhoto` into its own error.
 """
 from __future__ import annotations
 
 import io
+import subprocess
+import sys
 import threading
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple, Union
@@ -19,13 +22,19 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from pillow_heif import register_heif_opener
 
 from src.billing.usage import record_written
+from src.utils.logging import get_logger
 from src.utils.photo_paths import photo_file
+
+_log = get_logger(__name__)
 
 # Pillow's own plugins are loaded first so they keep priority: its AVIF plugin
 # accepts the generic "mif1" brand too, and an AVIF must still open as AVIF,
-# not reach libheif, which has no AV1 decoder here.
+# not reach libheif, which has no AV1 decoder here. This process only opens
+# HEIF files to read their boxes; the decode itself runs in heif_child.py,
+# which registers the opener the same way. One thread: libheif otherwise
+# decodes grid tiles four at a time.
 Image.init()
-register_heif_opener()
+register_heif_opener(decode_threads=1)
 
 #: Bounding box of the generated thumbnail.
 THUMB_SIZE = (400, 400)
@@ -48,17 +57,33 @@ MAX_PHOTO_PIXELS = 100_000_000
 
 #: Largest HEIC or HEIF photo, in pixels, that is decoded (#33). Lower than
 #: :data:`MAX_PHOTO_PIXELS` because libheif's decoded copy and Pillow's are held
-#: at once. Current phones stay under it. Read from the coded size of every
-#: image item in the file (:func:`_check_heif_size`), not from the size after
-#: cropping, which is all Pillow reports.
-HEIF_MAX_PIXELS = 50_000_000
+#: at once. Current phones stay under it (a 48 MP iPhone photo is 48.8 MP).
+#: Read from the coded size of every image item in the file
+#: (:func:`_check_heif_size`), not from the size after cropping, which is all
+#: Pillow reports. An early, explained refusal: the hard bound is
+#: :data:`HEIF_CHILD_MEMORY`.
+HEIF_MAX_PIXELS = 51_000_000
 
 #: Quality of the JPEG a HEIC or HEIF photo is stored as (#33, D4).
 HEIF_JPEG_QUALITY = 92
 
+#: Address space, in bytes, of the process that decodes a HEIC or HEIF photo
+#: (src/utils/heif_child.py). Measured on Linux (python:3.14-slim, libheif
+#: 1.23.6, one decode thread) on honest 51 MP HEICs: the smallest limit that
+#: decodes them lies between 460 and 480 MiB (peak resident 427-440 MiB), so
+#: 576 MiB leaves 20 % headroom. Beside the API process (~155 MiB resident
+#: once started), that still fits the API container's 768 MB.
+HEIF_CHILD_MEMORY = 576 * 1024 * 1024
+
+#: Seconds the HEIC or HEIF decode may take. A 51 MP photo takes about 2 s on
+#: the measuring machine; this allows a slower server many times that.
+HEIF_CHILD_TIMEOUT = 30
+
+_HEIF_CHILD = Path(__file__).with_name("heif_child.py")
+
 #: Held around every full decode, whatever the format, so one process never
-#: decodes two photos at once: two 100 MP decodes would not fit in the API
-#: container (#33). File writes and storage accounting happen outside it.
+#: decodes two photos at once, and runs one HEIC decoding process at a time
+#: (#33). File writes and storage accounting happen outside it.
 _DECODE_LOCK = threading.Lock()
 
 
@@ -322,12 +347,14 @@ def _thumbnail(raw: bytes) -> Image.Image:
     decoded when its header declares more than :data:`MAX_PHOTO_PIXELS`."""
     img = _open(raw)
     with _DECODE_LOCK:
+        if img.format == "HEIF":
+            img = _open(_heif_to_jpeg(raw))
         return _thumbnail_of(img)
 
 
 def _thumbnail_of(img: Image.Image) -> Image.Image:
-    """Decode the opened *img* into its RGB thumbnail. Called with
-    :data:`_DECODE_LOCK` held."""
+    """Decode the opened *img*, never a HEIF one, into its RGB thumbnail.
+    Called with :data:`_DECODE_LOCK` held."""
     try:
         if img.format == "JPEG" and img.mode in ("RGB", "L"):
             # thumbnail() on an image not yet loaded first asks the JPEG
@@ -352,38 +379,27 @@ def _thumbnail_of(img: Image.Image) -> Image.Image:
         raise InvalidPhoto("it is not a readable image") from exc
 
 
-def _heif_to_jpeg(img: Image.Image) -> Tuple[bytes, Image.Image]:
-    """Encode the HEIC or HEIF *img*, already checked against the pixel
-    limit, as the JPEG stored in its place, and return it with its thumbnail.
-
-    The photo is upright as decoded: libheif applies the container's rotation
-    and mirror, and pillow-heif resets the EXIF orientation to 1 on open, so
-    the EXIF copied here cannot turn it a second time. The EXIF (capture date
-    included) and the ICC profile are kept; other metadata is not. Called
-    with :data:`_DECODE_LOCK` held.
+def _heif_to_jpeg(raw: bytes) -> bytes:
+    """The upright JPEG stored in place of the HEIC or HEIF *raw*, already
+    checked against :data:`HEIF_MAX_PIXELS`, made by src/utils/heif_child.py in
+    a process limited to :data:`HEIF_CHILD_MEMORY` (on Windows, a development
+    machine, the child runs without a limit). A decode that fails, runs out of
+    memory, is killed or overruns :data:`HEIF_CHILD_TIMEOUT` refuses the photo.
+    Called with :data:`_DECODE_LOCK` held, so one child runs at a time.
     """
-    exif = img.info.get("exif") or b""
-    if exif and not exif.startswith(b"Exif\x00\x00"):
-        exif = b"Exif\x00\x00" + exif
-    icc_profile = img.info.get("icc_profile")
+    command = [sys.executable, "-I", str(_HEIF_CHILD), str(HEIF_CHILD_MEMORY),
+               str(HEIF_JPEG_QUALITY)]
     try:
-        # Converted only when it has to be: a 50 MP copy is another 150 MB.
-        if img.mode == "RGB":
-            upright = img
-            upright.load()
-        else:
-            upright = img.convert("RGB")
-            img.close()  # the decoded original is not kept beside its copy
-        buf = io.BytesIO()
-        upright.save(buf, "JPEG", quality=HEIF_JPEG_QUALITY, exif=exif,
-                     icc_profile=icc_profile)
-        # In place, once the full size is encoded: no second full-size copy.
-        upright.thumbnail(THUMB_SIZE, Image.LANCZOS)
-    except (OSError, ValueError, SyntaxError, RuntimeError, EOFError) as exc:
-        # pillow-heif reports a coded image it cannot decode as an EOFError,
-        # and a compression format it has no decoder for as a RuntimeError.
+        done = subprocess.run(command, input=raw, capture_output=True,
+                              timeout=HEIF_CHILD_TIMEOUT, check=False)
+    except subprocess.TimeoutExpired as exc:
+        _log.warning("HEIF decode timed out after %ss", HEIF_CHILD_TIMEOUT)
         raise InvalidPhoto("it is not a readable image") from exc
-    return buf.getvalue(), upright
+    if done.returncode != 0 or not done.stdout:
+        reason = done.stderr.decode("utf-8", "replace").strip().splitlines()[-1:]
+        _log.warning("HEIF decode failed: exit %s %s", done.returncode, reason)
+        raise InvalidPhoto("it is not a readable image")
+    return done.stdout
 
 
 def photo_media_type(path: Path) -> str:
@@ -404,8 +420,8 @@ def photo_media_type(path: Path) -> str:
 def write_photo_files(folder: Path, name: str, raw: bytes) -> Tuple[Path, Path]:
     """Decode *raw*, then write it as ``folder/<name>.jpg`` and its thumbnail
     as ``folder/<name>_thumb.jpg``. Returns both paths. A HEIC or HEIF photo
-    is written as the JPEG :func:`_heif_to_jpeg` makes of it, any other one
-    byte for byte as it came.
+    is written as the JPEG :func:`_heif_to_jpeg` makes of it, with its
+    thumbnail made from that JPEG; any other one byte for byte as it came.
 
     Raises :class:`InvalidPhoto` before anything is written (the folder is not
     even created) when *raw* is not an image or is over the pixel limit, so a
@@ -417,9 +433,10 @@ def write_photo_files(folder: Path, name: str, raw: bytes) -> Tuple[Path, Path]:
     with _DECODE_LOCK:
         try:
             if img.format == "HEIF":
-                raw, thumb_img = _heif_to_jpeg(img)
-            else:
-                thumb_img = _thumbnail_of(img)
+                img.close()
+                raw = _heif_to_jpeg(raw)
+                img = _open(raw)
+            thumb_img = _thumbnail_of(img)
         finally:
             # The full-size decode is let go before the next one may start.
             if thumb_img is not img:

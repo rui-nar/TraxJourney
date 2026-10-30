@@ -14,11 +14,19 @@ from __future__ import annotations
 import io
 import random
 import struct
+import subprocess
+import sys
 import threading
 import time
+import types
 import zlib
 
 import pytest
+
+try:
+    import resource
+except ImportError:  # Windows
+    resource = None
 from PIL import Image, ImageCms
 from pillow_heif.as_plugin import HeifImageFile
 
@@ -80,18 +88,13 @@ def test_a_heic_is_stored_as_a_jpeg_that_keeps_its_exif_date(tmp_path):
         assert t.format == "JPEG" and t.size == (160, 120)
 
 
-def test_the_jpeg_is_encoded_at_quality_92(tmp_path, monkeypatch):
-    saved = []
-    real_save = Image.Image.save
+def test_the_jpeg_is_encoded_at_quality_92(tmp_path):
+    full, _ = write_photo_files(tmp_path, NAME, _heic(_quartered((64, 48))))
 
-    def spy(self, fp, format=None, **params):
-        saved.append((format, params.get("quality")))
-        return real_save(self, fp, format, **params)
-
-    monkeypatch.setattr(Image.Image, "save", spy)
-    write_photo_files(tmp_path, NAME, _heic(_quartered((64, 48))))
-
-    assert ("JPEG", 92) in saved
+    reference = io.BytesIO()
+    _quartered((64, 48)).save(reference, "JPEG", quality=92)
+    with Image.open(full) as stored, Image.open(reference) as at_92:
+        assert stored.quantization == at_92.quantization
 
 
 def test_a_heif_with_the_generic_brand_is_converted_too(tmp_path):
@@ -124,10 +127,12 @@ def test_a_rotated_heic_is_stored_upright_with_an_upright_thumbnail(tmp_path):
 
 
 def _no_decode(monkeypatch):
-    def no_decode(self):
+    """Fail the test if the HEIC is decoded, here or in the decoding process."""
+    def no_decode(*args):
         raise AssertionError("the HEIC was decoded")
 
     monkeypatch.setattr(HeifImageFile, "load", no_decode)
+    monkeypatch.setattr(photo_store, "_heif_to_jpeg", no_decode)
 
 
 def _ispe_sizes(raw: bytes) -> list:
@@ -175,19 +180,126 @@ def test_a_heic_declaring_60_megapixels_is_refused_before_decoding(tmp_path, mon
     raw = _with_ispe(_heic(_quartered((64, 64))), 10_000, 6_000)
     _no_decode(monkeypatch)
 
-    with pytest.raises(PhotoTooLarge, match="50 megapixels"):
+    with pytest.raises(PhotoTooLarge, match="51 megapixels"):
         write_photo_files(tmp_path / "f", NAME, raw)
     assert not (tmp_path / "f").exists()
 
 
-def test_a_heic_declaring_40_megapixels_passes_the_size_check(monkeypatch):
+@pytest.mark.parametrize("width,height", [(8_000, 5_000), (8_500, 6_000)])
+def test_a_heic_declaring_up_to_51_megapixels_passes_the_size_check(monkeypatch, width, height):
     """Only the check: the pixels behind the patched size are 64×64, so the
-    decode itself is not run."""
-    raw = _with_ispe(_heic(_quartered((64, 64))), 8_000, 5_000)
+    decode itself is not run. 8500×6000 is exactly 51 MP."""
+    raw = _with_ispe(_heic(_quartered((64, 64))), width, height)
     _no_decode(monkeypatch)
 
     img = photo_store._open(raw)
-    assert img.format == "HEIF" and img.size == (8_000, 5_000)
+    assert img.format == "HEIF" and img.size == (width, height)
+
+
+def test_a_heic_declaring_one_row_over_51_megapixels_is_refused(monkeypatch):
+    raw = _with_ispe(_heic(_quartered((64, 64))), 8_500, 6_001)
+    _no_decode(monkeypatch)
+
+    with pytest.raises(PhotoTooLarge, match="51 megapixels"):
+        photo_store._open(raw)
+
+
+def test_a_coded_image_larger_than_its_ispe_is_refused(tmp_path):
+    """U4-R2-1: the size check reads 'ispe', libde265 sizes its frame from the
+    HEVC bitstream. libheif bounds the decoder to the 'ispe' size, so a file
+    whose 'ispe' understates its coded image fails to decode, in the child."""
+    raw = _with_ispe(_heic(_quartered((512, 512))), 64, 64)
+    with Image.open(io.BytesIO(raw)) as opened:
+        assert opened.size == (64, 64)
+
+    with pytest.raises(InvalidPhoto):
+        write_photo_files(tmp_path / "f", NAME, raw)
+    assert not (tmp_path / "f").exists()
+
+
+# ── The decoding process ──────────────────────────────────────────────────────
+
+def _completed(returncode: int, stdout: bytes = b"", stderr: bytes = b""):
+    def run(command, **kwargs):
+        return subprocess.CompletedProcess(command, returncode, stdout, stderr)
+    return run
+
+
+@pytest.mark.parametrize("outcome", [
+    pytest.param(_completed(1, stderr=b"MemoryError"), id="an exception"),
+    pytest.param(_completed(-9, stderr=b""), id="killed by a signal"),
+    pytest.param(_completed(0), id="no output"),
+])
+def test_a_failed_decoding_process_refuses_the_photo(tmp_path, monkeypatch, outcome):
+    monkeypatch.setattr(photo_store.subprocess, "run", outcome)
+
+    with pytest.raises(InvalidPhoto):
+        write_photo_files(tmp_path / "f", NAME, _heic(_quartered((64, 64))))
+    assert not (tmp_path / "f").exists()
+
+
+def test_a_decoding_process_that_overruns_its_time_refuses_the_photo(tmp_path, monkeypatch):
+    # Starting Python alone takes longer than this.
+    monkeypatch.setattr(photo_store, "HEIF_CHILD_TIMEOUT", 0.001)
+
+    with pytest.raises(InvalidPhoto):
+        write_photo_files(tmp_path / "f", NAME, _heic(_quartered((64, 64))))
+    assert not (tmp_path / "f").exists()
+
+
+def test_the_decoding_process_gets_its_limits(tmp_path, monkeypatch):
+    commands = []
+    real_run = subprocess.run
+
+    def spy(command, **kwargs):
+        commands.append((command, kwargs.get("timeout")))
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(photo_store.subprocess, "run", spy)
+    write_photo_files(tmp_path, NAME, _heic(_quartered((64, 64))))
+
+    (command, timeout), = commands
+    assert command[1] == "-I" and command[2].endswith("heif_child.py")
+    assert command[3:] == [str(photo_store.HEIF_CHILD_MEMORY), str(photo_store.HEIF_JPEG_QUALITY)]
+    assert timeout == photo_store.HEIF_CHILD_TIMEOUT
+
+
+def test_libheif_decodes_on_one_thread(monkeypatch):
+    """U4-R2-2: _DECODE_LOCK cannot see libheif's own tile threads. The API
+    process registers the opener with one thread, and so does the child."""
+    import pillow_heif
+    from src.utils import heif_child
+
+    assert pillow_heif.options.DECODE_THREADS == 1
+
+    registered = []
+    monkeypatch.setattr(pillow_heif, "register_heif_opener",
+                        lambda **options: registered.append(options))
+    # The child's main(), run here without a memory limit ("0").
+    out = io.BytesIO()
+    monkeypatch.setattr(sys, "argv", ["heif_child.py", "0", "92"])
+    monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(buffer=io.BytesIO(_heic(_quartered((64, 64))))))
+    monkeypatch.setattr(sys, "stdout", types.SimpleNamespace(buffer=out))
+    assert heif_child.main() == 0
+
+    assert registered == [{"decode_threads": 1}]
+    with Image.open(io.BytesIO(out.getvalue())) as jpeg:
+        assert jpeg.format == "JPEG"
+
+
+@pytest.mark.skipif(resource is None, reason="the memory limit needs the resource module (Linux)")
+def test_a_decode_over_the_memory_limit_ends_the_child_not_the_server(tmp_path, monkeypatch):
+    # Measured on Linux: a 64×64 HEIC decodes under 150 MiB, a 24 MP one
+    # needs more than 250 MiB.
+    monkeypatch.setattr(photo_store, "HEIF_CHILD_MEMORY", 160 * 1024 * 1024)
+    small = _heic(_quartered((64, 64)))
+    write_photo_files(tmp_path / "small", NAME, small)
+
+    large = io.BytesIO()
+    Image.new("RGB", (6000, 4000), (40, 90, 160)).save(large, "HEIF")
+    with pytest.raises(InvalidPhoto):
+        write_photo_files(tmp_path / "f", NAME, large.getvalue())
+    assert not (tmp_path / "f").exists()
 
 
 # ── HEIF boxes crafted by hand: grids, overlays, malformed files ──────────────
