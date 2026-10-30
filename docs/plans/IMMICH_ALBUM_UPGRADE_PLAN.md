@@ -1455,7 +1455,7 @@ wait for them.
      prod to `poster photos default resolve`, then `docker compose up -d`.
      Check with a scan on val. Until this is done, scans answer 503.
   4. The deployment doc gets the same command.
-  5. The plans index gets this plan's row.
+  5. The plans index row of this plan gets the PR that delivers it.
 - **Acceptance:**
   - `pytest tests/test_release_notes.py tests/test_worker_topology.py`
     passes.
