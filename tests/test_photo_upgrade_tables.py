@@ -154,6 +154,23 @@ def test_the_helper_deletes_only_the_selected_scans_with_their_rows(engine):
             sess, DBPhotoUpgradeScan.id.in_(sorted(gone))) == 0
 
 
+def test_the_helper_refuses_to_run_without_a_condition(engine):
+    """No condition would be DELETEs with no WHERE, emptying all three tables
+    for every user: refused, and nothing is deleted."""
+    with Session(engine) as sess:
+        uid = _mk_user(sess, "a@x.io")
+        pid = _mk_project(sess, uid, "Trip")
+        sid = _mk_scan(sess, pid, uid)
+        with pytest.raises(ValueError):
+            delete_photo_upgrade_scans(sess)
+        sess.commit()
+
+    with Session(engine) as sess:
+        assert _scans(sess) == {sid}
+        assert _scan_ids(sess, DBPhotoUpgradeAsset) == {sid}
+        assert _scan_ids(sess, DBPhotoUpgradeSuggestion) == {sid}
+
+
 def test_the_helper_honours_an_apply_that_starts_before_its_delete(tmp_path):
     """An apply another connection commits after the caller read the scan,
     just before the helper's first DELETE runs, is honoured: the condition is

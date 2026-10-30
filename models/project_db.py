@@ -873,6 +873,8 @@ def delete_photo_upgrade_scans(sess: sqlmodel.Session, *where) -> int:
     *where* are SQL conditions on :class:`DBPhotoUpgradeScan`, evaluated in
     each DELETE itself, never read beforehand. Does not commit.
     """
+    if not where:
+        raise ValueError("delete_photo_upgrade_scans needs at least one condition")
     # Children first, each by a subquery on the conditions: the first DELETE
     # takes SQLite's write lock, so all three see the same scans until commit.
     scan_ids = sqlmodel.select(DBPhotoUpgradeScan.id).where(*where)
