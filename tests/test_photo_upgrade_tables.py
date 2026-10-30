@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -152,6 +152,58 @@ def test_the_helper_deletes_only_the_selected_scans_with_their_rows(engine):
         assert _scan_ids(sess, DBPhotoUpgradeSuggestion) == kept
         assert delete_photo_upgrade_scans(
             sess, DBPhotoUpgradeScan.id.in_(sorted(gone))) == 0
+
+
+def test_the_helper_honours_an_apply_that_starts_before_its_delete(tmp_path):
+    """An apply another connection commits after the caller read the scan,
+    just before the helper's first DELETE runs, is honoured: the condition is
+    evaluated in the DELETE itself, not read beforehand. File-backed SQLite,
+    so the two connections are real and separate."""
+    url = f"sqlite:///{(tmp_path / 'race.db').as_posix()}"
+    eng = create_engine(url)
+    other = create_engine(url)
+    SQLModel.metadata.create_all(eng)
+    try:
+        with Session(eng) as sess:
+            uid = _mk_user(sess, "a@x.io")
+            pid = _mk_project(sess, uid, "Trip")
+            racing = _mk_scan(sess, pid, uid, status="ready")
+            idle = _mk_scan(sess, pid, uid, status="ready")
+            # The caller has seen both scans with no apply.
+            assert sess.get(DBPhotoUpgradeScan, racing).apply_status == "idle"
+
+            started = []
+
+            def start_apply(conn, cursor, statement, *args):
+                # The API's POST apply commits on another connection, once,
+                # just before the first DELETE.
+                if not started and statement.lstrip().upper().startswith("DELETE"):
+                    started.append(True)
+                    with other.begin() as oconn:
+                        oconn.execute(text(
+                            "UPDATE photoupgradescan SET apply_status = 'pending' "
+                            "WHERE id = :id"), {"id": racing})
+
+            event.listen(eng, "before_cursor_execute", start_apply)
+            try:
+                n = delete_photo_upgrade_scans(
+                    sess,
+                    DBPhotoUpgradeScan.project_id == pid,
+                    DBPhotoUpgradeScan.apply_status.not_in(("pending", "running")),
+                )
+                sess.commit()
+            finally:
+                event.remove(eng, "before_cursor_execute", start_apply)
+            assert started and n == 1
+
+        with Session(eng) as sess:
+            assert _scans(sess) == {racing}
+            assert _scan_ids(sess, DBPhotoUpgradeAsset) == {racing}
+            assert _scan_ids(sess, DBPhotoUpgradeSuggestion) == {racing}
+            assert idle not in _scans(sess)
+    finally:
+        eng.dispose()
+        other.dispose()
 
 
 @pytest.mark.parametrize("first", ["pending", "scanning"])

@@ -870,23 +870,17 @@ def delete_photo_upgrade_scans(sess: sqlmodel.Session, *where) -> int:
 
     The only way to delete scans: foreign keys are not enforced on SQLite, so
     a delete of the scan rows alone would leave their rows behind unseen.
-    *where* are SQL conditions on :class:`DBPhotoUpgradeScan`, read once: the
-    matching ids are selected (locked on Postgres, so a concurrent
-    compare-and-set on one of them waits and then finds it gone), then the
-    children and the scans are deleted by those ids. Does not commit.
+    *where* are SQL conditions on :class:`DBPhotoUpgradeScan`, evaluated in
+    each DELETE itself, never read beforehand. Does not commit.
     """
-    scan_ids = list(sess.exec(
-        sqlmodel.select(DBPhotoUpgradeScan.id).where(*where).with_for_update()
-    ).all())
-    if not scan_ids:
-        return 0
+    # Children first, each by a subquery on the conditions: the first DELETE
+    # takes SQLite's write lock, so all three see the same scans until commit.
+    scan_ids = sqlmodel.select(DBPhotoUpgradeScan.id).where(*where)
     sess.execute(delete(DBPhotoUpgradeAsset)
                  .where(DBPhotoUpgradeAsset.scan_id.in_(scan_ids)))
     sess.execute(delete(DBPhotoUpgradeSuggestion)
                  .where(DBPhotoUpgradeSuggestion.scan_id.in_(scan_ids)))
-    sess.execute(delete(DBPhotoUpgradeScan)
-                 .where(DBPhotoUpgradeScan.id.in_(scan_ids)))
-    return len(scan_ids)
+    return sess.execute(delete(DBPhotoUpgradeScan).where(*where)).rowcount
 
 
 class DBShareVisit(sqlmodel.SQLModel, table=True):
