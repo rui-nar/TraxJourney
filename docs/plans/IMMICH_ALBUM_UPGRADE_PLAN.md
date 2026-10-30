@@ -375,6 +375,12 @@ REVIEW.md §2 defaults apply, with these additions:
   - Decoding runs in the API container (768 MB) for uploads and in
     `worker-poster` (1280 MB) for applies. Each job handles one photo at a
     time.
+  - Each process has its own child limit (owner decision after the U4
+    unit review round 4, 2026-10-30): `HEIF_DECODE_MEMORY_MIB`, a runtime
+    variable, defaults to the API's 576 MiB and is raised in
+    `worker-poster`'s own environment. The per-format caps are computed
+    from the limit, so Immich applies accept larger 10-bit camera HEIF
+    (Canon R5, Fujifilm X-T5) than direct uploads do.
 - **No new end-to-end encryption surface.** Photos are documented as
   unencrypted. Scans read no memory or journal text.
 
@@ -1127,7 +1133,9 @@ wait for them.
 - **Do:**
   1. Add `QUEUE_PHOTOS = "photos"` with concurrency 1. `worker-poster`'s
      command becomes `poster photos default resolve`; update the topology
-     test and the compose comment block.
+     test and the compose comment block. `worker-poster` also gets
+     `HEIF_DECODE_MEMORY_MIB` in its own `environment:` (not `.env`, which
+     the API shares), at the value U4 measured.
   2. `start_scan(scan_id)` enqueues `run_scan_prepare`. Each job below
      first checks that its scan still exists and is `scanning` (or
      `pending` for the first), and stops quietly otherwise. Each updates
@@ -1466,7 +1474,8 @@ wait for them.
      them, and only their fingerprints are kept, until the scan is
      deleted. Applied originals are stored like any photo.
   3. RELEASING.md owner action: change `worker-poster`'s command on val and
-     prod to `poster photos default resolve`, then `docker compose up -d`.
+     prod to `poster photos default resolve`, add its
+     `HEIF_DECODE_MEMORY_MIB` environment entry, then `docker compose up -d`.
      Check with a scan on val. Until this is done, scans answer 503.
   4. The deployment doc gets the same command.
   4a. The published image now ships `pillow-heif`'s bundled libheif and

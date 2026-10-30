@@ -251,3 +251,4 @@ Owner answer (2026-10-30): yes, in scope. A 10-bit file the child cannot decode 
 Run at the owner's request, past the 3-round cap. No findings.
 
 Envelope question to the owner: with the child limit at 576 MiB, the measured caps refuse 10-bit 4:2:2 above 31 MP, which covers Canon R5 (45 MP) and Fujifilm X-T5 (40 MP) HEIF, while a JPEG of the same size from the same camera is accepted. The same limit also bounds the apply worker (1280 MB container), which could afford about 709 MiB. Is refusing those files intended for both uploads and Immich applies, or should the worker run the child with a higher limit and caps derived from it?
+Owner answer (2026-10-30): the worker gets a higher limit. Each process sets its own limit through `HEIF_DECODE_MEMORY_MIB` (default 576 MiB), and the caps are computed from it. Plan envelope, U9 and U13 updated.
