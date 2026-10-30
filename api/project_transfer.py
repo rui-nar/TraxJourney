@@ -40,13 +40,13 @@ from starlette.concurrency import run_in_threadpool
 from api.deps import get_current_user
 from api.geo import bust_geo_cache
 from api.photo_locks import photo_lock
+from api.photo_order import remove as remove_from_order
+from api.photo_write import PhotoWriteConflict, mutate_photos
 from api.project_access import OwnerParam, resolve_project
 import api.project_shared as project_shared
 from api.project_shared import (
-    _DATA_DIR, _repo, bust_project_payloads, project_cache_ref,
-    queue_share_tiles_refresh, queue_stats_refresh,
+    _DATA_DIR, _repo, bust_project_payloads, queue_share_tiles_refresh, queue_stats_refresh,
 )
-from models.project_db import DBJournalEntry, DBMemory
 from src.billing.entitlements import (
     ensure_project_quota, ensure_storage_quota, ensure_trip_span_quota,
 )
@@ -539,27 +539,35 @@ def _ingest_zip(
 
 #: photo_lock's key for each placement kind: the one that kind's uploads take.
 _PHOTO_LOCK_KEYS = {"memories": "memory", "journal": "journal"}
-_PHOTO_ROWS = {"memories": DBMemory, "journal": DBJournalEntry}
 
 
 def _drop_unplaced(kind: str, row_id: int, photo: str) -> None:
     """Remove *photo*, which could not be placed, from its committed row.
 
-    Under the row's photo lock, as an upload changes it, and re-read inside
-    it, so a photo added to the row since the import's commit is kept.
+    Under the row's photo lock, as an upload changes it, and by
+    compare-and-set (``api/photo_write.py``), so a photo added to the row
+    since the import's commit, in this process or another, is kept. The
+    photo's rank and hash go with it.
     """
     lock_key = _PHOTO_LOCK_KEYS[kind]
+
+    def drop(photos, state, row):
+        if photo not in photos:
+            return None
+        return remove_from_order(photos, state, photo)
+
     with photo_lock(lock_key, row_id):
-        cache_ref = None
-        with get_session() as sess:
-            row = sess.get(_PHOTO_ROWS[kind], row_id)
-            if row is not None:  # else deleted since: nothing names the photo
-                photos = json.loads(row.photos_json or "[]")
-                row.photos_json = json.dumps([p for p in photos if p != photo])
-                sess.add(row)
-                cache_ref = project_cache_ref(sess, row.project_id)
-                sess.commit()
-        bust_project_payloads(cache_ref)
+        try:
+            # None when the row was deleted since, or no longer names the photo.
+            dropped = mutate_photos(lock_key, row_id, drop)
+        except PhotoWriteConflict:
+            _log.error(
+                "import: %s %s photo %s could not be placed after the commit, and its "
+                "name stays listed: the row kept changing under photo_lock(%r, %s)",
+                kind, row_id, photo, lock_key, row_id)
+            return
+        if dropped is not None:
+            bust_project_payloads(dropped.cache_ref)
     _log.error(
         "import: %s %s photo %s could not be placed after the commit; its name was "
         "removed from the row under photo_lock(%r, %s)",

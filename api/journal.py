@@ -41,8 +41,9 @@ from api.project_access import (
     translate_insert_after,
 )
 from api.photo_locks import photo_lock
-from api.photo_order import dump_state, load_state, place
+from api.photo_order import load_state, place
 from api.photo_order import remove as remove_from_order, replace as replace_in_order
+from api.photo_write import PHOTO_CONFLICT_DETAIL, PhotoWriteConflict, mutate_photos
 from api.project_shared import bust_project_payloads, project_cache_ref
 from models.project_db import DBJournalEntry, DBProject, DBProjectItem
 from models.user import UserInfo
@@ -200,23 +201,29 @@ def _write_journal_photo(
     *epoch* is given and differs from the stored one, the photo's files are
     deleted — and uncounted — instead. Nothing bumps a journal entry's epoch
     today; it is checked so the two modules keep one rule.
+
+    The write is a compare-and-set (``api/photo_write.py``). When the list
+    keeps changing under it, the files are deleted the same way and
+    ``PhotoWriteConflict`` propagates.
     """
+    def place_photo(photos, state, row):
+        if epoch is not None and state["epoch"] != epoch:
+            return None
+        return place([p for p in photos if p], state, uuid_str, order)
+
     with photo_lock("journal", journal_id):
-        with get_session() as sess:
-            row = sess.get(DBJournalEntry, journal_id)
-            state = load_state(row.photo_order_json) if row is not None else None
-            if row is None or (epoch is not None and state["epoch"] != epoch):
-                if owner_dir is not None:
-                    _delete_photo_files(owner_dir, journal_id, [uuid_str])
-                return False
-            photos = [p for p in json.loads(row.photos_json or "[]") if p]
-            photos, state = place(photos, state, uuid_str, order)
-            row.photos_json = json.dumps(photos)
-            row.photo_order_json = dump_state(state)
-            sess.add(row)
-            cache_ref = project_cache_ref(sess, row.project_id)
-            sess.commit()
-            bust_project_payloads(cache_ref)
+        try:
+            placed = mutate_photos("journal", journal_id, place_photo)
+        except PhotoWriteConflict:
+            # Refused like any other placement, but the caller says why.
+            if owner_dir is not None:
+                _delete_photo_files(owner_dir, journal_id, [uuid_str])
+            raise
+        if placed is None:
+            if owner_dir is not None:
+                _delete_photo_files(owner_dir, journal_id, [uuid_str])
+            return False
+        bust_project_payloads(placed.cache_ref)
     return True
 
 
@@ -243,7 +250,10 @@ def _download_photo_from_url(
         return
     uuid_str = str(uuid_lib.uuid4())
     _save_photo_files(user_id, journal_id, uuid_str, content)
-    _write_journal_photo(journal_id, uuid_str, order, epoch, owner_dir=user_id)
+    try:
+        _write_journal_photo(journal_id, uuid_str, order, epoch, owner_dir=user_id)
+    except PhotoWriteConflict:
+        _log.error("Photo download for journal entry %s not placed: its photo list kept changing", journal_id)
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -492,7 +502,11 @@ async def upload_photo(
     # semaphore comment in api/memories.py — but here via FastAPI's thread
     # pool instead of a sync route, since the rest of this handler stays async).
     await run_in_threadpool(_save_photo_files, current_user["sub"], journal_id, photo_uuid, raw)
-    if not _write_journal_photo(journal_id, photo_uuid, owner_dir=current_user["sub"]):
+    try:
+        placed = _write_journal_photo(journal_id, photo_uuid, owner_dir=current_user["sub"])
+    except PhotoWriteConflict:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=PHOTO_CONFLICT_DETAIL)
+    if not placed:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Journal entry not found")
     return {"uuid": photo_uuid}
 
@@ -528,22 +542,25 @@ def delete_photo(
 ):
     """Remove a photo from a journal entry and delete its files from disk."""
     user_info_id = int(current_user["sub"])
-    with photo_lock("journal", journal_id), get_session() as sess:
-        row = _get_owned_journal(sess, journal_id, user_info_id)
-        photos: List[str] = json.loads(row.photos_json or "[]")
-        if photo_uuid not in photos:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
 
+    def drop(photos, state, row):
+        if photo_uuid not in photos:
+            return None
+        return remove_from_order(photos, state, photo_uuid)
+
+    with photo_lock("journal", journal_id):
+        with get_session() as sess:
+            _get_owned_journal(sess, journal_id, user_info_id)
+        try:
+            removed = mutate_photos("journal", journal_id, drop)
+        except PhotoWriteConflict:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=PHOTO_CONFLICT_DETAIL)
+        if removed is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
+        bust_project_payloads(removed.cache_ref)
+        # Only once the list no longer names the photo.
         unlink_and_record(current_user["sub"], photo_files(
             photo_folder(_DATA_DIR, current_user["sub"], "journal", journal_id), [photo_uuid]))
-
-        photos, state = remove_from_order(photos, load_state(row.photo_order_json), photo_uuid)
-        row.photos_json = json.dumps(photos)
-        row.photo_order_json = dump_state(state)
-        sess.add(row)
-        cache_ref = project_cache_ref(sess, row.project_id)
-        sess.commit()
-        bust_project_payloads(cache_ref)
 
 
 @router.put("/{journal_id}/photos/{old_uuid}/replace", status_code=status.HTTP_200_OK,
@@ -573,26 +590,23 @@ async def replace_photo(
     new_uuid = str(uuid_lib.uuid4())
     await run_in_threadpool(_save_photo_files, current_user["sub"], journal_id, new_uuid, raw)
 
-    with photo_lock("journal", journal_id), get_session() as sess:
-        row = sess.get(DBJournalEntry, journal_id)
+    def swap(photos, state, row):
         # Same position and rank, not remove+append: photos_json order is
         # display order. None when the old photo was deleted meanwhile.
-        replaced = None if row is None else replace_in_order(
-            [p for p in json.loads(row.photos_json or "[]") if p],
-            load_state(row.photo_order_json), old_uuid, new_uuid,
-        )
+        return replace_in_order([p for p in photos if p], state, old_uuid, new_uuid)
+
+    with photo_lock("journal", journal_id):
+        try:
+            replaced = mutate_photos("journal", journal_id, swap)
+        except PhotoWriteConflict:
+            _delete_photo_files(current_user["sub"], journal_id, [new_uuid])
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=PHOTO_CONFLICT_DETAIL)
         if replaced is None:
             # The entry or the old photo went while the new files were
             # written: they have nowhere to go (#237).
             _delete_photo_files(current_user["sub"], journal_id, [new_uuid])
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
-        photos, state = replaced
-        row.photos_json = json.dumps(photos)
-        row.photo_order_json = dump_state(state)
-        sess.add(row)
-        cache_ref = project_cache_ref(sess, row.project_id)
-        sess.commit()
-        bust_project_payloads(cache_ref)
+        bust_project_payloads(replaced.cache_ref)
         # Under the lock, as in api/memories.py, where a delete's folder
         # sweep would otherwise uncount these same files a second time.
         unlink_and_record(current_user["sub"], photo_files(
