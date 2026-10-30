@@ -378,7 +378,8 @@ REVIEW.md §2 defaults apply, with these additions:
   - Each process has its own child limit (owner decision after the U4
     unit review round 4, 2026-10-30): `HEIF_DECODE_MEMORY_MIB`, a runtime
     variable, defaults to the API's 576 MiB and is raised in
-    `worker-poster`'s own environment. The per-format caps are computed
+    `worker-poster`'s own environment. An unusable value stops the API or
+    the worker at start, with a message saying why. The per-format caps are computed
     from the limit, so Immich applies accept larger 10-bit camera HEIF
     (Canon R5, Fujifilm X-T5) than direct uploads do.
 - **No new end-to-end encryption surface.** Photos are documented as
@@ -1117,10 +1118,12 @@ wait for them.
   - `src/photo_upgrade/scan_job.py` (new)
   - `src/jobs/queue.py`
   - `src/jobs/worker.py`: `_INTERRUPT_HANDLERS` and the startup sweep, scan
-    entries only
+    entries only; the startup check of step 1a
+  - `api/router.py`: the startup check of step 1a in `lifespan` only
   - `docker-compose.yml.example`
   - `tests/test_worker_topology.py`
   - `tests/test_photo_upgrade_scan_job.py` (new)
+  - `tests/test_heif_config_startup.py` (new)
 - **Context:**
   - Example to follow for the job-row lifecycle, compare-and-set updates,
     the interrupt handler, the startup sweep and progress stages:
@@ -1135,7 +1138,14 @@ wait for them.
      command becomes `poster photos default resolve`; update the topology
      test and the compose comment block. `worker-poster` also gets
      `HEIF_DECODE_MEMORY_MIB` in its own `environment:` (not `.env`, which
-     the API shares), at the value U4 measured.
+     the API shares), at the value U4 measured: 896.
+  1a. An unusable `HEIF_DECODE_MEMORY_MIB` stops the process at start
+     (owner decision, U4 unit review round 5). The API's lifespan and the
+     RQ worker's startup both call U4's `heif_decode_memory_mib()` before
+     serving; a `HeifDecodeConfigError` exits with a message naming the
+     variable, the value and what a valid one looks like. Tests: each
+     process refuses to start on a bad value and starts on unset, blank
+     and a valid one.
   2. `start_scan(scan_id)` enqueues `run_scan_prepare`. Each job below
      first checks that its scan still exists and is `scanning` (or
      `pending` for the first), and stops quietly otherwise. Each updates

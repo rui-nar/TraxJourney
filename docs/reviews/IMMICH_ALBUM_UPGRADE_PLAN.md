@@ -258,3 +258,4 @@ Owner answer (2026-10-30): the worker gets a higher limit. Each process sets its
 Per-process child limit (`HEIF_DECODE_MEMORY_MIB`, default 576, worker-poster 896) and caps computed from it. Run at the owner's request. No findings.
 
 Envelope question to the owner: an unusable `HEIF_DECODE_MEMORY_MIB` fails on the first HEIC decode (a 500 for that upload), not at process start. Is first-use failure intended, or should the API and the worker refuse to start?
+Owner answer (2026-10-30): refuse to start, with a clear message naming the variable and why its value is unusable. Assigned to U9.
