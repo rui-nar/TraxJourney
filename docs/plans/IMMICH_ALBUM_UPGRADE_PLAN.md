@@ -366,7 +366,10 @@ REVIEW.md §2 defaults apply, with these additions:
     read from the coded size of every image item in the file, not from
     the size after cropping. The cap gives a clear "too large" answer;
     the child's limit is the protection. Current phones, Android 50 MP
-    "Hi-Res" files included, stay under it.
+    "Hi-Res" files included, stay under it. 10-bit camera HEIF is in
+    scope: when its bit depth needs more than the child's limit affords,
+    it is refused early as too large. The child gets no server secrets in
+    its environment.
   - Other formats keep `MAX_PHOTO_PIXELS` (100 MP).
   - Each process decodes one full image at a time, whatever its format.
   - Decoding runs in the API container (768 MB) for uploads and in

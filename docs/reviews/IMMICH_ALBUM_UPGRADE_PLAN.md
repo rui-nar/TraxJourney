@@ -222,3 +222,26 @@ Owner answer (2026-10-30): raise it to 51 MP, and decode HEIC/HEIF in a child pr
 - Guard: —
 - Override: —
 - Outcome: —
+
+## U4 unit review round 3 — 2026-10-30, reviewed at 228fbbc8
+
+Envelope question to the owner: the child's limit was measured on 8-bit HEICs only. Are 10-bit HEIF files from mirrorless cameras (Canon R5, Nikon Z8/Z9, Fujifilm X-T5, 24-46 MP) inside the envelope?
+Owner answer (2026-10-30): yes, in scope. A 10-bit file the child cannot decode must be refused early as too large, not as unreadable. The owner also asked for a fourth review round on the fixes.
+
+### U4-R3-1 — The 576 MiB child limit is sized from 8-bit HEICs only; a 10-bit camera HEIF under 51 MP may exceed it and be refused as "not a readable image"
+- Trigger: a user uploads a 10-bit HEIF from a 40-46 MP camera → the size check passes → the child runs out of address space while libheif converts 10-bit YUV to 8-bit RGB → a valid photo is refused as unreadable.
+- Scores: trigger=plausible, impact=wrong-visible, detect=logged, later=cheap, fix=M/local, confidence=inferred (one conversion path the reviewer gives fits within 576 MiB; not measured)
+- Decision: Defer (D10)
+- Revisit when: the "HEIF decode failed" warning appears for an upload under `HEIF_MAX_PIXELS` that did not time out; a user reports a camera HEIF refused as unreadable; or a measured 40-46 MP 10-bit HEIF fails at `HEIF_CHILD_MEMORY`.
+- Guard: —
+- Override: user: Fix now — 10-bit camera HEIF is in scope; measure it, and refuse early by bit depth if it does not fit (2026-10-30)
+- Outcome: —
+
+### U4-R3-2 — The decoding child inherits the API's full environment, so a decoder exploit could read server secrets
+- Trigger: an attacker uploads a HEIC exploiting a memory-safety bug in libheif/libde265 (none known in 1.23.6) → code runs in the child → reads the database URL, signing keys and Stripe/Immich credentials from its environment.
+- Scores: trigger=theoretical, impact=security, detect=silent, later=cheap, fix=S/local, confidence=verified. Triage correction: not "no regression" — main never decoded HEIF, so U4 exposes libheif/libde265 to untrusted uploads for the first time.
+- Decision: Guard (D4), flagged to the owner (F1 floor)
+- Revisit when: the guard fires.
+- Guard: in `_heif_to_jpeg`, log at ERROR "HEIF decoder crashed: signal N, sha256=<hash>, bytes=<len>" when the child dies on SIGSEGV, SIGBUS, SIGILL or SIGFPE (not SIGABRT/MemoryError, which is the normal limit outcome).
+- Override: user: Fix now — start the child with a PATH-only environment as well as adding the guard (2026-10-30)
+- Outcome: —
