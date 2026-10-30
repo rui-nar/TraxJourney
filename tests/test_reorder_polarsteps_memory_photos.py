@@ -368,7 +368,7 @@ class TestPhotoOrderColumn:
         photos, state = _read_memory(db, memory_id)
         assert photos == [_A, _B, _C]
         assert None not in photos
-        assert state == {"epoch": 3, "ranks": {}, "hashes": {}}
+        assert state == {"epoch": 3, "ranks": {}, "hashes": {}, "sources": {}}
 
     def test_apply_keeps_the_memory_s_content_hashes(self, tmp_path, monkeypatch):
         # The photos keep their UUIDs, so the hashes that guard a re-import
@@ -388,7 +388,7 @@ class TestPhotoOrderColumn:
 
         photos, state = _read_memory(db, memory_id)
         assert photos == [_A, _B, _C]
-        assert state == {"epoch": 1, "ranks": {}, "hashes": hashes}
+        assert state == {"epoch": 1, "ranks": {}, "hashes": hashes, "sources": {}}
 
     def test_apply_on_null_photo_order_json_writes_epoch_zero(self, tmp_path, monkeypatch):
         db = tmp_path / "r.db"
@@ -403,7 +403,7 @@ class TestPhotoOrderColumn:
 
         photos, state = _read_memory(db, memory_id)
         assert photos == [_A, _B, _C]
-        assert state == {"epoch": 0, "ranks": {}, "hashes": {}}
+        assert state == {"epoch": 0, "ranks": {}, "hashes": {}, "sources": {}}
 
     def test_unmigrated_db_is_refused_before_anything_runs(self, tmp_path, monkeypatch, capsys):
         import sqlite3
@@ -523,7 +523,7 @@ class TestFailedDownloads:
     def test_all_downloads_succeeding_still_reorders(self, tmp_path, monkeypatch, capsys):
         (photos, state), _ = self._run(tmp_path, monkeypatch, capsys, [_C, _A, _B])
         assert photos == [_A, _B, _C]
-        assert state == {"epoch": 2, "ranks": {}, "hashes": {}}
+        assert state == {"epoch": 2, "ranks": {}, "hashes": {}, "sources": {}}
 
 
 # ── Selection: --imported-before and --project ──────────────────────────────

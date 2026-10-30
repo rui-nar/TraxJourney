@@ -1,5 +1,5 @@
 """Tests for the rank placement helpers in ``api/photo_order.py`` (issue #237)
-and the content hashes they carry (issue #566).
+and the content hashes (issue #566) and sources (issue #33) they carry.
 
 Pure functions, so every test also checks its inputs come back unchanged.
 """
@@ -11,13 +11,15 @@ import json
 
 import pytest
 
-from api.photo_order import clear, dump_state, has_hash, load_state, place, remove, replace
+from api.photo_order import (clear, dump_state, fill_hashes, has_hash, load_state, place, remove, replace,
+                             source_of)
 
 _H1, _H2, _H3 = ("a" * 64, "0123456789abcdef" * 4, "f" * 64)
 
 
-def _state(ranks=None, epoch=0, hashes=None):
-    return {"epoch": epoch, "ranks": dict(ranks or {}), "hashes": dict(hashes or {})}
+def _state(ranks=None, epoch=0, hashes=None, sources=None):
+    return {"epoch": epoch, "ranks": dict(ranks or {}), "hashes": dict(hashes or {}),
+            "sources": dict(sources or {})}
 
 
 def _place_all(arrivals, photos=None, state=None):
@@ -126,16 +128,16 @@ def test_place_keeps_the_epoch():
 @pytest.mark.parametrize("raw", [None, "", "{}", "not json", "[1, 2]", "42", "null",
                                  '{"epoch": "x", "ranks": []}'])
 def test_load_state_defaults_on_missing_or_unreadable(raw):
-    assert load_state(raw) == {"epoch": 0, "ranks": {}, "hashes": {}}
+    assert load_state(raw) == {"epoch": 0, "ranks": {}, "hashes": {}, "sources": {}}
 
 
 def test_load_state_keeps_the_epoch_when_ranks_are_unreadable():
-    assert load_state('{"epoch": 4, "ranks": "junk"}') == {"epoch": 4, "ranks": {}, "hashes": {}}
+    assert load_state('{"epoch": 4, "ranks": "junk"}') == {"epoch": 4, "ranks": {}, "hashes": {}, "sources": {}}
 
 
 def test_load_state_drops_malformed_rank_entries_only():
     raw = json.dumps({"epoch": 1, "ranks": {"a": 2, "b": "3", "c": None, "d": True, "e": 0}})
-    assert load_state(raw) == {"epoch": 1, "ranks": {"a": 2, "e": 0}, "hashes": {}}
+    assert load_state(raw) == {"epoch": 1, "ranks": {"a": 2, "e": 0}, "hashes": {}, "sources": {}}
 
 
 def test_dump_then_load_round_trips():
@@ -145,18 +147,18 @@ def test_dump_then_load_round_trips():
     assert state == before
 
 
-def test_dump_writes_all_three_keys():
-    assert json.loads(dump_state(_state())) == {"epoch": 0, "ranks": {}, "hashes": {}}
+def test_dump_writes_all_four_keys():
+    assert json.loads(dump_state(_state())) == {"epoch": 0, "ranks": {}, "hashes": {}, "sources": {}}
 
 
 def test_a_state_written_before_hashes_existed_reads_as_no_hashes():
-    assert load_state('{"epoch": 2, "ranks": {"a": 0}}') == {"epoch": 2, "ranks": {"a": 0}, "hashes": {}}
+    assert load_state('{"epoch": 2, "ranks": {"a": 0}}') == {"epoch": 2, "ranks": {"a": 0}, "hashes": {}, "sources": {}}
 
 
 @pytest.mark.parametrize("hashes", ['"junk"', "[]", "null", "42", '{"a": 1}'])
 def test_malformed_hashes_never_reset_the_epoch_or_ranks(hashes):
     raw = '{"epoch": 6, "ranks": {"a": 1}, "hashes": %s}' % hashes
-    assert load_state(raw) == {"epoch": 6, "ranks": {"a": 1}, "hashes": {}}
+    assert load_state(raw) == {"epoch": 6, "ranks": {"a": 1}, "hashes": {}, "sources": {}}
 
 
 def test_load_state_drops_malformed_hash_entries_only():
@@ -177,9 +179,9 @@ def test_load_state_drops_malformed_hash_entries_only():
 def test_clear_bumps_the_epoch_and_empties_ranks():
     state = _state({"a": 0, "b": 1}, epoch=2)
     before = copy.deepcopy(state)
-    assert clear(state) == {"epoch": 3, "ranks": {}, "hashes": {}}
+    assert clear(state) == {"epoch": 3, "ranks": {}, "hashes": {}, "sources": {}}
     assert state == before
-    assert clear(load_state(None)) == {"epoch": 1, "ranks": {}, "hashes": {}}
+    assert clear(load_state(None)) == {"epoch": 1, "ranks": {}, "hashes": {}, "sources": {}}
 
 
 # ── Content hashes (issue #566) ─────────────────────────────────────────────
@@ -253,3 +255,137 @@ def test_has_hash_never_matches_a_missing_hash():
 def test_has_hash_never_matches_a_malformed_hash(bad):
     # Even a malformed entry already stored in the state does not match.
     assert not has_hash(_state(hashes={"a": _H1, "m": bad}), ["a", "m"], bad)
+
+
+# ── Sources (issue #33) ─────────────────────────────────────────────────────
+
+_S1, _S2 = "immich:0b3e7c1a-2d4f-4e8a-9c6b-5f1d2e3a4b5c", "immich:asset-2"
+
+
+def test_sources_round_trip():
+    state = _state({"a": 0}, epoch=3, hashes={"a": _H1}, sources={"a": _S1, "b": _S2})
+    before = copy.deepcopy(state)
+    assert load_state(dump_state(state)) == state
+    assert state == before
+
+
+def test_a_state_written_before_sources_existed_reads_as_no_sources():
+    raw = json.dumps({"epoch": 2, "ranks": {"a": 0}, "hashes": {"a": _H1}})
+    assert load_state(raw) == _state({"a": 0}, epoch=2, hashes={"a": _H1})
+
+
+@pytest.mark.parametrize("sources", ['"junk"', "[]", "null", "42", '{"a": 1}'])
+def test_malformed_sources_never_reset_the_epoch_ranks_or_hashes(sources):
+    raw = '{"epoch": 6, "ranks": {"a": 1}, "hashes": {"a": "%s"}, "sources": %s}' % (_H1, sources)
+    assert load_state(raw) == _state({"a": 1}, epoch=6, hashes={"a": _H1})
+
+
+def test_load_state_drops_malformed_source_entries_only():
+    raw = json.dumps({"epoch": 4, "ranks": {}, "hashes": {}, "sources": {
+        "ok": _S1,
+        "one-char": "immich:x",
+        "max": "immich:" + "A" * 64,
+        "too-long": "immich:" + "A" * 65,
+        "empty-id": "immich:",
+        "other-scheme": "polarsteps:1",
+        "bare-id": "asset-2",
+        "slash": "immich:a/b",
+        "underscore": "immich:a_b",
+        "newline": _S2 + "\n",
+        "upper-scheme": "IMMICH:a",
+        "int": 7,
+        "none": None,
+    }})
+    assert load_state(raw) == _state(epoch=4, sources={
+        "ok": _S1, "one-char": "immich:x", "max": "immich:" + "A" * 64})
+
+
+def test_place_with_a_source_records_it():
+    state = _state({"a": 0}, epoch=4, sources={"a": _S1})
+    before = copy.deepcopy(state)
+    photos, state2 = place(["a"], state, "b", 1, content_hash=_H2, source=_S2)
+    assert state == before
+    assert photos == ["a", "b"]
+    assert state2 == _state({"a": 0, "b": 1}, epoch=4, hashes={"b": _H2}, sources={"a": _S1, "b": _S2})
+
+
+def test_place_without_a_source_keeps_the_others_and_drops_a_stale_one_for_it():
+    _, state = place(["a"], _state(sources={"a": _S1, "u": _S2}), "u", None)
+    assert state["sources"] == {"a": _S1}
+
+
+def test_remove_drops_the_source():
+    photos, state = ["a", "b"], _state({"a": 0}, epoch=2, hashes={"a": _H1}, sources={"a": _S1, "b": _S2})
+    before = (copy.deepcopy(photos), copy.deepcopy(state))
+    photos2, state2 = remove(photos, state, "a")
+    assert (photos, state) == before
+    assert photos2 == ["b"]
+    assert state2 == _state(epoch=2, sources={"b": _S2})
+
+
+def test_replace_with_a_source_sets_it_and_carries_rank_and_hash():
+    photos, state = ["a", "b"], _state({"a": 0}, epoch=5, hashes={"a": _H1}, sources={"b": _S2})
+    before = (copy.deepcopy(photos), copy.deepcopy(state))
+    photos2, state2 = replace(photos, state, "a", "new", source=_S1)
+    assert (photos, state) == before
+    assert photos2 == ["new", "b"]
+    assert state2 == _state({"new": 0}, epoch=5, hashes={"new": _H1}, sources={"new": _S1, "b": _S2})
+
+
+def test_replace_never_carries_the_old_source():
+    photos, state = ["a", "b"], _state({"a": 0}, hashes={"a": _H1}, sources={"a": _S1, "b": _S2})
+    photos2, state2 = replace(photos, state, "a", "new")
+    assert photos2 == ["new", "b"]
+    assert state2 == _state({"new": 0}, hashes={"new": _H1}, sources={"b": _S2})
+
+
+def test_replace_with_a_new_source_does_not_keep_the_old_one():
+    _, state = replace(["a"], _state(sources={"a": _S1}), "a", "new", source=_S2)
+    assert state["sources"] == {"new": _S2}
+
+
+def test_replace_without_a_source_drops_a_stale_one_for_the_new_uuid():
+    _, state = replace(["a"], _state(sources={"new": _S2}), "a", "new")
+    assert state["sources"] == {}
+
+
+def test_clear_empties_the_sources():
+    state = _state({"a": 0}, epoch=1, hashes={"a": _H1}, sources={"a": _S1})
+    before = copy.deepcopy(state)
+    assert clear(state) == _state(epoch=2)
+    assert state == before
+
+
+def test_source_of_ignores_stale_entries():
+    state = _state(sources={"a": _S1, "gone": _S2})
+    before = copy.deepcopy(state)
+    assert source_of(state, ["a", "m"], "a") == _S1
+    assert source_of(state, ["a", "m"], "gone") is None  # stale entry for a removed UUID
+    assert source_of(state, ["a", "m"], "m") is None  # listed, no source
+    assert source_of(_state(), [], "a") is None
+    assert state == before
+
+
+# ── fill_hashes (issue #33, D10 F5) ─────────────────────────────────────────
+
+def test_fill_hashes_fills_only_missing_hashes_and_leaves_everything_else():
+    photos = ["a", "b", "c"]
+    state = _state({"a": 0, "b": 1}, epoch=7, hashes={"a": _H1, "gone": _H3}, sources={"b": _S1})
+    hashes = {"a": _H2, "b": _H2, "c": _H3}
+    before = (copy.deepcopy(photos), copy.deepcopy(state), copy.deepcopy(hashes))
+    state2 = fill_hashes(photos, state, hashes)
+    assert (photos, state, hashes) == before
+    assert state2 == _state({"a": 0, "b": 1}, epoch=7, hashes={"a": _H1, "b": _H2, "c": _H3, "gone": _H3},
+                            sources={"b": _S1})
+
+
+def test_fill_hashes_ignores_unlisted_uuids_and_malformed_values():
+    photos = ["a", "b", "c", "d", "e"]
+    hashes = {"a": _H1.upper(), "b": _H1[:63], "c": None, "d": 7, "e": _H2, "unlisted": _H3}
+    assert fill_hashes(photos, _state(), hashes) == _state(hashes={"e": _H2})
+
+
+def test_fill_hashes_with_nothing_to_fill_returns_an_equal_state():
+    state = _state({"a": 0}, epoch=2, hashes={"a": _H1}, sources={"a": _S1})
+    assert fill_hashes(["a"], state, {}) == state
+    assert fill_hashes(["a"], state, {"a": _H2}) == state
