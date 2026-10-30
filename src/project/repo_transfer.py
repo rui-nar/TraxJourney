@@ -28,6 +28,7 @@ from models.project_db import (
     DBMemoryTranslation,
     DBPerson,
     DBPersonGroup,
+    DBPhotoUpgradeScan,
     DBProject,
     DBProjectItem,
     DBShareMemoryContent,
@@ -55,6 +56,26 @@ class ProjectNameTaken(Exception):
     def __init__(self, name: str) -> None:
         super().__init__(name)
         self.name = name
+
+
+class PhotoUpgradeRunning(Exception):
+    """A Replace import met an "Upgrade photos from Immich" apply on the trip
+    that is ``pending`` or ``running`` (issue #33, D13)."""
+
+
+def photo_upgrade_running(sess: Session, project_id: int) -> bool:
+    """Whether anyone's apply on the trip *project_id* is pending or running.
+
+    Every person's scans count: a companion's apply on their own journal
+    entries blocks the owner's Replace too. Selects a column, not rows, so
+    a scan the session loaded earlier cannot hide a newer status.
+    """
+    return sess.exec(
+        select(DBPhotoUpgradeScan.id).where(
+            DBPhotoUpgradeScan.project_id == project_id,
+            DBPhotoUpgradeScan.apply_status.in_(("pending", "running")),
+        ).limit(1)
+    ).first() is not None
 
 
 #: A trailing " (n)" counter, as "Keep both" appends it. Only a positive
@@ -320,6 +341,10 @@ class ImportExportMixin:
         *span_check*, when given, runs just before the commit, with the
         trip's span as it was before this wrote anything. If it raises,
         nothing is committed.
+
+        Raises :class:`PhotoUpgradeRunning`, having written nothing, while an
+        apply of "Upgrade photos from Immich" on the trip is pending or
+        running (issue #33).
         """
         if data_dir is None:
             raise ValueError("replace_project needs data_dir to keep the photos already on disk")
@@ -329,6 +354,14 @@ class ImportExportMixin:
         project_id = row.id
         used = trip_days_used(sess, project_id) if span_check is not None else 0
         bump_lock_version(sess, project_id)
+        # After the bump, which holds SQLite's write lock until this commits:
+        # no apply can become pending, and no apply batch commit, meanwhile.
+        # An apply that has swapped a photo deletes the old one's files only
+        # afterwards, so a Replace in that window would list the old photo
+        # again and delete the new one (D13). The caller's session closes
+        # without a commit, so the bump goes too.
+        if photo_upgrade_running(sess, project_id):
+            raise PhotoUpgradeRunning()
         removals: List[PhotoRemoval] = []
 
         # The trip's activity rows, read under its lock: deleted below with

@@ -60,7 +60,10 @@ from src.models.great_circle import great_circle_points
 from src.models.project import Project
 from src.project.photo_placement import already_present, place_photos
 from src.project.project_io import InvalidProjectFile, ProjectIO
-from src.project.repo_transfer import Placement, PhotoRemoval, ProjectNameTaken, SpanCheck
+from src.project.repo_transfer import (
+    Placement, PhotoRemoval, PhotoUpgradeRunning, ProjectNameTaken, SpanCheck,
+    photo_upgrade_running,
+)
 from src.project.staged_photos import StagedPhotos, staged_total
 from src.project.zip_import import MANIFEST_NAME, InvalidTripArchive, read_trip_zip
 from src.utils.logging import get_logger, request_id_var
@@ -306,6 +309,20 @@ def _name_conflict(name: str) -> JSONResponse:
     )
 
 
+def _photo_upgrade_running() -> JSONResponse:
+    """409 for a Replace of a trip whose photos are being upgraded from
+    Immich (issue #33): an apply pending or running on it."""
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={
+            "detail": "Photos on this trip are being upgraded from Immich. "
+                      "Try again once that has finished.",
+            "code": "photo_upgrade_running",
+            "request_id": request_id_var.get(),
+        },
+    )
+
+
 def _remove_photos(removals: list[PhotoRemoval]) -> None:
     """Delete the photo files a replace dropped, once it has committed."""
     for removal in removals:
@@ -391,9 +408,12 @@ async def import_project(
         if taken and on_conflict == "replace":
             # The same trip, new content: no new trip, so no limit on the
             # number of trips. Its length is checked before the commit.
-            removals = _repo.replace_project(
-                sess, user_info_id, name, project, data_dir=project_shared._DATA_DIR,
-                span_check=_trip_days_check(user_info_id))
+            try:
+                removals = _repo.replace_project(
+                    sess, user_info_id, name, project, data_dir=project_shared._DATA_DIR,
+                    span_check=_trip_days_check(user_info_id))
+            except PhotoUpgradeRunning:
+                return _photo_upgrade_running()
         if removals is None:
             # A copy or a new name is a new trip. The storage quota does not
             # apply: nothing lands on disk. The size is bounded by
@@ -430,7 +450,9 @@ router.add_api_route(
     responses={
         400: {"description": "Not a .traxj file, or not a readable trip"},
         409: {"description": "The name is taken and on_conflict was not given; "
-                             "the body's name field holds it"},
+                             "the body's name field holds it. On replace, also "
+                             "while the trip's photos are being upgraded from "
+                             "Immich (code photo_upgrade_running)"},
         413: {"description": "The file is larger than MAX_IMPORT_BYTES"},
         408: {"description": "The upload stalled, or took too long to arrive"},
         503: {"description": "Another trip import is in progress"},
@@ -612,6 +634,10 @@ async def import_project_zip(
             return _name_conflict(name)
         if not (taken and on_conflict == "replace"):
             ensure_project_quota(sess, user_info_id)
+        elif photo_upgrade_running(sess, _repo.project_id_for(sess, user_info_id, name)):
+            # Refused before minutes of reading. replace_project's own check,
+            # under the write lock, is still the one that decides.
+            return _photo_upgrade_running()
 
     staging = await run_in_threadpool(_new_staging_dir)
     try:
@@ -623,8 +649,12 @@ async def import_project_zip(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from None
 
-        imported, removals, placements = await run_in_threadpool(
-            _ingest_zip, user_info_id, name, project, staged, on_conflict)
+        try:
+            imported, removals, placements = await run_in_threadpool(
+                _ingest_zip, user_info_id, name, project, staged, on_conflict)
+        except PhotoUpgradeRunning:
+            # An apply started while the archive was read.
+            return _photo_upgrade_running()
         if imported is None:
             # A concurrent request took the name after the check above.
             return _name_conflict(name)
@@ -667,7 +697,9 @@ router.add_api_route(
         402: {"description": "The trip or its photos would exceed the plan's "
                              "trip count or storage"},
         409: {"description": "The name is taken and on_conflict was not given; "
-                             "the body's name field holds it"},
+                             "the body's name field holds it. On replace, also "
+                             "while the trip's photos are being upgraded from "
+                             "Immich (code photo_upgrade_running)"},
         413: {"description": "The file is larger than MAX_ZIP_IMPORT_BYTES"},
         408: {"description": "The upload stalled, or took too long to arrive"},
         503: {"description": "Another trip import is in progress"},
