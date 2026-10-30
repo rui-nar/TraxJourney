@@ -52,6 +52,7 @@ from src.api.polarsteps_client import format_step, format_trip
 from src.billing.entitlements import ensure_storage_quota
 from src.billing.usage import record_written, unlink_and_record
 from src.utils.photo_paths import photo_file, photo_files, photo_folder
+from src.utils.photo_store import photo_media_type
 from src.models.person import polarsteps_from_socials
 from src.utils.logging import get_logger
 
@@ -458,7 +459,7 @@ def serve_avatar(
     full_path = photo_file(_avatar_folder(owner_dir, person_id), uuid_str)
     if full_path is None or not full_path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
-    return FileResponse(str(full_path), media_type="image/jpeg")
+    return FileResponse(str(full_path), media_type=photo_media_type(full_path))
 
 
 @router.get("/{person_id}/avatar/thumb", summary="Serve avatar thumbnail")
@@ -479,7 +480,7 @@ def serve_avatar_thumb(
     if thumb_path is None or not thumb_path.exists():
         full_path = photo_file(photo_dir, uuid_str)
         if full_path is not None and full_path.exists():
-            return FileResponse(str(full_path), media_type="image/jpeg")
+            return FileResponse(str(full_path), media_type=photo_media_type(full_path))
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     return FileResponse(str(thumb_path), media_type="image/jpeg")
 

@@ -299,3 +299,52 @@ class TestOversizedImageUpload:
             files={"file": ("p.jpg", _jpeg_bytes(), "image/jpeg")},
         )
         assert resp.status_code == 201, resp.text
+
+
+# ── A HEIC upload is stored as a JPEG (#33, D4) ───────────────────────────────
+#
+# The HEIF opener is registered by src/utils/photo_store.py, which both routers
+# import, so Pillow can encode the fixture too.
+
+def _heic_bytes(size=(20, 20), color=(200, 30, 30)) -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", size, color).save(buf, "HEIF")
+    return buf.getvalue()
+
+
+def _stored_originals(photo_dir):
+    return [p for p in photo_dir.glob("*.jpg") if not p.stem.endswith("_thumb")]
+
+
+class TestHeicUpload:
+    def test_memory_upload_stores_a_heic_as_jpeg(self, env, tmp_path):
+        client, user_id, project_id, engine = env
+        memory_id = _insert_memory(engine, project_id)
+
+        resp = client.post(
+            f"/api/memories/{memory_id}/photos",
+            files={"file": ("p.heic", _heic_bytes(), "image/heic")},
+        )
+        assert resp.status_code == 201, resp.text
+
+        photo_dir = tmp_path / "users" / str(user_id) / "memories" / str(memory_id)
+        stored = _stored_originals(photo_dir)
+        assert len(stored) == 1
+        with Image.open(stored[0]) as img:
+            assert img.format == "JPEG"
+
+    def test_journal_replace_stores_a_heic_as_jpeg(self, env, tmp_path):
+        client, user_id, project_id, engine = env
+        journal_id = _insert_journal(engine, project_id, ["old-uuid"])
+
+        resp = client.put(
+            f"/api/journal/{journal_id}/photos/old-uuid/replace",
+            files={"file": ("p.heic", _heic_bytes(), "image/heic")},
+        )
+        assert resp.status_code == 200, resp.text
+
+        photo_dir = tmp_path / "users" / str(user_id) / "journal" / str(journal_id)
+        stored = _stored_originals(photo_dir)
+        assert len(stored) == 1
+        with Image.open(stored[0]) as img:
+            assert img.format == "JPEG"
