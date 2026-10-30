@@ -11,8 +11,11 @@ photo at a time, whatever its format.
 """
 from __future__ import annotations
 
+import hashlib
 import io
+import logging
 import random
+import signal
 import struct
 import subprocess
 import sys
@@ -28,6 +31,7 @@ try:
 except ImportError:  # Windows
     resource = None
 from PIL import Image, ImageCms
+import pillow_heif
 from pillow_heif.as_plugin import HeifImageFile
 
 import src.utils.photo_store as photo_store
@@ -204,6 +208,69 @@ def test_a_heic_declaring_one_row_over_51_megapixels_is_refused(monkeypatch):
         photo_store._open(raw)
 
 
+# ── Deeper or less subsampled coded images: lower caps ────────────────────────
+
+def _heic_format(size, chroma: int, bits: int) -> bytes:
+    """An honest HEIC of *size* at *chroma* (420, 422, 444) and *bits*,
+    encoded from a 16-bit source when deeper than 8 bits."""
+    img = _quartered(size)
+    if bits == 8:
+        heif = pillow_heif.from_pillow(img)
+    else:
+        b8 = img.tobytes()
+        b16 = bytearray(2 * len(b8))
+        b16[0::2] = b8
+        b16[1::2] = b8
+        heif = pillow_heif.from_bytes(mode="RGB;16", size=size, data=bytes(b16))
+    buf = io.BytesIO()
+    heif.save(buf, quality=90, chroma=chroma)
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("chroma", [420, 422, 444])
+def test_a_10_bit_heif_converts_to_an_8_bit_jpeg(tmp_path, chroma):
+    raw = _heic_format((64, 48), chroma, 10)
+    assert pillow_heif.open_heif(io.BytesIO(raw), convert_hdr_to_8bit=False).info["bit_depth"] == 10
+
+    full, thumb = write_photo_files(tmp_path, NAME, raw)
+
+    with Image.open(full) as stored:
+        assert stored.format == "JPEG" and stored.mode == "RGB" and stored.size == (64, 48)
+        assert _is_red(stored.getpixel((10, 10))) and not _is_red(stored.getpixel((50, 40)))
+
+
+@pytest.mark.parametrize("chroma,bits,cap", [
+    (422, 8, 44_000_000),
+    (444, 8, 40_000_000),
+    (420, 10, 47_000_000),
+    (422, 10, 31_000_000),
+    (444, 10, 28_000_000),
+])
+def test_a_costlier_format_has_its_own_cap(monkeypatch, chroma, bits, cap):
+    """At the cap the file passes; one row more is refused, in the 51 MP
+    refusal's words; an 8-bit 4:2:0 file of that size is unaffected."""
+    _no_decode(monkeypatch)
+    raw = _heic_format((64, 64), chroma, bits)
+    width = 4_000
+    assert cap % width == 0
+
+    photo_store._open(_with_ispe(raw, width, cap // width))
+    with pytest.raises(PhotoTooLarge, match=f"it is larger than {cap // 1_000_000} megapixels"):
+        photo_store._open(_with_ispe(raw, width, cap // width + 1))
+    plain = _heic_format((64, 64), 420, 8)
+    photo_store._open(_with_ispe(plain, width, cap // width + 1))
+
+
+def test_a_grid_canvas_takes_the_cap_of_its_tiles_format():
+    """A 36 MP grid of 8-bit 4:2:0 tiles passes; of 10-bit 4:2:2 tiles, not."""
+    raw = _heif({1: b"grid", 2: b"hvc1", 3: b"hvc1"}, [(6_000, 6_000), (512, 512)],
+                {1: [1], 2: [2], 3: [2]}, {1: _grid(6_000, 6_000)}, hevc=_hvcc())
+    photo_store._check_heif_size(raw)  # 36 MP, 8-bit 4:2:0
+    deep = raw.replace(_hvcc(), _hvcc(chroma=2, bits=10))
+    with pytest.raises(PhotoTooLarge, match="31 megapixels"):
+        photo_store._check_heif_size(deep)
+
+
 def test_a_coded_image_larger_than_its_ispe_is_refused(tmp_path):
     """U4-R2-1: the size check reads 'ispe', libde265 sizes its frame from the
     HEVC bitstream. libheif bounds the decoder to the 'ispe' size, so a file
@@ -245,6 +312,58 @@ def test_a_decoding_process_that_overruns_its_time_refuses_the_photo(tmp_path, m
     with pytest.raises(InvalidPhoto):
         write_photo_files(tmp_path / "f", NAME, _heic(_quartered((64, 64))))
     assert not (tmp_path / "f").exists()
+
+
+def test_the_decoding_process_gets_no_secret(tmp_path, monkeypatch):
+    """It reads untrusted bytes with a C decoder: the API's environment, which
+    holds its secrets, is not handed to it. It still starts and converts."""
+    monkeypatch.setenv("TRAXJOURNEY_TEST_SECRET", "do-not-leak")
+    envs = []
+    real_run = subprocess.run
+
+    def spy(command, **kwargs):
+        envs.append(kwargs.get("env"))
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(photo_store.subprocess, "run", spy)
+    full, _ = write_photo_files(tmp_path, NAME, _heic(_quartered((64, 64))))
+
+    (env,) = envs
+    assert env is not None and "TRAXJOURNEY_TEST_SECRET" not in env
+    assert set(env) <= {"PATH", "SYSTEMROOT"}
+    with Image.open(full) as stored:
+        assert stored.format == "JPEG"
+
+
+@pytest.mark.parametrize("crash", ["SIGSEGV", "SIGBUS", "SIGILL", "SIGFPE"])
+def test_a_decoder_crash_is_logged_as_an_error_with_the_photo_hash(tmp_path, monkeypatch, caplog, crash):
+    if not hasattr(signal, crash):
+        pytest.skip(f"{crash} does not exist on this platform")
+    raw = _heic(_quartered((64, 64)))
+    monkeypatch.setattr(photo_store.subprocess, "run", _completed(-getattr(signal, crash)))
+
+    with caplog.at_level(logging.WARNING, logger=photo_store.__name__):
+        with pytest.raises(InvalidPhoto):
+            write_photo_files(tmp_path / "f", NAME, raw)
+
+    errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert errors == [f"HEIF decoder crashed: signal {getattr(signal, crash)}, "
+                      f"sha256={hashlib.sha256(raw).hexdigest()}, bytes={len(raw)}"]
+
+
+@pytest.mark.parametrize("outcome", [
+    pytest.param(-signal.SIGABRT, id="SIGABRT"),
+    pytest.param(1, id="an exception such as MemoryError"),
+])
+def test_other_decoder_failures_are_not_logged_as_errors(tmp_path, monkeypatch, caplog, outcome):
+    monkeypatch.setattr(photo_store.subprocess, "run", _completed(outcome, stderr=b"MemoryError"))
+
+    with caplog.at_level(logging.WARNING, logger=photo_store.__name__):
+        with pytest.raises(InvalidPhoto):
+            write_photo_files(tmp_path / "f", NAME, _heic(_quartered((64, 64))))
+
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
 def test_the_decoding_process_gets_its_limits(tmp_path, monkeypatch):
@@ -312,12 +431,27 @@ def _full_box(kind: bytes, payload: bytes, version: int = 0) -> bytes:
     return _box(kind, bytes([version, 0, 0, 0]) + payload)
 
 
-def _heif(items: dict, ispes: list, links: dict, item_data: dict = None) -> bytes:
+def _hvcc(chroma: int = 1, bits: int = 8) -> bytes:
+    """An 'hvcC' payload declaring *chroma* (1 4:2:0, 2 4:2:2, 3 4:4:4) and
+    *bits*, with no parameter sets."""
+    return (bytes([1]) + b"\x00" * 11 + bytes([0, 0xF0, 0, 0xFC, 0xFC | chroma,
+                                               0xF8 | (bits - 8), 0xF8 | (bits - 8)])
+            + b"\x00\x00" + bytes([0x0F, 0]))
+
+
+def _heif(items: dict, ispes: list, links: dict, item_data: dict = None,
+          hevc: bytes = _hvcc()) -> bytes:
     """A HEIF file's boxes: *items* is id → item type, *ispes* the sizes of
     the 'ispe' properties, *links* id → 1-based property indexes, and
-    *item_data* id → bytes stored in 'idat'. No coded image: only the size
-    check can read it."""
+    *item_data* id → bytes stored in 'idat'. Every 'hvc1' item is also linked
+    to one 'hvcC' property holding *hevc*, unless it is None. No coded image:
+    only the size check can read it."""
     item_data = item_data or {}
+    if hevc is not None:
+        links = {item_id: indexes + [len(ispes) + 1] if items.get(item_id) == b"hvc1" else indexes
+                 for item_id, indexes in links.items()}
+        links.update({item_id: [len(ispes) + 1] for item_id, kind in items.items()
+                      if kind == b"hvc1" and item_id not in links})
     iinf = _full_box(b"iinf", struct.pack(">H", len(items)) + b"".join(
         _full_box(b"infe", struct.pack(">HH", item_id, 0) + kind + b"\x00", version=2)
         for item_id, kind in items.items()))
@@ -328,7 +462,8 @@ def _heif(items: dict, ispes: list, links: dict, item_data: dict = None) -> byte
         idat += data
     iloc = _full_box(b"iloc", bytes([0x44, 0x00]) + struct.pack(">H", len(item_data)) + entries,
                      version=1)
-    ipco = _box(b"ipco", b"".join(_full_box(b"ispe", struct.pack(">II", w, h)) for w, h in ispes))
+    ipco = _box(b"ipco", b"".join(_full_box(b"ispe", struct.pack(">II", w, h)) for w, h in ispes)
+                + (_box(b"hvcC", hevc) if hevc is not None else b""))
     ipma = _full_box(b"ipma", struct.pack(">I", len(links)) + b"".join(
         struct.pack(">HB", item_id, len(indexes)) + bytes(indexes)
         for item_id, indexes in links.items()))
@@ -380,6 +515,8 @@ def test_a_tile_over_the_cap_is_refused():
     pytest.param(_heif({1: b"hvc1"}, [(64, 64)], {1: [9]}), id="a property index out of range"),
     pytest.param(_heif({1: b"grid"}, [(64, 64)], {1: [1]}), id="a grid without data"),
     pytest.param(_tiled(b"\x00\x00\x01"), id="a grid header cut short"),
+    pytest.param(_heif({1: b"hvc1"}, [(64, 64)], {1: [1]}, hevc=None), id="a coded image without hvcC"),
+    pytest.param(_heif({1: b"hvc1"}, [(64, 64)], {1: [1]}, hevc=_hvcc()[:17]), id="an hvcC cut short"),
     pytest.param(_box(b"ftyp", b"heic\x00\x00\x00\x00mif1heic"), id="no meta"),
     pytest.param(_box(b"ftyp", b"heic") + struct.pack(">I", 4000) + b"meta", id="a box past the end"),
     pytest.param(_box(b"ftyp", b"heic") + struct.pack(">I", 4) + b"meta", id="a box smaller than its header"),

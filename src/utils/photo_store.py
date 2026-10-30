@@ -11,7 +11,10 @@ HTTP: a caller turns :class:`InvalidPhoto` into its own error.
 """
 from __future__ import annotations
 
+import hashlib
 import io
+import os
+import signal
 import subprocess
 import sys
 import threading
@@ -75,11 +78,41 @@ HEIF_JPEG_QUALITY = 92
 #: once started), that still fits the API container's 768 MB.
 HEIF_CHILD_MEMORY = 576 * 1024 * 1024
 
+#: Lower pixel caps for coded formats that cost more to decode than 8-bit
+#: 4:2:0, keyed by (deeper than 8 bits, chroma format: 1 4:2:0, 2 4:2:2,
+#: 3 4:4:4), read from each coded image's 'hvcC' (:func:`_check_heif_size`).
+#: 8-bit 4:2:0 (and monochrome) keeps :data:`HEIF_MAX_PIXELS`.
+#:
+#: Measured like :data:`HEIF_CHILD_MEMORY`, as the smallest address-space limit
+#: each honest file decodes under: 8-bit 4:2:0 needs about 74 MiB + 7.8 MiB per
+#: MP (472 MiB at 50.8 MP); 8-bit 4:2:2 9.9, 8-bit 4:4:4 10.9, 10-bit 4:2:0
+#: 9.4, 10-bit 4:2:2 14.1 and 10-bit 4:4:4 16.0 MiB per MP (from 576, 627,
+#: 541, 709 and 795 MiB at 45-51 MP). Each cap keeps the decode near or
+#: under 529 MiB, about 10 % below the limit, and was checked at its value:
+#: 8-bit 4:2:2 at 45 MP needs 529 MiB, 8-bit 4:4:4 at 41 MP 529, 10-bit 4:2:0
+#: at 47 MP 512, 10-bit 4:2:2 at 31 MP 498, 10-bit 4:4:4 at 28 MP 520; the
+#: caps below are one MP lower where that measured value was above 524 MiB.
+#: Measured on 10-bit files; any depth above 8 bits takes the 10-bit cap.
+HEIF_MAX_PIXELS_BY_FORMAT: Dict[Tuple[bool, int], int] = {
+    (False, 2): 44_000_000,
+    (False, 3): 40_000_000,
+    (True, 1): 47_000_000,
+    (True, 2): 31_000_000,
+    (True, 3): 28_000_000,
+}
+
 #: Seconds the HEIC or HEIF decode may take. A 51 MP photo takes about 2 s on
 #: the measuring machine; this allows a slower server many times that.
 HEIF_CHILD_TIMEOUT = 30
 
 _HEIF_CHILD = Path(__file__).with_name("heif_child.py")
+
+#: Signals a decoder dies of when it has a memory-safety bug, not when it runs
+#: out of memory (MemoryError, or SIGABRT from an allocation libheif does not
+#: catch): a photo that causes one is logged as an error, with its hash, so it
+#: can be found and reported upstream.
+_CRASH_SIGNALS = frozenset(getattr(signal, name) for name in ("SIGSEGV", "SIGBUS", "SIGILL", "SIGFPE")
+                           if hasattr(signal, name))
 
 #: Held around every full decode, whatever the format, so one process never
 #: decodes two photos at once, and runs one HEIC decoding process at a time
@@ -94,7 +127,8 @@ class InvalidPhoto(ValueError):
 
 class PhotoTooLarge(InvalidPhoto):
     """The image is over :data:`MAX_PHOTO_PIXELS`, or a HEIC or HEIF one over
-    :data:`HEIF_MAX_PIXELS`."""
+    :data:`HEIF_MAX_PIXELS` or its format's cap
+    (:data:`HEIF_MAX_PIXELS_BY_FORMAT`)."""
 
 
 def _too_large(limit: Optional[int] = None) -> PhotoTooLarge:
@@ -206,18 +240,34 @@ def _item_types(raw: bytes, start: int, end: int) -> Dict[int, bytes]:
     return types
 
 
-def _properties(raw: bytes, start: int, end: int) -> Tuple[List[Optional[int]], Dict[int, List[int]]]:
-    """From the 'iprp' box: each property's pixel count when it is an 'ispe'
-    (None otherwise), in order, and item id → its properties' 1-based indexes."""
+def _hevc_format(raw: bytes, start: int, end: int) -> Tuple[bool, int]:
+    """From an 'hvcC' box (ISO/IEC 14496-15): whether the coded image is
+    deeper than 8 bits, and its chroma format (0 monochrome, 1 4:2:0, 2 4:2:2,
+    3 4:4:4)."""
+    r = _Reader(raw, start, end)
+    r.uint(1), r.uint(1)  # version, profile
+    r.uint(4), r.uint(4), r.uint(2)  # compatibility and constraint flags
+    r.uint(1), r.uint(2), r.uint(1)  # level, min spatial segmentation, parallelism
+    chroma = r.uint(1) & 0x03
+    luma_bits, chroma_bits = (r.uint(1) & 0x07) + 8, (r.uint(1) & 0x07) + 8
+    return max(luma_bits, chroma_bits) > 8, chroma
+
+
+def _properties(raw: bytes, start: int, end: int) -> Tuple[List[Tuple[bytes, object]], Dict[int, List[int]]]:
+    """From the 'iprp' box: each property in order, as its type and, for an
+    'ispe', its pixel count, for an 'hvcC', its :func:`_hevc_format` (None
+    otherwise); and item id → its properties' 1-based indexes."""
     iprp = _children(raw, start, end)
-    sizes: List[Optional[int]] = []
+    properties: List[Tuple[bytes, object]] = []
     for kind, s, e in _boxes(raw, *_only(iprp, b"ipco")):
         if kind == b"ispe":
             r = _Reader(raw, s, e)
             r.full_box()
-            sizes.append(r.uint(4) * r.uint(4))
+            properties.append((kind, r.uint(4) * r.uint(4)))
+        elif kind == b"hvcC":
+            properties.append((kind, _hevc_format(raw, s, e)))
         else:
-            sizes.append(None)
+            properties.append((kind, None))
     links: Dict[int, List[int]] = {}
     for s, e in iprp.get(b"ipma", []):
         r = _Reader(raw, s, e)
@@ -227,7 +277,7 @@ def _properties(raw: bytes, start: int, end: int) -> Tuple[List[Optional[int]], 
             item_id = r.uint(2 if version < 1 else 4)
             for _ in range(r.uint(1)):
                 links.setdefault(item_id, []).append(r.uint(2) & 0x7FFF if wide else r.uint(1) & 0x7F)
-    return sizes, links
+    return properties, links
 
 
 def _item_heads(raw: bytes, meta: Dict[bytes, List[Tuple[int, int]]], wanted: set) -> Dict[int, bytes]:
@@ -283,12 +333,22 @@ def _canvas_pixels(kind: bytes, head: bytes) -> int:
     return r.uint(field) * r.uint(field)
 
 
+def _heif_pixel_limit(formats: set) -> int:
+    """The pixel cap of a file whose coded images have these
+    :func:`_hevc_format` values: the lowest of theirs, and never above
+    :data:`HEIF_MAX_PIXELS`. Monochrome costs no more than 4:2:0."""
+    return min([HEIF_MAX_PIXELS] + [HEIF_MAX_PIXELS_BY_FORMAT.get((deep, max(chroma, 1)), HEIF_MAX_PIXELS)
+                                    for deep, chroma in formats])
+
+
 def _check_heif_size(raw: bytes) -> None:
     """Refuse the HEIC or HEIF *raw* when any image libheif could decode from
-    it is over :data:`HEIF_MAX_PIXELS`, before anything is decoded: every 'ispe'
-    property, every grid and overlay canvas. A file whose boxes cannot be read,
-    or with an image item of no 'ispe', is refused too rather than decoded
-    blind."""
+    it is over the pixel cap its coded format affords
+    (:data:`HEIF_MAX_PIXELS_BY_FORMAT`), before anything is decoded: every
+    'ispe' property, every grid and overlay canvas, against the costliest
+    format of any coded image in the file. A file whose boxes cannot be read,
+    with an image item of no 'ispe', or a coded HEVC image of no 'hvcC', is
+    refused too rather than decoded blind."""
     try:
         metas = [(s, e) for kind, s, e in _boxes(raw, 0, len(raw)) if kind == b"meta"]
         if len(metas) != 1:
@@ -298,16 +358,23 @@ def _check_heif_size(raw: bytes) -> None:
         r.full_box()
         meta = _children(raw, r.pos, end)
         types = _item_types(raw, *_only(meta, b"iinf"))
-        sizes, links = _properties(raw, *_only(meta, b"iprp"))
-        if not any(size is not None for size in sizes):
+        properties, links = _properties(raw, *_only(meta, b"iprp"))
+        sizes = [value for kind, value in properties if kind == b"ispe"]
+        if not sizes:
             raise _Malformed
-        largest = max(size for size in sizes if size is not None)
+        largest = max(sizes)
+        formats = set()
         for item_id, kind in types.items():
             if kind not in _HEIF_IMAGE_ITEMS:
                 continue
-            indexes = links.get(item_id, [])
-            if not any(0 < i <= len(sizes) and sizes[i - 1] is not None for i in indexes):
+            linked = [properties[i - 1] for i in links.get(item_id, []) if 0 < i <= len(properties)]
+            if not any(prop == b"ispe" for prop, _ in linked):
                 raise _Malformed
+            if kind == b"hvc1":
+                found = [value for prop, value in linked if prop == b"hvcC"]
+                if not found:
+                    raise _Malformed
+                formats.update(found)
         canvases = {i: k for i, k in types.items() if k in (b"grid", b"iovl")}
         if canvases:
             heads = _item_heads(raw, meta, set(canvases))
@@ -317,8 +384,9 @@ def _check_heif_size(raw: bytes) -> None:
                 largest = max(largest, _canvas_pixels(kind, heads[item_id]))
     except (ValueError, IndexError) as exc:
         raise InvalidPhoto("it is not a readable image") from exc
-    if largest > HEIF_MAX_PIXELS:
-        raise _too_large(HEIF_MAX_PIXELS)
+    limit = _heif_pixel_limit(formats)
+    if largest > limit:
+        raise _too_large(limit)
 
 
 def _open(raw: bytes) -> Image.Image:
@@ -379,6 +447,14 @@ def _thumbnail_of(img: Image.Image) -> Image.Image:
         raise InvalidPhoto("it is not a readable image") from exc
 
 
+def _child_env() -> Dict[str, str]:
+    env = {"PATH": os.environ.get("PATH", "")}
+    if sys.platform == "win32" and "SYSTEMROOT" in os.environ:
+        # Python cannot start on Windows (a development machine) without it.
+        env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
+    return env
+
+
 def _heif_to_jpeg(raw: bytes) -> bytes:
     """The upright JPEG stored in place of the HEIC or HEIF *raw*, already
     checked against :data:`HEIF_MAX_PIXELS`, made by src/utils/heif_child.py in
@@ -386,15 +462,22 @@ def _heif_to_jpeg(raw: bytes) -> bytes:
     machine, the child runs without a limit). A decode that fails, runs out of
     memory, is killed or overruns :data:`HEIF_CHILD_TIMEOUT` refuses the photo.
     Called with :data:`_DECODE_LOCK` held, so one child runs at a time.
+
+    The child gets no environment but PATH: it reads untrusted bytes with a
+    C decoder, and the API's environment holds its secrets.
     """
     command = [sys.executable, "-I", str(_HEIF_CHILD), str(HEIF_CHILD_MEMORY),
                str(HEIF_JPEG_QUALITY)]
     try:
-        done = subprocess.run(command, input=raw, capture_output=True,
+        done = subprocess.run(command, input=raw, capture_output=True, env=_child_env(),
                               timeout=HEIF_CHILD_TIMEOUT, check=False)
     except subprocess.TimeoutExpired as exc:
         _log.warning("HEIF decode timed out after %ss", HEIF_CHILD_TIMEOUT)
         raise InvalidPhoto("it is not a readable image") from exc
+    if -done.returncode in _CRASH_SIGNALS:
+        _log.error("HEIF decoder crashed: signal %s, sha256=%s, bytes=%s",
+                   -done.returncode, hashlib.sha256(raw).hexdigest(), len(raw))
+        raise InvalidPhoto("it is not a readable image")
     if done.returncode != 0 or not done.stdout:
         reason = done.stderr.decode("utf-8", "replace").strip().splitlines()[-1:]
         _log.warning("HEIF decode failed: exit %s %s", done.returncode, reason)
