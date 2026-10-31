@@ -315,10 +315,25 @@ Verifier: pass (scope, no weakened assertion, 6 new tests fail without the fixes
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: —
+- Outcome: fixed (4d8fdadd, with the memory and journal upload routes; verifier pass)
 
 Note: the same `len(raw)` measurement sits in the upload routes (`api/memories.py:765`, `api/journal.py:248`). Since U4 (this branch) a HEIC upload near the limit is checked on its HEIC size and stored as a larger JPEG. Outside this round's subject; raised to the owner separately. Owner (2026-10-31): fix it in U8 together with U8-R2-1 — check the quota on the bytes that will be stored, for replace and upload alike.
 
 ## U15 unit review round 2 — 2026-10-31, reviewed at 3500e3a3
 
 Clean: no findings, no envelope questions. Verifier: pass.
+
+## U8 unit review round 3 — 2026-10-31, reviewed at 4d8fdadd
+
+Verifier: pass (all upload paths in memories/journal check the stored size; one conversion; new tests fail without the fix).
+
+### U8-R3-1 — The avatar upload route still checks the storage quota on the raw HEIC while storing its larger JPEG
+- Trigger: an editor uploads a HEIC as a person's avatar (POST /api/people/{id}/avatar) on a trip whose owner has room for the HEIC but not its JPEG → `ensure_storage_quota` passes on `len(raw)` (`api/people.py:381-382`) → `write_photo_files` stores the quality-92 JPEG and `record_written` counts it → the owner's account ends over its limit, nothing refused.
+- Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3, F3 floor — decided by the orchestrator: the floor fixes the outcome whatever the triage)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: —
+
+Round 3 is the cap (§6). Owner (2026-10-31): fix U8-R3-1 in U8 (X3: `api/people.py`), and run a fourth round on the fix.
