@@ -19,11 +19,12 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 import api.journal as journal_mod
 import api.memories as mem_mod
+import api.people as people_mod
 import models.db as db_module
 from api.deps import get_current_user
 from api.router import app
 from models.billing import Subscription, UserUsage
-from models.project_db import DBJournalEntry, DBMemory, DBProject, DBProjectMember
+from models.project_db import DBJournalEntry, DBMemory, DBPerson, DBProject, DBProjectMember
 from models.user import UserInfo
 from src.billing.plans import TIER_2
 from src.utils.photo_store import prepare_photo
@@ -337,3 +338,57 @@ class TestHeicStorageQuota:
         assert res.status_code == 201, res.text
         stored = tmp_path / "users" / "1" / "memories" / str(memory_id) / f"{res.json()['uuid']}.jpg"
         assert stored.read_bytes() == jpeg
+
+    # Avatars count against the trip owner's storage too (#470, U8-R3-1).
+
+    def test_a_heic_avatar_that_fits_whose_jpeg_does_not_is_refused(
+            self, env, monkeypatch, tmp_path):
+        client, engine = env
+        monkeypatch.setattr(people_mod, "_DATA_DIR", str(tmp_path))
+        heic = _small_heic()
+        jpeg = prepare_photo(heic)
+        assert len(jpeg) > len(heic) + 1      # the case this test is about
+        _enforcing(monkeypatch)
+        monkeypatch.setenv("FREE_MAX_STORAGE_MB", "1")
+        # Room for the HEIC, not for its JPEG.
+        _seed_usage(engine, 1, 1 * _MB - len(heic) - 1)
+        person_id = _person(engine)
+
+        res = client.post(f"/api/people/{person_id}/avatar",
+                          files={"file": ("a.heic", heic, "image/heic")})
+
+        assert res.status_code == 402
+        assert res.json()["resource"] == "storage"
+        assert not (tmp_path / "users" / "1" / "people").exists()
+        assert _avatar(engine, person_id) is None
+
+    def test_a_heic_avatar_whose_jpeg_fits_is_stored(self, env, monkeypatch, tmp_path):
+        client, engine = env
+        monkeypatch.setattr(people_mod, "_DATA_DIR", str(tmp_path))
+        heic = _small_heic()
+        jpeg = prepare_photo(heic)
+        _enforcing(monkeypatch)
+        monkeypatch.setenv("FREE_MAX_STORAGE_MB", "1")
+        _seed_usage(engine, 1, 1 * _MB - len(jpeg))
+        person_id = _person(engine)
+
+        res = client.post(f"/api/people/{person_id}/avatar",
+                          files={"file": ("a.heic", heic, "image/heic")})
+
+        assert res.status_code == 201, res.text
+        stored = tmp_path / "users" / "1" / "people" / str(person_id) / f"{_avatar(engine, person_id)}.jpg"
+        assert stored.read_bytes() == jpeg
+
+
+def _person(engine, project_id=1) -> int:
+    with Session(engine) as sess:
+        row = DBPerson(project_id=project_id, name="Alice")
+        sess.add(row)
+        sess.commit()
+        sess.refresh(row)
+        return row.id
+
+
+def _avatar(engine, person_id):
+    with Session(engine) as sess:
+        return sess.get(DBPerson, person_id).avatar_photo

@@ -50,7 +50,7 @@ from src.api.polarsteps_client import format_step, format_trip
 from src.billing.entitlements import ensure_storage_quota
 from src.billing.usage import record_written, unlink_and_record
 from src.utils.photo_paths import photo_file, photo_files, photo_folder
-from src.utils.photo_store import InvalidPhoto, photo_media_type, write_photo_files
+from src.utils.photo_store import InvalidPhoto, photo_media_type, prepare_photo, write_photo_files
 from src.models.person import polarsteps_from_socials
 from src.utils.logging import get_logger
 
@@ -93,9 +93,15 @@ def _avatar_folder(owner_dir: str, person_id: int) -> Path:
 def _save_avatar_files(owner_dir: str, person_id: int, uuid_str: str, raw: bytes) -> None:
     """Write the avatar and its thumbnail in the owner's folder and charge the
     owner. Written by the shared photo writer, so a HEIC avatar is stored as
-    a JPEG (#33) and a non-image upload leaves nothing on disk."""
+    a JPEG (#33) and a non-image upload leaves nothing on disk.
+
+    The owner's quota is checked on the bytes stored, a HEIC avatar's larger
+    JPEG (U8-R3-1), before anything is written; QuotaExceeded propagates."""
     try:
-        full, thumb = write_photo_files(_avatar_folder(owner_dir, person_id), uuid_str, raw)
+        stored = prepare_photo(raw)
+        with get_session() as sess:
+            ensure_storage_quota(sess, int(owner_dir), len(stored))
+        full, thumb = write_photo_files(_avatar_folder(owner_dir, person_id), uuid_str, stored)
     except InvalidPhoto as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -378,10 +384,9 @@ async def upload_avatar(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=f"Photo exceeds the {_MAX_AVATAR_UPLOAD_BYTES // (1024 * 1024)}MB upload limit",
         )
-    with get_session() as sess:
-        ensure_storage_quota(sess, int(owner_dir), len(raw))
     new_uuid = str(uuid_lib.uuid4())
-    # Decode + LANCZOS resize is CPU-bound: keep it off the event loop.
+    # Decode + LANCZOS resize is CPU-bound: keep it off the event loop. The
+    # quota is checked there, on the bytes that will be stored.
     await run_in_threadpool(_save_avatar_files, owner_dir, person_id, new_uuid, raw)
 
     try:
