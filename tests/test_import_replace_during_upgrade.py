@@ -23,6 +23,7 @@ from __future__ import annotations
 import io
 import json
 import sqlite3
+import uuid
 import zipfile
 from pathlib import Path
 
@@ -342,6 +343,70 @@ def test_the_check_runs_under_the_write_lock_after_the_bump(alps, monkeypatch):
     _replaced(_import_traxj(client, "Alps", traxj, on_conflict="replace"))
 
     assert seen == [version + 1]
+
+
+@pytest.mark.parametrize("kind, model", [
+    ("memories", DBMemory), ("journal", DBJournalEntry)])
+def test_a_zip_replace_reads_photo_lists_fresh_after_the_bump(alps, kind, model, monkeypatch):
+    """The ZIP route reads the kept rows (already_present) before the bump.
+    An apply that commits in between, listing A' for A, unlinking A and
+    finishing, must be what the Replace works on: A' is dropped with its
+    files, not left on disk unlisted and counted."""
+    client, engine, ids, _, data, db_path, project_id, archive, _ = alps
+    _scan(engine, project_id, ids["owner"], "running")
+    with Session(engine) as sess:
+        # The owner's row with the photo; the companion's entry has none.
+        (row,) = [r for r in sess.exec(select(model).where(model.project_id == project_id))
+                  if json.loads(r.photos_json or "[]")]
+        row_id, (old,) = row.id, json.loads(row.photos_json)
+    folder = data / "users" / str(ids["owner"]) / kind / str(row_id)
+    new = str(uuid.uuid4())
+    real_bump = repo_transfer_mod.bump_lock_version
+    hooked = []
+
+    def _apply_commits_then_bump(sess, pid):
+        # The apply, from another connection: A' written and listed, A gone,
+        # the apply done.
+        for suffix in ("", "_thumb"):
+            (folder / f"{new}{suffix}.jpg").write_bytes(_jpeg((1, 2, 3)))
+            (folder / f"{old}{suffix}.jpg").unlink()
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute(f"UPDATE {model.__tablename__} SET photos_json = ? WHERE id = ?",
+                         (json.dumps([new]), row_id))
+            conn.execute("UPDATE photoupgradescan SET apply_status = 'done'")
+            conn.commit()
+        finally:
+            conn.close()
+        hooked.append(pid)
+        return real_bump(sess, pid)
+
+    # The route's early check would refuse the running apply; it is the
+    # window after it, and after already_present, that is under test.
+    monkeypatch.setattr(transfer_mod, "photo_upgrade_running", lambda *_a: False)
+    monkeypatch.setattr(repo_transfer_mod, "bump_lock_version", _apply_commits_then_bump)
+    # Nothing guarantees the rows already_present loads are freed before the
+    # bump: hold them for the whole import, so the session keeps them.
+    held = []
+    real_present = transfer_mod.already_present
+
+    def _present_holding_rows(sess, *args, **kwargs):
+        held.extend(sess.exec(select(model).where(model.project_id == project_id)).all())
+        return real_present(sess, *args, **kwargs)
+
+    monkeypatch.setattr(transfer_mod, "already_present", _present_holding_rows)
+
+    _replaced(_import_zip(client, "Alps", archive, on_conflict="replace"))
+
+    assert hooked == [project_id] and held
+    with Session(engine) as sess:
+        listed = json.loads(sess.get(model, row_id).photos_json)
+    # A is placed again from the archive, and listed: not on disk unlisted.
+    assert (folder / f"{old}.jpg").is_file()
+    assert listed == [old], "A's file left on disk unlisted"
+    # A' is dropped with its files: not on disk unlisted, counted.
+    assert not (folder / f"{new}.jpg").exists(), "A' left on disk, unlisted"
+    assert not (folder / f"{new}_thumb.jpg").exists()
 
 
 # ── Allowed ───────────────────────────────────────────────────────────────────

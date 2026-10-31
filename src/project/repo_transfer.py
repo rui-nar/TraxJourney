@@ -354,6 +354,9 @@ class ImportExportMixin:
         project_id = row.id
         used = trip_days_used(sess, project_id) if span_check is not None else 0
         bump_lock_version(sess, project_id)
+        # Rows the session read before the write lock may be stale, and nothing
+        # guarantees they are freed: read every row afresh from here.
+        sess.expire_all()
         # After the bump, which holds SQLite's write lock until this commits:
         # no apply can become pending, and no apply batch commit, meanwhile.
         # An apply that has swapped a photo deletes the old one's files only
