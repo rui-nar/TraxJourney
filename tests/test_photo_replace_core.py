@@ -12,6 +12,12 @@ Covers:
   * a photo, or a row, deleted while the new files are written leaves no files
     and no counted storage, and raises ``PhotoGone``;
   * a download of a photo a replace stood in for is skipped (issue #566);
+  * an account over its limit may still replace a photo with one no larger,
+    and is refused one that grows storage;
+  * a replace busts the project's cached payloads, and one that finds the
+    photo gone busts nothing;
+  * a file deleted between its check and its read is a photo gone (404) for
+    a replace, and is left unhashed by a re-import;
   * the same rules hold for a journal entry;
   * stored originals are served with their own media type, a PNG as
     ``image/png``, thumbnails' fallback to the original included.
@@ -377,3 +383,155 @@ class TestServedMediaType:
         resp = client.get(f"/api/{prefix}/{ids[kind]}/photos/{_OLD}/thumb")
 
         assert resp.headers["content-type"] == "image/jpeg"
+
+
+# ── Storage: a replace that does not grow (quota envelope) ──────────────────
+
+class TestOverLimitAccount:
+    """An account already over its limit may still swap a photo for one that
+    is no larger; one that grows storage is still refused."""
+
+    def _over_limit(self, engine, ids, monkeypatch) -> None:
+        monkeypatch.setenv("BILLING_ENABLED", "1")
+        monkeypatch.setenv("BILLING_ENFORCE_QUOTAS", "1")
+        monkeypatch.setenv("FREE_MAX_STORAGE_MB", "1")
+        _seed_usage(engine, ids["user"], 2 * _MB)
+
+    def test_a_smaller_photo_is_accepted(self, env, monkeypatch):
+        _, engine, ids, tmp_path = env
+        raw = _image_bytes()
+        _write_old(tmp_path, ids, "memory", b"\xff" * (len(raw) + 1))
+        self._over_limit(engine, ids, monkeypatch)
+
+        new = _replace(ids, "memory", raw)
+
+        assert _photos(engine, ids, "memory") == [new, _OTHER]
+
+    def test_a_photo_of_the_same_size_is_accepted_without_a_check(self, env, monkeypatch):
+        _, engine, ids, tmp_path = env
+        raw = _image_bytes()
+        _write_old(tmp_path, ids, "journal", b"\xff" * len(raw))
+        self._over_limit(engine, ids, monkeypatch)
+        real_check = photo_replace_mod.ensure_storage_quota
+        checks = []
+
+        def counting_check(*args, **kwargs):
+            checks.append(args)
+            return real_check(*args, **kwargs)
+
+        monkeypatch.setattr(photo_replace_mod, "ensure_storage_quota", counting_check)
+
+        new = _replace(ids, "journal", raw)
+
+        assert _photos(engine, ids, "journal") == [new, _OTHER]
+        assert checks == []
+
+    def test_a_larger_photo_is_still_refused(self, env, monkeypatch):
+        _, engine, ids, tmp_path = env
+        raw = _image_bytes()
+        _write_old(tmp_path, ids, "memory", b"\xff" * (len(raw) - 1))
+        self._over_limit(engine, ids, monkeypatch)
+
+        with pytest.raises(QuotaExceeded):
+            _replace(ids, "memory", raw)
+
+        assert _photos(engine, ids, "memory") == [_OLD, _OTHER]
+
+
+# ── The project's cached payloads ───────────────────────────────────────────
+
+@pytest.mark.parametrize("kind", ["memory", "journal"])
+def test_a_replace_busts_the_projects_cached_payloads(env, monkeypatch, kind):
+    _, engine, ids, tmp_path = env
+    _write_old(tmp_path, ids, kind, _image_bytes(shade=200))
+    busted = []
+    monkeypatch.setattr(photo_replace_mod, "bust_project_payloads", busted.append)
+
+    _replace(ids, kind, _image_bytes(shade=50))
+
+    assert busted == [(ids["user"], "My Trip")]
+
+
+@pytest.mark.parametrize("kind", ["memory", "journal"])
+def test_a_replace_of_a_photo_gone_busts_nothing(env, monkeypatch, kind):
+    _, engine, ids, tmp_path = env
+    busted = []
+    monkeypatch.setattr(photo_replace_mod, "bust_project_payloads", busted.append)
+
+    with pytest.raises(PhotoGone):
+        replace_photo_bytes(kind, ids[kind], "00000000-0000-4000-8000-0000000000ff",
+                            _image_bytes(), owner_dir=str(ids["user"]))
+
+    assert busted == []
+
+
+# ── A file deleted between its check and its read ───────────────────────────
+
+def _vanish_on_read(monkeypatch, target: Path, before=None) -> list:
+    """Make reading *target* find it gone: run *before*, delete the file, then
+    raise FileNotFoundError, as a delete landing after ``is_file()`` would."""
+    real = Path.read_bytes
+    reads = []
+
+    def read_bytes(self):
+        if self == target:
+            reads.append(self)
+            if before is not None:
+                before()
+            target.unlink(missing_ok=True)
+            raise FileNotFoundError(str(self))
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    return reads
+
+
+@pytest.mark.parametrize("kind,prefix", [("memory", "memories"), ("journal", "journal")])
+def test_a_photo_deleted_while_its_file_is_hashed_answers_404(env, monkeypatch, kind, prefix):
+    client, engine, ids, tmp_path = env
+    old_full = _write_old(tmp_path, ids, kind, _image_bytes(shade=200))
+
+    def delete_from_list():
+        with Session(engine) as sess:
+            row = sess.get(_MODELS[kind], ids[kind])
+            row.photos_json = json.dumps([_OTHER])
+            sess.add(row)
+            sess.commit()
+
+    reads = _vanish_on_read(monkeypatch, old_full, before=delete_from_list)
+    resp = client.put(f"/api/{prefix}/{ids[kind]}/photos/{_OLD}/replace",
+                      files={"file": ("n.jpg", _image_bytes(shade=50), "image/jpeg")})
+
+    assert reads == [old_full]
+    assert resp.status_code == 404
+    assert _photos(engine, ids, kind) == [_OTHER]
+    # Only what the racing delete had not reached yet is left; no new files.
+    assert sorted(p.name for p in _folder(tmp_path, ids, kind).glob("*")) == sorted(
+        [f"{_OLD}_thumb.jpg", f"{_OTHER}.jpg", f"{_OTHER}_thumb.jpg"])
+
+
+def test_a_file_lost_while_hashed_still_lets_its_listed_photo_be_replaced(env, monkeypatch):
+    _, engine, ids, tmp_path = env
+    old_full = _write_old(tmp_path, ids, "memory", _image_bytes(shade=200))
+    _vanish_on_read(monkeypatch, old_full)
+
+    new = _replace(ids, "memory", _image_bytes(shade=50))
+
+    assert _photos(engine, ids, "memory") == [new, _OTHER]
+    assert _state(engine, ids, "memory")["hashes"] == {}
+
+
+def test_a_reimport_skips_a_file_deleted_while_it_is_hashed(env, monkeypatch):
+    _, engine, ids, tmp_path = env
+    old_full = _write_old(tmp_path, ids, "memory", _image_bytes(shade=200))
+    reads = _vanish_on_read(monkeypatch, old_full)
+    body = mem_mod.MemoryBody(project_name="My Trip", date="2025-06-01", geo_mode="custom",
+                              polarsteps_step_id=42)
+
+    assert mem_mod.create_memory(body, {"sub": str(ids["user"])})["id"] == ids["memory"]
+
+    assert reads == [old_full]
+    assert _photos(engine, ids, "memory") == [_OLD, _OTHER]
+    # The vanished file is left unhashed; the other one is hashed.
+    assert _state(engine, ids, "memory")["hashes"] == {_OTHER: _sha(_image_bytes())}
+    assert _row(engine, ids, "memory").polarsteps_step_id == 42

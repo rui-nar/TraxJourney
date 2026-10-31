@@ -641,8 +641,13 @@ def _hash_unhashed_photos(user_id: str, mem_row: DBMemory) -> Dict[str, str]:
         if not photo_uuid or photo_uuid in known:
             continue
         full = photo_file(folder, photo_uuid)
-        if full is not None and full.is_file():
+        if full is None or not full.is_file():
+            continue
+        try:
             hashes[photo_uuid] = hashlib.sha256(full.read_bytes()).hexdigest()
+        except FileNotFoundError:
+            # Deleted meanwhile: left unhashed, like a missing file.
+            continue
     return hashes
 
 

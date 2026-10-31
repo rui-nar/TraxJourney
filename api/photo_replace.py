@@ -7,7 +7,9 @@ and the Immich apply job, all replace a photo through
 sources and files:
 
 * Storage is checked against the net change: the new bytes minus the old
-  full-size file they free, never below 0 (F3). The thumbnails are left out
+  full-size file they free (F3). A replace that does not grow storage is not
+  checked at all, so an account over its limit can still upgrade a photo
+  that is no larger. The thumbnails are left out
   of the check, as they are for an upload; the counter records what is
   actually written and freed.
 * When the old photo has no sha256 yet, its full-size file is hashed before
@@ -100,14 +102,24 @@ def replace_photo_bytes(kind: str, artifact_id: int, old_uuid: str, raw: bytes, 
         has_old_hash = old_uuid in load_state(row.photo_order_json)["hashes"]
 
     old_full = photo_file(folder, old_uuid)
+    # A missing file sizes as 0 (bytes_of skips it).
     old_size = bytes_of(old_full) if old_full is not None else 0
-    with get_session() as sess:
-        ensure_storage_quota(sess, int(owner_dir), max(0, len(raw) - old_size))
+    growth = len(raw) - old_size
+    # A replace that does not grow storage is never refused, even on an
+    # account already over its limit: it can only bring it closer.
+    if growth > 0:
+        with get_session() as sess:
+            ensure_storage_quota(sess, int(owner_dir), growth)
 
     # Outside the lock: a 25 MB original takes a moment to read.
     old_hash: Optional[str] = None
     if not has_old_hash and old_full is not None and old_full.is_file():
-        old_hash = hashlib.sha256(old_full.read_bytes()).hexdigest()
+        try:
+            old_hash = hashlib.sha256(old_full.read_bytes()).hexdigest()
+        except FileNotFoundError:
+            # Deleted meanwhile: no hash to hand on. The write below finds
+            # the photo gone, or replaces a photo whose file was lost.
+            pass
 
     new_uuid = str(uuid_lib.uuid4())
     save_photo_files(owner_dir, folder, new_uuid, raw)
