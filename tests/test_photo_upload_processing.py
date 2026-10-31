@@ -25,6 +25,7 @@ from sqlmodel import Session, SQLModel, create_engine
 
 import api.journal as journal_mod
 import api.memories as mem_mod
+import api.photo_replace as photo_replace_mod
 import models.db as db_module
 from api.deps import get_current_user
 from api.journal import router as journal_router
@@ -136,7 +137,8 @@ class TestUploadOffloadsToThread:
             files={"file": ("p.jpg", _jpeg_bytes(), "image/jpeg")},
         )
         assert resp.status_code == 200, resp.text
-        assert calls == [mem_mod._save_photo_files]
+        # The decode, file writes and list write all run in the replace core.
+        assert calls == [photo_replace_mod.replace_photo_bytes]
 
     def test_journal_upload_uses_run_in_threadpool(self, env, monkeypatch):
         client, _, project_id, engine = env
@@ -160,7 +162,8 @@ class TestUploadOffloadsToThread:
             files={"file": ("p.jpg", _jpeg_bytes(), "image/jpeg")},
         )
         assert resp.status_code == 200, resp.text
-        assert calls == [journal_mod._save_photo_files]
+        # The decode, file writes and list write all run in the replace core.
+        assert calls == [photo_replace_mod.replace_photo_bytes]
 
 
 # ── Fix 3: corrupt/non-image uploads get a clean 422, not a 500 ───────────────

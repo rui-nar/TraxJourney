@@ -8,13 +8,15 @@ empty-name-fragile. These tests pin the unified behaviour:
 
   * shared `step_key` normalization (trailing space, empty-vs-NULL name);
   * write path adopts a pre-step-id memory by name+date (no duplicate);
-  * adopt = full refresh (scalars overwritten, step id backfilled, photos cleared);
+  * adopt = refresh (scalars overwritten, step id backfilled, photos kept with
+    their missing hashes filled: F5 of the Immich upgrade plan, #33);
   * exact step-id re-import is idempotent (no photo wipe);
   * the partial unique index forbids duplicate step ids per project;
   * the repair script merges existing duplicate pairs.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -29,6 +31,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 import models.db as db_module
 from api.deps import get_current_user
 from api.memories import router as memories_router
+from api.photo_order import load_state
 from models.project_db import DBMemory, DBProject, DBProjectItem
 from models.user import UserInfo
 from src.project.memory_match import normalize_name, step_key
@@ -164,20 +167,47 @@ class TestCreateMemoryDedup:
             assert row.polarsteps_step_id == 220373126   # backfilled
             assert row.description == "hi"               # refreshed from step
 
-    def test_adopt_clears_existing_photos(self, env):
+    def test_adopt_keeps_every_photo_fills_missing_hashes_and_keeps_the_epoch(self, env):
+        # F5 of the Immich upgrade plan (#33): adopt no longer clears photos.
         client, user_id, project_id, engine, data = env
+        imported, upgraded, hand_added = ("00000000-0000-4000-8000-000000000011",
+                                          "00000000-0000-4000-8000-000000000012",
+                                          "00000000-0000-4000-8000-000000000013")
+        recorded = "ab" * 32
+        state = {"epoch": 3, "ranks": {imported: 0, upgraded: 1},
+                 "hashes": {imported: recorded},
+                 "sources": {upgraded: "immich:asset-1"}}
         old = _insert_memory(engine, project_id, name="Beuron", date="2026-03-04",
-                             polarsteps_step_id=None, photos_json=json.dumps(["00000000-0000-4000-8000-000000000011", "00000000-0000-4000-8000-000000000012"]))
+                             polarsteps_step_id=None,
+                             photos_json=json.dumps([imported, upgraded, hand_added]),
+                             photo_order_json=json.dumps(state))
         pdir = data / "users" / str(user_id) / "memories" / str(old)
         pdir.mkdir(parents=True)
-        for u in ("00000000-0000-4000-8000-000000000011", "00000000-0000-4000-8000-000000000012"):
-            (pdir / f"{u}.jpg").write_bytes(b"x")
+        for u in (imported, upgraded, hand_added):
+            (pdir / f"{u}.jpg").write_bytes(u.encode())
             (pdir / f"{u}_thumb.jpg").write_bytes(b"x")
-        client.post("/api/memories/", json=self._body())
+
+        r = client.post("/api/memories/", json=self._body())
+
+        assert r.json()["id"] == old
         with Session(engine) as sess:
-            assert json.loads(sess.get(DBMemory, old).photos_json) == []
-        assert not (pdir / "00000000-0000-4000-8000-000000000011.jpg").exists()
-        assert not (pdir / "00000000-0000-4000-8000-000000000012_thumb.jpg").exists()
+            row = sess.get(DBMemory, old)
+            assert json.loads(row.photos_json) == [imported, upgraded, hand_added]
+            assert row.description == "hi"                # still refreshed from the step
+            assert row.polarsteps_step_id == 220373126
+            after = load_state(row.photo_order_json)
+        assert after == {
+            "epoch": 3,
+            "ranks": {imported: 0, upgraded: 1},
+            # The recorded hash is kept; the two missing ones come from the files.
+            "hashes": {imported: recorded,
+                       upgraded: hashlib.sha256(upgraded.encode()).hexdigest(),
+                       hand_added: hashlib.sha256(hand_added.encode()).hexdigest()},
+            "sources": {upgraded: "immich:asset-1"},
+        }
+        for u in (imported, upgraded, hand_added):
+            assert (pdir / f"{u}.jpg").exists()
+            assert (pdir / f"{u}_thumb.jpg").exists()
 
     def test_nameless_step_matches_null_name_memory(self, env):
         # format_step yields "" for a nameless step; client sends null → stored

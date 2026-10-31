@@ -18,11 +18,12 @@ the read and the write — what another process would do, holding no
   * a compare-and-set leaves the row's other columns as they were;
   * ``_drop_unplaced`` racing a replace of another photo of the row keeps the
     replacement and drops only the unplaced name;
-  * a re-import's clear racing a placement clears that photo too, and writes
+  * a re-import racing a placement keeps that photo, and retries to write
     the refreshed fields with it.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import uuid as uuid_lib
@@ -386,37 +387,45 @@ def test_drop_unplaced_that_keeps_conflicting_logs_and_leaves_the_name(env, monk
     assert "drop" in rec.getMessage() and str(row_id) in rec.getMessage()
 
 
-# ── A re-import's clear racing a placement ──────────────────────────────────
+# ── A re-import racing a placement ──────────────────────────────────────────
 
 def _reimport(user_id) -> int:
     """A Polarsteps re-import of the fixture memory's step (same name+date):
-    adopts the memory and clears its photos."""
+    adopts the memory and refreshes it, keeping its photos."""
     body = mem_mod.MemoryBody(project_name="My Trip", date="2025-06-01", geo_mode="custom",
                               description="from the step", polarsteps_step_id=42)
     return mem_mod.create_memory(body, _user(user_id))["id"]
 
 
-def test_a_reimport_clear_racing_a_placement_clears_it_too(env, monkeypatch):
+def test_a_reimport_racing_a_placement_keeps_it_and_retries_its_refresh(env, monkeypatch):
+    # F5 of the Immich upgrade plan (#33): a re-import keeps the photos; it
+    # used to clear them, the racing placement included.
     _, engine, ids = env
     user_id, row_id = ids["user"], ids["memory"]
     first = _land("memory", user_id, row_id, order=0)
     racer = str(uuid_lib.uuid4())
     _save("memory", user_id, row_id, racer)
 
-    _between_read_and_write(monkeypatch, lambda: _other_process_writes(
-        engine, "memory", row_id, lambda p, s: place(p, s, racer, 1)))
+    calls = _between_read_and_write(monkeypatch, lambda: _other_process_writes(
+        engine, "memory", row_id, lambda p, s: place(p, s, racer, 1, content_hash=_HASH)))
     assert _reimport(user_id) == row_id
 
+    # The first compare-and-set missed the other process's write; the retry
+    # wrote the refreshed fields over it without losing it.
+    assert len(calls) == 2
     row = _row(engine, "memory", row_id)
-    assert json.loads(row.photos_json) == []
-    assert load_state(row.photo_order_json)["epoch"] == 1
+    assert json.loads(row.photos_json) == [first, racer]
+    state = load_state(row.photo_order_json)
+    assert state["epoch"] == 0
+    assert state["hashes"] == {first: hashlib.sha256(_jpeg_bytes()).hexdigest(), racer: _HASH}
     assert row.description == "from the step" and row.polarsteps_step_id == 42
-    assert _files(user_id, "memory", row_id) == []
-    assert _usage(engine, user_id) == _BASELINE_USAGE
-    assert first != racer
+    assert _files(user_id, "memory", row_id) == sorted(
+        [f"{first}.jpg", f"{first}_thumb.jpg", f"{racer}.jpg", f"{racer}_thumb.jpg"])
+    folder = Path(mem_mod._DATA_DIR) / "users" / str(user_id) / "memories" / str(row_id)
+    assert _usage(engine, user_id) == _BASELINE_USAGE + sum(p.stat().st_size for p in folder.glob("*"))
 
 
-def test_a_reimport_clear_that_keeps_conflicting_answers_409_and_writes_nothing(env, monkeypatch):
+def test_a_reimport_that_keeps_conflicting_answers_409_and_writes_nothing(env, monkeypatch):
     client, engine, ids = env
     user_id, row_id = ids["user"], ids["memory"]
     photo = _land("memory", user_id, row_id, order=0)

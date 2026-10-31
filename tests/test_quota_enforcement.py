@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+import random
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,14 +17,17 @@ from PIL import Image
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
+import api.journal as journal_mod
 import api.memories as mem_mod
+import api.people as people_mod
 import models.db as db_module
 from api.deps import get_current_user
 from api.router import app
 from models.billing import Subscription, UserUsage
-from models.project_db import DBMemory, DBProject, DBProjectMember
+from models.project_db import DBJournalEntry, DBMemory, DBPerson, DBProject, DBProjectMember
 from models.user import UserInfo
 from src.billing.plans import TIER_2
+from src.utils.photo_store import prepare_photo
 
 _MB = 1024 * 1024
 
@@ -269,3 +273,122 @@ class TestStorageQuota:
         res = client.post(f"/api/memories/{memory_id}/photos",
                           files={"file": ("p.jpg", _jpeg_bytes(), "image/jpeg")})
         assert res.status_code == 402
+
+
+# ── A HEIC photo counts as the JPEG it is stored as (#33, U8-R2-1) ────────────
+
+def _small_heic() -> bytes:
+    """A noisy gradient saved as a low-quality HEIC: its stored JPEG, at
+    quality 92, is several times larger than the HEIC itself."""
+    rnd = random.Random(33)
+    data = bytearray()
+    for y in range(192):
+        for x in range(192):
+            n = rnd.randrange(-20, 21)
+            data += bytes((max(0, min(255, x + n)), max(0, min(255, y + n)), 128 + n))
+    buf = io.BytesIO()
+    Image.frombytes("RGB", (192, 192), bytes(data)).save(buf, "HEIF", quality=30)
+    return buf.getvalue()
+
+
+def _journal(engine, project_id=1) -> int:
+    with Session(engine) as sess:
+        row = DBJournalEntry(project_id=project_id, date="2026-06-01",
+                             geo_mode="custom", photos_json=json.dumps([]))
+        sess.add(row)
+        sess.commit()
+        sess.refresh(row)
+        return row.id
+
+
+class TestHeicStorageQuota:
+    @pytest.mark.parametrize("kind", ["memories", "journal"])
+    def test_a_heic_that_fits_whose_jpeg_does_not_is_refused(
+            self, env, monkeypatch, tmp_path, kind):
+        client, engine = env
+        monkeypatch.setattr(journal_mod, "_DATA_DIR", str(tmp_path))
+        heic = _small_heic()
+        jpeg = prepare_photo(heic)
+        assert len(jpeg) > len(heic) + 1      # the case this test is about
+        _enforcing(monkeypatch)
+        monkeypatch.setenv("FREE_MAX_STORAGE_MB", "1")
+        # Room for the HEIC, not for its JPEG.
+        _seed_usage(engine, 1, 1 * _MB - len(heic) - 1)
+        row_id = _memory(engine) if kind == "memories" else _journal(engine)
+
+        res = client.post(f"/api/{kind}/{row_id}/photos",
+                          files={"file": ("p.heic", heic, "image/heic")})
+
+        assert res.status_code == 402
+        assert res.json()["resource"] == "storage"
+        assert list((tmp_path / "users" / "1" / kind).glob("**/*.jpg")) == []
+
+    def test_a_heic_whose_jpeg_fits_is_stored(self, env, monkeypatch, tmp_path):
+        client, engine = env
+        heic = _small_heic()
+        jpeg = prepare_photo(heic)
+        _enforcing(monkeypatch)
+        monkeypatch.setenv("FREE_MAX_STORAGE_MB", "1")
+        _seed_usage(engine, 1, 1 * _MB - len(jpeg))
+        memory_id = _memory(engine)
+
+        res = client.post(f"/api/memories/{memory_id}/photos",
+                          files={"file": ("p.heic", heic, "image/heic")})
+
+        assert res.status_code == 201, res.text
+        stored = tmp_path / "users" / "1" / "memories" / str(memory_id) / f"{res.json()['uuid']}.jpg"
+        assert stored.read_bytes() == jpeg
+
+    # Avatars count against the trip owner's storage too (#470, U8-R3-1).
+
+    def test_a_heic_avatar_that_fits_whose_jpeg_does_not_is_refused(
+            self, env, monkeypatch, tmp_path):
+        client, engine = env
+        monkeypatch.setattr(people_mod, "_DATA_DIR", str(tmp_path))
+        heic = _small_heic()
+        jpeg = prepare_photo(heic)
+        assert len(jpeg) > len(heic) + 1      # the case this test is about
+        _enforcing(monkeypatch)
+        monkeypatch.setenv("FREE_MAX_STORAGE_MB", "1")
+        # Room for the HEIC, not for its JPEG.
+        _seed_usage(engine, 1, 1 * _MB - len(heic) - 1)
+        person_id = _person(engine)
+
+        res = client.post(f"/api/people/{person_id}/avatar",
+                          files={"file": ("a.heic", heic, "image/heic")})
+
+        assert res.status_code == 402
+        assert res.json()["resource"] == "storage"
+        assert not (tmp_path / "users" / "1" / "people").exists()
+        assert _avatar(engine, person_id) is None
+
+    def test_a_heic_avatar_whose_jpeg_fits_is_stored(self, env, monkeypatch, tmp_path):
+        client, engine = env
+        monkeypatch.setattr(people_mod, "_DATA_DIR", str(tmp_path))
+        heic = _small_heic()
+        jpeg = prepare_photo(heic)
+        _enforcing(monkeypatch)
+        monkeypatch.setenv("FREE_MAX_STORAGE_MB", "1")
+        _seed_usage(engine, 1, 1 * _MB - len(jpeg))
+        person_id = _person(engine)
+
+        res = client.post(f"/api/people/{person_id}/avatar",
+                          files={"file": ("a.heic", heic, "image/heic")})
+
+        assert res.status_code == 201, res.text
+        stored = tmp_path / "users" / "1" / "people" / str(person_id) / f"{_avatar(engine, person_id)}.jpg"
+        assert stored.read_bytes() == jpeg
+
+
+def _person(engine, project_id=1) -> int:
+    with Session(engine) as sess:
+        row = DBPerson(project_id=project_id, name="Alice")
+        sess.add(row)
+        sess.commit()
+        sess.refresh(row)
+        return row.id
+
+
+def _avatar(engine, person_id):
+    with Session(engine) as sess:
+        return sess.get(DBPerson, person_id).avatar_photo

@@ -549,6 +549,26 @@ def photo_media_type(path: Path) -> str:
     return "image/jpeg"
 
 
+def prepare_photo(raw: bytes) -> bytes:
+    """The bytes :func:`write_photo_files` stores for *raw*: the JPEG
+    :func:`_heif_to_jpeg` makes of a HEIC or HEIF photo, any other one as it
+    came. A storage quota is checked on their size (#33, U8-R2-1): the JPEG of
+    a HEIC photo is often two or three times larger than the HEIC.
+
+    Only the header of a photo that is not HEIC or HEIF is read. Writing the
+    result converts nothing again, since it is no longer HEIF. Raises
+    :class:`InvalidPhoto` (or :class:`PhotoTooLarge`) as
+    :func:`write_photo_files` would.
+    """
+    img = _open(raw)
+    heif = img.format == "HEIF"
+    img.close()
+    if not heif:
+        return raw
+    with _DECODE_LOCK:
+        return _heif_to_jpeg(raw)
+
+
 def write_photo_files(folder: Path, name: str, raw: bytes) -> Tuple[Path, Path]:
     """Decode *raw*, then write it as ``folder/<name>.jpg`` and its thumbnail
     as ``folder/<name>_thumb.jpg``. Returns both paths. A HEIC or HEIF photo
