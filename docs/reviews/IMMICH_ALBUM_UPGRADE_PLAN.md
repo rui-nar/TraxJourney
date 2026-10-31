@@ -268,7 +268,7 @@ Owner answer (2026-10-30): refuse to start, with a clear message naming the vari
 - Decision: Fix now (D3, F3 floor)
 - Revisit when: —
 - Guard: —
-- Override: —
+- Override: user: keep as a safeguard — not reproducible on 9f7936a2 (rows read before the bump are freed), but nothing guarantees it; expire_all after the bump, test keeps the early rows alive (2026-10-31)
 - Outcome: —
 
 ## U8 unit review — 2026-10-31, reviewed at 37443e6a
@@ -303,3 +303,18 @@ Owner answer (2026-10-31): allow it. A replacement whose net change is 0 or nega
 - Guard: —
 - Override: user: Fix now — U11's apply runs this code over whole batches; treat a vanished file as photo gone (404 on replace, skip on re-import) (2026-10-31)
 - Outcome: —
+
+## U8 unit review round 2 — 2026-10-31, reviewed at 69981a3e
+
+Verifier: pass (scope, no weakened assertion, 6 new tests fail without the fixes).
+
+### U8-R2-1 — The "does not grow storage" skip is measured on the raw upload, but a HEIC/HEIF is stored as a larger JPEG, so an over-limit account can now grow its storage with no check
+- Trigger: an account already over its storage limit replaces a 2.0 MB stored JPEG with a 1.9 MB HEIC (PUT …/replace or U11's Immich apply) → growth is -0.1 MB, so `ensure_storage_quota` is skipped → `write_photo_files` stores the quality-92 JPEG decoded from the HEIC (typically 2-3x the HEIC's bytes) and `record_written` counts it → the account ends several MB further over with nothing refused; repeated replaces compound.
+- Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=M/shared, confidence=verified
+- Decision: Fix now (D3, F3 floor)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: —
+
+Note: the same `len(raw)` measurement sits in the upload routes (`api/memories.py:765`, `api/journal.py:248`). Since U4 (this branch) a HEIC upload near the limit is checked on its HEIC size and stored as a larger JPEG. Outside this round's subject; raised to the owner separately. Owner (2026-10-31): fix it in U8 together with U8-R2-1 — check the quota on the bytes that will be stored, for replace and upload alike.
