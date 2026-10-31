@@ -259,3 +259,47 @@ Per-process child limit (`HEIF_DECODE_MEMORY_MIB`, default 576, worker-poster 89
 
 Envelope question to the owner: an unusable `HEIF_DECODE_MEMORY_MIB` fails on the first HEIC decode (a 500 for that upload), not at process start. Is first-use failure intended, or should the API and the worker refuse to start?
 Owner answer (2026-10-30): refuse to start, with a clear message naming the variable and why its value is unusable. Assigned to U9.
+
+## U15 unit review — 2026-10-31, reviewed at 9f7936a2
+
+### U15-R1-1 — ZIP Replace reads the kept memory and journal rows into the session before the bump, so an apply that finishes in that window leaves the upgraded photo orphaned and counted
+- Trigger: the owner Replace-imports a trip ZIP while the last apply batch on that trip is finishing → `already_present` loads the rows (photos [A]) into the session → the worker commits [A'], unlinks A, sets `done` → `replace_project` bumps, sees `done`, and proceeds on the stale identity-map rows → A' is never removed: it stays on disk, unlisted, counted against the owner's storage.
+- Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=S/shared, confidence=verified (the implementer reported the same gap independently)
+- Decision: Fix now (D3, F3 floor)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: —
+
+## U8 unit review — 2026-10-31, reviewed at 37443e6a
+
+Envelope question to the owner: the net-change quota check refuses an account already over its limit even a replacement whose net change is 0 or negative. Allow a replacement that does not increase storage?
+
+Owner answer (2026-10-31): allow it. A replacement whose net change is 0 or negative skips the quota check, so an account over its limit after a downgrade can still swap or upgrade photos. Assigned to U8.
+
+### U8-R1-1 — Both replace routes no longer contain a bust call in their own source, so tests/test_project_cache_invalidation.py fails on them
+- Trigger: CI runs `test_every_mutating_project_route_busts_the_payload_cache` after U8 merges → it fails naming both `replace_photo` routes.
+- Scores: trigger=concrete, impact=maintainability, detect=logged (triage corrected from user-visible), later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: —
+
+### U8-R1-2 — tests/test_photo_upload_processing.py still expects the replace routes to hand `_save_photo_files` to run_in_threadpool
+- Trigger: CI runs the two `*_replace_uses_run_in_threadpool` tests → they fail on the expected callable.
+- Scores: trigger=concrete, impact=maintainability, detect=logged (triage corrected), later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: —
+
+### U8-R1-3 — Pre-lock sha256 reads can raise FileNotFoundError when a concurrent delete removes the file, turning a 404 or skip into a 500
+- Trigger: a companion deletes photo A while the owner's replace of A (or a re-import adopting the memory) is between `is_file()` and `read_bytes()` → 500 instead of 404; in U11's apply job, an unexpected error instead of `photo_gone`.
+- Scores: trigger=plausible, impact=wrong-visible, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: U11 runs `replace_photo_bytes` and a row ends with an unexpected error instead of `photo_gone`, or a 500 tracing to FileNotFoundError from `photo_replace.py` or `_hash_unhashed_photos` appears in the API logs.
+- Guard: —
+- Override: user: Fix now — U11's apply runs this code over whole batches; treat a vanished file as photo gone (404 on replace, skip on re-import) (2026-10-31)
+- Outcome: —
