@@ -13,7 +13,8 @@ Covers:
     and no counted storage, and raises ``PhotoGone``;
   * a download of a photo a replace stood in for is skipped (issue #566);
   * an account over its limit may still replace a photo with one no larger,
-    and is refused one that grows storage;
+    and is refused one that grows storage, a HEIC counting as the larger
+    JPEG it is stored as;
   * a replace busts the project's cached payloads, and one that finds the
     photo gone busts nothing;
   * a file deleted between its check and its read is a photo gone (404) for
@@ -27,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import random
 from pathlib import Path
 
 import pytest
@@ -46,6 +48,7 @@ from models.billing import UserUsage
 from models.project_db import DBJournalEntry, DBMemory, DBProject
 from models.user import UserInfo
 from src.exceptions.errors import QuotaExceeded
+from src.utils.photo_store import prepare_photo
 
 _MB = 1024 * 1024
 _OLD = "00000000-0000-4000-8000-0000000000a1"
@@ -436,6 +439,61 @@ class TestOverLimitAccount:
             _replace(ids, "memory", raw)
 
         assert _photos(engine, ids, "memory") == [_OLD, _OTHER]
+
+
+# ── Storage: a HEIC photo counts as the JPEG it is stored as (U8-R2-1) ───────
+
+def _small_heic() -> bytes:
+    """A noisy gradient saved as a low-quality HEIC: its stored JPEG, at
+    quality 92, is several times larger than the HEIC itself."""
+    rnd = random.Random(33)
+    data = bytearray()
+    for y in range(192):
+        for x in range(192):
+            n = rnd.randrange(-20, 21)
+            data += bytes((max(0, min(255, x + n)), max(0, min(255, y + n)), 128 + n))
+    buf = io.BytesIO()
+    Image.frombytes("RGB", (192, 192), bytes(data)).save(buf, "HEIF", quality=30)
+    return buf.getvalue()
+
+
+class TestHeicCountsAsItsJpeg:
+    """An account already over its limit replaces a stored photo with a HEIC."""
+
+    def _over_limit(self, engine, ids, monkeypatch) -> None:
+        monkeypatch.setenv("BILLING_ENABLED", "1")
+        monkeypatch.setenv("BILLING_ENFORCE_QUOTAS", "1")
+        monkeypatch.setenv("FREE_MAX_STORAGE_MB", "1")
+        _seed_usage(engine, ids["user"], 2 * _MB)
+
+    def test_a_smaller_heic_whose_jpeg_is_larger_is_refused(self, env, monkeypatch):
+        _, engine, ids, tmp_path = env
+        heic = _small_heic()
+        jpeg = prepare_photo(heic)
+        assert len(jpeg) > len(heic) + 1      # the case this test is about
+        # The old file is larger than the HEIC, smaller than its JPEG.
+        _write_old(tmp_path, ids, "memory", b"\xff" * (len(heic) + 1))
+        self._over_limit(engine, ids, monkeypatch)
+
+        with pytest.raises(QuotaExceeded):
+            _replace(ids, "memory", heic)
+
+        assert _photos(engine, ids, "memory") == [_OLD, _OTHER]
+        assert sorted(p.name for p in _folder(tmp_path, ids, "memory").glob("*")) == sorted(
+            [f"{_OLD}.jpg", f"{_OLD}_thumb.jpg", f"{_OTHER}.jpg", f"{_OTHER}_thumb.jpg"])
+
+    def test_a_heic_whose_jpeg_is_no_larger_is_accepted(self, env, monkeypatch):
+        _, engine, ids, tmp_path = env
+        heic = _small_heic()
+        jpeg = prepare_photo(heic)
+        _write_old(tmp_path, ids, "journal", b"\xff" * len(jpeg))
+        self._over_limit(engine, ids, monkeypatch)
+
+        new = _replace(ids, "journal", heic)
+
+        assert _photos(engine, ids, "journal") == [new, _OTHER]
+        stored = (_folder(tmp_path, ids, "journal") / f"{new}.jpg").read_bytes()
+        assert stored == jpeg
 
 
 # ── The project's cached payloads ───────────────────────────────────────────

@@ -39,6 +39,7 @@ from src.utils.photo_store import (
     InvalidPhoto,
     PhotoTooLarge,
     photo_media_type,
+    prepare_photo,
     write_photo_files,
 )
 
@@ -105,6 +106,44 @@ def test_the_jpeg_is_encoded_at_quality_92(tmp_path):
     _quartered((64, 48)).save(reference, "JPEG", quality=92)
     with Image.open(full) as stored, Image.open(reference) as at_92:
         assert stored.quantization == at_92.quantization
+
+
+def test_prepare_photo_converts_a_heic_once_and_writing_it_converts_nothing(tmp_path, monkeypatch):
+    """The quota is checked on prepare_photo's bytes, which are then written
+    as they are (#33, U8-R2-1): one conversion, and the same file."""
+    raw = _heic(_quartered((64, 48)))
+    real = photo_store._heif_to_jpeg
+    conversions = []
+
+    def counting(data):
+        conversions.append(len(data))
+        return real(data)
+
+    monkeypatch.setattr(photo_store, "_heif_to_jpeg", counting)
+    prepared = prepare_photo(raw)
+    full, _ = write_photo_files(tmp_path, NAME, prepared)
+
+    assert len(conversions) == 1
+    assert prepared[:2] == b"\xff\xd8"
+    assert full.read_bytes() == prepared
+
+
+def test_prepare_photo_returns_any_other_photo_as_it_came():
+    buf = io.BytesIO()
+    _quartered((64, 48)).save(buf, "PNG")
+    raw = buf.getvalue()
+
+    assert prepare_photo(raw) is raw
+
+
+def test_prepare_photo_refuses_what_write_photo_files_refuses(monkeypatch):
+    with pytest.raises(InvalidPhoto):
+        prepare_photo(b"not an image")
+    raw = _heic(_quartered((64, 64)))
+    monkeypatch.setattr(photo_store, "HEIF_MAX_PIXELS", 64 * 64 - 1)
+    _no_decode(monkeypatch)
+    with pytest.raises(PhotoTooLarge):
+        prepare_photo(raw)
 
 
 def test_a_heif_with_the_generic_brand_is_converted_too(tmp_path):

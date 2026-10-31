@@ -6,8 +6,9 @@ and the Immich apply job, all replace a photo through
 :func:`replace_photo_bytes`, so the three share one rule for storage, hashes,
 sources and files:
 
-* Storage is checked against the net change: the new bytes minus the old
-  full-size file they free (F3). A replace that does not grow storage is not
+* Storage is checked against the net change: the bytes that will be stored
+  (a HEIC photo's JPEG, not the HEIC) minus the old full-size file they free
+  (F3). A replace that does not grow storage is not
   checked at all, so an account over its limit can still upgrade a photo
   that is no larger. The thumbnails are left out
   of the check, as they are for an upload; the counter records what is
@@ -45,7 +46,7 @@ from src.billing.entitlements import ensure_storage_quota
 from src.billing.usage import bytes_of, unlink_and_record
 from src.utils.photo_paths import photo_file, photo_files, photo_folder
 from src.utils.photo_privacy import remove_share_copy
-from src.utils.photo_store import save_photo_files
+from src.utils.photo_store import prepare_photo, save_photo_files
 
 #: Each kind's row, and its folder name under ``users/<id>/``.
 _KINDS = {"memory": (DBMemory, "memories"), "journal": (DBJournalEntry, "journal")}
@@ -101,10 +102,13 @@ def replace_photo_bytes(kind: str, artifact_id: int, old_uuid: str, raw: bytes, 
             raise PhotoGone()
         has_old_hash = old_uuid in load_state(row.photo_order_json)["hashes"]
 
+    # What is stored, and so counted: a HEIC photo's JPEG, often larger than
+    # the HEIC (U8-R2-1). Converted once, here; writing it converts nothing.
+    stored = prepare_photo(raw)
     old_full = photo_file(folder, old_uuid)
     # A missing file sizes as 0 (bytes_of skips it).
     old_size = bytes_of(old_full) if old_full is not None else 0
-    growth = len(raw) - old_size
+    growth = len(stored) - old_size
     # A replace that does not grow storage is never refused, even on an
     # account already over its limit: it can only bring it closer.
     if growth > 0:
@@ -122,7 +126,7 @@ def replace_photo_bytes(kind: str, artifact_id: int, old_uuid: str, raw: bytes, 
             pass
 
     new_uuid = str(uuid_lib.uuid4())
-    save_photo_files(owner_dir, folder, new_uuid, raw)
+    save_photo_files(owner_dir, folder, new_uuid, stored)
 
     def swap(photos, state, row):
         # Same position and rank, not remove+append: photos_json order is

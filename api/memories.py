@@ -62,7 +62,7 @@ from src.models.value_bounds import Lat, Lon
 from src.billing.entitlements import ensure_storage_quota, ensure_trip_days_quota
 from src.billing.usage import unlink_and_record
 from src.utils.photo_paths import photo_file, photo_files, photo_folder
-from src.utils.photo_store import InvalidPhoto, PhotoTooLarge, photo_media_type, save_photo_files
+from src.utils.photo_store import InvalidPhoto, PhotoTooLarge, photo_media_type, prepare_photo, save_photo_files
 from src.utils.safe_fetch import fetch_bytes
 from src.exceptions.errors import QuotaExceeded
 from src.models.memory import Memory
@@ -598,10 +598,17 @@ def delete_memory(
 
 def _save_photo_files(user_id: str, memory_id: int, uuid_str: str, raw: bytes) -> None:
     # Decode, write and count the photo (src/utils/photo_store.py). Memory
-    # photos live under the project OWNER's tree (the caller passes that id).
+    # photos live under the project OWNER's tree (the caller passes that id),
+    # so it is the owner's quota that applies: a companion uploading to a
+    # shared trip spends the owner's space. The quota is checked on the bytes
+    # stored, a HEIC photo's larger JPEG (U8-R2-1); QuotaExceeded propagates
+    # with nothing written.
     folder = photo_folder(_DATA_DIR, user_id, "memories", memory_id)
     try:
-        save_photo_files(user_id, folder, uuid_str, raw)
+        stored = prepare_photo(raw)
+        with get_session() as sess:
+            ensure_storage_quota(sess, int(user_id), len(stored))
+        save_photo_files(user_id, folder, uuid_str, stored)
     except PhotoTooLarge as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -758,16 +765,14 @@ def _download_photo_from_url(
     if duplicate:
         _log.info("Skipped photo download for memory %s: it already has this photo", memory_id)
         return
+    uuid_str = str(uuid_lib.uuid4())
     # Same quota rule as a direct upload, but this runs in a background task —
     # there is no request left to answer 402 on, so it just declines to store.
     try:
-        with get_session() as sess:
-            ensure_storage_quota(sess, int(user_id), len(content))
+        _save_photo_files(user_id, memory_id, uuid_str, content)
     except QuotaExceeded:
         _log.info("Skipped photo download for user %s: storage quota reached", user_id)
         return
-    uuid_str = str(uuid_lib.uuid4())
-    _save_photo_files(user_id, memory_id, uuid_str, content)
     try:
         _write_memory_photo(memory_id, uuid_str, order, epoch, owner_dir=user_id, content_hash=content_hash)
     except PhotoWriteConflict:
@@ -803,9 +808,8 @@ async def upload_photo(
             detail=f"Photo exceeds the {_MAX_PHOTO_UPLOAD_BYTES // (1024 * 1024)}MB upload limit",
         )
     # The bytes land in the owner's tree, so it is the owner's quota that
-    # applies — a companion uploading to a shared trip spends the owner's space.
-    with get_session() as sess:
-        ensure_storage_quota(sess, int(owner_dir), len(raw))
+    # applies — a companion uploading to a shared trip spends the owner's
+    # space. _save_photo_files checks it on the bytes it will store.
     photo_uuid = str(uuid_lib.uuid4())
     # JPEG decode + LANCZOS thumbnail resize is CPU-bound; run it off the event
     # loop so one upload doesn't stall every other in-flight request (mirrors
