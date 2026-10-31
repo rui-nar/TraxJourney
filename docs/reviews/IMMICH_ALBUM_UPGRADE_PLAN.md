@@ -284,7 +284,7 @@ Owner answer (2026-10-31): allow it. A replacement whose net change is 0 or nega
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: —
+- Outcome: fixed (69981a3e)
 
 ### U8-R1-2 — tests/test_photo_upload_processing.py still expects the replace routes to hand `_save_photo_files` to run_in_threadpool
 - Trigger: CI runs the two `*_replace_uses_run_in_threadpool` tests → they fail on the expected callable.
@@ -293,7 +293,7 @@ Owner answer (2026-10-31): allow it. A replacement whose net change is 0 or nega
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: —
+- Outcome: fixed (69981a3e)
 
 ### U8-R1-3 — Pre-lock sha256 reads can raise FileNotFoundError when a concurrent delete removes the file, turning a 404 or skip into a 500
 - Trigger: a companion deletes photo A while the owner's replace of A (or a re-import adopting the memory) is between `is_file()` and `read_bytes()` → 500 instead of 404; in U11's apply job, an unexpected error instead of `photo_gone`.
@@ -302,7 +302,7 @@ Owner answer (2026-10-31): allow it. A replacement whose net change is 0 or nega
 - Revisit when: U11 runs `replace_photo_bytes` and a row ends with an unexpected error instead of `photo_gone`, or a 500 tracing to FileNotFoundError from `photo_replace.py` or `_hash_unhashed_photos` appears in the API logs.
 - Guard: —
 - Override: user: Fix now — U11's apply runs this code over whole batches; treat a vanished file as photo gone (404 on replace, skip on re-import) (2026-10-31)
-- Outcome: —
+- Outcome: fixed (69981a3e)
 
 ## U8 unit review round 2 — 2026-10-31, reviewed at 69981a3e
 
@@ -334,6 +334,10 @@ Verifier: pass (all upload paths in memories/journal check the stored size; one 
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: —
+- Outcome: fixed (62b284d5; verifier pass)
 
 Round 3 is the cap (§6). Owner (2026-10-31): fix U8-R3-1 in U8 (X3: `api/people.py`), and run a fourth round on the fix.
+
+## U8 unit review round 4 — 2026-10-31, reviewed at 62b284d5
+
+Clean: no findings, no envelope questions. Verifier: pass.
