@@ -269,7 +269,7 @@ Owner answer (2026-10-30): refuse to start, with a clear message naming the vari
 - Revisit when: —
 - Guard: —
 - Override: user: keep as a safeguard — not reproducible on 9f7936a2 (rows read before the bump are freed), but nothing guarantees it; expire_all after the bump, test keeps the early rows alive (2026-10-31)
-- Outcome: —
+- Outcome: guard added (3500e3a3; verifier pass, test fails without it)
 
 ## U8 unit review — 2026-10-31, reviewed at 37443e6a
 
@@ -318,3 +318,7 @@ Verifier: pass (scope, no weakened assertion, 6 new tests fail without the fixes
 - Outcome: —
 
 Note: the same `len(raw)` measurement sits in the upload routes (`api/memories.py:765`, `api/journal.py:248`). Since U4 (this branch) a HEIC upload near the limit is checked on its HEIC size and stored as a larger JPEG. Outside this round's subject; raised to the owner separately. Owner (2026-10-31): fix it in U8 together with U8-R2-1 — check the quota on the bytes that will be stored, for replace and upload alike.
+
+## U15 unit review round 2 — 2026-10-31, reviewed at 3500e3a3
+
+Clean: no findings, no envelope questions. Verifier: pass.
