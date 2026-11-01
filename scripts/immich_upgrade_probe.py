@@ -52,13 +52,14 @@ from urllib.parse import quote
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import requests  # noqa: E402
-from PIL import Image, ImageOps  # noqa: E402
+from PIL import Image  # noqa: E402
 from sqlalchemy import event  # noqa: E402
 from sqlmodel import Session, create_engine, or_, select  # noqa: E402
 
 import api.immich as immich  # noqa: E402
 from models.project_db import DBJournalEntry, DBMemory, DBProject  # noqa: E402
 from models.user import ImmichToken  # noqa: E402
+from src.photo_upgrade.hashing import ahash, dhash, hamming, upright_image  # noqa: E402
 from src.utils.photo_paths import is_photo_name, photo_file, photo_folder  # noqa: E402
 
 #: Stored Polarsteps photos checked for EXIF capture time (OD4).
@@ -83,26 +84,6 @@ _DATETIME_ORIGINAL = 36867
 _OFFSET_TIME_ORIGINAL = 36881
 
 
-# ── Hashing: a local copy of what src/photo_upgrade/matching.py will own (U5) ──
-
-def ahash(img: Image.Image) -> int:
-    """64-bit average hash of an upright image."""
-    px = list(img.convert("L").resize((8, 8), Image.LANCZOS).tobytes())
-    mean = sum(px) / 64
-    return sum(1 << i for i, p in enumerate(px) if p > mean)
-
-
-def dhash(img: Image.Image) -> int:
-    """64-bit difference hash: each pixel against its right neighbour."""
-    px = list(img.convert("L").resize((9, 8), Image.LANCZOS).tobytes())
-    bits = [px[r * 9 + c] > px[r * 9 + c + 1] for r in range(8) for c in range(8)]
-    return sum(1 << i for i, b in enumerate(bits) if b)
-
-
-def hamming(a: int, b: int) -> int:
-    return bin(a ^ b).count("1")
-
-
 @dataclass
 class Fingerprint:
     ahash: int
@@ -113,8 +94,7 @@ class Fingerprint:
 
 def fingerprint(raw: bytes) -> Fingerprint:
     """Hash an image upright. Raises OSError/ValueError when it does not decode."""
-    img = ImageOps.exif_transpose(Image.open(io.BytesIO(raw)))
-    img = img.convert("RGB")
+    img = upright_image(raw)
     fp_a, fp_d = ahash(img), dhash(img)
     aspect = img.width / img.height
     img.thumbnail((_SHEET_PX, _SHEET_PX), Image.LANCZOS)
