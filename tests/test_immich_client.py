@@ -155,6 +155,20 @@ def test_asset_fields_including_trashed_and_archived(fake):
     assert a2.local_date_time is None and a2.file_size is None
 
 
+def test_asset_dimensions_come_from_exif_as_stored(fake):
+    _calls, pages = fake
+    pages.append(_page([
+        _item(1, exifInfo={"exifImageWidth": 4080, "exifImageHeight": 3072}),
+        _item(2, exifInfo={}),
+        _item(3),
+        _item(4, exifInfo={"exifImageWidth": "4080", "exifImageHeight": -3072}),
+        _item(5, exifInfo={"exifImageWidth": 0, "exifImageHeight": True}),
+        _item(6, exifInfo={"exifImageWidth": 40.5, "exifImageHeight": None}),
+    ]))
+    got = [(a.width, a.height) for a in _client().iter_album_assets("al", AFTER, BEFORE)]
+    assert got == [(4080, 3072)] + [(None, None)] * 5
+
+
 def test_malformed_items_are_dropped_one_by_one(fake):
     _calls, pages = fake
     pages.append(_page([1, {"id": 5, "fileCreatedAt": "x"}, {"id": "no-date"},

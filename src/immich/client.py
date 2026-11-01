@@ -229,6 +229,9 @@ class Asset:
     original_file_name: Optional[str]
     is_trashed: bool
     is_archived: bool
+    # The original's size from EXIF, as stored: not turned by its orientation.
+    width: Optional[int] = None
+    height: Optional[int] = None
 
 
 def _asset(item) -> Optional[Asset]:
@@ -255,6 +258,8 @@ def _asset(item) -> Optional[Asset]:
         is_trashed=item.get("isTrashed") is True,
         # Later Immich versions replace isArchived with a visibility field.
         is_archived=item.get("isArchived") is True or item.get("visibility") == "archive",
+        width=_count(exif.get("exifImageWidth")) or None,
+        height=_count(exif.get("exifImageHeight")) or None,
     )
 
 
