@@ -144,6 +144,36 @@ def test_rank_candidates_lists_gated_assets_best_first():
     assert ranked == [("a", 0), ("b", 2), ("far", 40)]
 
 
+def test_a_rival_over_the_cap_but_within_the_margin_makes_it_low():
+    r = by_key(m.match([trip("p", flips=0)], [album("a", flips=5), album("b", flips=15)]))["p"]
+    # chosen scores 5, the rival 15: over MAX_SCORE, inside the margin of 10
+    assert (r.state, r.asset_id, r.score, r.confidence) == (m.PROPOSED, "a", 5, m.LOW)
+    assert ("b", 15) in r.alternatives
+
+
+def test_a_rival_outside_the_margin_keeps_high_confidence():
+    r = by_key(m.match([trip("p")], [album("a", flips=5), album("b", flips=16)]))["p"]
+    assert (r.asset_id, r.score, r.confidence) == ("a", 5, m.HIGH)
+    assert r.alternatives == ()
+
+
+def test_a_second_photo_over_the_cap_but_within_the_margin_makes_it_low():
+    # p1 scores 5 on the asset, p2 scores 15 (over the cap, inside the margin)
+    base = fp(1)
+    asset = m.AlbumPhoto("a", D, None, None, Fingerprint(base.ahash ^ 0b11111, base.dhash, 400, 300), 5000)
+    p1 = trip("p1")
+    p2 = m.TripPhoto("p2", D, None, None,
+                     Fingerprint(base.ahash ^ 0b11111 ^ (((1 << 15) - 1) << 10), base.dhash,
+                                 400, 300), 1000, None, None)
+    r = by_key(m.match([p1, p2], [asset]))
+    assert (r["p1"].asset_id, r["p1"].score, r["p1"].confidence) == ("a", 5, m.LOW)
+    assert r["p2"].state == m.NO_MATCH and r["p2"].confidence is None
+    far = m.TripPhoto("p3", D, None, None,
+                      Fingerprint(base.ahash ^ 0b11111 ^ (((1 << 16) - 1) << 10), base.dhash,
+                                  400, 300), 1000, None, None)
+    assert by_key(m.match([p1, far], [asset]))["p1"].confidence == m.HIGH
+
+
 def test_performance_5000_photos_against_10000_assets():
     rng = random.Random(3)
 

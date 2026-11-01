@@ -13,14 +13,16 @@ How a scan decides, in order:
    ``content_hash`` is never grouped.
 3. Candidates are assets whose local day is within one day of the photo's
    (a hard filter), with the same upright aspect ratio within
-   ``ASPECT_TOLERANCE`` (a hard gate). A pair is *plausible* when its score is
-   at most ``MAX_SCORE``.
+   ``ASPECT_TOLERANCE`` (a hard gate). A pair is *plausible*, and may be
+   proposed, when its score is at most ``MAX_SCORE``.
 4. Plausible pairs are taken in ascending order of (score, same day first,
    distance between the two places, ids); each photo unit and each asset is
    used once. Location only breaks ties; it never filters.
-5. Confidence is ``low`` when another plausible asset scores within
+5. Confidence is ``low`` when another asset scores within
    ``AMBIGUITY_MARGIN`` of the chosen one, or when another photo unit
-   scores that close for the chosen asset.
+   scores that close for the chosen asset. Rivals count whatever their score
+   (a burst frame just over ``MAX_SCORE`` is still a rival); they only need to
+   pass the gates and not be excluded.
 6. An asset with no more pixels than the current photo is
    ``already_original`` rather than a proposal.
 
@@ -43,6 +45,9 @@ MAX_SCORE = 12
 AMBIGUITY_MARGIN = 10
 #: Largest relative difference of upright width/height between two photos.
 ASPECT_TOLERANCE = 0.02
+#: Pairs scoring up to this are kept: a rival of a proposal (score <= MAX_SCORE)
+#: is within the margin of it, so nothing scoring higher can matter.
+_KEEP_SCORE = MAX_SCORE + AMBIGUITY_MARGIN
 #: Alternatives kept on a suggestion.
 MAX_ALTERNATIVES = 5
 
@@ -215,12 +220,13 @@ def match(photos: Sequence[TripPhoto], album_photos: Iterable[AlbumPhoto],
         loc = next(((m.lat, m.lon) for m in u if m.lat is not None and m.lon is not None),
                    (None, None))
         pairs = pool.candidates(sorted({m.date for m in u}), u[0].fp, loc[0], loc[1],
-                                MAX_SCORE)
+                                _KEEP_SCORE)
         cands.append([q for q in pairs
                       if not any((m.key, q.asset_id) in excluded for m in u)])
 
-    # 4. Global greedy assignment, deterministic on ties.
-    flat = sorted(((q, i) for i, qs in enumerate(cands) for q in qs),
+    # 4. Global greedy assignment over plausible pairs, deterministic on ties.
+    flat = sorted(((q, i) for i, qs in enumerate(cands) for q in qs
+                   if q.score <= MAX_SCORE),
                   key=lambda t: _order(t[0]) + (units[t[1]][0].key,))
     chosen: Dict[int, _Pair] = {}
     used: Set[str] = set()
@@ -241,13 +247,16 @@ def match(photos: Sequence[TripPhoto], album_photos: Iterable[AlbumPhoto],
         qs = cands[i]
         pick = chosen.get(i)
         if pick is None:
-            alts = tuple((q.asset_id, q.score) for q in qs[:MAX_ALTERNATIVES])
-            conf = LOW if qs else None
+            plausible = [q for q in qs if q.score <= MAX_SCORE]
+            alts = tuple((q.asset_id, q.score) for q in plausible[:MAX_ALTERNATIVES])
+            conf = LOW if plausible else None
             for m in u:
                 out[m.key] = Suggestion(m.key, NO_MATCH, None, None, conf, alts)
             continue
         alts = tuple((q.asset_id, q.score) for q in qs
-                     if q.asset_id != pick.asset_id)[:MAX_ALTERNATIVES]
+                     if q.asset_id != pick.asset_id
+                     and (q.score <= MAX_SCORE or q.score - pick.score <= AMBIGUITY_MARGIN)
+                     )[:MAX_ALTERNATIVES]
         rival = any(q.asset_id != pick.asset_id and q.score - pick.score <= AMBIGUITY_MARGIN
                     for q in qs)
         rival = rival or any(s - pick.score <= AMBIGUITY_MARGIN
