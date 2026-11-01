@@ -18,7 +18,7 @@ import pathlib
 import pytest
 import yaml
 
-from src.jobs.queue import ALL_QUEUES, QUEUE_MAX_CONCURRENCY, QUEUE_POSTER
+from src.jobs.queue import ALL_QUEUES, QUEUE_MAX_CONCURRENCY, QUEUE_PHOTOS, QUEUE_POSTER
 
 _COMPOSE = pathlib.Path(__file__).resolve().parent.parent / "docker-compose.yml.example"
 _API_SERVICE = "traxjourney"
@@ -82,16 +82,26 @@ class TestQueueConcurrency:
         assert len(renderers) == 1, f"expected one poster service, got {renderers}"
         assert _instances(services[renderers[0]]) == 1
 
-    def test_a_dedicated_queue_is_listed_first(self, workers):
+    def test_dedicated_queues_are_listed_first(self, workers):
         """RQ dequeues in the order given, so a sole consumer must prefer its
-        own queue — otherwise a busy shared queue starves it indefinitely."""
+        own queues — otherwise a busy shared queue starves them indefinitely.
+        worker-poster has two (`poster`, then `photos`): both come before any
+        shared queue."""
         for name, queues in workers.items():
             sole = [q for q in queues
                     if sum(q in other for other in workers.values()) == 1]
-            for queue in sole:
-                assert queues[0] == queue, (
-                    f"{name} is the only consumer of {queue!r} but lists it "
-                    f"after {queues[:queues.index(queue)]}")
+            assert queues[:len(sole)] == sole, (
+                f"{name} is the only consumer of {sole} but lists "
+                f"{queues} — a shared queue comes before one of them")
+
+    def test_photos_runs_on_the_poster_worker_after_poster(self, workers):
+        """D9 of docs/plans/IMMICH_ALBUM_UPGRADE_PLAN.md: no sixth service;
+        a poster is taken before a photo job."""
+        consumers = [n for n, queues in workers.items() if QUEUE_PHOTOS in queues]
+        assert len(consumers) == 1
+        queues = workers[consumers[0]]
+        assert QUEUE_POSTER in queues
+        assert queues.index(QUEUE_POSTER) < queues.index(QUEUE_PHOTOS)
 
 
 class TestMemoryLimits:
@@ -131,6 +141,19 @@ class TestMemoryLimits:
         assert total < four_gb, (
             f"declared memory limits sum to {total} bytes, "
             f"at or above the documented 4 GB host size")
+
+
+class TestHeifDecodeMemory:
+    """The photos consumer decodes HEIC originals under its own, larger limit
+    (U4, U9 of docs/plans/IMMICH_ALBUM_UPGRADE_PLAN.md). It is set in that
+    service's `environment:`, not in .env, which the API shares."""
+
+    def test_the_photos_worker_sets_its_own_limit(self, services, workers):
+        name = next(n for n, queues in workers.items() if QUEUE_PHOTOS in queues)
+        assert str(services[name]["environment"]["HEIF_DECODE_MEMORY_MIB"]) == "896"
+
+    def test_the_api_keeps_the_default(self, services):
+        assert "HEIF_DECODE_MEMORY_MIB" not in (services[_API_SERVICE].get("environment") or {})
 
 
 class TestWorkersTrackTheApi:

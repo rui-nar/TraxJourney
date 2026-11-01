@@ -33,8 +33,9 @@ QUEUE_RESOLVE = "resolve"   # HAFAS + Overpass; long-running, a few at a time
 QUEUE_POSTER = "poster"     # A0 rendering — memory-heavy, keep it to one
 QUEUE_DEFAULT = "default"   # share tiles, stats: short and cheap
 QUEUE_VIDEO = "video"       # trip video renders — minutes each, never in-process
+QUEUE_PHOTOS = "photos"     # Immich photo upgrade: chains of short jobs, one at a time
 
-ALL_QUEUES = (QUEUE_RESOLVE, QUEUE_POSTER, QUEUE_DEFAULT, QUEUE_VIDEO)
+ALL_QUEUES = (QUEUE_RESOLVE, QUEUE_POSTER, QUEUE_DEFAULT, QUEUE_VIDEO, QUEUE_PHOTOS)
 
 # How many jobs from each queue may run at once. An RQ worker takes one job at a
 # time, so a queue's bound *is* the number of worker processes listening on it —
@@ -42,7 +43,9 @@ ALL_QUEUES = (QUEUE_RESOLVE, QUEUE_POSTER, QUEUE_DEFAULT, QUEUE_VIDEO)
 # here. It lives in this module anyway because the numbers are properties of the
 # jobs, not of a host: 2 on `resolve` bounds how many rail resolves are in
 # flight, and 1 on `poster` (and on `video`) is the memory footprint of one
-# render.
+# render. 1 on `photos` keeps scans and applies of Immich albums one at a time on
+# the poster worker, each job short enough that a poster waits behind at most
+# one (docs/plans/IMMICH_ALBUM_UPGRADE_PLAN.md D9).
 #
 # NOTE this is *not* the Overpass politeness bound, though it was once described
 # as one. A worker count cannot be: a single resolve makes four or five Overpass
@@ -59,6 +62,7 @@ QUEUE_MAX_CONCURRENCY = {
     QUEUE_POSTER: 1,
     QUEUE_DEFAULT: 2,
     QUEUE_VIDEO: 1,
+    QUEUE_PHOTOS: 1,
 }
 
 # Generous: a rail resolve makes several Overpass queries, each with a 45 s HTTP
