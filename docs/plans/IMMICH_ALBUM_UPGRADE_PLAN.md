@@ -178,22 +178,30 @@ accounting.
 **D7 — How matching works** (pure module, `src/photo_upgrade/matching.py`).
 - **Candidates:** album photos whose local capture date (Immich
   `localDateTime`) is within ±1 day of the memory or entry date. This is a
-  hard filter. Adjacent days get a small score penalty.
+  hard filter. Adjacent days get no score penalty (OD2: a true match sat a
+  day before its memory's date); on an equal score the same-day asset wins.
 - **Appearance:** 64-bit aHash plus 64-bit dHash, both computed on upright
   images. The score is their summed Hamming distance (0–128).
-- **Aspect ratio:** a hard gate. Upright width/height must agree within 3%.
+- **Aspect ratio:** a hard gate. Upright width/height must agree within 2%
+  (OD2).
 - **Location:** a tie-break only, never a filter. A memory's location is
   often its start of day, and on travel days that is far from where the
   photo was taken. This deliberately differs from the per-memory dialog,
   where location is a filter.
 - **Assignment:** one-to-one and global. Pairs are taken in ascending score
   order (ties broken by ids), and each asset is used at most once.
+- **Exact copies:** trip photos whose stored files have the same content
+  hash (the sha256 U3 records) are one photo for matching. They are matched
+  as a group, and every copy gets the same suggestion, so one asset upgrades
+  them all. Only identical content counts: two different photos that match
+  the same asset still compete for it, and the loser's confidence is low.
+  (Found by the U1 probe: one photo added to two memories, byte-identical.)
 - **Confidence:** "low" when a rival asset scores within the ambiguity
   margin for the same photo, or the asset's second-best photo does.
 - **No upgrade:** a matched asset with no more pixels than the current photo
   is reported as "already original", not proposed.
-- **Thresholds:** the maximum score and the margin come from the U1 probe on
-  the owner's real album (OD2).
+- **Thresholds** (OD2, from the U1 probe on the owner's real album):
+  maximum score 12, ambiguity margin 10.
 - *Rules out:*
   - reusing the Dart aHash alone, which cannot separate burst shots;
   - Hungarian assignment, since greedy matching with a flag on near-ties
@@ -488,18 +496,56 @@ wait for them.
     - The formats served by `thumbnail?size=thumbnail`.
     - The minimum Immich version to support.
   - Affects: U2, and U7's fallback.
+  - **Answer (U1 probe on val, 2026-11-01, Immich v5.9.0):**
+    - `search/metadata` accepts `albumIds` with a date window and `type:
+      IMAGE`, and returned images only. U2 uses it.
+    - With no size sent, 37 items came back in one page, `nextPage` null.
+      U2 still follows `nextPage` whatever its type (string or null).
+    - `localDateTime` is on every asset and is wall-clock local time written
+      with a `Z` (e.g. 17:23 local for 16:23 UTC in March, France). Its date
+      part is the local capture day as it stands.
+    - `thumbnail?size=thumbnail` serves WebP (332×250 for a 4:3 photo);
+      `size=fullsize` of a JPEG serves the full-resolution JPEG. Hashing
+      decodes WebP.
+    - Minimum supported version: v5.9.0, the only one tested.
+    - Not verified: the album answer (`GET /api/albums/{id}`) lists no
+      assets on this version, so the probe could not check that every
+      search result belongs to the album. U2's tests pin the request body;
+      the owner checks the trip window's photo count in the Immich UI
+      against the search count (37) when convenient.
 - **OD2 — Thresholds.** The maximum score, the ambiguity margin and the
   adjacent-day penalty, read off the probe's contact sheet. Affects: U5.
+  - **Answer (37 trip photos over 10 days, owner-approved 2026-11-01):**
+    - True matches scored 0–2; the closest wrong candidate on the sheet
+      scored 33, typical ones 40–60.
+    - Maximum score **12**, ambiguity margin **10**, aspect gate **2%**,
+      adjacent-day penalty **none** (D7).
+    - Most unmatched trip photos are 16:9 shots from another person's
+      phone, not in the album; the owner will add them to the same album.
+      No change to the design.
+    - One photo was in two memories as byte-identical files: D7's
+      "exact copies" rule.
 - **OD3 — RAW.** Does `thumbnail?size=fullsize` return a full-resolution
   JPEG for a RAW or HEIC asset on the owner's server? If not, RAW rows fail
   with `unsupported_format`. Affects: U2, U11.
+  - **Answer:** partly. `size=fullsize` of a JPEG is the full-resolution
+    JPEG. The owner's album has no HEIC or RAW asset, so neither was
+    tested. Until one is: a JPEG asset is applied from `fullsize`; a HEIC
+    asset from its original (converted to JPEG by U4's path); a RAW asset
+    fails with `unsupported_format`.
 - **OD4 — EXIF on Polarsteps imports.** Do stored Polarsteps photos keep
   `DateTimeOriginal`? If they do, exact capture time is a far stronger
   signal than appearance, and D7 gains it as a plan amendment before U5.
   Affects: U5.
+  - **Answer:** no. 0 of 20 stored Polarsteps photos keep
+    `DateTimeOriginal` (or `OffsetTimeOriginal`). D7 stays on appearance
+    plus day.
 - **OD5 — API key permissions.** Which Immich key permissions the feature
   needs (album read, asset read, view and download). Affects: U2's error
   message, U13's README.
+  - **Answer:** `album.read`, `asset.read`, `asset.view`,
+    `asset.download`, plus `server.about` for the version. None was
+    refused on the owner's key.
 
 ## Execution units
 
@@ -778,7 +824,9 @@ wait for them.
      - `to_hex` and `from_hex` for storing a 64-bit hash as 16 hex
        characters, since SQLite integers are signed.
   2. `matching.py`:
-     - inputs `TripPhoto(key, date, lat, lon, fp, pixels, source)` and
+     - inputs `TripPhoto(key, date, lat, lon, fp, pixels, source,
+       content_hash)` (`content_hash` is U3's sha256, or None when not
+       yet hashed) and
        `AlbumPhoto(id, local_date, lat, lon, fp, pixels)`;
      - output `Suggestion(key, state, asset_id, score, confidence,
        alternatives[≤5])`, where `state` is `proposed`, `no_match` or
@@ -787,10 +835,13 @@ wait for them.
   3. Implement D7 in order:
      - photos with a source become `already_original`, and their asset ids
        leave the pool;
-     - candidates within ±1 day, with the adjacent-day penalty;
+     - exact copies (same `content_hash`) grouped into one matching unit;
+     - candidates within ±1 day, no adjacent-day penalty, same day first on
+       an equal score;
      - the aspect gate;
      - the score;
-     - global greedy assignment, deterministic on ties;
+     - global greedy assignment, deterministic on ties; a group's asset is
+       given to every copy;
      - confidence;
      - the "no more pixels" rule;
      - geo distance as a tie-break.
@@ -807,8 +858,13 @@ wait for them.
       alternatives;
     - a wrong aspect ratio excluded;
     - a photo dated D matched by an asset dated D+1 only when no D asset
-      scores better;
-    - an asset never used twice;
+      scores better or equal;
+    - an asset never used twice by different photos;
+    - two byte-identical copies in two memories both proposed the same
+      asset, while two different photos matching one asset are not (the
+      loser gets low confidence and the asset as an alternative);
+    - a photo with no `content_hash` never grouped;
+    - the OD2 sheet's numbers: a score of 2 proposed, 33 not;
     - `already_original` by source and by pixels;
     - excluded pairs never proposed;
     - deterministic output when the input order is shuffled;
@@ -817,10 +873,8 @@ wait for them.
       s.
 - **Out of scope:** any I/O, any DB access, Immich calls.
 - **Latitude:** local design, inside D7.
-- **Escalate if:**
-  - OD4 says capture times exist, and D7 has not been amended yet;
-  - a file outside Scope must change (X3).
-- **Depends on:** U1 (OD2, OD4).
+- **Escalate if:** a file outside Scope must change (X3).
+- **Depends on:** U1 (OD2, OD4: answered).
 
 #### U6 — Scan, album-photo and suggestion tables
 - **Goal:** the three tables of D8 exist, with their migration, and go with
@@ -1167,7 +1221,9 @@ wait for them.
   5. `run_scan_match(scan_id)`:
      - fingerprint each trip photo in scope from its `_thumb.jpg` on disk;
        read its current bytes and upright dimensions from the full file's
-       header, and its `position` in its photo list;
+       header, its `position` in its photo list, and its sha256 from the
+       photo order state's `hashes` (None when missing) as the matcher's
+       `content_hash` (D7 exact copies);
      - read the rejected pairs from the person's earlier scans of this
        trip;
      - run the matcher and write the suggestion rows. `selected` is true
