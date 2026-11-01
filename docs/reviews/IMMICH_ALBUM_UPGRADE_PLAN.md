@@ -341,3 +341,27 @@ Round 3 is the cap (§6). Owner (2026-10-31): fix U8-R3-1 in U8 (X3: `api/people
 ## U8 unit review round 4 — 2026-10-31, reviewed at 62b284d5
 
 Clean: no findings, no envelope questions. Verifier: pass.
+
+## U9 unit review — 2026-11-01, reviewed at 0afff4b0
+
+Verifier: pass (scope plus approved X3 extensions: `Asset.width/height`, `original_width/original_height` columns with migration b9d3e6f1a274). Verifier note: the step 1a message states the rule but gives no literal example value, as the plan asks; folded into the fix round. 8f196422 (each scan job named at its enqueue call, for `test_jobs_never_call_strava`) landed after this round's subject and is reviewed in round 2.
+
+### U9-R1-1 — A rejection survives only while the matcher finds nothing else for the photo; a rescan that proposes another asset erases it, and the rejected asset comes back ticked
+- Trigger: a user rejects burst frame A for photo P, then rescans → scan 2 excludes (P, A), proposes sibling B and deletes scan 1, the only copy of the rejection → the user leaves or rejects B and rescans → scan 3 proposes A again, ticked when best (D2) → Apply replaces P with the refused frame and deletes P's file (D5).
+- Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=expensive, fix=M/local, confidence=verified
+- Decision: Fix now (D3, F3 floor; F4 — the fix needs schema, unreleased so cheap now)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Approved (2026-11-01): rejections carried forward on the scan record (one JSON column, merged from earlier scans, own migration). Owner also approved the related U5 change raised by the review: a frame rejected for the same photo, scoring within the ambiguity margin of the proposal, makes the proposal low-confidence (unticked).
+- Outcome: —
+
+### U9-R1-2 — A fingerprint batch holds all 250 thumbnail bodies in memory, each capped only at 20 MiB, so a hostile Immich can OOM-kill worker-poster
+- Trigger: a signed-in user points their Immich connection at a server they control and scans an album of 250+ photos → each thumbnail answer is just under 20 MiB → `_fingerprint` holds all 250 (≈5 GB) before decoding any → worker-poster (1280 MB) is OOM-killed; queued poster or apply jobs are interrupted; repeatable at will.
+- Scores: trigger=concrete (triage corrected from plausible: deliberate, repeatable, no race — as U4-R1-1/R2-1), impact=wrong-visible, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Approved (2026-11-01): fingerprint each thumbnail as it arrives (at most the worker count held at once) and refuse thumbnail bodies over 2 MiB at download.
+- Outcome: —
