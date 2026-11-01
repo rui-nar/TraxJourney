@@ -680,7 +680,16 @@ def _run_step(name: str, scan_id: int) -> Optional[str]:
 def _enqueue_next(name: Optional[str], scan_id: int) -> None:
     if name is None:
         return
-    if not enqueue(QUEUE_PHOTOS, _JOBS[name], scan_id, max_retries=0, allow_inline=False):
+    # Each job named at its call, never looked up: tests/test_jobs_never_call_strava.py
+    # traces every queued callable to its module.
+    options = {"max_retries": 0, "allow_inline": False}
+    if name == "prepare":
+        queued = enqueue(QUEUE_PHOTOS, run_scan_prepare, scan_id, **options)
+    elif name == "fingerprint":
+        queued = enqueue(QUEUE_PHOTOS, run_scan_fingerprint, scan_id, **options)
+    else:
+        queued = enqueue(QUEUE_PHOTOS, run_scan_match, scan_id, **options)
+    if not queued:
         _fail(scan_id, REASON_UNAVAILABLE)
 
 
@@ -697,13 +706,6 @@ def run_scan_fingerprint(scan_id: int) -> None:
 def run_scan_match(scan_id: int) -> None:
     """Job: step 3. Never raises."""
     _enqueue_next(_run_step("match", scan_id), scan_id)
-
-
-_JOBS: Dict[str, Callable[[int], None]] = {
-    "prepare": run_scan_prepare,
-    "fingerprint": run_scan_fingerprint,
-    "match": run_scan_match,
-}
 
 
 def start_scan(scan_id: int) -> None:
