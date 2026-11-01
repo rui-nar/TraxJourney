@@ -271,3 +271,32 @@ def test_the_migration_refuses_a_second_active_scan(tmp_path, monkeypatch):
                 conn.execute(insert, {"s": "scanning"})
     finally:
         eng.dispose()
+
+
+def test_the_original_size_columns_come_and_go_with_their_migration(tmp_path, monkeypatch):
+    """``original_width``/``original_height`` (b9d3e6f1a274) exist at head
+    and are dropped again by its downgrade."""
+    db_path = tmp_path / "sizes.db"
+    url = f"sqlite:///{db_path.as_posix()}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    cfg = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+    cfg.set_main_option("sqlalchemy.url", url)
+
+    def columns() -> set:
+        eng = create_engine(url)
+        try:
+            with eng.connect() as conn:
+                return {row[1] for row in conn.execute(text("PRAGMA table_info(photoupgradeasset)"))}
+        finally:
+            eng.dispose()
+
+    command.upgrade(cfg, "head")
+    assert {"original_width", "original_height", "width", "height"} <= columns()
+
+    command.downgrade(cfg, "f4a8c2d61e37")
+    after = columns()
+    assert "original_width" not in after and "original_height" not in after
+    assert {"width", "height", "ahash"} <= after
+
+    command.upgrade(cfg, "head")
+    assert {"original_width", "original_height"} <= columns()

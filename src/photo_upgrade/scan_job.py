@@ -361,7 +361,8 @@ def _prepare(scan_id: int) -> Optional[str]:
             rows.append(DBPhotoUpgradeAsset(
                 scan_id=scan_id, asset_id=asset.id, local_date=day,
                 lat=asset.lat, lon=asset.lon, mime=asset.mime,
-                file_bytes=asset.file_size))
+                file_bytes=asset.file_size,
+                original_width=asset.width, original_height=asset.height))
 
     with get_session() as sess:
         if not _hold(sess, scan_id, stage=STAGE_FINGERPRINTING,
@@ -516,14 +517,29 @@ def _trip_photo(cur: _Current, folder: Path) -> Optional[TripPhoto]:
 
 def _album_photo(row: DBPhotoUpgradeAsset) -> AlbumPhoto:
     # ``width``/``height`` are the fingerprinted thumbnail's, upright: they
-    # give the aspect ratio, never the original's size, so ``pixels`` is
-    # unknown (U2's assets carry no dimensions).
+    # give the aspect ratio. The pixel count is the original's, from EXIF,
+    # which turning does not change.
+    known = row.original_width and row.original_height
     return AlbumPhoto(
         id=row.asset_id, local_date=dt.date.fromisoformat(row.local_date),
         lat=row.lat, lon=row.lon,
         fp=Fingerprint(from_hex(row.ahash), from_hex(row.dhash), row.width, row.height),
-        pixels=None,
+        pixels=row.original_width * row.original_height if known else None,
     )
+
+
+def _original_size(row: DBPhotoUpgradeAsset) -> Tuple[Optional[int], Optional[int]]:
+    """The original's width and height as shown: its EXIF pair, swapped when
+    the upright thumbnail is portrait and the pair landscape, or the reverse.
+    A square thumbnail or an unknown size keeps the EXIF order; no EXIF pair
+    is (None, None)."""
+    w, h = row.original_width, row.original_height
+    if not (w and h):
+        return None, None
+    tw, th = row.width, row.height
+    if tw and th and tw != th and w != h and (tw > th) != (w > h):
+        return h, w
+    return w, h
 
 
 def _earlier_rejections(sess, scan: DBPhotoUpgradeScan) -> Dict[str, List[str]]:
@@ -604,6 +620,8 @@ def _match(scan_id: int) -> Optional[str]:
                 alternatives_json=json.dumps(
                     [{"asset_id": a, "score": score} for a, score in s.alternatives]),
                 asset_bytes=asset.file_bytes if asset is not None else None,
+                asset_width=_original_size(asset)[0] if asset is not None else None,
+                asset_height=_original_size(asset)[1] if asset is not None else None,
                 asset_mime=asset.mime if asset is not None else None,
                 current_bytes=cur.bytes,
                 current_width=cur.size[0] if cur.size else None,

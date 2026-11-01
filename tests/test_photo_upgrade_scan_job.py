@@ -75,9 +75,9 @@ def _encode(img: Image.Image, fmt: str) -> bytes:
     return buf.getvalue()
 
 
-def _album_thumb(seed: int) -> bytes:
+def _album_thumb(seed: int, size=(332, 249)) -> bytes:
     """What Immich's ``size=thumbnail`` answers for the photo: a WebP (OD1)."""
-    return _encode(_pattern(seed, (332, 249)), "WEBP")
+    return _encode(_pattern(seed, size), "WEBP")
 
 
 # ── Fakes ─────────────────────────────────────────────────────────────────────
@@ -166,7 +166,8 @@ class _Env:
             sess.commit()
             self.owner, self.mate, self.project = owner.id, mate.id, project.id
 
-    def memory(self, seeds, day: str = _DAY, *, files: bool = True, hashes=None) -> tuple:
+    def memory(self, seeds, day: str = _DAY, *, files: bool = True, hashes=None,
+               size=(400, 300)) -> tuple:
         """A memory whose photos are *seeds*' patterns; (id, [uuid, ...])."""
         uuids = [str(uuid_lib.uuid4()) for _ in seeds]
         state = load_state(None)
@@ -179,7 +180,7 @@ class _Env:
             sess.commit()
             mid = row.id
         if files:
-            self._write("memories", self.owner, mid, uuids, seeds)
+            self._write("memories", self.owner, mid, uuids, seeds, size)
         return mid, uuids
 
     def journal(self, seeds, author, day: str = _DAY) -> tuple:
@@ -193,13 +194,13 @@ class _Env:
         self._write("journal", author if author is not None else self.owner, jid, uuids, seeds)
         return jid, uuids
 
-    def _write(self, kind, uid, artifact_id, uuids, seeds):
+    def _write(self, kind, uid, artifact_id, uuids, seeds, size=(400, 300)):
         folder = self.tmp / "users" / str(uid) / kind / str(artifact_id)
         folder.mkdir(parents=True, exist_ok=True)
         for name, seed in zip(uuids, seeds):
-            (folder / f"{name}.jpg").write_bytes(_encode(_pattern(seed), "JPEG"))
+            (folder / f"{name}.jpg").write_bytes(_encode(_pattern(seed, size), "JPEG"))
             (folder / f"{name}_thumb.jpg").write_bytes(
-                _encode(_pattern(seed, (200, 150)), "JPEG"))
+                _encode(_pattern(seed, (size[0] // 2, size[1] // 2)), "JPEG"))
 
     def scan(self, user=None, *, status="pending", include_memories=True,
              include_journal=True, created_at=None, apply_status="idle") -> int:
@@ -489,6 +490,56 @@ def test_a_failed_scan_leaves_the_earlier_scan_and_its_rejections(env, broker):
     assert env.get(scan_id).status == "failed"
     assert env.get(earlier).status == "ready"
     assert [(r.state, r.asset_id) for r in env.suggestions(earlier)] == [("rejected", "a70")]
+
+
+# ── The original's size ───────────────────────────────────────────────────────
+
+def test_an_album_photo_with_no_more_pixels_is_already_original(env, broker):
+    env.memory([100, 101])     # stored at 400x300
+    env.immich.add("same", _album_thumb(100), width=400, height=300)
+    env.immich.add("bigger", _album_thumb(101), width=4080, height=3072)
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    broker.drain()
+
+    same, bigger = env.suggestions(scan_id)
+    assert (same.state, same.asset_id, same.selected) == ("already_original", "same", False)
+    assert (bigger.state, bigger.asset_id, bigger.selected) == ("proposed", "bigger", True)
+    assert (bigger.asset_width, bigger.asset_height) == (4080, 3072)
+    stored = {r.asset_id: r for r in env.assets(scan_id)}
+    assert (stored["bigger"].original_width, stored["bigger"].original_height) == (4080, 3072)
+    # The thumbnail's upright size stays for the aspect gate.
+    assert (stored["bigger"].width, stored["bigger"].height) == (332, 249)
+
+
+def test_a_portrait_thumbnail_turns_a_landscape_exif_pair_upright(env, broker):
+    env.memory([102], size=(300, 400))
+    env.immich.add("portrait", _album_thumb(102, (249, 332)), width=4080, height=3072)
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    broker.drain()
+
+    (row,) = env.suggestions(scan_id)
+    assert (row.state, row.asset_id) == ("proposed", "portrait")
+    assert (row.asset_width, row.asset_height) == (3072, 4080)
+    stored = env.assets(scan_id)[0]
+    assert (stored.original_width, stored.original_height) == (4080, 3072)
+
+
+def test_without_exif_sizes_the_dimensions_stay_unknown(env, broker):
+    # Same pixels as the stored photo would be "already original" if known.
+    env.memory([103], size=(332, 249))
+    env.immich.add("no-exif", _album_thumb(103))
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    broker.drain()
+
+    (row,) = env.suggestions(scan_id)
+    assert (row.state, row.asset_id) == ("proposed", "no-exif")
+    assert (row.asset_width, row.asset_height) == (None, None)
 
 
 # ── Failures ──────────────────────────────────────────────────────────────────

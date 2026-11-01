@@ -797,6 +797,9 @@ class DBPhotoUpgradeAsset(sqlmodel.SQLModel, table=True):
 
     The scan's fingerprint jobs keep their progress here (``fingerprinted``),
     and the "Choose another" chooser reads the fingerprinted rows.
+    ``width``/``height`` are the fingerprinted thumbnail's upright size (the
+    aspect gate); ``original_width``/``original_height`` the original's, from
+    EXIF, as stored.
     ``ahash``/``dhash`` are 64-bit hashes as 16 hex characters, since SQLite
     integers are signed.
     """
@@ -821,6 +824,10 @@ class DBPhotoUpgradeAsset(sqlmodel.SQLModel, table=True):
     dhash: Optional[str] = sqlmodel.Field(default=None)
     fingerprinted: bool = sqlmodel.Field(default=False)
     fetch_failed: bool = sqlmodel.Field(default=False)
+    # The original's size from Immich's EXIF, as stored (not turned upright),
+    # or None. ``width``/``height`` above are the fingerprinted thumbnail's.
+    original_width: Optional[int] = sqlmodel.Field(default=None)
+    original_height: Optional[int] = sqlmodel.Field(default=None)
 
 
 class DBPhotoUpgradeSuggestion(sqlmodel.SQLModel, table=True):
