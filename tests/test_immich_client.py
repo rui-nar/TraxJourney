@@ -297,7 +297,58 @@ def test_thumbnail_bytes(fake):
     pages.append(_FakeResponse(headers={"content-type": "image/webp"}, content=b"RIFFwebp"))
     assert _client().thumbnail_bytes("a1", "thumbnail") == b"RIFFwebp"
     assert calls == [{"method": "GET", "url": SERVER + "/api/assets/a1/thumbnail?size=thumbnail",
-                      "headers": {"x-api-key": "secret-key"}, "stream": False}]
+                      "headers": {"x-api-key": "secret-key"}, "stream": True}]
+    assert pages == []
+
+
+class _Stream:
+    """A streamed body of ``chunks`` chunks of 64 KiB; counts what is read."""
+
+    status_code = 200
+    headers: dict = {}
+
+    def __init__(self, chunks: int, fail_after=None):
+        self.chunks = chunks
+        self.fail_after = fail_after
+        self.read = 0
+        self.closed = False
+
+    def iter_content(self, chunk_size=None):
+        for i in range(self.chunks):
+            if self.fail_after is not None and i == self.fail_after:
+                raise safe_fetch.FetchRefused("the download took longer than allowed")
+            self.read += 1
+            yield b"x" * (64 * 1024)
+
+    def close(self):
+        self.closed = True
+
+
+def test_a_thumbnail_up_to_the_cap_is_read(fake):
+    _calls, pages = fake
+    body = _Stream(32)                       # exactly 2 MiB
+    pages.append(body)
+    assert len(_client().thumbnail_bytes("a1", "thumbnail")) == 2 * 1024 * 1024
+    assert body.closed
+
+
+def test_an_over_cap_thumbnail_is_refused_without_reading_on(fake):
+    _calls, pages = fake
+    body = _Stream(10_000)                   # 625 MiB on offer
+    pages.append(body)
+    with pytest.raises(ImmichBadAnswer):
+        _client().thumbnail_bytes("a1", "thumbnail")
+    assert body.read == 33                   # the first chunk past 2 MiB, no more
+    assert body.closed
+
+
+def test_a_thumbnail_cut_off_while_streaming_is_unreachable(fake):
+    _calls, pages = fake
+    body = _Stream(5, fail_after=2)
+    pages.append(body)
+    with pytest.raises(ImmichUnreachable):
+        _client().thumbnail_bytes("a1", "thumbnail")
+    assert body.closed
 
 
 def test_thumbnail_size_is_checked():

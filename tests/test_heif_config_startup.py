@@ -41,6 +41,7 @@ class TestApi:
         assert HEIF_DECODE_MEMORY_ENV in message
         assert repr(value) in message
         assert "positive whole number of MiB" in message
+        assert f"set {HEIF_DECODE_MEMORY_ENV}=576" in message
 
     @pytest.mark.parametrize("value", _GOOD)
     def test_starts(self, monkeypatch, value):
@@ -87,6 +88,7 @@ class TestWorker:
         assert HEIF_DECODE_MEMORY_ENV in logged
         assert repr(value) in logged
         assert "positive whole number of MiB" in logged
+        assert f"set {HEIF_DECODE_MEMORY_ENV}=576" in logged
 
     @pytest.mark.parametrize("value", _GOOD)
     def test_starts(self, monkeypatch, value):

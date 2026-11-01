@@ -114,6 +114,28 @@ def test_excluded_pairs_are_never_proposed():
     assert by_key(m.match([trip("p")], [album("a")], {("p", "a")}))["p"].state == m.NO_MATCH
 
 
+def test_a_rejected_frame_within_the_margin_makes_the_next_proposal_low():
+    # A rejected, B proposed instead: A scores 0, B 2 — A may be B's twin.
+    r = by_key(m.match([trip("p")], [album("A"), album("B", flips=2)], {("p", "A")}))["p"]
+    assert (r.state, r.asset_id, r.score, r.confidence) == (m.PROPOSED, "B", 2, m.LOW)
+    assert "A" not in [x for x, _ in r.alternatives]
+
+
+def test_a_rejected_frame_outside_the_margin_leaves_the_proposal_alone():
+    # A rejected scores 16, B proposed scores 5: 11 apart, outside the margin.
+    r = by_key(m.match([trip("p")], [album("A", flips=16), album("B", flips=5)],
+                       {("p", "A")}))["p"]
+    assert (r.state, r.asset_id, r.score, r.confidence) == (m.PROPOSED, "B", 5, m.HIGH)
+    assert r.alternatives == ()
+
+
+def test_a_rejection_by_one_copy_is_a_rival_for_the_whole_group():
+    copies = [trip("m1", content_hash="h"), trip("m2", content_hash="h", day=NEXT)]
+    r = by_key(m.match(copies, [album("A"), album("B", flips=3)], {("m2", "A")}))
+    assert r["m1"].asset_id == r["m2"].asset_id == "B"
+    assert r["m1"].confidence == r["m2"].confidence == m.LOW
+
+
 def test_geo_distance_breaks_a_tie_without_filtering():
     p = trip("p", lat=43.6, lon=1.44)
     near, far = album("z_near", lat=43.61, lon=1.45), album("a_far", lat=48.85, lon=2.35)

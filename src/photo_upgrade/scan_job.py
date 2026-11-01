@@ -8,7 +8,8 @@ the next, so a poster never waits behind more than one of them:
    scope (D3, at most ``MAX_TRIP_PHOTOS``) and stores one row per album photo
    dated within the trip ±1 day (D12).
 2. ``run_scan_fingerprint``: fetches up to ``FINGERPRINT_BATCH`` album
-   thumbnails, ``FETCH_THREADS`` at a time, and stores their fingerprints;
+   thumbnails, ``FETCH_THREADS`` at a time, each thread hashing what it
+   fetched before the next, and stores their fingerprints;
    enqueues itself again while rows remain.
 3. ``run_scan_match``: fingerprints the trip photos from their thumbnails on
    disk, runs the matcher (``src/photo_upgrade/matching.py``), writes one
@@ -377,12 +378,15 @@ def _prepare(scan_id: int) -> Optional[str]:
 
 # ── Step 2: fingerprint ───────────────────────────────────────────────────────
 
-def _fetch(client: ImmichClient, asset_id: str):
-    """The asset's thumbnail bytes, or the ImmichError that stopped it."""
+def _fetch_fingerprint(client: ImmichClient, asset_id: str):
+    """The asset's thumbnail fingerprint (None when it does not decode), or
+    the ImmichError that stopped the fetch. Fetched and hashed in one go, so
+    each thread holds one body at a time and none outlives this call."""
     try:
-        return client.thumbnail_bytes(asset_id, _THUMB_SIZE)
+        raw = client.thumbnail_bytes(asset_id, _THUMB_SIZE)
     except ImmichError as exc:
         return exc
+    return _album_fingerprint(raw)
 
 
 def _album_fingerprint(raw: bytes) -> Optional[Fingerprint]:
@@ -416,7 +420,7 @@ def _fingerprint(scan_id: int) -> Optional[str]:
     if batch:
         client = _client_for(scan.user_info_id)
         with ThreadPoolExecutor(max_workers=FETCH_THREADS) as pool:
-            fetched = list(pool.map(lambda row: _fetch(client, row[1]), batch))
+            fetched = list(pool.map(lambda row: _fetch_fingerprint(client, row[1]), batch))
         failures = [r for r in fetched if isinstance(r, ImmichError)]
         for exc in failures:
             # The key or the address is wrong for every photo, not this one.
@@ -427,9 +431,8 @@ def _fingerprint(scan_id: int) -> Optional[str]:
         if failures and len(failures) == len(fetched) and all(
                 isinstance(exc, ImmichUnreachable) for exc in failures):
             raise failures[0]
-        for (row_id, _), raw in zip(batch, fetched):
-            # Decoded here, one at a time: thumbnails are small.
-            results[row_id] = None if isinstance(raw, ImmichError) else _album_fingerprint(raw)
+        for (row_id, _), got in zip(batch, fetched):
+            results[row_id] = None if isinstance(got, ImmichError) else got
 
     with get_session() as sess:
         if not _hold(sess, scan_id):
@@ -480,7 +483,7 @@ class _Current:
         self.artifact = artifact
         self.uuid = uuid
         self.position = position
-        self.key = f"{artifact.kind}:{artifact.id}:{uuid}"
+        self.key = photo_key(artifact.kind, artifact.id, uuid)
         self.bytes: Optional[int] = None
         self.size: Optional[Tuple[int, int]] = None
 
@@ -542,26 +545,82 @@ def _original_size(row: DBPhotoUpgradeAsset) -> Tuple[Optional[int], Optional[in
     return w, h
 
 
+def photo_key(kind: str, artifact_id: int, photo_uuid: str) -> str:
+    """The key a trip photo has in matching and in ``rejected_pairs_json``."""
+    return f"{kind}:{artifact_id}:{photo_uuid}"
+
+
+def _load_pairs(raw: Optional[str]) -> List[Tuple[str, str]]:
+    """``rejected_pairs_json`` as (photo key, asset id) pairs; malformed
+    entries are dropped one by one, an unreadable column reads as none."""
+    try:
+        value = json.loads(raw or "[]")
+    except ValueError:
+        return []
+    if not isinstance(value, list):
+        return []
+    return [(p[0], p[1]) for p in value
+            if isinstance(p, list) and len(p) == 2
+            and isinstance(p[0], str) and isinstance(p[1], str)]
+
+
+def _dump_pairs(pairs: Iterable[Tuple[str, str]]) -> str:
+    return json.dumps([list(p) for p in sorted(set(pairs))])
+
+
 def _earlier_rejections(sess, scan: DBPhotoUpgradeScan) -> Dict[str, List[str]]:
-    """``{photo key: [asset id, ...]}`` the runner rejected in their earlier
-    scans of this trip, newest scan first."""
+    """``{photo key: [asset id, ...]}`` the runner rejected on this trip in
+    their earlier scans: those scans' rejected rows, newest scan first, then
+    the rejections each of them carried from the scans before it (U9-R1-1)."""
+    earlier = (DBPhotoUpgradeScan.project_id == scan.project_id,
+               DBPhotoUpgradeScan.user_info_id == scan.user_info_id,
+               DBPhotoUpgradeScan.id != scan.id)
     rows = sess.exec(
         select(DBPhotoUpgradeSuggestion.artifact_kind, DBPhotoUpgradeSuggestion.artifact_id,
                DBPhotoUpgradeSuggestion.photo_uuid, DBPhotoUpgradeSuggestion.asset_id)
         .join(DBPhotoUpgradeScan, DBPhotoUpgradeScan.id == DBPhotoUpgradeSuggestion.scan_id)
-        .where(DBPhotoUpgradeScan.project_id == scan.project_id,
-               DBPhotoUpgradeScan.user_info_id == scan.user_info_id,
-               DBPhotoUpgradeScan.id != scan.id,
+        .where(*earlier,
                DBPhotoUpgradeSuggestion.state == "rejected",
                DBPhotoUpgradeSuggestion.asset_id.is_not(None))
         .order_by(DBPhotoUpgradeScan.created_at.desc(), DBPhotoUpgradeSuggestion.id)
     ).all()
+    pairs = [(photo_key(kind, artifact_id, uuid), asset_id)
+             for kind, artifact_id, uuid, asset_id in rows]
+    for raw in sess.exec(select(DBPhotoUpgradeScan.rejected_pairs_json).where(*earlier)
+                         .order_by(DBPhotoUpgradeScan.created_at.desc())).all():
+        pairs += sorted(_load_pairs(raw))
     found: Dict[str, List[str]] = {}
-    for kind, artifact_id, uuid, asset_id in rows:
-        assets = found.setdefault(f"{kind}:{artifact_id}:{uuid}", [])
+    for key, asset_id in pairs:
+        assets = found.setdefault(key, [])
         if asset_id not in assets:
             assets.append(asset_id)
     return found
+
+
+def record_rejection(scan_id: int, key: str, asset_id: str) -> bool:
+    """Add (*key*, *asset_id*) to the scan's ``rejected_pairs_json``, for the
+    route that rejects a suggestion. A compare-and-set on the column's old
+    value, retried, so two rejections at once both land. False when the scan
+    is gone."""
+    for _ in range(5):
+        with get_session() as sess:
+            raw = sess.exec(select(DBPhotoUpgradeScan.rejected_pairs_json)
+                            .where(DBPhotoUpgradeScan.id == scan_id)).first()
+            if raw is None and sess.get(DBPhotoUpgradeScan, scan_id) is None:
+                return False
+            pairs = set(_load_pairs(raw))
+            if (key, asset_id) in pairs:
+                return True
+            pairs.add((key, asset_id))
+            result = sess.execute(
+                update(DBPhotoUpgradeScan)
+                .where(DBPhotoUpgradeScan.id == scan_id,
+                       DBPhotoUpgradeScan.rejected_pairs_json == raw)
+                .values(rejected_pairs_json=_dump_pairs(pairs)))
+            sess.commit()
+            if result.rowcount == 1:
+                return True
+    raise RuntimeError(f"rejection on photo scan {scan_id} lost five races")
 
 
 def _match(scan_id: int) -> Optional[str]:
@@ -598,8 +657,13 @@ def _match(scan_id: int) -> Optional[str]:
 
     now = time.time()
     with get_session() as sess:
+        # Every rejection so far goes onto this scan before the scans that
+        # held them are deleted below (U9-R1-1).
+        own = _load_pairs(sess.exec(select(DBPhotoUpgradeScan.rejected_pairs_json)
+                                    .where(DBPhotoUpgradeScan.id == scan_id)).first())
         if not _hold(sess, scan_id, status="ready", stage=STAGE_DONE,
-                     progress_done=total, completed_at=now):
+                     progress_done=total, completed_at=now,
+                     rejected_pairs_json=_dump_pairs(list(excluded) + own)):
             sess.rollback()
             return None
         for s in suggestions:

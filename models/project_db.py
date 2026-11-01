@@ -790,6 +790,11 @@ class DBPhotoUpgradeScan(sqlmodel.SQLModel, table=True):
     apply_heartbeat_at: Optional[float] = sqlmodel.Field(default=None)
     created_at: float = sqlmodel.Field(default_factory=time.time)
     completed_at: Optional[float] = sqlmodel.Field(default=None)
+    # Every (photo key, asset id) pair the person rejected on this trip so far,
+    # as a JSON list of 2-lists: carried from scan to scan, so a rejection
+    # outlives the scan it was made in (U9-R1-1).
+    rejected_pairs_json: str = sqlmodel.Field(
+        default="[]", sa_column_kwargs={"server_default": "[]"})
 
 
 class DBPhotoUpgradeAsset(sqlmodel.SQLModel, table=True):

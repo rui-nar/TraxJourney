@@ -300,3 +300,29 @@ def test_the_original_size_columns_come_and_go_with_their_migration(tmp_path, mo
 
     command.upgrade(cfg, "head")
     assert {"original_width", "original_height"} <= columns()
+
+
+def test_the_rejected_pairs_column_comes_and_goes_with_its_migration(tmp_path, monkeypatch):
+    """``rejected_pairs_json`` (c5a1e8d27f40, U9-R1-1) exists at head, reads
+    as ``[]`` on a scan written before it, and its downgrade drops it."""
+    db_path = tmp_path / "pairs.db"
+    url = f"sqlite:///{db_path.as_posix()}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    cfg = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+    cfg.set_main_option("sqlalchemy.url", url)
+    eng = create_engine(url)
+    try:
+        command.upgrade(cfg, "b9d3e6f1a274")
+        with eng.begin() as conn:
+            conn.execute(text("INSERT INTO photoupgradescan (project_id, user_info_id, "
+                              "album_id, status) VALUES (1, 1, 'album', 'ready')"))
+        command.upgrade(cfg, "head")
+        with eng.connect() as conn:
+            assert conn.execute(text(
+                "SELECT rejected_pairs_json FROM photoupgradescan")).scalar_one() == "[]"
+        command.downgrade(cfg, "b9d3e6f1a274")
+        with eng.connect() as conn:
+            cols = {row[1] for row in conn.execute(text("PRAGMA table_info(photoupgradescan)"))}
+        assert "rejected_pairs_json" not in cols and "status" in cols
+    finally:
+        eng.dispose()

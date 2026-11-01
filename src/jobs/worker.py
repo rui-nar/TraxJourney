@@ -149,12 +149,16 @@ def main(argv: list[str] | None = None) -> int:
     # A HEIC decode limit nobody chose must stop the worker now, not fail every
     # HEIC photo later (docs/plans/IMMICH_ALBUM_UPGRADE_PLAN.md, U9 step 1a).
     # Imported here, like the sweeps below: it pulls in Pillow and pillow-heif.
-    from src.utils.photo_store import HeifDecodeConfigError, heif_decode_memory_mib
+    from src.utils.photo_store import (
+        HEIF_DECODE_MEMORY_ENV, HEIF_DECODE_MEMORY_MIB_DEFAULT, HeifDecodeConfigError,
+        heif_decode_memory_mib)
 
     try:
         heif_decode_memory_mib()
     except HeifDecodeConfigError as exc:
-        _log.error("cannot start a worker: %s (unset it for the default)", exc)
+        _log.error("cannot start a worker: %s: set %s=%d (worker-poster uses 896), "
+                   "or unset it for that default", exc, HEIF_DECODE_MEMORY_ENV,
+                   HEIF_DECODE_MEMORY_MIB_DEFAULT)
         return 1
 
     if not redis_url():

@@ -419,6 +419,112 @@ def test_rejected_pairs_are_carried_over_from_an_earlier_scan(env, broker):
     assert env.suggestions(third)[0].state == "rejected"
 
 
+def _reject_in_review(env, scan_id, photo_uuid):
+    """What the review does to a suggestion the user turns down: its state."""
+    with Session(env.engine) as sess:
+        row = sess.exec(select(DBPhotoUpgradeSuggestion).where(
+            DBPhotoUpgradeSuggestion.scan_id == scan_id,
+            DBPhotoUpgradeSuggestion.photo_uuid == photo_uuid)).one()
+        row.state, row.selected = "rejected", False
+        sess.add(row)
+        sess.commit()
+        return row.asset_id
+
+
+def _scan_once(env, broker) -> int:
+    scan_id = env.scan()
+    scan_job.start_scan(scan_id)
+    broker.drain()
+    assert env.get(scan_id).status == "ready", env.get(scan_id).error_message
+    return scan_id
+
+
+def test_a_rejected_frame_never_comes_back_once_a_sibling_is_proposed(env, broker):
+    """U9-R1-1: reject A, a rescan proposes its burst sibling B and deletes
+    the scan holding the rejection, and the scan after must still not
+    propose A."""
+    mid, (uuid,) = env.memory([110])
+    env.immich.add("frame-a", _album_thumb(110))
+    env.immich.add("frame-b", _album_thumb(110))
+    key = scan_job.photo_key("memory", mid, uuid)
+
+    first = _scan_once(env, broker)
+    rejected = _reject_in_review(env, first, uuid)
+    sibling = {"frame-a": "frame-b", "frame-b": "frame-a"}[rejected]
+
+    second = _scan_once(env, broker)
+    (row,) = env.suggestions(second)
+    assert (row.state, row.asset_id) == ("proposed", sibling)
+    # The rejected twin scores as well: the sibling is not ticked.
+    assert (row.confidence, row.selected) == ("low", False)
+    assert env.get(first) is None
+
+    third = _scan_once(env, broker)
+    (row,) = env.suggestions(third)
+    assert row.asset_id == sibling and row.state == "proposed"
+    assert rejected not in [a["asset_id"] for a in json.loads(row.alternatives_json)]
+    assert [key, rejected] in json.loads(env.get(third).rejected_pairs_json)
+
+
+def test_carried_rejections_survive_the_deletion_of_older_scans(env, broker):
+    mid, uuids = env.memory([111, 112])
+    env.immich.add("a111", _album_thumb(111))
+    older = env.scan(status="ready", created_at=time.time() - 120,
+                     )
+    env.reject(older, "memory", mid, uuids[0], "a111")
+    with Session(env.engine) as sess:
+        row = sess.get(DBPhotoUpgradeScan, older)
+        row.rejected_pairs_json = json.dumps([[scan_job.photo_key("memory", mid, uuids[1]),
+                                               "gone-asset"]])
+        sess.add(row)
+        sess.commit()
+
+    newer = _scan_once(env, broker)
+
+    assert env.get(older) is None
+    carried = {tuple(p) for p in json.loads(env.get(newer).rejected_pairs_json)}
+    assert carried == {(scan_job.photo_key("memory", mid, uuids[0]), "a111"),
+                       (scan_job.photo_key("memory", mid, uuids[1]), "gone-asset")}
+    assert env.suggestions(newer)[0].state == "rejected"
+
+
+def test_a_failed_scan_copies_no_rejections_and_deletes_nothing(env, broker):
+    mid, uuids = env.memory([113])
+    older = env.scan(status="ready", created_at=time.time() - 60)
+    env.reject(older, "memory", mid, uuids[0], "a113")
+    env.immich.album_error = ImmichUnreachable("down")
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    broker.drain()
+
+    assert env.get(scan_id).status == "failed"
+    assert json.loads(env.get(scan_id).rejected_pairs_json) == []
+    assert env.get(older) is not None
+
+
+def test_record_rejection_adds_each_pair_once(env):
+    scan_id = env.scan(status="ready")
+    assert scan_job.record_rejection(scan_id, "memory:1:u", "a1")
+    assert scan_job.record_rejection(scan_id, "memory:1:u", "a1")
+    assert scan_job.record_rejection(scan_id, "memory:1:u", "a2")
+    assert json.loads(env.get(scan_id).rejected_pairs_json) == [
+        ["memory:1:u", "a1"], ["memory:1:u", "a2"]]
+    assert not scan_job.record_rejection(scan_id + 99, "memory:1:u", "a1")
+
+
+def test_a_rejection_recorded_on_the_scan_is_honoured_by_the_next(env, broker):
+    mid, (uuid,) = env.memory([114])
+    env.immich.add("a114", _album_thumb(114))
+    first = _scan_once(env, broker)
+    scan_job.record_rejection(first, scan_job.photo_key("memory", mid, uuid), "a114")
+
+    second = _scan_once(env, broker)
+
+    (row,) = env.suggestions(second)
+    assert (row.state, row.asset_id, row.selected) == ("rejected", "a114", False)
+
+
 def test_earlier_scans_are_deleted_only_once_the_new_one_is_ready(env, broker):
     env.memory([60])
     env.immich.add("a60", _album_thumb(60))
@@ -649,6 +755,46 @@ def test_a_failed_thumbnail_fetch_is_counted_and_the_scan_goes_on(env, broker):
     assert {a for a, r in rows.items() if r.fetch_failed} == {"missing", "broken", "flaky", "huge"}
     assert rows["good"].fingerprinted and not rows["good"].fetch_failed
     assert env.suggestions(scan_id)[0].asset_id == "good"
+
+
+def test_a_batch_never_holds_more_bodies_than_fetch_threads(env, broker, monkeypatch):
+    """U9-R1-2: each thread hashes what it fetched before fetching again, so
+    at most FETCH_THREADS thumbnail bodies are alive at once."""
+    import threading
+
+    env.memory([115])
+    for i in range(40):
+        env.immich.add(f"a{i:02d}", _album_thumb(115))
+    lock = threading.Lock()
+    alive = {"now": 0, "max": 0}
+    real_thumbnail = env.immich.thumbnail_bytes
+    real_fingerprint = scan_job._album_fingerprint
+
+    def thumbnail(asset_id, size):
+        raw = real_thumbnail(asset_id, size)
+        with lock:
+            alive["now"] += 1
+            alive["max"] = max(alive["max"], alive["now"])
+        time.sleep(0.005)
+        return raw
+
+    def album_fingerprint(raw):
+        try:
+            return real_fingerprint(raw)
+        finally:
+            with lock:
+                alive["now"] -= 1
+
+    monkeypatch.setattr(env.immich, "thumbnail_bytes", thumbnail)
+    monkeypatch.setattr(scan_job, "_album_fingerprint", album_fingerprint)
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    broker.drain()
+
+    assert env.get(scan_id).status == "ready"
+    assert alive["now"] == 0
+    assert 1 <= alive["max"] <= scan_job.FETCH_THREADS
 
 
 def test_no_immich_connection_fails_the_scan(env, broker):
