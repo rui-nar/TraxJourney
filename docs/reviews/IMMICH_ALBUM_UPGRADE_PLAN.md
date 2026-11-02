@@ -365,3 +365,25 @@ Verifier: pass (scope plus approved X3 extensions: `Asset.width/height`, `origin
 - Override: —
 - Approved (2026-11-01): fingerprint each thumbnail as it arrives (at most the worker count held at once) and refuse thumbnail bodies over 2 MiB at download.
 - Outcome: —
+
+## U9 unit review round 2 — 2026-11-01, reviewed at 0b8868fe (fixes only: 8f196422, 0b8868fe)
+
+Verifier on 0b8868fe: pass (488 tests, single head c5a1e8d27f40). Its out-of-scope notes are U9's own step 1a files (api/router.py, src/jobs/worker.py) and the 8f196422 job-naming change reviewed here.
+
+### U9-R2-1 — A rejection made on the earlier scan while the new scan is matching is neither excluded nor carried, and the earlier scan is then deleted
+- Trigger: a user with a ready scan 1 starts scan 2 and, during scan 2's match step, rejects frame A for photo P in scan 1 → scan 2 read the earlier rejections before that write (scan_job.py:632), writes its carry from the stale read (:662-666) and deletes scan 1 (:699-708) → the rejection is lost; A comes back, ticked when confident.
+- Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3, F3 floor) — a window inside the R1-1 fix, not a duplicate of R1-1
+- Revisit when: —
+- Guard: —
+- Override: — (approved 2026-11-02)
+- Outcome: —
+
+### U9-R2-2 — The carried rejection set only grows; a rejection the user reverses, or a rejected asset the user later chooses, stays excluded from every future scan
+- Trigger: a user rejects A for P, rescans (scan 2 carries (P, A)), then in scan 2 picks A via "Choose another" or un-rejects it, and does not apply → scan 3 and later never propose A for P; nothing shows it is barred.
+- Scores: trigger=plausible (triage corrected from theoretical: same planned U10 PATCH as R1-1), impact=degraded-ux (triage corrected from silent-wrong: nothing wrong is applied, A stays in "Choose another"), detect=silent, later=cheap, fix=M/local, confidence=verified
+- Decision: Guard (D9)
+- Revisit when: the guard fires
+- Guard: in `_earlier_rejections`, log a warning once per scan with the scan id and the count of carried pairs contradicted by a non-rejected suggestion row (same photo and asset id) in an earlier scan; no ids.
+- Override: user: Fix now — the guard computes the very pairs the fix subtracts, so fix it at the same cost; give U10 the inverse of record_rejection (2026-11-02)
+- Outcome: —
