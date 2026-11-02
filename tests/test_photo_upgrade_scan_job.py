@@ -46,6 +46,7 @@ from models.project_db import (
     DBPhotoUpgradeSuggestion,
     DBProject,
     DBProjectMember,
+    delete_photo_upgrade_scans,
 )
 from models.user import ImmichToken, UserInfo
 from src.immich.client import (
@@ -514,15 +515,174 @@ def test_record_rejection_adds_each_pair_once(env):
 
 
 def test_a_rejection_recorded_on_the_scan_is_honoured_by_the_next(env, broker):
+    """A pair only in the column (say an alternative turned down in the
+    chooser while the row proposes another asset) still bars the asset."""
     mid, (uuid,) = env.memory([114])
     env.immich.add("a114", _album_thumb(114))
+    env.immich.add("b114", _album_thumb(114))
     first = _scan_once(env, broker)
-    scan_job.record_rejection(first, scan_job.photo_key("memory", mid, uuid), "a114")
+    (row,) = env.suggestions(first)
+    other = {"a114": "b114", "b114": "a114"}[row.asset_id]
+    scan_job.record_rejection(first, scan_job.photo_key("memory", mid, uuid), other)
 
     second = _scan_once(env, broker)
 
     (row,) = env.suggestions(second)
-    assert (row.state, row.asset_id, row.selected) == ("rejected", "a114", False)
+    assert row.asset_id != other and row.state == "proposed"
+
+
+# ── Reversed rejections and late ones (U9-R2-1, U9-R2-2) ─────────────────────
+
+def _set_row(env, scan_id, photo_uuid, **values):
+    with Session(env.engine) as sess:
+        row = sess.exec(select(DBPhotoUpgradeSuggestion).where(
+            DBPhotoUpgradeSuggestion.scan_id == scan_id,
+            DBPhotoUpgradeSuggestion.photo_uuid == photo_uuid)).one()
+        for name, value in values.items():
+            setattr(row, name, value)
+        sess.add(row)
+        sess.commit()
+
+
+def _pairs(env, scan_id) -> set:
+    return {tuple(p) for p in json.loads(env.get(scan_id).rejected_pairs_json)}
+
+
+def test_an_un_rejected_frame_can_be_proposed_again(env, broker):
+    mid, (uuid,) = env.memory([120])
+    env.immich.add("frame-a", _album_thumb(120))
+    env.immich.add("frame-b", _album_thumb(120))
+    key = scan_job.photo_key("memory", mid, uuid)
+    first = _scan_once(env, broker)
+    rejected = _reject_in_review(env, first, uuid)
+    second = _scan_once(env, broker)
+    assert (key, rejected) in _pairs(env, second)
+    assert env.suggestions(second)[0].asset_id != rejected
+
+    # The review un-rejects it on the second scan.
+    assert scan_job.remove_rejection(second, key, rejected)
+    third = _scan_once(env, broker)
+
+    (row,) = env.suggestions(third)
+    offered = {row.asset_id} | {a["asset_id"] for a in json.loads(row.alternatives_json)}
+    assert rejected in offered
+    assert (key, rejected) not in _pairs(env, third)
+
+
+def test_choosing_a_rejected_frame_lifts_its_rejection(env, broker):
+    mid, (uuid,) = env.memory([121])
+    env.immich.add("frame-a", _album_thumb(121))
+    key = scan_job.photo_key("memory", mid, uuid)
+    first = _scan_once(env, broker)
+    rejected = _reject_in_review(env, first, uuid)
+    second = _scan_once(env, broker)
+    (row,) = env.suggestions(second)
+    assert (row.state, row.asset_id) == ("rejected", rejected)
+
+    # "Choose another" picks it back for that photo; the column is left as
+    # it was: the row decides.
+    _set_row(env, second, uuid, state="proposed", asset_id=rejected, selected=True)
+    third = _scan_once(env, broker)
+
+    (row,) = env.suggestions(third)
+    assert (row.state, row.asset_id) == ("proposed", rejected)
+    assert (key, rejected) not in _pairs(env, third)
+
+
+def test_the_newest_earlier_scan_decides(env):
+    """Two earlier scans kept (their applies are running) disagree on one
+    pair: the newer one's opinion wins, either way."""
+    key = "memory:1:00000000-0000-4000-8000-000000000001"
+
+    def scans(newer_rejects: bool) -> int:
+        older = env.scan(status="ready", created_at=time.time() - 200, apply_status="running")
+        newer = env.scan(status="ready", created_at=time.time() - 100, apply_status="running")
+        allowing, rejecting = (older, newer) if newer_rejects else (newer, older)
+        with Session(env.engine) as sess:
+            sess.add(DBPhotoUpgradeSuggestion(
+                scan_id=allowing, artifact_kind="memory", artifact_id=1,
+                photo_uuid=key.split(":")[2], position=0, date=_DAY,
+                state="proposed", asset_id="A"))
+            sess.commit()
+        scan_job.record_rejection(rejecting, key, "A")
+        return env.scan(created_at=time.time())
+
+    current = scans(newer_rejects=True)
+    with Session(env.engine) as sess:
+        assert scan_job._earlier_rejections(sess, sess.get(DBPhotoUpgradeScan, current)) == {
+            key: ["A"]}
+        delete_photo_upgrade_scans(sess, DBPhotoUpgradeScan.id > 0)
+        sess.commit()
+
+    current = scans(newer_rejects=False)
+    with Session(env.engine) as sess:
+        assert scan_job._earlier_rejections(sess, sess.get(DBPhotoUpgradeScan, current)) == {}
+
+
+def test_record_and_remove_touch_only_their_own_pair(env):
+    scan_id = env.scan(status="ready")
+    for pair in (("memory:1:u", "a1"), ("memory:1:u", "a2"), ("journal:2:v", "a1")):
+        scan_job.record_rejection(scan_id, *pair)
+
+    assert scan_job.remove_rejection(scan_id, "memory:1:u", "a1")
+    assert _pairs(env, scan_id) == {("memory:1:u", "a2"), ("journal:2:v", "a1")}
+    assert scan_job.remove_rejection(scan_id, "memory:1:u", "absent")
+    assert _pairs(env, scan_id) == {("memory:1:u", "a2"), ("journal:2:v", "a1")}
+    scan_job.record_rejection(scan_id, "memory:1:u", "a1")
+    assert _pairs(env, scan_id) == {("memory:1:u", "a1"), ("memory:1:u", "a2"),
+                                    ("journal:2:v", "a1")}
+    assert not scan_job.remove_rejection(scan_id + 99, "memory:1:u", "a1")
+
+
+def test_a_rejection_made_during_the_match_is_carried(env, broker, monkeypatch):
+    """U9-R2-1: a rejection written to the earlier scan after the match read
+    the rejections, before the earlier scan is deleted."""
+    mid, (uuid,) = env.memory([122])
+    env.immich.add("frame-a", _album_thumb(122))
+    key = scan_job.photo_key("memory", mid, uuid)
+    first = _scan_once(env, broker)
+    (row,) = env.suggestions(first)
+    assert (row.state, row.asset_id, row.selected) == ("proposed", "frame-a", True)
+    real_match = scan_job.match
+
+    def match_then_the_user_rejects(*args, **kwargs):
+        result = real_match(*args, **kwargs)
+        # What the review does on the first scan, while the second matches.
+        _reject_in_review(env, first, uuid)
+        scan_job.record_rejection(first, key, "frame-a")
+        return result
+
+    monkeypatch.setattr(scan_job, "match", match_then_the_user_rejects)
+    second = _scan_once(env, broker)
+
+    assert env.get(first) is None
+    assert (key, "frame-a") in _pairs(env, second)
+    (row,) = env.suggestions(second)
+    assert (row.state, row.asset_id, row.selected) == ("rejected", "frame-a", False)
+
+    monkeypatch.setattr(scan_job, "match", real_match)
+    third = _scan_once(env, broker)
+    assert env.suggestions(third)[0].state == "rejected"
+
+
+def test_a_late_rejection_leaves_other_proposals_alone(env, broker, monkeypatch):
+    mid, uuids = env.memory([123, 124])
+    env.immich.add("a123", _album_thumb(123))
+    env.immich.add("a124", _album_thumb(124))
+    first = _scan_once(env, broker)
+    real_match = scan_job.match
+
+    def match_then_the_user_rejects(*args, **kwargs):
+        result = real_match(*args, **kwargs)
+        _reject_in_review(env, first, uuids[0])
+        return result
+
+    monkeypatch.setattr(scan_job, "match", match_then_the_user_rejects)
+    second = _scan_once(env, broker)
+
+    rejected, kept = env.suggestions(second)
+    assert (rejected.state, rejected.selected) == ("rejected", False)
+    assert (kept.state, kept.asset_id, kept.selected) == ("proposed", "a124", True)
 
 
 def test_earlier_scans_are_deleted_only_once_the_new_one_is_ready(env, broker):
