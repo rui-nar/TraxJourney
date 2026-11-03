@@ -387,3 +387,16 @@ Verifier on 0b8868fe: pass (488 tests, single head c5a1e8d27f40). Its out-of-sco
 - Guard: in `_earlier_rejections`, log a warning once per scan with the scan id and the count of carried pairs contradicted by a non-rejected suggestion row (same photo and asset id) in an earlier scan; no ids.
 - Override: user: Fix now — the guard computes the very pairs the fix subtracts, so fix it at the same cost; give U10 the inverse of record_rejection (2026-11-02)
 - Outcome: —
+
+## U9 unit review round 3 — 2026-11-02, reviewed at a7c615bc (fixes only: a7c615bc)
+
+Verifier on a7c615bc: pass (494 tests, single head). The one changed existing test (`test_a_rejection_recorded_on_the_scan_is_honoured_by_the_next`) follows from the approved R2-2 rule (a non-rejected row naming the asset beats the column); "rejected on the row, rescan, still barred" stays covered by three tests.
+
+### U9-R3-1 — The late re-read only adds rejections; a rejection the user lifts on the earlier scan during the match stays carried on the new scan, and the earlier scan is then deleted
+- Trigger: a user with ready scan 1 (P rejected with A) starts scan 2 and, during scan 2's match, un-rejects A for P on scan 1 or picks A back → scan 2 already excluded (P, A) from its stale read and wrote it to its column (and a rejected/A row when nothing else matched) → `_replace_earlier_scans` computes only `now - carried`, removes nothing, deletes scan 1 → later scans keep A barred for P; nothing shows the reversal was dropped.
+- Scores: trigger=plausible, impact=degraded-ux, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Guard (D9) — mirror window of U9-R2-1 for U9-R2-2's reversal; not a duplicate. Disclosed by the implementer as a known edge.
+- Revisit when: the guard fires
+- Guard: in `_replace_earlier_scans`, inside the same transaction, compute `carried - now` and when non-empty log a warning once per scan with the scan id and the count; no ids.
+- Override: user: Fix now — the guard computes the very pairs the fix lifts; round 4 allowed past the cap to review the fix (2026-11-03)
+- Outcome: —
