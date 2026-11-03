@@ -400,3 +400,7 @@ Verifier on a7c615bc: pass (494 tests, single head). The one changed existing te
 - Guard: in `_replace_earlier_scans`, inside the same transaction, compute `carried - now` and when non-empty log a warning once per scan with the scan id and the count; no ids.
 - Override: user: Fix now — the guard computes the very pairs the fix lifts; round 4 allowed past the cap to review the fix (2026-11-03)
 - Outcome: —
+
+## U9 unit review round 4 — 2026-11-03, reviewed at e677d0c7 (fixes only: e677d0c7; past the cap with the owner's OK)
+
+Clean: no findings, no envelope questions. U9-R3-1 resolved (carry written from the in-transaction re-read; no row built from the stale read). Reviewer considered and dismissed: lock span, the rollback-on-delete-failure path (no nameable trigger under WAL once the lock is held; the resulting state is the safer one), confidence kept on late-rejected rows (no consumer).
