@@ -49,6 +49,10 @@ _SEARCH_MAX_PAGES = 10
 _ALBUM_MAX_ITEMS = 10_000
 
 _THUMBNAIL_SIZES = ("thumbnail", "preview", "fullsize")
+# A thumbnail is tens of KiB (a 332×250 WebP on v5.9.0). Anything past this is
+# refused while it streams, so a hostile server cannot make a scan hold
+# megabytes per photo.
+_MAX_THUMBNAIL_BYTES = 2 * 1024 * 1024
 
 # What the feature needs from the user's API key (OD5).
 REQUIRED_PERMISSIONS = ("album.read", "asset.read", "asset.view", "asset.download")
@@ -229,6 +233,9 @@ class Asset:
     original_file_name: Optional[str]
     is_trashed: bool
     is_archived: bool
+    # The original's size from EXIF, as stored: not turned by its orientation.
+    width: Optional[int] = None
+    height: Optional[int] = None
 
 
 def _asset(item) -> Optional[Asset]:
@@ -255,6 +262,8 @@ def _asset(item) -> Optional[Asset]:
         is_trashed=item.get("isTrashed") is True,
         # Later Immich versions replace isArchived with a visibility field.
         is_archived=item.get("isArchived") is True or item.get("visibility") == "archive",
+        width=_count(exif.get("exifImageWidth")) or None,
+        height=_count(exif.get("exifImageHeight")) or None,
     )
 
 
@@ -412,12 +421,27 @@ class ImmichClient:
         return assets, True
 
     def thumbnail_bytes(self, asset_id: str, size: str) -> bytes:
-        """An asset's thumbnail; ``size=thumbnail`` is WebP on v5.9.0."""
+        """An asset's thumbnail; ``size=thumbnail`` is WebP on v5.9.0.
+
+        Read streamed: a body past ``_MAX_THUMBNAIL_BYTES`` raises
+        ImmichBadAnswer as soon as the read crosses it, without the rest
+        being downloaded.
+        """
         if size not in _THUMBNAIL_SIZES:
             raise ValueError(f"unknown thumbnail size {size!r}")
         resp = self._get(self._asset_path(asset_id, f"thumbnail?size={size}"),
-                         timeout=_DOWNLOAD_TIMEOUT)
-        return resp.content
+                         timeout=_DOWNLOAD_TIMEOUT, stream=True)
+        body = bytearray()
+        try:
+            for chunk in resp.iter_content():
+                body += chunk
+                if len(body) > _MAX_THUMBNAIL_BYTES:
+                    raise ImmichBadAnswer("Immich sent a thumbnail larger than allowed")
+        except (FetchRefused, urllib3.exceptions.HTTPError, OSError) as exc:
+            raise ImmichUnreachable(str(exc)) from None
+        finally:
+            resp.close()
+        return bytes(body)
 
     def open_original(self, asset_id: str) -> _Response:
         """The original file, streamed. The caller closes the response."""

@@ -22,7 +22,9 @@ How a scan decides, in order:
    ``AMBIGUITY_MARGIN`` of the chosen one, or when another photo unit
    scores that close for the chosen asset. Rivals count whatever their score
    (a burst frame just over ``MAX_SCORE`` is still a rival); they only need to
-   pass the gates and not be excluded.
+   pass the gates and not be excluded. An excluded (rejected) asset is never
+   proposed, but it is still a rival: a frame the user turned down that scores
+   within the margin of the proposal makes the proposal ``low``.
 6. An asset with no more pixels than the current photo is
    ``already_original`` rather than a proposal.
 
@@ -216,13 +218,15 @@ def match(photos: Sequence[TripPhoto], album_photos: Iterable[AlbumPhoto],
     # 3. Plausible pairs per unit.
     pool = _Pool(album, taken)
     cands: List[List[_Pair]] = []
+    rejected_scores: List[List[int]] = []
     for u in units:
         loc = next(((m.lat, m.lon) for m in u if m.lat is not None and m.lon is not None),
                    (None, None))
         pairs = pool.candidates(sorted({m.date for m in u}), u[0].fp, loc[0], loc[1],
                                 _KEEP_SCORE)
-        cands.append([q for q in pairs
-                      if not any((m.key, q.asset_id) in excluded for m in u)])
+        out_of_play = [any((m.key, q.asset_id) in excluded for m in u) for q in pairs]
+        cands.append([q for q, x in zip(pairs, out_of_play) if not x])
+        rejected_scores.append([q.score for q, x in zip(pairs, out_of_play) if x])
 
     # 4. Global greedy assignment over plausible pairs, deterministic on ties.
     flat = sorted(((q, i) for i, qs in enumerate(cands) for q in qs
@@ -261,6 +265,8 @@ def match(photos: Sequence[TripPhoto], album_photos: Iterable[AlbumPhoto],
                     for q in qs)
         rival = rival or any(s - pick.score <= AMBIGUITY_MARGIN
                              for s, j in asset_scores[pick.asset_id] if j != i)
+        # A rejected frame this close means the proposal may be its twin.
+        rival = rival or any(s - pick.score <= AMBIGUITY_MARGIN for s in rejected_scores[i])
         conf = LOW if rival else HIGH
         a_px = pixels_of.get(pick.asset_id)
         for m in u:

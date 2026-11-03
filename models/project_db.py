@@ -790,6 +790,11 @@ class DBPhotoUpgradeScan(sqlmodel.SQLModel, table=True):
     apply_heartbeat_at: Optional[float] = sqlmodel.Field(default=None)
     created_at: float = sqlmodel.Field(default_factory=time.time)
     completed_at: Optional[float] = sqlmodel.Field(default=None)
+    # Every (photo key, asset id) pair the person rejected on this trip so far,
+    # as a JSON list of 2-lists: carried from scan to scan, so a rejection
+    # outlives the scan it was made in (U9-R1-1).
+    rejected_pairs_json: str = sqlmodel.Field(
+        default="[]", sa_column_kwargs={"server_default": "[]"})
 
 
 class DBPhotoUpgradeAsset(sqlmodel.SQLModel, table=True):
@@ -797,6 +802,9 @@ class DBPhotoUpgradeAsset(sqlmodel.SQLModel, table=True):
 
     The scan's fingerprint jobs keep their progress here (``fingerprinted``),
     and the "Choose another" chooser reads the fingerprinted rows.
+    ``width``/``height`` are the fingerprinted thumbnail's upright size (the
+    aspect gate); ``original_width``/``original_height`` the original's, from
+    EXIF, as stored.
     ``ahash``/``dhash`` are 64-bit hashes as 16 hex characters, since SQLite
     integers are signed.
     """
@@ -821,6 +829,10 @@ class DBPhotoUpgradeAsset(sqlmodel.SQLModel, table=True):
     dhash: Optional[str] = sqlmodel.Field(default=None)
     fingerprinted: bool = sqlmodel.Field(default=False)
     fetch_failed: bool = sqlmodel.Field(default=False)
+    # The original's size from Immich's EXIF, as stored (not turned upright),
+    # or None. ``width``/``height`` above are the fingerprinted thumbnail's.
+    original_width: Optional[int] = sqlmodel.Field(default=None)
+    original_height: Optional[int] = sqlmodel.Field(default=None)
 
 
 class DBPhotoUpgradeSuggestion(sqlmodel.SQLModel, table=True):

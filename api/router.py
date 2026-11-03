@@ -129,6 +129,19 @@ async def lifespan(_app: FastAPI):
     # Same for the key the connected-service credentials are stored under:
     # without it no Strava, Polarsteps or Immich connection can be read or saved.
     credentials_keyring()
+    # And for the HEIC decode limit: a value nobody chose would otherwise fail
+    # every HEIC upload, each as the user's fault (U9 step 1a of
+    # docs/plans/IMMICH_ALBUM_UPGRADE_PLAN.md).
+    from src.utils.photo_store import (
+        HEIF_DECODE_MEMORY_ENV, HEIF_DECODE_MEMORY_MIB_DEFAULT, HeifDecodeConfigError,
+        heif_decode_memory_mib)
+
+    try:
+        heif_decode_memory_mib()
+    except HeifDecodeConfigError as exc:
+        raise HeifDecodeConfigError(
+            f"{exc}: set {HEIF_DECODE_MEMORY_ENV}={HEIF_DECODE_MEMORY_MIB_DEFAULT}, "
+            "or unset it for that default") from None
     if not _IS_API_PROCESS:
         # A worker shares this codebase but must not own schema or schedules.
         _log.info("TRAXJOURNEY_ROLE=%s — skipping migrations, admin seed and scheduler", _ROLE)

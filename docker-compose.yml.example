@@ -120,15 +120,17 @@ services:
   #   default  2  Share tiles and stats — short and cheap.
   #   video    1  A trip video render holds a worker for minutes, and its own
   #               service keeps it from delaying posters, resolves or tiles.
+  #   photos   1  Scans and applies of an Immich album, in chains of short jobs,
+  #               on worker-poster: a poster waits behind one job at most.
   #
   # These numbers are mirrored in QUEUE_MAX_CONCURRENCY in src/jobs/queue.py,
   # and tests/test_worker_topology.py fails if this file stops matching it.
   #
   # QUEUE ORDER IN `command` MATTERS: RQ checks the queues in the order given and
   # takes the first job it finds. Two rules, in this order:
-  #   1. A service's dedicated queue comes first, so it cannot starve. Only
-  #      worker-poster consumes `poster`; if `poster` came last there, a busy
-  #      `resolve` queue would leave a user waiting on a render indefinitely.
+  #   1. A service's dedicated queues come first, so they cannot starve. Only
+  #      worker-poster consumes `poster` and `photos`; if they came last there,
+  #      a busy `resolve` queue would leave a user waiting indefinitely.
   #   2. Otherwise cheapest first, so a 1 s share tile is not stuck behind a
   #      resolve, which can hold a worker for the full 600 s job timeout.
   #
@@ -161,18 +163,25 @@ services:
       redis:
         condition: service_healthy
 
-  # The ONLY consumer of `poster`, which is what keeps A0 renders serial. Do not
-  # add a second instance of this service and do not add `poster` to the service
-  # above. It also drains the cheap queues when no poster is pending, so it is
-  # the second `resolve`/`default` consumer rather than a mostly-idle container.
+  # The ONLY consumer of `poster`, which is what keeps A0 renders serial, and of
+  # `photos` (Immich photo upgrades). Do not add a second instance of this
+  # service and do not add `poster` or `photos` to the service above. It also
+  # drains the cheap queues when nothing of its own is pending, so it is the
+  # second `resolve`/`default` consumer rather than a mostly-idle container.
   worker-poster:
     image: ghcr.io/rui-nar/traxjourney:latest
     container_name: traxjourney-worker-poster
     restart: unless-stopped
-    command: ["/worker-entrypoint.sh", "poster", "default", "resolve"]
+    command: ["/worker-entrypoint.sh", "poster", "photos", "default", "resolve"]
     env_file: .env
     environment:
       TRAXJOURNEY_ROLE: worker
+      # Memory limit, in MiB, of the process that decodes one HEIC photo of an
+      # Immich upgrade. Set here, not in .env, which the API shares: the API
+      # keeps the default (576) within its 768M. 896 fits this container's
+      # 1280M (src/utils/photo_store.py). Anything but a positive whole number
+      # stops the worker at start.
+      HEIF_DECODE_MEMORY_MIB: "896"
     logging: *default-logging
     deploy:
       resources:
