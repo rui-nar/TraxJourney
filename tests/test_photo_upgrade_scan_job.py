@@ -1241,3 +1241,42 @@ def test_a_late_rejection_and_a_late_lift_on_different_photos(env, broker, monke
     one, two = env.suggestions(third)
     assert (one.state, one.asset_id) == ("rejected", "a132")
     assert (two.state, two.asset_id) == ("proposed", "a133")
+
+
+def test_a_failed_delete_of_earlier_scans_rolls_the_match_back(env, broker, monkeypatch):
+    """Everything the match writes shares one transaction with the delete of
+    the earlier scans: when the delete fails, none of it stays."""
+    mid, (uuid,) = env.memory([140])
+    env.immich.add("frame-a", _album_thumb(140))
+    env.immich.add("frame-b", _album_thumb(140))
+    key = scan_job.photo_key("memory", mid, uuid)
+    first = _scan_once(env, broker)
+    rejected = _reject_in_review(env, first, uuid)
+    scan_job.record_rejection(first, key, rejected)
+    before_first = (env.get(first).status, _pairs(env, first),
+                    [(r.state, r.asset_id) for r in env.suggestions(first)])
+
+    def locked(*args, **kwargs):
+        raise RuntimeError("database is locked")
+
+    real_delete = scan_job.delete_photo_upgrade_scans
+    monkeypatch.setattr(scan_job, "delete_photo_upgrade_scans", locked)
+    second = env.scan()
+    pairs_before = env.get(second).rejected_pairs_json
+    scan_job.start_scan(second)
+    broker.drain()
+
+    scan = env.get(second)
+    assert (scan.status, scan.error_message) == ("failed", scan_job.REASON_FAILED)
+    assert env.suggestions(second) == []
+    assert scan.rejected_pairs_json == pairs_before
+    assert (env.get(first).status, _pairs(env, first),
+            [(r.state, r.asset_id) for r in env.suggestions(first)]) == before_first
+    assert (key, rejected) in _pairs(env, first)
+
+    monkeypatch.setattr(scan_job, "delete_photo_upgrade_scans", real_delete)
+    third = _scan_once(env, broker)
+    assert env.get(first) is None and env.get(second) is None
+    (row,) = env.suggestions(third)
+    assert row.state == "proposed" and row.asset_id != rejected
+    assert (key, rejected) in _pairs(env, third)
