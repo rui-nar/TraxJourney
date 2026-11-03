@@ -1142,3 +1142,102 @@ def test_without_a_broker_the_chain_runs_in_one_loop(env):
     assert scan.status == "ready", scan.error_message
     assert all(r.fingerprinted for r in env.assets(scan_id))
     assert [r.asset_id for r in env.suggestions(scan_id)] == ["a90", None]
+
+
+# ── Rejections lifted during the match (U9-R3-1) ──────────────────────────────
+
+def _during_match(monkeypatch, act):
+    """Run *act* after the match read the rejections, before the earlier
+    scans are reconciled and deleted."""
+    real_match = scan_job.match
+
+    def match_then_act(*args, **kwargs):
+        result = real_match(*args, **kwargs)
+        act()
+        return result
+
+    monkeypatch.setattr(scan_job, "match", match_then_act)
+    return real_match
+
+
+def test_an_un_rejection_during_the_match_is_not_carried(env, broker, monkeypatch):
+    mid, (uuid,) = env.memory([130])
+    env.immich.add("frame-a", _album_thumb(130))
+    key = scan_job.photo_key("memory", mid, uuid)
+    first = _scan_once(env, broker)
+    _reject_in_review(env, first, uuid)
+    scan_job.record_rejection(first, key, "frame-a")
+
+    def un_reject():
+        _set_row(env, first, uuid, state="proposed", selected=True)
+        scan_job.remove_rejection(first, key, "frame-a")
+
+    real_match = _during_match(monkeypatch, un_reject)
+    second = _scan_once(env, broker)
+
+    assert env.get(first) is None
+    assert (key, "frame-a") not in _pairs(env, second)
+    (row,) = env.suggestions(second)
+    # What the match gave without the rejection's made-up row.
+    assert (row.state, row.asset_id, row.selected) == ("no_match", None, False)
+
+    monkeypatch.setattr(scan_job, "match", real_match)
+    third = _scan_once(env, broker)
+    (row,) = env.suggestions(third)
+    assert (row.state, row.asset_id) == ("proposed", "frame-a")
+
+
+def test_choosing_a_frame_back_during_the_match_is_not_carried(env, broker, monkeypatch):
+    mid, (uuid,) = env.memory([131])
+    env.immich.add("frame-a", _album_thumb(131))
+    env.immich.add("frame-b", _album_thumb(131))
+    key = scan_job.photo_key("memory", mid, uuid)
+    first = _scan_once(env, broker)
+    rejected = _reject_in_review(env, first, uuid)
+    scan_job.record_rejection(first, key, rejected)
+
+    # "Choose another" picks the rejected frame back; only the row changes.
+    real_match = _during_match(monkeypatch, lambda: _set_row(
+        env, first, uuid, state="proposed", asset_id=rejected, selected=True))
+    second = _scan_once(env, broker)
+
+    assert env.get(first) is None
+    assert (key, rejected) not in _pairs(env, second)
+    (row,) = env.suggestions(second)
+    assert not (row.state == "rejected" and row.asset_id == rejected)
+
+    monkeypatch.setattr(scan_job, "match", real_match)
+    third = _scan_once(env, broker)
+    (row,) = env.suggestions(third)
+    offered = {row.asset_id} | {a["asset_id"] for a in json.loads(row.alternatives_json)}
+    assert rejected in offered and row.state == "proposed"
+
+
+def test_a_late_rejection_and_a_late_lift_on_different_photos(env, broker, monkeypatch):
+    mid, (p1, p2) = env.memory([132, 133])
+    env.immich.add("a132", _album_thumb(132))
+    env.immich.add("a133", _album_thumb(133))
+    k1, k2 = (scan_job.photo_key("memory", mid, u) for u in (p1, p2))
+    first = _scan_once(env, broker)
+    _reject_in_review(env, first, p2)
+    scan_job.record_rejection(first, k2, "a133")
+
+    def reject_one_lift_the_other():
+        _reject_in_review(env, first, p1)
+        scan_job.record_rejection(first, k1, "a132")
+        _set_row(env, first, p2, state="proposed", selected=True)
+        scan_job.remove_rejection(first, k2, "a133")
+
+    real_match = _during_match(monkeypatch, reject_one_lift_the_other)
+    second = _scan_once(env, broker)
+
+    assert _pairs(env, second) == {(k1, "a132")}
+    one, two = env.suggestions(second)
+    assert (one.state, one.asset_id, one.selected) == ("rejected", "a132", False)
+    assert (two.state, two.asset_id, two.selected) == ("no_match", None, False)
+
+    monkeypatch.setattr(scan_job, "match", real_match)
+    third = _scan_once(env, broker)
+    one, two = env.suggestions(third)
+    assert (one.state, one.asset_id) == ("rejected", "a132")
+    assert (two.state, two.asset_id) == ("proposed", "a133")

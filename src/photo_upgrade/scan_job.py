@@ -669,57 +669,6 @@ def remove_rejection(scan_id: int, key: str, asset_id: str) -> bool:
     return _edit_pairs(scan_id, lambda pairs: pairs.discard((key, asset_id)))
 
 
-def _replace_earlier_scans(scan: DBPhotoUpgradeScan, carried: set) -> int:
-    """Delete the runner's earlier scans of the trip, except one whose apply
-    is in progress (D8), once this scan is ready. Returns how many went.
-
-    One transaction, opened by a write so no rejection can commit inside it:
-    the earlier scans' rejections are read again, and any made since the
-    match read them (U9-R2-1) are carried onto this scan before the scans
-    go. Too late to change this scan's matching, but a proposal of that very
-    asset for that photo is turned to ``rejected``, unticked, so the user is
-    not shown back what they refused. The delete's condition is in the
-    DELETE, so an apply started meanwhile keeps its scan.
-    """
-    with get_session() as sess:
-        held = sess.execute(
-            update(DBPhotoUpgradeScan)
-            .where(DBPhotoUpgradeScan.id == scan.id, DBPhotoUpgradeScan.status == "ready")
-            .values(heartbeat_at=time.time()))
-        if held.rowcount != 1:
-            sess.rollback()
-            return 0
-        now = {(key, asset_id) for key, ids in _earlier_rejections(sess, scan).items()
-               for asset_id in ids}
-        late = now - carried
-        if late:
-            own = _load_pairs(sess.exec(select(DBPhotoUpgradeScan.rejected_pairs_json)
-                                        .where(DBPhotoUpgradeScan.id == scan.id)).first())
-            sess.execute(update(DBPhotoUpgradeScan)
-                         .where(DBPhotoUpgradeScan.id == scan.id)
-                         .values(rejected_pairs_json=_dump_pairs(list(late) + own)))
-            for row in sess.exec(select(DBPhotoUpgradeSuggestion).where(
-                    DBPhotoUpgradeSuggestion.scan_id == scan.id,
-                    DBPhotoUpgradeSuggestion.state == PROPOSED)).all():
-                if (photo_key(row.artifact_kind, row.artifact_id, row.photo_uuid),
-                        row.asset_id) in late:
-                    row.state, row.selected = "rejected", False
-                    sess.add(row)
-        gone = delete_photo_upgrade_scans(
-            sess,
-            DBPhotoUpgradeScan.project_id == scan.project_id,
-            DBPhotoUpgradeScan.user_info_id == scan.user_info_id,
-            DBPhotoUpgradeScan.id != scan.id,
-            DBPhotoUpgradeScan.created_at <= scan.created_at,
-            DBPhotoUpgradeScan.apply_status.not_in(_APPLY_IN_PROGRESS),
-        )
-        sess.commit()
-    if late:
-        _log.info("Photo scan %s: %d rejections made during the match carried",
-                  scan.id, len(late))
-    return gone
-
-
 def _match(scan_id: int) -> Optional[str]:
     scan = _live_scan(scan_id, "scanning")
     if scan is None:
@@ -752,31 +701,54 @@ def _match(scan_id: int) -> Optional[str]:
     excluded = {(key, asset_id) for key, ids in rejected.items() for asset_id in ids}
     suggestions = match(photos, [_album_photo(r) for r in assets.values()], excluded)
 
-    now = time.time()
+    # One transaction from here to the commit (U9-R2-1, U9-R3-1). It opens with
+    # the write that makes this scan ready, so no rejection can commit inside
+    # it, and this scan cannot be reviewed before it commits: it is still
+    # "scanning" to every other reader. In it, the earlier scans' rejections
+    # are read again and reconciled with what the match excluded:
+    # * late, rejected since the read: carried, and a proposal of that very
+    #   asset for that photo is written rejected and unticked, so the user is
+    #   not shown back what they refused;
+    # * lifted, un-rejected or chosen back since the read: not carried, and
+    #   no rejected row is made up for it. The asset cannot be proposed by
+    #   this scan any more; the next scan offers it again, and so does
+    #   "Choose another".
+    # The earlier scans are deleted last, only once this scan is ready (D8);
+    # the condition is in the DELETE, so an apply started meanwhile keeps its
+    # scan. If anything here fails, all of it rolls back and the scan fails,
+    # leaving the earlier scans and their rejections in place.
     with get_session() as sess:
-        # Every rejection so far goes onto this scan before the scans that
-        # held them are deleted below (U9-R1-1).
-        own = _load_pairs(sess.exec(select(DBPhotoUpgradeScan.rejected_pairs_json)
-                                    .where(DBPhotoUpgradeScan.id == scan_id)).first())
         if not _hold(sess, scan_id, status="ready", stage=STAGE_DONE,
-                     progress_done=total, completed_at=now,
-                     rejected_pairs_json=_dump_pairs(list(excluded) + own)):
+                     progress_done=total, completed_at=time.time()):
             sess.rollback()
             return None
+        still = _earlier_rejections(sess, scan)
+        still_pairs = {(key, asset_id) for key, ids in still.items() for asset_id in ids}
+        late = still_pairs - excluded
+        lifted = excluded - still_pairs
+        # Pairs recorded on this scan itself: none in practice, since it was
+        # not reviewable until now, but never dropped.
+        own = _load_pairs(sess.exec(select(DBPhotoUpgradeScan.rejected_pairs_json)
+                                    .where(DBPhotoUpgradeScan.id == scan_id)).first())
+        sess.execute(update(DBPhotoUpgradeScan).where(DBPhotoUpgradeScan.id == scan_id)
+                     .values(rejected_pairs_json=_dump_pairs(list(still_pairs) + own)))
         for s in suggestions:
             cur = current[s.key]
             state, asset_id, confidence = s.state, s.asset_id, s.confidence
-            if state == NO_MATCH and s.key in rejected:
-                # Keep the rejection on the row, so the scan after this one
-                # still reads it once this one has replaced the earlier scan.
-                state, asset_id, confidence = "rejected", rejected[s.key][0], None
+            selected = state == PROPOSED and confidence == HIGH
+            if state == NO_MATCH and s.key in still:
+                # Keep the rejection on the row (still rejected, so never a
+                # lifted one), so the review keeps showing it.
+                state, asset_id, confidence, selected = (
+                    "rejected", still[s.key][0], None, False)
+            elif state == PROPOSED and (s.key, asset_id) in late:
+                state, selected = "rejected", False
             asset = assets.get(asset_id) if asset_id else None
             sess.add(DBPhotoUpgradeSuggestion(
                 scan_id=scan_id, artifact_kind=cur.artifact.kind,
                 artifact_id=cur.artifact.id, photo_uuid=cur.uuid,
                 position=cur.position, date=normalise(cur.artifact.date),
-                state=state, confidence=confidence,
-                selected=state == PROPOSED and confidence == HIGH,
+                state=state, confidence=confidence, selected=selected,
                 asset_id=asset_id, score=s.score if state != "rejected" else None,
                 alternatives_json=json.dumps(
                     [{"asset_id": a, "score": score} for a, score in s.alternatives]),
@@ -788,15 +760,18 @@ def _match(scan_id: int) -> Optional[str]:
                 current_width=cur.size[0] if cur.size else None,
                 current_height=cur.size[1] if cur.size else None,
             ))
+        gone = delete_photo_upgrade_scans(
+            sess,
+            DBPhotoUpgradeScan.project_id == scan.project_id,
+            DBPhotoUpgradeScan.user_info_id == scan.user_info_id,
+            DBPhotoUpgradeScan.id != scan_id,
+            DBPhotoUpgradeScan.created_at <= scan.created_at,
+            DBPhotoUpgradeScan.apply_status.not_in(_APPLY_IN_PROGRESS),
+        )
         sess.commit()
-
-    # Only now that this scan is ready (D8).
-    try:
-        gone = _replace_earlier_scans(scan, excluded)
-    except Exception as exc:  # noqa: BLE001 — the scan stands; the sweep deletes them
-        _log.error("Photo scan %s: earlier scans not deleted (%s)", scan_id,
-                   type(exc).__qualname__)
-        gone = 0
+    if late or lifted:
+        _log.info("Photo scan %s: %d rejections made and %d lifted during the match",
+                  scan_id, len(late), len(lifted))
     _log.info("Photo scan %s ready: %d suggestions, %d earlier scans deleted",
               scan_id, len(suggestions), gone)
     return None
