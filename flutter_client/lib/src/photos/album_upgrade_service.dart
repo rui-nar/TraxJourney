@@ -131,6 +131,10 @@ class UpgradeScan {
   final String? applyStoppedReason;
   final UpgradeSummary? summary;
 
+  /// Album photos that could not be read from Immich even after retries, so
+  /// they could not be matched. Older servers omit it (read as 0).
+  final int unreadablePhotos;
+
   const UpgradeScan({
     required this.id,
     required this.albumId,
@@ -145,6 +149,7 @@ class UpgradeScan {
     required this.applyStatus,
     this.applyStoppedReason,
     this.summary,
+    this.unreadablePhotos = 0,
   });
 
   factory UpgradeScan.fromJson(Map<String, dynamic> j) => UpgradeScan(
@@ -163,6 +168,7 @@ class UpgradeScan {
         summary: j['summary'] is Map
             ? UpgradeSummary.fromJson((j['summary'] as Map).cast<String, dynamic>())
             : null,
+        unreadablePhotos: _int(j['unreadable_photos']),
       );
 
   UpgradeScan withSummary(UpgradeSummary s) => UpgradeScan(
@@ -179,6 +185,7 @@ class UpgradeScan {
         applyStatus: applyStatus,
         applyStoppedReason: applyStoppedReason,
         summary: s,
+        unreadablePhotos: unreadablePhotos,
       );
 
   bool get isScanning => status == 'pending' || status == 'scanning';
@@ -478,9 +485,10 @@ class AlbumUpgradeService {
       ? '$baseUrl/api/memories/${s.artifactId}/photos/${s.currentUuid}'
       : '$baseUrl/api/journal/${s.artifactId}/photos/${s.currentUuid}';
 
-  String assetThumbUrl(String assetId) => '$baseUrl/api/immich/assets/$assetId/thumbnail';
-
-  String assetOriginalUrl(String assetId) => '$baseUrl/api/immich/assets/$assetId/original';
+  /// [preview] asks for Immich's preview JPEG (about 1440 px) instead of the
+  /// small thumbnail; the original is never fetched for display.
+  String assetThumbUrl(String assetId, {bool preview = false}) =>
+      '$baseUrl/api/immich/assets/$assetId/thumbnail${preview ? '?size=preview' : ''}';
 
   /// An album cover: the server hands back its own proxied relative path.
   String albumThumbUrl(String thumbUrl) => '$baseUrl$thumbUrl';

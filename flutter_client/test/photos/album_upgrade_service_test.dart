@@ -72,6 +72,22 @@ void main() {
     expect(l.scan!.summary!.overStorage, isFalse);
   });
 
+  test('assetThumbUrl asks for the preview only on request', () {
+    final s = _service((_) async => _json(200, {}));
+    expect(s.assetThumbUrl('x'), endsWith('/api/immich/assets/x/thumbnail'));
+    expect(s.assetThumbUrl('x', preview: true), endsWith('/api/immich/assets/x/thumbnail?size=preview'));
+  });
+
+  test('unreadable_photos is read, and a missing value is 0', () async {
+    Map<String, dynamic> scan(Map<String, dynamic> extra) => {
+          'id': 3, 'album_id': 'a', 'status': 'ready', 'apply_status': 'idle',
+          'progress_done': 0, 'progress_total': 0, 'include_memories': true,
+          'include_journal': false, ...extra,
+        };
+    expect(UpgradeScan.fromJson(scan({'unreadable_photos': 4})).unreadablePhotos, 4);
+    expect(UpgradeScan.fromJson(scan({})).unreadablePhotos, 0);
+  });
+
   test('every error code has its own sentence', () {
     for (final code in [
       'too_large', 'unsupported_format', 'not_found_in_immich', 'immich_permission',

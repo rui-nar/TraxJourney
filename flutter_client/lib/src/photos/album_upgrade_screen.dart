@@ -15,6 +15,12 @@ import 'album_upgrade_notifier.dart';
 import 'album_upgrade_service.dart';
 import 'album_upgrade_widgets.dart';
 
+String _unreadableSentence(int n) => n == 1
+    ? '1 photo in the album could not be read from Immich, so it could not be '
+        'matched. Scan again to retry.'
+    : '$n photos in the album could not be read from Immich, so they could not '
+        'be matched. Scan again to retry.';
+
 const _kNoWorkerSentence = 'Photo upgrades are not available on this server right now.';
 
 class AlbumUpgradeScreen extends StatefulWidget {
@@ -50,6 +56,15 @@ class _AlbumUpgradeScreenState extends State<AlbumUpgradeScreen> {
   }
 
   void _openPlan() => context.push(kPlanRoute);
+
+  /// The user may connect Immich in Settings: read the connection again on return.
+  Future<void> _openSettings(AlbumUpgradeNotifier n) async {
+    final project = context.read<ProjectNotifier>();
+    await context.push('/settings');
+    if (!mounted) return;
+    await n.load(widget.projectRef,
+        tripStart: project.itemsFacet.tripStart, tripEnd: project.itemsFacet.tripEnd);
+  }
 
   Future<void> _choose(AlbumUpgradeNotifier n, UpgradeSuggestion row) async {
     final assetId = await showCandidateSheet(
@@ -129,7 +144,7 @@ class _AlbumUpgradeScreenState extends State<AlbumUpgradeScreen> {
               'Settings and TraxJourney can swap this trip\'s smaller photos for '
               'the original files.',
           actionLabel: 'Open Settings',
-          onAction: () => context.push('/settings'),
+          onAction: () => _openSettings(n),
         );
       case UpgradeView.scanning:
         return ScanProgressCard(scan: n.newer!);
@@ -251,6 +266,13 @@ class _AlbumUpgradeScreenState extends State<AlbumUpgradeScreen> {
     final header = <Widget>[
       ..._notices(n, showFailedScan: true),
       ..._applyBanners(context, n, summary),
+      if (n.scan!.unreadablePhotos > 0)
+        UpgradeBanner(
+          key: const ValueKey('unreadable-notice'),
+          icon: Icons.info_outline,
+          color: kWarning,
+          message: _unreadableSentence(n.scan!.unreadablePhotos),
+        ),
       SummaryChips(summary: summary, filter: n.filter, onFilter: n.setFilter),
       const SizedBox(height: 10),
       if (n.rows.isEmpty && !n.rowsLoading)

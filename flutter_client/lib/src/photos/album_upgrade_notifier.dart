@@ -411,7 +411,10 @@ class AlbumUpgradeNotifier extends ChangeNotifier {
     _notify();
   }
 
-  Future<void> toggle(UpgradeSuggestion row) => _patch(row, selected: !row.selected);
+  /// A failed row keeps `selected: true` on the server but is drawn unticked,
+  /// so its tap always asks for `selected: true` (back to proposed).
+  Future<void> toggle(UpgradeSuggestion row) =>
+      _patch(row, selected: row.state == 'failed' ? true : !row.selected);
 
   Future<void> choose(UpgradeSuggestion row, String assetId) => _patch(row, assetId: assetId);
 
@@ -497,5 +500,6 @@ extension on UpgradeScan {
         applyStatus: other.applyStatus,
         applyStoppedReason: other.applyStoppedReason,
         summary: summary,
+        unreadablePhotos: unreadablePhotos,
       );
 }

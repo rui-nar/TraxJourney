@@ -49,8 +49,10 @@ Map<String, dynamic> _scan({
   String? error,
   String album = 'alb1',
   Map<String, dynamic>? summary,
+  int? unreadable,
 }) =>
     {
+      if (unreadable != null) 'unreadable_photos': unreadable,
       'id': id,
       'album_id': album,
       'album_name': 'Japan',
@@ -167,7 +169,14 @@ class _Server {
         row['state'] = 'proposed';
         row['selected'] = true;
       }
-      if (body['selected'] != null) row['selected'] = body['selected'];
+      if (body['selected'] != null) {
+        row['selected'] = body['selected'];
+        // Like the server: ticking a failed row puts it back to proposed.
+        if (body['selected'] == true && row['state'] == 'failed') {
+          row['state'] = 'proposed';
+          row['error_code'] = null;
+        }
+      }
       if (body['rejected'] == true) row['state'] = 'rejected';
       return _ok({'suggestion': row, 'summary': summaryAfterAction});
     }
@@ -208,7 +217,15 @@ Future<void> _pumpApp(WidgetTester tester, {Duration pollInterval = const Durati
   addTearDown(tester.view.reset);
   final router = GoRouter(routes: [
     GoRoute(path: '/', builder: (_, __) => const AlbumUpgradeScreen(projectName: 'Trip')),
-    GoRoute(path: '/settings', builder: (_, __) => const Scaffold(body: Text('settings page'))),
+    GoRoute(
+        path: '/settings',
+        builder: (_, __) => Scaffold(
+                body: Column(children: [
+              const Text('settings page'),
+              Builder(
+                  builder: (ctx) =>
+                      TextButton(onPressed: () => ctx.pop(), child: const Text('back from settings'))),
+            ]))),
     GoRoute(path: '/settings/plan', builder: (_, __) => const Scaffold(body: Text('plan page'))),
   ]);
   await tester.pumpWidget(MultiProvider(
@@ -253,6 +270,25 @@ void main() {
       await tester.tap(find.text('Open Settings'));
       await _settle(tester);
       expect(find.text('settings page'), findsOneWidget);
+    });
+
+    testWidgets('coming back from Settings re-reads the connection and drops the card',
+        (tester) async {
+      _server.connected = false;
+      await _pumpApp(tester);
+      expect(find.text('Immich is not connected'), findsOneWidget);
+
+      await tester.tap(find.text('Open Settings'));
+      await _settle(tester);
+      expect(find.text('settings page'), findsOneWidget);
+
+      _server.connected = true; // the user connected Immich meanwhile
+      await tester.tap(find.text('back from settings'));
+      await _settle(tester);
+
+      expect(_server.where('GET', '/api/immich/status'), hasLength(2));
+      expect(find.text('Immich is not connected'), findsNothing);
+      expect(find.byKey(const ValueKey('scan-button')), findsOneWidget);
     });
 
     testWidgets('a 503 on Scan says upgrades are not available right now', (tester) async {
@@ -460,6 +496,71 @@ void main() {
       expect(find.textContaining('larger than 25 MB'), findsOneWidget);
       expect(find.textContaining('asset.download'), findsOneWidget);
       expect(find.text('2 photos could not be replaced.'), findsOneWidget);
+    });
+
+    testWidgets('a failed row is unticked even though the server keeps selected, and a tap ticks it',
+        (tester) async {
+      _server.rows = [_row(1, state: 'failed', selected: true, err: 'immich_unreachable')];
+      _server.scan = _scan(summary: _summary(counts: {'failed': 1}));
+      await _pumpApp(tester);
+
+      expect(tester.widget<Checkbox>(find.byKey(const ValueKey('row-check-1'))).value, isFalse);
+
+      await tester.tap(find.byKey(const ValueKey('row-check-1')));
+      await _settle(tester);
+      expect(_server.bodyOf(_server.where('PATCH', '/suggestions/1').single), {'selected': true});
+      expect(tester.widget<Checkbox>(find.byKey(const ValueKey('row-check-1'))).value, isTrue);
+    });
+
+    testWidgets('compare asks Immich for the preview and never the original', (tester) async {
+      _server.rows = [_row(1)];
+      _server.scan = _scan(summary: _summary(counts: {'proposed': 1}, high: 1));
+      await _pumpApp(tester);
+
+      await tester.tap(find.byKey(const ValueKey('row-compare-1')));
+      await _settle(tester);
+
+      final urls = tester
+          .widgetList<Image>(find.byType(Image))
+          .map((i) => i.image)
+          .whereType<NetworkImage>()
+          .map((i) => i.url)
+          .toList();
+      expect(urls.where((u) => u.contains('/api/immich/assets/a1/thumbnail?size=preview')),
+          hasLength(1));
+      expect(urls.where((u) => u.contains('/original')), isEmpty);
+      expect(find.text('Immich preview'), findsOneWidget);
+    });
+
+    testWidgets('the unreadable-photos notice shows at N>0 with plural handling',
+        (tester) async {
+      _server.rows = [_row(1)];
+      _server.scan = _scan(unreadable: 3, summary: _summary(counts: {'proposed': 1}, high: 1));
+      await _pumpApp(tester);
+      expect(
+          find.text('3 photos in the album could not be read from Immich, so they could not '
+              'be matched. Scan again to retry.'),
+          findsOneWidget);
+    });
+
+    testWidgets('one unreadable photo reads in the singular', (tester) async {
+      _server.rows = [_row(1)];
+      _server.scan = _scan(unreadable: 1, summary: _summary(counts: {'proposed': 1}, high: 1));
+      await _pumpApp(tester);
+      expect(find.textContaining('1 photo in the album could not be read'), findsOneWidget);
+    });
+
+    testWidgets('no unreadable notice at 0 or when the field is missing', (tester) async {
+      _server.rows = [_row(1)];
+      _server.scan = _scan(unreadable: 0, summary: _summary(counts: {'proposed': 1}, high: 1));
+      await _pumpApp(tester);
+      expect(find.byKey(const ValueKey('unreadable-notice')), findsNothing);
+
+      _server.scan = _scan(summary: _summary(counts: {'proposed': 1}, high: 1)); // omitted
+      await _notifier.load(const ProjectRef(name: 'Trip'));
+      await _settle(tester);
+      expect(find.byKey(const ValueKey('row-1')), findsOneWidget);
+      expect(find.byKey(const ValueKey('unreadable-notice')), findsNothing);
     });
 
     testWidgets('Retry failed calls select with which failed', (tester) async {
