@@ -17,6 +17,9 @@ Covers:
   * a failed thumbnail fetch counted;
   * a fetch that can pass tried again in later passes, a permanent one not
     (INT-R1-A1);
+  * Immich down judged over the whole scan: nothing fingerprinted and a
+    failure that can pass fails the scan and keeps the earlier review
+    (INT-R2-1, INT-R2-2);
   * a project deleted mid-chain stopping the next job quietly;
   * the killed-work-horse handler and the worker's startup sweep;
   * the in-process loop without a broker.
@@ -1011,7 +1014,8 @@ def test_every_pass_walks_its_rows_in_batches(env, broker, monkeypatch):
     env.immich.add("b", [ImmichRejected(500), _album_thumb(128)])
     env.immich.add("c", ImmichRejected(500))
     env.immich.add("d", _album_thumb(129))
-    # Not unreachable first: alone in its batch, that would say Immich is down.
+    # Alone in its first-pass batch, but photos of the scan got through
+    # before it: no sign that Immich is down either way.
     env.immich.add("e", [ImmichRejected(503), ImmichUnreachable("x"), _album_thumb(130)])
     scan_id = env.scan()
 
@@ -1084,6 +1088,124 @@ def test_a_first_pass_with_one_photo_unreachable_still_fails_the_scan(env, broke
 
     assert env.get(scan_id).error_message == scan_job.REASON_UNREACHABLE
     assert _calls(env) == {"only": 1}
+
+
+# ── Immich down, judged over the whole scan (INT-R2-1, INT-R2-2) ─────────────
+
+def _reviewed_scan(env, broker) -> tuple:
+    """A ready scan of two trip photos, with a tick on the first and a
+    "Choose another" pick on the second; (scan id, its rows as reviewed)."""
+    mid, uuids = env.memory([140, 141])
+    env.immich.add("a140", _album_thumb(140))
+    env.immich.add("a141", _album_thumb(141))
+    earlier = _scan_once(env, broker)
+    ticked, other = env.suggestions(earlier)
+    assert (ticked.asset_id, ticked.selected) == ("a140", True)
+    _set_row(env, earlier, other.photo_uuid, state="proposed", asset_id="a140",
+             selected=True)
+    broker.ran.clear()
+    env.immich.thumb_calls.clear()
+    return earlier, _review(env, earlier)
+
+
+def _review(env, scan_id) -> list:
+    return [(r.photo_uuid, r.state, r.asset_id, r.selected)
+            for r in env.suggestions(scan_id)]
+
+
+def _unreadable_photos(env, scan_id) -> int:
+    """What the API reports for the scan."""
+    from api.photo_upgrade import _scan_out
+    with Session(env.engine) as sess:
+        return _scan_out(sess, sess.get(DBPhotoUpgradeScan, scan_id))["unreadable_photos"]
+
+
+def test_every_thumbnail_answering_503_fails_the_scan_and_keeps_the_review(env, broker):
+    """INT-R2-1: Immich restarting behind its proxy answers 503, not a
+    refused connection; the first batch still says Immich is down."""
+    earlier, reviewed = _reviewed_scan(env, broker)
+    for asset_id in ("a140", "a141"):
+        env.immich.thumbs[asset_id] = ImmichRejected(503)
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    ran = broker.drain()
+
+    scan = env.get(scan_id)
+    assert (scan.status, scan.error_message) == (
+        "failed", "Your Immich server refused the request (HTTP 503).")
+    assert "run_scan_match" not in ran
+    assert _calls(env) == {"a140": 1, "a141": 1}
+    assert env.get(earlier).status == "ready"
+    assert _review(env, earlier) == reviewed
+
+
+def test_nothing_read_after_every_pass_fails_the_scan_and_keeps_the_review(env, broker):
+    """INT-R2-1: a 404 among the 502s keeps the first batch from saying
+    Immich is down; the retry passes fail too, and nothing is matched."""
+    earlier, reviewed = _reviewed_scan(env, broker)
+    for asset_id in ("a140", "a141"):
+        env.immich.thumbs[asset_id] = ImmichRejected(502)
+    env.immich.add("gone", ImmichRejected(404))
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    ran = broker.drain()
+
+    scan = env.get(scan_id)
+    assert (scan.status, scan.error_message) == ("failed", scan_job.REASON_UNREACHABLE)
+    assert "run_scan_match" not in ran
+    tries = 1 + len(scan_job._RETRY_PAUSES)
+    assert _calls(env) == {"a140": tries, "a141": tries, "gone": 1}
+    assert env.get(earlier).status == "ready"
+    assert _review(env, earlier) == reviewed
+
+
+@pytest.mark.parametrize("passes_on_retry", [True, False])
+def test_a_lone_last_photo_timing_out_does_not_fail_the_scan(env, broker, passes_on_retry):
+    """INT-R2-2: after a full first batch got through, a one-photo last batch
+    that times out is tried again, never a sign that Immich is down."""
+    env.memory([142])
+    thumb = _album_thumb(99)
+    for i in range(scan_job.FINGERPRINT_BATCH):
+        env.immich.add(f"a{i:03d}", thumb)
+    timeout = ImmichUnreachable("read timed out")
+    env.immich.add("late", [timeout, _album_thumb(142)] if passes_on_retry else timeout)
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    broker.drain()
+
+    scan = env.get(scan_id)
+    assert scan.status == "ready", scan.error_message
+    assert _calls(env)["late"] == (2 if passes_on_retry else 1 + len(scan_job._RETRY_PAUSES))
+    rows = env.assets(scan_id)
+    assert len(rows) == scan_job.FINGERPRINT_BATCH + 1
+    if passes_on_retry:
+        assert all(r.fingerprinted for r in rows)
+        assert _unreadable_photos(env, scan_id) == 0
+        assert env.suggestions(scan_id)[0].asset_id == "late"
+    else:
+        assert [r.asset_id for r in rows if r.fetch_failed] == ["late"]
+        assert _unreadable_photos(env, scan_id) == 1
+
+
+def test_every_asset_gone_still_makes_the_scan_ready(env, broker):
+    """Every failure permanent (404) with nothing read is a result, not
+    Immich down: the scan is ready, all "No match"."""
+    env.memory([143, 144])
+    env.immich.add("gone-1", ImmichRejected(404))
+    env.immich.add("gone-2", ImmichRejected(404))
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    ran = broker.drain()
+
+    scan = env.get(scan_id)
+    assert scan.status == "ready", scan.error_message
+    assert ran == ["run_scan_prepare", "run_scan_fingerprint", "run_scan_match"]
+    assert _unreadable_photos(env, scan_id) == 2
+    assert [r.state for r in env.suggestions(scan_id)] == ["no_match", "no_match"]
 
 
 def test_a_killed_retry_pass_fails_its_scan(env):
