@@ -1477,7 +1477,11 @@ wait for them.
        because U11's apply and its recovery act on `photo_uuid` (U11-R1-4).
        A test applies such a re-proposed row end to end, recovery included;
      - `POST …/select` with `{which: "confident" | "all_proposed" |
-       "none"}`;
+       "none" | "failed"}`. `failed` puts back, ticked and `proposed` with
+       its reason cleared, every `failed` row that has an asset and failed
+       for a reason that can pass (`immich_permission`,
+       `immich_unreachable`); other failed rows stay as they are
+       (U10-R2-1);
      - `GET …/candidates?suggestion_id=` returns the scan's fingerprinted
        asset rows within ±1 day, ranked by `rank_candidates`, for the
        chooser;
@@ -1636,6 +1640,8 @@ wait for them.
   7. Applying:
      - per-row results arrive as rows flip, and a failed row shows its
        reason;
+     - when rows failed because of the Immich key or connection, "Retry
+       failed" calls `select` with `which: "failed"` (U10-R2-1);
      - a stop explains itself: storage full, or interrupted, with
        "Resume".
   8. Applied rows keep "Choose another".
@@ -1653,7 +1659,8 @@ wait for them.
     - the bar's numbers and its storage block;
     - polling stopping when the page is left;
     - a failed newer scan shown over the earlier review;
-    - the applied, failed, storage-full and interrupted-with-Resume states.
+    - the applied, failed, storage-full and interrupted-with-Resume states;
+    - "Retry failed" calling `select` with `which: "failed"`.
   - `flutter analyze` is clean for the new files.
 - **Out of scope:**
   - push or email notifications;
