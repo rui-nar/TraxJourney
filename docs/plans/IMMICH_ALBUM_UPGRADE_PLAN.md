@@ -1226,7 +1226,12 @@ wait for them.
   4. `run_scan_fingerprint(scan_id)`:
      - take up to 250 asset rows not yet fingerprinted;
      - fetch their thumbnails 4 at a time and store their fingerprints;
-     - mark a failed fetch `fetch_failed`;
+     - mark a failed fetch `fetch_failed`. Before `run_scan_match`, rows
+       that failed for a reason that can pass (Immich unreachable, a 5xx, a
+       timeout, an unreadable answer) are fetched again, a bounded number
+       of times. Those still failed are counted in `ScanOut`'s
+       `unreadable_photos`, and the review says how many album photos could
+       not be read (revised for INT-R1-A1);
      - enqueue itself again while rows remain, then `run_scan_match`.
   5. `run_scan_match(scan_id)`:
      - fingerprint each trip photo in scope from its `_thumb.jpg` on disk;
@@ -1632,7 +1637,10 @@ wait for them.
      - each row shows current → proposed, sizes and dimensions, the
        confidence, a tick box, "Choose another" (a sheet of that day's
        album photos), "Not this one" (reject), and a tap-to-compare view
-       side by side with zoom;
+       side by side with zoom. Compare shows Immich's `preview` rendition
+       (through `/api/immich/assets/{id}/thumbnail?size=preview`), never the
+       original, beside the current photo (owner decision on the integrated
+       review's envelope question);
      - "No match" rows offer "Choose from album";
      - the sticky bar reads "Replace N photos · +X of Y free", blocked with
        an upgrade link when over storage;

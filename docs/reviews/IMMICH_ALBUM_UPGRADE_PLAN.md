@@ -511,3 +511,90 @@ Verifier: pass (189 tests in the container, seven required cases asserted; re-ch
 ## U10 unit review round 3 — 2026-11-04, reviewed at 28ac632a (fixes only)
 
 Clean: no findings, no envelope questions. Verifier: pass (194 tests in the container). U10-R2-1 resolved. The reviewer noted that PATCH still lets a single `failed` row be ticked during an apply while the bulk route refuses: a stricter rule on the new route, not a harm. U10 merged into the feature branch at f43e6f20.
+
+## Integrated review round 1 — 2026-11-04, reviewed at 65cf5e88 (feat/immich-album-upgrade against main 1a226fb1)
+
+Three reviewers in parallel, by area: A (photo-upgrade jobs, API, Immich client, queue, migrations, models), B (photo endpoints, store, transfer, account deletion, config, docs), C (Flutter client). Envelope question from C, put to the owner: does tap-to-compare's per-tap download of the Immich original (up to 25 MB) and the stored full photo sit inside the envelope, or should compare use the Immich preview and the stored thumbnail?
+
+Owner decisions (2026-11-04): compare uses Immich's `preview` rendition beside the current photo, never the original (plan U12 Do 6 revised; the thumbnail proxy gains an optional `size`). The table is approved as recommended: five Fix now, four Defer. INT-R1-A1's fix retries fetches that can pass and reports the rest as `unreadable_photos` (plan U9 Do 4 revised).
+
+### INT-R1-A1 — An album photo whose thumbnail fetch fails once is dropped from the scan, so its trip photo reads "No match" and the chooser cannot offer it
+- Trigger: a user scans a large album while Immich or its proxy answers a few thumbnail requests with 5xx or a timeout → those assets are marked `fetch_failed` and never retried → the match and the candidates list see fingerprinted rows only → their trip photos read "No match", with no count or banner, only an INFO log line.
+- Scores: trigger=plausible, impact=silent-wrong, detect=logged, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3, F3 floor)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: —
+
+### INT-R1-B1 — The README's LGPL source offer names library versions nothing ties to the locked pillow-heif
+- Trigger: Dependabot (uv ecosystem) or the owner upgrades the lock past pillow-heif 1.8.1 → the image ships other libheif/libde265/x265 versions than README names → the source offer is wrong, and no test fails.
+- Scores: trigger=concrete, impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: —
+
+### INT-R1-B2 — The release runbook quotes a 503 message the server does not send
+- Trigger: the owner follows the post-deploy step looking for "No worker is processing photo upgrades" → the server says "No worker is processing photo jobs".
+- Scores: trigger=concrete, impact=cosmetic, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: —
+
+### INT-R1-C1 — A failed row shows ticked while the bar counts 0, and the first tap unticks it
+- Trigger: a row fails during an apply → `_take`/`_end_row` leave `selected` true → the review draws it ticked, the bar reads "Replace 0 photos" → the user taps to retry → the client sends `selected: false`, the row stays failed and unticked; a second tap puts it back.
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: —
+
+### INT-R1-C3 — The "Immich is not connected" card stays after the user connects in Settings and comes back
+- Trigger: the user taps "Open Settings", connects Immich, goes back → `connected` is read only in `load()` → the card stays until the screen is reopened.
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: —
+
+### INT-R1-A2 — The matcher ignores format, so the RAW half of an unstacked RAW+JPEG pair can be the proposal, which apply never stores
+- Trigger: an album holds unstacked RAW+JPEG pairs → both halves tie, the tie breaks on asset_id → about half the proposals name the RAW, low confidence and unticked → the user ticks them → each fails `unsupported_format` and must be re-chosen.
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=M/local, confidence=inferred
+- Decision: Defer (D10)
+- Revisit when: an apply on val/prod ends with `unsupported_format` rows whose asset has a same-day JPEG twin in the album; a user reports RAW proposed where the JPEG is in the album; or the matcher's tie-break or D7 is next changed.
+- Guard: —
+- Override: —
+- Outcome: —
+
+### INT-R1-A3 — Applying after Immich was disconnected fails every row as `immich_unreachable`
+- Trigger: a user with a ready scan disconnects Immich, presses Apply or Resume → 202, every row fails `immich_unreachable` → the sentence says the server could not be reached; "Retry failed" fails the same way.
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: logs show apply rows failed `immich_unreachable` for a user with no Immich token; a user reports "could not be reached" after disconnecting.
+- Guard: —
+- Override: —
+- Outcome: —
+
+### INT-R1-C2 — The setup view reached by polling never loads the albums, so it reads "No albums found" with Scan disabled
+- Trigger: a user opens the screen while a first scan is pending or scanning → no albums are fetched → the scan fails, or the ready scan is discarded elsewhere or expires → setup shows "No albums found in your Immich library." with Scan disabled.
+- Scores: trigger=plausible (triage corrected from concrete), impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: a user reports "No albums found" while their Immich has albums; a test or device run reaches setup from a failed or vanished scan without albums; or the setup view or polling is next changed.
+- Guard: —
+- Override: —
+- Outcome: —
+
+### INT-R1-C4 — Two quick chip taps can leave one filter's rows under another chip
+- Trigger: on a slow connection the user taps Failed then Confident → the Failed reply lands last and fills the list under Confident → "Load more" pages with the wrong cursor.
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10)
+- Revisit when: a user reports rows under the wrong filter, or duplicates after "Load more"; or the review's filter or paging code is next changed.
+- Guard: —
+- Override: —
+- Outcome: —
