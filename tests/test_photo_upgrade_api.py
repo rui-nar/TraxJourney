@@ -38,6 +38,7 @@ import api.photo_replace as photo_replace_mod
 import api.photo_upgrade as pu
 import models.db as db_module
 import src.photo_upgrade.apply_job as apply_job
+import src.photo_upgrade.scan_job as scan_job
 from api.deps import get_current_user
 from api.photo_order import dump_state, load_state
 from api.router import app
@@ -52,10 +53,12 @@ from models.project_db import (
     DBProjectMember,
 )
 from models.user import ImmichToken, UserInfo
+from src.auth.account_deletion import delete_user_and_data
 from src.billing.entitlements import limits_for_user
 from src.photo_upgrade.hashing import fingerprint, to_hex
 from src.photo_upgrade.matching import TripPhoto, rank_candidates
 from src.photo_upgrade.scan_job import _album_photo, photo_key
+from src.project.project_repo import ProjectRepo
 
 _DAY = "2026-05-02"
 _BILLING_ENV = ("BILLING_ENABLED", "BILLING_ENFORCE_QUOTAS", "STRIPE_SECRET_KEY",
@@ -776,6 +779,58 @@ def test_a_re_proposed_applied_row_killed_before_its_replace_resumes(
     assert env.sources("memory", mid) == {got.applied_uuid: "immich:asset-2"}
 
 
+# ── A failed row ticked again (U10-R1-2) ──────────────────────────────────────
+
+def _failed_row(env, **kw) -> tuple:
+    mid, (p,) = env.memory(1)
+    scan = env.scan(apply_status="done")
+    row = env.row(scan, mid, p, asset_id="asset-1", state="failed", selected=True, **kw)
+    with Session(env.engine) as sess:
+        r = sess.get(DBPhotoUpgradeSuggestion, row)
+        r.error_code = "immich_permission"
+        sess.add(r)
+        sess.commit()
+    return scan, row, mid
+
+
+def test_ticking_a_failed_row_puts_it_back_and_the_apply_takes_it(env, real_apply):
+    scan, row, mid = _failed_row(env, asset_bytes=900, current_bytes=500)
+
+    resp = _patch(env, scan, row, selected=True)
+
+    assert resp.status_code == 200
+    got = env.sugg(row)
+    assert (got.state, got.selected, got.error_code) == ("proposed", True, None)
+    body = resp.json()
+    assert (body["suggestion"]["state"], body["suggestion"]["error_code"]) == ("proposed", None)
+    summary = body["summary"]
+    assert (summary["counts"]["proposed"], summary["counts"]["failed"]) == (1, 0)
+    assert (summary["selected"], summary["selected_bytes_delta"]) == (1, 400)
+
+    # The key is fixed now: the next apply takes the row.
+    assert env.client.post(f"/api/photo-upgrade/scans/{scan}/apply").status_code == 202
+    got = env.sugg(row)
+    assert got.state == "applied"
+    assert env.photos("memory", mid) == [got.applied_uuid]
+    assert env.sources("memory", mid) == {got.applied_uuid: "immich:asset-1"}
+
+
+def test_choosing_a_failed_rows_asset_again_puts_it_back(env):
+    scan, row, _ = _failed_row(env)
+    env.asset(scan, "asset-1")
+    assert _patch(env, scan, row, asset_id="asset-1").status_code == 200
+    got = env.sugg(row)
+    assert (got.state, got.selected, got.error_code) == ("proposed", True, None)
+
+
+def test_a_failed_row_without_an_asset_still_cannot_be_ticked(env):
+    scan = env.scan()
+    row = env.row(scan, state="failed", asset_id=None, selected=False)
+    resp = _patch(env, scan, row, selected=True)
+    assert resp.status_code == 409 and _code(resp) == "not_selectable"
+    assert env.sugg(row).state == "failed"
+
+
 # ── select ────────────────────────────────────────────────────────────────────
 
 def test_select_confident_all_proposed_and_none(env):
@@ -938,20 +993,214 @@ def test_delete_discards_the_scan_and_its_rows(env):
 _NOW = time.time() + 60
 
 
-def test_the_sweep_deletes_scans_older_than_30_days(env):
-    old = env.scan(created_at=_NOW - pu.RETENTION_S - 1)
-    env.row(old)
-    young = env.scan(created_at=_NOW - pu.RETENTION_S + 3600)
-    old_applying = env.scan(created_at=_NOW - pu.RETENTION_S - 1, apply_status="running",
-                            apply_heartbeat_at=_NOW - 60)
+_AGED = _NOW - pu.RETENTION_S - 1
+
+
+def _rows_of(env, model, scan_id) -> list:
+    with Session(env.engine) as sess:
+        return sess.exec(select(model).where(model.scan_id == scan_id)).all()
+
+
+def _rescan(env) -> int:
+    """A new scan of the owner's memories, matched by the real scan job:
+    its rejections come from ``_earlier_rejections``. Its album holds the
+    frame of the trip photo ``env.memory(1)`` writes, as asset A."""
+    scan = env.scan(status="scanning")
+    env.asset(scan, "A", img=_pattern(0, (400, 300)))
+    scan_job._match(scan)
+    assert env.get(scan).status == "ready"
+    return scan
+
+
+def _row_for(env, scan_id, photo_uuid) -> DBPhotoUpgradeSuggestion:
+    [row] = [r for r in _rows_of(env, DBPhotoUpgradeSuggestion, scan_id)
+             if r.photo_uuid == photo_uuid]
+    return row
+
+
+def test_a_rescan_without_rejections_proposes_the_frame(env):
+    """The control for the two tests below: frame A is P's match."""
+    _, (p,) = env.memory(1)
+    row = _row_for(env, _rescan(env), p)
+    assert (row.state, row.asset_id, row.selected) == ("proposed", "A", True)
+
+
+def test_the_sweep_expires_a_ready_scan_and_keeps_its_rejections(env):
+    """U10-R1-1: a rejection outlives the 30 days."""
+    mid, (p,) = env.memory(1)
+    old = env.scan(created_at=_AGED)
+    env.asset(old, "A", img=_pattern(0, (400, 300)))
+    row = env.row(old, mid, p, asset_id="A")
+    assert _patch(env, old, row, rejected=True).status_code == 200
 
     done = pu.sweep_photo_upgrade_scans(_NOW)
 
-    assert done["scans_deleted"] == 1
-    assert env.get(old) is None
-    assert env.get(young) is not None and env.get(old_applying) is not None
+    assert (done["scans_expired"], done["scans_deleted"]) == (1, 0)
+    got = env.get(old)
+    assert got.status == "expired"
+    assert json.loads(got.rejected_pairs_json) == [[photo_key("memory", mid, p), "A"]]
+    assert _rows_of(env, DBPhotoUpgradeSuggestion, old) == []
+    assert _rows_of(env, DBPhotoUpgradeAsset, old) == []
+
+    # A rescan months later still honours it: A is not proposed for P.
+    row = _row_for(env, _rescan(env), p)
+    assert (row.state, row.selected) == ("rejected", False)
+
+
+def test_an_unreject_on_the_newer_scan_survives_the_sweep(env):
+    """The older scan rejected A for P; the newer one un-rejected it. Once
+    both are cleared, A may be proposed again."""
+    mid, (p,) = env.memory(1)
+    key = photo_key("memory", mid, p)
+    older = env.scan(created_at=_AGED - 1000, rejected_pairs_json=json.dumps([[key, "A"]]))
+    env.row(older, mid, p, asset_id="A", state="rejected", selected=False)
+    newer = env.scan(created_at=_AGED, rejected_pairs_json=json.dumps([[key, "A"]]))
+    env.asset(newer, "A", img=_pattern(0, (400, 300)))
+    row = env.row(newer, mid, p, asset_id="A", state="rejected", selected=False)
+    assert _patch(env, newer, row, rejected=False).status_code == 200
+    # remove_rejection took the pair off the newer scan's column.
+    assert env.pairs(newer) == []
+
+    done = pu.sweep_photo_upgrade_scans(_NOW)
+
+    assert (done["scans_expired"], done["scans_deleted"]) == (2, 1)
+    assert env.get(older) is None
+    assert (env.get(newer).status, env.pairs(newer)) == ("expired", [])
+    row = _row_for(env, _rescan(env), p)
+    assert (row.state, row.asset_id) == ("proposed", "A")
+
+
+def test_clearing_folds_the_verdicts_of_the_scans_it_supersedes(env):
+    """A rejection only an earlier scan holds is kept on the expired one."""
+    mid, (p,) = env.memory(1)
+    key = photo_key("memory", mid, p)
+    older = env.scan(created_at=_AGED - 1000)
+    env.row(older, mid, p, asset_id="A", state="rejected", selected=False)
+    newer = env.scan(created_at=_AGED - 10)
+    env.row(newer, mid, p, asset_id="B", state="proposed")
+
+    pu.sweep_photo_upgrade_scans(_NOW)
+
+    assert env.get(older) is None
+    assert env.pairs(newer) == [[key, "A"]]
+
+
+def test_an_expired_scan_is_hidden_and_refused(env):
+    mid, (p,) = env.memory(1)
+    old = env.scan(created_at=_AGED)
+    row = env.row(old, mid, p, asset_id="A", state="rejected", selected=False)
+    pu.sweep_photo_upgrade_scans(_NOW)
+    assert env.get(old).status == "expired"
+
+    body = env.client.get(env.url("/latest")).json()
+    assert (body["scan"], body["newer"]) == (None, None)
+    base = f"/api/photo-upgrade/scans/{old}"
+    for method, url, json_body in [
+            ("get", f"{base}/suggestions", None),
+            ("get", f"{base}/candidates?suggestion_id={row}", None),
+            ("patch", f"{base}/suggestions/{row}", {"selected": False}),
+            ("post", f"{base}/select", {"which": "none"}),
+            ("post", f"{base}/apply", None)]:
+        kw = {"json": json_body} if json_body is not None else {}
+        resp = getattr(env.client, method)(url, **kw)
+        assert resp.status_code == 409 and _code(resp) == "scan_not_ready", (method, url)
+    assert env.applies_started == []
+
+    # It is not active: a new scan starts beside it.
+    assert env.client.post(env.url(), json=_scan_body()).status_code == 202
+
+
+def test_an_expired_scan_goes_with_the_trip_and_with_the_account(env):
     with Session(env.engine) as sess:
-        assert sess.exec(select(DBPhotoUpgradeSuggestion)).all() == []
+        other = DBProject(user_info_id=env.owner, name="Other")
+        sess.add(other)
+        sess.commit()
+        sess.add(DBProjectMember(project_id=other.id, user_info_id=env.mate, role="editor",
+                                 invited_by=env.owner))
+        sess.commit()
+        other_id = other.id
+    trip = env.scan(status="expired")
+    mates = env.scan(env.mate, status="expired", include_memories=False)
+    with Session(env.engine) as sess:
+        row = DBPhotoUpgradeScan(project_id=other_id, user_info_id=env.mate, album_id="a",
+                                 status="expired")
+        sess.add(row)
+        sess.commit()
+        elsewhere = row.id
+
+    with Session(env.engine) as sess:
+        assert ProjectRepo().delete_project(sess, env.owner, "Trip") is True
+    assert env.get(trip) is None and env.get(mates) is None
+    with Session(env.engine) as sess:
+        delete_user_and_data(sess, env.mate)
+    assert env.get(elsewhere) is None
+
+
+@pytest.mark.parametrize("apply_status", ["pending", "running"])
+def test_an_aged_scan_with_an_apply_in_progress_is_untouched(env, apply_status):
+    old = env.scan(created_at=_AGED, apply_status=apply_status, apply_heartbeat_at=_NOW - 60)
+    env.row(old)
+    env.asset(old, "A")
+
+    pu.sweep_photo_upgrade_scans(_NOW)
+
+    assert (env.get(old).status, env.get(old).apply_status) == ("ready", apply_status)
+    assert len(_rows_of(env, DBPhotoUpgradeSuggestion, old)) == 1
+    assert len(_rows_of(env, DBPhotoUpgradeAsset, old)) == 1
+
+
+def test_an_aged_scan_waits_while_an_earlier_one_is_applying(env):
+    """Clearing it would delete the earlier scan, which cannot go yet."""
+    earlier = env.scan(created_at=_AGED - 1000, apply_status="running",
+                       apply_heartbeat_at=_NOW - 60)
+    later = env.scan(created_at=_AGED)
+    env.row(later)
+
+    pu.sweep_photo_upgrade_scans(_NOW)
+    assert env.get(later).status == "ready"
+    assert env.get(earlier) is not None
+
+    with Session(env.engine) as sess:
+        s = sess.get(DBPhotoUpgradeScan, earlier)
+        s.apply_status = "done"
+        sess.add(s)
+        sess.commit()
+    pu.sweep_photo_upgrade_scans(_NOW)
+    assert env.get(later).status == "expired"
+    assert env.get(earlier) is None
+
+
+def test_a_second_sweep_changes_nothing(env):
+    mid, (p,) = env.memory(1)
+    old = env.scan(created_at=_AGED)
+    row = env.row(old, mid, p, asset_id="A")
+    assert _patch(env, old, row, rejected=True).status_code == 200
+    young = env.scan(created_at=_NOW - 3600, status="failed")
+    pu.sweep_photo_upgrade_scans(_NOW)
+
+    def snapshot():
+        return [(s.id, s.status, s.apply_status, s.rejected_pairs_json, s.completed_at)
+                for s in env.all_scans()]
+
+    before = snapshot()
+    assert pu.sweep_photo_upgrade_scans(_NOW) == {
+        "scans_failed": 0, "applies_stopped": 0, "scans_expired": 0, "scans_deleted": 0}
+    assert snapshot() == before
+    assert {s[0] for s in before} == {old, young}
+
+
+@pytest.mark.parametrize("status", ["failed", "pending", "scanning"])
+def test_an_aged_scan_that_never_became_ready_is_deleted(env, status):
+    old = env.scan(status=status, created_at=_AGED, heartbeat_at=_NOW - 60)
+    env.row(old)
+    young = env.scan(env.mate, status="failed", created_at=_NOW - 3600,
+                     include_memories=False)
+
+    pu.sweep_photo_upgrade_scans(_NOW)
+
+    assert env.get(old) is None
+    assert _rows_of(env, DBPhotoUpgradeSuggestion, old) == []
+    assert env.get(young) is not None
 
 
 def test_the_sweep_fails_scans_pending_for_24_hours(env):
@@ -1017,7 +1266,7 @@ def test_the_sweep_never_raises(env, monkeypatch):
         raise RuntimeError("database is gone")
     monkeypatch.setattr(pu, "get_session", broken)
     assert pu.sweep_photo_upgrade_scans(_NOW) == {
-        "scans_failed": 0, "applies_stopped": 0, "scans_deleted": 0}
+        "scans_failed": 0, "applies_stopped": 0, "scans_expired": 0, "scans_deleted": 0}
 
 
 def test_the_api_schedules_the_sweep_hourly(monkeypatch):

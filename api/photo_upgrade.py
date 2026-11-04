@@ -13,7 +13,9 @@ Routes:
     DELETE /api/photo-upgrade/scans/{id}                     — discard the scan
 
 A scan is its runner's: every scan route answers 404 for a scan that is not
-the caller's, as for one that does not exist. Who may scan what is D3:
+the caller's, as for one that does not exist. A scan the sweep expired after
+30 days is only its rejection list (D8): ``latest`` ignores it, and its
+review and apply routes answer 409 ``scan_not_ready``. Who may scan what is D3:
 memories for the trip owner only, journal entries for any editor or more,
 their own entries only (the jobs re-check both).
 
@@ -45,7 +47,7 @@ from typing import Annotated, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, exists, func, or_, tuple_, update
+from sqlalchemy import and_, delete, exists, func, or_, tuple_, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import aliased
 from sqlmodel import select
@@ -75,6 +77,8 @@ from src.photo_upgrade.matching import TripPhoto, rank_candidates
 from src.photo_upgrade.scan_job import (
     REASON_INTERRUPTED,
     _album_photo,
+    _dump_pairs,
+    _load_pairs,
     _original_size,
     _upright_size,
     photo_key,
@@ -91,6 +95,9 @@ scans_router = APIRouter(prefix="/api/photo-upgrade/scans", tags=["photo-upgrade
 _log = get_logger(__name__)
 
 ACTIVE = ("pending", "scanning")
+#: A ``ready`` scan the sweep cleared after ``RETENTION_S``: only its row and
+#: its rejection list are left (D8, U10-R1-1).
+EXPIRED = "expired"
 APPLY_IN_PROGRESS = ("pending", "running")
 #: Where a POST /apply may start or resume from.
 _APPLY_STARTABLE = ("idle", "stopped", "done")
@@ -146,7 +153,7 @@ class ScanOut(BaseModel):
     album_name: Optional[str]
     include_memories: bool
     include_journal: bool
-    status: str = Field(description="pending | scanning | ready | failed")
+    status: str = Field(description="pending | scanning | ready | failed | expired")
     stage: Optional[str] = Field(None, description="reading_album | fingerprinting | "
                                                    "matching | done")
     progress_done: int
@@ -280,6 +287,10 @@ def _apply_in_progress() -> HTTPException:
     return _conflict("apply_in_progress", "Photos are being replaced on this trip.")
 
 
+def _scan_not_ready() -> HTTPException:
+    return _conflict("scan_not_ready", "This check of your album cannot be reviewed now.")
+
+
 def _scan_out(scan: DBPhotoUpgradeScan) -> dict:
     return {k: getattr(scan, k) for k in ScanOut.model_fields}
 
@@ -323,14 +334,17 @@ def _suggestion_out(row: DBPhotoUpgradeSuggestion) -> dict:
     return out
 
 
-def _owned_scan(sess, scan_id: int, caller: int, *, need_access: bool = True
-                ) -> DBPhotoUpgradeScan:
+def _owned_scan(sess, scan_id: int, caller: int, *, need_access: bool = True,
+                reviewable: bool = True) -> DBPhotoUpgradeScan:
     """The caller's scan; 404 for anyone else's or none. With *need_access*,
     the caller must still be a member of its trip (404 when no longer one, as
-    for a stranger) with editor access (403)."""
+    for a stranger) with editor access (403). With *reviewable*, an
+    ``expired`` scan answers 409: it has no rows left to review or apply."""
     scan = sess.get(DBPhotoUpgradeScan, scan_id)
     if scan is None or scan.user_info_id != caller:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan not found")
+    if reviewable and scan.status == EXPIRED:
+        raise _scan_not_ready()
     if need_access:
         project = sess.get(DBProject, scan.project_id)
         role = effective_role(sess, project, caller) if project is not None else None
@@ -459,7 +473,9 @@ def get_latest_photo_upgrade_scan(
         ready = sess.exec(select(DBPhotoUpgradeScan)
                           .where(*_mine(row.id, caller), DBPhotoUpgradeScan.status == "ready")
                           .order_by(*order)).first()
-        newest = sess.exec(select(DBPhotoUpgradeScan).where(*_mine(row.id, caller))
+        # An expired scan is only a rejection list: as if absent here (D8).
+        newest = sess.exec(select(DBPhotoUpgradeScan)
+                           .where(*_mine(row.id, caller), DBPhotoUpgradeScan.status != EXPIRED)
                            .order_by(*order)).first()
         scan_out = None
         if ready is not None:
@@ -540,6 +556,9 @@ def update_photo_upgrade_suggestion(
       ``rejected: false`` puts a ``rejected`` row back to ``proposed`` and
       takes the pair off.
     * ``selected``: ticks or unticks; only a ``proposed`` row can be ticked.
+      Ticking a ``failed`` row that has an asset, or choosing its asset
+      again, puts it back to ``proposed`` with its ``error_code`` cleared,
+      for the next apply (U10-R1-2).
 
     Rows ``applying`` or ``stale`` cannot be changed.
     """
@@ -617,6 +636,14 @@ def update_photo_upgrade_suggestion(
             values.update(state=state, selected=True if body.selected is None
                           else body.selected)
             lift = (photo_key(row.artifact_kind, row.artifact_id, photo_uuid), row.asset_id)
+        elif state == "failed" and row.asset_id is not None and (
+                body.selected or body.asset_id == row.asset_id):
+            # A failed row ticked again, or its asset chosen again, is put
+            # back for the next apply, its reason cleared (U10-R1-2): the
+            # cause (a key, an outage) may be fixed since.
+            state = "proposed"
+            values.update(state=state, error_code=None,
+                          selected=True if body.selected is None else body.selected)
 
         if body.selected is not None and "selected" not in values:
             if body.selected and state != "proposed":
@@ -775,7 +802,7 @@ def apply_photo_upgrade_scan(
     with get_session() as sess:
         scan = _owned_scan(sess, scan_id, caller)
         if scan.status != "ready":
-            raise _conflict("scan_not_ready", "This check of your album is not finished.")
+            raise _scan_not_ready()
         if scan.apply_status in APPLY_IN_PROGRESS:
             raise _apply_in_progress()
         _refuse_if_busy(sess, scan.project_id, caller)
@@ -815,7 +842,7 @@ def delete_photo_upgrade_scan(
     the trip, so they can still discard what they ran."""
     caller = int(current_user["sub"])
     with get_session() as sess:
-        scan = _owned_scan(sess, scan_id, caller, need_access=False)
+        scan = _owned_scan(sess, scan_id, caller, need_access=False, reviewable=False)
         gone = delete_photo_upgrade_scans(
             sess, DBPhotoUpgradeScan.id == scan.id,
             DBPhotoUpgradeScan.apply_status.not_in(APPLY_IN_PROGRESS))
@@ -841,12 +868,15 @@ def sweep_photo_upgrade_scans(now: Optional[float] = None) -> dict:
        stop comes first, conditioned on the heartbeat read, so a batch that
        beat meanwhile keeps running, and no batch can start while the
        recovery runs.
-    3. Deletes scans created more than ``RETENTION_S`` ago, except one whose
-       apply is in progress: step 2 stops it if it is stale, and a later
-       sweep deletes it.
+    3. Clears scans created more than ``RETENTION_S`` ago (D8, U10-R1-1),
+       except one whose apply is in progress: step 2 stops it if it is
+       stale, and a later sweep clears it. A ``ready`` scan is expired by
+       :func:`_expire_scan`, keeping its rejection list; an ``expired`` one
+       is left as it is; any other is deleted.
     """
     now = time.time() if now is None else now
-    done = {"scans_failed": 0, "applies_stopped": 0, "scans_deleted": 0}
+    done = {"scans_failed": 0, "applies_stopped": 0, "scans_expired": 0,
+            "scans_deleted": 0}
     Scan = DBPhotoUpgradeScan
     try:
         with get_session() as sess:
@@ -888,9 +918,23 @@ def sweep_photo_upgrade_scans(now: Optional[float] = None) -> dict:
             except Exception:  # noqa: BLE001 — one bad scan must not stop the sweep
                 _log.exception("Could not stop photo apply %s", scan_id)
 
+        cutoff = now - RETENTION_S
         with get_session() as sess:
-            done["scans_deleted"] = delete_photo_upgrade_scans(
-                sess, Scan.created_at < now - RETENTION_S,
+            aged = list(sess.exec(
+                select(Scan.id).where(Scan.status == "ready", Scan.created_at < cutoff,
+                                      Scan.apply_status.not_in(APPLY_IN_PROGRESS))
+                .order_by(Scan.created_at, Scan.id)).all())
+        for scan_id in aged:
+            try:
+                superseded = _expire_scan(scan_id, cutoff)
+                if superseded is not None:
+                    done["scans_expired"] += 1
+                    done["scans_deleted"] += superseded
+            except Exception:  # noqa: BLE001 — one bad scan must not stop the sweep
+                _log.exception("Could not expire photo scan %s", scan_id)
+        with get_session() as sess:
+            done["scans_deleted"] += delete_photo_upgrade_scans(
+                sess, Scan.created_at < cutoff, Scan.status.not_in(("ready", EXPIRED)),
                 Scan.apply_status.not_in(APPLY_IN_PROGRESS))
             sess.commit()
     except Exception:  # noqa: BLE001 — a scheduled job must not die loudly
@@ -898,3 +942,91 @@ def sweep_photo_upgrade_scans(now: Optional[float] = None) -> dict:
     if any(done.values()):
         _log.info("Photo upgrade sweep: %s", done)
     return done
+
+
+def _earlier_than(other, scan: DBPhotoUpgradeScan):
+    """*other* is the same person's scan of the same trip, created before
+    *scan* (``created_at``, then ``id``, as ``_earlier_rejections`` orders)."""
+    return and_(other.project_id == scan.project_id, other.user_info_id == scan.user_info_id,
+                other.id != scan.id,
+                or_(other.created_at < scan.created_at,
+                    and_(other.created_at == scan.created_at, other.id < scan.id)))
+
+
+def _folded_rejections(sess, scan_ids: List[int]) -> set:
+    """The (photo key, asset id) pairs *scan_ids*, newest first, hold
+    rejected between them: the verdict ``_earlier_rejections`` gives a later
+    scan, by the same rules. Within a scan a row naming an asset, not
+    ``rejected``, beats its rejected rows and its column; the newest scan
+    with an opinion decides."""
+    S = DBPhotoUpgradeSuggestion
+    columns = dict(sess.exec(select(DBPhotoUpgradeScan.id, DBPhotoUpgradeScan.rejected_pairs_json)
+                             .where(DBPhotoUpgradeScan.id.in_(scan_ids))).all())
+    rejected_rows: Dict[int, List[tuple]] = {}
+    allowed_rows: Dict[int, set] = {}
+    for sid, kind, artifact_id, uuid, asset_id, state in sess.exec(
+            select(S.scan_id, S.artifact_kind, S.artifact_id, S.photo_uuid, S.asset_id, S.state)
+            .where(S.scan_id.in_(scan_ids), S.asset_id.is_not(None))).all():
+        pair = (photo_key(kind, artifact_id, uuid), asset_id)
+        if state == "rejected":
+            rejected_rows.setdefault(sid, []).append(pair)
+        else:
+            allowed_rows.setdefault(sid, set()).add(pair)
+    decided: Dict[tuple, bool] = {}
+    for sid in scan_ids:
+        allowed = allowed_rows.get(sid, set())
+        for pair in rejected_rows.get(sid, []) + _load_pairs(columns.get(sid)):
+            decided.setdefault(pair, pair not in allowed)
+        for pair in allowed:
+            decided.setdefault(pair, False)
+    return {pair for pair, rejected in decided.items() if rejected}
+
+
+def _expire_scan(scan_id: int, cutoff: float) -> Optional[int]:
+    """Clear one aged ``ready`` scan (D8, U10-R1-1), in one transaction: its
+    rejection verdicts, and those of the earlier scans it supersedes, are
+    folded into its ``rejected_pairs_json``; its suggestions and album
+    fingerprints are deleted; it becomes ``expired``; the earlier scans are
+    deleted. A later scan's ``_earlier_rejections`` then reads the same
+    verdict for every pair: an un-reject made on this scan is no longer an
+    opinion, so no earlier rejection it overruled may survive it.
+
+    Left for a later sweep while an earlier scan of the same person has an
+    apply in progress: that scan cannot be deleted yet, and keeping it would
+    let its rejections outlive this scan's reversals. Returns how many
+    earlier scans went, or None when nothing was done."""
+    S = DBPhotoUpgradeSuggestion
+    Scan = DBPhotoUpgradeScan
+    other = aliased(DBPhotoUpgradeScan)
+    with get_session() as sess:
+        scan = sess.get(Scan, scan_id)
+        if scan is None:
+            return None
+        busy = exists().where(_earlier_than(other, scan),
+                              other.apply_status.in_(APPLY_IN_PROGRESS))
+        # First write: SQLite's write lock is held from here to the commit,
+        # so no rejection, apply or new scan lands in between.
+        claimed = sess.execute(
+            update(Scan).where(Scan.id == scan_id, Scan.status == "ready",
+                               Scan.created_at < cutoff,
+                               Scan.apply_status.not_in(APPLY_IN_PROGRESS), ~busy)
+            .values(status=EXPIRED)
+            .execution_options(synchronize_session=False)).rowcount
+        if claimed != 1:
+            sess.rollback()
+            return None
+        earlier = list(sess.exec(select(other.id).where(_earlier_than(other, scan))
+                                 .order_by(other.created_at.desc(), other.id.desc())).all())
+        pairs = _folded_rejections(sess, [scan_id] + earlier)
+        sess.execute(update(Scan).where(Scan.id == scan_id)
+                     .values(rejected_pairs_json=_dump_pairs(pairs))
+                     .execution_options(synchronize_session=False))
+        sess.execute(delete(S).where(S.scan_id == scan_id))
+        sess.execute(delete(DBPhotoUpgradeAsset).where(DBPhotoUpgradeAsset.scan_id == scan_id))
+        gone = delete_photo_upgrade_scans(
+            sess, Scan.id.in_(earlier), Scan.apply_status.not_in(APPLY_IN_PROGRESS)
+        ) if earlier else 0
+        sess.commit()
+    _log.info("Photo scan %s expired: %d rejections kept, %d earlier scans deleted",
+              scan_id, len(pairs), gone)
+    return gone
