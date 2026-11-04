@@ -135,7 +135,7 @@ Envelope: the plan's `## Review envelope` section, on top of REVIEW.md §2 defau
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: —
+- Outcome: fixed (9635cd88; regression found in round 3, see INT-R3-1)
 
 ## U6 unit review — 2026-10-30, reviewed at 112b884c
 
@@ -189,7 +189,7 @@ Answer (owner, 2026-10-30): HEIC/HEIF capped at 50 MP on the coded size of every
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: —
+- Outcome: fixed (9635cd88; regression found in round 3, see INT-R3-1)
 
 ### U4-R1-4 — A HEIC whose rotation is only in its EXIF is stored sideways, and the original is not kept
 - Trigger: a user uploads a HEIC with EXIF orientation and no `irot`/`imir` → pillow-heif resets the tag without rotating, and the JPEG is stored sideways. HEIF readers are specified to use `irot`/`imir`, and no known producer writes EXIF-only orientation.
@@ -621,4 +621,28 @@ Owner decisions (2026-11-04): INT-R2-1 Fix now as recommended; INT-R2-2 moved to
 - Revisit when: the INT-R2-1 fix keeps a batch-shape-only check; logs show a scan failed unreachable after rows of it were fingerprinted; or a user reports "could not reach Immich" on a scan that showed progress.
 - Guard: —
 - Override: user: Fix now — fold into the INT-R2-1 fix and give the 251-photo case its own test (2026-11-04)
+- Outcome: —
+
+## Integrated review round 3 — 2026-11-04, reviewed at 9635cd88 (fixes only: 48d8cd56..9635cd88, fix unit F4)
+
+Verifier: F4 pass (71 scan-job tests, 350 in the photo-upgrade and Immich group; the four new tests for INT-R2-1 and INT-R2-2 fail on 48d8cd56). INT-R2-1 and INT-R2-2 resolved for the cases they name; R3-1 is a regression the fix introduced. Round 3 is the cap: a re-review of R3-1's fix needs the owner's OK (§6).
+
+Owner decisions (2026-11-04): the table is approved as recommended. INT-R3-1's share is 10% of the album's photos still unread after the retry passes. A round 4, fixes only, is allowed past the cap to review the INT-R3-1 fix.
+
+### INT-R3-1 — An Immich outage after the first batch has been read lets a mostly-unreadable scan replace the earlier review
+- Trigger: a user with a ready review (ticks, "Choose another" picks) on a trip whose album has more than 250 photos in its dates presses New scan; Immich goes down after batch 1 and stays down past the 2 s + 5 s retry pauses → the per-batch check no longer fires (250 rows fingerprinted), the end check needs nothing read → every remaining row ends `fetch_failed` → `_match` goes `ready`, mostly "No match", and deletes the earlier review with its ticks and picks. Before F4 the all-unreachable first-pass batch failed the scan. Triage widens it: an outage starting mid-batch, during a short last batch after progress, or answering 5xx after progress was never caught.
+- Scores: trigger=plausible, impact=data-loss, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3, F2 floor) — not a duplicate of INT-R2-1 (nothing read) or INT-R2-2 (the opposite failure). Fix: an outcome rule judged once before `_match` — a retry pass ran and the rows still unread are at least a set share of the album → fail unreachable, keep the earlier review; the per-batch "nothing fingerprinted yet" raise stays as a fast path. The reviewer's narrowing (fail any full first-pass batch that fails entirely) is not taken: it is a batch-shape check, skips the retry passes, and misses mid-batch and short-last-batch outages.
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: —
+
+### INT-R3-2 — A scan whose every album thumbnail is an undecodable body fails as "could not reach Immich" instead of going ready (verifier note)
+- Trigger: a user whose Immich sits behind a proxy or forward-auth that answers 200 with an HTML page presses New scan → every fetch decodes to nothing → retried, then all `fetch_failed` → the end check fails the scan as unreachable; the earlier review is kept. Before F4 the scan went ready, all "No match", and deleted the earlier review.
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10) — intended by `_can_pass` (an undecodable body is "a proxy's error page or a cut answer"); only the wording says unreachable. The R3-1 fix adds the missing test, since its rule must decide how undecodable rows count.
+- Revisit when: a user reports "could not reach Immich" while Immich answers normally; logs show a scan failing unreachable with no Immich error on its last pass; or the R3-1 end rule treats undecodable rows differently from unreachable ones.
+- Guard: —
+- Override: —
 - Outcome: —
