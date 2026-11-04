@@ -525,7 +525,7 @@ Owner decisions (2026-11-04): compare uses Immich's `preview` rendition beside t
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: —
+- Outcome: fixed (0f456e88, retry passes and `unreadable_photos`; down check completed by INT-R2-1)
 
 ### INT-R1-B1 — The README's LGPL source offer names library versions nothing ties to the locked pillow-heif
 - Trigger: Dependabot (uv ecosystem) or the owner upgrades the lock past pillow-heif 1.8.1 → the image ships other libheif/libde265/x265 versions than README names → the source offer is wrong, and no test fails.
@@ -534,7 +534,7 @@ Owner decisions (2026-11-04): compare uses Immich's `preview` rendition beside t
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: —
+- Outcome: fixed (27e3d3f5)
 
 ### INT-R1-B2 — The release runbook quotes a 503 message the server does not send
 - Trigger: the owner follows the post-deploy step looking for "No worker is processing photo upgrades" → the server says "No worker is processing photo jobs".
@@ -543,7 +543,7 @@ Owner decisions (2026-11-04): compare uses Immich's `preview` rendition beside t
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: —
+- Outcome: fixed (27e3d3f5)
 
 ### INT-R1-C1 — A failed row shows ticked while the bar counts 0, and the first tap unticks it
 - Trigger: a row fails during an apply → `_take`/`_end_row` leave `selected` true → the review draws it ticked, the bar reads "Replace 0 photos" → the user taps to retry → the client sends `selected: false`, the row stays failed and unticked; a second tap puts it back.
@@ -552,7 +552,7 @@ Owner decisions (2026-11-04): compare uses Immich's `preview` rendition beside t
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: —
+- Outcome: fixed (b39af48b)
 
 ### INT-R1-C3 — The "Immich is not connected" card stays after the user connects in Settings and comes back
 - Trigger: the user taps "Open Settings", connects Immich, goes back → `connected` is read only in `load()` → the card stays until the screen is reopened.
@@ -561,7 +561,7 @@ Owner decisions (2026-11-04): compare uses Immich's `preview` rendition beside t
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: —
+- Outcome: fixed (b39af48b)
 
 ### INT-R1-A2 — The matcher ignores format, so the RAW half of an unstacked RAW+JPEG pair can be the proposal, which apply never stores
 - Trigger: an album holds unstacked RAW+JPEG pairs → both halves tie, the tie breaks on asset_id → about half the proposals name the RAW, low confidence and unticked → the user ticks them → each fails `unsupported_format` and must be re-chosen.
@@ -597,4 +597,28 @@ Owner decisions (2026-11-04): compare uses Immich's `preview` rendition beside t
 - Revisit when: a user reports rows under the wrong filter, or duplicates after "Load more"; or the review's filter or paging code is next changed.
 - Guard: —
 - Override: —
+- Outcome: —
+
+## Integrated review round 2 — 2026-11-04, reviewed at 6f1dd066 (fixes only: fe04e42c..6f1dd066, fix units F1–F3)
+
+Verifiers: F1 pass (285 tests), F2 pass, F3 pass (80 tests). Full Flutter suite at 6f1dd066: analyze clean, 2827 passed. INT-R1-B1, B2, C1, C3 resolved; INT-R1-A1 resolved except the down check, see INT-R2-1.
+
+Owner decisions (2026-11-04): INT-R2-1 Fix now as recommended; INT-R2-2 moved to Fix now so its case gets its own test.
+
+### INT-R2-1 — A scan whose every thumbnail answers 5xx still ends `ready`, all "No match", and deletes the earlier review
+- Trigger: a user with a ready review (ticks, "Choose another" picks) presses New scan while Immich restarts behind its reverse proxy → every thumbnail answers 502/503 (`ImmichRejected`, so the first-pass down check, which needs `ImmichUnreachable`, does not fire) → retried, then all `fetch_failed` → `_match` runs with no fingerprinted asset, goes `ready` and deletes the earlier review with its picks.
+- Scores: trigger=plausible, impact=data-loss (triage corrected from wrong-visible: the earlier review's picks are deleted), detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3, F2 floor). Fix: judge "Immich is down" over the whole scan — before `_match`, no row fingerprinted and any failure that can pass → fail the scan, keep the earlier review; the per-batch first-pass check fires only while nothing is fingerprinted yet and counts 5xx/408/429 as well as unreachable
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: —
+
+### INT-R2-2 — A small final fingerprint batch whose few thumbnails all time out fails the whole scan, after 250 successes
+- Trigger: an album with 251 photos in the trip's dates; the lone last request times out → a 1-row pass-0 batch counts as "all failed" → the scan fails as unreachable (earlier review kept).
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10) — nothing is lost; the INT-R2-1 fix rewrites the same check ("nothing fingerprinted yet"), which closes this
+- Revisit when: the INT-R2-1 fix keeps a batch-shape-only check; logs show a scan failed unreachable after rows of it were fingerprinted; or a user reports "could not reach Immich" on a scan that showed progress.
+- Guard: —
+- Override: user: Fix now — fold into the INT-R2-1 fix and give the 251-photo case its own test (2026-11-04)
 - Outcome: —
