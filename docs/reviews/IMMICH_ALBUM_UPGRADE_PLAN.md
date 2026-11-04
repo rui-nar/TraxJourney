@@ -444,3 +444,16 @@ Verifier: pass (194 tests; every Acceptance case asserted; departures refine the
 - Guard: —
 - Override: —
 - Outcome: —
+
+## U11 unit review round 2 — 2026-11-04, reviewed at 7072d075 (fixes only)
+
+Verifier on 7072d075: pass (200 tests). Its gap (no journal-entry recovery test) closed by 0f6d2d65 (test-only; breaking the owner-dir choice fails it). Reviewer: U11-R1-1 and U11-R1-2 resolved.
+
+### U11-R2-1 — A 401 from Immich (key revoked or invalid) fails every row as "immich_unreachable", while the scan calls the same answer a key problem
+- Trigger: a user deletes or rotates their Immich API key after a scan is ready, then applies → every download gets 401 → each row `failed`/`immich_unreachable` → the app says the server could not be reached when the fix is the key; a rescan on the same key says forbidden.
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10) — not a duplicate of U11-R1-2 (403 only)
+- Revisit when: an apply fails "Immich unreachable" while the server was up, logs show immich_unreachable rows on a 401, or the Immich key reconnect flow next changes.
+- Guard: —
+- Override: user: Fix now — a few lines in code already being changed; 401 maps to immich_permission like 403, matching the scan (2026-11-04)
+- Outcome: —
