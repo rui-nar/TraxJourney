@@ -47,6 +47,7 @@ from models.project_db import (
     DBProject,
     DBProjectMember,
 )
+from models.billing import UserUsage
 from models.user import ImmichToken, UserInfo
 from src.exceptions.errors import QuotaExceeded
 from src.immich.client import ImmichRejected, ImmichUnreachable
@@ -393,6 +394,9 @@ def _big_header_png() -> bytes:
     ("too_many_pixels", "too_large", True),
     ("not_found", "not_found_in_immich", True),
     ("not_found_400", "not_found_in_immich", True),
+    ("not_found_410", "not_found_in_immich", True),
+    ("no_permission_original", "immich_permission", True),
+    ("no_permission_fullsize", "immich_permission", True),
     ("unreachable", "immich_unreachable", True),
     ("server_error", "immich_unreachable", True),
     ("broken_stream", "immich_unreachable", True),
@@ -416,6 +420,13 @@ def test_each_error_code(env, broker, monkeypatch, case, code, fetched):
         kw = {"body": ImmichRejected(404)}
     elif case == "not_found_400":
         kw = {"body": ImmichRejected(400)}
+    elif case == "not_found_410":
+        kw = {"body": ImmichRejected(410)}
+    elif case == "no_permission_original":
+        # A key without asset.download (OD5): not a missing photo.
+        kw = {"mime": "image/heic", "body": ImmichRejected(403)}
+    elif case == "no_permission_fullsize":
+        kw = {"body": ImmichRejected(403)}
     elif case == "unreachable":
         kw = {"body": ImmichUnreachable("down")}
     elif case == "server_error":
@@ -600,6 +611,88 @@ def test_recovery_of_exact_copies_tells_the_two_rows_apart(env):
     apply_job.recover_interrupted_apply(scan_id)
     row = env.sugg(left)
     assert (row.state, row.applied_uuid) == ("applied", second)
+
+
+def _tree_bytes(env, uid) -> int:
+    return sum(p.stat().st_size for p in (env.tmp / "users" / str(uid)).rglob("*")
+               if p.is_file())
+
+
+def _counted(env, uid) -> int:
+    with Session(env.engine) as sess:
+        return sess.exec(select(UserUsage).where(UserUsage.user_info_id == uid)).one().storage_bytes
+
+
+def _seed_usage(env, uid) -> None:
+    """The counter as the uploads that wrote the trip's files left it."""
+    with Session(env.engine) as sess:
+        sess.add(UserUsage(user_info_id=uid, storage_bytes=_tree_bytes(env, uid)))
+        sess.commit()
+
+
+class _Killed(Exception):
+    """The batch dying between the list write and the old files' delete
+    (RQ's timeout exception lands there, U11-R1-1)."""
+
+
+def test_a_batch_killed_before_the_old_files_go_is_recovered_with_them(
+        env, broker, monkeypatch):
+    scan_id, row_id, mid, old = _one_row(env)
+    _seed_usage(env, env.owner)
+    old_bytes = sum(p.stat().st_size for p in env.folder("memory", mid).iterdir())
+    real_delete = photo_replace_mod._delete_files
+    deletes = []
+
+    def dies_at_the_delete(kind, folder, owner_dir, uuids):
+        if uuids == [old] and not deletes:
+            deletes.append(uuids)
+            raise _Killed()
+        return real_delete(kind, folder, owner_dir, uuids)
+
+    monkeypatch.setattr(photo_replace_mod, "_delete_files", dies_at_the_delete)
+
+    apply_job.start_apply(scan_id)
+    broker.drain()
+
+    row = env.sugg(row_id)
+    assert (row.state, row.applied_uuid) == ("applied", env.photos("memory", mid)[0])
+    assert env.get(scan_id).apply_stopped_reason == "interrupted"
+    # The old photo's files went, as the replace would have deleted them.
+    assert {p.name for p in env.folder("memory", mid).iterdir()} == {
+        f"{row.applied_uuid}.jpg", f"{row.applied_uuid}_thumb.jpg"}
+    # And the counter is what a clean replace leaves: the files on disk.
+    new_bytes = _tree_bytes(env, env.owner)
+    assert _counted(env, env.owner) == new_bytes
+    assert new_bytes != old_bytes
+
+
+def test_recovery_with_the_old_files_already_gone_uncounts_nothing(env):
+    scan_id, row_id, mid, old = _one_row(env, state="applying")
+    _seed_usage(env, env.owner)
+    # The replace finished, files and counter included; only the row was
+    # left applying.
+    photo_replace_mod.replace_photo_bytes(
+        "memory", mid, old, _original(500), owner_dir=str(env.owner), source="immich:asset-1")
+    counted = _counted(env, env.owner)
+    assert counted == _tree_bytes(env, env.owner)
+
+    apply_job.recover_interrupted_apply(scan_id)
+
+    assert env.sugg(row_id).state == "applied"
+    assert _counted(env, env.owner) == counted
+
+
+def test_a_proposed_verdict_deletes_nothing(env):
+    scan_id, row_id, mid, old = _one_row(env, state="applying")
+    _seed_usage(env, env.owner)
+    before = sorted(p.name for p in env.folder("memory", mid).iterdir())
+    counted = _counted(env, env.owner)
+
+    apply_job.recover_interrupted_apply(scan_id)
+
+    assert env.sugg(row_id).state == "proposed"
+    assert sorted(p.name for p in env.folder("memory", mid).iterdir()) == before
+    assert _counted(env, env.owner) == counted
 
 
 def test_recovery_ignores_an_original_of_the_asset_from_an_earlier_apply(env):

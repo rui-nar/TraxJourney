@@ -45,8 +45,10 @@ from sqlalchemy import func, update
 from sqlmodel import select
 
 from api.photo_order import load_state
-from api.photo_replace import PhotoGone, replace_photo_bytes
+from api.photo_locks import photo_lock
+from api.photo_replace import _KINDS, PhotoGone, _data_dir, _delete_files, replace_photo_bytes
 from api.photo_write import PhotoWriteConflict
+from api.project_shared import bust_project_payloads, project_cache_ref
 from models.db import get_session
 from models.project_db import (
     DBJournalEntry,
@@ -60,6 +62,7 @@ from src.exceptions.errors import QuotaExceeded
 from src.immich.client import ImmichClient, ImmichError, ImmichRejected
 from src.jobs.queue import QUEUE_PHOTOS, enqueue, queue_available
 from src.utils.logging import get_logger
+from src.utils.photo_paths import photo_folder
 from src.utils.photo_store import MAX_PHOTO_BYTES, InvalidPhoto, PhotoTooLarge
 from src.utils.safe_fetch import FetchRefused
 
@@ -88,6 +91,7 @@ TOO_LARGE = "too_large"
 UNSUPPORTED_FORMAT = "unsupported_format"
 NOT_FOUND_IN_IMMICH = "not_found_in_immich"
 IMMICH_UNREACHABLE = "immich_unreachable"
+IMMICH_PERMISSION = "immich_permission"
 PHOTO_GONE = "photo_gone"
 STORAGE_FULL = "storage_full"
 INVALID_IMAGE = "invalid_image"
@@ -98,7 +102,9 @@ INVALID_IMAGE = "invalid_image"
 _FULLSIZE_TYPES = frozenset({"image/jpeg", "image/jpg", "image/pjpeg"})
 _ORIGINAL_TYPES = frozenset({"image/heic", "image/heif", "image/png", "image/webp"})
 #: Immich answers 400 "Not found or no access" for an asset it does not have.
-_NOT_FOUND_STATUSES = frozenset({400, 403, 404, 410})
+_NOT_FOUND_STATUSES = frozenset({400, 404, 410})
+#: The key lacks a permission the download needs (``asset.download``, OD5).
+_PERMISSION_STATUS = 403
 
 _MEMBER_ROLES = ("owner", "co-owner", "editor")
 
@@ -260,6 +266,8 @@ def _download(client: Optional[ImmichClient], row: DBPhotoUpgradeSuggestion) -> 
     except ImmichRejected as exc:
         if exc.status in _NOT_FOUND_STATUSES:
             raise _RowEnds("failed", NOT_FOUND_IN_IMMICH) from None
+        if exc.status == _PERMISSION_STATUS:
+            raise _RowEnds("failed", IMMICH_PERMISSION) from None
         raise _RowEnds("failed", IMMICH_UNREACHABLE) from None
     except ImmichError:
         raise _RowEnds("failed", IMMICH_UNREACHABLE) from None
@@ -434,10 +442,21 @@ def recover_interrupted_apply(scan_id: int) -> None:
     * otherwise ``proposed``: the photo went another way, and the next batch
       finds it gone.
 
+    An ``applied`` row's old photo may still have its files: the replace
+    deletes them only after its list write commits (D5), and the batch may
+    have died in between. They are deleted and uncounted here, as the replace
+    would have, once the rows are written. A file already gone is skipped and
+    only what is found is uncounted, so deleting twice frees nothing twice.
+
     Call it only while no batch of this apply runs.
     """
     settled = {"applied": 0, "proposed": 0}
+    # (kind, artifact id, owner dir, old uuid) of each row settled applied.
+    leftovers: List[tuple] = []
     with get_session() as sess:
+        scan = sess.get(DBPhotoUpgradeScan, scan_id)
+        project = sess.get(DBProject, scan.project_id) if scan is not None else None
+        cache_ref = project_cache_ref(sess, project.id) if project is not None else None
         rows = sess.exec(select(DBPhotoUpgradeSuggestion).where(
             DBPhotoUpgradeSuggestion.scan_id == scan_id,
             DBPhotoUpgradeSuggestion.state == "applying")).all()
@@ -469,7 +488,22 @@ def recover_interrupted_apply(scan_id: int) -> None:
                 .execution_options(synchronize_session=False))
             if done.rowcount == 1:
                 settled[state] += 1
+                if state == "applied" and project is not None:
+                    # Where the replace wrote: a memory's owner, a journal
+                    # entry's runner (as _owner_dir gives it, D3).
+                    owner_dir = (project.user_info_id if row.artifact_kind == "memory"
+                                 else scan.user_info_id)
+                    leftovers.append((row.artifact_kind, row.artifact_id, str(owner_dir),
+                                      row.photo_uuid))
         sess.commit()
+    for kind, artifact_id, owner_dir, old_uuid in leftovers:
+        folder = photo_folder(_data_dir(kind), owner_dir, _KINDS[kind][1], artifact_id)
+        # Under the lock, as the replace deletes them: a delete's folder sweep
+        # would otherwise size these same files and uncount them twice.
+        with photo_lock(kind, artifact_id):
+            _delete_files(kind, folder, owner_dir, [old_uuid])
+    if leftovers:
+        bust_project_payloads(cache_ref)
     if settled["applied"] or settled["proposed"]:
         _log.info("Photo apply %s: recovered %d rows as applied, %d as proposed",
                   scan_id, settled["applied"], settled["proposed"])
