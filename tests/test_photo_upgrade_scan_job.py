@@ -20,6 +20,9 @@ Covers:
   * Immich down judged over the whole scan: nothing fingerprinted and a
     failure that can pass fails the scan and keeps the earlier review
     (INT-R2-1, INT-R2-2);
+  * a scan left with ``_UNREAD_FAIL_PERCENT`` of its album unread after a
+    retry pass failing and keeping the earlier review, one under it going
+    ready (INT-R3-1, INT-R3-2);
   * a project deleted mid-chain stopping the next job quietly;
   * the killed-work-horse handler and the worker's startup sweep;
   * the in-process loop without a broker.
@@ -915,6 +918,9 @@ def test_a_failed_thumbnail_fetch_is_counted_and_the_scan_goes_on(env, broker):
     env.immich.add("flaky", ImmichUnreachable("reset"))
     # Untrusted: a "thumbnail" far larger than one is never decoded.
     env.immich.add("huge", _encode(Image.new("L", (2500, 2000)), "PNG"))
+    # Enough of the album read that the four left out are a result, not
+    # Immich down (INT-R3-1).
+    _readable(env, _under_the_share(4) - 5)
     scan_id = env.scan()
 
     scan_job.start_scan(scan_id)
@@ -932,6 +938,11 @@ def test_a_failed_thumbnail_fetch_is_counted_and_the_scan_goes_on(env, broker):
 
 def _calls(env) -> dict:
     return {a: env.immich.thumb_calls.count(a) for a in set(env.immich.thumb_calls)}
+
+
+def _named_calls(env) -> dict:
+    """:func:`_calls` without the padding :func:`_readable` adds."""
+    return {a: n for a, n in _calls(env).items() if not a.startswith("ok-")}
 
 
 def test_a_fetch_that_can_pass_is_tried_again_and_matched(env, broker, monkeypatch):
@@ -988,6 +999,9 @@ def test_a_photo_failing_every_attempt_is_given_up_and_the_scan_is_ready(env, br
     env.immich.add("always-down", ImmichUnreachable("reset"))
     env.immich.add("always-5xx", ImmichRejected(502))
     env.immich.add("always-429", ImmichRejected(429))
+    # Enough of the album read that the three given up are a result, not
+    # Immich down (INT-R3-1).
+    _readable(env, _under_the_share(3) - 4)
     scan_id = env.scan()
 
     scan_job.start_scan(scan_id)
@@ -996,7 +1010,7 @@ def test_a_photo_failing_every_attempt_is_given_up_and_the_scan_is_ready(env, br
     scan = env.get(scan_id)
     assert scan.status == "ready", scan.error_message
     tries = 1 + len(scan_job._RETRY_PAUSES)
-    assert _calls(env) == {"good": 1, "always-down": tries, "always-5xx": tries,
+    assert _named_calls(env) == {"good": 1, "always-down": tries, "always-5xx": tries,
                            "always-429": tries}
     rows = {r.asset_id: r for r in env.assets(scan_id)}
     assert {a for a, r in rows.items() if r.fetch_failed} == {
@@ -1010,6 +1024,10 @@ def test_every_pass_walks_its_rows_in_batches(env, broker, monkeypatch):
     so a photo waiting for the next pass is not fetched twice in this one."""
     monkeypatch.setattr(scan_job, "FINGERPRINT_BATCH", 2)
     env.memory([127])
+    # Read first, so the one photo given up is a result, not Immich down
+    # (INT-R3-1).
+    padding = _under_the_share(1) - 5
+    _readable(env, padding)
     env.immich.add("a", _album_thumb(127))
     env.immich.add("b", [ImmichRejected(500), _album_thumb(128)])
     env.immich.add("c", ImmichRejected(500))
@@ -1023,11 +1041,14 @@ def test_every_pass_walks_its_rows_in_batches(env, broker, monkeypatch):
     ran = broker.drain()
 
     assert env.get(scan_id).status == "ready"
-    # Pass 0: a b | c d | e. Pass 1: b c | e. Pass 2: c e.
-    assert ran.count("run_scan_fingerprint") == 3 + 2 + 1
-    assert _calls(env) == {"a": 1, "b": 2, "c": 3, "d": 1, "e": 3}
+    # Pass 0: the padding, two a batch | a b | c d | e. Pass 1: b c | e.
+    # Pass 2: c e.
+    assert padding % 2 == 0
+    assert ran.count("run_scan_fingerprint") == padding // 2 + 3 + 2 + 1
+    assert _named_calls(env) == {"a": 1, "b": 2, "c": 3, "d": 1, "e": 3}
     rows = {r.asset_id: r for r in env.assets(scan_id)}
-    assert {a for a, r in rows.items() if r.fingerprinted} == {"a", "b", "d", "e"}
+    assert {a for a, r in rows.items() if r.fingerprinted} == {
+        "a", "b", "d", "e"} | {a for a in rows if a.startswith("ok-")}
     assert {a for a, r in rows.items() if r.fetch_failed} == {"c"}
 
 
@@ -1069,6 +1090,9 @@ def test_a_later_pass_with_immich_unreachable_does_not_fail_the_scan(env, broker
     env.memory([133])
     env.immich.add("good", _album_thumb(133))
     env.immich.add("flaky", ImmichUnreachable("reset"))
+    # Enough of the album read that the one given up is a result, not
+    # Immich down (INT-R3-1).
+    _readable(env, _under_the_share(1) - 2)
     scan_id = env.scan()
 
     scan_job.start_scan(scan_id)
@@ -1206,6 +1230,125 @@ def test_every_asset_gone_still_makes_the_scan_ready(env, broker):
     assert ran == ["run_scan_prepare", "run_scan_fingerprint", "run_scan_match"]
     assert _unreadable_photos(env, scan_id) == 2
     assert [r.state for r in env.suggestions(scan_id)] == ["no_match", "no_match"]
+
+
+# ── Immich down partway through the scan (INT-R3-1, INT-R3-2) ────────────────
+
+def _readable(env, count: int) -> None:
+    """*count* album photos that read at once, none a match for a trip photo."""
+    thumb = _album_thumb(99)
+    for i in range(count):
+        env.immich.add(f"ok-{len(env.immich.assets):04d}", thumb)
+
+
+def _down(env, count: int, error) -> list:
+    """*count* album photos whose every fetch fails with *error*; their ids."""
+    ids = [f"down-{len(env.immich.assets) + i:04d}" for i in range(count)]
+    for asset_id in ids:
+        env.immich.add(asset_id, error)
+    return ids
+
+
+def _under_the_share(unread: int) -> int:
+    """The fewest album photos of which *unread* is under the share at which
+    a scan fails (``_UNREAD_FAIL_PERCENT``)."""
+    return unread * 100 // scan_job._UNREAD_FAIL_PERCENT + 1
+
+
+def _assert_failed_keeping(env, scan_id, ran, earlier, reviewed) -> None:
+    scan = env.get(scan_id)
+    assert (scan.status, scan.error_message) == ("failed", scan_job.REASON_UNREACHABLE)
+    assert "run_scan_match" not in ran
+    assert env.get(earlier).status == "ready"
+    assert _review(env, earlier) == reviewed
+
+
+@pytest.mark.parametrize("error", [ImmichUnreachable("connection refused"),
+                                   ImmichRejected(503)])
+def test_immich_down_after_the_first_batch_fails_the_scan_and_keeps_the_review(
+        env, broker, error):
+    """INT-R3-1: the first batch reads, then Immich stays down through every
+    retry pass. The first-pass check no longer fires, since photos got
+    through; the half of the album left unread fails the scan."""
+    earlier, reviewed = _reviewed_scan(env, broker)
+    _readable(env, scan_job.FINGERPRINT_BATCH - 2)
+    down = _down(env, scan_job.FINGERPRINT_BATCH, error)
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    ran = broker.drain()
+
+    _assert_failed_keeping(env, scan_id, ran, earlier, reviewed)
+    tries = 1 + len(scan_job._RETRY_PAUSES)
+    calls = _calls(env)
+    assert {calls[a] for a in down} == {tries}
+    assert (calls["a140"], calls["a141"]) == (1, 1)
+    rows = env.assets(scan_id)
+    assert sum(r.fingerprinted for r in rows) == scan_job.FINGERPRINT_BATCH
+    assert {r.asset_id for r in rows if r.fetch_failed} == set(down)
+
+
+def test_immich_down_partway_through_a_batch_fails_the_scan_and_keeps_the_review(
+        env, broker, monkeypatch):
+    """INT-R3-1: the outage starts inside a batch, after some of its photos
+    and the whole batch before it got through."""
+    monkeypatch.setattr(scan_job, "FINGERPRINT_BATCH", 10)
+    earlier, reviewed = _reviewed_scan(env, broker)
+    _readable(env, 8 + 4)
+    down = _down(env, 6, ImmichUnreachable("reset"))
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    ran = broker.drain()
+
+    _assert_failed_keeping(env, scan_id, ran, earlier, reviewed)
+    rows = env.assets(scan_id)
+    assert len(rows) == 20
+    assert {r.asset_id for r in rows if r.fetch_failed} == set(down)
+
+
+@pytest.mark.parametrize("at_the_share", [False, True])
+def test_the_unread_share_decides_between_ready_and_failed(env, broker, at_the_share):
+    """INT-R3-1: one photo under the share the scan goes ready and counts
+    the photos it could not read; at the share it fails and keeps the
+    earlier review."""
+    album = 100
+    share = album * scan_job._UNREAD_FAIL_PERCENT // 100
+    unread = share if at_the_share else share - 1
+    earlier, reviewed = _reviewed_scan(env, broker)
+    _readable(env, album - 2 - unread)
+    _down(env, unread, ImmichUnreachable("read timed out"))
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    ran = broker.drain()
+
+    assert len(env.assets(scan_id)) == album
+    if at_the_share:
+        _assert_failed_keeping(env, scan_id, ran, earlier, reviewed)
+    else:
+        scan = env.get(scan_id)
+        assert scan.status == "ready", scan.error_message
+        assert _unreadable_photos(env, scan_id) == unread
+        assert [r.asset_id for r in env.suggestions(scan_id)] == ["a140", "a141"]
+
+
+def test_every_thumbnail_undecodable_fails_the_scan_and_keeps_the_review(env, broker):
+    """INT-R3-2: a proxy answering 200 with an HTML page for every thumbnail
+    is a failure that can pass (:func:`scan_job._can_pass`); after the retry
+    passes nothing is read, so the scan fails as Immich unreachable and the
+    earlier review is kept."""
+    earlier, reviewed = _reviewed_scan(env, broker)
+    for asset_id in ("a140", "a141"):
+        env.immich.thumbs[asset_id] = b"<html>Sign in</html>"
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    ran = broker.drain()
+
+    _assert_failed_keeping(env, scan_id, ran, earlier, reviewed)
+    tries = 1 + len(scan_job._RETRY_PAUSES)
+    assert _calls(env) == {"a140": tries, "a141": tries}
 
 
 def test_a_killed_retry_pass_fails_its_scan(env):

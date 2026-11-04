@@ -98,6 +98,11 @@ MAX_TRIP_PHOTOS = 5000
 #: The pause before each further pass over the album thumbnails whose fetch
 #: failed for a reason that can pass; one pass per pause (INT-R1-A1).
 _RETRY_PAUSES = (2.0, 5.0)
+#: Share of the scan's album photos, in percent, still unread after the
+#: retry passes at which the scan fails as Immich unreachable instead of
+#: matching (INT-R3-1). It fails when ``unread * 100 >= _UNREAD_FAIL_PERCENT
+#: * album photos``, in integers.
+_UNREAD_FAIL_PERCENT = 10
 #: Immich thumbnail size hashed: WebP, about 332×250 on v5.9.0 (OD1).
 _THUMB_SIZE = "thumbnail"
 #: Largest album thumbnail decoded. Immich's answers are untrusted (E2): a
@@ -460,7 +465,9 @@ def _fingerprint(scan_id: int, retry_pass: int = 0, after_id: int = 0) -> Option
 
     Whether Immich is down is judged over the whole scan, never one batch
     (INT-R2-1, INT-R2-2): the scan fails, so ``_match`` never runs and the
-    earlier review is kept, only while none of its photos is fingerprinted."""
+    earlier review is kept, at once while none of its photos is
+    fingerprinted, and before matching while ``_UNREAD_FAIL_PERCENT`` of them
+    or more are unread after a retry pass (INT-R3-1)."""
     scan = _live_scan(scan_id, "scanning")
     if scan is None:
         return None
@@ -530,7 +537,7 @@ def _fingerprint(scan_id: int, retry_pass: int = 0, after_id: int = 0) -> Option
             select(func.count()).select_from(DBPhotoUpgradeAsset)
             .where(DBPhotoUpgradeAsset.scan_id == scan_id)).one()
         _hold(sess, scan_id, progress_done=total - remaining, progress_total=total)
-        none_read = not _fingerprinted(sess, scan_id)
+        unread = total - _fingerprinted(sess, scan_id)
         sess.commit()
     if retried:
         _log.info("Photo scan %s: %d album thumbnails to fetch again", scan_id, retried)
@@ -540,15 +547,19 @@ def _fingerprint(scan_id: int, retry_pass: int = 0, after_id: int = 0) -> Option
         return ("fingerprint", retry_pass, batch[-1][0])
     if remaining and not last_pass:
         return ("fingerprint", retry_pass + 1, 0)
-    # About to match with no album photo read, after a fetch that could have
-    # passed: Immich was down for the whole scan, though no first-pass batch
-    # said so (say a 404 among the 503s). Matching would read every trip
-    # photo "No match" and delete the earlier review. The proof of a passing
+    # About to match with a large share of the album unread, after a fetch
+    # that could have passed: Immich went down, for the whole scan or partway
+    # through it, though no first-pass batch said so (say a 404 among the
+    # 503s, or an outage after the first batch got through). Matching would
+    # read those trip photos "No match" and delete the earlier review with
+    # its ticks and picks (INT-R2-1, INT-R3-1). The proof of a passing
     # failure is the chain itself: a retry pass runs only when a first-pass
     # fetch failed for a reason that can pass and left its row open, whereas
-    # rows do not store why they failed. A scan whose failures were all
-    # permanent, such as every asset gone (404), ends on pass 0 and matches.
-    if retry_pass and none_read:
+    # rows do not store why they failed. So the unread rows, every one not
+    # fingerprinted, also count the scan's permanent failures (404, the size
+    # caps). A scan whose failures were all permanent, such as every asset
+    # gone (404), ends on pass 0 and matches.
+    if retry_pass and unread * 100 >= _UNREAD_FAIL_PERCENT * total:
         raise _ScanFailed(REASON_UNREACHABLE)
     return ("match",)
 
