@@ -209,7 +209,7 @@ mounts its own `./db` and `./data` at `/app/db` and `/app/data`.
 ### Upgrade photos from Immich (#33)
 
 Until this is done, starting a scan or an apply answers 503 ("No worker is
-processing photo upgrades"): no worker consumes the `photos` queue yet.
+processing photo jobs"): no worker consumes the `photos` queue yet.
 
 **1. Update `worker-poster`** in the compose file of val and prod, to match
 `docker-compose.yml.example`. Its command gains the `photos` queue, and it gets
