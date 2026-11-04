@@ -445,8 +445,10 @@ REVIEW.md §2 defaults apply, with these additions:
   - Every state transition is a compare-and-set update in SQL, like `_cas`
     in `src/video/job_runner.py`.
 - **Error codes on a failed row:** `too_large`, `unsupported_format`,
-  `not_found_in_immich`, `immich_unreachable`, `photo_gone`,
-  `storage_full`, `invalid_image`. The app maps each to a sentence.
+  `not_found_in_immich`, `immich_permission`, `immich_unreachable`,
+  `photo_gone`, `storage_full`, `invalid_image`. The app maps each to a
+  sentence; `immich_permission` asks for a key with `asset.download`
+  (U11-R1-2).
 - **Writes.**
   - Every change to `photos_json` or `photo_order_json` goes through U14's
     helper.
@@ -1462,7 +1464,10 @@ wait for them.
      - `PATCH …/suggestions/{sid}` with `{selected?, asset_id?, rejected?}`.
        A chosen `asset_id` must be one of the scan's asset rows within the
        row's date ±1 day. On an applied row it targets `applied_uuid` and
-       puts the row back to `proposed` (D5);
+       puts the row back to `proposed` (D5): in the same update it sets
+       `photo_uuid` to the listed `applied_uuid` and clears `applied_uuid`,
+       because U11's apply and its recovery act on `photo_uuid` (U11-R1-4).
+       A test applies such a re-proposed row end to end, recovery included;
      - `POST …/select` with `{which: "confident" | "all_proposed" |
        "none"}`;
      - `GET …/candidates?suggestion_id=` returns the scan's fingerprinted

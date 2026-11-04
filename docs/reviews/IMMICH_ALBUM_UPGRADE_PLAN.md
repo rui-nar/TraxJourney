@@ -404,3 +404,43 @@ Verifier on a7c615bc: pass (494 tests, single head). The one changed existing te
 ## U9 unit review round 4 — 2026-11-03, reviewed at e677d0c7 (fixes only: e677d0c7; past the cap with the owner's OK)
 
 Clean: no findings, no envelope questions. U9-R3-1 resolved (carry written from the in-transaction re-read; no row built from the stale read). Reviewer considered and dismissed: lock span, the rollback-on-delete-failure path (no nameable trigger under WAL once the lock is held; the resulting state is the safer one), confidence kept on late-rejected rows (no consumer).
+
+## U11 unit review — 2026-11-03, reviewed at af34ae1a
+
+Verifier: pass (194 tests; every Acceptance case asserted; departures refine the plan). Verifier note: D4 and U11 Do 2 still say RAW goes "through the RAW rendition per OD3", but OD3's answer makes RAW `unsupported_format`; the code follows OD3. Plan wording to be corrected in the Delivery section.
+
+### U11-R1-1 — Recovery marks a row applied but never deletes the old photo's files when the batch died between the list commit and the file delete
+- Trigger: OOM kill, docker stop at deploy, or RQ's 600 s timeout hits the work-horse after `mutate_photos` committed the new photo and before the old files are deleted → recovery sets the row `applied` → the old photo's files stay on disk, counted in storage usage, listed nowhere; the nightly reconcile recounts them.
+- Scores: trigger=plausible, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3, F3 floor) — not a duplicate of U8-R1-3 (sha256 read before the lock)
+- Revisit when: —
+- Guard: —
+- Override: — (approved 2026-11-04: recovery deletes and uncounts the old photo's files when it marks a row applied)
+- Outcome: —
+
+### U11-R1-2 — A 403 from Immich on the original download is reported as "not found in Immich"
+- Trigger: a user's Immich key lacks `asset.download` (connect and scan never need it) → JPEG rows succeed through fullsize; every HEIC/HEIF/PNG/WebP row fails `not_found_in_immich` → the app says the photos are gone from Immich when the fix is a key permission.
+- Scores: trigger=concrete, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D6)
+- Revisit when: —
+- Guard: —
+- Override: — (approved 2026-11-04 with a new error code `immich_permission`, added to the plan's Conventions list)
+- Outcome: —
+
+### U11-R1-3 — The batch budget is only checked between rows, so one slow original can run past RQ's 600 s job timeout
+- Trigger: a row started near the 300 s budget whose download takes more than about 300 s (25 MB under about 0.7 Mbit/s) passes RQ's 600 s timeout → the apply stops `interrupted`; on resume the row is first with the full 600 s, so it fails again only if its download alone exceeds 600 s (about 0.33 Mbit/s).
+- Scores: trigger=plausible, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=inferred (triage narrowed the trigger)
+- Decision: Defer (D10)
+- Revisit when: the log shows a JobTimeoutException from run_apply_batch, a user reports an apply that keeps stopping on the same photo, or a single row is measured over about 300 s on val/prod.
+- Guard: —
+- Override: —
+- Outcome: —
+
+### U11-R1-4 — The apply replaces whatever `photo_uuid` names; a re-proposed applied row only works if U10 rewrites `photo_uuid` to the listed `applied_uuid`
+- Trigger: U10's PATCH picks another asset on an applied row, sets `proposed` and leaves `photo_uuid` → on resume `_owner_dir` finds the old photo unlisted → `stale`/`photo_gone`; the upgraded photo is not replaced and the user is told it is gone.
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified (triage corrected from inferred)
+- Decision: Defer (D10) — the fix belongs to the unit writing the PATCH; approved 2026-11-04, written into U10 Do 4 in the plan (U10 sets `photo_uuid` to `applied_uuid`)
+- Revisit when: U10's PATCH for an applied row is written: either U10 sets `photo_uuid` to the listed `applied_uuid` or the job targets `applied_uuid`, with an end-to-end test including recovery.
+- Guard: —
+- Override: —
+- Outcome: —
