@@ -945,6 +945,8 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
                   );
                   case 5: context.push('/settings');
                   case 6: context.go('/projects');
+                  case 7: context.push(
+                      _route('/photo-upgrade'));
                 }
               },
               itemBuilder: (_) => [
@@ -965,6 +967,13 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
                   child: ListTile(
                     leading: Icon(Icons.explore_outlined),
                     title: Text('Import steps from Polarsteps'),
+                  ),
+                ),
+                const PopupMenuItem(
+                  value: 7,
+                  child: ListTile(
+                    leading: Icon(Icons.photo_library_outlined),
+                    title: Text('Upgrade photos from Immich…'),
                   ),
                 ),
                 const PopupMenuItem(
@@ -1027,6 +1036,12 @@ class _AppScreenState extends State<AppScreen> with TickerProviderStateMixin {
               tooltip: 'Import steps from Polarsteps',
               onPressed: () => context.push(
                   _route('/polarsteps-import')),
+            ),
+            IconButton(
+              icon: const Icon(Icons.photo_library_outlined),
+              tooltip: 'Upgrade photos from Immich…',
+              onPressed: () => context.push(
+                  _route('/photo-upgrade')),
             ),
             IconButton(
               icon: const Icon(Icons.upload_file),
