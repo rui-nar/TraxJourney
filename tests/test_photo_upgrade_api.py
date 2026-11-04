@@ -401,6 +401,49 @@ def test_latest_is_the_callers_own(env):
     assert env.client.get(env.url("/latest")).json()["scan"] is None
 
 
+def _unreadable(env, scan_id, n) -> None:
+    for i in range(n):
+        env.asset(scan_id, f"unreadable-{scan_id}-{i}", fingerprinted=False)
+    with Session(env.engine) as sess:
+        for row in sess.exec(select(DBPhotoUpgradeAsset).where(
+                DBPhotoUpgradeAsset.scan_id == scan_id,
+                DBPhotoUpgradeAsset.asset_id.startswith("unreadable-"))).all():
+            row.fetch_failed = True
+            sess.add(row)
+        sess.commit()
+
+
+def test_scans_count_the_album_photos_that_could_not_be_read(env):
+    """INT-R1-A1: the review says how many album photos were left out."""
+    now = time.time()
+    ready = env.scan(created_at=now - 100)
+    env.asset(ready, "read", img=_pattern(1))
+    _unreadable(env, ready, 2)
+    other = env.scan(created_at=now - 200, include_memories=False)
+    _unreadable(env, other, 5)
+    scanning = env.scan(status="scanning", created_at=now)
+    _unreadable(env, scanning, 3)   # failed so far, maybe fetched again yet
+
+    body = env.client.get(env.url("/latest")).json()
+    assert (body["scan"]["id"], body["scan"]["unreadable_photos"]) == (ready, 2)
+    assert (body["newer"]["id"], body["newer"]["unreadable_photos"]) == (scanning, 0)
+
+    with Session(env.engine) as sess:   # so the apply is not refused as busy
+        row = sess.get(DBPhotoUpgradeScan, scanning)
+        row.status = "failed"
+        sess.add(row)
+        sess.commit()
+    resp = env.client.post(f"/api/photo-upgrade/scans/{ready}/apply")
+    assert resp.status_code == 202
+    assert resp.json()["unreadable_photos"] == 2
+
+
+def test_a_new_scan_has_no_unreadable_photos(env):
+    resp = env.client.post(env.url(), json=_scan_body(include_memories=True))
+    assert resp.status_code == 202
+    assert resp.json()["unreadable_photos"] == 0
+
+
 def test_the_summary_numbers(env):
     scan = env.scan()
     # Ticked proposals: +100 and -40, and one with an unknown current size.

@@ -13,14 +13,15 @@ Routes:
     GET    /api/immich/albums                 — list the user's albums, owned and shared
     POST   /api/immich/search                 — search Immich by taken date range
     GET    /api/immich/assets/{id}/thumbnail  — proxy an asset's thumbnail bytes
+                                                (``?size=preview``: its preview)
     GET    /api/immich/assets/{id}/original   — proxy an asset's original bytes
 """
 from __future__ import annotations
 
-from typing import Annotated, List, Optional
+from typing import Annotated, List, Literal, Optional
 
 import requests
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlmodel import select
@@ -318,10 +319,15 @@ def immich_albums(current_user: Annotated[dict, Depends(get_current_user)]):
 def immich_asset_thumbnail(
     asset_id: str,
     current_user: Annotated[dict, Depends(get_current_user)],
+    size: Annotated[Optional[Literal["thumbnail", "preview"]], Query(
+        description="Immich's rendition: thumbnail (the default) or preview, the "
+                    "larger one the photo upgrade's compare view shows")] = None,
 ):
-    """Stream the thumbnail bytes for one asset from the user's Immich server."""
+    """Stream the thumbnail bytes for one asset from the user's Immich server.
+    Without *size*, Immich is asked exactly as before, and sends its
+    thumbnail."""
     tok = _require_token(int(current_user["sub"]))
-    return _proxy_asset(tok, asset_id, "thumbnail")
+    return _proxy_asset(tok, asset_id, "thumbnail" if size is None else f"thumbnail?size={size}")
 
 
 @router.get("/assets/{asset_id}/original", summary="Proxy an Immich asset original")
