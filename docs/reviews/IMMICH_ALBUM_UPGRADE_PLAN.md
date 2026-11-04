@@ -636,7 +636,7 @@ Owner decisions (2026-11-04): the table is approved as recommended. INT-R3-1's s
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: —
+- Outcome: partly fixed (1a231eef: outages leaving at least 10% unread); the 251–277 range and INT-R4-1 go to the control fetch
 
 ### INT-R3-2 — A scan whose every album thumbnail is an undecodable body fails as "could not reach Immich" instead of going ready (verifier note)
 - Trigger: a user whose Immich sits behind a proxy or forward-auth that answers 200 with an HTML page presses New scan → every fetch decodes to nothing → retried, then all `fetch_failed` → the end check fails the scan as unreachable; the earlier review is kept. Before F4 the scan went ready, all "No match", and deleted the earlier review.
@@ -645,4 +645,21 @@ Owner decisions (2026-11-04): the table is approved as recommended. INT-R3-1's s
 - Revisit when: a user reports "could not reach Immich" while Immich answers normally; logs show a scan failing unreachable with no Immich error on its last pass; or the R3-1 end rule treats undecodable rows differently from unreachable ones.
 - Guard: —
 - Override: —
+- Outcome: —
+
+## Integrated review round 4 — 2026-11-04, reviewed at 1a231eef (fixes only: 3547528f..1a231eef, fix unit F5; past the cap with the owner's OK)
+
+Verifier: F5 pass (77 scan-job tests, 356 in the photo-upgrade and Immich group; the four INT-R3-1 boundary tests fail on 3547528f; four existing small-album tests padded with readable photos, no expected value changed).
+
+Envelope question from the reviewer, put to the owner: INT-R3-1's own trigger (an outage after batch 1 of an album over 250 photos) fails the scan only from 278 photos up under the 10% share; for 251–277 photos the scan goes ready and still deletes the earlier review. Was the 10% decision taken knowing that range is uncaught?
+
+Owner decisions (2026-11-04): the 251–277 range is in scope, so INT-R3-1 is not resolved by F5 and stays Fix now. INT-R4-1 moves to Fix now; both are fixed by the control fetch, which drops the 10% share (the transport-failure refinement is not taken: it would bring back INT-R2-2). A round 5, fixes only, is allowed past the cap.
+
+### INT-R4-1 — One album photo whose thumbnail Immich cannot serve locks a small album out of scanning, reported as "could not reach your Immich server"
+- Trigger: a user whose album has 8 photos in the trip's dates, one of them an asset Immich answers 500 for on every fetch (its thumbnail missing on disk) presses Scan → 7 read, the 500 retried twice then `fetch_failed` → 1 unread of 8 is over 10% → the scan fails "Could not reach your Immich server" on every attempt while Immich is online; nothing names the cause. Before F5 the scan went ready with `unreadable_photos=1`.
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10) — nothing lost, the earlier review is kept. Fix if taken: a control fetch in the last retry pass — each batch also fetches one already-fingerprinted thumbnail; control fails for a reason that can pass → Immich down, fail and keep the review; control decodes → the failed rows are per-asset breakage, `fetch_failed`, scan ready; control 404/size cap → next fingerprinted row, up to 3, then fail safe. Drops the share. Closes this and the 251–277 range. Rejected: a minimum count beside the share (moves the lockout, leaves the range); storing the failure kind (a per-asset 500 and an outage 503 are the same kind).
+- Revisit when: the owner brings the 251–277 range into scope (then INT-R3-1 is unresolved and both are fixed together by the control fetch); logs show a scan failing unreachable with fewer than 10 unread rows; a user reports "could not reach your Immich server" while Immich is online; or the end rule changes again.
+- Guard: —
+- Override: user: Fix now — fixed with INT-R3-1 by the control fetch, at no extra cost (2026-11-04)
 - Outcome: —
