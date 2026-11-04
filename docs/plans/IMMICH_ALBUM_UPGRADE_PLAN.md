@@ -149,8 +149,9 @@ unticked. *Rules out* confirming each row separately.
   ICC profile.
 - Because `photo_store` is the single write path, uploads, replacements,
   from-URL downloads, archive imports and avatars all convert.
-- RAW originals: the apply job uses Immich's JPEG rendition when one exists
-  (OD3). Otherwise the row fails with "unsupported format".
+- RAW originals: the row fails with "unsupported format" (OD3's answer:
+  Immich's `fullsize` rendition of a RAW asset is untested, so it is not
+  relied on).
 - Stored originals are served with the media type sniffed from their first
   bytes, not a fixed `image/jpeg`.
 - *Rules out* storing HEIC as it came: browsers other than Safari cannot
@@ -1384,8 +1385,10 @@ wait for them.
      - update `apply_heartbeat_at`;
      - re-check the role (owner for memory rows) and that the photo is
        still listed;
-     - download the original: through the RAW rendition per OD3 when the
-       mime is RAW; rows over 25 MB fail with `too_large`;
+     - download per OD3's answer: a JPEG asset's `fullsize` rendition, a
+       HEIC, HEIF, PNG or WebP asset's original; RAW and any other type fail
+       with `unsupported_format`;
+       rows over 25 MB fail with `too_large`;
      - call `replace_photo_bytes(..., source="immich:<id>")`;
      - mark the row `applied` with `applied_uuid`, or `failed` with an
        error code, or `stale` on `PhotoGone`.
