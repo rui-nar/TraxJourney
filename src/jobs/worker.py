@@ -68,6 +68,11 @@ _INTERRUPT_HANDLERS: dict[str, tuple[str, str]] = {
     "src.photo_upgrade.scan_job.run_scan_match": (
         "src.photo_upgrade.scan_job.mark_scan_interrupted",
         "The check of your album was interrupted. Please start it again."),
+    # Its apply chain: the batch's rows left applying are recovered and the
+    # apply stops as "interrupted", a code the app words itself.
+    "src.photo_upgrade.apply_job.run_apply_batch": (
+        "src.photo_upgrade.apply_job.mark_apply_interrupted",
+        "interrupted"),
 }
 
 
@@ -183,11 +188,13 @@ def main(argv: list[str] | None = None) -> int:
         sweep_stale_running_video_jobs()
 
     if QUEUE_PHOTOS in queues:
-        # Likewise the photos queue's only consumer: a "scanning" scan belongs
-        # to a job that died with the previous worker.
+        # Likewise the photos queue's only consumer: a "scanning" scan, or a
+        # "running" apply, belongs to a job that died with the previous worker.
+        from src.photo_upgrade.apply_job import sweep_running_applies
         from src.photo_upgrade.scan_job import sweep_scanning_scans
 
         sweep_scanning_scans()
+        sweep_running_applies()
 
     from rq import Worker
 
