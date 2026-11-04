@@ -68,6 +68,8 @@ from models.project_db import (
 from src.billing.entitlements import limits_for_user, quotas_enforced, storage_used
 from src.jobs.queue import QUEUE_PHOTOS, queue_available, queue_has_workers
 from src.photo_upgrade.apply_job import (
+    IMMICH_PERMISSION,
+    IMMICH_UNREACHABLE,
     STOPPED_INTERRUPTED,
     recover_interrupted_apply,
     start_apply,
@@ -103,6 +105,10 @@ APPLY_IN_PROGRESS = ("pending", "running")
 _APPLY_STARTABLE = ("idle", "stopped", "done")
 STATES = ("proposed", "no_match", "already_original", "rejected", "applying", "applied",
           "failed", "stale")
+#: Reasons a row can fail for that pass once the key or the connection is
+#: fixed: ``select`` with ``which: "failed"`` puts those rows back (U10-R2-1).
+#: Every other reason (too large, unsupported, invalid) would fail again.
+RETRYABLE_ERRORS = (IMMICH_PERMISSION, IMMICH_UNREACHABLE)
 #: Review rows per page.
 PAGE_SIZE = 100
 #: Days around a row's date an album photo may be chosen from (D7).
@@ -230,7 +236,7 @@ class SuggestionChangedOut(BaseModel):
 
 
 class SelectRequest(BaseModel):
-    which: Literal["confident", "all_proposed", "none"]
+    which: Literal["confident", "all_proposed", "none", "failed"]
 
 
 class CandidateOut(BaseModel):
@@ -707,19 +713,43 @@ def _current_size(folder, uuid: str) -> dict:
 
 
 @scans_router.post("/{scan_id}/select", response_model=SummaryOut,
-                   summary="Tick the confident rows, every proposed row, or none")
+                   summary="Tick the confident rows, every proposed row, or none; "
+                           "or put back the rows that failed for a reason that can pass")
 def select_photo_upgrade_suggestions(
     scan_id: int,
     body: SelectRequest,
     current_user: Annotated[dict, Depends(get_current_user)],
 ):
     """``confident`` and ``all_proposed`` tick those ``proposed`` rows and
-    leave the others as they are; ``none`` unticks every row."""
+    leave the others as they are; ``none`` unticks every row.
+
+    ``failed`` ("Retry failed", U10-R2-1) puts every ``failed`` row with an
+    asset whose reason is in ``RETRYABLE_ERRORS`` back to ``proposed``,
+    ticked and with its reason cleared; other failed rows stay. It needs a
+    ``ready`` scan and answers 409 while its apply is ``pending`` or
+    ``running``, checked by the transaction's first write, so no batch
+    starts between the check and the rows."""
     caller = int(current_user["sub"])
     S = DBPhotoUpgradeSuggestion
     with get_session() as sess:
         scan = _owned_scan(sess, scan_id, caller)
-        if body.which == "none":
+        if body.which == "failed":
+            if scan.status != "ready":
+                raise _scan_not_ready()
+            held = sess.execute(
+                update(DBPhotoUpgradeScan)
+                .where(DBPhotoUpgradeScan.id == scan.id, DBPhotoUpgradeScan.status == "ready",
+                       DBPhotoUpgradeScan.apply_status.not_in(APPLY_IN_PROGRESS))
+                .values(apply_status=DBPhotoUpgradeScan.apply_status)
+                .execution_options(synchronize_session=False)).rowcount
+            if held != 1:
+                sess.rollback()
+                raise _apply_in_progress()
+            stmt = update(S).where(
+                S.scan_id == scan.id, S.state == "failed", S.asset_id.is_not(None),
+                S.error_code.in_(RETRYABLE_ERRORS)
+            ).values(state="proposed", selected=True, error_code=None)
+        elif body.which == "none":
             stmt = update(S).where(S.scan_id == scan.id, S.selected == True  # noqa: E712
                                    ).values(selected=False)
         else:

@@ -857,6 +857,94 @@ def test_select_confident_all_proposed_and_none(env):
     assert env.client.post(url, json={"which": "bogus"}).status_code == 422
 
 
+def _fail(env, row_id, code) -> None:
+    with Session(env.engine) as sess:
+        r = sess.get(DBPhotoUpgradeSuggestion, row_id)
+        r.state, r.error_code = "failed", code
+        sess.add(r)
+        sess.commit()
+
+
+def _retry_scene(env) -> tuple:
+    """A done apply that failed four rows on the key or the connection, one
+    on a file too large, and one with no asset."""
+    mid, uuids = env.memory(6)
+    scan = env.scan(apply_status="done")
+    codes = ["immich_permission", "immich_unreachable", "immich_permission",
+             "immich_unreachable", "too_large", "immich_permission"]
+    rows = []
+    for i, (u, code) in enumerate(zip(uuids, codes)):
+        row = env.row(scan, mid, u, i, None if i == 5 else f"asset-{i}", selected=i % 2 == 0,
+                      asset_bytes=1000, current_bytes=400)
+        _fail(env, row, code)
+        rows.append(row)
+    return scan, mid, rows
+
+
+def test_select_failed_puts_back_only_the_rows_that_can_pass(env):
+    """U10-R2-1: "Retry failed" after a key or outage failure."""
+    scan, _, rows = _retry_scene(env)
+    retried, too_large, no_asset = rows[:4], rows[4], rows[5]
+
+    resp = env.client.post(f"/api/photo-upgrade/scans/{scan}/select", json={"which": "failed"})
+
+    assert resp.status_code == 200
+    for r in retried:
+        got = env.sugg(r)
+        assert (got.state, got.selected, got.error_code) == ("proposed", True, None)
+    assert (env.sugg(too_large).state, env.sugg(too_large).error_code) == ("failed", "too_large")
+    assert (env.sugg(no_asset).state, env.sugg(no_asset).error_code) == (
+        "failed", "immich_permission")
+    summary = resp.json()
+    assert (summary["counts"]["proposed"], summary["counts"]["failed"]) == (4, 2)
+    assert (summary["selected"], summary["selected_bytes_delta"]) == (4, 4 * 600)
+
+
+def test_rows_put_back_by_select_failed_are_applied(env, real_apply):
+    scan, mid, rows = _retry_scene(env)
+    real_apply.bodies.update({f"asset-{i}": _original(600 + i) for i in range(5)})
+    assert env.client.post(f"/api/photo-upgrade/scans/{scan}/select",
+                           json={"which": "failed"}).status_code == 200
+
+    assert env.client.post(f"/api/photo-upgrade/scans/{scan}/apply").status_code == 202
+
+    applied = [env.sugg(r) for r in rows[:4]]
+    assert [r.state for r in applied] == ["applied"] * 4
+    assert [env.sugg(r).state for r in rows[4:]] == ["failed", "failed"]
+    photos = env.photos("memory", mid)
+    assert photos[:4] == [r.applied_uuid for r in applied]
+    assert {env.sources("memory", mid)[r.applied_uuid] for r in applied} == {
+        f"immich:asset-{i}" for i in range(4)}
+    assert env.get(scan).apply_status == "done"
+
+
+@pytest.mark.parametrize("apply_status", ["pending", "running"])
+def test_select_failed_during_an_apply_is_409(env, apply_status):
+    scan, _, rows = _retry_scene(env)
+    with Session(env.engine) as sess:
+        s = sess.get(DBPhotoUpgradeScan, scan)
+        s.apply_status = apply_status
+        sess.add(s)
+        sess.commit()
+
+    resp = env.client.post(f"/api/photo-upgrade/scans/{scan}/select", json={"which": "failed"})
+
+    assert resp.status_code == 409 and _code(resp) == "apply_in_progress"
+    assert [env.sugg(r).state for r in rows] == ["failed"] * 6
+
+
+def test_select_failed_with_no_failed_rows_changes_nothing(env):
+    scan = env.scan()
+    rows = [env.row(scan, position=0, selected=False),
+            env.row(scan, position=1, state="no_match", asset_id=None, selected=False)]
+    before = [(env.sugg(r).state, env.sugg(r).selected) for r in rows]
+
+    resp = env.client.post(f"/api/photo-upgrade/scans/{scan}/select", json={"which": "failed"})
+
+    assert resp.status_code == 200 and resp.json()["selected"] == 0
+    assert [(env.sugg(r).state, env.sugg(r).selected) for r in rows] == before
+
+
 # ── candidates ────────────────────────────────────────────────────────────────
 
 def test_candidates_are_the_days_album_photos_ranked(env):
