@@ -666,6 +666,43 @@ def test_a_batch_killed_before_the_old_files_go_is_recovered_with_them(
     assert new_bytes != old_bytes
 
 
+def test_a_killed_journal_batch_is_recovered_in_the_runners_tree(env, broker, monkeypatch):
+    # A companion's own entry: its files are in their tree, not the owner's.
+    jid, uuids = env.journal(1, env.mate)
+    old = uuids[0]
+    env.memory(1, seed=40)   # the owner's tree and counter, to stay as they are
+    scan_id = env.scan(env.mate, include_memories=False)
+    row_id = env.row(scan_id, "journal", jid, old, 0, "asset-1", body=_original(500))
+    _seed_usage(env, env.mate)
+    _seed_usage(env, env.owner)
+    owner_tree = sorted(p.relative_to(env.tmp) for p in
+                        (env.tmp / "users" / str(env.owner)).rglob("*"))
+    owner_counted = _counted(env, env.owner)
+    real_delete = photo_replace_mod._delete_files
+    deletes = []
+
+    def dies_at_the_delete(kind, folder, owner_dir, uuids):
+        if uuids == [old] and not deletes:
+            deletes.append(uuids)
+            raise _Killed()
+        return real_delete(kind, folder, owner_dir, uuids)
+
+    monkeypatch.setattr(photo_replace_mod, "_delete_files", dies_at_the_delete)
+
+    apply_job.start_apply(scan_id)
+    broker.drain()
+
+    row = env.sugg(row_id)
+    assert (row.state, row.applied_uuid) == ("applied", env.photos("journal", jid)[0])
+    assert env.get(scan_id).apply_stopped_reason == "interrupted"
+    assert {p.name for p in env.folder("journal", jid, env.mate).iterdir()} == {
+        f"{row.applied_uuid}.jpg", f"{row.applied_uuid}_thumb.jpg"}
+    assert _counted(env, env.mate) == _tree_bytes(env, env.mate)
+    assert sorted(p.relative_to(env.tmp) for p in
+                  (env.tmp / "users" / str(env.owner)).rglob("*")) == owner_tree
+    assert _counted(env, env.owner) == owner_counted
+
+
 def test_recovery_with_the_old_files_already_gone_uncounts_nothing(env):
     scan_id, row_id, mid, old = _one_row(env, state="applying")
     _seed_usage(env, env.owner)
