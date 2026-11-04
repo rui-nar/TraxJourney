@@ -494,3 +494,16 @@ Owner approved the table as recommended (2026-11-04). U10-R1-1 fix design A: the
 - Guard: —
 - Override: —
 - Outcome: —
+
+## U10 unit review round 2 — 2026-11-04, reviewed at 40257921 (fixes only)
+
+Verifier: pass (189 tests in the container, seven required cases asserted; re-choosing a failed row's own asset also resets it, inside U10-R1-2's intent). U10-R1-1 resolved. U10-R1-2 only partly resolved, see U10-R2-1. Owner approved U10-R2-1 as Fix now (2026-11-04); plan U10 Do 4 and U12 Do 7 / Acceptance revised.
+
+### U10-R2-1 — After a key or outage failure every selected row is `failed`, and there is still no bulk way to put them back
+- Trigger: a user applies with a key lacking `asset.download`, or during an Immich outage → each row ends `failed` and the chain goes on, so every selected row fails → the user reconnects → `select` with `all_proposed` or `confident` touches `proposed` rows only → the way back is one PATCH per row, or a rescan that drops their picks.
+- Scores: trigger=concrete, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7) — not a duplicate: the bulk half of U10-R1-2's own trigger was left in place. Fix as a new additive `which` value that puts back only rows failed for a temporary reason (`immich_permission`, `immich_unreachable`); plan U10 Do 4 and U12 gain a "Retry failed" action
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: —
