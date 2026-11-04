@@ -119,6 +119,11 @@ release. See [docs/ANDROID.md](docs/ANDROID.md).
 - Register a Strava application at <https://www.strava.com/settings/api>. Set the **Authorization Callback Domain** to your server's hostname.
 - Register a Google OAuth app at <https://console.developers.google.com>. Add your origin to the allowed origins.
 - Immich needs no server-side registration: each user pastes their own Immich server URL and an API key (Immich → Account Settings → API Keys) into the app's Settings screen. The backend proxies every Immich call — image bytes are streamed through and never persisted — so no CORS configuration is needed on the Immich side either.
+- **Upgrade photos from Immich** (project menu) replaces a whole project's thumbnail-quality photos from one Immich album. The server scans the album, suggests a match for each photo, and only applies the ones you confirm. Needs Immich v5.9.0 or later.
+  - The API key needs the permissions `album.read`, `asset.read`, `asset.view`, `asset.download` and `server.about`. With a key that lacks `asset.download`, or one that was revoked, the affected photos fail with a permission error; reconnect with a valid key.
+  - Each original is limited to 25 MB; larger ones fail with "too large".
+  - HEIC and HEIF originals are converted to JPEG on the server. JPEG is taken at Immich's full size; PNG and WebP are taken from the original as they are. RAW originals are not supported: those photos fail with "unsupported format" and are never downloaded.
+  - Applying is a background job, so it needs the `worker-poster` service of `docker-compose.yml.example` started with the `photos` queue and its `HEIF_DECODE_MEMORY_MIB` entry. Without a worker, scans and applies answer 503. See [docs/DEPLOYMENT_VPS.md](docs/DEPLOYMENT_VPS.md).
 
 ### Environment variables
 
@@ -237,3 +242,17 @@ service that other people use over a network, the licence requires you to offer
 those users the source code of your version. The app's Settings → About panel
 and the `/privacy` and `/terms` pages link to this repository for that reason;
 point them at your own repository if you change the code.
+
+### Third-party notice
+
+The published image decodes and converts HEIC photos with the libraries that
+ship inside the [`pillow-heif`](https://pypi.org/project/pillow-heif/) 1.8.1
+wheel. They are separate programs under their own licences; this is the offer
+of their source. Each link is the exact upstream source of the version bundled
+in that wheel.
+
+| Library | Version | Licence | Source |
+|---|---|---|---|
+| libheif | 1.23.6 | LGPL-3.0 | <https://github.com/strukturag/libheif/tree/v1.23.6> |
+| libde265 | 1.1.3 | LGPL-3.0 | <https://github.com/strukturag/libde265/tree/v1.1.3> |
+| x265 | 4.3 | GPL-2.0-or-later | <https://github.com/Multicorewareinc/x265/tree/4.3> |
