@@ -461,3 +461,36 @@ Verifier on 7072d075: pass (200 tests). Its gap (no journal-entry recovery test)
 ## U11 unit review round 3 — 2026-11-04, reviewed at f1af58a4 (fixes only: 0f6d2d65, f1af58a4)
 
 Clean: no findings, no envelope questions. Verifier: pass (203 tests). U11-R2-1 resolved. The reviewer noted the Conventions wording for `immich_permission` named only `asset.download`; widened in the plan to cover a revoked or invalid key (401) for U12's sentence.
+
+## U10 unit review — 2026-11-04, reviewed at 7ccb4424
+
+Verifier: pass (254 tests in the container; every Acceptance case asserted; departures refine the plan: optional album_name and at least one include flag, photo_counts in latest, DELETE allowed for a removed companion, BackgroundTasks, sweep at minute 25, reuse of private helpers). X3 granted: one `_EXEMPT` entry in tests/test_project_cache_invalidation.py for `create_photo_upgrade_scan` (/meta reads no photo-upgrade table).
+
+Owner approved the table as recommended (2026-11-04). U10-R1-1 fix design A: the sweep clears an old scan instead of deleting it, keeping its rejection list; plan D8 and U10 Do 5 revised, docs/ENCRYPTION.md wording aligned.
+
+### U10-R1-1 — The 30-day sweep deletes the only record of a person's rejections, so a rescan a month later proposes the refused frame again, ticked
+- Trigger: a user rejects frame A for photo P, applies the rest, and rescans after 30 days → the sweep deleted every scan of theirs on the trip, `rejected_pairs_json` included → `_earlier_rejections` returns nothing → A is proposed for P, ticked when confident → Apply replaces P with the refused frame and deletes P's file.
+- Scores: trigger=concrete, impact=silent-wrong, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D3, F3 floor) — the U9-R1-1 harm through the retention sweep, which D8's 30 days predates; not a duplicate
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: —
+
+### U10-R1-2 — A failed row is a dead end: it cannot be re-ticked or re-chosen with the same asset
+- Trigger: a key without `asset.download`, a rotated key or a brief outage fails rows (`immich_permission`, `immich_unreachable`) → the user reconnects → PATCH `selected: true` answers 409, the same `asset_id` is a no-op, select and resume take proposed rows only → the only way back is reject then un-reject per row, or a rescan that discards their picks.
+- Scores: trigger=concrete, impact=degraded-ux, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Fix now (D7)
+- Revisit when: —
+- Guard: —
+- Override: —
+- Outcome: —
+
+### U10-R1-3 — The 30-minute heartbeat rule fails a scan as "interrupted" while its next step is only waiting in the photos queue
+- Trigger: a scan step hands the next one to the queue; poster jobs and other users' apply batches run first → over 30 minutes pass → the sweep fails the healthy scan as interrupted → the queued step exits; the user restarts a scan for nothing.
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local (triage corrected from shared), confidence=verified
+- Decision: Defer (D10) — not a duplicate of R1-6 (that fix covered the pending branch)
+- Revisit when: the sweep fails a scan as interrupted while worker-poster was alive or its next step was queued; a photos-queue job waits more than about 15 minutes on val/prod; or a user reports a scan stopping as interrupted with no worker restart.
+- Guard: —
+- Override: —
+- Outcome: —

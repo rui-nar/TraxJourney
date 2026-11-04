@@ -234,7 +234,14 @@ Scans per person:
   R2-2).
 
 Retention:
-- An hourly sweep deletes scans older than 30 days.
+- An hourly sweep clears scans older than 30 days (revised for U10-R1-1).
+  A reviewed (`ready`) scan is cleared, not deleted: its rejected rows are
+  folded into `rejected_pairs_json`, its suggestions and album fingerprints
+  are deleted, its status becomes `expired`, and the person's earlier scans
+  of the trip, which it supersedes, are deleted. The row and its rejection
+  list stay until the trip or the account is deleted, so a rescan months
+  later still honours them. An `expired` scan cannot be reviewed or applied,
+  and `latest` ignores it. Old scans that never became `ready` are deleted.
 - Rows hold ids, dates, sizes, dimensions and fingerprints only, never image
   data or text.
 
@@ -1483,7 +1490,9 @@ wait for them.
      - `DELETE …` discards the scan, refused while an apply is `pending` or
        `running`.
   5. The hourly sweep in `api/router.py`:
-     - deletes scans older than 30 days;
+     - clears scans older than 30 days as D8 says (revised for U10-R1-1):
+       a `ready` scan becomes `expired` and keeps only its rejection list;
+       others are deleted;
      - fails scans, and stops applies, still `pending` after 24 hours, with
        a neutral message;
      - fails scans `scanning` with a heartbeat older than 30 minutes, as

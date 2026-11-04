@@ -261,6 +261,12 @@ admin seed, and the scheduled jobs. Only the API container owns those: two
 containers racing `alembic upgrade head` at boot, or each taking its own nightly
 backup and 60 s WAL checkpoint, is the failure that guards against.
 
+`worker-poster` also consumes the `photos` queue (Immich photo upgrades, #33).
+Its command is `["/worker-entrypoint.sh", "poster", "photos", "default", "resolve"]`
+and it sets `HEIF_DECODE_MEMORY_MIB: "896"` in its own `environment`, as
+`docker-compose.yml.example` shows. Without a worker on `photos`, scans and
+applies answer 503.
+
 Keep all three worker services on the **same image tag** as the API. They share
 one image and only the API runs migrations, so a worker left on an older tag
 would run stale job code against a schema it does not know about.
