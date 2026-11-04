@@ -475,7 +475,7 @@ Owner approved the table as recommended (2026-11-04). U10-R1-1 fix design A: the
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: —
+- Outcome: fixed (40257921)
 
 ### U10-R1-2 — A failed row is a dead end: it cannot be re-ticked or re-chosen with the same asset
 - Trigger: a key without `asset.download`, a rotated key or a brief outage fails rows (`immich_permission`, `immich_unreachable`) → the user reconnects → PATCH `selected: true` answers 409, the same `asset_id` is a no-op, select and resume take proposed rows only → the only way back is reject then un-reject per row, or a rescan that discards their picks.
@@ -484,7 +484,7 @@ Owner approved the table as recommended (2026-11-04). U10-R1-1 fix design A: the
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: —
+- Outcome: fixed (40257921, completed by U10-R2-1 in 28ac632a)
 
 ### U10-R1-3 — The 30-minute heartbeat rule fails a scan as "interrupted" while its next step is only waiting in the photos queue
 - Trigger: a scan step hands the next one to the queue; poster jobs and other users' apply batches run first → over 30 minutes pass → the sweep fails the healthy scan as interrupted → the queued step exits; the user restarts a scan for nothing.
@@ -506,4 +506,8 @@ Verifier: pass (189 tests in the container, seven required cases asserted; re-ch
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: —
+- Outcome: fixed (28ac632a)
+
+## U10 unit review round 3 — 2026-11-04, reviewed at 28ac632a (fixes only)
+
+Clean: no findings, no envelope questions. Verifier: pass (194 tests in the container). U10-R2-1 resolved. The reviewer noted that PATCH still lets a single `failed` row be ticked during an apply while the bulk route refuses: a stricter rule on the new route, not a harm. U10 merged into the feature branch at f43e6f20.
