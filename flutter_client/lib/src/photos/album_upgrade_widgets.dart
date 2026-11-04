@@ -335,7 +335,8 @@ class SuggestionRow extends StatelessWidget {
               if (_tickable)
                 Checkbox(
                   key: ValueKey('row-check-${row.id}'),
-                  value: row.selected,
+                  // A failed row is never drawn ticked, whatever the server keeps.
+                  value: row.selected && row.state != 'failed',
                   onChanged: canAct ? (_) => onToggle() : null,
                 )
               else
@@ -427,7 +428,7 @@ class SuggestionRow extends StatelessWidget {
 Future<void> showCompareDialog(
     BuildContext context, AlbumUpgradeService service, UpgradeSuggestion row) {
   final headers = service.authHeaders;
-  Widget pane(String caption, String url, {String? fallbackUrl}) => Expanded(
+  Widget pane(String caption, String url) => Expanded(
         child: Column(
           children: [
             Text(caption, style: Theme.of(context).textTheme.labelMedium),
@@ -440,13 +441,8 @@ Future<void> showCompareDialog(
                     url,
                     headers: headers,
                     fit: BoxFit.contain,
-                    errorBuilder: (_, __, ___) => fallbackUrl == null
-                        ? const Center(child: Icon(Icons.broken_image_outlined))
-                        : Image.network(fallbackUrl,
-                            headers: headers,
-                            fit: BoxFit.contain,
-                            errorBuilder: (_, __, ___) =>
-                                const Center(child: Icon(Icons.broken_image_outlined))),
+                    errorBuilder: (_, __, ___) =>
+                        const Center(child: Icon(Icons.broken_image_outlined)),
                   ),
                 ),
               ),
@@ -469,8 +465,8 @@ Future<void> showCompareDialog(
                   children: [
                     pane('In your trip', service.currentFullUrl(row)),
                     const SizedBox(width: 8),
-                    pane('Immich original', service.assetOriginalUrl(row.assetId!),
-                        fallbackUrl: service.assetThumbUrl(row.assetId!)),
+                    pane('Immich preview',
+                        service.assetThumbUrl(row.assetId!, preview: true)),
                   ],
                 ),
               ),
