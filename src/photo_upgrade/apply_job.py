@@ -103,8 +103,9 @@ _FULLSIZE_TYPES = frozenset({"image/jpeg", "image/jpg", "image/pjpeg"})
 _ORIGINAL_TYPES = frozenset({"image/heic", "image/heif", "image/png", "image/webp"})
 #: Immich answers 400 "Not found or no access" for an asset it does not have.
 _NOT_FOUND_STATUSES = frozenset({400, 404, 410})
-#: The key lacks a permission the download needs (``asset.download``, OD5).
-_PERMISSION_STATUS = 403
+#: The key is refused (401: revoked or invalid) or lacks a permission the
+#: download needs (403: ``asset.download``, OD5), as the scan reads them.
+_PERMISSION_STATUSES = frozenset({401, 403})
 
 _MEMBER_ROLES = ("owner", "co-owner", "editor")
 
@@ -266,7 +267,7 @@ def _download(client: Optional[ImmichClient], row: DBPhotoUpgradeSuggestion) -> 
     except ImmichRejected as exc:
         if exc.status in _NOT_FOUND_STATUSES:
             raise _RowEnds("failed", NOT_FOUND_IN_IMMICH) from None
-        if exc.status == _PERMISSION_STATUS:
+        if exc.status in _PERMISSION_STATUSES:
             raise _RowEnds("failed", IMMICH_PERMISSION) from None
         raise _RowEnds("failed", IMMICH_UNREACHABLE) from None
     except ImmichError:

@@ -397,6 +397,8 @@ def _big_header_png() -> bytes:
     ("not_found_410", "not_found_in_immich", True),
     ("no_permission_original", "immich_permission", True),
     ("no_permission_fullsize", "immich_permission", True),
+    ("key_refused_original", "immich_permission", True),
+    ("key_refused_fullsize", "immich_permission", True),
     ("unreachable", "immich_unreachable", True),
     ("server_error", "immich_unreachable", True),
     ("broken_stream", "immich_unreachable", True),
@@ -427,6 +429,11 @@ def test_each_error_code(env, broker, monkeypatch, case, code, fetched):
         kw = {"mime": "image/heic", "body": ImmichRejected(403)}
     elif case == "no_permission_fullsize":
         kw = {"body": ImmichRejected(403)}
+    elif case == "key_refused_original":
+        # A revoked or invalid key, as the scan reads it.
+        kw = {"mime": "image/heic", "body": ImmichRejected(401)}
+    elif case == "key_refused_fullsize":
+        kw = {"body": ImmichRejected(401)}
     elif case == "unreachable":
         kw = {"body": ImmichUnreachable("down")}
     elif case == "server_error":
