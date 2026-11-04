@@ -169,6 +169,9 @@ class ScanOut(BaseModel):
     apply_stopped_reason: Optional[str] = Field(None, description="storage_full | interrupted")
     created_at: float
     completed_at: Optional[float]
+    unreadable_photos: int = Field(
+        0, description="Album photos whose thumbnail could not be read after retries, "
+                       "left out of the match; 0 unless ready")
 
 
 class ReadyScanOut(ScanOut):
@@ -297,8 +300,14 @@ def _scan_not_ready() -> HTTPException:
     return _conflict("scan_not_ready", "This check of your album cannot be reviewed now.")
 
 
-def _scan_out(scan: DBPhotoUpgradeScan) -> dict:
-    return {k: getattr(scan, k) for k in ScanOut.model_fields}
+def _scan_out(sess, scan: DBPhotoUpgradeScan) -> dict:
+    out = {k: getattr(scan, k) for k in ScanOut.model_fields if k != "unreadable_photos"}
+    out["unreadable_photos"] = sess.exec(
+        select(func.count()).select_from(DBPhotoUpgradeAsset)
+        .where(DBPhotoUpgradeAsset.scan_id == scan.id,
+               DBPhotoUpgradeAsset.fetch_failed == True)  # noqa: E712
+    ).one() if scan.status == "ready" else 0
+    return out
 
 
 def _storage(sess, user_info_id: int) -> dict:
@@ -459,7 +468,7 @@ def create_photo_upgrade_scan(
             sess.rollback()
             raise _scan_in_progress() from None
         sess.refresh(scan)
-        out = _scan_out(scan)
+        out = _scan_out(sess, scan)
     background_tasks.add_task(start_scan, out["id"])
     _log.info("Photo scan %s created on project %s", out["id"], project_id)
     return out
@@ -485,11 +494,11 @@ def get_latest_photo_upgrade_scan(
                            .order_by(*order)).first()
         scan_out = None
         if ready is not None:
-            scan_out = {**_scan_out(ready), "summary": _summary(sess, ready)}
+            scan_out = {**_scan_out(sess, ready), "summary": _summary(sess, ready)}
         newer = None
         if newest is not None and newest.status != "ready" and (
                 ready is None or newest.id != ready.id):
-            newer = _scan_out(newest)
+            newer = _scan_out(sess, newest)
         return {"scan": scan_out, "newer": newer,
                 "photo_counts": _photo_counts(sess, row, caller)}
 
@@ -855,7 +864,7 @@ def apply_photo_upgrade_scan(
             raise _apply_in_progress()
         sess.commit()
         sess.refresh(scan)
-        out = _scan_out(scan)
+        out = _scan_out(sess, scan)
     background_tasks.add_task(start_apply, scan_id)
     _log.info("Photo apply %s requested", scan_id)
     return out

@@ -15,6 +15,8 @@ Covers:
   * ``ImmichTooManyAssets`` and the 5,000-photo limit failing the scan;
   * Immich unreachable, and a 403;
   * a failed thumbnail fetch counted;
+  * a fetch that can pass tried again in later passes, a permanent one not
+    (INT-R1-A1);
   * a project deleted mid-chain stopping the next job quietly;
   * the killed-work-horse handler and the worker's startup sweep;
   * the in-process loop without a broker.
@@ -51,6 +53,8 @@ from models.project_db import (
 from models.user import ImmichToken, UserInfo
 from src.immich.client import (
     Asset,
+    ImmichAddressNotAllowed,
+    ImmichBadAnswer,
     ImmichRejected,
     ImmichTooManyAssets,
     ImmichUnreachable,
@@ -111,9 +115,12 @@ class _FakeImmich:
         yield from self.assets
 
     def thumbnail_bytes(self, asset_id, size):
+        """A list answers its items in turn, then its last one for good."""
         assert size == "thumbnail"
         self.thumb_calls.append(asset_id)
         value = self.thumbs[asset_id]
+        if isinstance(value, list):
+            value = value.pop(0) if len(value) > 1 else value[0]
         if isinstance(value, Exception):
             raise value
         return value
@@ -258,6 +265,7 @@ def env(monkeypatch, tmp_path):
 
     monkeypatch.setattr(scan_job, "_make_client", make_client)
     monkeypatch.setattr(scan_job, "queue_available", lambda: False)
+    monkeypatch.setattr(scan_job, "_RETRY_PAUSES", (0.0, 0.0))
     e = _Env(engine, tmp_path, immich)
     e.keys = keys
     yield e
@@ -915,6 +923,176 @@ def test_a_failed_thumbnail_fetch_is_counted_and_the_scan_goes_on(env, broker):
     assert {a for a, r in rows.items() if r.fetch_failed} == {"missing", "broken", "flaky", "huge"}
     assert rows["good"].fingerprinted and not rows["good"].fetch_failed
     assert env.suggestions(scan_id)[0].asset_id == "good"
+
+
+# ── Failed fetches tried again (INT-R1-A1) ────────────────────────────────────
+
+def _calls(env) -> dict:
+    return {a: env.immich.thumb_calls.count(a) for a in set(env.immich.thumb_calls)}
+
+
+def test_a_fetch_that_can_pass_is_tried_again_and_matched(env, broker, monkeypatch):
+    pauses = []
+    monkeypatch.setattr(scan_job, "_RETRY_PAUSES", (2.0, 5.0))
+    monkeypatch.setattr(scan_job.time, "sleep", pauses.append)
+    mid, uuids = env.memory([120, 121, 122, 123])
+    env.immich.add("good", _album_thumb(120))
+    env.immich.add("server-error", [ImmichRejected(503), _album_thumb(121)])
+    env.immich.add("timed-out", [ImmichUnreachable("read timed out"),
+                                 ImmichUnreachable("read timed out"), _album_thumb(122)])
+    env.immich.add("cut-off", [b"<html>502 Bad Gateway</html>", _album_thumb(123)])
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    ran = broker.drain()
+
+    scan = env.get(scan_id)
+    assert scan.status == "ready", scan.error_message
+    assert ran == ["run_scan_prepare", "run_scan_fingerprint", "run_scan_fingerprint",
+                   "run_scan_fingerprint", "run_scan_match"]
+    assert pauses == [2.0, 5.0]
+    assert _calls(env) == {"good": 1, "server-error": 2, "timed-out": 3, "cut-off": 2}
+    rows = env.assets(scan_id)
+    assert all(r.fingerprinted and not r.fetch_failed for r in rows)
+    assert [r.asset_id for r in env.suggestions(scan_id)] == [
+        "good", "server-error", "timed-out", "cut-off"]
+
+
+def test_a_permanent_failure_is_not_fetched_again(env, broker):
+    env.memory([124])
+    env.immich.add("good", _album_thumb(124))
+    env.immich.add("gone", ImmichRejected(404))
+    env.immich.add("refused", ImmichRejected(400))
+    env.immich.add("over-the-byte-cap", ImmichBadAnswer("thumbnail larger than allowed"))
+    env.immich.add("over-the-pixel-cap", _encode(Image.new("L", (2500, 2000)), "PNG"))
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    ran = broker.drain()
+
+    assert env.get(scan_id).status == "ready"
+    assert ran == ["run_scan_prepare", "run_scan_fingerprint", "run_scan_match"]
+    assert _calls(env) == {"good": 1, "gone": 1, "refused": 1, "over-the-byte-cap": 1,
+                           "over-the-pixel-cap": 1}
+    rows = {r.asset_id: r for r in env.assets(scan_id)}
+    assert {a for a, r in rows.items() if r.fetch_failed} == {
+        "gone", "refused", "over-the-byte-cap", "over-the-pixel-cap"}
+
+
+def test_a_photo_failing_every_attempt_is_given_up_and_the_scan_is_ready(env, broker):
+    env.memory([125, 126])
+    env.immich.add("good", _album_thumb(125))
+    env.immich.add("always-down", ImmichUnreachable("reset"))
+    env.immich.add("always-5xx", ImmichRejected(502))
+    env.immich.add("always-429", ImmichRejected(429))
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    broker.drain()
+
+    scan = env.get(scan_id)
+    assert scan.status == "ready", scan.error_message
+    tries = 1 + len(scan_job._RETRY_PAUSES)
+    assert _calls(env) == {"good": 1, "always-down": tries, "always-5xx": tries,
+                           "always-429": tries}
+    rows = {r.asset_id: r for r in env.assets(scan_id)}
+    assert {a for a, r in rows.items() if r.fetch_failed} == {
+        "always-down", "always-5xx", "always-429"}
+    assert (scan.progress_done, scan.progress_total) == (2, 2)
+    assert [r.state for r in env.suggestions(scan_id)] == ["proposed", "no_match"]
+
+
+def test_every_pass_walks_its_rows_in_batches(env, broker, monkeypatch):
+    """A pass longer than one batch carries on after the last row it read,
+    so a photo waiting for the next pass is not fetched twice in this one."""
+    monkeypatch.setattr(scan_job, "FINGERPRINT_BATCH", 2)
+    env.memory([127])
+    env.immich.add("a", _album_thumb(127))
+    env.immich.add("b", [ImmichRejected(500), _album_thumb(128)])
+    env.immich.add("c", ImmichRejected(500))
+    env.immich.add("d", _album_thumb(129))
+    # Not unreachable first: alone in its batch, that would say Immich is down.
+    env.immich.add("e", [ImmichRejected(503), ImmichUnreachable("x"), _album_thumb(130)])
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    ran = broker.drain()
+
+    assert env.get(scan_id).status == "ready"
+    # Pass 0: a b | c d | e. Pass 1: b c | e. Pass 2: c e.
+    assert ran.count("run_scan_fingerprint") == 3 + 2 + 1
+    assert _calls(env) == {"a": 1, "b": 2, "c": 3, "d": 1, "e": 3}
+    rows = {r.asset_id: r for r in env.assets(scan_id)}
+    assert {a for a, r in rows.items() if r.fingerprinted} == {"a", "b", "d", "e"}
+    assert {a for a, r in rows.items() if r.fetch_failed} == {"c"}
+
+
+def test_without_a_failure_no_pass_is_paused_for(env, broker, monkeypatch):
+    pauses = []
+    monkeypatch.setattr(scan_job.time, "sleep", pauses.append)
+    env.memory([131])
+    env.immich.add("good", _album_thumb(131))
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    broker.drain()
+
+    assert env.get(scan_id).status == "ready"
+    assert pauses == []
+
+
+@pytest.mark.parametrize("error, reason", [
+    (ImmichRejected(401), scan_job.REASON_FORBIDDEN),
+    (ImmichRejected(403), scan_job.REASON_FORBIDDEN),
+    (ImmichAddressNotAllowed("private"), scan_job.REASON_ADDRESS_NOT_ALLOWED),
+])
+def test_a_refusal_on_a_later_pass_still_fails_the_scan(env, broker, error, reason):
+    env.memory([132])
+    env.immich.add("good", _album_thumb(132))
+    env.immich.add("flaky", [ImmichUnreachable("reset"), error])
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    broker.drain()
+
+    scan = env.get(scan_id)
+    assert (scan.status, scan.error_message) == ("failed", reason)
+
+
+def test_a_later_pass_with_immich_unreachable_does_not_fail_the_scan(env, broker):
+    """Only a first-pass batch says Immich is down: a later pass holds only
+    the photos that failed before."""
+    env.memory([133])
+    env.immich.add("good", _album_thumb(133))
+    env.immich.add("flaky", ImmichUnreachable("reset"))
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    broker.drain()
+
+    assert env.get(scan_id).status == "ready"
+    assert _calls(env)["flaky"] == 1 + len(scan_job._RETRY_PAUSES)
+
+
+def test_a_first_pass_with_one_photo_unreachable_still_fails_the_scan(env, broker):
+    env.memory([134])
+    env.immich.add("only", ImmichUnreachable("refused"))
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    broker.drain()
+
+    assert env.get(scan_id).error_message == scan_job.REASON_UNREACHABLE
+    assert _calls(env) == {"only": 1}
+
+
+def test_a_killed_retry_pass_fails_its_scan(env):
+    scan_id = env.scan(status="scanning")
+
+    worker_mod._work_horse_killed_handler(
+        _FakeRQJob((scan_job.run_scan_fingerprint, scan_id, 1, 40)), 123, 9, None)
+
+    assert env.get(scan_id).error_message == scan_job.REASON_INTERRUPTED
 
 
 def test_a_batch_never_holds_more_bodies_than_fetch_threads(env, broker, monkeypatch):

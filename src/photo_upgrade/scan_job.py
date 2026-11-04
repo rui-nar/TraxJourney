@@ -10,7 +10,10 @@ the next, so a poster never waits behind more than one of them:
 2. ``run_scan_fingerprint``: fetches up to ``FINGERPRINT_BATCH`` album
    thumbnails, ``FETCH_THREADS`` at a time, each thread hashing what it
    fetched before the next, and stores their fingerprints;
-   enqueues itself again while rows remain.
+   enqueues itself again while rows remain. Thumbnails whose fetch failed
+   for a reason that can pass are fetched again in up to
+   ``len(_RETRY_PAUSES)`` further passes; those still failing are left out
+   of the match, and counted for the review (INT-R1-A1).
 3. ``run_scan_match``: fingerprints the trip photos from their thumbnails on
    disk, runs the matcher (``src/photo_upgrade/matching.py``), writes one
    suggestion per trip photo, sets ``ready``, and only then deletes the
@@ -92,6 +95,9 @@ FINGERPRINT_BATCH = 250
 FETCH_THREADS = 4
 #: Most trip photos one scan considers (D12).
 MAX_TRIP_PHOTOS = 5000
+#: The pause before each further pass over the album thumbnails whose fetch
+#: failed for a reason that can pass; one pass per pause (INT-R1-A1).
+_RETRY_PAUSES = (2.0, 5.0)
 #: Immich thumbnail size hashed: WebP, about 332×250 on v5.9.0 (OD1).
 _THUMB_SIZE = "thumbnail"
 #: Largest album thumbnail decoded. Immich's answers are untrusted (E2): a
@@ -105,6 +111,9 @@ _DAY_SLACK = dt.timedelta(days=1)
 #: local day of each answer decides.
 _UTC_AHEAD = dt.timedelta(hours=14)
 _UTC_BEHIND = dt.timedelta(hours=12)
+
+#: The next step of the chain: its name, then its arguments after the scan id.
+Step = Tuple
 
 ACTIVE = ("pending", "scanning")
 _APPLY_IN_PROGRESS = ("pending", "running")
@@ -330,7 +339,7 @@ def _local_day(asset) -> Optional[str]:
     return normalise(asset.local_date_time) or normalise(asset.file_created_at)
 
 
-def _prepare(scan_id: int) -> Optional[str]:
+def _prepare(scan_id: int) -> Optional[Step]:
     if not _cas(scan_id, ("pending",), status="scanning", stage=STAGE_READING_ALBUM,
                 progress_done=0, progress_total=0, heartbeat_at=time.time()):
         _log.info("Photo scan %s not started: no longer pending", scan_id)
@@ -373,15 +382,16 @@ def _prepare(scan_id: int) -> Optional[str]:
         sess.add_all(rows)
         sess.commit()
     _log.info("Photo scan %s: %d album photos to fingerprint", scan_id, len(rows))
-    return "fingerprint" if rows else "match"
+    return ("fingerprint",) if rows else ("match",)
 
 
 # ── Step 2: fingerprint ───────────────────────────────────────────────────────
 
 def _fetch_fingerprint(client: ImmichClient, asset_id: str):
-    """The asset's thumbnail fingerprint (None when it does not decode), or
-    the ImmichError that stopped the fetch. Fetched and hashed in one go, so
-    each thread holds one body at a time and none outlives this call."""
+    """The asset's thumbnail fingerprint, None when it does not decode,
+    ``_TOO_LARGE`` when it declares too many pixels, or the ImmichError that
+    stopped the fetch. Fetched and hashed in one go, so each thread holds one
+    body at a time and none outlives this call."""
     try:
         raw = client.thumbnail_bytes(asset_id, _THUMB_SIZE)
     except ImmichError as exc:
@@ -389,34 +399,71 @@ def _fetch_fingerprint(client: ImmichClient, asset_id: str):
     return _album_fingerprint(raw)
 
 
-def _album_fingerprint(raw: bytes) -> Optional[Fingerprint]:
-    """*raw*'s fingerprint, or None when it is not a thumbnail-sized image.
-    The size is read from the header before anything is decoded."""
+#: A thumbnail declaring more than ``_THUMB_MAX_PIXELS``.
+_TOO_LARGE = object()
+
+
+def _album_fingerprint(raw: bytes):
+    """*raw*'s fingerprint; None when it does not decode, ``_TOO_LARGE`` when
+    it is not a thumbnail-sized image. The size is read from the header before
+    anything is decoded."""
     try:
         with Image.open(io.BytesIO(raw)) as img:
             width, height = img.size
     except (OSError, ValueError, SyntaxError, Image.DecompressionBombError):
         return None
     if width * height > _THUMB_MAX_PIXELS:
-        return None
+        return _TOO_LARGE
     return fingerprint(raw)
 
 
-def _fingerprint(scan_id: int) -> Optional[str]:
+def _can_pass(got) -> bool:
+    """Whether a failed fetch may succeed if tried again (INT-R1-A1).
+
+    Passing: Immich unreachable (refused, reset, timed out, cut off mid-body),
+    a 5xx, 408 or 429, and a body that does not decode, as a proxy's error
+    page or a cut answer would be. Permanent: any other status, such as 404
+    for an asset gone from the album, a thumbnail over the byte cap
+    (``ImmichBadAnswer``, the only one ``thumbnail_bytes`` raises) or the
+    pixel cap. 401, 403 and a refused address never get here: they fail the
+    scan."""
+    if got is None or isinstance(got, ImmichUnreachable):
+        return True
+    if isinstance(got, ImmichRejected):
+        return got.status >= 500 or got.status in (408, 429)
+    return False
+
+
+def _open_rows(scan_id: int) -> tuple:
+    """The scan's album photos neither fingerprinted nor given up on."""
+    return (DBPhotoUpgradeAsset.scan_id == scan_id,
+            DBPhotoUpgradeAsset.fingerprinted == False,  # noqa: E712
+            DBPhotoUpgradeAsset.fetch_failed == False)  # noqa: E712
+
+
+def _fingerprint(scan_id: int, retry_pass: int = 0, after_id: int = 0) -> Optional[Step]:
+    """One batch of pass *retry_pass*: the open rows after row *after_id*.
+
+    Pass 0 fetches every album photo once. A fetch that failed for a reason
+    that can pass (:func:`_can_pass`) leaves its row open, and the next pass,
+    after a pause, fetches it again; a permanent failure, or any failure on
+    the last pass, sets ``fetch_failed`` (INT-R1-A1). Each pass walks the
+    rows in id order, ``FINGERPRINT_BATCH`` per job."""
     scan = _live_scan(scan_id, "scanning")
     if scan is None:
         return None
+    last_pass = retry_pass >= len(_RETRY_PAUSES)
+    if retry_pass and not after_id:
+        time.sleep(_RETRY_PAUSES[retry_pass - 1])
     with get_session() as sess:
         batch = sess.exec(
             select(DBPhotoUpgradeAsset.id, DBPhotoUpgradeAsset.asset_id)
-            .where(DBPhotoUpgradeAsset.scan_id == scan_id,
-                   DBPhotoUpgradeAsset.fingerprinted == False,  # noqa: E712
-                   DBPhotoUpgradeAsset.fetch_failed == False)  # noqa: E712
+            .where(*_open_rows(scan_id), DBPhotoUpgradeAsset.id > after_id)
             .order_by(DBPhotoUpgradeAsset.id)
             .limit(FINGERPRINT_BATCH)
         ).all()
 
-    results: Dict[int, Optional[Fingerprint]] = {}
+    results: Dict[int, object] = {}
     if batch:
         client = _client_for(scan.user_info_id)
         with ThreadPoolExecutor(max_workers=FETCH_THREADS) as pool:
@@ -428,39 +475,53 @@ def _fingerprint(scan_id: int) -> Optional[str]:
                 raise exc
             if isinstance(exc, ImmichRejected) and exc.status in (401, 403):
                 raise exc
-        if failures and len(failures) == len(fetched) and all(
+        # A first-pass batch none of which got through: Immich is down. On a
+        # later pass the batch is only the photos that failed before, and a
+        # few failing again says nothing about the rest.
+        if not retry_pass and failures and len(failures) == len(fetched) and all(
                 isinstance(exc, ImmichUnreachable) for exc in failures):
             raise failures[0]
         for (row_id, _), got in zip(batch, fetched):
-            results[row_id] = None if isinstance(got, ImmichError) else got
+            results[row_id] = got
 
+    retried = failed = 0
     with get_session() as sess:
         if not _hold(sess, scan_id):
             sess.rollback()
             return None
-        for row_id, fp in results.items():
-            if fp is None:
-                values = {"fetch_failed": True}
+        for row_id, got in results.items():
+            if isinstance(got, Fingerprint):
+                values = {"ahash": to_hex(got.ahash), "dhash": to_hex(got.dhash),
+                          "width": got.width, "height": got.height, "fingerprinted": True}
+            elif _can_pass(got) and not last_pass:
+                retried += 1
+                continue
             else:
-                values = {"ahash": to_hex(fp.ahash), "dhash": to_hex(fp.dhash),
-                          "width": fp.width, "height": fp.height, "fingerprinted": True}
+                failed += 1
+                values = {"fetch_failed": True}
             sess.execute(update(DBPhotoUpgradeAsset)
                          .where(DBPhotoUpgradeAsset.id == row_id).values(**values))
         remaining = sess.exec(
             select(func.count()).select_from(DBPhotoUpgradeAsset)
-            .where(DBPhotoUpgradeAsset.scan_id == scan_id,
-                   DBPhotoUpgradeAsset.fingerprinted == False,  # noqa: E712
-                   DBPhotoUpgradeAsset.fetch_failed == False)  # noqa: E712
-        ).one()
+            .where(*_open_rows(scan_id))).one()
+        later = sess.exec(
+            select(func.count()).select_from(DBPhotoUpgradeAsset)
+            .where(*_open_rows(scan_id), DBPhotoUpgradeAsset.id > batch[-1][0])
+        ).one() if batch else 0
         total = sess.exec(
             select(func.count()).select_from(DBPhotoUpgradeAsset)
             .where(DBPhotoUpgradeAsset.scan_id == scan_id)).one()
         _hold(sess, scan_id, progress_done=total - remaining, progress_total=total)
         sess.commit()
-    failed = sum(1 for fp in results.values() if fp is None)
+    if retried:
+        _log.info("Photo scan %s: %d album thumbnails to fetch again", scan_id, retried)
     if failed:
         _log.info("Photo scan %s: %d album thumbnails could not be read", scan_id, failed)
-    return "fingerprint" if remaining else "match"
+    if later:
+        return ("fingerprint", retry_pass, batch[-1][0])
+    if remaining and not last_pass:
+        return ("fingerprint", retry_pass + 1, 0)
+    return ("match",)
 
 
 # ── Step 3: match ─────────────────────────────────────────────────────────────
@@ -669,7 +730,7 @@ def remove_rejection(scan_id: int, key: str, asset_id: str) -> bool:
     return _edit_pairs(scan_id, lambda pairs: pairs.discard((key, asset_id)))
 
 
-def _match(scan_id: int) -> Optional[str]:
+def _match(scan_id: int) -> Optional[Step]:
     scan = _live_scan(scan_id, "scanning")
     if scan is None:
         return None
@@ -779,18 +840,19 @@ def _match(scan_id: int) -> Optional[str]:
 
 # ── The chain ─────────────────────────────────────────────────────────────────
 
-_STEPS: Dict[str, Callable[[int], Optional[str]]] = {
+_STEPS: Dict[str, Callable[..., Optional[Step]]] = {
     "prepare": _prepare,
     "fingerprint": _fingerprint,
     "match": _match,
 }
 
 
-def _run_step(name: str, scan_id: int) -> Optional[str]:
-    """Run step *name*; the next step's name, or None when the chain ends.
-    Any failure fails the scan. Never raises an ``Exception``."""
+def _run_step(step: Step, scan_id: int) -> Optional[Step]:
+    """Run *step*; the next step, or None when the chain ends. Any failure
+    fails the scan. Never raises an ``Exception``."""
+    name = step[0]
     try:
-        return _STEPS[name](scan_id)
+        return _STEPS[name](scan_id, *step[1:])
     except BaseException as exc:  # noqa: BLE001 — every failure ends the scan
         if not isinstance(exc, (_ScanFailed, ImmichError)):
             _log.error("Photo scan %s failed in %s: %s", scan_id, name, _describe(exc))
@@ -803,16 +865,17 @@ def _run_step(name: str, scan_id: int) -> Optional[str]:
         return None
 
 
-def _enqueue_next(name: Optional[str], scan_id: int) -> None:
-    if name is None:
+def _enqueue_next(step: Optional[Step], scan_id: int) -> None:
+    if step is None:
         return
     # Each job named at its call, never looked up: tests/test_jobs_never_call_strava.py
     # traces every queued callable to its module.
     options = {"max_retries": 0, "allow_inline": False}
+    name, args = step[0], step[1:]
     if name == "prepare":
         queued = enqueue(QUEUE_PHOTOS, run_scan_prepare, scan_id, **options)
     elif name == "fingerprint":
-        queued = enqueue(QUEUE_PHOTOS, run_scan_fingerprint, scan_id, **options)
+        queued = enqueue(QUEUE_PHOTOS, run_scan_fingerprint, scan_id, *args, **options)
     else:
         queued = enqueue(QUEUE_PHOTOS, run_scan_match, scan_id, **options)
     if not queued:
@@ -821,17 +884,17 @@ def _enqueue_next(name: Optional[str], scan_id: int) -> None:
 
 def run_scan_prepare(scan_id: int) -> None:
     """Job: step 1, then enqueue the next. Never raises."""
-    _enqueue_next(_run_step("prepare", scan_id), scan_id)
+    _enqueue_next(_run_step(("prepare",), scan_id), scan_id)
 
 
-def run_scan_fingerprint(scan_id: int) -> None:
+def run_scan_fingerprint(scan_id: int, retry_pass: int = 0, after_id: int = 0) -> None:
     """Job: one batch of step 2, then enqueue the next. Never raises."""
-    _enqueue_next(_run_step("fingerprint", scan_id), scan_id)
+    _enqueue_next(_run_step(("fingerprint", retry_pass, after_id), scan_id), scan_id)
 
 
 def run_scan_match(scan_id: int) -> None:
     """Job: step 3. Never raises."""
-    _enqueue_next(_run_step("match", scan_id), scan_id)
+    _enqueue_next(_run_step(("match",), scan_id), scan_id)
 
 
 def start_scan(scan_id: int) -> None:
@@ -842,9 +905,9 @@ def start_scan(scan_id: int) -> None:
     request passes it to its background tasks.
     """
     if queue_available():
-        _enqueue_next("prepare", scan_id)
+        _enqueue_next(("prepare",), scan_id)
         return
-    step: Optional[str] = "prepare"
+    step: Optional[Step] = ("prepare",)
     while step is not None:
         step = _run_step(step, scan_id)
 

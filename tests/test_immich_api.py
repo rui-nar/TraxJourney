@@ -459,6 +459,36 @@ def test_thumbnail_streams_bytes_through(env, monkeypatch):
     assert captured["headers"]["x-api-key"] == "secret-key"
 
 
+@pytest.mark.parametrize("size", ["preview", "thumbnail"])
+def test_thumbnail_passes_the_size_asked_for_to_immich(env, monkeypatch, size):
+    """The photo upgrade's compare view asks for ``size=preview`` (#33)."""
+    client, engine, uid = env
+    _connect(engine, uid, server_url="https://immich.example.com", api_key="secret-key")
+    urls = []
+
+    def fake_get(url, headers=None, timeout=None, stream=None):
+        urls.append(url)
+        return _FakeResponse(status_code=200, headers={"content-type": "image/jpeg"},
+                             content=b"jpeg")
+
+    monkeypatch.setattr(immich_module._http, "get", fake_get)
+    resp = client.get(f"/api/immich/assets/asset-1/thumbnail?size={size}")
+    assert resp.status_code == 200
+    assert urls == [f"https://immich.example.com/api/assets/asset-1/thumbnail?size={size}"]
+
+
+@pytest.mark.parametrize("size", ["original", "fullsize", "PREVIEW", ""])
+def test_thumbnail_refuses_any_other_size(env, monkeypatch, size):
+    client, engine, uid = env
+    _connect(engine, uid)
+    urls = []
+    monkeypatch.setattr(immich_module._http, "get",
+                        lambda url, **k: urls.append(url) or _FakeResponse(status_code=200))
+    resp = client.get(f"/api/immich/assets/asset-1/thumbnail?size={size}")
+    assert resp.status_code == 422
+    assert urls == []
+
+
 def test_original_streams_bytes_through(env, monkeypatch):
     client, engine, uid = env
     _connect(engine, uid, server_url="https://immich.example.com", api_key="secret-key")
