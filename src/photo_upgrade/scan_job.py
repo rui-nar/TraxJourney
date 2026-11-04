@@ -441,6 +441,14 @@ def _open_rows(scan_id: int) -> tuple:
             DBPhotoUpgradeAsset.fetch_failed == False)  # noqa: E712
 
 
+def _fingerprinted(sess, scan_id: int) -> int:
+    """How many of the scan's album photos are fingerprinted."""
+    return sess.exec(
+        select(func.count()).select_from(DBPhotoUpgradeAsset)
+        .where(DBPhotoUpgradeAsset.scan_id == scan_id,
+               DBPhotoUpgradeAsset.fingerprinted == True)).one()  # noqa: E712
+
+
 def _fingerprint(scan_id: int, retry_pass: int = 0, after_id: int = 0) -> Optional[Step]:
     """One batch of pass *retry_pass*: the open rows after row *after_id*.
 
@@ -448,7 +456,11 @@ def _fingerprint(scan_id: int, retry_pass: int = 0, after_id: int = 0) -> Option
     that can pass (:func:`_can_pass`) leaves its row open, and the next pass,
     after a pause, fetches it again; a permanent failure, or any failure on
     the last pass, sets ``fetch_failed`` (INT-R1-A1). Each pass walks the
-    rows in id order, ``FINGERPRINT_BATCH`` per job."""
+    rows in id order, ``FINGERPRINT_BATCH`` per job.
+
+    Whether Immich is down is judged over the whole scan, never one batch
+    (INT-R2-1, INT-R2-2): the scan fails, so ``_match`` never runs and the
+    earlier review is kept, only while none of its photos is fingerprinted."""
     scan = _live_scan(scan_id, "scanning")
     if scan is None:
         return None
@@ -475,12 +487,18 @@ def _fingerprint(scan_id: int, retry_pass: int = 0, after_id: int = 0) -> Option
                 raise exc
             if isinstance(exc, ImmichRejected) and exc.status in (401, 403):
                 raise exc
-        # A first-pass batch none of which got through: Immich is down. On a
-        # later pass the batch is only the photos that failed before, and a
-        # few failing again says nothing about the rest.
+        # A first-pass batch none of which got through, each for a reason
+        # that can pass, with nothing of the scan fingerprinted before it:
+        # Immich, or the proxy in front of it, is down. Once a photo got
+        # through, a failing batch goes to the retry passes like any other.
+        # On a later pass the batch is only the photos that failed before,
+        # and a few failing again says nothing about the rest.
         if not retry_pass and failures and len(failures) == len(fetched) and all(
-                isinstance(exc, ImmichUnreachable) for exc in failures):
-            raise failures[0]
+                _can_pass(exc) for exc in failures):
+            with get_session() as sess:
+                down = not _fingerprinted(sess, scan_id)
+            if down:
+                raise failures[0]
         for (row_id, _), got in zip(batch, fetched):
             results[row_id] = got
 
@@ -512,6 +530,7 @@ def _fingerprint(scan_id: int, retry_pass: int = 0, after_id: int = 0) -> Option
             select(func.count()).select_from(DBPhotoUpgradeAsset)
             .where(DBPhotoUpgradeAsset.scan_id == scan_id)).one()
         _hold(sess, scan_id, progress_done=total - remaining, progress_total=total)
+        none_read = not _fingerprinted(sess, scan_id)
         sess.commit()
     if retried:
         _log.info("Photo scan %s: %d album thumbnails to fetch again", scan_id, retried)
@@ -521,6 +540,16 @@ def _fingerprint(scan_id: int, retry_pass: int = 0, after_id: int = 0) -> Option
         return ("fingerprint", retry_pass, batch[-1][0])
     if remaining and not last_pass:
         return ("fingerprint", retry_pass + 1, 0)
+    # About to match with no album photo read, after a fetch that could have
+    # passed: Immich was down for the whole scan, though no first-pass batch
+    # said so (say a 404 among the 503s). Matching would read every trip
+    # photo "No match" and delete the earlier review. The proof of a passing
+    # failure is the chain itself: a retry pass runs only when a first-pass
+    # fetch failed for a reason that can pass and left its row open, whereas
+    # rows do not store why they failed. A scan whose failures were all
+    # permanent, such as every asset gone (404), ends on pass 0 and matches.
+    if retry_pass and none_read:
+        raise _ScanFailed(REASON_UNREACHABLE)
     return ("match",)
 
 
