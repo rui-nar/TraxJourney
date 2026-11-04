@@ -35,6 +35,8 @@ import '../projects/strava_import_notifier.dart';
 import '../projects/trip_picker_screen.dart';
 import '../projects/polarsteps_import_screen.dart';
 import '../projects/polarsteps_import_notifier.dart';
+import '../photos/album_upgrade_notifier.dart';
+import '../photos/album_upgrade_screen.dart';
 import '../projects/project_settings_screen.dart';
 import '../projects/project_stats_screen.dart';
 import '../settings/settings_screen.dart';
@@ -280,6 +282,18 @@ GoRouter buildRouter(BuildContext context) {
           return ChangeNotifierProvider(
             create: (_) => PolarstepsImportNotifier(),
             child: PolarstepsImportScreen(
+                projectName: projectName, ownerId: _ownerParam(state)),
+          );
+        },
+      ),
+      GoRoute(
+        path: '/photo-upgrade',
+        builder: (context, state) {
+          final projectName =
+              state.uri.queryParameters['project'] ?? '';
+          return ChangeNotifierProvider(
+            create: (_) => AlbumUpgradeNotifier(),
+            child: AlbumUpgradeScreen(
                 projectName: projectName, ownerId: _ownerParam(state)),
           );
         },
