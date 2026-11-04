@@ -447,8 +447,9 @@ REVIEW.md §2 defaults apply, with these additions:
 - **Error codes on a failed row:** `too_large`, `unsupported_format`,
   `not_found_in_immich`, `immich_permission`, `immich_unreachable`,
   `photo_gone`, `storage_full`, `invalid_image`. The app maps each to a
-  sentence; `immich_permission` asks for a key with `asset.download`
-  (U11-R1-2).
+  sentence; `immich_permission` (Immich answered 401 or 403) asks the
+  user to reconnect with a valid key that has `asset.download`
+  (U11-R1-2, U11-R2-1).
 - **Writes.**
   - Every change to `photos_json` or `photo_order_json` goes through U14's
     helper.

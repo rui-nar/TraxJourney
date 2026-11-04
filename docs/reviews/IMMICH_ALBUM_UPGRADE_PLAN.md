@@ -457,3 +457,7 @@ Verifier on 7072d075: pass (200 tests). Its gap (no journal-entry recovery test)
 - Guard: —
 - Override: user: Fix now — a few lines in code already being changed; 401 maps to immich_permission like 403, matching the scan (2026-11-04)
 - Outcome: —
+
+## U11 unit review round 3 — 2026-11-04, reviewed at f1af58a4 (fixes only: 0f6d2d65, f1af58a4)
+
+Clean: no findings, no envelope questions. Verifier: pass (203 tests). U11-R2-1 resolved. The reviewer noted the Conventions wording for `immich_permission` named only `asset.download`; widened in the plan to cover a revoked or invalid key (401) for U12's sentence.
