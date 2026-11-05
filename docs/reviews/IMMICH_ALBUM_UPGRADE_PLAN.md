@@ -135,7 +135,7 @@ Envelope: the plan's `## Review envelope` section, on top of REVIEW.md §2 defau
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: fixed (9635cd88; regression found in round 3, see INT-R3-1)
+- Outcome: —
 
 ## U6 unit review — 2026-10-30, reviewed at 112b884c
 
@@ -189,7 +189,7 @@ Answer (owner, 2026-10-30): HEIC/HEIF capped at 50 MP on the coded size of every
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: fixed (9635cd88; regression found in round 3, see INT-R3-1)
+- Outcome: —
 
 ### U4-R1-4 — A HEIC whose rotation is only in its EXIF is stored sideways, and the original is not kept
 - Trigger: a user uploads a HEIC with EXIF orientation and no `irot`/`imir` → pillow-heif resets the tag without rotating, and the JPEG is stored sideways. HEIF readers are specified to use `irot`/`imir`, and no known producer writes EXIF-only orientation.
@@ -354,7 +354,7 @@ Verifier: pass (scope plus approved X3 extensions: `Asset.width/height`, `origin
 - Guard: —
 - Override: —
 - Approved (2026-11-01): rejections carried forward on the scan record (one JSON column, merged from earlier scans, own migration). Owner also approved the related U5 change raised by the review: a frame rejected for the same photo, scoring within the ambiguity margin of the proposal, makes the proposal low-confidence (unticked).
-- Outcome: —
+- Outcome: fixed (0b8868fe)
 
 ### U9-R1-2 — A fingerprint batch holds all 250 thumbnail bodies in memory, each capped only at 20 MiB, so a hostile Immich can OOM-kill worker-poster
 - Trigger: a signed-in user points their Immich connection at a server they control and scans an album of 250+ photos → each thumbnail answer is just under 20 MiB → `_fingerprint` holds all 250 (≈5 GB) before decoding any → worker-poster (1280 MB) is OOM-killed; queued poster or apply jobs are interrupted; repeatable at will.
@@ -364,7 +364,7 @@ Verifier: pass (scope plus approved X3 extensions: `Asset.width/height`, `origin
 - Guard: —
 - Override: —
 - Approved (2026-11-01): fingerprint each thumbnail as it arrives (at most the worker count held at once) and refuse thumbnail bodies over 2 MiB at download.
-- Outcome: —
+- Outcome: fixed (0b8868fe)
 
 ## U9 unit review round 2 — 2026-11-01, reviewed at 0b8868fe (fixes only: 8f196422, 0b8868fe)
 
@@ -377,7 +377,7 @@ Verifier on 0b8868fe: pass (488 tests, single head c5a1e8d27f40). Its out-of-sco
 - Revisit when: —
 - Guard: —
 - Override: — (approved 2026-11-02)
-- Outcome: —
+- Outcome: fixed (a7c615bc)
 
 ### U9-R2-2 — The carried rejection set only grows; a rejection the user reverses, or a rejected asset the user later chooses, stays excluded from every future scan
 - Trigger: a user rejects A for P, rescans (scan 2 carries (P, A)), then in scan 2 picks A via "Choose another" or un-rejects it, and does not apply → scan 3 and later never propose A for P; nothing shows it is barred.
@@ -386,7 +386,7 @@ Verifier on 0b8868fe: pass (488 tests, single head c5a1e8d27f40). Its out-of-sco
 - Revisit when: the guard fires
 - Guard: in `_earlier_rejections`, log a warning once per scan with the scan id and the count of carried pairs contradicted by a non-rejected suggestion row (same photo and asset id) in an earlier scan; no ids.
 - Override: user: Fix now — the guard computes the very pairs the fix subtracts, so fix it at the same cost; give U10 the inverse of record_rejection (2026-11-02)
-- Outcome: —
+- Outcome: fixed (a7c615bc)
 
 ## U9 unit review round 3 — 2026-11-02, reviewed at a7c615bc (fixes only: a7c615bc)
 
@@ -399,7 +399,7 @@ Verifier on a7c615bc: pass (494 tests, single head). The one changed existing te
 - Revisit when: the guard fires
 - Guard: in `_replace_earlier_scans`, inside the same transaction, compute `carried - now` and when non-empty log a warning once per scan with the scan id and the count; no ids.
 - Override: user: Fix now — the guard computes the very pairs the fix lifts; round 4 allowed past the cap to review the fix (2026-11-03)
-- Outcome: —
+- Outcome: fixed (e677d0c7)
 
 ## U9 unit review round 4 — 2026-11-03, reviewed at e677d0c7 (fixes only: e677d0c7; past the cap with the owner's OK)
 
@@ -416,7 +416,7 @@ Verifier: pass (194 tests; every Acceptance case asserted; departures refine the
 - Revisit when: —
 - Guard: —
 - Override: — (approved 2026-11-04: recovery deletes and uncounts the old photo's files when it marks a row applied)
-- Outcome: —
+- Outcome: fixed (7072d075)
 
 ### U11-R1-2 — A 403 from Immich on the original download is reported as "not found in Immich"
 - Trigger: a user's Immich key lacks `asset.download` (connect and scan never need it) → JPEG rows succeed through fullsize; every HEIC/HEIF/PNG/WebP row fails `not_found_in_immich` → the app says the photos are gone from Immich when the fix is a key permission.
@@ -425,7 +425,7 @@ Verifier: pass (194 tests; every Acceptance case asserted; departures refine the
 - Revisit when: —
 - Guard: —
 - Override: — (approved 2026-11-04 with a new error code `immich_permission`, added to the plan's Conventions list)
-- Outcome: —
+- Outcome: fixed (7072d075)
 
 ### U11-R1-3 — The batch budget is only checked between rows, so one slow original can run past RQ's 600 s job timeout
 - Trigger: a row started near the 300 s budget whose download takes more than about 300 s (25 MB under about 0.7 Mbit/s) passes RQ's 600 s timeout → the apply stops `interrupted`; on resume the row is first with the full 600 s, so it fails again only if its download alone exceeds 600 s (about 0.33 Mbit/s).
@@ -443,7 +443,7 @@ Verifier: pass (194 tests; every Acceptance case asserted; departures refine the
 - Revisit when: U10's PATCH for an applied row is written: either U10 sets `photo_uuid` to the listed `applied_uuid` or the job targets `applied_uuid`, with an end-to-end test including recovery.
 - Guard: —
 - Override: —
-- Outcome: —
+- Outcome: fixed in U10 (9a2609ee, as the decision directs)
 
 ## U11 unit review round 2 — 2026-11-04, reviewed at 7072d075 (fixes only)
 
@@ -456,7 +456,7 @@ Verifier on 7072d075: pass (200 tests). Its gap (no journal-entry recovery test)
 - Revisit when: an apply fails "Immich unreachable" while the server was up, logs show immich_unreachable rows on a 401, or the Immich key reconnect flow next changes.
 - Guard: —
 - Override: user: Fix now — a few lines in code already being changed; 401 maps to immich_permission like 403, matching the scan (2026-11-04)
-- Outcome: —
+- Outcome: fixed (f1af58a4)
 
 ## U11 unit review round 3 — 2026-11-04, reviewed at f1af58a4 (fixes only: 0f6d2d65, f1af58a4)
 
@@ -612,7 +612,7 @@ Owner decisions (2026-11-04): INT-R2-1 Fix now as recommended; INT-R2-2 moved to
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: —
+- Outcome: fixed (9635cd88; regression found in round 3, see INT-R3-1)
 
 ### INT-R2-2 — A small final fingerprint batch whose few thumbnails all time out fails the whole scan, after 250 successes
 - Trigger: an album with 251 photos in the trip's dates; the lone last request times out → a 1-row pass-0 batch counts as "all failed" → the scan fails as unreachable (earlier review kept).
@@ -621,7 +621,7 @@ Owner decisions (2026-11-04): INT-R2-1 Fix now as recommended; INT-R2-2 moved to
 - Revisit when: the INT-R2-1 fix keeps a batch-shape-only check; logs show a scan failed unreachable after rows of it were fingerprinted; or a user reports "could not reach Immich" on a scan that showed progress.
 - Guard: —
 - Override: user: Fix now — fold into the INT-R2-1 fix and give the 251-photo case its own test (2026-11-04)
-- Outcome: —
+- Outcome: fixed (9635cd88; verifier pass)
 
 ## Integrated review round 3 — 2026-11-04, reviewed at 9635cd88 (fixes only: 48d8cd56..9635cd88, fix unit F4)
 
@@ -692,6 +692,8 @@ Owner decisions (2026-11-05): INT-R5-2's guard as recommended; INT-R5-1 moves to
 
 Verifier: F7 pass (103 scan-job tests, 382 in the photo-upgrade and Immich group; the new R5-1, mixed-batch, re-ask and guard tests fail on b70c949f; the partway-outage test fails against the rejected fix; no existing assertion changed). INT-R5-1 and INT-R5-2 resolved.
 
+Owner decision (2026-11-05): INT-R6-1 stays Defer, and the review loop on this rule stops here. The findings had started alternating between the two errors of one detector (R3-1 false ready, R4-1 and R5-1 false alarm, R6-1 false ready): a sampled control can tell up from down, not from intermittent. Only a design change would end that class: keep the earlier review until the user accepts a scan with unread photos, or carry ticks and picks over.
+
 ### INT-R6-1 — Under intermittent failure, a re-asked control that reads lets a batch's failed rows count as unreadable and the new review replace the earlier one
 - Trigger: a user with a ready review presses New scan while Immich or its proxy answers 5xx/429 intermittently → on the last pass some rows and the first control fail, a re-asked control reads → the failed rows are `fetch_failed`, the scan goes `ready` with those photos "No match" and counted in `unreadable_photos`, and the earlier review is deleted. At b70c949f the same batch failed safe.
 - Scores: trigger=plausible, impact=wrong-visible (data-loss considered and declined: a good rescan deletes the same ticks and picks by design, the new review is mostly real at realistic failure rates, says how many photos it could not read, and a rescan repairs it; if this were data loss, F6's own "first control reads" path would be the same defect), detect=user-visible, later=cheap, fix=S/local, confidence=verified
@@ -700,3 +702,43 @@ Verifier: F7 pass (103 scan-job tests, 382 in the photo-upgrade and Immich group
 - Guard: —
 - Override: —
 - Outcome: —
+
+## Delivery
+
+| Unit | Goal | Route | Rule | Attempts | Escalated | Verified first time | Findings traced |
+|---|---|---|---|---|---|---|---|
+| U1 | Immich probe and calibration script (owner runs it on val) | Opus to build; the owner runs the probe (OD1-OD5) | S5 | 1 | — | yes | — |
+| U7 | Per-memory dialog uses local capture day (F2 app side) | Sonnet | — | 1 | — | yes | — |
+| U3 | `sources` in the photo order state, `fill_hashes` | Opus | S4 | 1 | X3: scope widened to `tests/test_memories_photo_order.py` and `tests/test_reorder_polarsteps_memory_photos.py`, only to add `"sources": {}` to whole-state assertions | yes | U3-R1-1 (Reject: it claimed U3 edited those two files without an X3, but U3 had escalated) |
+| U6 | Three scan tables, migration `f4a8c2d61e37`, scan cleanup on trip and account deletion | Opus | S4 | 1 | — | yes | U6-R1-1 (Reject, then owner override to Fix now); U6-R2-1 (Guard) |
+| U14 | Photo-list writes become compare-and-set (`api/photo_write.py`, memories, journal, `_drop_unplaced`) | Opus | S4 | 1 | — (it made one decision in `api/memories.py` at no-latitude and reported it; the verifier judged it correct) | yes | no unit review. Plan-round R1-1 and R3-1 concern this unit's design (inferred from their text) |
+| U4 | HEIC to JPEG on ingest, sniffed media types (F4) | Opus | S4 | 1 | X3: scope widened to `_save_avatar_files` in `api/people.py`, its 422 mapping, and the avatar tests | yes | U4-R1-1, U4-R1-2 (Fix now); U4-R1-3, U4-R1-4 (Reject); U4-R2-1, U4-R2-2 (Fix now); U4-R3-1 (Defer, then fixed), U4-R3-2 (Guard). Rounds 4 and 5 found nothing |
+| U-W1fix | Fix 4 test failures at wave-1 integration (not in the original split) | Sonnet | — | 1 | — | yes | — |
+| U8 | Shared replace core, net-delta quota, adopt keeps photos (F3, F4, F5) | Opus | S4 | 1 | X3 (1): `tests/test_journal_photo_order.py`, for two TestDeletedEntry tests, plus approval to rewrite the tests that relied on adopt clearing photos. X3 (2): `tests/test_photo_write_cas.py`. Later review fixes had the scope widened with owner approval (see notes) | yes | U8-R1-1, U8-R1-2 (Fix now), U8-R1-3 (Defer, then fixed); U8-R2-1; U8-R3-1 |
+| U15 | Replace import refused during an apply (R2-1) | Opus | S4 | 1 | — | yes | U15-R1-1 (implementer reported it did not reproduce; kept as a safeguard); plan-round R2-1 |
+| U2 | Immich client module, album listing, search fixes (F1, F2 server side) | Opus | S4 | 2 launches (the first stopped at once because its worktree base was wrong) | — | yes | none at unit level. Plan-round R1-4 concerns it (inferred) |
+| U5 | Matching engine | Sonnet | — | 3 (2 launches, the first aborted on the worktree base; plus 1 continuation after the verifier flagged a D7 deviation) | — (this was a verifier-flagged fix, not X1 to X3) | no (verdict "pass", but it flagged a deviation from D7's confidence rule that had to be fixed before merge) | INT-R1-A2 (Defer; `matching.py`) |
+| U9 | Scan job chain and the `photos` queue | Opus | S5 | 1 | X3 (1): `src/immich/client.py` and `tests/test_immich_client.py` (asset width/height from `exifInfo`). X3 (2): `models/project_db.py` (the `DBPhotoUpgradeAsset` model only), one new Alembic migration `b9d3e6f1a274`, and `tests/test_photo_upgrade_tables.py` (original_width/original_height columns) | yes | U9-R1-1, U9-R1-2; U9-R2-1, U9-R2-2; U9-R3-1; INT-R1-A1 (`scan_job.py`); INT-R2-1; INT-R2-2 (fixed through F1 and F4) |
+| U11 | Apply job chain (`apply_job.py`, `src/jobs/worker.py`) | Opus | S5 | 1 | — (the fix round used private helpers from `api/photo_replace.py` without editing it, and the implementer reported "no X3") | yes | U11-R1-1, U11-R1-2 (Fix now); U11-R1-3, U11-R1-4 (Defer); U11-R2-1 (Defer, then moved to Fix now); INT-R1-A3 (Defer) |
+| U10 | Photo-upgrade API and sweeps | Opus | S5 | 1 | X3: one `_EXEMPT` entry for `create_photo_upgrade_scan` in `tests/test_project_cache_invalidation.py` | yes | U10-R1-1, U10-R1-2 (Fix now); U10-R1-3 (Defer); U10-R2-1 (Fix now). U11-R1-4 was fixed in U10 |
+| U13 | Docs, release notes, owner actions | Sonnet | — | 1 | — | yes | INT-R1-B1, INT-R1-B2 |
+| U12 | Flutter "Upgrade photos from Immich" screen | Sonnet (Latitude none, except layout choices that the plan grants) | — | 1 | — | yes | INT-R1-C1, INT-R1-C3 (Fix now); INT-R1-C2, INT-R1-C4 (Defer) |
+| F1 | Scan retry passes with `unreadable_photos`, and a `size` parameter on the thumbnail proxy | Opus | S5 (S4 also applies: the shape of an existing endpoint changes) | 1 | — | yes | INT-R1-A1 (fixed in `0f456e88`) |
+| F2 | README third-party notice test and runbook 503 wording | Sonnet | — | 1 | — | yes | INT-R1-B1, INT-R1-B2 (fixed in `27e3d3f5`) |
+| F3 | Flutter review fixes | Sonnet | — | 1 | — | yes | INT-R1-C1, INT-R1-C3 (fixed in `b39af48b`) |
+| F4 | "Immich down" judged over the whole scan | Opus | S5 | 1 | — | yes | INT-R2-1, INT-R2-2 (fixed in `9635cd88`); INT-R3-1, INT-R3-2 found in it |
+| F5 | Fail a scan left at least 10% unread | Opus | S5 | 1 | — | yes | INT-R3-1 (partly, `1a231eef`); INT-R4-1 found in it |
+| F6 | Control fetch replaces the share | Opus | S5 | 1 | — | yes | INT-R3-1, INT-R4-1 (fixed in `bfcc20b1`); INT-R5-1, INT-R5-2 found in it |
+| F7 | Sequential re-ask and control log line | Opus | S5 | 1 | — | yes | INT-R5-1, INT-R5-2 (`b5f035ab`); INT-R6-1 found in it (Defer) |
+
+Owner overrides of the split or routes: none (the split was answered with "go"). Units added after it: U-W1fix and F1–F7. "Attempts" counts implementer launches and continuations after a verifier fail or a verifier-flagged defect; continuations for X3 answers and review fixes are not attempts. U5's third attempt is a judgement call: its verifier passed it but flagged a D7 deviation that had to be fixed before merge.
+
+Findings traced for U2, U14 and U15 rest on plan-round findings, which have no location field, so those links are inferred. Whether U4, U14, U8, U15 and U-W1fix actually started on the wrong base could not be established from their reports.
+
+Worktree-base incidents (`isolation: worktree` branches from main, not the feature head): wave 1 U3 and U6 started at main and reset themselves; U2 and U5 stopped before doing any work and were relaunched in worktrees made from the feature branch. From then on, unit worktrees were made by hand from the feature head.
+
+Integration: no merge conflicts. Wave 1 had 4 test failures between units built separately (U14's hand-built photo-order state against U3's `sources` key; `.env.example` missing what U4 reads), fixed by U-W1fix.
+
+Reviews past the cap, each with the owner's OK: U4 rounds 4 and 5, U8 round 4, U9 round 4, integrated rounds 4, 5 and 6.
+
+Final checks at the merged head (db30413a plus ledger commits): server suite 7955 passed, 47 skipped, 1 deselected in the py314 container, and 11 passed on Windows (the tests that need git). Flutter unchanged since 6f1dd066: analyze clean, 2827 passed.
