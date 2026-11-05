@@ -206,6 +206,36 @@ Commands below are for prod (`/opt/traxjourney`). For val, run the same from
 `/opt/traxjourney-val`: the container paths are identical, since each stack
 mounts its own `./db` and `./data` at `/app/db` and `/app/data`.
 
+### Upgrade photos from Immich (#33)
+
+Until this is done, starting a scan or an apply answers 503 ("No worker is
+processing photo jobs"): no worker consumes the `photos` queue yet.
+
+**1. Update `worker-poster`** in the compose file of val and prod, to match
+`docker-compose.yml.example`. Its command gains the `photos` queue, and it gets
+its own decode limit (in MiB, set here and not in `.env`, which the API shares;
+anything but a positive whole number stops the worker at start):
+
+```yaml
+  worker-poster:
+    command: ["/worker-entrypoint.sh", "poster", "photos", "default", "resolve"]
+    environment:
+      TRAXJOURNEY_ROLE: worker
+      HEIF_DECODE_MEMORY_MIB: "896"
+```
+
+**2. Recreate it**, from the stack's directory:
+
+```bash
+cd /opt/traxjourney
+docker compose up -d
+```
+
+**3. Check on val.** Run a scan from a project's "Upgrade photos from Immich…"
+menu item on an Immich album; it must reach "ready" instead of answering 503.
+The Immich key needs `album.read`, `asset.read`, `asset.view`, `asset.download`
+and `server.about`, and the server Immich v5.9.0 or later.
+
 ### Photo order and thumbnail orientation (#237, #511)
 
 Needs the release's image deployed and started once, so its migration has

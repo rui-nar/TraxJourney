@@ -17,7 +17,7 @@ from sqlalchemy.orm import defer as _sa_defer
 from sqlmodel import Session, select
 
 from src.utils.logging import get_logger
-from models.project_db import DBActivity, DBEncounter, DBJournalEntry, DBMemory, DBMemoryComment, DBMemoryLike, DBPerson, DBPersonGroup, DBProject, DBProjectItem
+from models.project_db import DBActivity, DBEncounter, DBJournalEntry, DBMemory, DBMemoryComment, DBMemoryLike, DBPerson, DBPersonGroup, DBPhotoUpgradeScan, DBProject, DBProjectItem, delete_photo_upgrade_scans
 from src.models.activity import Activity
 from src.models.journal import JournalEntry
 from src.models.memory import Memory
@@ -452,6 +452,10 @@ class ProjectCoreMixin:
             select(DBPersonGroup).where(DBPersonGroup.project_id == row.id)
         ).all():
             sess.delete(group)
+
+        # Photo-upgrade scans of every person on this trip, with their album
+        # photos and suggestions (issue #33, D8).
+        delete_photo_upgrade_scans(sess, DBPhotoUpgradeScan.project_id == row.id)
 
         sess.delete(row)
         sess.commit()

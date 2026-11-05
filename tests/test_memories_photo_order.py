@@ -10,8 +10,8 @@ loses nothing — no matter what order the writes actually land in.
 
 For memories ``order`` is a *rank* (``api/photo_order.py``): a photo is
 inserted among the ranked ones, never written over a slot, and the list
-stays dense. A re-import's clear bumps an epoch that drops downloads queued
-before it, and a photo that cannot be placed (memory gone, stale epoch, old
+stays dense. A bumped epoch drops downloads queued before it (a re-import no
+longer bumps it: F5 of the Immich upgrade plan, #33), and a photo that cannot be placed (memory gone, stale epoch, old
 photo of a replace gone) leaves no files and no counted storage behind.
 
 Covers:
@@ -19,8 +19,8 @@ Covers:
     correct final position, and a missing rank leaves no gap;
   * a manual upload or a delete during an import neither gets overwritten
     nor shifts later downloads;
-  * re-import: stale downloads are dropped with their files, and a placement
-    racing the clear lands after its commit;
+  * epochs: stale downloads are dropped with their files, a placement racing
+    a bump lands after its commit, and a re-import leaves the epoch alone;
   * downloads, uploads and replaces for a memory (or photo) deleted meanwhile
     leave no files and never land in a newer memory;
   * ``order`` outside 0..9999 is refused;
@@ -29,8 +29,8 @@ Covers:
     ``tests/test_journal_photo_order.py``);
   * the end-to-end ``POST /photos/from-url`` route accepts ``order``;
   * a memory never stores the same downloaded photo twice (issue #566),
-    whether the downloads run one after the other or concurrently, while a
-    manual upload of the same bytes is still stored;
+    whether the downloads run one after the other or concurrently, or after
+    a re-import, while a manual upload of the same bytes is still stored;
   * ``delete_photo`` still works under the same lock.
 """
 from __future__ import annotations
@@ -50,12 +50,15 @@ from sqlmodel import Session, SQLModel, select
 
 import api.journal as journal_mod
 import api.memories as mem_mod
+import api.photo_replace as photo_replace_mod
 import models.db as db_module
 import src.billing.usage as usage_mod
 from api.deps import get_current_user
 from api.journal import router as journal_router
 from api.memories import router as memories_router
+from api.photo_locks import photo_lock
 from api.photo_order import load_state
+from api.photo_write import mutate_photos
 from models.billing import UserUsage
 from models.project_db import DBJournalEntry, DBMemory, DBProject
 from models.user import UserInfo
@@ -276,56 +279,86 @@ class TestWriteJournalPhotoOrdering:
         assert photos == [f"uuid-{i}" for i in range(n)]
 
 
-# ── Re-import epochs ────────────────────────────────────────────────────────
+# ── Epochs ──────────────────────────────────────────────────────────────────
+#
+# F5 of the Immich upgrade plan (#33): a re-import no longer clears a memory
+# or bumps its epoch. The guard that drops a download queued under an older
+# epoch stays, so these bump the epoch directly.
+
+def _bump_epoch(memory_id) -> None:
+    """Advance the memory's epoch by compare-and-set, leaving its photos."""
+    mutate_photos("memory", memory_id,
+                  lambda photos, state, row: (photos, {**state, "epoch": state["epoch"] + 1}))
+
+
+def _epoch(engine, memory_id) -> int:
+    with Session(engine) as sess:
+        return load_state(sess.get(DBMemory, memory_id).photo_order_json)["epoch"]
+
+
+def _folder_bytes(user_id, memory_id) -> int:
+    folder = Path(mem_mod._DATA_DIR) / "users" / str(user_id) / "memories" / str(memory_id)
+    return sum(p.stat().st_size for p in folder.glob("*"))
+
 
 class TestReimportEpoch:
-    def test_a_download_from_before_a_reimport_is_dropped_and_its_files_removed(self, env, monkeypatch):
-        client, engine, user_id, memory_id, _ = env
+    def test_a_reimport_does_not_bump_the_epoch(self, env):
+        # F5 (#33): nothing is cleared, so downloads queued before it still land.
+        _, engine, user_id, memory_id, _ = env
         _land(user_id, memory_id, order=0)
+        assert _reimport(user_id) == memory_id
+        assert _epoch(engine, memory_id) == 0
 
-        def fetch_during_reimport(url, **kwargs):
+    def test_a_download_from_before_an_epoch_bump_is_dropped_and_its_files_removed(self, env, monkeypatch):
+        # F5 (#33): the epoch is bumped directly; a re-import no longer does.
+        client, engine, user_id, memory_id, _ = env
+        first = _land(user_id, memory_id, order=0)
+        first_bytes = _folder_bytes(user_id, memory_id)
+
+        def fetch_during_bump(url, **kwargs):
             # The route has queued this download under the current epoch; the
-            # re-import clears the memory while it is still downloading.
-            assert _reimport(user_id) == memory_id
-            return _jpeg_bytes()
+            # epoch moves on while it is still downloading.
+            _bump_epoch(memory_id)
+            return _jpeg_bytes(shade=99)
 
-        monkeypatch.setattr(mem_mod, "fetch_bytes", fetch_during_reimport)
+        monkeypatch.setattr(mem_mod, "fetch_bytes", fetch_during_bump)
         resp = client.post(f"/api/memories/{memory_id}/photos/from-url",
                            json={"url": "http://x/1.jpg", "order": 1})
         assert resp.status_code == 202
 
-        assert _photos(engine, memory_id) == []
-        assert _files(user_id, memory_id) == []
-        assert _usage(engine, user_id) == _BASELINE_USAGE
+        assert _photos(engine, memory_id) == [first]
+        assert _files(user_id, memory_id) == sorted([f"{first}.jpg", f"{first}_thumb.jpg"])
+        assert _usage(engine, user_id) == _BASELINE_USAGE + first_bytes
         with Session(engine) as sess:
-            assert load_state(sess.get(DBMemory, memory_id).photo_order_json) == {"epoch": 1, "ranks": {}, "hashes": {}}
+            assert load_state(sess.get(DBMemory, memory_id).photo_order_json) == {
+                "epoch": 1, "ranks": {first: 0}, "hashes": {}, "sources": {}}
 
-    def test_a_download_queued_after_a_reimport_lands(self, env, monkeypatch):
+    def test_a_download_queued_after_an_epoch_bump_lands(self, env, monkeypatch):
+        # F5 (#33): the epoch is bumped directly; a re-import no longer does.
         client, engine, user_id, memory_id, _ = env
-        _land(user_id, memory_id, order=0)
-        _reimport(user_id)
-        monkeypatch.setattr(mem_mod, "fetch_bytes", lambda url, **kwargs: _jpeg_bytes())
+        first = _land(user_id, memory_id, order=0)
+        _bump_epoch(memory_id)
+        monkeypatch.setattr(mem_mod, "fetch_bytes", lambda url, **kwargs: _jpeg_bytes(shade=99))
 
         resp = client.post(f"/api/memories/{memory_id}/photos/from-url",
-                           json={"url": "http://x/0.jpg", "order": 0})
+                           json={"url": "http://x/1.jpg", "order": 1})
         assert resp.status_code == 202
-        assert len(_photos(engine, memory_id)) == 1
+        photos = _photos(engine, memory_id)
+        assert len(photos) == 2 and photos[0] == first
 
-    def test_a_reimport_clear_and_a_concurrent_placement_do_not_interleave(self, env, monkeypatch):
+    def test_an_epoch_bump_and_a_concurrent_placement_do_not_interleave(self, env):
+        # F5 (#33): the lock holder bumps the epoch directly, not through a re-import.
         _, engine, user_id, memory_id, _ = env
         owner = str(user_id)
-        _land(user_id, memory_id, order=0)
+        first = _land(user_id, memory_id, order=0)
         # Two photos whose files are written and which are about to be placed:
-        # a download queued before the re-import (epoch 0) and a manual upload.
+        # a download queued before the bump (epoch 0) and a manual upload.
         stale, manual = str(uuid_lib.uuid4()), str(uuid_lib.uuid4())
         for u in (stale, manual):
             mem_mod._save_photo_files(owner, memory_id, u, _jpeg_bytes())
 
-        original_clear = mem_mod._clear_memory_photos
         racers = []
-        blocked = []
-
-        def clear_with_racers(sess, user_id_, mem_row):
+        with photo_lock("memory", memory_id):
             for uuid_str, order, epoch in ((stale, 0, 0), (manual, None, None)):
                 t = threading.Thread(target=mem_mod._write_memory_photo,
                                      args=(memory_id, uuid_str, order, epoch),
@@ -333,24 +366,20 @@ class TestReimportEpoch:
                 t.start()
                 racers.append(t)
             time.sleep(0.3)
-            # Both are waiting on the photo lock the re-import holds.
-            blocked.append(all(t.is_alive() for t in racers))
-            original_clear(sess, user_id_, mem_row)
-
-        monkeypatch.setattr(mem_mod, "_clear_memory_photos", clear_with_racers)
-        _reimport(user_id)
+            # Both are waiting on the photo lock the bump holds.
+            blocked = all(t.is_alive() for t in racers)
+            _bump_epoch(memory_id)
         for t in racers:
             t.join()
 
-        assert blocked == [True]
-        # The manual photo landed after the clear's commit (not wiped by it);
-        # the stale download was dropped by the epoch rule, files and all.
-        assert _photos(engine, memory_id) == [manual]
-        assert _files(user_id, memory_id) == sorted([f"{manual}.jpg", f"{manual}_thumb.jpg"])
-        manual_bytes = sum((Path(mem_mod._DATA_DIR) / "users" / owner / "memories" / str(memory_id) / f).stat().st_size
-                           for f in _files(user_id, memory_id))
-        # The previously imported photo went with the clear, uncounted.
-        assert _usage(engine, user_id) == _BASELINE_USAGE + manual_bytes
+        assert blocked
+        # The manual photo landed after the bump's commit; the stale download
+        # was dropped by the epoch rule, files and all.
+        assert _photos(engine, memory_id) == [first, manual]
+        assert _files(user_id, memory_id) == sorted([f"{first}.jpg", f"{first}_thumb.jpg",
+                                                     f"{manual}.jpg", f"{manual}_thumb.jpg"])
+        # The stale download's files are uncounted.
+        assert _usage(engine, user_id) == _BASELINE_USAGE + _folder_bytes(user_id, memory_id)
 
 
 # ── Photos for a memory deleted meanwhile ───────────────────────────────────
@@ -460,13 +489,14 @@ class TestReplaceRacingDelete:
     def test_replacing_a_photo_deleted_meanwhile_answers_404_and_leaves_no_files(self, env, monkeypatch):
         client, engine, user_id, memory_id, _ = env
         old = _land(user_id, memory_id, order=0)
-        original_save = mem_mod._save_photo_files
+        original_save = photo_replace_mod.save_photo_files
 
         def delete_old_then_save(*args):
             mem_mod.delete_photo(memory_id, old, _user(user_id))
             original_save(*args)
 
-        monkeypatch.setattr(mem_mod, "_save_photo_files", delete_old_then_save)
+        # The replace writes its files through api/photo_replace.py.
+        monkeypatch.setattr(photo_replace_mod, "save_photo_files", delete_old_then_save)
         resp = client.put(f"/api/memories/{memory_id}/photos/{old}/replace",
                           files={"file": ("n.jpg", _jpeg_bytes(), "image/jpeg")})
         assert resp.status_code == 404
@@ -479,13 +509,13 @@ class TestReplaceRacingDelete:
             self, env, monkeypatch):
         client, engine, user_id, memory_id, _ = env
         old = _land(user_id, memory_id, order=0)
-        original_save = mem_mod._save_photo_files
+        original_save = photo_replace_mod.save_photo_files
 
         def delete_memory_then_save(*args):
             mem_mod.delete_memory(memory_id, _user(user_id))
             original_save(*args)
 
-        monkeypatch.setattr(mem_mod, "_save_photo_files", delete_memory_then_save)
+        monkeypatch.setattr(photo_replace_mod, "save_photo_files", delete_memory_then_save)
         resp = client.put(f"/api/memories/{memory_id}/photos/{old}/replace",
                           files={"file": ("n.jpg", _jpeg_bytes(), "image/jpeg")})
         assert resp.status_code == 404
@@ -683,19 +713,45 @@ class TestFromUrlDedup:
         assert _hashes(engine, memory_id) == {p0: _sha(content["http://x/0.jpg"]),
                                               p1: _sha(content["http://x/1.jpg"])}
 
-    def test_after_a_reimport_clear_the_same_photos_download_again(self, env, monkeypatch):
+    def test_after_a_reimport_the_same_photos_are_skipped_and_a_missing_one_is_placed(
+            self, env, monkeypatch):
+        # F5 (#33): a re-import keeps the photos and fills their hashes, so its
+        # downloads of them are skipped; before, it cleared them and they came back.
         client, engine, user_id, memory_id, _ = env
-        raw = _jpeg_bytes()
-        monkeypatch.setattr(mem_mod, "fetch_bytes", lambda url, **kwargs: raw)
+        owner = str(user_id)
+        content = {f"http://x/{i}.jpg": _jpeg_bytes(shade=40 * i) for i in range(4)}
+        monkeypatch.setattr(mem_mod, "fetch_bytes", lambda url, **kwargs: content[url])
+        # 0: downloaded, with its hash recorded.
         _queue(client, memory_id, "http://x/0.jpg", 0)
-        (before,) = _photos(engine, memory_id)
+        (downloaded,) = _photos(engine, memory_id)
+        # 1 and 2: placed before hashes existed, with none recorded.
+        hashless, replaced = str(uuid_lib.uuid4()), str(uuid_lib.uuid4())
+        for photo_uuid, url, order in ((hashless, "http://x/1.jpg", 1), (replaced, "http://x/2.jpg", 2)):
+            mem_mod._save_photo_files(owner, memory_id, photo_uuid, content[url])
+            mem_mod._write_memory_photo(memory_id, photo_uuid, order, owner_dir=owner)
+        # 2 is upgraded to an original, which carries the old file's hash.
+        resp = client.put(f"/api/memories/{memory_id}/photos/{replaced}/replace",
+                          files={"file": ("o.jpg", _jpeg_bytes(shade=250), "image/jpeg")})
+        assert resp.status_code == 200, resp.text
+        original = resp.json()["uuid"]
 
         assert _reimport(user_id) == memory_id
-        _queue(client, memory_id, "http://x/0.jpg", 0)
+        usage = _usage(engine, user_id)
+        for i in range(3):
+            _queue(client, memory_id, f"http://x/{i}.jpg", i)
 
-        (after,) = _photos(engine, memory_id)
-        assert after != before
-        assert _hashes(engine, memory_id) == {after: _sha(raw)}
+        assert _photos(engine, memory_id) == [downloaded, hashless, original]
+        assert _usage(engine, user_id) == usage
+        # 3 is a photo the memory lacks: it is placed.
+        _queue(client, memory_id, "http://x/3.jpg", 3)
+        *kept, added = _photos(engine, memory_id)
+        assert kept == [downloaded, hashless, original]
+        assert _hashes(engine, memory_id) == {
+            downloaded: _sha(content["http://x/0.jpg"]),
+            hashless: _sha(content["http://x/1.jpg"]),     # filled by the re-import
+            original: _sha(content["http://x/2.jpg"]),     # carried by the replace
+            added: _sha(content["http://x/3.jpg"]),
+        }
 
     def test_a_deleted_photo_downloads_again(self, env, monkeypatch):
         client, engine, _, memory_id, _ = env

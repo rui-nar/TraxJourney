@@ -28,6 +28,12 @@ import 'photo_source.dart' show PickedPhoto;
 class ImmichCandidate {
   final String id;
   final DateTime takenAt;
+
+  /// The photo's wall-clock capture time where it was taken (Immich's
+  /// `localDateTime`), carried as a UTC [DateTime] with the offset dropped —
+  /// the same "wall clock as UTC" convention as on-device EXIF. Null when the
+  /// server did not send `local_taken_at`.
+  final DateTime? localTakenAt;
   final double? lat;
   final double? lon;
 
@@ -38,10 +44,45 @@ class ImmichCandidate {
   const ImmichCandidate({
     required this.id,
     required this.takenAt,
+    this.localTakenAt,
     this.lat,
     this.lon,
     required this.thumbUrl,
   });
+
+  /// The instant day comparisons use: the local wall clock when known, else
+  /// [takenAt] as before.
+  DateTime get dayComparisonTime => localTakenAt ?? takenAt;
+}
+
+/// Widening applied to each side of a local day when searching, so the photos
+/// of any timezone (UTC-12 .. UTC+14) fall inside the requested UTC window.
+const Duration kImmichSearchWindowMargin = Duration(hours: 14);
+
+/// Searches Immich for the memory's local [date] (`YYYY-MM-DD`). The UTC window
+/// is the day widened by [kImmichSearchWindowMargin] on both sides; callers
+/// then narrow the result with [filterImmichCandidatesForDay]. Same never-throws
+/// contract as [fetchImmichCandidatesForDay].
+Future<List<ImmichCandidate>> fetchImmichCandidatesForLocalDay({
+  required String baseUrl,
+  required Map<String, String> authHeaders,
+  required String date,
+  http.Client? httpClient,
+}) {
+  final parts = date.split('-');
+  final dayStart = DateTime.utc(
+    int.parse(parts[0]),
+    int.parse(parts[1]),
+    int.parse(parts[2]),
+  );
+  return fetchImmichCandidatesForDay(
+    baseUrl: baseUrl,
+    authHeaders: authHeaders,
+    dayStartUtc: dayStart.subtract(kImmichSearchWindowMargin),
+    dayEndUtc:
+        dayStart.add(const Duration(days: 1)).add(kImmichSearchWindowMargin),
+    httpClient: httpClient,
+  );
 }
 
 /// Queries `/api/immich/search` for every asset captured within
@@ -103,9 +144,25 @@ ImmichCandidate? _parseCandidate(dynamic raw) {
   final takenAt = DateTime.tryParse(takenAtRaw);
   if (takenAt == null) return null;
 
+  // Keep the wall-clock fields and drop any zone: "wall clock as UTC".
+  final localRaw = raw['local_taken_at'];
+  final localParsed = localRaw is String ? DateTime.tryParse(localRaw) : null;
+  final localTakenAt = localParsed == null
+      ? null
+      : DateTime.utc(
+          localParsed.year,
+          localParsed.month,
+          localParsed.day,
+          localParsed.hour,
+          localParsed.minute,
+          localParsed.second,
+          localParsed.millisecond,
+        );
+
   return ImmichCandidate(
     id: id,
     takenAt: takenAt,
+    localTakenAt: localTakenAt,
     lat: (raw['lat'] as num?)?.toDouble(),
     lon: (raw['lon'] as num?)?.toDouble(),
     thumbUrl: thumbUrl,
@@ -131,7 +188,8 @@ List<ImmichCandidate> filterImmichCandidatesForDay({
     final mismatch = classifyDayGeoMatch(
       date: date,
       localOffset: localOffset,
-      candidate: PhotoCandidate(capturedAt: c.takenAt, lat: c.lat, lon: c.lon),
+      candidate: PhotoCandidate(
+          capturedAt: c.dayComparisonTime, lat: c.lat, lon: c.lon),
       memoryLat: memoryLat,
       memoryLon: memoryLon,
       geoToleranceKm: geoToleranceKm,
@@ -175,7 +233,7 @@ Future<PickedPhoto> downloadImmichCandidate({
   final bytes = res.bodyBytes;
   final pHash = computeAverageHash(bytes);
   final photoCandidate = PhotoCandidate(
-    capturedAt: candidate.takenAt,
+    capturedAt: candidate.dayComparisonTime,
     lat: candidate.lat,
     lon: candidate.lon,
     pHash: pHash,

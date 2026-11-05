@@ -17,6 +17,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 import api.immich as immich_module
 import models.db as db_module
+import src.immich.client as client_module
 from api.deps import get_current_user
 from api.immich import router as immich_router
 from models.user import ImmichToken, UserInfo
@@ -271,6 +272,7 @@ def test_search_proxies_params_and_reshapes_response(env, monkeypatch):
     assert candidates[0] == {
         "id": "asset-1",
         "taken_at": "2024-06-15T10:30:00.000Z",
+        "local_taken_at": None,
         "lat": 48.85,
         "lon": 2.35,
         "thumb_url": "/api/immich/assets/asset-1/thumbnail",
@@ -297,6 +299,144 @@ def test_search_upstream_failure_maps_to_502(env, monkeypatch):
     assert resp.status_code == 502
 
 
+def _search_page(items, next_page=None):
+    return _FakeResponse(status_code=200, json_data={"assets": {"items": items, "nextPage": next_page}})
+
+
+def test_search_returns_every_page(env, monkeypatch):
+    client, engine, uid = env
+    _connect(engine, uid)
+    pages = [
+        _search_page([{"id": "a1", "fileCreatedAt": "2024-06-15T10:00:00.000Z"}], "2"),
+        _search_page([{"id": "a2", "fileCreatedAt": "2024-06-15T11:00:00.000Z"}], "3"),
+        _search_page([{"id": "a3", "fileCreatedAt": "2024-06-15T12:00:00.000Z"}], None),
+    ]
+    sent = []
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        sent.append(json["page"])
+        return pages.pop(0)
+
+    monkeypatch.setattr(immich_module._http, "post", fake_post)
+    resp = client.post("/api/immich/search", json=_SEARCH)
+    assert resp.status_code == 200, resp.text
+    assert [c["id"] for c in resp.json()["candidates"]] == ["a1", "a2", "a3"]
+    assert sent == [1, 2, 3]
+
+
+def test_search_logs_a_warning_when_it_cuts_the_result(env, monkeypatch, caplog):
+    client, engine, uid = env
+    _connect(engine, uid)
+    calls = []
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        calls.append(json["page"])
+        n = json["page"]
+        return _search_page([{"id": f"a{n}", "fileCreatedAt": "2024-06-15T10:00:00.000Z"}], str(n + 1))
+
+    monkeypatch.setattr(immich_module._http, "post", fake_post)
+    with caplog.at_level("WARNING", logger="api.immich"):
+        resp = client.post("/api/immich/search", json=_SEARCH)
+    assert resp.status_code == 200
+    assert len(resp.json()["candidates"]) == 10
+    assert len(calls) == 10
+    assert any("truncated" in r.getMessage() for r in caplog.records)
+    assert "secret-key" not in caplog.text and "immich.example.com" not in caplog.text
+
+
+def test_search_does_not_warn_when_nothing_is_cut(env, monkeypatch, caplog):
+    client, engine, uid = env
+    _connect(engine, uid)
+    monkeypatch.setattr(immich_module._http, "post", lambda *a, **k: _search_page([], None))
+    with caplog.at_level("WARNING", logger="api.immich"):
+        assert client.post("/api/immich/search", json=_SEARCH).status_code == 200
+    assert not any("truncated" in r.getMessage() for r in caplog.records)
+
+
+def test_search_returns_the_local_capture_time_when_present(env, monkeypatch):
+    client, engine, uid = env
+    _connect(engine, uid)
+    monkeypatch.setattr(immich_module._http, "post", lambda *a, **k: _search_page([
+        {"id": "local", "fileCreatedAt": "2024-03-20T16:23:00.000Z",
+         "localDateTime": "2024-03-20T17:23:00.000Z"},
+        {"id": "none", "fileCreatedAt": "2024-03-20T16:23:00.000Z"},
+    ]))
+    resp = client.post("/api/immich/search", json=_SEARCH)
+    assert resp.status_code == 200
+    got = {c["id"]: c["local_taken_at"] for c in resp.json()["candidates"]}
+    # Wall-clock local time, passed through untouched (not converted from UTC).
+    assert got == {"local": "2024-03-20T17:23:00.000Z", "none": None}
+
+
+def test_search_403_names_the_permissions(env, monkeypatch):
+    client, engine, uid = env
+    _connect(engine, uid)
+    monkeypatch.setattr(immich_module._http, "post", lambda *a, **k: _FakeResponse(status_code=403))
+    resp = client.post("/api/immich/search", json=_SEARCH)
+    assert resp.status_code == 502
+    assert "asset.read" in resp.json()["detail"]
+
+
+# ── Albums ────────────────────────────────────────────────────────────────────
+
+def test_albums_lists_owned_and_shared(env, monkeypatch):
+    client, engine, uid = env
+    _connect(engine, uid, server_url="https://immich.example.com", api_key="secret-key")
+    answers = {
+        "https://immich.example.com/api/albums": [
+            {"id": "al1", "albumName": "Japan 2024", "assetCount": 37,
+             "startDate": "2024-03-01T08:00:00.000Z", "endDate": "2024-03-10T20:00:00.000Z",
+             "albumThumbnailAssetId": "t1", "shared": False},
+        ],
+        "https://immich.example.com/api/albums?shared=true": [
+            {"id": "al2", "albumName": "Friends", "assetCount": 4},
+        ],
+    }
+    seen = []
+
+    def fake_get(url, headers=None, timeout=None):
+        seen.append(headers["x-api-key"])
+        return _FakeResponse(status_code=200, json_data=answers[url])
+
+    monkeypatch.setattr(immich_module._http, "get", fake_get)
+    resp = client.get("/api/immich/albums")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"albums": [
+        {"id": "al1", "name": "Japan 2024", "asset_count": 37,
+         "start_date": "2024-03-01T08:00:00.000Z", "end_date": "2024-03-10T20:00:00.000Z",
+         "thumb_url": "/api/immich/assets/t1/thumbnail", "shared": False},
+        {"id": "al2", "name": "Friends", "asset_count": 4, "start_date": None, "end_date": None,
+         "thumb_url": None, "shared": True},
+    ]}
+    assert seen == ["secret-key", "secret-key"]
+    assert "immich.example.com" not in resp.text
+
+
+def test_albums_requires_connection(env):
+    client, _engine, _uid = env
+    assert client.get("/api/immich/albums").status_code == 400
+
+
+def test_albums_403_is_a_502_naming_the_permissions(env, monkeypatch):
+    client, engine, uid = env
+    _connect(engine, uid)
+    monkeypatch.setattr(immich_module._http, "get", lambda *a, **k: _FakeResponse(status_code=403))
+    resp = client.get("/api/immich/albums")
+    assert resp.status_code == 502
+    detail = resp.json()["detail"]
+    for permission in ("album.read", "asset.read", "asset.view", "asset.download"):
+        assert permission in detail
+
+
+def test_albums_other_failures_are_502(env, monkeypatch):
+    client, engine, uid = env
+    _connect(engine, uid)
+    monkeypatch.setattr(immich_module._http, "get", lambda *a, **k: _FakeResponse(status_code=500))
+    resp = client.get("/api/immich/albums")
+    assert resp.status_code == 502
+    assert "HTTP 500" in resp.json()["detail"]
+
+
 # ── Asset proxying ────────────────────────────────────────────────────────────
 
 def test_thumbnail_streams_bytes_through(env, monkeypatch):
@@ -317,6 +457,36 @@ def test_thumbnail_streams_bytes_through(env, monkeypatch):
     assert resp.content == b"\xff\xd8\xff\xfake-jpeg-bytes"
     assert captured["url"] == "https://immich.example.com/api/assets/asset-1/thumbnail"
     assert captured["headers"]["x-api-key"] == "secret-key"
+
+
+@pytest.mark.parametrize("size", ["preview", "thumbnail"])
+def test_thumbnail_passes_the_size_asked_for_to_immich(env, monkeypatch, size):
+    """The photo upgrade's compare view asks for ``size=preview`` (#33)."""
+    client, engine, uid = env
+    _connect(engine, uid, server_url="https://immich.example.com", api_key="secret-key")
+    urls = []
+
+    def fake_get(url, headers=None, timeout=None, stream=None):
+        urls.append(url)
+        return _FakeResponse(status_code=200, headers={"content-type": "image/jpeg"},
+                             content=b"jpeg")
+
+    monkeypatch.setattr(immich_module._http, "get", fake_get)
+    resp = client.get(f"/api/immich/assets/asset-1/thumbnail?size={size}")
+    assert resp.status_code == 200
+    assert urls == [f"https://immich.example.com/api/assets/asset-1/thumbnail?size={size}"]
+
+
+@pytest.mark.parametrize("size", ["original", "fullsize", "PREVIEW", ""])
+def test_thumbnail_refuses_any_other_size(env, monkeypatch, size):
+    client, engine, uid = env
+    _connect(engine, uid)
+    urls = []
+    monkeypatch.setattr(immich_module._http, "get",
+                        lambda url, **k: urls.append(url) or _FakeResponse(status_code=200))
+    resp = client.get(f"/api/immich/assets/asset-1/thumbnail?size={size}")
+    assert resp.status_code == 422
+    assert urls == []
 
 
 def test_original_streams_bytes_through(env, monkeypatch):
@@ -405,6 +575,7 @@ def unauth_client(monkeypatch):
     ("put", "/api/immich/config"),
     ("delete", "/api/immich/disconnect"),
     ("post", "/api/immich/search"),
+    ("get", "/api/immich/albums"),
     ("get", "/api/immich/assets/x/thumbnail"),
     ("get", "/api/immich/assets/x/original"),
 ])
@@ -511,6 +682,17 @@ def test_the_asset_proxy_refuses_a_stored_server_that_is_no_longer_allowed(env, 
     assert opened == []
 
 
+def test_albums_refuse_a_stored_server_on_a_non_public_address(env, net):
+    client, engine, uid = env
+    dns, opened, _ = net
+    _connect(engine, uid, server_url="http://immich.example.com")
+    dns["immich.example.com"] = ["10.1.2.3"]
+    resp = client.get("/api/immich/albums")
+    assert resp.status_code == 502
+    assert "IMMICH_ALLOWED_HOSTS" in resp.json()["detail"]
+    assert opened == []
+
+
 def test_search_refuses_a_stored_server_on_a_non_public_address(env, net):
     client, engine, uid = env
     dns, opened, _ = net
@@ -569,7 +751,7 @@ def test_search_answers_502_when_the_body_cannot_be_read(env, net):
 def test_search_answers_502_when_the_body_is_over_the_cap(env, net, monkeypatch):
     client, engine, uid = env
     dns, opened, script = net
-    monkeypatch.setattr(immich_module, "_MAX_JSON_BYTES", 10)
+    monkeypatch.setattr(client_module, "_MAX_JSON_BYTES", 10)
     _connect(engine, uid, server_url="https://immich.example.com")
     dns["immich.example.com"] = ["93.184.216.34"]
     script.append(_Raw(200, b'{"assets": {"items": []}, "padding": "xxxxxxxx"}'))
@@ -596,16 +778,16 @@ def test_the_asset_proxy_allows_a_long_download(env, net, monkeypatch):
     dns["immich.example.com"] = ["93.184.216.34"]
     script.append(_Raw(200, b"JPEG", {"content-type": "image/jpeg"}))
     seen = {}
-    real_open_url = immich_module.open_url
+    real_open_url = client_module.open_url
 
     def spy(url, **kwargs):
         seen.update(kwargs)
         return real_open_url(url, **kwargs)
 
-    monkeypatch.setattr(immich_module, "open_url", spy)
+    monkeypatch.setattr(client_module, "open_url", spy)
     assert client.get("/api/immich/assets/abc/original").status_code == 200
-    assert seen["total_timeout"] == immich_module._DOWNLOAD_TOTAL_SECONDS
-    assert seen["idle_timeout"] == immich_module._DOWNLOAD_TIMEOUT[1]
+    assert seen["total_timeout"] == client_module._DOWNLOAD_TOTAL_SECONDS
+    assert seen["idle_timeout"] == client_module._DOWNLOAD_TIMEOUT[1]
 
 
 
@@ -617,7 +799,7 @@ def test_config_with_an_api_key_holding_a_line_break_is_a_422_not_a_500(env, net
     def refuse_header(*a, **k):
         raise ValueError("Invalid header value")
 
-    monkeypatch.setattr(immich_module, "open_url", refuse_header)
+    monkeypatch.setattr(client_module, "open_url", refuse_header)
     resp = client.put("/api/immich/config",
                       json={"server_url": "https://immich.example.com", "api_key": "a\r\nb"})
     assert resp.status_code == 422

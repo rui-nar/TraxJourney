@@ -14,7 +14,7 @@ import os
 import sys
 import time
 
-from src.jobs.queue import ALL_QUEUES, QUEUE_VIDEO
+from src.jobs.queue import ALL_QUEUES, QUEUE_PHOTOS, QUEUE_VIDEO
 from src.jobs.redis_client import get_redis, redis_url, reset_redis
 from src.utils.logging import configure_logging, env_level, get_logger
 from src.utils.metrics_multiproc import forget_process
@@ -57,6 +57,22 @@ _INTERRUPT_HANDLERS: dict[str, tuple[str, str]] = {
         "src.video.job_runner.mark_video_job_interrupted",
         "The preview was stopped unexpectedly (likely out of memory) — "
         "try again."),
+    # The scan chain of the Immich photo upgrade, on ``photos``
+    # (docs/plans/IMMICH_ALBUM_UPGRADE_PLAN.md D9): any of its jobs fails the scan.
+    "src.photo_upgrade.scan_job.run_scan_prepare": (
+        "src.photo_upgrade.scan_job.mark_scan_interrupted",
+        "The check of your album was interrupted. Please start it again."),
+    "src.photo_upgrade.scan_job.run_scan_fingerprint": (
+        "src.photo_upgrade.scan_job.mark_scan_interrupted",
+        "The check of your album was interrupted. Please start it again."),
+    "src.photo_upgrade.scan_job.run_scan_match": (
+        "src.photo_upgrade.scan_job.mark_scan_interrupted",
+        "The check of your album was interrupted. Please start it again."),
+    # Its apply chain: the batch's rows left applying are recovered and the
+    # apply stops as "interrupted", a code the app words itself.
+    "src.photo_upgrade.apply_job.run_apply_batch": (
+        "src.photo_upgrade.apply_job.mark_apply_interrupted",
+        "interrupted"),
 }
 
 
@@ -135,6 +151,21 @@ def main(argv: list[str] | None = None) -> int:
 
     queues = argv if argv else list(ALL_QUEUES)
 
+    # A HEIC decode limit nobody chose must stop the worker now, not fail every
+    # HEIC photo later (docs/plans/IMMICH_ALBUM_UPGRADE_PLAN.md, U9 step 1a).
+    # Imported here, like the sweeps below: it pulls in Pillow and pillow-heif.
+    from src.utils.photo_store import (
+        HEIF_DECODE_MEMORY_ENV, HEIF_DECODE_MEMORY_MIB_DEFAULT, HeifDecodeConfigError,
+        heif_decode_memory_mib)
+
+    try:
+        heif_decode_memory_mib()
+    except HeifDecodeConfigError as exc:
+        _log.error("cannot start a worker: %s: set %s=%d (worker-poster uses 896), "
+                   "or unset it for that default", exc, HEIF_DECODE_MEMORY_ENV,
+                   HEIF_DECODE_MEMORY_MIB_DEFAULT)
+        return 1
+
     if not redis_url():
         _log.error(
             "cannot start a worker: REDIS_URL is not set. Without a broker "
@@ -155,6 +186,15 @@ def main(argv: list[str] | None = None) -> int:
         from src.video.job_runner import sweep_stale_running_video_jobs
 
         sweep_stale_running_video_jobs()
+
+    if QUEUE_PHOTOS in queues:
+        # Likewise the photos queue's only consumer: a "scanning" scan, or a
+        # "running" apply, belongs to a job that died with the previous worker.
+        from src.photo_upgrade.apply_job import sweep_running_applies
+        from src.photo_upgrade.scan_job import sweep_scanning_scans
+
+        sweep_scanning_scans()
+        sweep_running_applies()
 
     from rq import Worker
 

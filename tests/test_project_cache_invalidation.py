@@ -56,9 +56,13 @@ _EXEMPT = {
     "create_video_job": "video rendering does not mutate the project",
     "plan_video": "video rendering does not mutate the project",
     "create_video_preview_job": "video rendering does not mutate the project",
+    # Starts an Immich photo-upgrade scan (issue #33); writes only its own tables.
+    "create_photo_upgrade_scan": "inserts a scan row; nothing in /meta changes, and photos "
+                                 "change only through replace_photo_bytes, which busts",
     # Delegates its write (and the bust) to a helper in the same module.
     "upload_photo": "busts via _append_photo/_append_photo_to_memory",
     "queue_photo_from_url": "background task busts via _append_photo",
+    "replace_photo": "busts inside api.photo_replace.replace_photo_bytes, after its write",
     # The whole-map day-meta PUT, retired for PATCH /day-meta.
     "update_day_meta": "retired (#397): answers 426 and writes nothing",
 }

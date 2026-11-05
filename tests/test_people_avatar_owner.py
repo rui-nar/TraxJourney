@@ -167,6 +167,54 @@ def test_invalid_image_writes_nothing(env):
     assert _usage(engine, ids["owner"]) == 0
 
 
+def _avatar_paths(engine, ids, data_dir):
+    uuid_str = _avatar_uuid(engine, ids["person"])
+    folder = data_dir / "users" / str(ids["owner"]) / "people" / str(ids["person"])
+    return folder / f"{uuid_str}.jpg", folder / f"{uuid_str}_thumb.jpg"
+
+
+def test_a_jpeg_avatar_is_stored_byte_for_byte(env):
+    client, engine, ids, act_as, data_dir = env
+    raw = _jpeg_bytes()
+    assert _upload(client, ids["person"], raw).status_code == 201
+
+    full, thumb = _avatar_paths(engine, ids, data_dir)
+    assert full.read_bytes() == raw
+    assert _usage(engine, ids["owner"]) == full.stat().st_size + thumb.stat().st_size
+    resp = client.get(f"/api/people/{ids['person']}/avatar")
+    assert resp.content == raw
+    assert resp.headers["content-type"] == "image/jpeg"
+
+
+def test_a_heic_avatar_is_stored_and_served_as_jpeg(env):
+    """A HEIC avatar goes through the shared photo writer (#33, D4). The HEIF
+    opener is registered by src/utils/photo_store.py, which api.people imports."""
+    client, engine, ids, act_as, data_dir = env
+    buf = io.BytesIO()
+    Image.new("RGB", (40, 30), (200, 30, 30)).save(buf, "HEIF")
+    assert _upload(client, ids["person"], buf.getvalue()).status_code == 201
+
+    full, thumb = _avatar_paths(engine, ids, data_dir)
+    with Image.open(full) as stored:
+        assert stored.format == "JPEG" and stored.size == (40, 30)
+    assert _usage(engine, ids["owner"]) == full.stat().st_size + thumb.stat().st_size
+    resp = client.get(f"/api/people/{ids['person']}/avatar")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/jpeg"
+    assert resp.content == full.read_bytes()
+
+
+def test_a_png_avatar_is_served_as_png(env):
+    client, engine, ids, act_as, data_dir = env
+    buf = io.BytesIO()
+    Image.new("RGB", (20, 20), (200, 30, 30)).save(buf, "PNG")
+    assert _upload(client, ids["person"], buf.getvalue()).status_code == 201
+
+    resp = client.get(f"/api/people/{ids['person']}/avatar")
+    assert resp.content == buf.getvalue()
+    assert resp.headers["content-type"] == "image/png"
+
+
 def test_replacing_avatar_removes_old_files_from_owner_folder(env):
     client, engine, ids, act_as, data_dir = env
     act_as("editor")

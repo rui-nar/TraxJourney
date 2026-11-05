@@ -21,6 +21,10 @@ ENV_EXAMPLE = ROOT / ".env.example"
 NOT_OPERATOR_SETTINGS = {
     # Baked into the image from the release tag (Dockerfile ARG/ENV).
     "APP_VERSION",
+    # Passed through to the HEIF decoding child process (photo_store), not
+    # operator settings.
+    "PATH",
+    "SYSTEMROOT",
 }
 
 _LITERAL_READ = re.compile(

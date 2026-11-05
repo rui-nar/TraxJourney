@@ -35,6 +35,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from models.db import get_session
 from pydantic import BaseModel, Field
+from sqlalchemy import inspect
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
@@ -49,8 +50,10 @@ from api.project_access import (
     translate_insert_after,
 )
 from api.photo_locks import photo_lock
-from api.photo_order import clear as clear_order, dump_state, has_hash, load_state, place
-from api.photo_order import remove as remove_from_order, replace as replace_in_order
+from api.photo_order import fill_hashes, has_hash, load_state, place
+from api.photo_order import remove as remove_from_order
+from api.photo_write import PHOTO_CONFLICT_DETAIL, PhotoWriteConflict, mutate_photos
+from api.photo_replace import PhotoGone, replace_photo_bytes
 from api.project_shared import bust_project_payloads, project_cache_ref
 from api.translations import translate_text
 from models.project_db import DBMemory, DBMemoryComment, DBMemoryLike, DBMemoryTranslation, DBProject, DBProjectItem
@@ -59,7 +62,7 @@ from src.models.value_bounds import Lat, Lon
 from src.billing.entitlements import ensure_storage_quota, ensure_trip_days_quota
 from src.billing.usage import unlink_and_record
 from src.utils.photo_paths import photo_file, photo_files, photo_folder
-from src.utils.photo_store import InvalidPhoto, PhotoTooLarge, save_photo_files
+from src.utils.photo_store import InvalidPhoto, PhotoTooLarge, photo_media_type, prepare_photo, save_photo_files
 from src.utils.safe_fetch import fetch_bytes
 from src.exceptions.errors import QuotaExceeded
 from src.models.memory import Memory
@@ -331,21 +334,26 @@ def _find_namedate_match(sess, project_id: int, body: "MemoryBody") -> Optional[
 
 
 def _adopt_and_refresh(sess, user_id: str, mem_row: DBMemory, body: "MemoryBody") -> int:
-    """Adopt an existing memory for a Polarsteps re-import: backfill the step id,
-    overwrite scalar fields from the step (Polarsteps is source of truth), and
-    clear photos so the client's re-upload repopulates a fresh set. Returns the
-    memory id; never creates a second row or project item.
+    """Adopt an existing memory for a Polarsteps re-import: backfill the step id
+    and overwrite scalar fields from the step (Polarsteps is source of truth).
+    Returns the memory id; never creates a second row or project item.
 
-    The photo lock is held from before the clear until after the commit, so no
-    photo placement can land between the two (#237): one that waits on the
-    lock lands after the commit, where the clear's epoch bump decides its fate.
-    Nothing inside the window takes ``photo_lock`` again (it is not re-entrant).
+    Its photos all stay, upgraded and hand-added ones included (F5 of
+    docs/plans/IMMICH_ALBUM_UPGRADE_PLAN.md, #33). Each listed photo with no
+    hash yet gets the sha256 of its full-size file, so the client's
+    re-download of a photo the memory already has is skipped by the hash
+    check, and one it lacks is placed. Nothing is cleared, so the epoch stays.
+
+    The files are hashed before the photo lock is taken. The refreshed fields
+    and the hashes are written in one compare-and-set transaction; when the
+    photo list keeps changing under it, nothing is written and this answers
+    409. Nothing inside the lock takes ``photo_lock`` again (it is not
+    re-entrant).
     """
+    memory_id = mem_row.id
     lat, lon = _resolve_body_geo(sess, mem_row.project_id, body)
-    with photo_lock("memory", mem_row.id):
-        # The row was read before the lock: a photo placed since then must be
-        # in the list the clear deletes, or its files would be orphaned.
-        sess.refresh(mem_row)
+    hashes = _hash_unhashed_photos(user_id, mem_row)
+    with photo_lock("memory", memory_id):
         mem_row.name = body.name
         mem_row.date = body.date
         mem_row.time = body.time
@@ -354,12 +362,11 @@ def _adopt_and_refresh(sess, user_id: str, mem_row: DBMemory, body: "MemoryBody"
         mem_row.lat = lat
         mem_row.lon = lon
         mem_row.polarsteps_step_id = body.polarsteps_step_id
-        _clear_memory_photos(sess, user_id, mem_row)
-        sess.add(mem_row)
-        cache_ref = project_cache_ref(sess, mem_row.project_id)
-        sess.commit()
-    bust_project_payloads(cache_ref)
-    return mem_row.id
+        try:
+            _write_refresh(sess, mem_row, hashes)
+        except PhotoWriteConflict:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=PHOTO_CONFLICT_DETAIL)
+    return memory_id
 
 
 class MemoryBody(BaseModel):
@@ -591,10 +598,17 @@ def delete_memory(
 
 def _save_photo_files(user_id: str, memory_id: int, uuid_str: str, raw: bytes) -> None:
     # Decode, write and count the photo (src/utils/photo_store.py). Memory
-    # photos live under the project OWNER's tree (the caller passes that id).
+    # photos live under the project OWNER's tree (the caller passes that id),
+    # so it is the owner's quota that applies: a companion uploading to a
+    # shared trip spends the owner's space. The quota is checked on the bytes
+    # stored, a HEIC photo's larger JPEG (U8-R2-1); QuotaExceeded propagates
+    # with nothing written.
     folder = photo_folder(_DATA_DIR, user_id, "memories", memory_id)
     try:
-        save_photo_files(user_id, folder, uuid_str, raw)
+        stored = prepare_photo(raw)
+        with get_session() as sess:
+            ensure_storage_quota(sess, int(user_id), len(stored))
+        save_photo_files(user_id, folder, uuid_str, stored)
     except PhotoTooLarge as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -622,20 +636,50 @@ def _delete_photo_files(user_id: str, memory_id: int, photo_uuids: List[str]) ->
             remove_share_copy(full)
 
 
-def _clear_memory_photos(sess, user_id: str, mem_row: DBMemory) -> None:
-    """Drop all photos from *mem_row*: delete files, empty the list and ranks,
-    and bump the epoch so downloads queued before the clear are dropped.
-
-    Used when a Polarsteps re-import adopts an existing memory and refreshes it,
-    so the client's subsequent ``from-url`` uploads repopulate a clean set rather
-    than appending duplicates onto the previously imported photos. The caller
-    holds ``photo_lock`` through its commit; this does not take it.
+def _hash_unhashed_photos(user_id: str, mem_row: DBMemory) -> Dict[str, str]:
+    """``{uuid: sha256}`` of the full-size file of each photo listed on
+    *mem_row* that has no hash yet. A photo whose file is missing is left
+    out. Reads files under *user_id*'s tree; takes no lock.
     """
-    existing: List[str] = [p for p in json.loads(mem_row.photos_json or "[]") if p]
-    if existing:
-        _delete_photo_files(user_id, mem_row.id, existing)
-    mem_row.photos_json = "[]"
-    mem_row.photo_order_json = dump_state(clear_order(load_state(mem_row.photo_order_json)))
+    known = load_state(mem_row.photo_order_json)["hashes"]
+    folder = photo_folder(_DATA_DIR, user_id, "memories", mem_row.id)
+    hashes: Dict[str, str] = {}
+    for photo_uuid in json.loads(mem_row.photos_json or "[]"):
+        if not photo_uuid or photo_uuid in known:
+            continue
+        full = photo_file(folder, photo_uuid)
+        if full is None or not full.is_file():
+            continue
+        try:
+            hashes[photo_uuid] = hashlib.sha256(full.read_bytes()).hexdigest()
+        except FileNotFoundError:
+            # Deleted meanwhile: left unhashed, like a missing file.
+            continue
+    return hashes
+
+
+def _write_refresh(sess, mem_row: DBMemory, hashes: Dict[str, str]) -> None:
+    """Write the fields the caller changed on *mem_row*, not yet flushed in
+    *sess*, and record *hashes* for the listed photos that still have none,
+    in one compare-and-set transaction (D13). The photo list, ranks, sources
+    and epoch are left as they are. *mem_row* is then expired in *sess*.
+
+    The caller holds ``photo_lock``; this does not take it. Raises
+    ``PhotoWriteConflict``, having written nothing, when the list kept
+    changing under it.
+    """
+    changed = {attr.key: attr.value for attr in inspect(mem_row).attrs if attr.history.has_changes()}
+
+    def refresh(photos, state, row):
+        for key, value in changed.items():
+            setattr(row, key, value)
+        # Always a result: the refreshed fields are written with it.
+        return photos, fill_hashes(photos, state, hashes)
+
+    written = mutate_photos("memory", mem_row.id, refresh)
+    sess.expire(mem_row)
+    if written is not None:
+        bust_project_payloads(written.cache_ref)
 
 
 def _write_memory_photo(
@@ -665,24 +709,31 @@ def _write_memory_photo(
     (a concurrent download of the same photo placed first), this one is a
     duplicate and its files are deleted the same way. Manual uploads pass
     none and are never refused.
+
+    The write is a compare-and-set (``api/photo_write.py``). When the list
+    keeps changing under it, the files are deleted the same way and
+    ``PhotoWriteConflict`` propagates.
     """
+    def place_photo(photos, state, row):
+        photos = [p for p in photos if p]
+        if ((epoch is not None and state["epoch"] != epoch)
+                or (content_hash is not None and has_hash(state, photos, content_hash))):
+            return None
+        return place(photos, state, uuid_str, order, content_hash=content_hash)
+
     with photo_lock("memory", memory_id):
-        with get_session() as sess:
-            mem_row = sess.get(DBMemory, memory_id)
-            state = load_state(mem_row.photo_order_json) if mem_row is not None else None
-            photos = [p for p in json.loads(mem_row.photos_json or "[]") if p] if mem_row is not None else []
-            if (mem_row is None or (epoch is not None and state["epoch"] != epoch)
-                    or (content_hash is not None and has_hash(state, photos, content_hash))):
-                if owner_dir is not None:
-                    _delete_photo_files(owner_dir, memory_id, [uuid_str])
-                return False
-            photos, state = place(photos, state, uuid_str, order, content_hash=content_hash)
-            mem_row.photos_json = json.dumps(photos)
-            mem_row.photo_order_json = dump_state(state)
-            sess.add(mem_row)
-            cache_ref = project_cache_ref(sess, mem_row.project_id)
-            sess.commit()
-            bust_project_payloads(cache_ref)
+        try:
+            placed = mutate_photos("memory", memory_id, place_photo)
+        except PhotoWriteConflict:
+            # Refused like any other placement, but the caller says why.
+            if owner_dir is not None:
+                _delete_photo_files(owner_dir, memory_id, [uuid_str])
+            raise
+        if placed is None:
+            if owner_dir is not None:
+                _delete_photo_files(owner_dir, memory_id, [uuid_str])
+            return False
+        bust_project_payloads(placed.cache_ref)
     return True
 
 
@@ -714,17 +765,18 @@ def _download_photo_from_url(
     if duplicate:
         _log.info("Skipped photo download for memory %s: it already has this photo", memory_id)
         return
+    uuid_str = str(uuid_lib.uuid4())
     # Same quota rule as a direct upload, but this runs in a background task —
     # there is no request left to answer 402 on, so it just declines to store.
     try:
-        with get_session() as sess:
-            ensure_storage_quota(sess, int(user_id), len(content))
+        _save_photo_files(user_id, memory_id, uuid_str, content)
     except QuotaExceeded:
         _log.info("Skipped photo download for user %s: storage quota reached", user_id)
         return
-    uuid_str = str(uuid_lib.uuid4())
-    _save_photo_files(user_id, memory_id, uuid_str, content)
-    _write_memory_photo(memory_id, uuid_str, order, epoch, owner_dir=user_id, content_hash=content_hash)
+    try:
+        _write_memory_photo(memory_id, uuid_str, order, epoch, owner_dir=user_id, content_hash=content_hash)
+    except PhotoWriteConflict:
+        _log.error("Photo download for memory %s not placed: its photo list kept changing", memory_id)
 
 
 class PhotoFromUrlIn(BaseModel):
@@ -756,9 +808,8 @@ async def upload_photo(
             detail=f"Photo exceeds the {_MAX_PHOTO_UPLOAD_BYTES // (1024 * 1024)}MB upload limit",
         )
     # The bytes land in the owner's tree, so it is the owner's quota that
-    # applies — a companion uploading to a shared trip spends the owner's space.
-    with get_session() as sess:
-        ensure_storage_quota(sess, int(owner_dir), len(raw))
+    # applies — a companion uploading to a shared trip spends the owner's
+    # space. _save_photo_files checks it on the bytes it will store.
     photo_uuid = str(uuid_lib.uuid4())
     # JPEG decode + LANCZOS thumbnail resize is CPU-bound; run it off the event
     # loop so one upload doesn't stall every other in-flight request (mirrors
@@ -766,7 +817,11 @@ async def upload_photo(
     # semaphore comment above — but here via FastAPI's thread pool instead of
     # a sync route, since the rest of this handler needs to stay async).
     await run_in_threadpool(_save_photo_files, owner_dir, memory_id, photo_uuid, raw)
-    if not _write_memory_photo(memory_id, photo_uuid, owner_dir=owner_dir):
+    try:
+        placed = _write_memory_photo(memory_id, photo_uuid, owner_dir=owner_dir)
+    except PhotoWriteConflict:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=PHOTO_CONFLICT_DETAIL)
+    if not placed:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Memory not found")
     return {"uuid": photo_uuid}
 
@@ -803,21 +858,25 @@ def delete_photo(
 ):
     """Remove a photo from a memory and delete its files from disk."""
     user_info_id = int(current_user["sub"])
-    with photo_lock("memory", memory_id), get_session() as sess:
-        mem_row = _get_owned_memory(sess, memory_id, user_info_id)
-        photos: List[str] = json.loads(mem_row.photos_json or "[]")
+
+    def drop(photos, state, row):
         if photo_uuid not in photos:
+            return None
+        return remove_from_order(photos, state, photo_uuid)
+
+    with photo_lock("memory", memory_id):
+        with get_session() as sess:
+            mem_row = _get_owned_memory(sess, memory_id, user_info_id)
+            owner_dir = _owner_dir_id(sess, mem_row)
+        try:
+            removed = mutate_photos("memory", memory_id, drop)
+        except PhotoWriteConflict:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=PHOTO_CONFLICT_DETAIL)
+        if removed is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
-
-        _delete_photo_files(_owner_dir_id(sess, mem_row), memory_id, [photo_uuid])
-
-        photos, state = remove_from_order(photos, load_state(mem_row.photo_order_json), photo_uuid)
-        mem_row.photos_json = json.dumps(photos)
-        mem_row.photo_order_json = dump_state(state)
-        sess.add(mem_row)
-        cache_ref = project_cache_ref(sess, mem_row.project_id)
-        sess.commit()
-        bust_project_payloads(cache_ref)
+        bust_project_payloads(removed.cache_ref)
+        # Only once the list no longer names the photo.
+        _delete_photo_files(owner_dir, memory_id, [photo_uuid])
 
 
 @router.put("/{memory_id}/photos/{old_uuid}/replace", status_code=status.HTTP_200_OK,
@@ -843,34 +902,26 @@ async def replace_photo(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=f"Photo exceeds the {_MAX_PHOTO_UPLOAD_BYTES // (1024 * 1024)}MB upload limit",
         )
-    with get_session() as sess:
-        ensure_storage_quota(sess, int(owner_dir), len(raw))
-    new_uuid = str(uuid_lib.uuid4())
-    await run_in_threadpool(_save_photo_files, owner_dir, memory_id, new_uuid, raw)
-
-    with photo_lock("memory", memory_id), get_session() as sess:
-        mem_row = sess.get(DBMemory, memory_id)
-        # Same position and rank, not remove+append: photos_json order is
-        # display order. None when the old photo was deleted meanwhile.
-        replaced = None if mem_row is None else replace_in_order(
-            [p for p in json.loads(mem_row.photos_json or "[]") if p],
-            load_state(mem_row.photo_order_json), old_uuid, new_uuid,
-        )
-        if replaced is None:
-            # The memory or the old photo went while the new files were
-            # written: they have nowhere to go (#237).
-            _delete_photo_files(owner_dir, memory_id, [new_uuid])
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
-        photos, state = replaced
-        mem_row.photos_json = json.dumps(photos)
-        mem_row.photo_order_json = dump_state(state)
-        sess.add(mem_row)
-        cache_ref = project_cache_ref(sess, mem_row.project_id)
-        sess.commit()
-        bust_project_payloads(cache_ref)
-        # Still under the lock: a delete_memory's folder sweep would otherwise
-        # size these same files and uncount them a second time.
-        _delete_photo_files(owner_dir, memory_id, [old_uuid])
+    # Storage, hashes, files and the list write: api/photo_replace.py. The
+    # decode is CPU-bound, so it runs off the event loop. The quota is the
+    # owner's: the bytes land in their tree.
+    try:
+        new_uuid = await run_in_threadpool(
+            replace_photo_bytes, "memory", memory_id, old_uuid, raw, owner_dir=owner_dir)
+    except PhotoGone:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
+    except PhotoWriteConflict:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=PHOTO_CONFLICT_DETAIL)
+    except PhotoTooLarge as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"This photo is too large: {exc}.",
+        ) from exc
+    except InvalidPhoto as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Invalid image file",
+        ) from exc
     return {"uuid": new_uuid}
 
 
@@ -892,7 +943,7 @@ def serve_photo(
     full_path = photo_file(photo_folder(_DATA_DIR, owner_dir, "memories", memory_id), photo_uuid)
     if full_path is None or not full_path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
-    return FileResponse(str(full_path), media_type="image/jpeg")
+    return FileResponse(str(full_path), media_type=photo_media_type(full_path))
 
 
 def stripped_photo_response(original: Path, headers: Dict[str, str]) -> FileResponse:
@@ -964,7 +1015,7 @@ def serve_photo_thumb(
         if thumb_path is None or not thumb_path.exists():
             full_path = photo_file(photo_path, photo_uuid)
             if full_path is not None and full_path.exists():
-                return FileResponse(str(full_path), media_type="image/jpeg")
+                return FileResponse(str(full_path), media_type=photo_media_type(full_path))
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
         return FileResponse(str(thumb_path), media_type="image/jpeg")
     finally:

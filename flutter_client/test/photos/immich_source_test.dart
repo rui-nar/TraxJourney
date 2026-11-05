@@ -31,10 +31,12 @@ Map<String, dynamic> _rawCandidate({
   double? lat = 48.85,
   double? lon = 2.35,
   String thumbUrl = '/api/immich/assets/asset-1/thumb',
+  String? localTakenAt,
 }) =>
     {
       'id': id,
       'taken_at': takenAt,
+      if (localTakenAt != null) 'local_taken_at': localTakenAt,
       'lat': lat,
       'lon': lon,
       'thumb_url': thumbUrl,
@@ -152,6 +154,106 @@ void main() {
       );
 
       expect(candidates, isEmpty);
+    });
+  });
+
+  group('local capture time', () {
+    test('local_taken_at is parsed as wall clock in UTC; absent is null', () async {
+      final mock = MockClient((req) async => http.Response(
+            jsonEncode({
+              'candidates': [
+                _rawCandidate(
+                  id: 'with-local',
+                  takenAt: '2026-07-09T23:00:00Z',
+                  localTakenAt: '2026-07-10T08:00:00.000Z',
+                ),
+                _rawCandidate(id: 'without-local'),
+              ],
+            }),
+            200,
+          ));
+
+      final candidates = await fetchImmichCandidatesForDay(
+        baseUrl: _baseUrl,
+        authHeaders: _authHeaders,
+        dayStartUtc: DateTime.utc(2026, 7, 10),
+        dayEndUtc: DateTime.utc(2026, 7, 11),
+        httpClient: mock,
+      );
+
+      expect(candidates[0].localTakenAt, DateTime.utc(2026, 7, 10, 8, 0));
+      expect(candidates[1].localTakenAt, isNull);
+    });
+
+    test('a photo at 08:00 local in UTC+9 lands on its local day', () {
+      // 08:00 on 10 July in UTC+9 is 23:00 UTC on 9 July.
+      final tokyoMorning = ImmichCandidate(
+        id: 'tokyo',
+        takenAt: DateTime.utc(2026, 7, 9, 23, 0),
+        localTakenAt: DateTime.utc(2026, 7, 10, 8, 0),
+        thumbUrl: '/thumb/tokyo',
+      );
+
+      final onTenth = filterImmichCandidatesForDay(
+        date: '2026-07-10',
+        localOffset: Duration.zero,
+        candidates: [tokyoMorning],
+      );
+      final onNinth = filterImmichCandidatesForDay(
+        date: '2026-07-09',
+        localOffset: Duration.zero,
+        candidates: [tokyoMorning],
+      );
+
+      expect(onTenth.map((c) => c.id), ['tokyo']);
+      expect(onNinth, isEmpty);
+    });
+
+    test('a candidate without local_taken_at is bucketed on takenAt as before', () {
+      final noLocal = ImmichCandidate(
+        id: 'no-local',
+        takenAt: DateTime.utc(2026, 7, 9, 23, 0),
+        thumbUrl: '/thumb/no-local',
+      );
+
+      expect(
+        filterImmichCandidatesForDay(
+          date: '2026-07-09',
+          localOffset: Duration.zero,
+          candidates: [noLocal],
+        ).map((c) => c.id),
+        ['no-local'],
+      );
+      expect(
+        filterImmichCandidatesForDay(
+          date: '2026-07-10',
+          localOffset: Duration.zero,
+          candidates: [noLocal],
+        ),
+        isEmpty,
+      );
+    });
+  });
+
+  group('fetchImmichCandidatesForLocalDay', () {
+    test('requests the local day widened by 14 h on each side', () async {
+      Map<String, dynamic>? sent;
+      final mock = MockClient((req) async {
+        sent = jsonDecode(req.body) as Map<String, dynamic>;
+        return http.Response(jsonEncode({'candidates': []}), 200);
+      });
+
+      await fetchImmichCandidatesForLocalDay(
+        baseUrl: _baseUrl,
+        authHeaders: _authHeaders,
+        date: '2026-07-10',
+        httpClient: mock,
+      );
+
+      expect(DateTime.parse(sent!['taken_after'] as String),
+          DateTime.utc(2026, 7, 9, 10, 0));
+      expect(DateTime.parse(sent!['taken_before'] as String),
+          DateTime.utc(2026, 7, 11, 14, 0));
     });
   });
 

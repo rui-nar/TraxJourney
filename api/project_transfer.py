@@ -40,13 +40,13 @@ from starlette.concurrency import run_in_threadpool
 from api.deps import get_current_user
 from api.geo import bust_geo_cache
 from api.photo_locks import photo_lock
+from api.photo_order import remove as remove_from_order
+from api.photo_write import PhotoWriteConflict, mutate_photos
 from api.project_access import OwnerParam, resolve_project
 import api.project_shared as project_shared
 from api.project_shared import (
-    _DATA_DIR, _repo, bust_project_payloads, project_cache_ref,
-    queue_share_tiles_refresh, queue_stats_refresh,
+    _DATA_DIR, _repo, bust_project_payloads, queue_share_tiles_refresh, queue_stats_refresh,
 )
-from models.project_db import DBJournalEntry, DBMemory
 from src.billing.entitlements import (
     ensure_project_quota, ensure_storage_quota, ensure_trip_span_quota,
 )
@@ -60,7 +60,10 @@ from src.models.great_circle import great_circle_points
 from src.models.project import Project
 from src.project.photo_placement import already_present, place_photos
 from src.project.project_io import InvalidProjectFile, ProjectIO
-from src.project.repo_transfer import Placement, PhotoRemoval, ProjectNameTaken, SpanCheck
+from src.project.repo_transfer import (
+    Placement, PhotoRemoval, PhotoUpgradeRunning, ProjectNameTaken, SpanCheck,
+    photo_upgrade_running,
+)
 from src.project.staged_photos import StagedPhotos, staged_total
 from src.project.zip_import import MANIFEST_NAME, InvalidTripArchive, read_trip_zip
 from src.utils.logging import get_logger, request_id_var
@@ -306,6 +309,20 @@ def _name_conflict(name: str) -> JSONResponse:
     )
 
 
+def _photo_upgrade_running() -> JSONResponse:
+    """409 for a Replace of a trip whose photos are being upgraded from
+    Immich (issue #33): an apply pending or running on it."""
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={
+            "detail": "Photos on this trip are being upgraded from Immich. "
+                      "Try again once that has finished.",
+            "code": "photo_upgrade_running",
+            "request_id": request_id_var.get(),
+        },
+    )
+
+
 def _remove_photos(removals: list[PhotoRemoval]) -> None:
     """Delete the photo files a replace dropped, once it has committed."""
     for removal in removals:
@@ -391,9 +408,12 @@ async def import_project(
         if taken and on_conflict == "replace":
             # The same trip, new content: no new trip, so no limit on the
             # number of trips. Its length is checked before the commit.
-            removals = _repo.replace_project(
-                sess, user_info_id, name, project, data_dir=project_shared._DATA_DIR,
-                span_check=_trip_days_check(user_info_id))
+            try:
+                removals = _repo.replace_project(
+                    sess, user_info_id, name, project, data_dir=project_shared._DATA_DIR,
+                    span_check=_trip_days_check(user_info_id))
+            except PhotoUpgradeRunning:
+                return _photo_upgrade_running()
         if removals is None:
             # A copy or a new name is a new trip. The storage quota does not
             # apply: nothing lands on disk. The size is bounded by
@@ -430,7 +450,9 @@ router.add_api_route(
     responses={
         400: {"description": "Not a .traxj file, or not a readable trip"},
         409: {"description": "The name is taken and on_conflict was not given; "
-                             "the body's name field holds it"},
+                             "the body's name field holds it. On replace, also "
+                             "while the trip's photos are being upgraded from "
+                             "Immich (code photo_upgrade_running)"},
         413: {"description": "The file is larger than MAX_IMPORT_BYTES"},
         408: {"description": "The upload stalled, or took too long to arrive"},
         503: {"description": "Another trip import is in progress"},
@@ -539,27 +561,35 @@ def _ingest_zip(
 
 #: photo_lock's key for each placement kind: the one that kind's uploads take.
 _PHOTO_LOCK_KEYS = {"memories": "memory", "journal": "journal"}
-_PHOTO_ROWS = {"memories": DBMemory, "journal": DBJournalEntry}
 
 
 def _drop_unplaced(kind: str, row_id: int, photo: str) -> None:
     """Remove *photo*, which could not be placed, from its committed row.
 
-    Under the row's photo lock, as an upload changes it, and re-read inside
-    it, so a photo added to the row since the import's commit is kept.
+    Under the row's photo lock, as an upload changes it, and by
+    compare-and-set (``api/photo_write.py``), so a photo added to the row
+    since the import's commit, in this process or another, is kept. The
+    photo's rank and hash go with it.
     """
     lock_key = _PHOTO_LOCK_KEYS[kind]
+
+    def drop(photos, state, row):
+        if photo not in photos:
+            return None
+        return remove_from_order(photos, state, photo)
+
     with photo_lock(lock_key, row_id):
-        cache_ref = None
-        with get_session() as sess:
-            row = sess.get(_PHOTO_ROWS[kind], row_id)
-            if row is not None:  # else deleted since: nothing names the photo
-                photos = json.loads(row.photos_json or "[]")
-                row.photos_json = json.dumps([p for p in photos if p != photo])
-                sess.add(row)
-                cache_ref = project_cache_ref(sess, row.project_id)
-                sess.commit()
-        bust_project_payloads(cache_ref)
+        try:
+            # None when the row was deleted since, or no longer names the photo.
+            dropped = mutate_photos(lock_key, row_id, drop)
+        except PhotoWriteConflict:
+            _log.error(
+                "import: %s %s photo %s could not be placed after the commit, and its "
+                "name stays listed: the row kept changing under photo_lock(%r, %s)",
+                kind, row_id, photo, lock_key, row_id)
+            return
+        if dropped is not None:
+            bust_project_payloads(dropped.cache_ref)
     _log.error(
         "import: %s %s photo %s could not be placed after the commit; its name was "
         "removed from the row under photo_lock(%r, %s)",
@@ -604,6 +634,10 @@ async def import_project_zip(
             return _name_conflict(name)
         if not (taken and on_conflict == "replace"):
             ensure_project_quota(sess, user_info_id)
+        elif photo_upgrade_running(sess, _repo.project_id_for(sess, user_info_id, name)):
+            # Refused before minutes of reading. replace_project's own check,
+            # under the write lock, is still the one that decides.
+            return _photo_upgrade_running()
 
     staging = await run_in_threadpool(_new_staging_dir)
     try:
@@ -615,8 +649,12 @@ async def import_project_zip(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from None
 
-        imported, removals, placements = await run_in_threadpool(
-            _ingest_zip, user_info_id, name, project, staged, on_conflict)
+        try:
+            imported, removals, placements = await run_in_threadpool(
+                _ingest_zip, user_info_id, name, project, staged, on_conflict)
+        except PhotoUpgradeRunning:
+            # An apply started while the archive was read.
+            return _photo_upgrade_running()
         if imported is None:
             # A concurrent request took the name after the check above.
             return _name_conflict(name)
@@ -659,7 +697,9 @@ router.add_api_route(
         402: {"description": "The trip or its photos would exceed the plan's "
                              "trip count or storage"},
         409: {"description": "The name is taken and on_conflict was not given; "
-                             "the body's name field holds it"},
+                             "the body's name field holds it. On replace, also "
+                             "while the trip's photos are being upgraded from "
+                             "Immich (code photo_upgrade_running)"},
         413: {"description": "The file is larger than MAX_ZIP_IMPORT_BYTES"},
         408: {"description": "The upload stalled, or took too long to arrive"},
         503: {"description": "Another trip import is in progress"},

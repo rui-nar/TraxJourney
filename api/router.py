@@ -54,6 +54,11 @@ from api.memories import router as memories_router
 from api.metrics import router as metrics_router
 from api.middleware import install_middleware, route_template
 from api.people import router as people_router
+from api.photo_upgrade import (
+    router as photo_upgrade_router,
+    scans_router as photo_upgrade_scans_router,
+    sweep_photo_upgrade_scans,
+)
 from api.polarsteps import router as polarsteps_router
 from api.poster import poster_public_router, router as poster_router
 from api.project_items import router as project_items_router
@@ -129,6 +134,19 @@ async def lifespan(_app: FastAPI):
     # Same for the key the connected-service credentials are stored under:
     # without it no Strava, Polarsteps or Immich connection can be read or saved.
     credentials_keyring()
+    # And for the HEIC decode limit: a value nobody chose would otherwise fail
+    # every HEIC upload, each as the user's fault (U9 step 1a of
+    # docs/plans/IMMICH_ALBUM_UPGRADE_PLAN.md).
+    from src.utils.photo_store import (
+        HEIF_DECODE_MEMORY_ENV, HEIF_DECODE_MEMORY_MIB_DEFAULT, HeifDecodeConfigError,
+        heif_decode_memory_mib)
+
+    try:
+        heif_decode_memory_mib()
+    except HeifDecodeConfigError as exc:
+        raise HeifDecodeConfigError(
+            f"{exc}: set {HEIF_DECODE_MEMORY_ENV}={HEIF_DECODE_MEMORY_MIB_DEFAULT}, "
+            "or unset it for that default") from None
     if not _IS_API_PROCESS:
         # A worker shares this codebase but must not own schema or schedules.
         _log.info("TRAXJOURNEY_ROLE=%s — skipping migrations, admin seed and scheduler", _ROLE)
@@ -205,6 +223,11 @@ async def lifespan(_app: FastAPI):
     # complete. Hourly, on a minute no other job uses.
     _scheduler.add_job(sweep_poster_jobs, "cron", minute=50,
                        id="poster_sweep", replace_existing=True)
+    # Immich photo-upgrade scans (issue #33, D8/D9): fail scans and stop
+    # applies whose job died unseen or never started, and delete scans after
+    # 30 days. Hourly, on a minute no other job uses.
+    _scheduler.add_job(sweep_photo_upgrade_scans, "cron", minute=25,
+                       id="photo_upgrade_sweep", replace_existing=True)
     # How old the installed local rail data is (issue #345): a gauge and a daily
     # WARNING while it is over 40 days or unreadable. Daily, an hour after the
     # monthly refresh (04:10), and once at start-up too, so the gauge exists
@@ -280,6 +303,8 @@ app.include_router(invites_router)
 app.include_router(memories_router)
 app.include_router(metrics_router)
 app.include_router(people_router)
+app.include_router(photo_upgrade_router)
+app.include_router(photo_upgrade_scans_router)
 app.include_router(polarsteps_router)
 app.include_router(poster_router)
 app.include_router(poster_public_router)

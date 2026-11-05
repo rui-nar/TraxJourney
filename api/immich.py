@@ -10,21 +10,18 @@ Routes:
     GET    /api/immich/status                 — connection status
     PUT    /api/immich/config                 — validate & store server_url + api_key
     DELETE /api/immich/disconnect             — remove stored config
+    GET    /api/immich/albums                 — list the user's albums, owned and shared
     POST   /api/immich/search                 — search Immich by taken date range
     GET    /api/immich/assets/{id}/thumbnail  — proxy an asset's thumbnail bytes
+                                                (``?size=preview``: its preview)
     GET    /api/immich/assets/{id}/original   — proxy an asset's original bytes
 """
 from __future__ import annotations
 
-from typing import Annotated, List, Optional
-
-import json as _json
-import math
-import os
+from typing import Annotated, List, Literal, Optional
 
 import requests
-import urllib3
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlmodel import select
@@ -32,124 +29,22 @@ from sqlmodel import select
 from api.deps import get_current_user
 from models.db import get_session
 from models.user import ImmichToken
-from src.utils.safe_fetch import DestinationRefused, FetchRefused, SafeResponse, open_url
+from src.immich.client import (  # noqa: F401  (_http and the timeouts are used by scripts and tests)
+    _ALLOWED_HOSTS_ENV,
+    _DOWNLOAD_TIMEOUT,
+    _SEARCH_TIMEOUT,
+    _VALIDATE_TIMEOUT,
+    ImmichAddressNotAllowed,
+    ImmichBadAnswer,
+    ImmichClient,
+    ImmichRejected,
+    ImmichUnreachable,
+    _http,
+)
+from src.utils.logging import get_logger
 
 router = APIRouter(prefix="/api/immich", tags=["immich"])
-
-# (connect, read) seconds — same shape as the other outbound clients in this
-# codebase (see src/api/strava_client.py, src/api/polarsteps_client.py).
-_VALIDATE_TIMEOUT: tuple = (5, 10)
-_SEARCH_TIMEOUT: tuple = (5, 30)
-# Original photos can be multi-MB, so downloads get a more generous read budget.
-_DOWNLOAD_TIMEOUT: tuple = (5, 60)
-
-# Body caps: a JSON answer is small; an original can be a large photo.
-_MAX_JSON_BYTES = 20 * 1024 * 1024
-_MAX_ASSET_BYTES = 200 * 1024 * 1024
-# A streamed original may take a while on a slow uplink (and is paced by the
-# downstream client); the per-read wait, _DOWNLOAD_TIMEOUT's read part, still
-# bounds a stalled server.
-_DOWNLOAD_TOTAL_SECONDS = 30 * 60
-
-# The Immich server URL is the user's choice, so every call to it goes through
-# the guarded fetch (src/utils/safe_fetch): public addresses only, unless the
-# operator lists the host in IMMICH_ALLOWED_HOSTS (a self-hosted Immich on the
-# LAN or another container). Loopback and link-local stay refused regardless.
-_ALLOWED_HOSTS_ENV = "IMMICH_ALLOWED_HOSTS"
-
-
-def _allowed_private_hosts() -> list:
-    """Hosts the operator allows to be private, read per call (runtime env)."""
-    return [h.strip() for h in os.environ.get(_ALLOWED_HOSTS_ENV, "").split(",") if h.strip()]
-
-
-class ImmichAddressNotAllowed(Exception):
-    """The Immich server URL points at an address the policy refuses."""
-
-
-class _Response:
-    """The slice of a requests.Response this module uses. A non-streamed
-    response is read in full when it is opened, so a failure while reading
-    the body surfaces there, as a requests exception, like before."""
-
-    def __init__(self, resp: SafeResponse, *, stream: bool):
-        self._resp = resp
-        self.status_code = resp.status
-        self.headers = resp.headers
-        self._body = None if stream else resp.read_all()
-
-    def json(self):
-        body = self._body if self._body is not None else self._resp.read_all()
-        charset = None
-        for part in (self.headers.get("content-type") or "").split(";")[1:]:
-            key, _, value = part.strip().partition("=")
-            if key.lower() == "charset" and value:
-                charset = value.strip().strip('"')
-        try:
-            return _json.loads(body.decode(charset) if charset else body)
-        except LookupError:  # an unknown charset: let json detect UTF-8/16/32
-            return _json.loads(body)
-
-    def iter_content(self, chunk_size=None):
-        return self._resp.iter_bytes()
-
-    def close(self):
-        self._resp.close()
-
-
-class _GuardedHttp:
-    """requests-shaped get/post over the guarded fetch. Network failures come
-    back as requests exceptions, as before; a refused address as
-    ImmichAddressNotAllowed."""
-
-    def _open(self, method, url, *, headers, body, timeout, max_bytes, total, stream):
-        try:
-            resp = open_url(
-                url, method=method, headers=headers, body=body,
-                max_bytes=max_bytes, total_timeout=total, idle_timeout=float(timeout[1]),
-                allowed_private_hosts=_allowed_private_hosts(),
-            )
-        except DestinationRefused as exc:
-            raise ImmichAddressNotAllowed(str(exc)) from None
-        except FetchRefused as exc:
-            raise requests.RequestException(str(exc)) from None
-        except (urllib3.exceptions.HTTPError, OSError) as exc:
-            raise requests.ConnectionError(str(exc)) from None
-        except ValueError as exc:  # http.client refuses e.g. a header with a line break
-            raise requests.RequestException(str(exc)) from None
-        try:
-            return _Response(resp, stream=stream)
-        except FetchRefused as exc:
-            raise requests.RequestException(str(exc)) from None
-        except (urllib3.exceptions.HTTPError, OSError) as exc:
-            raise requests.ConnectionError(str(exc)) from None
-
-    def get(self, url, headers=None, timeout=_VALIDATE_TIMEOUT, stream=False):
-        if stream:
-            return self._open("GET", url, headers=headers, body=None, timeout=timeout,
-                              max_bytes=_MAX_ASSET_BYTES, total=_DOWNLOAD_TOTAL_SECONDS, stream=True)
-        return self._open("GET", url, headers=headers, body=None, timeout=timeout,
-                          max_bytes=_MAX_JSON_BYTES, total=float(sum(timeout)), stream=False)
-
-    def post(self, url, headers=None, json=None, timeout=_SEARCH_TIMEOUT):
-        body = _json.dumps(json).encode() if json is not None else None
-        hdrs = {**(headers or {}), "Content-Type": "application/json"}
-        return self._open("POST", url, headers=hdrs, body=body, timeout=timeout,
-                          max_bytes=_MAX_JSON_BYTES, total=float(sum(timeout)), stream=False)
-
-
-_http = _GuardedHttp()
-
-
-def _coordinate(value, limit: float):
-    """A finite number within +/-limit, else None (bool is not a number here)."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    try:
-        value = float(value)
-    except OverflowError:
-        return None
-    return value if math.isfinite(value) and -limit <= value <= limit else None
+_log = get_logger(__name__)
 
 
 def _not_allowed(status_code: int) -> HTTPException:
@@ -185,6 +80,11 @@ class ImmichSearchRequest(BaseModel):
 class ImmichCandidateOut(BaseModel):
     id: str = Field(description="Immich asset id")
     taken_at: str = Field(description="Capture timestamp (Immich's fileCreatedAt)")
+    local_taken_at: Optional[str] = Field(
+        None,
+        description="Wall-clock local capture time (Immich's localDateTime, written with a "
+                    "trailing Z that is not UTC), or null. Its date part is the local capture day.",
+    )
     lat: Optional[float] = Field(None, description="GPS latitude from EXIF, or null if unavailable")
     lon: Optional[float] = Field(None, description="GPS longitude from EXIF, or null if unavailable")
     thumb_url: str = Field(description="Our own proxied thumbnail URL for this asset")
@@ -195,6 +95,20 @@ class ImmichSearchOut(BaseModel):
         description="Day-matched Immich assets. No geo filtering is done here — "
                      "the client's own matching engine does day+geo filtering."
     )
+
+
+class ImmichAlbumOut(BaseModel):
+    id: str = Field(description="Immich album id")
+    name: str = Field(description="Album name")
+    asset_count: Optional[int] = Field(None, description="Number of assets in the album, or null")
+    start_date: Optional[str] = Field(None, description="Earliest asset date, or null")
+    end_date: Optional[str] = Field(None, description="Latest asset date, or null")
+    thumb_url: Optional[str] = Field(None, description="Our own proxied URL of the album cover, or null")
+    shared: bool = Field(description="True if the album is shared")
+
+
+class ImmichAlbumsOut(BaseModel):
+    albums: List[ImmichAlbumOut] = Field(description="The user's own albums, then those shared with them")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -218,6 +132,19 @@ def _require_token(user_info_id: int) -> ImmichToken:
 
 def _headers(api_key: str) -> dict:
     return {"x-api-key": api_key}
+
+
+def _client_error(exc: Exception, what: str) -> HTTPException:
+    """A client failure as a 502. A 403 names the permissions the key needs."""
+    if isinstance(exc, ImmichAddressNotAllowed):
+        return _not_allowed(status.HTTP_502_BAD_GATEWAY)
+    if isinstance(exc, ImmichUnreachable):
+        detail = f"Could not reach Immich: {exc}"
+    elif isinstance(exc, ImmichRejected):
+        detail = str(exc) if exc.status == 403 else f"{what} failed (HTTP {exc.status})"
+    else:
+        detail = f"{what} returned an unreadable answer"
+    return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail)
 
 
 def _proxy_asset(tok: ImmichToken, asset_id: str, subpath: str) -> StreamingResponse:
@@ -329,7 +256,8 @@ def immich_search(
     body: ImmichSearchRequest,
     current_user: Annotated[dict, Depends(get_current_user)],
 ):
-    """Thin passthrough to Immich's `POST /api/search/metadata`.
+    """Passthrough to Immich's `POST /api/search/metadata`, every page of it
+    up to the client's page cap; a cut result is logged.
 
     No geo filtering happens here — every day-matched asset (with its lat/lon,
     if EXIF GPS is present) is returned as-is; the Flutter client's own
@@ -338,59 +266,51 @@ def immich_search(
     user_info_id = int(current_user["sub"])
     tok = _require_token(user_info_id)
 
-    payload = {
-        "takenAfter": body.taken_after,
-        "takenBefore": body.taken_before,
-        "withExif": True,
-    }
+    client = ImmichClient(tok.server_url, tok.api_key)
     try:
-        resp = _http.post(
-            f"{tok.server_url}/api/search/metadata",
-            headers=_headers(tok.api_key),
-            json=payload,
-            timeout=_SEARCH_TIMEOUT,
-        )
-    except ImmichAddressNotAllowed:
-        raise _not_allowed(status.HTTP_502_BAD_GATEWAY)
-    except requests.RequestException as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Could not reach Immich: {exc}",
-        )
-    if resp.status_code != 200:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Immich search failed (HTTP {resp.status_code})",
-        )
+        assets, truncated = client.search_assets(body.taken_after, body.taken_before)
+    except (ImmichAddressNotAllowed, ImmichUnreachable, ImmichRejected, ImmichBadAnswer) as exc:
+        raise _client_error(exc, "Immich search")
+    if truncated:
+        _log.warning("immich search truncated user=%s kept=%d", user_info_id, len(assets))
 
+    return {"candidates": [
+        {
+            "id": a.id,
+            "taken_at": a.file_created_at,
+            "local_taken_at": a.local_date_time,
+            "lat": a.lat,
+            "lon": a.lon,
+            "thumb_url": f"/api/immich/assets/{a.id}/thumbnail",
+        }
+        for a in assets
+    ]}
+
+
+# ── Albums ────────────────────────────────────────────────────────────────────
+
+@router.get("/albums", response_model=ImmichAlbumsOut, summary="List the user's Immich albums")
+def immich_albums(current_user: Annotated[dict, Depends(get_current_user)]):
+    """The user's own Immich albums and those shared with them, each once."""
+    tok = _require_token(int(current_user["sub"]))
+    client = ImmichClient(tok.server_url, tok.api_key)
     try:
-        items = resp.json().get("assets", {}).get("items", [])
-        candidates = []
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            asset_id = item.get("id")
-            if not isinstance(asset_id, str) or not asset_id:
-                continue
-            taken_at = item.get("fileCreatedAt")
-            if not isinstance(taken_at, str) or not taken_at:
-                continue
-            exif = item.get("exifInfo")
-            if not isinstance(exif, dict):
-                exif = {}
-            candidates.append({
-                "id": asset_id,
-                "taken_at": taken_at,
-                "lat": _coordinate(exif.get("latitude"), 90.0),
-                "lon": _coordinate(exif.get("longitude"), 180.0),
-                "thumb_url": f"/api/immich/assets/{asset_id}/thumbnail",
-            })
-    except (ValueError, AttributeError, TypeError):
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Immich search returned an unreadable answer",
-        )
-    return {"candidates": candidates}
+        albums = client.list_albums()
+    except (ImmichAddressNotAllowed, ImmichUnreachable, ImmichRejected, ImmichBadAnswer) as exc:
+        raise _client_error(exc, "Immich album listing")
+    return {"albums": [
+        {
+            "id": a.id,
+            "name": a.name,
+            "asset_count": a.asset_count,
+            "start_date": a.start_date,
+            "end_date": a.end_date,
+            "thumb_url": (f"/api/immich/assets/{a.thumbnail_asset_id}/thumbnail"
+                          if a.thumbnail_asset_id else None),
+            "shared": a.shared,
+        }
+        for a in albums
+    ]}
 
 
 # ── Asset proxying ────────────────────────────────────────────────────────────
@@ -399,10 +319,15 @@ def immich_search(
 def immich_asset_thumbnail(
     asset_id: str,
     current_user: Annotated[dict, Depends(get_current_user)],
+    size: Annotated[Optional[Literal["thumbnail", "preview"]], Query(
+        description="Immich's rendition: thumbnail (the default) or preview, the "
+                    "larger one the photo upgrade's compare view shows")] = None,
 ):
-    """Stream the thumbnail bytes for one asset from the user's Immich server."""
+    """Stream the thumbnail bytes for one asset from the user's Immich server.
+    Without *size*, Immich is asked exactly as before, and sends its
+    thumbnail."""
     tok = _require_token(int(current_user["sub"]))
-    return _proxy_asset(tok, asset_id, "thumbnail")
+    return _proxy_asset(tok, asset_id, "thumbnail" if size is None else f"thumbnail?size={size}")
 
 
 @router.get("/assets/{asset_id}/original", summary="Proxy an Immich asset original")

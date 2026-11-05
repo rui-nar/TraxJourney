@@ -41,8 +41,10 @@ from api.project_access import (
     translate_insert_after,
 )
 from api.photo_locks import photo_lock
-from api.photo_order import dump_state, load_state, place
-from api.photo_order import remove as remove_from_order, replace as replace_in_order
+from api.photo_order import load_state, place
+from api.photo_order import remove as remove_from_order
+from api.photo_write import PHOTO_CONFLICT_DETAIL, PhotoWriteConflict, mutate_photos
+from api.photo_replace import PhotoGone, replace_photo_bytes
 from api.project_shared import bust_project_payloads, project_cache_ref
 from models.project_db import DBJournalEntry, DBProject, DBProjectItem
 from models.user import UserInfo
@@ -51,7 +53,7 @@ from src.project.project_repo import bump_lock_version
 from src.billing.entitlements import ensure_storage_quota, ensure_trip_days_quota
 from src.billing.usage import unlink_and_record
 from src.utils.photo_paths import photo_file, photo_files, photo_folder
-from src.utils.photo_store import InvalidPhoto, PhotoTooLarge, save_photo_files
+from src.utils.photo_store import InvalidPhoto, PhotoTooLarge, photo_media_type, prepare_photo, save_photo_files
 from src.utils.safe_fetch import fetch_bytes
 from src.exceptions.errors import QuotaExceeded
 from src.utils.logging import get_logger
@@ -160,10 +162,15 @@ def _resolve_geo(sess, project_id: int, date: str, geo_mode: str):
 
 def _save_photo_files(user_id: str, journal_id: int, uuid_str: str, raw: bytes) -> None:
     # Decode, write and count the photo (src/utils/photo_store.py). Journals
-    # are per-user, so the bytes are the writing user's own.
+    # are per-user, so the bytes, and the quota, are the writing user's own.
+    # The quota is checked on the bytes stored, a HEIC photo's larger JPEG
+    # (U8-R2-1); QuotaExceeded propagates with nothing written.
     folder = photo_folder(_DATA_DIR, user_id, "journal", journal_id)
     try:
-        save_photo_files(user_id, folder, uuid_str, raw)
+        stored = prepare_photo(raw)
+        with get_session() as sess:
+            ensure_storage_quota(sess, int(user_id), len(stored))
+        save_photo_files(user_id, folder, uuid_str, stored)
     except PhotoTooLarge as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -200,23 +207,29 @@ def _write_journal_photo(
     *epoch* is given and differs from the stored one, the photo's files are
     deleted — and uncounted — instead. Nothing bumps a journal entry's epoch
     today; it is checked so the two modules keep one rule.
+
+    The write is a compare-and-set (``api/photo_write.py``). When the list
+    keeps changing under it, the files are deleted the same way and
+    ``PhotoWriteConflict`` propagates.
     """
+    def place_photo(photos, state, row):
+        if epoch is not None and state["epoch"] != epoch:
+            return None
+        return place([p for p in photos if p], state, uuid_str, order)
+
     with photo_lock("journal", journal_id):
-        with get_session() as sess:
-            row = sess.get(DBJournalEntry, journal_id)
-            state = load_state(row.photo_order_json) if row is not None else None
-            if row is None or (epoch is not None and state["epoch"] != epoch):
-                if owner_dir is not None:
-                    _delete_photo_files(owner_dir, journal_id, [uuid_str])
-                return False
-            photos = [p for p in json.loads(row.photos_json or "[]") if p]
-            photos, state = place(photos, state, uuid_str, order)
-            row.photos_json = json.dumps(photos)
-            row.photo_order_json = dump_state(state)
-            sess.add(row)
-            cache_ref = project_cache_ref(sess, row.project_id)
-            sess.commit()
-            bust_project_payloads(cache_ref)
+        try:
+            placed = mutate_photos("journal", journal_id, place_photo)
+        except PhotoWriteConflict:
+            # Refused like any other placement, but the caller says why.
+            if owner_dir is not None:
+                _delete_photo_files(owner_dir, journal_id, [uuid_str])
+            raise
+        if placed is None:
+            if owner_dir is not None:
+                _delete_photo_files(owner_dir, journal_id, [uuid_str])
+            return False
+        bust_project_payloads(placed.cache_ref)
     return True
 
 
@@ -234,16 +247,17 @@ def _download_photo_from_url(
             journal_id, project_id, user_id, url,
         )
         return
+    uuid_str = str(uuid_lib.uuid4())
     # Background task — no request left to answer 402 on, so it declines to store.
     try:
-        with get_session() as sess:
-            ensure_storage_quota(sess, int(user_id), len(content))
+        _save_photo_files(user_id, journal_id, uuid_str, content)
     except QuotaExceeded:
         _log.info("Skipped photo download for user %s: storage quota reached", user_id)
         return
-    uuid_str = str(uuid_lib.uuid4())
-    _save_photo_files(user_id, journal_id, uuid_str, content)
-    _write_journal_photo(journal_id, uuid_str, order, epoch, owner_dir=user_id)
+    try:
+        _write_journal_photo(journal_id, uuid_str, order, epoch, owner_dir=user_id)
+    except PhotoWriteConflict:
+        _log.error("Photo download for journal entry %s not placed: its photo list kept changing", journal_id)
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -483,8 +497,7 @@ async def upload_photo(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=f"Photo exceeds the {_MAX_PHOTO_UPLOAD_BYTES // (1024 * 1024)}MB upload limit",
         )
-    with get_session() as sess:
-        ensure_storage_quota(sess, user_info_id, len(raw))
+    # _save_photo_files checks the quota on the bytes it will store.
     photo_uuid = str(uuid_lib.uuid4())
     # JPEG decode + LANCZOS thumbnail resize is CPU-bound; run it off the event
     # loop so one upload doesn't stall every other in-flight request (mirrors
@@ -492,7 +505,11 @@ async def upload_photo(
     # semaphore comment in api/memories.py — but here via FastAPI's thread
     # pool instead of a sync route, since the rest of this handler stays async).
     await run_in_threadpool(_save_photo_files, current_user["sub"], journal_id, photo_uuid, raw)
-    if not _write_journal_photo(journal_id, photo_uuid, owner_dir=current_user["sub"]):
+    try:
+        placed = _write_journal_photo(journal_id, photo_uuid, owner_dir=current_user["sub"])
+    except PhotoWriteConflict:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=PHOTO_CONFLICT_DETAIL)
+    if not placed:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Journal entry not found")
     return {"uuid": photo_uuid}
 
@@ -528,22 +545,25 @@ def delete_photo(
 ):
     """Remove a photo from a journal entry and delete its files from disk."""
     user_info_id = int(current_user["sub"])
-    with photo_lock("journal", journal_id), get_session() as sess:
-        row = _get_owned_journal(sess, journal_id, user_info_id)
-        photos: List[str] = json.loads(row.photos_json or "[]")
-        if photo_uuid not in photos:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
 
+    def drop(photos, state, row):
+        if photo_uuid not in photos:
+            return None
+        return remove_from_order(photos, state, photo_uuid)
+
+    with photo_lock("journal", journal_id):
+        with get_session() as sess:
+            _get_owned_journal(sess, journal_id, user_info_id)
+        try:
+            removed = mutate_photos("journal", journal_id, drop)
+        except PhotoWriteConflict:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=PHOTO_CONFLICT_DETAIL)
+        if removed is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
+        bust_project_payloads(removed.cache_ref)
+        # Only once the list no longer names the photo.
         unlink_and_record(current_user["sub"], photo_files(
             photo_folder(_DATA_DIR, current_user["sub"], "journal", journal_id), [photo_uuid]))
-
-        photos, state = remove_from_order(photos, load_state(row.photo_order_json), photo_uuid)
-        row.photos_json = json.dumps(photos)
-        row.photo_order_json = dump_state(state)
-        sess.add(row)
-        cache_ref = project_cache_ref(sess, row.project_id)
-        sess.commit()
-        bust_project_payloads(cache_ref)
 
 
 @router.put("/{journal_id}/photos/{old_uuid}/replace", status_code=status.HTTP_200_OK,
@@ -568,36 +588,26 @@ async def replace_photo(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=f"Photo exceeds the {_MAX_PHOTO_UPLOAD_BYTES // (1024 * 1024)}MB upload limit",
         )
-    with get_session() as sess:
-        ensure_storage_quota(sess, user_info_id, len(raw))
-    new_uuid = str(uuid_lib.uuid4())
-    await run_in_threadpool(_save_photo_files, current_user["sub"], journal_id, new_uuid, raw)
-
-    with photo_lock("journal", journal_id), get_session() as sess:
-        row = sess.get(DBJournalEntry, journal_id)
-        # Same position and rank, not remove+append: photos_json order is
-        # display order. None when the old photo was deleted meanwhile.
-        replaced = None if row is None else replace_in_order(
-            [p for p in json.loads(row.photos_json or "[]") if p],
-            load_state(row.photo_order_json), old_uuid, new_uuid,
-        )
-        if replaced is None:
-            # The entry or the old photo went while the new files were
-            # written: they have nowhere to go (#237).
-            _delete_photo_files(current_user["sub"], journal_id, [new_uuid])
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
-        photos, state = replaced
-        row.photos_json = json.dumps(photos)
-        row.photo_order_json = dump_state(state)
-        sess.add(row)
-        cache_ref = project_cache_ref(sess, row.project_id)
-        sess.commit()
-        bust_project_payloads(cache_ref)
-        # Under the lock, as in api/memories.py, where a delete's folder
-        # sweep would otherwise uncount these same files a second time.
-        unlink_and_record(current_user["sub"], photo_files(
-            photo_folder(_DATA_DIR, current_user["sub"], "journal", journal_id), [old_uuid]))
-
+    # Storage, hashes, files and the list write: api/photo_replace.py. The
+    # decode is CPU-bound, so it runs off the event loop. Journal photos live
+    # in, and count against, the writing user's own tree.
+    try:
+        new_uuid = await run_in_threadpool(
+            replace_photo_bytes, "journal", journal_id, old_uuid, raw, owner_dir=current_user["sub"])
+    except PhotoGone:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
+    except PhotoWriteConflict:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=PHOTO_CONFLICT_DETAIL)
+    except PhotoTooLarge as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"This photo is too large: {exc}.",
+        ) from exc
+    except InvalidPhoto as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Invalid image file",
+        ) from exc
     return {"uuid": new_uuid}
 
 
@@ -619,7 +629,7 @@ def serve_photo(
         photo_folder(_DATA_DIR, current_user["sub"], "journal", journal_id), photo_uuid)
     if full_path is None or not full_path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
-    return FileResponse(str(full_path), media_type="image/jpeg")
+    return FileResponse(str(full_path), media_type=photo_media_type(full_path))
 
 
 @router.get("/{journal_id}/photos/{photo_uuid}/thumb", summary="Serve photo thumbnail")
@@ -641,6 +651,6 @@ def serve_photo_thumb(
     if thumb_path is None or not thumb_path.exists():
         full_path = photo_file(photo_path, photo_uuid)
         if full_path is not None and full_path.exists():
-            return FileResponse(str(full_path), media_type="image/jpeg")
+            return FileResponse(str(full_path), media_type=photo_media_type(full_path))
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     return FileResponse(str(thumb_path), media_type="image/jpeg")

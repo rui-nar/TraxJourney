@@ -149,8 +149,9 @@ unticked. *Rules out* confirming each row separately.
   ICC profile.
 - Because `photo_store` is the single write path, uploads, replacements,
   from-URL downloads, archive imports and avatars all convert.
-- RAW originals: the apply job uses Immich's JPEG rendition when one exists
-  (OD3). Otherwise the row fails with "unsupported format".
+- RAW originals: the row fails with "unsupported format" (OD3's answer:
+  Immich's `fullsize` rendition of a RAW asset is untested, so it is not
+  relied on).
 - Stored originals are served with the media type sniffed from their first
   bytes, not a fixed `image/jpeg`.
 - *Rules out* storing HEIC as it came: browsers other than Safari cannot
@@ -178,22 +179,30 @@ accounting.
 **D7 — How matching works** (pure module, `src/photo_upgrade/matching.py`).
 - **Candidates:** album photos whose local capture date (Immich
   `localDateTime`) is within ±1 day of the memory or entry date. This is a
-  hard filter. Adjacent days get a small score penalty.
+  hard filter. Adjacent days get no score penalty (OD2: a true match sat a
+  day before its memory's date); on an equal score the same-day asset wins.
 - **Appearance:** 64-bit aHash plus 64-bit dHash, both computed on upright
   images. The score is their summed Hamming distance (0–128).
-- **Aspect ratio:** a hard gate. Upright width/height must agree within 3%.
+- **Aspect ratio:** a hard gate. Upright width/height must agree within 2%
+  (OD2).
 - **Location:** a tie-break only, never a filter. A memory's location is
   often its start of day, and on travel days that is far from where the
   photo was taken. This deliberately differs from the per-memory dialog,
   where location is a filter.
 - **Assignment:** one-to-one and global. Pairs are taken in ascending score
   order (ties broken by ids), and each asset is used at most once.
+- **Exact copies:** trip photos whose stored files have the same content
+  hash (the sha256 U3 records) are one photo for matching. They are matched
+  as a group, and every copy gets the same suggestion, so one asset upgrades
+  them all. Only identical content counts: two different photos that match
+  the same asset still compete for it, and the loser's confidence is low.
+  (Found by the U1 probe: one photo added to two memories, byte-identical.)
 - **Confidence:** "low" when a rival asset scores within the ambiguity
   margin for the same photo, or the asset's second-best photo does.
 - **No upgrade:** a matched asset with no more pixels than the current photo
   is reported as "already original", not proposed.
-- **Thresholds:** the maximum score and the margin come from the U1 probe on
-  the owner's real album (OD2).
+- **Thresholds** (OD2, from the U1 probe on the owner's real album):
+  maximum score 12, ambiguity margin 10.
 - *Rules out:*
   - reusing the Dart aHash alone, which cannot separate burst shots;
   - Hungarian assignment, since greedy matching with a flag on near-ties
@@ -226,7 +235,14 @@ Scans per person:
   R2-2).
 
 Retention:
-- An hourly sweep deletes scans older than 30 days.
+- An hourly sweep clears scans older than 30 days (revised for U10-R1-1).
+  A reviewed (`ready`) scan is cleared, not deleted: its rejected rows are
+  folded into `rejected_pairs_json`, its suggestions and album fingerprints
+  are deleted, its status becomes `expired`, and the person's earlier scans
+  of the trip, which it supersedes, are deleted. The row and its rejection
+  list stay until the trip or the account is deleted, so a rescan months
+  later still honours them. An `expired` scan cannot be reviewed or applied,
+  and `latest` ignores it. Old scans that never became `ready` are deleted.
 - Rows hold ids, dates, sizes, dimensions and fingerprints only, never image
   data or text.
 
@@ -357,10 +373,31 @@ REVIEW.md §2 defaults apply, with these additions:
   - A Replace import of the trip is refused while any apply on it is
     `pending` or `running` (D13, U15).
   - Each person has at most one scan or apply in progress per trip (U10).
-- **Memory.** HEIC decode is bounded by `MAX_PHOTO_PIXELS`, as PNG decode
-  already is. It runs in the API container (768 MB) for uploads and in
-  `worker-poster` (1280 MB) for applies. Each job handles one photo at a
-  time.
+- **Memory** (revised by the owner after the U4 unit reviews, 2026-10-30).
+  - HEIC and HEIF are decoded in a child process with a hard memory limit
+    (revised after the U4 unit review round 2). Whatever size a file
+    declares, an allocation past the limit ends only the child, and the
+    photo is refused as invalid. libheif decodes on one thread.
+  - Before that, HEIC and HEIF are capped at 51 MP (`HEIF_MAX_PIXELS`),
+    read from the coded size of every image item in the file, not from
+    the size after cropping. The cap gives a clear "too large" answer;
+    the child's limit is the protection. Current phones, Android 50 MP
+    "Hi-Res" files included, stay under it. 10-bit camera HEIF is in
+    scope: when its bit depth needs more than the child's limit affords,
+    it is refused early as too large. The child gets no server secrets in
+    its environment.
+  - Other formats keep `MAX_PHOTO_PIXELS` (100 MP).
+  - Each process decodes one full image at a time, whatever its format.
+  - Decoding runs in the API container (768 MB) for uploads and in
+    `worker-poster` (1280 MB) for applies. Each job handles one photo at a
+    time.
+  - Each process has its own child limit (owner decision after the U4
+    unit review round 4, 2026-10-30): `HEIF_DECODE_MEMORY_MIB`, a runtime
+    variable, defaults to the API's 576 MiB and is raised in
+    `worker-poster`'s own environment. An unusable value stops the API or
+    the worker at start, with a message saying why. The per-format caps are computed
+    from the limit, so Immich applies accept larger 10-bit camera HEIF
+    (Canon R5, Fujifilm X-T5) than direct uploads do.
 - **No new end-to-end encryption surface.** Photos are documented as
   unencrypted. Scans read no memory or journal text.
 
@@ -416,8 +453,11 @@ REVIEW.md §2 defaults apply, with these additions:
   - Every state transition is a compare-and-set update in SQL, like `_cas`
     in `src/video/job_runner.py`.
 - **Error codes on a failed row:** `too_large`, `unsupported_format`,
-  `not_found_in_immich`, `immich_unreachable`, `photo_gone`,
-  `storage_full`, `invalid_image`. The app maps each to a sentence.
+  `not_found_in_immich`, `immich_permission`, `immich_unreachable`,
+  `photo_gone`, `storage_full`, `invalid_image`. The app maps each to a
+  sentence; `immich_permission` (Immich answered 401 or 403) asks the
+  user to reconnect with a valid key that has `asset.download`
+  (U11-R1-2, U11-R2-1).
 - **Writes.**
   - Every change to `photos_json` or `photo_order_json` goes through U14's
     helper.
@@ -467,18 +507,56 @@ wait for them.
     - The formats served by `thumbnail?size=thumbnail`.
     - The minimum Immich version to support.
   - Affects: U2, and U7's fallback.
+  - **Answer (U1 probe on val, 2026-11-01, Immich v5.9.0):**
+    - `search/metadata` accepts `albumIds` with a date window and `type:
+      IMAGE`, and returned images only. U2 uses it.
+    - With no size sent, 37 items came back in one page, `nextPage` null.
+      U2 still follows `nextPage` whatever its type (string or null).
+    - `localDateTime` is on every asset and is wall-clock local time written
+      with a `Z` (e.g. 17:23 local for 16:23 UTC in March, France). Its date
+      part is the local capture day as it stands.
+    - `thumbnail?size=thumbnail` serves WebP (332×250 for a 4:3 photo);
+      `size=fullsize` of a JPEG serves the full-resolution JPEG. Hashing
+      decodes WebP.
+    - Minimum supported version: v5.9.0, the only one tested.
+    - Not verified: the album answer (`GET /api/albums/{id}`) lists no
+      assets on this version, so the probe could not check that every
+      search result belongs to the album. U2's tests pin the request body;
+      the owner checks the trip window's photo count in the Immich UI
+      against the search count (37) when convenient.
 - **OD2 — Thresholds.** The maximum score, the ambiguity margin and the
   adjacent-day penalty, read off the probe's contact sheet. Affects: U5.
+  - **Answer (37 trip photos over 10 days, owner-approved 2026-11-01):**
+    - True matches scored 0–2; the closest wrong candidate on the sheet
+      scored 33, typical ones 40–60.
+    - Maximum score **12**, ambiguity margin **10**, aspect gate **2%**,
+      adjacent-day penalty **none** (D7).
+    - Most unmatched trip photos are 16:9 shots from another person's
+      phone, not in the album; the owner will add them to the same album.
+      No change to the design.
+    - One photo was in two memories as byte-identical files: D7's
+      "exact copies" rule.
 - **OD3 — RAW.** Does `thumbnail?size=fullsize` return a full-resolution
   JPEG for a RAW or HEIC asset on the owner's server? If not, RAW rows fail
   with `unsupported_format`. Affects: U2, U11.
+  - **Answer:** partly. `size=fullsize` of a JPEG is the full-resolution
+    JPEG. The owner's album has no HEIC or RAW asset, so neither was
+    tested. Until one is: a JPEG asset is applied from `fullsize`; a HEIC
+    asset from its original (converted to JPEG by U4's path); a RAW asset
+    fails with `unsupported_format`.
 - **OD4 — EXIF on Polarsteps imports.** Do stored Polarsteps photos keep
   `DateTimeOriginal`? If they do, exact capture time is a far stronger
   signal than appearance, and D7 gains it as a plan amendment before U5.
   Affects: U5.
+  - **Answer:** no. 0 of 20 stored Polarsteps photos keep
+    `DateTimeOriginal` (or `OffsetTimeOriginal`). D7 stays on appearance
+    plus day.
 - **OD5 — API key permissions.** Which Immich key permissions the feature
   needs (album read, asset read, view and download). Affects: U2's error
   message, U13's README.
+  - **Answer:** `album.read`, `asset.read`, `asset.view`,
+    `asset.download`, plus `server.about` for the version. None was
+    refused on the owner's key.
 
 ## Execution units
 
@@ -757,7 +835,9 @@ wait for them.
      - `to_hex` and `from_hex` for storing a 64-bit hash as 16 hex
        characters, since SQLite integers are signed.
   2. `matching.py`:
-     - inputs `TripPhoto(key, date, lat, lon, fp, pixels, source)` and
+     - inputs `TripPhoto(key, date, lat, lon, fp, pixels, source,
+       content_hash)` (`content_hash` is U3's sha256, or None when not
+       yet hashed) and
        `AlbumPhoto(id, local_date, lat, lon, fp, pixels)`;
      - output `Suggestion(key, state, asset_id, score, confidence,
        alternatives[≤5])`, where `state` is `proposed`, `no_match` or
@@ -766,10 +846,13 @@ wait for them.
   3. Implement D7 in order:
      - photos with a source become `already_original`, and their asset ids
        leave the pool;
-     - candidates within ±1 day, with the adjacent-day penalty;
+     - exact copies (same `content_hash`) grouped into one matching unit;
+     - candidates within ±1 day, no adjacent-day penalty, same day first on
+       an equal score;
      - the aspect gate;
      - the score;
-     - global greedy assignment, deterministic on ties;
+     - global greedy assignment, deterministic on ties; a group's asset is
+       given to every copy;
      - confidence;
      - the "no more pixels" rule;
      - geo distance as a tie-break.
@@ -786,8 +869,13 @@ wait for them.
       alternatives;
     - a wrong aspect ratio excluded;
     - a photo dated D matched by an asset dated D+1 only when no D asset
-      scores better;
-    - an asset never used twice;
+      scores better or equal;
+    - an asset never used twice by different photos;
+    - two byte-identical copies in two memories both proposed the same
+      asset, while two different photos matching one asset are not (the
+      loser gets low confidence and the asset as an alternative);
+    - a photo with no `content_hash` never grouped;
+    - the OD2 sheet's numbers: a score of 2 proposed, 33 not;
     - `already_original` by source and by pixels;
     - excluded pairs never proposed;
     - deterministic output when the input order is shuffled;
@@ -796,10 +884,8 @@ wait for them.
       s.
 - **Out of scope:** any I/O, any DB access, Immich calls.
 - **Latitude:** local design, inside D7.
-- **Escalate if:**
-  - OD4 says capture times exist, and D7 has not been amended yet;
-  - a file outside Scope must change (X3).
-- **Depends on:** U1 (OD2, OD4).
+- **Escalate if:** a file outside Scope must change (X3).
+- **Depends on:** U1 (OD2, OD4: answered).
 
 #### U6 — Scan, album-photo and suggestion tables
 - **Goal:** the three tables of D8 exist, with their migration, and go with
@@ -1097,10 +1183,12 @@ wait for them.
   - `src/photo_upgrade/scan_job.py` (new)
   - `src/jobs/queue.py`
   - `src/jobs/worker.py`: `_INTERRUPT_HANDLERS` and the startup sweep, scan
-    entries only
+    entries only; the startup check of step 1a
+  - `api/router.py`: the startup check of step 1a in `lifespan` only
   - `docker-compose.yml.example`
   - `tests/test_worker_topology.py`
   - `tests/test_photo_upgrade_scan_job.py` (new)
+  - `tests/test_heif_config_startup.py` (new)
 - **Context:**
   - Example to follow for the job-row lifecycle, compare-and-set updates,
     the interrupt handler, the startup sweep and progress stages:
@@ -1113,7 +1201,16 @@ wait for them.
 - **Do:**
   1. Add `QUEUE_PHOTOS = "photos"` with concurrency 1. `worker-poster`'s
      command becomes `poster photos default resolve`; update the topology
-     test and the compose comment block.
+     test and the compose comment block. `worker-poster` also gets
+     `HEIF_DECODE_MEMORY_MIB` in its own `environment:` (not `.env`, which
+     the API shares), at the value U4 measured: 896.
+  1a. An unusable `HEIF_DECODE_MEMORY_MIB` stops the process at start
+     (owner decision, U4 unit review round 5). The API's lifespan and the
+     RQ worker's startup both call U4's `heif_decode_memory_mib()` before
+     serving; a `HeifDecodeConfigError` exits with a message naming the
+     variable, the value and what a valid one looks like. Tests: each
+     process refuses to start on a bad value and starts on unset, blank
+     and a valid one.
   2. `start_scan(scan_id)` enqueues `run_scan_prepare`. Each job below
      first checks that its scan still exists and is `scanning` (or
      `pending` for the first), and stops quietly otherwise. Each updates
@@ -1130,12 +1227,33 @@ wait for them.
   4. `run_scan_fingerprint(scan_id)`:
      - take up to 250 asset rows not yet fingerprinted;
      - fetch their thumbnails 4 at a time and store their fingerprints;
-     - mark a failed fetch `fetch_failed`;
+     - mark a failed fetch `fetch_failed`. Before `run_scan_match`, rows
+       that failed for a reason that can pass (Immich unreachable, a 5xx, a
+       timeout, an unreadable answer) are fetched again, a bounded number
+       of times. Those still failed are counted in `ScanOut`'s
+       `unreadable_photos`, and the review says how many album photos could
+       not be read (revised for INT-R1-A1);
+     - the last retry also fetches, beside the photos it retries, the
+       thumbnail of one album photo already read (the first one). If it
+       reads, Immich is up and the photos still failing are broken ones,
+       left out and counted. If it fails for a reason that can pass and no
+       photo of that batch read, Immich is down: the scan fails as
+       unreachable and the earlier review is kept, never replaced by a
+       mostly "No match" one. If it fails for a reason that can pass while
+       a photo of that batch read, or fails for good (gone, too large), the
+       next photo read is tried, one at a time after the batch, up to three;
+       none reading fails the scan the same way. The control is a
+       thumbnail, not a ping, since a storage outage leaves the API
+       answering while thumbnails fail. When a retry was needed and no
+       photo was read at all, there is no control and the scan fails as
+       unreachable (INT-R2-1, INT-R3-1, INT-R4-1, INT-R5-1);
      - enqueue itself again while rows remain, then `run_scan_match`.
   5. `run_scan_match(scan_id)`:
      - fingerprint each trip photo in scope from its `_thumb.jpg` on disk;
        read its current bytes and upright dimensions from the full file's
-       header, and its `position` in its photo list;
+       header, its `position` in its photo list, and its sha256 from the
+       photo order state's `hashes` (None when missing) as the matcher's
+       `content_hash` (D7 exact copies);
      - read the rejected pairs from the person's earlier scans of this
        trip;
      - run the matcher and write the suggestion rows. `selected` is true
@@ -1281,8 +1399,10 @@ wait for them.
      - update `apply_heartbeat_at`;
      - re-check the role (owner for memory rows) and that the photo is
        still listed;
-     - download the original: through the RAW rendition per OD3 when the
-       mime is RAW; rows over 25 MB fail with `too_large`;
+     - download per OD3's answer: a JPEG asset's `fullsize` rendition, a
+       HEIC, HEIF, PNG or WebP asset's original; RAW and any other type fail
+       with `unsupported_format`;
+       rows over 25 MB fail with `too_large`;
      - call `replace_photo_bytes(..., source="immich:<id>")`;
      - mark the row `applied` with `applied_uuid`, or `failed` with an
        error code, or `stale` on `PhotoGone`.
@@ -1374,9 +1494,16 @@ wait for them.
      - `PATCH …/suggestions/{sid}` with `{selected?, asset_id?, rejected?}`.
        A chosen `asset_id` must be one of the scan's asset rows within the
        row's date ±1 day. On an applied row it targets `applied_uuid` and
-       puts the row back to `proposed` (D5);
+       puts the row back to `proposed` (D5): in the same update it sets
+       `photo_uuid` to the listed `applied_uuid` and clears `applied_uuid`,
+       because U11's apply and its recovery act on `photo_uuid` (U11-R1-4).
+       A test applies such a re-proposed row end to end, recovery included;
      - `POST …/select` with `{which: "confident" | "all_proposed" |
-       "none"}`;
+       "none" | "failed"}`. `failed` puts back, ticked and `proposed` with
+       its reason cleared, every `failed` row that has an asset and failed
+       for a reason that can pass (`immich_permission`,
+       `immich_unreachable`); other failed rows stay as they are
+       (U10-R2-1);
      - `GET …/candidates?suggestion_id=` returns the scan's fingerprinted
        asset rows within ±1 day, ranked by `rank_candidates`, for the
        chooser;
@@ -1389,7 +1516,9 @@ wait for them.
      - `DELETE …` discards the scan, refused while an apply is `pending` or
        `running`.
   5. The hourly sweep in `api/router.py`:
-     - deletes scans older than 30 days;
+     - clears scans older than 30 days as D8 says (revised for U10-R1-1):
+       a `ready` scan becomes `expired` and keeps only its rejection list;
+       others are deleted;
      - fails scans, and stops applies, still `pending` after 24 hours, with
        a neutral message;
      - fails scans `scanning` with a heartbeat older than 30 minutes, as
@@ -1452,9 +1581,15 @@ wait for them.
      them, and only their fingerprints are kept, until the scan is
      deleted. Applied originals are stored like any photo.
   3. RELEASING.md owner action: change `worker-poster`'s command on val and
-     prod to `poster photos default resolve`, then `docker compose up -d`.
+     prod to `poster photos default resolve`, add its
+     `HEIF_DECODE_MEMORY_MIB` environment entry, then `docker compose up -d`.
      Check with a scan on val. Until this is done, scans answer 503.
   4. The deployment doc gets the same command.
+  4a. The published image now ships `pillow-heif`'s bundled libheif and
+     libde265 (LGPL-3.0) and x265 (GPL-2.0-or-later). Add a third-party
+     notice to the README's licence section: name the three libraries,
+     their licences and versions, and link the exact upstream source of
+     each version, as the source offer (owner decision, 2026-10-30).
   5. The plans index row of this plan gets the PR that delivers it.
 - **Acceptance:**
   - `pytest tests/test_release_notes.py tests/test_worker_topology.py`
@@ -1519,7 +1654,10 @@ wait for them.
      - each row shows current → proposed, sizes and dimensions, the
        confidence, a tick box, "Choose another" (a sheet of that day's
        album photos), "Not this one" (reject), and a tap-to-compare view
-       side by side with zoom;
+       side by side with zoom. Compare shows Immich's `preview` rendition
+       (through `/api/immich/assets/{id}/thumbnail?size=preview`), never the
+       original, beside the current photo (owner decision on the integrated
+       review's envelope question);
      - "No match" rows offer "Choose from album";
      - the sticky bar reads "Replace N photos · +X of Y free", blocked with
        an upgrade link when over storage;
@@ -1527,6 +1665,8 @@ wait for them.
   7. Applying:
      - per-row results arrive as rows flip, and a failed row shows its
        reason;
+     - when rows failed because of the Immich key or connection, "Retry
+       failed" calls `select` with `which: "failed"` (U10-R2-1);
      - a stop explains itself: storage full, or interrupted, with
        "Resume".
   8. Applied rows keep "Choose another".
@@ -1544,7 +1684,8 @@ wait for them.
     - the bar's numbers and its storage block;
     - polling stopping when the page is left;
     - a failed newer scan shown over the earlier review;
-    - the applied, failed, storage-full and interrupted-with-Resume states.
+    - the applied, failed, storage-full and interrupted-with-Resume states;
+    - "Retry failed" calling `select` with `which: "failed"`.
   - `flutter analyze` is clean for the new files.
 - **Out of scope:**
   - push or email notifications;
