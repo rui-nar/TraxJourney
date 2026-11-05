@@ -636,7 +636,7 @@ Owner decisions (2026-11-04): the table is approved as recommended. INT-R3-1's s
 - Revisit when: —
 - Guard: —
 - Override: —
-- Outcome: partly fixed (1a231eef: outages leaving at least 10% unread); the 251–277 range and INT-R4-1 go to the control fetch
+- Outcome: fixed (1a231eef for outages leaving at least 10% unread; bfcc20b1, the control fetch, for the 251–277 range; verifier pass)
 
 ### INT-R3-2 — A scan whose every album thumbnail is an undecodable body fails as "could not reach Immich" instead of going ready (verifier note)
 - Trigger: a user whose Immich sits behind a proxy or forward-auth that answers 200 with an HTML page presses New scan → every fetch decodes to nothing → retried, then all `fetch_failed` → the end check fails the scan as unreachable; the earlier review is kept. Before F4 the scan went ready, all "No match", and deleted the earlier review.
@@ -662,4 +662,28 @@ Owner decisions (2026-11-04): the 251–277 range is in scope, so INT-R3-1 is no
 - Revisit when: the owner brings the 251–277 range into scope (then INT-R3-1 is unresolved and both are fixed together by the control fetch); logs show a scan failing unreachable with fewer than 10 unread rows; a user reports "could not reach your Immich server" while Immich is online; or the end rule changes again.
 - Guard: —
 - Override: user: Fix now — fixed with INT-R3-1 by the control fetch, at no extra cost (2026-11-04)
+- Outcome: fixed (bfcc20b1; verifier pass)
+
+## Integrated review round 5 — 2026-11-04, reviewed at bfcc20b1 (fixes only: 05c59e94..bfcc20b1, fix unit F6; past the cap with the owner's OK)
+
+Verifier: F6 pass (87 scan-job tests, 366 in the photo-upgrade and Immich group; 20 fail on 05c59e94, including the small album with one broken photo and the 251/260/277 outages; the F5-padded tests are back to their pre-F5 form, counts changed only by the control fetch; a 403 control still ends `REASON_FORBIDDEN`). INT-R3-1 and INT-R4-1 resolved.
+
+Owner decisions (2026-11-05): INT-R5-2's guard as recommended; INT-R5-1 moves to Fix now with the sequential re-ask, not the reviewer's fix. A round 6, fixes only, is allowed past the cap.
+
+### INT-R5-1 — One transient failure of the control request fails the scan even when every retried row beside it just decoded
+- Trigger: a user with a ready review presses New scan; a few thumbnails failed twice for a passing reason; on the last pass they all decode but the single control request answers 503, times out or is cut → the scan fails "Could not reach your Immich server" while Immich just served the batch; the earlier review is kept, the new fingerprints are discarded.
+- Scores: trigger=plausible, impact=wrong-visible, detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10) — nothing lost. The reviewer's fix (the control decides only when no batch row decoded) is not safe: an outage starting partway through the final last-pass batch leaves early rows decoded and the rest failed, so the scan would go ready and delete the earlier review (INT-R3-1). If taken: when the control fails for a reason that can pass and a batch row decoded, ask the next control one at a time after the pool (up to `_CONTROLS`); it decodes → Immich is up; it fails → down.
+- Revisit when: a scan fails on the control (see INT-R5-2's log line) with rows of its last-pass batch decoded; a user reports "Could not reach your Immich server" on a scan that showed progress while Immich was online; or the owner moves it to Fix now — then take the sequential re-ask, not the reviewer's fix.
+- Guard: —
+- Override: user: Fix now — take the sequential re-ask: a false alarm users would hit after a brief hiccup, in code already being changed (2026-11-05)
+- Outcome: —
+
+### INT-R5-2 — A scan failed by the control logs nothing about what the control answered
+- Trigger: an Immich outage, or every control failing permanently, fails a scan → the worker log reads only `Photo scan N stopped in fingerprint: _ScanFailed` → nothing tells an outage from the fail-safe, and the INT-R3-2, INT-R4-1 and INT-R5-1 revisit triggers cannot be checked.
+- Scores: trigger=plausible (triage corrected from concrete: the event is a third-party outage), impact=maintainability, detect=silent, later=cheap, fix=S/local, confidence=verified
+- Decision: Guard (D9)
+- Revisit when: —
+- Guard: one `_log.info` before the control's raise giving scan id, retry pass, batch size, rows decoded, and each control's outcome class (with status for `ImmichRejected`, or undecodable / too large) — no server address, no asset ids; the pass-end "nothing read" raise gets its own line so the two are told apart.
+- Override: —
 - Outcome: —
