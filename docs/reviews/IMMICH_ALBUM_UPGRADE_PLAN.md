@@ -677,7 +677,7 @@ Owner decisions (2026-11-05): INT-R5-2's guard as recommended; INT-R5-1 moves to
 - Revisit when: a scan fails on the control (see INT-R5-2's log line) with rows of its last-pass batch decoded; a user reports "Could not reach your Immich server" on a scan that showed progress while Immich was online; or the owner moves it to Fix now — then take the sequential re-ask, not the reviewer's fix.
 - Guard: —
 - Override: user: Fix now — take the sequential re-ask: a false alarm users would hit after a brief hiccup, in code already being changed (2026-11-05)
-- Outcome: —
+- Outcome: fixed (b5f035ab; verifier pass)
 
 ### INT-R5-2 — A scan failed by the control logs nothing about what the control answered
 - Trigger: an Immich outage, or every control failing permanently, fails a scan → the worker log reads only `Photo scan N stopped in fingerprint: _ScanFailed` → nothing tells an outage from the fail-safe, and the INT-R3-2, INT-R4-1 and INT-R5-1 revisit triggers cannot be checked.
@@ -685,5 +685,18 @@ Owner decisions (2026-11-05): INT-R5-2's guard as recommended; INT-R5-1 moves to
 - Decision: Guard (D9)
 - Revisit when: —
 - Guard: one `_log.info` before the control's raise giving scan id, retry pass, batch size, rows decoded, and each control's outcome class (with status for `ImmichRejected`, or undecodable / too large) — no server address, no asset ids; the pass-end "nothing read" raise gets its own line so the two are told apart.
+- Override: —
+- Outcome: guard added (b5f035ab; verifier pass)
+
+## Integrated review round 6 — 2026-11-05, reviewed at b5f035ab (fixes only: b70c949f..b5f035ab, fix unit F7; past the cap with the owner's OK)
+
+Verifier: F7 pass (103 scan-job tests, 382 in the photo-upgrade and Immich group; the new R5-1, mixed-batch, re-ask and guard tests fail on b70c949f; the partway-outage test fails against the rejected fix; no existing assertion changed). INT-R5-1 and INT-R5-2 resolved.
+
+### INT-R6-1 — Under intermittent failure, a re-asked control that reads lets a batch's failed rows count as unreadable and the new review replace the earlier one
+- Trigger: a user with a ready review presses New scan while Immich or its proxy answers 5xx/429 intermittently → on the last pass some rows and the first control fail, a re-asked control reads → the failed rows are `fetch_failed`, the scan goes `ready` with those photos "No match" and counted in `unreadable_photos`, and the earlier review is deleted. At b70c949f the same batch failed safe.
+- Scores: trigger=plausible, impact=wrong-visible (data-loss considered and declined: a good rescan deletes the same ticks and picks by design, the new review is mostly real at realistic failure rates, says how many photos it could not read, and a rescan repairs it; if this were data loss, F6's own "first control reads" path would be the same defect), detect=user-visible, later=cheap, fix=S/local, confidence=verified
+- Decision: Defer (D10) — not a new harm: a higher probability of a state F6 already allows (the transport-failure refinement was not taken, round 4). Per batch, ready goes from 1-f to 1-f³; a row must fail three times at least 2 s and 5 s apart. Small for ordinary hiccups, real only for sustained heavy failure on large albums (f=0.5, 10,000 photos: ready 0.001 → 0.26, independence assumed, not measured). The reviewer's fix (re-fetch failed rows once more) is rejected: a fourth pass in disguise, with the review still replaced. If overridden: narrow the re-ask to batches with no row failing for a passing reason (no extra fetches; a broken photo coinciding with a control blip then fails safe, as before F7).
+- Revisit when: a user reports the unreadable notice or "No match" on a scan while Immich or its proxy was overloaded or rate-limiting, and a later scan reads those photos; logs show a ready scan with more than about 5% of its album unreadable; a rate limiter in front of Immich is found to be a common setup; or the control rule or the rule replacing the earlier review next changes.
+- Guard: —
 - Override: —
 - Outcome: —
