@@ -1236,15 +1236,17 @@ wait for them.
      - the last retry also fetches, beside the photos it retries, the
        thumbnail of one album photo already read (the first one). If it
        reads, Immich is up and the photos still failing are broken ones,
-       left out and counted. If it fails for a reason that can pass, Immich
-       is down: the scan fails as unreachable and the earlier review is
-       kept, never replaced by a mostly "No match" one. If it fails for
-       good (gone, too large), the next photo read is tried, up to three;
+       left out and counted. If it fails for a reason that can pass and no
+       photo of that batch read, Immich is down: the scan fails as
+       unreachable and the earlier review is kept, never replaced by a
+       mostly "No match" one. If it fails for a reason that can pass while
+       a photo of that batch read, or fails for good (gone, too large), the
+       next photo read is tried, one at a time after the batch, up to three;
        none reading fails the scan the same way. The control is a
        thumbnail, not a ping, since a storage outage leaves the API
        answering while thumbnails fail. When a retry was needed and no
        photo was read at all, there is no control and the scan fails as
-       unreachable (INT-R2-1, INT-R3-1, INT-R4-1);
+       unreachable (INT-R2-1, INT-R3-1, INT-R4-1, INT-R5-1);
      - enqueue itself again while rows remain, then `run_scan_match`.
   5. `run_scan_match(scan_id)`:
      - fingerprint each trip photo in scope from its `_thumb.jpg` on disk;

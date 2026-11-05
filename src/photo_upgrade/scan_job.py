@@ -13,9 +13,9 @@ the next, so a poster never waits behind more than one of them:
    enqueues itself again while rows remain. Thumbnails whose fetch failed
    for a reason that can pass are fetched again in up to
    ``len(_RETRY_PAUSES)`` further passes; those still failing are left out
-   of the match, and counted for the review (INT-R1-A1), unless a thumbnail
-   already read, fetched beside them, fails too: Immich is down, and the
-   scan fails (INT-R3-1, INT-R4-1).
+   of the match, and counted for the review (INT-R1-A1), unless the
+   thumbnails already read, asked beside them, fail too: Immich is down, and
+   the scan fails (INT-R3-1, INT-R4-1, INT-R5-1).
 3. ``run_scan_match``: fingerprints the trip photos from their thumbnails on
    disk, runs the matcher (``src/photo_upgrade/matching.py``), writes one
    suggestion per trip photo, sets ``ready``, and only then deletes the
@@ -440,6 +440,18 @@ def _can_pass(got) -> bool:
     return False
 
 
+def _outcome(got) -> str:
+    """A failed fetch of :func:`_fetch_fingerprint` as a log label: never the
+    exception's message, which can quote the server's address."""
+    if got is None:
+        return "undecodable"
+    if got is _TOO_LARGE:
+        return "too_large"
+    if isinstance(got, ImmichRejected):
+        return f"ImmichRejected {got.status}"
+    return type(got).__qualname__
+
+
 def _open_rows(scan_id: int) -> tuple:
     """The scan's album photos neither fingerprinted nor given up on."""
     return (DBPhotoUpgradeAsset.scan_id == scan_id,
@@ -467,9 +479,9 @@ def _fingerprint(scan_id: int, retry_pass: int = 0, after_id: int = 0) -> Option
     Whether Immich is down is judged over the whole scan, never one batch
     (INT-R2-1, INT-R2-2): the scan fails, so ``_match`` never runs and the
     earlier review is kept, at once while none of its photos is
-    fingerprinted, on the last pass when a thumbnail already read fails
-    beside the batch (INT-R3-1, INT-R4-1), and before matching when a retry
-    pass ran and none is fingerprinted."""
+    fingerprinted, on the last pass when the thumbnails already read fail
+    beside the batch (INT-R3-1, INT-R4-1, INT-R5-1), and before matching when
+    a retry pass ran and none is fingerprinted."""
     scan = _live_scan(scan_id, "scanning")
     if scan is None:
         return None
@@ -495,17 +507,26 @@ def _fingerprint(scan_id: int, retry_pass: int = 0, after_id: int = 0) -> Option
     results: Dict[int, object] = {}
     if batch:
         client = _client_for(scan.user_info_id)
-        # The first control is fetched in the same pool as the batch, so at
-        # the same moment.
+        # The first control is queued in the pool after the batch, so it
+        # starts once every row of the batch has started. That is all the
+        # order says: it may answer before a slow row does, and it can fail
+        # alone while the rows beside it read.
         with ThreadPoolExecutor(max_workers=FETCH_THREADS) as pool:
             fetched = list(pool.map(lambda row: _fetch_fingerprint(client, row[1]),
                                     batch + controls[:1]))
         checks = fetched[len(batch):]
         fetched = fetched[:len(batch)]
+        decoded = sum(isinstance(got, Fingerprint) for got in fetched)
         # A control failing permanently (404, the size caps) says nothing
-        # about Immich: that one photo may be gone. The next is tried.
+        # about Immich: that one photo may be gone. The next is tried, one at
+        # a time. So too after a failure that can pass with a row of the batch
+        # decoded (INT-R5-1): either that one request failed while Immich was
+        # serving its neighbours, and the next reads, or Immich went down
+        # partway through the batch, and the next fails too. With no row
+        # decoded, nothing speaks for Immich: no further control is asked.
         while (checks and not isinstance(checks[-1], Fingerprint)
-               and not _can_pass(checks[-1]) and len(checks) < len(controls)):
+               and (decoded or not _can_pass(checks[-1]))
+               and len(checks) < len(controls)):
             checks.append(_fetch_fingerprint(client, controls[len(checks)][1]))
         failures = [r for r in fetched + checks if isinstance(r, ImmichError)]
         for exc in failures:
@@ -528,18 +549,23 @@ def _fingerprint(scan_id: int, retry_pass: int = 0, after_id: int = 0) -> Option
                 raise failures[0]
         # The last pass holds only photos that failed twice already, and
         # whether Immich can serve a thumbnail right now is asked of a photo
-        # it served before, fetched beside them (INT-R3-1, INT-R4-1). The
+        # it served before, fetched beside them (INT-R3-1, INT-R4-1). A
         # control read: Immich is up, and the batch's failures are photos it
         # cannot serve, left out of the match and counted. Otherwise Immich
         # is down, partway through the scan, so it fails before anything of
         # this batch is written and the earlier review is kept; so too when
-        # every control failed permanently, since nothing then says Immich
-        # is up. The control is a thumbnail, never a ping: a storage outage
-        # leaves the API answering while every thumbnail answers 500. A
-        # share of the album unread cannot tell the two apart: it locked a
-        # small album with one broken photo out of scanning, and missed an
-        # outage after one batch of a slightly larger album.
+        # every control failed permanently or none is left to ask, since
+        # nothing then says Immich is up. Rows of the batch decoding do not
+        # say so: they may have been read before the outage began. The
+        # control is a thumbnail, never a ping: a storage outage leaves the
+        # API answering while every thumbnail answers 500. A share of the
+        # album unread cannot tell the two apart: it locked a small album
+        # with one broken photo out of scanning, and missed an outage after
+        # one batch of a slightly larger album.
         if checks and not isinstance(checks[-1], Fingerprint):
+            _log.info("Photo scan %s: controls failed on pass %s: batch of %d, "
+                      "%d decoded, controls: %s", scan_id, retry_pass, len(batch),
+                      decoded, ", ".join(_outcome(got) for got in checks))
             raise _ScanFailed(REASON_UNREACHABLE)
         for (row_id, _), got in zip(batch, fetched):
             results[row_id] = got
@@ -592,6 +618,7 @@ def _fingerprint(scan_id: int, retry_pass: int = 0, after_id: int = 0) -> Option
     # do not store why they failed. A scan whose failures were all
     # permanent, such as every asset gone (404), ends on pass 0 and matches.
     if retry_pass and none_read:
+        _log.info("Photo scan %s: nothing read by the end of pass %s", scan_id, retry_pass)
         raise _ScanFailed(REASON_UNREACHABLE)
     return ("match",)
 

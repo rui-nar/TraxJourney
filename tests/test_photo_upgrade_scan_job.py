@@ -24,6 +24,9 @@ Covers:
     Immich down partway through the scan failing it and keeping the earlier
     review, a few photos Immich cannot serve counted and the scan ready
     (INT-R3-1, INT-R3-2, INT-R4-1);
+  * one control failing beside rows that decoded asking the next, and what
+    the scan logs when the controls, or the whole scan, read nothing
+    (INT-R5-1, INT-R5-2);
   * a project deleted mid-chain stopping the next job quietly;
   * the killed-work-horse handler and the worker's startup sweep;
   * the in-process loop without a broker.
@@ -32,6 +35,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import random
 import time
 import uuid as uuid_lib
@@ -1456,6 +1460,225 @@ def test_every_thumbnail_undecodable_fails_the_scan_and_keeps_the_review(env, br
     _assert_failed_keeping(env, scan_id, ran, earlier, reviewed)
     tries = 1 + len(scan_job._RETRY_PAUSES)
     assert _calls(env) == {"a140": tries, "a141": tries}
+
+
+# ── A control failing beside rows that decoded (INT-R5-1), and the log (INT-R5-2) ─
+
+def _reads_last_pass(env, name: str = "suspect") -> str:
+    """An album photo failing the first pass and the next, reading on the
+    last; its id."""
+    env.immich.add(name, [ImmichRejected(503), ImmichRejected(503), _album_thumb(99)])
+    return name
+
+
+def _reads_then(env, asset_id: str, *answers) -> None:
+    """*asset_id* reads as it did, then gives *answers*: its control's."""
+    env.immich.thumbs[asset_id] = [env.immich.thumbs[asset_id], *answers]
+
+
+@pytest.mark.parametrize("first_control", [
+    ImmichRejected(503), ImmichUnreachable("read timed out"), b"<html>502 Bad Gateway</html>",
+], ids=["503", "unreachable", "undecodable"])
+def test_one_control_failing_beside_rows_that_decoded_asks_the_next(
+        env, broker, first_control):
+    """INT-R5-1: every photo retried reads and only the control request
+    fails: the next control, asked alone, reads, so Immich is up."""
+    earlier, _ = _reviewed_scan(env, broker)
+    _reads_then(env, "a140", first_control)
+    suspects = [_reads_last_pass(env, f"suspect-{i}") for i in range(2)]
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    broker.drain()
+
+    _assert_ready_replacing(env, scan_id, earlier, 0)
+    assert all(r.fingerprinted for r in env.assets(scan_id))
+    calls = _calls(env)
+    assert (calls["a140"], calls["a141"]) == (2, 2)
+    assert [calls[s] for s in suspects] == [3, 3]
+
+
+def test_a_re_asked_control_reading_leaves_the_broken_photos_counted(env, broker):
+    """INT-R5-1: some photos read and some keep failing, the first control
+    fails, the next reads: Immich is up, the photos failing are broken."""
+    earlier, _ = _reviewed_scan(env, broker)
+    _reads_then(env, "a140", ImmichRejected(503))
+    good = _reads_last_pass(env)
+    broken = _down(env, 2, ImmichRejected(500))
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    broker.drain()
+
+    _assert_ready_replacing(env, scan_id, earlier, 2)
+    rows = {r.asset_id: r for r in env.assets(scan_id)}
+    assert rows[good].fingerprinted
+    assert {a for a, r in rows.items() if r.fetch_failed} == set(broken)
+    assert (_calls(env)["a140"], _calls(env)["a141"]) == (2, 2)
+
+
+@pytest.mark.parametrize("error", [ImmichUnreachable("reset"), ImmichRejected(503)],
+                         ids=["unreachable", "503"])
+def test_an_outage_partway_through_the_final_batch_keeps_the_review(env, broker, error):
+    """INT-R3-1 against INT-R5-1: the last pass's early rows decode, then
+    Immich goes down, so its later rows and every control fail. A row
+    decoding must not be taken for Immich up: letting the control decide only
+    when no row decoded would make this scan ready and delete the review."""
+    earlier, reviewed = _reviewed_scan(env, broker)
+    _readable(env, 1)
+    for asset_id in ("a140", "a141", "ok-0002"):
+        _reads_then(env, asset_id, error)
+    early = _reads_last_pass(env)
+    later = _down(env, 2, error)
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    ran = broker.drain()
+
+    _assert_failed_keeping(env, scan_id, ran, earlier, reviewed)
+    calls = _calls(env)
+    # The third answer of "early" is its thumbnail: the row did decode, and
+    # the batch was refused all the same.
+    assert calls[early] == 3
+    assert [calls[a] for a in later] == [3, 3]
+    rows = {r.asset_id: r for r in env.assets(scan_id)}
+    assert not rows[early].fingerprinted
+    assert not any(r.fetch_failed for r in rows.values())
+
+
+@pytest.mark.parametrize("answers", [
+    (ImmichRejected(503), ImmichRejected(503), ImmichRejected(503)),
+    (ImmichUnreachable("reset"), ImmichRejected(404),
+     ImmichBadAnswer("thumbnail larger than allowed")),
+], ids=["all-passing", "mixed-with-permanent"])
+def test_a_re_ask_running_out_of_controls_fails_the_scan(env, broker, answers):
+    """INT-R5-1: three controls asked, none reads: Immich is down. A fourth
+    photo read is never asked."""
+    earlier, reviewed = _reviewed_scan(env, broker)
+    _readable(env, 2)
+    third, fourth = env.immich.assets[2].id, env.immich.assets[3].id
+    for asset_id, answer in zip(("a140", "a141", third), answers):
+        _reads_then(env, asset_id, answer)
+    _reads_last_pass(env)
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    ran = broker.drain()
+
+    _assert_failed_keeping(env, scan_id, ran, earlier, reviewed)
+    calls = _calls(env)
+    assert tuple(calls[a] for a in ("a140", "a141", third, fourth)) == (2, 2, 2, 1)
+
+
+def test_a_failing_control_with_no_other_photo_read_fails_the_scan(env, broker):
+    """INT-R5-1: one photo was read before the last pass, so one control
+    exists: it failing leaves nothing to ask, and the scan fails safe."""
+    earlier, reviewed = _reviewed_scan(env, broker)
+    env.immich.thumbs["a141"] = ImmichRejected(404)
+    _reads_then(env, "a140", ImmichRejected(503))
+    suspect = _reads_last_pass(env)
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    ran = broker.drain()
+
+    _assert_failed_keeping(env, scan_id, ran, earlier, reviewed)
+    assert _calls(env) == {"a140": 2, "a141": 1, suspect: 3}
+
+
+def test_a_control_failing_with_no_row_decoded_asks_no_other(env, broker):
+    """INT-R5-1 leaves the plain and the storage outage as fast as they were:
+    no row of the batch read and the control agrees, so the scan fails at
+    once."""
+    earlier, reviewed = _reviewed_scan(env, broker)
+    _reads_then(env, "a140", ImmichRejected(500))
+    down = _down(env, 3, ImmichRejected(500))
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    ran = broker.drain()
+
+    _assert_failed_keeping(env, scan_id, ran, earlier, reviewed)
+    calls = _calls(env)
+    assert (calls["a140"], calls["a141"]) == (2, 1)
+    assert [calls[a] for a in down] == [3, 3, 3]
+
+
+@pytest.mark.parametrize("refusal, reason", [
+    (ImmichRejected(401), scan_job.REASON_FORBIDDEN),
+    (ImmichRejected(403), scan_job.REASON_FORBIDDEN),
+    (ImmichAddressNotAllowed("private"), scan_job.REASON_ADDRESS_NOT_ALLOWED),
+], ids=["401", "403", "address"])
+def test_a_re_asked_control_refused_fails_the_scan_as_a_batch_row_would(
+        env, broker, refusal, reason):
+    """INT-R5-1: the key or the address is wrong for every photo, whichever
+    request says so, and even if a later control reads."""
+    earlier, reviewed = _reviewed_scan(env, broker)
+    _readable(env, 1)
+    _reads_then(env, "a140", ImmichRejected(503))
+    _reads_then(env, "a141", refusal)
+    _reads_last_pass(env)
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    broker.drain()
+
+    scan = env.get(scan_id)
+    assert (scan.status, scan.error_message) == ("failed", reason)
+    assert env.get(earlier).status == "ready"
+    assert _review(env, earlier) == reviewed
+
+
+@pytest.mark.parametrize("answers, labels", [
+    ((ImmichUnreachable("https://immich.example:2283 reset"), ImmichRejected(503),
+      b"<html>https://immich.example</html>"),
+     "ImmichUnreachable, ImmichRejected 503, undecodable"),
+    ((ImmichRejected(404), ImmichBadAnswer("https://immich.example sent too much"),
+      _encode(Image.new("L", (2500, 2000)), "PNG")),
+     "ImmichRejected 404, ImmichBadAnswer, too_large"),
+], ids=["passing", "permanent"])
+def test_a_scan_failed_by_the_controls_logs_what_they_answered(
+        env, broker, caplog, answers, labels):
+    """INT-R5-2: enough to tell an outage from the fail-safe, and neither the
+    server's address nor an asset id."""
+    caplog.set_level(logging.INFO, logger=scan_job._log.name)
+    _reviewed_scan(env, broker)
+    _readable(env, 1)
+    for asset_id, answer in zip(("a140", "a141", "ok-0002"), answers):
+        _reads_then(env, asset_id, answer)
+    _reads_last_pass(env)
+    _down(env, 1, ImmichRejected(500))
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    caplog.clear()
+    broker.drain()
+
+    assert env.get(scan_id).error_message == scan_job.REASON_UNREACHABLE
+    lines = [r.getMessage() for r in caplog.records if "controls failed" in r.getMessage()]
+    assert lines == [f"Photo scan {scan_id}: controls failed on pass 2: batch of 2, "
+                     f"1 decoded, controls: {labels}"]
+    assert not any("nothing read" in r.getMessage() for r in caplog.records)
+    assert "immich.example" not in caplog.text
+    for asset in env.immich.assets:
+        assert asset.id not in caplog.text
+
+
+def test_a_scan_that_read_nothing_logs_its_own_line(env, broker, caplog):
+    """INT-R5-2: no control was asked, and the log says so apart."""
+    caplog.set_level(logging.INFO, logger=scan_job._log.name)
+    env.memory([140])
+    env.immich.add("down", ImmichRejected(502))
+    env.immich.add("gone", ImmichRejected(404))
+    scan_id = env.scan()
+
+    scan_job.start_scan(scan_id)
+    broker.drain()
+
+    assert env.get(scan_id).error_message == scan_job.REASON_UNREACHABLE
+    assert f"Photo scan {scan_id}: nothing read by the end of pass 2" in [
+        r.getMessage() for r in caplog.records]
+    assert not any("controls failed" in r.getMessage() for r in caplog.records)
 
 
 def test_a_killed_retry_pass_fails_its_scan(env):
